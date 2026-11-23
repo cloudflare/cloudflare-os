@@ -344,6 +344,111 @@ describe("credentials", () => {
   });
 });
 
+describe("a link on a host other than the root site's, as a multi-geo tenant's other geographies have", () => {
+  const oneDrive = "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/Documents";
+  const siteCollection = "d0d0d0d0-0000-0000-0000-000000000001";
+  const web = "f0f0f0f0-0000-0000-0000-000000000001";
+  /** Answers the link as a OneDrive folder that Graph places in `tenantId`, or in no tenant at all, on the site at `siteUrl`. */
+  function folderIn(graph: FakeGraph, tenantId?: string, siteUrl?: string): void {
+    graph.on("GET", /^\/v1\.0\/shares\/[^/]+\/driveItem/, () => json({
+      id: "01ATTACHMENTS", name: "Attachments", folder: { childCount: 2 }, webUrl: `${oneDrive}/Attachments`,
+      parentReference: { driveId: "b!OneDrive", id: "01ONEDRIVEROOT" },
+      sharepointIds: { siteId: siteCollection, webId: web, ...(tenantId ? { tenantId } : {}), ...(siteUrl ? { siteUrl } : {}) },
+    }));
+  }
+
+  it("resolves when Graph places what it names in the connected tenant", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    folderIn(graph, TENANT.toUpperCase());
+    expect(unwrap(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatchObject({
+      scope: { kind: "folder", siteId: `contosoeur-my.sharepoint.com,${siteCollection},${web}`, driveId: "b!OneDrive", itemId: "01ATTACHMENTS" },
+      name: "Attachments",
+    });
+  });
+
+  it("names the site by the host Graph gives, where a link from before a move between geographies leads", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    folderIn(graph, TENANT, "https://contosoapc-my.sharepoint.com/personal/phillip_contoso_com");
+    expect(unwrap(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatchObject({
+      scope: { kind: "folder", siteId: `contosoapc-my.sharepoint.com,${siteCollection},${web}` },
+    });
+  });
+
+  it("is refused as another organization's when Graph places it in another tenant, or in none", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    folderIn(graph, OTHER_TENANT);
+    expect(failure(await hooks().resolve(id, `${oneDrive}/Attachments`)))
+      .toMatch(/another organization's SharePoint \(contosoeur-my\.sharepoint\.com\)/);
+    folderIn(graph);
+    expect(failure(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatch(/another organization's SharePoint/);
+  });
+
+  const site = `contosoeur.sharepoint.com,${siteCollection},${web}`;
+  const sales = "https://contosoeur.sharepoint.com/sites/Sales";
+  const page = "aaaaaaaa-1111-0000-0000-000000000001";
+  /** Every other kind of thing a link names: the link, the one Graph request that answers it, the answer, and the scope. */
+  const KINDS: Array<[string, string, RegExp, Record<string, unknown>, string]> = [
+    ["a site, by its link", sales, /\/shares\/[^/]+\/site(\?|$)/, { id: site, displayName: "Sales", webUrl: sales }, "site"],
+    ["a site, by its path", sales, /\/sites\/contosoeur\.sharepoint\.com:/, { id: site, displayName: "Sales", webUrl: sales }, "site"],
+    ["a list", `${sales}/Lists/Tasks`, /\/shares\/[^/]+\/list(\?|$)/,
+      { id: "bbbbbbbb-1111-0000-0000-000000000001", displayName: "Tasks", webUrl: `${sales}/Lists/Tasks`, list: { template: "genericList" }, parentReference: { siteId: site } }, "list"],
+    ["a page", `${sales}/SitePages/Home.aspx`, /\/shares\/[^/]+\/listItem(\?|$)/,
+      { id: "1", webUrl: `${sales}/SitePages/Home.aspx`, sharepointIds: { listItemUniqueId: page }, parentReference: { siteId: site } }, "page"],
+  ];
+
+  it.each(KINDS)("holds %s to the connected tenant the same way", async (_name, url, route, body, kind) => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const answerIn = (tenantId?: string) => graph.on("GET", /^\/v1\.0\/(shares|sites)\//, request => {
+      const path = request.url.pathname + request.url.search;
+      if (/\/pages\//.test(path)) return json({ title: "Home", name: "Home.aspx", webUrl: url });
+      if (!route.test(path)) return json({ error: { code: "itemNotFound", message: "Not found." } }, { status: 404 });
+      return json({ ...body, sharepointIds: { ...body.sharepointIds as object, ...(tenantId ? { tenantId } : {}) } });
+    });
+    answerIn(TENANT);
+    expect(unwrap(await hooks().resolve(id, url))).toMatchObject({ scope: { kind } });
+    // The tenant is asked for by name: a site and a list don't say theirs otherwise.
+    const asked = graph.requests.find(request => route.test(request.url.pathname + request.url.search));
+    expect(asked?.url.searchParams.get("$select")).toContain("sharepointIds");
+    answerIn(OTHER_TENANT);
+    expect(failure(await hooks().resolve(id, url))).toMatch(/another organization's SharePoint/);
+    answerIn();
+    expect(failure(await hooks().resolve(id, url))).toMatch(/another organization's SharePoint/);
+  });
+
+  it("is refused on the tenant's own host too, when Graph places it in another tenant or on another host without saying", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const moved = "https://contoso-my.sharepoint.com/personal/phillip_contoso_com/Documents/Attachments";
+    folderIn(graph, OTHER_TENANT);
+    expect(failure(await hooks().resolve(id, moved))).toMatch(/another organization's SharePoint \(contoso-my\.sharepoint\.com\)/);
+    folderIn(graph, undefined, "https://fabrikam-my.sharepoint.com/personal/phillip_fabrikam_com");
+    expect(failure(await hooks().resolve(id, moved))).toMatch(/another organization's SharePoint/);
+    // With nothing said either way, the tenant's own host stands for it, as it always has.
+    folderIn(graph);
+    expect(unwrap(await hooks().resolve(id, moved))).toMatchObject({ scope: { kind: "folder", siteId: `contoso-my.sharepoint.com,${siteCollection},${web}` } });
+  });
+
+  it("is refused like any link that leads nowhere when Graph resolves nothing", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    graph.on("GET", /^\/v1\.0\/(shares|sites)\//, () => json({ error: { code: "accessDenied", message: "Access denied." } }, { status: 403 }));
+    expect(failure(await hooks().resolve(id, "https://fabrikam.sharepoint.com/sites/Finance/Shared%20Documents/plan.docx")))
+      .toMatch(/doesn't lead to anything/);
+  });
+
+  it("is refused without asking Graph when it names everything", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    expect(failure(await hooks().resolve(id, "https://contosoeur.sharepoint.com/_layouts/15/sharepoint.aspx")))
+      .toMatch(/another organization's SharePoint/);
+    expect(graph.requests).toEqual([]);
+  });
+});
+
 describe("identity", () => {
   it("is served for a day without asking Graph, then read again, never letting the pin move", async () => {
     const graph = new FakeGraph().install();

@@ -18,6 +18,7 @@ import {
   ResourceConfiguratorFrame,
   workerVersionTag,
   type ActionKind,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   type ActionDescriptionBuilder, buildDescription, plainInline, type RenderedDescription,
@@ -126,6 +127,7 @@ type Env = Cloudflare.Env & {
 const OAUTH_SCOPES = ["read", "write"];
 
 const WORKSPACE_RESOURCE: SupportedResource = {
+  id: "workspace",
   urlPattern: "https://linear.app/:workspace",
   title: "Linear Workspace",
   description:
@@ -134,12 +136,14 @@ const WORKSPACE_RESOURCE: SupportedResource = {
 };
 
 const TEAM_RESOURCE: SupportedResource = {
+  id: "team",
   urlPattern: "https://linear.app/:workspace/team/:teamKey{/:rest}*",
   title: "Linear Team",
   description: "Read and manage the issues, labels, states, and cycles of a single Linear team.",
 };
 
 const ISSUE_RESOURCE: SupportedResource = {
+  id: "issue",
   urlPattern: "https://linear.app/:workspace/issue/:issueId{/:rest}*",
   title: "Linear Issue",
   description: "Read and manage a single Linear issue and its comments.",
@@ -896,6 +900,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const account = this.#account();
     const getToken = () => account.getAccessToken();
 

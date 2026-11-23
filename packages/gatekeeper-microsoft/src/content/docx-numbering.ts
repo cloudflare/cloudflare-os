@@ -5,9 +5,9 @@
 // Markdown did. The document's own numbering part is kept byte for byte; definitions and instances
 // are inserted with ids above any it already uses.
 
-import { attribute, childElements } from "./xml";
-import { parsePart } from "./ooxml";
-import { XML_DECLARATION } from "./ooxml";
+import { attribute, childElements } from "@gadgets/office-content/xml";
+import { parsePart } from "@gadgets/office-content/ooxml";
+import { XML_DECLARATION } from "@gadgets/office-content/ooxml";
 
 /** The kinds of list the writer lays out. */
 export type ListKind = "bullet" | "ordered" | "task";

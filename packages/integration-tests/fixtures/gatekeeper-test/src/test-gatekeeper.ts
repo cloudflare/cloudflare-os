@@ -28,22 +28,27 @@ import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
   Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
-  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
+  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type {
-  ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
-} from "@gadgets/workshop-shared/external-message-gateway";
+
+import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-shared/worktree-replica";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
 const VENDOR_HOST = "gadgets-test.example";
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [{
+  id: "thing",
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
   creatable: true,
+  // An approver's configuration is whatever a test approves with: nothing here serves the
+  // configurator frame, which only the Workshop UI asks for.
+  creationConfigurator: true,
+  creationConfigurationDescription: "the URL of the test folder to create it in",
+  savableFrom: ["text/csv"],
 }];
 
 const TYPES_CODE = `
@@ -52,6 +57,10 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and mounts it. */
+  mountWorktree(worktree: unknown): Promise<string>;
+  /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
+  runCommand(path: string, text: string): Promise<string>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
   /** Binds a hook the integration test delivers through \`/control/queue-hook\`. */
@@ -440,42 +449,71 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`credential:${label}`) ?? null;
   }
 
-  recordGadgetResponse(messageKey: string, response: GadgetResponse): void {
-    const key = `gadget-responses:${messageKey}`;
-    this.ctx.storage.kv.put(key, [...this.getGadgetResponses(messageKey), response]);
-  }
-
-  getGadgetResponses(messageKey: string): GadgetResponse[] {
-    return this.ctx.storage.kv.get<GadgetResponse[]>(`gadget-responses:${messageKey}`) ?? [];
+  /**
+   * Fetches the worktree's head, as `git clone` would, and keeps its replicator for runCommand().
+   */
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
+    using replicator = await worktree.getReplicator();
+    this.ctx.storage.kv.put("mounted-worktree", replicator);
+    const head = await replicator.gitHead();
+    await fetchPack(replicator, head);
+    return `worktree pack received for ${head}`;
   }
 
   /**
-   * Submits from here rather than returning the target: relayed back through the fetch handler,
-   * the stub ctx.restore() mints arrives non-persistent, and the Workshop stores it.
+   * Runs a command in the worktree mountWorktree() kept, as a container would, for the execution
+   * whose session `queue` belongs to: snapshots it, fetches the snapshot's tree, and submits the
+   * tree the command left, which holds only `path`.
    */
-  async submitExternalMessage(input: Omit<SubmitExternalMessageInput, "chatGatewayRpcTarget">)
-      : Promise<SubmitExternalMessageResult> {
-    using chatGatewayRpcTarget =
-        await this.ctx.restore<RpcStub<ChatGatewayRpcTarget>>({ messageKey: input.messageKey });
-    return await this.env.WORKSHOP_EXTERNAL_MESSAGES.submitExternalMessage(
-        { ...input, chatGatewayRpcTarget });
-  }
-
-  [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
-    return new GadgetResponseRecorder(this, messageKey);
+  async runCommand(queue: RpcStub<ObservationAuthorizer>, path: string, text: string): Promise<string> {
+    using replicator = this.ctx.storage.kv.get<RpcStub<WorktreeReplicator>>("mounted-worktree");
+    if (!replicator) throw new Error("No worktree is mounted");
+    const snapshot = await replicator.snapshot(queue);
+    await fetchPack(replicator, snapshot.tree);
+    const blob = {type: 3, payload: new TextEncoder().encode(text)};
+    const blobId = await gitObjectId("blob", blob.payload);
+    const tree = {type: 2, payload: concat([new TextEncoder().encode(`100644 ${path}\0`), hexBytes(blobId)])};
+    const treeId = await gitObjectId("tree", tree.payload);
+    const pack = await packBytes([blob, tree]);
+    const result = await replicator.submit(queue, snapshot.tree, treeId, new Blob([pack]).stream());
+    return result.tree === treeId ? `submitted ${path}` : `merged into ${result.tree}`;
   }
 }
 
-/** Records each delivery rather than the latest, since delivery is at-least-once. */
-@validateRpc()
-class GadgetResponseRecorder extends RpcTarget implements ChatGatewayRpcTarget {
-  constructor(private readonly owner: TestControl, private readonly messageKey: string) {
-    super();
-  }
+// Fetches `oid` from the worktree, checking that a raw Git pack arrives.
+async function fetchPack(replicator: RpcStub<WorktreeReplicator>, oid: string): Promise<void> {
+  using transfer = await replicator.gitPull([oid], {commitHistory: {kind: "full"}});
+  const bytes = new Uint8Array(await new Response(await transfer.stream()).arrayBuffer());
+  if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
+}
 
-  async onGadgetResponse(response: GadgetResponse): Promise<void> {
-    this.owner.recordGadgetResponse(this.messageKey, response);
+function concat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  parts.reduce((offset, part) => (out.set(part, offset), offset + part.length), 0);
+  return out;
+}
+const hexBytes = (hex: string) => Uint8Array.from(hex.match(/../g)!, byte => parseInt(byte, 16));
+async function sha1(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-1", bytes));
+}
+async function gitObjectId(type: string, payload: Uint8Array): Promise<string> {
+  const hash = await sha1(concat([new TextEncoder().encode(`${type} ${payload.length}\0`), payload]));
+  return [...hash].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+// A Git pack holding `objects` whole (type 2 is a tree, 3 a blob).
+async function packBytes(objects: {type: number; payload: Uint8Array}[]): Promise<Uint8Array> {
+  const parts = [new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, objects.length])];
+  for (const {type, payload} of objects) {
+    const header = [(type << 4) | (payload.length & 15)];
+    for (let size = payload.length >> 4; size > 0; size >>= 7) {
+      header[header.length - 1] |= 0x80;
+      header.push(size & 0x7f);
+    }
+    parts.push(new Uint8Array(header), new Uint8Array(
+      await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()));
   }
+  const body = concat(parts);
+  return concat([body, await sha1(body)]);
 }
 
 // ctx.exports is typed via the Cloudflare.GlobalProps declaration in env.d.ts, so loopback bindings
@@ -623,6 +661,14 @@ export class TestAccount
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
   }
 
+  /** Keeps nothing: the URL it returns reports what arrived. */
+  async saveFile(_resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }> {
+    const saved = new URLSearchParams(
+        { destination, name, contentType, content: await new Response(file).text() });
+    return { url: `https://${VENDOR_HOST}/things/saved?${saved}` };
+  }
+
   async commitReconnect(stageId: string): Promise<void> {
     await control(this.ctx.exports).commitReconnect(this.ctx.props.label, stageId);
   }
@@ -684,6 +730,10 @@ export interface TestSession {
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Exercises worktree capability delegation through the real code-mode bridge. */
+  mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
+  /** Runs a command in the worktree mountWorktree() kept, in a later execution. */
+  runCommand(path: string, text: string): Promise<string>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Binds a hook kept in a `HookRegistry`, which `/control/queue-hook` delivers to by `name`. */
   subscribe(name: string, callback: RpcStub<ValueHook>): Promise<void>;
@@ -755,6 +805,14 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async writeValues(values: number[]): Promise<number[]> {
     return Promise.all(values.map(value => this.writeValue(value)));
+  }
+
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
+    return this.state.mountWorktree(worktree);
+  }
+
+  async runCommand(path: string, text: string): Promise<string> {
+    return this.state.runCommand(this.approvalQueue, path, text);
   }
 
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {
@@ -995,7 +1053,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 export default {
-  async fetch(req: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, _env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
     // The page a finished connect flow ends on, carrying the handoff ticket to the Workshop.
@@ -1179,29 +1237,6 @@ export default {
       return new Response(null, { status: 204 });
     }
 
-    // Submit an external chat message through the Workshop's ExternalMessageGateway entrypoint,
-    // the way a chat-integration worker would, so tests can drive receiveExternalMessage().
-    // Body: {"callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"}
-    // -> SubmitExternalMessageResult
-    if (url.pathname === "/control/submit-external-message" && req.method === "POST") {
-      const fields =
-          ["callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"] as const;
-      const input = {} as Record<(typeof fields)[number], string>;
-      for (const field of fields) {
-        const value = (body as Record<string, unknown>)[field];
-        if (!isNonEmptyString(value)) return badRequest(`\`${field}\` must be a non-empty string`);
-        input[field] = value;
-      }
-      return Response.json(await control(ctx.exports).submitExternalMessage(input));
-    }
-
-    // Body: {"messageKey": "..."} -> {"responses": GadgetResponse[]}
-    if (url.pathname === "/control/gadget-responses" && req.method === "POST") {
-      const { messageKey } = body as Record<string, unknown>;
-      if (!isNonEmptyString(messageKey)) return badRequest("`messageKey` must be a non-empty string");
-      return Response.json({ responses: await control(ctx.exports).getGadgetResponses(messageKey) });
-    }
-
     // Fire a hook through the initiator its controller's enable() stored, as an event about the
     // binding at `resourceUrl` whose reads depended on `subresources` (see TestControl.fireHook()).
     // Body: {"key": "...", "value": number, "resourceUrl"?: "...", "subresources"?: string[]}
@@ -1248,17 +1283,6 @@ export default {
       const { key } = body as Record<string, unknown>;
       if (!isNonEmptyString(key)) return badRequest("`key` must be a non-empty string");
       return Response.json(await control(ctx.exports).getHookState(key));
-    }
-
-    // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
-    // "<source>:<gadgetKey>", where "test" is the `source` prop on WORKSHOP_EXTERNAL_MESSAGES --
-    // so a test can open the same workspace over the web API, which addresses by DO id string.
-    // Body: {"gadgetKey": "..."} -> {"gadgetId": "..."}
-    if (url.pathname === "/control/external-gadget-id" && req.method === "POST") {
-      const { gadgetKey } = body as Record<string, unknown>;
-      if (!isNonEmptyString(gadgetKey)) return badRequest("`gadgetKey` must be a non-empty string");
-      return Response.json(
-          { gadgetId: env.WORKSHOP_OVERSEER.idFromName(`test:${gadgetKey}`).toString() });
     }
 
     // Make this Worker issue a subrequest, so a test can prove that Worker-originated fetches really

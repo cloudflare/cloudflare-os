@@ -83,6 +83,53 @@ export function fakeAi(answer: Response | Error | ((sent: Sent) => Response)) {
   return { ai, sent };
 }
 
+/** The body of a vision request, as far as the tests read it. */
+export type VisionJson = {
+  inputs: {
+    messages: { role: string; content: { type: string; text?: string; image_url?: { url: string } }[] }[];
+    [setting: string]: unknown;
+  };
+  options: unknown;
+};
+
+/** The image a vision request carried: its data URI's MIME type, and its bytes. */
+export function sentImage(sent: Sent): { mimeType: string; bytes: Uint8Array } {
+  let { inputs } = sent.json as unknown as VisionJson;
+  let url = inputs.messages[0]!.content.find(part => part.type === "image_url")!.image_url!.url;
+  let [, mimeType, data] = /^data:([^;]+);base64,(.*)$/.exec(url)!;
+  return { mimeType: mimeType!, bytes: decodeBase64(data!) };
+}
+
+/** One event of a model's streamed answer. */
+function event(delta: object, finishReason: string | null = null): string {
+  return `data: ${JSON.stringify({
+    id: "a", object: "chat.completion.chunk", model: "@cf/google/gemma-4-26b-a4b-it",
+    choices: [{ index: 0, delta, logprobs: null, finish_reason: finishReason }],
+    usage: { prompt_tokens: 0, completion_tokens: 1 }, p: "abc",
+  })}\n\n`;
+}
+
+/**
+ * A model's streamed answer as Workers AI sends it: an opening event, one per piece of text, a
+ * closing one carrying `finish`, the usage summary, and `[DONE]`.
+ */
+export function tokenEvents(pieces: string[], finish = "stop"): string {
+  return event({ reasoning_content: null, role: "assistant", content: "" }) +
+    pieces.map(content => event({ content })).join("") +
+    event({ content: "" }, finish) +
+    `data: ${JSON.stringify({ id: "a", choices: [], usage: {} })}\n\n` +
+    `data: ${JSON.stringify({ response: "", usage: { prompt_tokens: 318, completion_tokens: 340 } })}\n\n` +
+    "data: [DONE]\n\n";
+}
+
+/** A response streaming server-sent `events` out `size` bytes at a time. */
+export function eventResponse(events: string, size = 11, status = 200) {
+  let bytes = new TextEncoder().encode(events);
+  return new Response(byteStream(bytes, [size]).stream, {
+    status, headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 export function decodeBase64(data: string): Uint8Array {
   return Uint8Array.from(atob(data), ch => ch.charCodeAt(0));
 }

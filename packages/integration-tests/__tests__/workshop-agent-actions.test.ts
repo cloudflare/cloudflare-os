@@ -95,6 +95,25 @@ const decidedBy = (session: WorkshopAgentSession, state: ActionState) =>
 const agentSaid = (history: AiChatMessage[], text: string) => history.filter(message =>
   message.type === "message" && message.author.type === "agent" && message.message === text).length;
 
+it.concurrent("a mismatched connection URL returns an error without ending the turn", async () => {
+  const model = models.script([
+    { toolCall: { id: "bad-connection", name: "requestConnection", arguments: {
+      vendorId: TEST_VENDOR_ID, resourceTypeId: "thing",
+      resourceUrl: "https://gadgets-test.example/unrelated", reason: "Read a thing", bindingName: "OTHER",
+    } } },
+    { text: "I need a matching URL." },
+  ]);
+  await using session = await openSession(model, "agentbadconnection");
+  const { history } = await session.runTurn("Connect this resource.");
+  expect(history.filter(message => message.type === "connectionRequest")).toEqual([]);
+  expect(agentSaid(history, "I need a matching URL.")).toBe(1);
+  expect(model.requests).toHaveLength(2);
+  expect(model.requests[1]).toMatchObject({ messages: expect.arrayContaining([
+    expect.objectContaining({ role: "tool", tool_call_id: "bad-connection",
+      content: expect.stringContaining("does not match") }),
+  ]) });
+});
+
 it.concurrent("rejecting an action discards it and leaves the agent stopped", async () => {
   const model = models.script([writeValues(7), { text: "This must not run." }]);
   await using session = await openSession(model, "agentreject");
@@ -289,11 +308,11 @@ it.concurrent.each(["retry", "reject"] as const)(
   }
 });
 
-// Known bug, kept as a deterministic repro: Overseer.approveAction checks `pending`, then awaits
-// applyPendingAction before marking the action approved, so two concurrent approvals (separate
-// approval surfaces, tabs, or a retry after a dropped WebSocket) both dispatch the apply, and a
-// non-idempotent gatekeeper writes twice. Drop `.fails` once approval claims the action first.
-it.concurrent.fails("approving one action twice at once applies it once", async () => {
+// Overseer.approveAction checks `pending`, then awaits the gatekeeper before marking the action
+// approved, so without a claim on the action two concurrent approvals (separate approval surfaces,
+// tabs, or a retry after a dropped WebSocket) both dispatch the apply, and a non-idempotent
+// gatekeeper writes twice.
+it.concurrent("approving one action twice at once applies it once", async () => {
   await using session = await openSession(models.script([{ text: "Ready." }]), "agentdoubleapprove");
   const label = labelOf(session);
   // A workspace is listed, so withOwnerWorkspace can open it, once it has seen activity.
@@ -321,6 +340,45 @@ it.concurrent.fails("approving one action twice at once applies it once", async 
     expect(await applyAttempts(label)).toBe(1);
     expect(await actionState(label)).toEqual({ pending: [], value: 23, applyCount: 1 });
     expect(await actionStatus(session, action.id)).toMatchObject(decidedBy(session, "approved"));
+  });
+});
+
+// The drain is a decision like any other, and nothing on the wire says it has started: until its
+// apply returns, the action still reads as pending to every client.
+it.concurrent("an action the drain is applying refuses a manual decision", async () => {
+  await using session = await openSession(models.script([{ text: "Ready." }]), "agentdrainrace");
+  const label = labelOf(session);
+  await session.runTurn("Get ready.");
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using connection = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
+        "https://gadgets-test.example/things/drain-race");
+    if (!connection) throw new Error("Failed to create the test connection");
+    await ws.setAutoApprovedActionKind(await connection.getId(), SET_VALUE);
+    using testSession = await connection.openSession() as RpcStub<TestSession>;
+
+    await control("hold-next-apply", { label });
+    const write = testSession.writeValue(31, { autoApprovable: true });
+    let actionId: number | undefined;
+    try {
+      await waitFor("the drain's apply to be held", async () => await applyAttempts(label) === 1 || null);
+      const [action] = await waitForPendingActions(session, 1);
+      actionId = action.id;
+      // Approving it again would reach the gatekeeper a second time. Rejecting it would be recorded
+      // as rejected and then overwritten as approved when the apply returns.
+      await expect(() => ws.approveAction(action.id)).rejects.toThrow(`Action is not pending: ${action.id}`);
+      await expect(() => ws.rejectAction(action.id)).rejects.toThrow(`Action is not pending: ${action.id}`);
+    } finally {
+      await control("release-apply", { label });
+      await Promise.allSettled([write]);
+    }
+    await write;
+
+    await waitFor("the drain's apply to land", async () =>
+      await actionState(label).then(state => state.applyCount === 1) || null);
+    expect(await applyAttempts(label)).toBe(1);
+    expect(await actionState(label)).toEqual({ pending: [], value: 31, applyCount: 1 });
+    expect(await actionStatus(session, actionId!)).toMatchObject(decidedBy(session, "approved"));
   });
 });
 

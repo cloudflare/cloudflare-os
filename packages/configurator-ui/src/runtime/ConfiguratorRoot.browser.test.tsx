@@ -439,6 +439,37 @@ describe("Autocomplete", () => {
     await expect.element(input()).toHaveValue("pro");
   });
 
+  it("shows a value the module set while the field was not rendered, once it is", async () => {
+    const spec = autocompleteSpec(folders);
+    const render = spec.render;
+    spec.initial = { folderId: null, shown: null };
+    spec.render = context => context.values.shown ? render(context) : null;
+    const { session } = await mount(spec);
+    await act(() => session.store.setValues({ folderId: "projects" }));
+    await act(() => session.store.setValues({ shown: "yes" }));
+    await expect.element(input()).toHaveValue("projects");
+  });
+
+  it("keeps what is typed into a field revealed with a value, even before its effects have run", async () => {
+    const spec = autocompleteSpec(folders);
+    const render = spec.render;
+    spec.initial = { folderId: null, shown: null };
+    spec.render = context => context.values.shown ? render(context) : null;
+    const { session, values } = await mount(spec);
+    await act(() => session.store.setValues({ folderId: "projects" }));
+    // Outside `act`, so the reveal renders on its own schedule and its passive effects wait for a frame.
+    session.store.setValues({ shown: "yes" });
+    const rendered = Promise.withResolvers<void>();
+    setTimeout(rendered.resolve);
+    await rendered.promise;
+    const field = container!.querySelector<HTMLInputElement>("input[role=combobox]")!;
+    field.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "x");
+    field.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await expect.element(input()).toHaveValue("x");
+    expect(values().folderId).toBeNull();
+  });
+
   it("keeps focus and stays closed when a pick renders the field twice", async () => {
     const loadOptions = vi.fn(folders);
     await mount(inspectingSpec(loadOptions));

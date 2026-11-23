@@ -1,7 +1,8 @@
 // Collaborator ("observer") verification for GitLab bindings, through the real gatekeeper and
 // UserAccount Durable Objects with GitLab faked at `fetch`: what each read reports to the Workshop,
-// CI data's role included, how verifyObserverAccess and addObserver answer, and how both hold up
-// when the bound project is renamed or transferred, deleted, or its path taken by another project.
+// the CI jobs it disclosed included, how verifyObserverAccess and addObserver answer, and how both
+// hold up when the bound project is renamed or transferred, deleted, or its path taken by another
+// project.
 
 import type { RpcStub } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -18,10 +19,13 @@ const PATH = "group/sub/project";
 const PROJECT_ID = 42;
 /** What an ordinary read through the binding reports. */
 const PROJECT = `project/${PROJECT_ID}`;
-/** What a read of data only Developers see reports. */
-const DEVELOPER = `project/${PROJECT_ID}/role/developer`;
-/** What a read of data only Maintainers may see reports. */
-const MAINTAINER = `project/${PROJECT_ID}/role/maintainer`;
+/** What a read of job 8's log reports beside the project. */
+const TRACE = `project/${PROJECT_ID}/jobTrace/8`;
+/** What a read of the test reports of pipeline 6, which job 66004's report makes up, reports. */
+const ARTIFACTS = `project/${PROJECT_ID}/jobArtifacts/66004`;
+/** What earlier releases reported for CI data, now read as the project alone. */
+const LEGACY_DEVELOPER = `project/${PROJECT_ID}/role/developer`;
+const LEGACY_MAINTAINER = `project/${PROJECT_ID}/role/maintainer`;
 /** A project that takes the bound one's path once it has left it. */
 const OTHER_ID = 43;
 const HEAD = "a".repeat(40);
@@ -63,6 +67,24 @@ class ObserverGitLab extends FakeGitLab {
   readonly gitRequests: string[] = [];
   /** Runs as a git request reaches GitLab, before it is answered. */
   onGit: (() => void) | undefined;
+  /** Jobs that ran with a debug trace, whose log GitLab shows only to Developers and above. */
+  readonly debugJobs = new Set<number>();
+  /**
+   * The level each job's `artifacts:access` requires, for jobs that restrict it. GitLab's job-level
+   * `readJobArtifacts` applies it only through the job's archive (see `archivelessJobs`).
+   */
+  readonly restrictedArtifacts = new Map<number, number>();
+  /** Jobs with a test report but no archive, which `readJobArtifacts` treats as public. */
+  readonly archivelessJobs = new Set<number>();
+  /** Jobs erased, and jobs deleted. */
+  readonly erasedJobs = new Set<number>();
+  readonly deletedJobs = new Set<number>();
+  /** Jobs still running, with no `finished_at`. */
+  readonly runningJobs = new Set<number>();
+  /** Each pipeline's jobs, retried ones included, and whether each has a test report. */
+  readonly pipelineJobs = new Map<number, Array<{ id: number; junit: boolean }>>([[6, [{ id: 66004, junit: true }]]]);
+  /** Each pipeline's child pipelines in the project. */
+  readonly childPipelines = new Map<number, number[]>();
   /** How GitLab answers a token exchange or refresh. */
   oauth: () => Response = () => json(fx.oauthInvalidGrantResponse.data, { status: 400 });
 
@@ -70,6 +92,7 @@ class ObserverGitLab extends FakeGitLab {
     super();
     this.member(OWNER_TOKEN, { [PROJECT_ID]: MAINTAINER_LEVEL, [OTHER_ID]: MAINTAINER_LEVEL });
     this.on("GET", /^\/api\/v4\//, request => this.#rest(request));
+    this.on("POST", /^\/api\/graphql$/, request => this.#graphql(request));
     this.on("POST", /\.git\/git-upload-pack$/, request => this.#git(request));
     this.on("POST", /^\/oauth\/token$/, () => this.oauth());
     this.on("POST", /^\/oauth\/revoke$/, () => json({}));
@@ -92,6 +115,7 @@ class ObserverGitLab extends FakeGitLab {
     const token = tokenOf(request);
     const user = this.users.get(token);
     const notFound = json({ message: "404 Project Not Found" }, { status: 404 });
+    if (path === "/metadata") return json({ version: "19.2.0" });
     if (path === "/user") {
       return user ? json({ id: user.id, username: token, name: token, web_url: `${WEB}/${token}` })
         : json({ message: "401 Unauthorized" }, { status: 401 });
@@ -124,7 +148,37 @@ class ObserverGitLab extends FakeGitLab {
       return json(level === undefined ? [] : [{ id: asked, username: name, access_level: level }]);
     }
     if (id !== PROJECT_ID) return notFound;
+    const job = /^\/jobs\/(\d+)(\/trace)?$/.exec(rest);
+    if (job) {
+      const jobId = Number(job[1]);
+      if (this.deletedJobs.has(jobId)) return json({ message: "404 Not found" }, { status: 404 });
+      if (job[2] === undefined) {
+        const running = this.runningJobs.has(jobId);
+        return json({ ...fx.jobResponse.data, id: jobId, status: running ? "running" : "success",
+          finished_at: running ? null : fx.jobResponse.data.finished_at,
+          erased_at: this.erasedJobs.has(jobId) ? "2026-01-01T00:00:00Z" : null,
+          artifacts: this.archivelessJobs.has(jobId) ? [{ file_type: "junit" }] : [{ file_type: "archive" }, { file_type: "junit" }],
+          pipeline: { ...fx.jobResponse.data.pipeline, id: 6, project_id: PROJECT_ID } });
+      }
+      if (this.debugJobs.has(jobId) && user!.levels.get(id)! < DEVELOPER_LEVEL) {
+        return json({ message: "403 Forbidden" }, { status: 403 });
+      }
+      return this.erasedJobs.has(jobId) ? json({ message: "404 Not found" }, { status: 404 }) : new Response("hello\n");
+    }
     const firstPage = (request.url.searchParams.get("page") ?? "1") === "1";
+    const listing = /^\/pipelines\/(\d+)\/(jobs|trigger_jobs)$/.exec(rest);
+    if (listing) {
+      const pipelineId = Number(listing[1]);
+      if (!firstPage) return json([]);
+      if (listing[2] === "trigger_jobs") {
+        return json((this.childPipelines.get(pipelineId) ?? []).map(child => ({ ...fx.jobResponse.data, id: 5000 + child,
+          downstream_pipeline: { ...fx.pipelineResponse.data, id: child, project_id: PROJECT_ID } })));
+      }
+      const retried = request.url.searchParams.get("include_retried") === "true";
+      return json((this.pipelineJobs.get(pipelineId) ?? []).filter((_, index) => retried || index === 0).map(row => ({
+        ...fx.jobResponse.data, id: row.id, artifacts: row.junit ? [{ file_type: "junit" }] : [],
+      })));
+    }
     switch (rest) {
       case "/issues": {
         const open = request.url.searchParams.get("state") !== "closed";
@@ -160,14 +214,27 @@ class ObserverGitLab extends FakeGitLab {
           ...fx.testReportResponse.data.test_suites[0], failed_count: 2,
           test_cases: [failedCase("first"), failedCase("second")],
         }] });
-      case "/jobs/8":
-        return json({ ...fx.jobResponse.data, id: 8, status: "success",
-          pipeline: { ...fx.jobResponse.data.pipeline, id: 6, project_id: PROJECT_ID } });
-      case "/jobs/8/trace":
-        return new Response("hello\n");
       default:
         return notFound;
     }
+  }
+
+  /** The one GraphQL query the gatekeeper asks: whether a job's artifacts are readable. */
+  #graphql(request: FakeRequest): Response {
+    const user = this.users.get(tokenOf(request));
+    const { variables } = JSON.parse(request.body!) as { variables: { project: string[]; job: string } };
+    const projectId = Number(variables.project[0].replace("gid://gitlab/Project/", ""));
+    const jobId = Number(variables.job.replace("gid://gitlab/Ci::Build/", ""));
+    const level = user?.levels.get(projectId);
+    // GitLab lists only projects the user can see; all of these are private.
+    if (level === undefined) return json({ data: { projects: { nodes: [] } } });
+    const job = this.deletedJobs.has(jobId) ? null : {
+      erasedAt: this.erasedJobs.has(jobId) ? "2026-01-01T00:00:00Z" : null,
+      userPermissions: {
+        readJobArtifacts: this.archivelessJobs.has(jobId) || level >= (this.restrictedArtifacts.get(jobId) ?? REPORTER),
+      },
+    };
+    return json({ data: { projects: { nodes: [{ job }] } } });
   }
 
   #git(request: FakeRequest): Response {
@@ -281,36 +348,53 @@ describe("reads", () => {
     ]);
   });
 
-  it("report the role CI data needs, chosen as it was read and never again", async () => {
+  it("report the jobs whose log or test reports CI data came from", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
-    // The owner is a Developer when the test report is read, and a Maintainer as soon as GitLab has
-    // answered for that membership once.
-    let ownerAsked = 0;
-    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/members/all\\?`), request => {
-      const owner = gitlab.users.get(OWNER_TOKEN)!;
-      if (Number(request.url.searchParams.get("user_ids[]")) !== owner.id) return json([]);
-      return json([{ id: owner.id, access_level: ownerAsked++ === 0 ? DEVELOPER_LEVEL : MAINTAINER_LEVEL }]);
-    });
     const gk = await binding();
 
-    // A job's log, which a debug trace can fill with CI/CD variables only Developers see.
     expect(await gk.read([{ method: "getJob", args: ["8"] }, { method: "readLog" }]))
       .toMatchObject({ ok: { lines: [{ number: 1 }] } });
-    // Failed tests read through a Developer, whose reports leave out what only Maintainers may
-    // download: each page reports Developer, though the owner is a Maintainer by the time they leave.
+    // Each page of the failed tests, and the summary, name the job the report came from.
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "listFailedTests", args: [{ resultsPerPage: 1 }], drain: true }]))
       .toMatchObject({ ok: [{ name: "first" }, { name: "second" }] });
-    expect(ownerAsked).toBe(1);
-    // Read again now, through a Maintainer, the report may hold more, so it needs Maintainer.
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getTestReport" }])).toMatchObject({ ok: {} });
 
     expect(await gk.observations()).toEqual([
-      { title: "Read log of job `rubocop` #8, lines 1–1", subresources: [DEVELOPER] },
-      { title: "Read failed tests of pipeline #6", subresources: [DEVELOPER] },
-      { title: "Read failed tests of pipeline #6 (page 2)", subresources: [DEVELOPER] },
-      { title: "Read test report of pipeline #6", subresources: [MAINTAINER] },
+      { title: "Read log of job `rubocop` #8, lines 1–1", subresources: [TRACE] },
+      { title: "Read failed tests of pipeline #6", subresources: [ARTIFACTS] },
+      { title: "Read failed tests of pipeline #6 (page 2)", subresources: [ARTIFACTS] },
+      { title: "Read test report of pipeline #6", subresources: [ARTIFACTS] },
     ]);
+  });
+
+  it("report the project for a test report that holds no job's reports", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/pipelines/6/test_report_summary$`), () =>
+      json({ ...fx.testReportSummaryResponse.data, test_suites: [] }));
+    const gk = await binding();
+
+    expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getTestReport" }])).toMatchObject({ ok: {} });
+    expect(await gk.observations()).toEqual([{ title: "Read test report of pipeline #6", subresources: [PROJECT] }]);
+  });
+
+  it("report failed tests as from every job with a test report the whole report could hold", async () => {
+    // The whole report names no jobs, may be up to two minutes old, and can hold a job the summary
+    // does not list yet, so the summary is not asked: retried attempts and same-project child
+    // pipelines are listed instead, and jobs without a test report left out.
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    gitlab.pipelineJobs.set(6, [{ id: 71, junit: true }, { id: 70, junit: true }, { id: 72, junit: false }]);
+    gitlab.childPipelines.set(6, [9]);
+    gitlab.pipelineJobs.set(9, [{ id: 90, junit: true }]);
+    const gk = await binding();
+
+    expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true }]))
+      .toMatchObject({ ok: [{ name: "first" }, { name: "second" }] });
+    const [{ subresources }] = await gk.observations();
+    expect(subresources?.toSorted()).toEqual([70, 71, 90].map(jobId => `project/${PROJECT_ID}/jobArtifacts/${jobId}`));
+    expect(gitlab.requestsWith(OWNER_TOKEN)).not.toContain(`/api/v4/projects/${PROJECT_ID}/pipelines/6/test_report_summary`);
   });
 
   it("authorize each page of a listing as it leaves, a refused one ending the listing", async () => {
@@ -484,7 +568,7 @@ describe("reads", () => {
 });
 
 describe("verifyObserverAccess", () => {
-  it("allows an observer whose membership of the project reaches the role each ID names", async () => {
+  it("allows a member to see a job's log or artifacts unless GitLab withholds that job's from them", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [guest, reporter, developer, maintainer, outsider] = await Promise.all(
@@ -496,16 +580,79 @@ describe("verifyObserverAccess", () => {
     gitlab.member("outsider");
     const gk = await binding();
     const everyone = { guest, reporter, developer, maintainer, outsider };
+    const members = ["reporter", "developer", "maintainer"];
+    const trace = (jobId: number) => `project/${PROJECT_ID}/jobTrace/${jobId}`;
+    const artifacts = (jobId: number) => `project/${PROJECT_ID}/jobArtifacts/${jobId}`;
+    gitlab.debugJobs.add(9);
+    gitlab.restrictedArtifacts.set(10, DEVELOPER_LEVEL);
+    gitlab.restrictedArtifacts.set(11, MAINTAINER_LEVEL);
 
-    expect(await gk.verify(everyone, [PROJECT])).toEqual({ ok: ["reporter", "developer", "maintainer"] });
-    expect(await gk.verify(everyone, [DEVELOPER])).toEqual({ ok: ["developer", "maintainer"] });
-    expect(await gk.verify(everyone, [MAINTAINER])).toEqual({ ok: ["maintainer"] });
-    // Each observer is asked with their own token, by the project's id.
-    expect(gitlab.requestsWith("reporter")).toEqual([
-      "/api/v4/user", ...Array(3).fill(`/api/v4/projects/${PROJECT_ID}/members/all`),
-    ]);
+    expect(await gk.verify(everyone, [PROJECT])).toEqual({ ok: members });
+    // An ordinary job's log and artifacts are every member's.
+    expect(await gk.verify(everyone, [trace(8), artifacts(8)])).toEqual({ ok: members });
+    // A debug trace is a Developer's, and restricted artifacts their role's.
+    expect(await gk.verify(everyone, [trace(9)])).toEqual({ ok: ["developer", "maintainer"] });
+    expect(await gk.verify(everyone, [artifacts(10)])).toEqual({ ok: ["developer", "maintainer"] });
+    expect(await gk.verify(everyone, [artifacts(11)])).toEqual({ ok: ["maintainer"] });
+    // Each observer is asked with their own token, membership by the project's id once and first,
+    // then its jobs, a few at a time and so in no fixed order.
+    const asked = gitlab.requestsWith("reporter");
+    expect(asked.slice(0, 2)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`]);
+    expect(asked.slice(2).toSorted()).toEqual([
+      `/api/v4/projects/${PROJECT_ID}/jobs/8`, `/api/v4/projects/${PROJECT_ID}/jobs/8/trace`,
+      `/api/v4/projects/${PROJECT_ID}/jobs/8`, "/api/graphql",
+      `/api/v4/projects/${PROJECT_ID}/jobs/9`, `/api/v4/projects/${PROJECT_ID}/jobs/9/trace`,
+      `/api/v4/projects/${PROJECT_ID}/jobs/10`, "/api/graphql", `/api/v4/projects/${PROJECT_ID}/jobs/11`, "/api/graphql",
+    ].toSorted());
     // The binding's own account was never asked.
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
+  });
+
+  it("holds a test report from a job with no archive to Maintainer, which GitLab's job check would call public", async () => {
+    // `artifacts:access` still restricts such a job's report, but readJobArtifacts follows the
+    // archive, so nothing GitLab exposes says how far.
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const [reporter, developer, maintainer] = await Promise.all(["reporter", "developer", "maintainer"].map(token => account(token)));
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.member("developer", { [PROJECT_ID]: DEVELOPER_LEVEL });
+    gitlab.member("maintainer", { [PROJECT_ID]: MAINTAINER_LEVEL });
+    gitlab.archivelessJobs.add(12);
+    const gk = await binding();
+
+    expect(await gk.verify({ reporter, developer, maintainer }, [`project/${PROJECT_ID}/jobArtifacts/12`]))
+      .toEqual({ ok: ["maintainer"] });
+    expect(gitlab.requestsWith("reporter")).not.toContain("/api/graphql");
+  });
+
+  it("lets any member see an erased or deleted job's, which hold nothing left to withhold", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const [reporter, outsider] = await Promise.all([account("reporter"), account("outsider")]);
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.member("outsider");
+    for (const jobId of [9, 10]) {
+      gitlab.debugJobs.add(jobId);
+      gitlab.restrictedArtifacts.set(jobId, MAINTAINER_LEVEL);
+    }
+    gitlab.erasedJobs.add(9);
+    gitlab.deletedJobs.add(10);
+    const gk = await binding();
+
+    expect(await gk.verify({ reporter, outsider }, [9, 10].flatMap(jobId =>
+      [`project/${PROJECT_ID}/jobTrace/${jobId}`, `project/${PROJECT_ID}/jobArtifacts/${jobId}`])))
+      .toEqual({ ok: ["reporter"] });
+  });
+
+  it("reads the role IDs earlier releases reported as the project alone", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const [reporter, outsider] = await Promise.all([account("reporter"), account("outsider")]);
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.member("outsider");
+    const gk = await binding();
+
+    expect(await gk.verify({ reporter, outsider }, [LEGACY_DEVELOPER, LEGACY_MAINTAINER])).toEqual({ ok: ["reporter"] });
   });
 
   it("fails, denying no one for good, when an outage keeps GitLab from answering", async () => {
@@ -514,10 +661,13 @@ describe("verifyObserverAccess", () => {
     const [alice, carol] = await Promise.all([account("alice"), account("carol")]);
     gitlab.member("alice", { [PROJECT_ID]: REPORTER });
     gitlab.member("carol", { [PROJECT_ID]: REPORTER });
-    gitlab.refusals.set("carol", () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+    gitlab.refusals.set("carol", () => json({ message: "upstream detail" }, { status: 500 }));
     const gk = await binding();
 
-    expect(await gk.verify({ alice, carol })).toEqual({ error: expect.any(String) });
+    // GitLab's own text stays out of the error, which the Workshop logs and shows.
+    const failed = await gk.verify({ alice, carol });
+    expect(failed).toEqual({ error: expect.stringContaining("GitLab could not check access (500)") });
+    expect(failed).not.toEqual({ error: expect.stringContaining("upstream detail") });
     // Not remembered as a denial: once GitLab answers, carol is allowed.
     gitlab.refusals.delete("carol");
     expect(await gk.verify({ alice, carol })).toEqual({ ok: ["alice", "carol"] });
@@ -549,6 +699,26 @@ describe("verifyObserverAccess", () => {
     at(15 * MINUTE + 1_000);
     expect(await first.verify({ alice, bob })).toEqual({ ok: ["bob"] });
     expect([asked("alice"), asked("bob")]).toEqual([2, 2]);
+  });
+
+  it("reuses an allowed answer for a running job only as long as a denial", async () => {
+    // The runner may yet mark the log a debug trace, which GitLab then shows only to Developers.
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const reporter = await account("reporter");
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.runningJobs.add(8);
+    const gk = await binding();
+    const start = Date.now();
+    const at = (offset: number) => vi.setSystemTime(start + offset);
+    const trace = [`project/${PROJECT_ID}/jobTrace/8`];
+
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: ["reporter"] });
+    gitlab.debugJobs.add(8);
+    at(14_000);
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: ["reporter"] });
+    at(16_000);
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: [] });
   });
 
   it("serves no remembered answer once the account's credentials are confirmed dead", async () => {
@@ -591,10 +761,41 @@ describe("verifyObserverAccess", () => {
     expect(gitlab.requestsWith("access-1")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`]);
   });
 
+  it("refuses to answer for a check the account reconnected during, its answers two users' combined", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const alice = await account("alice");
+    gitlab.member("alice", { [PROJECT_ID]: REPORTER });
+    gitlab.member("access-1");
+    const gk = await binding();
+    const trace = `project/${PROJECT_ID}/jobTrace/8`;
+
+    // As GitLab answers alice's membership, her connection is replaced by another GitLab user's,
+    // who is no member: the job, hidden from them, would read as deleted and so allowed.
+    gitlab.oauth = () => json(tokenResponse(1));
+    await hooks().installCallback(alice);
+    let reconnected = false;
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/members/all`), async request => {
+      if (!reconnected) {
+        reconnected = true;
+        await runInDurableObject(env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(alice)), async instance => {
+          await instance.commitReconnect(await stageReconnect(instance, "code-1"));
+        });
+      }
+      const level = gitlab.users.get(tokenOf(request))?.levels.get(PROJECT_ID);
+      return level === undefined ? json([]) : json([{ id: gitlab.users.get(tokenOf(request))!.id, access_level: level }]);
+    });
+
+    expect(await gk.verify({ observer: alice }, [trace])).toEqual({ error: expect.stringContaining("changed while access") });
+    // Asked again, the new user is checked throughout.
+    expect(await gk.verify({ observer: alice }, [trace])).toEqual({ ok: [] });
+  });
+
   it.each([
     "gitlab/project/42", "project/042", "project/abc", "project/-1", "project/0", "project/9007199254740993",
     "project/42/role/reporter", "project/42/role/owner", "project/42/issue/7", "role/developer",
-    "project/42/role/developer/role/maintainer", "project/4%32",
+    "project/42/role/developer/role/maintainer", "project/4%32", "project/42/jobTrace/08",
+    "project/42/jobArtifacts/x", "project/42/jobTrace/8/jobArtifacts/8", "jobTrace/8",
   ])("refuses the whole call for %s, asking no one", async id => {
     const gitlab = new ObserverGitLab();
     gitlab.install();

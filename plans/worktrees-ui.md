@@ -2,9 +2,10 @@
 
 This is the original plan. Since it was written, `GitStore` was replaced by
 `WorkspaceGitCache` and `MAX_GIT_OBJECT_SIZE` was removed: no blob is refused for its size
-(see [chunked git storage](chunked-git.md)), and `readFilesAtCommit` streams a file over
-`MAX_BUFFERED_BLOB_SIZE` rather than reporting it unreadable. The text below is updated to
-match where it states current behaviour.
+(see [chunked git storage](chunked-git.md)). `readFilesAtCommit` names a binary file, and any
+file over `MAX_BUFFERED_BLOB_SIZE`, by its blob rather than reporting it unreadable, and
+`readBlob` returns the bytes. The text below is updated to match where it states current
+behaviour.
 
 ## Goal
 
@@ -66,7 +67,7 @@ Frontend:
 Backend:
 
 - `WorktreeRecord` (`overseer.ts:406-463`): `{type:"worktree", id, title, chatId,
-  sourceGatekeeperId?, baseCommit, headCommit, pinBase, pending?}`. `pinBase` advances
+  baseCommit, headCommit, pinBase, pending?}`. `pinBase` advances
   only at epoch resets (`:4600-4606`); `headCommit` only by explicit `commit()`
   (`:8433-8450`) and revert rollback (`:4773-4790`, to the earliest reverted
   advancement's `previousHead`).
@@ -241,7 +242,8 @@ Backend:
 - **No worktree operations from the UI in v1** (commit/push/branches/log). Editing is in
   scope because ingestion already exists.
 - **Limits are surfaced, not worked around.** Symlinks/submodules list with their kind and
-  don't open; binary blobs open to a placeholder naming the reason; a readable file longer than `MAX_FILE_TEXT_LENGTH` opens read-only.
+  don't open; an image opens as the image, and any other binary file opens to a note to
+  download it; a readable file longer than `MAX_FILE_TEXT_LENGTH` opens read-only.
 
 ## Design
 

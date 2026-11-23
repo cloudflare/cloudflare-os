@@ -6,17 +6,36 @@
 
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { AuthenticatedApi, Overseer } from "@gadgets/workshop-shared/api";
+import type {
+  AuthenticatedApi, Overseer, PresenceParticipant, PresenceSubscriber,
+} from "@gadgets/workshop-shared/api";
 import { startHarness, type Harness } from "../src/harness.js";
 import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, logIn, MAX_OBSERVER_PROMPTS, nextUsernames, ObserverConfigRecorder, signUp, stubFor,
-  waitFor, waitForIdleChat, type ConnectedAccount,
+  connect, MAX_OBSERVER_PROMPTS, nextUsernames, ObserverConfigRecorder, signUp, stubFor,
+  RpcTarget, waitFor, waitForIdleChat, type ConnectedAccount,
 } from "../src/rpc-client.js";
 import { connectGitHub, FakeGitHub, githubGatekeeper } from "./github-fake.js";
+
+/** The workspace's roster of present participants, as its presence subscription reports it. */
+class PresenceRecorder extends RpcTarget implements PresenceSubscriber {
+  readonly participants = new Map<string, PresenceParticipant>();
+  init(participants: PresenceParticipant[]): void {
+    this.participants.clear();
+    for (const participant of participants) this.participants.set(participant.key, participant);
+  }
+
+  add(participant: PresenceParticipant): void {
+    this.participants.set(participant.key, participant);
+  }
+
+  remove(key: string): void {
+    this.participants.delete(key);
+  }
+}
 
 const github = new FakeGitHub();
 const models = scriptedModelRouter();
@@ -170,62 +189,52 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   expect(new Set(daveChecks)).toEqual(new Set([`GET /repositories/${repo.id}`, `GET /repos/acme/${repo.name}`]));
 });
 
-it.concurrent("a chat's read is refused while a collaborator who can't read the repository can see it",
+it.concurrent("a chat's read is refused only while a collaborator who can't read the repository is online",
     async () => {
   using owner = await gitHubUser("githubobsreadowner");
-  using state = await ownerWorkspace(owner, [...readTurn("refused"), ...readTurn("allowed")]);
+  using state = await ownerWorkspace(owner, [...readTurn("refused"), ...readTurn("offline")]);
   const { ws, workspaceId, repo, model } = state;
 
   // Both collaborators are admitted while they can read the repository; nothing has been read
   // yet, so only the connection's own live check of each token runs.
   using bob = await gitHubUser("githubobsreadbob");
   using carol = await gitHubUser("githubobsreadcarol");
-  const bobInfo = await ws.addCollaborator(bob.username, "workspace");
-  if (!bobInfo) throw new Error(`Failed to share the workspace with ${bob.username}`);
+  await ws.addCollaborator(bob.username, "workspace");
   await ws.addCollaborator(carol.username, "workspace");
-  expect((await opens(bob, workspaceId)).error).toBeUndefined();
+  using bobCallback = stubFor(
+    new ObserverConfigRecorder().alwaysChoose(bob.account.id, MAX_OBSERVER_PROMPTS));
+  const bobSession = await bob.api.openWorkspace(workspaceId, undefined, bobCallback);
+  const presence = new PresenceRecorder();
+  using presenceStub = stubFor(presence);
+  using _presence = await ws.subscribeToPresence(presenceStub);
+  const bobPresent = () => [...presence.participants.values()].some(entry => entry.user.id === bob.username);
+  await waitFor("Bob's presence", async () => bobPresent() || null);
   expect((await opens(carol, workspaceId)).error).toBeUndefined();
 
-  // End Bob's entire RPC connection, not just his workspace stub. His persisted account choice
-  // still participates in authorization while he is offline.
-  bob[Symbol.dispose]();
-
-  // Bob loses access on GitHub. The agent's read is refused: the kernel checked the repository
-  // it reported against every collaborator who can see the chat, each with their own token.
+  // Bob loses access on GitHub while his session is open. The agent's read is refused: the
+  // kernel checked the repository it reported against him with his own token.
   github.setVisibleTo(repo.name, bob.token, false);
-  const bobChecksBefore = repoRequestsWith(bob.token, repo).length;
   const chatId = await ws.newChat("Read the repository.", SCRIPTED_MODEL_ID);
   await waitFor("the refused read turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expectToolResult(model, 1, "refused", READ_REFUSED);
-  expect(repoRequestsWith(bob.token, repo).length).toBeGreaterThan(bobChecksBefore);
   expect(repoRequestsWith(bob.token, repo).at(-1)).toBe(`GET /repositories/${repo.id}`);
-  expect(repoRequestsWith(carol.token, repo).at(-1)).toBe(`GET /repositories/${repo.id}`);
-  // The refused read recorded no observation.
   expect((await ws.listActions({ filter: "observation" })).entries.map(entry => entry.description.title))
     .not.toContain(`Read repository metadata for acme/${repo.name}`);
 
-  // Once Bob is removed, only Carol, who can read it, remains, and the same read succeeds. The
-  // removal restarts the workspace, so the owner comes back on a fresh connection.
-  await ws.removeCollaborator(bobInfo.profile.id, []);
-  await waitFor("the restart to fell the old workspace instance", () =>
-    ws.getMetadata().then(() => null, () => true));
-  using reopened = await waitFor("the workspace to come back after the restart", async () => {
-    using stack = new DisposableStack();
-    try {
-      const api = stack.use(await logIn(stack.use(connect(harness.url)), owner.username));
-      const overseer = stack.use(await api.openWorkspace(workspaceId));
-      await overseer.getMetadata();
-      return Object.assign(stack.move(), { overseer });
-    } catch {
-      return null;
-    }
-  });
-  await reopened.overseer.sendChatMessage(chatId, "Read it again.", SCRIPTED_MODEL_ID);
-  await waitFor("the allowed read turn", async () => model.requests.length === 4 || null);
-  await waitForIdleChat(reopened.overseer, chatId);
-  expect(model.remainingSteps()).toBe(0);
-  expectToolResult(model, 3, "allowed", `acme/${repo.name}`);
-  expect((await reopened.overseer.listActions({ filter: "observation" })).entries
-    .map(entry => entry.description.title)).toContain(`Read repository metadata for acme/${repo.name}`);
+  // Once Bob closes his session, he is not asked: the same read succeeds and is recorded. His
+  // session and his presence end in the same disposal.
+  bobSession[Symbol.dispose]();
+  await waitFor("Bob's session to close", async () => bobPresent() ? null : true);
+  const bobChecks = repoRequestsWith(bob.token, repo).length;
+  await ws.sendChatMessage(chatId, "Read it again.", SCRIPTED_MODEL_ID);
+  await waitFor("the offline read turn", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  expectToolResult(model, 3, "offline", `acme/${repo.name}`);
+  expect(repoRequestsWith(bob.token, repo)).toHaveLength(bobChecks);
+
+  // When he comes back, his admission checks what was read meanwhile, and refuses him.
+  const refused = await opens(bob, workspaceId);
+  expect(refused.error).toBeDefined();
+  expect(repoRequestsWith(bob.token, repo).slice(bobChecks)).toContain(`GET /repositories/${repo.id}`);
 });

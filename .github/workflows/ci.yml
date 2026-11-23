@@ -99,7 +99,8 @@ jobs:
               --filter=!@gadgets/workshop-backend
               --filter=!@gadgets/workshop-frontend
               --filter=!@gadgets/integration-tests
-            # configurator-ui's browser suite and generated-frame test.
+            # configurator-ui's browser suite and generated-frame test, and gatekeeper-kit's
+            # connect-form test.
             chromium: true
     steps:
       - name: Check out repository
@@ -124,7 +125,8 @@ jobs:
 
       # The frontend's and configurator-ui's browser suites (`vitest.browser.config.ts`), and
       # configurator-ui's generated-frame test, run in Chromium, which Playwright downloads outside
-      # node_modules; both packages pin the catalog `playwright`, so one install serves them.
+      # node_modules, as does gatekeeper-kit's connect-form test; all three pin the catalog
+      # `playwright`, so one install serves them.
       # `--with-deps` adds the system libraries it needs.
       - name: Install Chromium for the browser suite
         if: ${{ matrix.chromium }}

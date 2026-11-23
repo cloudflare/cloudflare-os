@@ -4,13 +4,14 @@
 //
 // This covers the "soft" deployment customizations only (branding, agent instructions, which
 // gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, and
-// the audit retention admins choose within the bound admin-access.ts reads from the environment).
+// the access level and audit retention admins choose within the bounds admin-access.ts reads from
+// the environment).
 // Authentication/authorization config (sign-in providers, password login) is deliberately NOT
 // here — it stays env-var driven so it can't be changed by a compromised admin session. Everything
 // here is enabled by default; the admin UI opts things *out*.
 
-import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
-import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { SupportedResource, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import { adminSettingChange } from "./admin-access.js";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -366,13 +367,12 @@ export function parseRestrictedWebFetchHosts(hosts: string[]): string[] {
  * storage or its KV mirror.
  */
 export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
-  let disabledResources: Record<string, string[]> = {};
-  if (p.disabledResources && typeof p.disabledResources === "object") {
-    for (let [vendorId, patterns] of Object.entries(p.disabledResources)) {
-      let list = strings(patterns);
-      if (list.length > 0) disabledResources[vendorId] = list;
-    }
-  }
+  const restrictions = (raw: Record<string, string[]> | undefined) => Object.fromEntries(
+    Object.entries(raw ?? {}).flatMap(([vendorId, values]) => {
+      const list = strings(values);
+      return list.length ? [[vendorId.toLowerCase(), list]] : [];
+    }));
+  let disabledResources = restrictions(p.disabledResources);
   let ambientGatekeeperModes: Record<string, AmbientGatekeeperMode> = {};
   if (p.ambientGatekeeperModes && typeof p.ambientGatekeeperModes === "object") {
     for (let [vendorId, mode] of Object.entries(p.ambientGatekeeperModes)) {
@@ -405,6 +405,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     userSearchEnabled: typeof p.userSearchEnabled === "boolean"
       ? p.userSearchEnabled
       : !signupsEnabled,
+    snapshotSharingEnabled: typeof p.snapshotSharingEnabled === "boolean"
+      ? p.snapshotSharingEnabled
+      : DEFAULT_ADMIN_CONFIG.snapshotSharingEnabled,
     siteName: typeof p.siteName === "string" ? p.siteName : "",
     siteLogoConfigured: typeof p.siteLogoConfigured === "boolean" ? p.siteLogoConfigured : false,
     instanceInstructions: typeof p.instanceInstructions === "string" ? p.instanceInstructions : "",
@@ -415,6 +418,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     },
     accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
     disabledResources,
+    disabledResourceTypeIds: restrictions(p.disabledResourceTypeIds),
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     restrictedWebFetchHosts: strings(p.restrictedWebFetchHosts),
@@ -452,8 +456,13 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     updateNoticeSnoozeHours: isUpdateHours(p.updateNoticeSnoozeHours)
       ? p.updateNoticeSnoozeHours
       : DEFAULT_ADMIN_CONFIG.updateNoticeSnoozeHours,
-    // The admins' choice, kept as chosen: adminAccessPolicy() (admin-access.ts) holds it within the
-    // environment's bound wherever it is enforced, so changing the bound needs no rewrite.
+    // The admins' choices, kept as chosen: adminAccessPolicy() (admin-access.ts) holds them within
+    // the environment's bounds wherever they are enforced, so changing a bound needs no rewrite.
+    // A config that stores no access level is one whose admins never chose. A stored value that
+    // is not a level fails closed, as ADMIN_WORKSPACE_ACCESS_MAX does.
+    adminWorkspaceAccess: p.adminWorkspaceAccess === undefined
+      ? DEFAULT_ADMIN_CONFIG.adminWorkspaceAccess
+      : isAdminWorkspaceAccess(p.adminWorkspaceAccess) ? p.adminWorkspaceAccess : "off",
     adminAuditRetentionDays: isAdminAuditRetention(p.adminAuditRetentionDays)
       ? p.adminAuditRetentionDays
       : DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays,
@@ -667,16 +676,25 @@ export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig>
 
 // --- Resource-disable helpers ---
 
+/** Legacy restrictions whose type can no longer be identified without an admin's decision. */
+export function unresolvedResourceRestrictions(
+    config: AdminConfig, vendorId: string, resources: readonly SupportedResource[]): string[] {
+  return (config.disabledResources[vendorId] ?? [])
+      .filter(pattern => !resources.some(resource => resource.urlPattern === pattern));
+}
+
 export function isResourceDisabled(
-    config: AdminConfig, vendorId: string, urlPattern: string): boolean {
-  return config.disabledResources[vendorId]?.includes(urlPattern) ?? false;
+    config: AdminConfig, vendorId: string, resource: SupportedResource,
+    advertisedResources: readonly SupportedResource[]): boolean {
+  return unresolvedResourceRestrictions(config, vendorId, advertisedResources).length > 0 ||
+    (config.disabledResourceTypeIds?.[vendorId]?.includes(getResourceTypeId(resource)) ?? false) ||
+    (config.disabledResources[vendorId]?.includes(resource.urlPattern) ?? false);
 }
 
 export function filterEnabledResources(
-    config: AdminConfig, vendorId: string, resources: SupportedResource[]): SupportedResource[] {
-  let disabled = config.disabledResources[vendorId];
-  if (!disabled || disabled.length === 0) return resources;
-  return resources.filter(r => !disabled.includes(r.urlPattern));
+    config: AdminConfig, vendorId: string, resources: SupportedResource[],
+    advertisedResources: readonly SupportedResource[] = resources): SupportedResource[] {
+  return resources.filter(resource => !isResourceDisabled(config, vendorId, resource, advertisedResources));
 }
 
 // --- Agent system-prompt instructions ---

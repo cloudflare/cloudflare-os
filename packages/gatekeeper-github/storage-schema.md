@@ -135,7 +135,8 @@ discussions and the top-level comment half of pull-request discussions.
 
 The `pullReviewComments:*` family tracks the pull-request diff-comment stream returned by
 `GET /pulls/{pull_number}/comments`, which is reused for diff-thread views and, once fully
-materialized, for attaching diff comments to review summaries.
+materialized, for attaching diff comments to review summaries. Both reads run the `since` walk
+below before using it.
 
 Meaning of the state fields:
 
@@ -199,7 +200,12 @@ Implemented TTL cache families:
   dropped rows with pending actions)
 - `cache:search-pulls-v2:<state>:p<page>` -> `GitHubPullRequestSummary & { bodyMarkdown }` rows of
   the `/pulls` listing (newest-updated first) that PR text search filters after the overlay
-- `cache:discussion-reviews:<realId>:p<page>` -> `GitHubDiscussionEntry[]` review-summary pages for pull discussions
+- `cache:discussion-reviews-v2:<realId>:p<page>` -> review-summary pages for pull discussions:
+  `GitHubDiscussionEntry` reviews *without* `diffComments`, which every read attaches from the
+  `pullReviewComments:*` stream after its `since` walk (v2: v1 cached the diff comments in the
+  page, where they went stale -- the page's etag changes only with the reviews, so edits, and
+  comments the stream hadn't seen yet when the page was built, stayed invisible until the next
+  review)
 - `cache:resolve-ref:<encodedRef>` -> full commit id the ref resolved to
 - `cache:diff-v2:<realId>:<baseSha>:<headSha>` -> `{ revision, files }` (v2: the revision gained
   `mergeBaseSha`)
@@ -212,7 +218,7 @@ Implemented TTL cache families:
 ### Cache TTLs
 
 - Viewer cache: 5 minutes
-- Entity caches (`repo-v2`, `issue`, `pull-v2`, `discussion-reviews`, `resolve-ref`, `diff-v2`,
+- Entity caches (`repo-v2`, `issue`, `pull-v2`, `discussion-reviews-v2`, `resolve-ref`, `diff-v2`,
   `required-checks`): 30 seconds
 - List/search caches: 15 seconds
 - `merge-base` entries never expire (a merge base is a pure function of its two key commits);

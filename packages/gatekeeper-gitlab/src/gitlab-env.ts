@@ -168,8 +168,8 @@ export async function withAccountApi<T>(
 const REPORTER_ACCESS_LEVEL = 20;
 /** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
 export const DEVELOPER_ACCESS_LEVEL = 30;
-/** GitLab's Maintainer role, below which a member cannot read artifacts a job restricts to it. */
-export const MAINTAINER_ACCESS_LEVEL = 40;
+/** GitLab's Maintainer role, the most `artifacts:access` can require short of `none`. */
+const MAINTAINER_ACCESS_LEVEL = 40;
 
 /** An account as the membership probe reaches it: its token, and the GitLab user behind it. */
 export type MemberAccount = AccountCredentials & {
@@ -217,6 +217,52 @@ export async function projectMembershipLevel(
   }
 }
 
+/** A job access answer, and whether the job was still running, which can change it. */
+export type JobDataAccess = { readable: boolean; running: boolean };
+
+/**
+ * Whether `account`'s GitLab user may read job `jobId`'s log (`trace`) or artifacts in the project
+ * with id `projectId`, asked with the account's own token: a job's log is refused to a member below
+ * Developer while it ran with a debug trace, and its artifacts as its `artifacts:access` says.
+ * A job that is gone or erased holds nothing left to protect, so it is readable. The caller checks
+ * membership of the project first: unlike membership, a public project's job may be readable to
+ * anyone. Fenced to one connection as `projectMembershipLevel()` is, unreadable if it moved.
+ *
+ * GitLab answers `readJobArtifacts` from the job's archive, and a job with no archive reads as
+ * public, though it may hold a test report (`junit`) its `artifacts:access` restricts; the report's
+ * own access is exposed nowhere, so such a job needs Maintainer, the most it can require.
+ *
+ * A job still running (no `finished_at`) is `running`: its runner may yet mark its log a debug
+ * trace, and it may yet upload a restricted archive, so an answer that allows it can go stale.
+ */
+export async function canReadJobData(
+  env: Env, account: MemberAccount, projectId: number, data: "trace" | "artifacts", jobId: number,
+): Promise<JobDataAccess> {
+  const { generation } = await account.getUser();
+  let running = false;
+  const answer = await withAccountApi(env, account, async api => {
+    const job = await api.getJob(String(projectId), jobId);
+    if (job === null || job.erased_at) return true;
+    running = !job.finished_at;
+    if (data === "artifacts") {
+      const types = new Set(job.artifacts?.map(artifact => artifact.file_type));
+      if (types.has("junit") && !types.has("archive")) return "maintainer";
+      return await api.jobArtifactsReadable(projectId, jobId) ?? true;
+    }
+    try {
+      await (await api.getJobTrace(String(projectId), jobId))?.cancel();
+      return true;
+    } catch (error) {
+      if (error instanceof GitLabApiError && error.status === 403) return false;
+      throw error;
+    }
+  }, { replayable: true });
+  const readable = answer === "maintainer"
+    ? await hasProjectMembership(env, account, projectId, MAINTAINER_ACCESS_LEVEL)
+    : answer;
+  return { readable: readable && (await account.getUser()).generation === generation, running };
+}
+
 /**
  * The access level a user's effective membership (or its absence) grants: none for an invitation
  * still awaiting acceptance, nor once expired -- GitLab documents that from `expires_at` onward the
@@ -249,16 +295,19 @@ export function supportedResources(env: Env): {
 } {
   const origin = instanceUrl(env);
   const mergeRequest: SupportedResource = {
+    id: "merge-request",
     urlPattern: `${origin}/:project+/-/merge_requests/:iid{/*}?`,
     title: "GitLab Merge Request",
     description: "Read and manage a specific GitLab merge request and its review threads.",
   };
   const issue: SupportedResource = {
+    id: "issue",
     urlPattern: `${origin}/:project+/-/issues/:iid{/*}?`,
     title: "GitLab Issue",
     description: "Read and manage a specific GitLab issue.",
   };
   const project: SupportedResource = {
+    id: "project",
     urlPattern: `${origin}/:project+`,
     title: "GitLab Project",
     description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",

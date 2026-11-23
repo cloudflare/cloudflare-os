@@ -350,9 +350,9 @@ it), or change a meeting they don't organize.
 
 ## Sharing a workspace
 
-Every read reports what it revealed as subresources, which the Workshop checks each collaborator
-against before showing them the read, and again whenever they open the workspace. A collaborator
-passes only if all of these hold:
+Every read reports what it revealed as subresources, which the Workshop checks collaborators
+against (see [docs/observers.md](../../docs/observers.md) §10). A collaborator passes only if all of
+these hold:
 
 - they have their own working Microsoft 365 connection
 - that connection is in the owner's tenant

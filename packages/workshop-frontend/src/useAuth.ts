@@ -5,6 +5,7 @@ import { setReportedUserId } from './errorReporting'
 import { nativeApp } from './features/native-app/nativeApp'
 import { NativeConnectSession } from './features/native-app/connectSession'
 import { browserPushSupport, disableBrowserPush } from './features/notifications/browserPush'
+import { forgetModelSelection } from './modelSelection'
 import { disconnectNativeNotificationEnrollment } from './features/notifications/nativeNotificationEnrollment'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
@@ -153,6 +154,7 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       }
     })
     localStorage.removeItem('authToken')
+    forgetModelSelection()
 
     if (CF_ACCESS_MODE) {
       void releasePush.then(() => window.location.assign('/cdn-cgi/access/logout'))

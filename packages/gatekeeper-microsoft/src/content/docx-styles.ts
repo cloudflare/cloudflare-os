@@ -6,8 +6,8 @@
 // its look. A style the document lacks is added with the definition below, whose colors and fonts
 // refer to the theme, so even an added style takes on the template's palette.
 
-import { attribute, childElements, firstChild } from "./xml";
-import { escapeAttribute, parsePart, XML_DECLARATION } from "./ooxml";
+import { attribute, childElements, firstChild } from "@gadgets/office-content/xml";
+import { escapeAttribute, parsePart, XML_DECLARATION } from "@gadgets/office-content/ooxml";
 
 /** A style the writer uses. */
 export type StyleRole =

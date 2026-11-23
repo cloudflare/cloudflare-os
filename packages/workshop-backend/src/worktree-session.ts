@@ -7,7 +7,9 @@
 // (agent.ts), so binding operations and file-tool operations see one consistent worktree, and
 // writes and commits buffer into the same step and become durable at the same barrier. The git
 // side -- base-tree walks, blob reads, commit writes -- goes through the host's WorkspaceGitCache,
-// the same plumbing the file tools' lazy reads use.
+// the same plumbing the file tools' lazy reads use. Only getReplicator() hands out access that
+// outlives the execution: the worktree's WorktreeReplicator (worktree-replica.ts), for a gatekeeper
+// keeping a replica of it.
 //
 // The env.GIT binding (git-binding.ts) serves this same class for its in-memory worktrees,
 // substituting a single object holding the worktree's state for both the turn and the host.
@@ -20,13 +22,14 @@
 // diff likewise (a "(cannot diff ...)" note).
 
 import { RpcTarget } from "cloudflare:workers";
-import { validateRpc } from "capnweb-validate";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { structuredPatch } from "diff";
 import type {
   DiffFile, DiffFileKind, DiffHunk, DiffLine, StructuredDiffResult, StructuredGrepResult, Worktree,
   WorktreeFileEntry,
 } from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { ReplicableWorktree, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
 import {
   diffFiles, validateCodeChangeSchema, type BytesRef, type FileChange, type FileContent,
 } from "@gadgets/workshop-shared/code-change";
@@ -37,12 +40,15 @@ import { formatGrep, scanWorkpieceForGrep } from "./grep";
 import { blobByteStream } from "./git-chunked-blob";
 
 /**
- * What the session needs from the overseer: the git plumbing and the worktree's registry record
- * (whose headCommit the step barrier owns). Structurally satisfied by OverseerImpl.
+ * What the session needs from the overseer: the git plumbing, the worktree's registry record
+ * (whose headCommit the step barrier owns), and its replicator. Structurally satisfied by
+ * OverseerImpl.
  */
 export interface WorktreeSessionHost {
   gitCache: WorkspaceGitCache;
   getWorktreeRecord(id: WorkpieceId): WorktreeRecordView;
+  /** ReplicableWorktree.getReplicator(); absent where the worktree can't be replicated. */
+  getWorktreeReplicator?(id: WorkpieceId): Promise<WorktreeReplicator>;
 }
 
 /** The slice of the worktree registry record the session reads. */
@@ -56,7 +62,7 @@ export interface WorktreeRecordView {
  * module doc for how state splits between the turn (`turn`) and the workspace (`host`).
  */
 @validateRpc()
-export class WorktreeSessionImpl extends RpcTarget implements Worktree {
+export class WorktreeSessionImpl extends RpcTarget implements Worktree, ReplicableWorktree {
   /**
    * `author` resolves who commits are attributed to. It is called only by commit(), so a session
    * that never commits never pays for resolving it (env.GIT's may need an RPC to the owner's DO).
@@ -192,8 +198,9 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     return blobByteStream(reader, checkByteRange(range, reader.size), () => this.#pinBase());
   }
   async writeBytes(path: string, content: Uint8Array | ReadableStream<Uint8Array>): Promise<void> {
+    let base = this.#pinBase();
     try {
-      await this.host.gitCache.assertWorktreePathWritable(this.#pinBase(), path);
+      await this.host.gitCache.assertWorktreePathWritable(base, path);
       this.#pinBase();
     } catch (err) {
       if (!(content instanceof Uint8Array)) await content.cancel(err).catch(() => {});
@@ -204,7 +211,12 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
         : await this.host.gitCache.writeBlobStream(content);
     const change = {setBytes: value};
     validateCodeChangeSchema({[this.worktreeId]: [[path, change]]});
-    this.#pinBase();
+    // A command's submission may have re-rooted the worktree meanwhile (WorktreeTurnAccess.reRoot),
+    // perhaps making the path a directory: check it again against the new base.
+    for (let now = this.#pinBase(); now !== base; now = this.#pinBase()) {
+      base = now;
+      await this.host.gitCache.assertWorktreePathWritable(base, path);
+    }
     this.turn.appendChange(this.worktreeId, path, change);
   }
   async writeFile(path: string, text: string): Promise<void> {
@@ -226,6 +238,9 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
         if (!(err instanceof UnreadableContentError)) throw err;
       }
     }
+    // A command's submission may have re-rooted the worktree meanwhile (WorktreeTurnAccess.reRoot),
+    // so that neither the checks nor `before` hold: start again against the new base.
+    if (this.#pinBase() !== base) return this.writeFile(path, text);
     if (before === text) return;  // no-op: nothing to record
 
     // A readable existing file gets a minimal diffed edit (fast-diff via diffFiles), keeping
@@ -252,6 +267,8 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       if (await this.host.gitCache.pathEntryAtCommit(base, path) === undefined) {
         throw new Error(`${path}: no such file`);
       }
+      // As in writeFile: a re-root meanwhile invalidates the checks.
+      if (this.#pinBase() !== base) return this.deleteFile(path);
     }
     this.turn.appendChange(this.worktreeId, path, { remove: true });
   }
@@ -283,13 +300,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     // auto-commits since, they simply never appear in this commit's ancestry (squash semantics;
     // see WorktreeRecord). The overlay may include lazily-read untouched files; content
     // addressing makes rewriting them a no-op that reuses their blob oids and modes.
-    let changes = new Map<string, FileContent | null>();
-    for (let [path, text] of this.turn.getOverlayFiles(this.worktreeId)) {
-      changes.set(path, text);
-    }
-    for (let path of this.turn.getRemovedPaths(this.worktreeId)) {
-      changes.set(path, null);
-    }
+    let changes = worktreeChanges(this.turn, this.worktreeId);
     let commit = await this.host.gitCache.writeChangedFilesAsCommit(changes, {
       treeBase: base,
       parents: [previousHead],
@@ -411,6 +422,30 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     }
     return files;
   }
+
+  /**
+   * Unvalidated: validation would wrap the returned stub in a Proxy, which the runtime exports as
+   * a new capability of its own, one that isn't persistent (so the gatekeeper couldn't store it)
+   * and whose methods it can't find. It takes no arguments, and WorktreeReplicatorImpl validates
+   * its own.
+   */
+  @skipRpcValidation()
+  async getReplicator(): Promise<WorktreeReplicator> {
+    if (!this.host.getWorktreeReplicator) throw new Error("This worktree can't be replicated.");
+    return this.host.getWorktreeReplicator(this.worktreeId);
+  }
+}
+
+/**
+ * The worktree's current content as changes to its base commit (WorktreeTurnAccess.getBaseCommit):
+ * the overlay's files, and null for each removed path. A tree of its current files is the base's
+ * tree with these applied (WorkspaceGitCache.writeChangedTree).
+ */
+export function worktreeChanges(turn: WorktreeTurnAccess, worktreeId: WorkpieceId)
+    : Map<string, FileContent | null> {
+  let changes = new Map<string, FileContent | null>(turn.getOverlayFiles(worktreeId));
+  for (let path of turn.getRemovedPaths(worktreeId)) changes.set(path, null);
+  return changes;
 }
 
 /** Validates a readBytes range against a file of `size` bytes; no range means the whole file. */

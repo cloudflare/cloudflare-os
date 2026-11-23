@@ -1,11 +1,13 @@
 import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
-import { useUnreadState } from "./features/notifications/UnreadStateBridge";
+import { ChatNotificationsMenu } from "./features/notifications/ChatNotificationsMenu";
+import { unreadCountOf, useUnreadState } from "./features/notifications/UnreadStateBridge";
 import { UnreadBadge } from "./features/notifications/UnreadBadge";
 import { ReadTimeline } from "./features/notifications/ReadTimeline";
 import { TimelineReadItem } from "./features/notifications/TimelineReadItem";
 import { timelineReadRanges } from "./features/notifications/timelineReadRanges";
 import {
   Fragment,
+  createContext,
   isValidElement,
   memo,
   useState,
@@ -14,6 +16,7 @@ import {
   useRef,
   useMemo,
   useCallback,
+  useContext,
   type ComponentPropsWithoutRef,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
@@ -28,7 +31,6 @@ import {
 } from "@cloudflare/kumo";
 
 import {
-  CaretDown,
   CaretLeft,
   CaretRight,
   Check,
@@ -61,12 +63,15 @@ import {
   GitBranch,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import styles from "./ChatInterface.module.css";
 import {
+  cacheModels,
+  getCachedModels,
   getStoredSelectedModel,
   persistSelectedModel,
+  syncSelectedModel,
 } from "./modelSelection";
 import {
   Overseer,
@@ -74,6 +79,7 @@ import {
   AiChatHistoryPage,
   AiChatMetadata,
   AiChatMessage,
+  ChatEmbeds,
   AiChatSubscriber,
   ActionLogEntry,
   AiChatAuthorInfo,
@@ -83,7 +89,6 @@ import {
   SlashCommandId,
   SlashCommandRequest,
   ChatAttachmentHandle,
-  ChatAttachmentRef,
   ChatCodeBase,
   WorkpieceId,
   BlueprintMerge,
@@ -108,11 +113,30 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
+import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
-import { actionLogResumed, useActionEntries } from "./useActions";
+import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
+import {
+  chatRequestIds, pendingChangeGroups, type PendingChange,
+} from "./features/approvals/pendingChangeGroups";
+import {
+  canOfferAlwaysApprove, type AutoApprovalRules,
+} from "./features/approvals/autoApprovalRules";
+import { useBulkResolve } from "./features/approvals/useBulkResolve";
+import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
+import { AgentListRow } from "./features/chat/agents/AgentListRow";
+import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
+import { ChatListTabs, type ChatListTab } from "./features/chat/agents/ChatListTabs";
+import {
+  agentsNeedingAttention, deriveAgents, ownConversations,
+} from "./features/chat/agents/agentList";
+import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
+import { useStandingRules } from "./features/approvals/useStandingRules";
 import { useResolveAction } from "./useResolveAction";
+import type { ActivityView } from "./Activity";
+import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
@@ -120,7 +144,7 @@ import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
-import { formatAttachmentSize } from "./features/chat/attachmentFormatting";
+import { ChatAttachmentGrid } from "./features/chat/attachments/ChatAttachmentGrid";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
 import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 import {
@@ -128,6 +152,9 @@ import {
 } from "./features/chat/mergeConflicts";
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { UiBlockCard, type UiBlockCardProps } from "./features/chat/UiBlockCard";
+import type { FileSnapshots } from "./features/chat/inlineFiles";
+import { FileLink } from "./features/chat/FileLink";
+import { FileImage, type FileImageLayout } from "./features/chat/FileImage";
 import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
@@ -329,14 +356,6 @@ type ChatChangeRowBuffer = {
   // but have their own streaming UI): when the newest such row arrived (rows don't carry
   // timestamps on the wire; arrival time is close enough for display).
   lastUserEditAt: Date | null;
-};
-
-type ChatListScope = "direct" | "agents" | "all";
-
-const CHAT_LIST_SCOPE_LABELS: Record<ChatListScope, string> = {
-  all: "All",
-  direct: "Started by people",
-  agents: "Started by agents",
 };
 
 const SHOW_THINKING_TRACES_KEY = "showThinkingTraces";
@@ -1193,10 +1212,31 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   );
 }
 
+// ReactMarkdown owns the image props. Context keeps its renderer's identity stable when files
+// arrive, so previously pinned files keep their downloaded bytes.
+const MarkdownFiles = createContext<{files?: FileSnapshots; layout?: FileImageLayout}>({});
+const MarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, alt, title, ...props }) => {
+  const {files, layout} = useContext(MarkdownFiles);
+  if (typeof src === "string" && src.startsWith("worktree://")) {
+    return files
+      ? <FileImage key={files.oids[src] ?? src} oid={files.oids[src]} alt={alt} title={title} readBlob={files.readBlob} layout={layout} />
+      : <span>{alt}</span>;
+  }
+  return <img {...props} src={src || undefined} alt={alt} title={title} />;
+};
+const MarkdownFileLink = ({ source, children, title }: { source: string; children: ReactNode; title?: string }) => {
+  const {files} = useContext(MarkdownFiles);
+  return <FileLink key={files?.oids[source] ?? source} source={source} files={files} title={title}>{children}</FileLink>;
+};
+const markdownUrlTransform: UrlTransform = (url, key, node) =>
+  ((key === "src" && node.tagName === "img") || (key === "href" && node.tagName === "a")) && url.startsWith("worktree://")
+    ? url : defaultUrlTransform(url);
+
 function getMarkdownComponents(
   mentionsByToken?: Map<string, Mention>,
 ): Components {
   return {
+    img: MarkdownImage,
     pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
     table: ({ node: _node, children, ...props }) => (
       <div className={styles.markdownTableWrapper}>
@@ -1214,6 +1254,9 @@ function getMarkdownComponents(
         }
       }
 
+      if (href?.startsWith("worktree://")) {
+        return <MarkdownFileLink source={href} title={props.title}>{children}</MarkdownFileLink>;
+      }
       const safeHref = safeExternalUrl(href);
       if (!safeHref) {
         return <>{children}</>;
@@ -1240,11 +1283,13 @@ const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
  * single newlines as hard breaks, for text people typed rather than Markdown a model wrote.
  */
 export const MarkdownMessage = memo(function MarkdownMessage(
-  { message, capsules, formats, preserveLineBreaks }: {
+  { message, capsules, formats, preserveLineBreaks, files, fileLayout }: {
     message: string;
     capsules?: CapsuleSpecifier[];
     formats?: MessageFormatRef[];
     preserveLineBreaks?: boolean;
+    files?: FileSnapshots;
+    fileLayout?: FileImageLayout;
   },
 ): ReactNode {
   const tokenizedMessage = useMemo(
@@ -1268,14 +1313,16 @@ export const MarkdownMessage = memo(function MarkdownMessage(
     [preserveLineBreaks, tokenizedMessage],
   );
 
+  const fileContext = useMemo(() => ({files, layout: fileLayout}), [files, fileLayout]);
   return (
-    <ReactMarkdown
+    <MarkdownFiles value={fileContext}><ReactMarkdown
       skipHtml={true}
       remarkPlugins={remarkPlugins}
       components={components}
+      urlTransform={markdownUrlTransform}
     >
       {tokenizedMessage?.markdown ?? message}
-    </ReactMarkdown>
+    </ReactMarkdown></MarkdownFiles>
   );
 });
 
@@ -1292,250 +1339,31 @@ type AnswerBlocks = Omit<UiBlockCardProps, "block">;
  * An agent answer: Markdown prose, with each `<inline-html>` block drawn as a live view. A block
  * draws as it streams, and shows as code if its stored answer never closed it.
  */
-const AgentAnswer = (
+export const AgentAnswer = (
   { message, blocks, streaming }: { message: string; blocks: AnswerBlocks; streaming: boolean },
 ): ReactNode => {
   // ChatInterface renders every message again on each streamed delta; an answer is parsed only
   // when it changes.
   const parts = useMemo(() => parseInlineHtmlBlocks(message, { streaming }), [message, streaming]);
+  // The caller rebuilds blocks, but unchanged pins must not invalidate MarkdownMessage's memo.
+  const oids = blocks.files?.oids, readBlob = blocks.files?.readBlob;
+  const files = useMemo(() => oids && readBlob ? { oids, readBlob } : undefined, [oids, readBlob]);
 
+  const imageLayout = useMemo(() => ({scrollRoot: blocks.scrollRoot, onHeightChange: blocks.onHeightChange}),
+      [blocks.scrollRoot, blocks.onHeightChange]);
   return parts.map((part, i) => {
     switch (part.kind) {
       case "text":
-        return <MarkdownMessage key={i} message={part.text} />;
+        return <MarkdownMessage key={i} message={part.text} files={files} fileLayout={imageLayout} />;
       case "block":
       case "open":
         // An open block's view stays the closed block's: the same component, at the same place.
         return part.kind === "open" && !streaming
           ? <MarkdownMessage key={i} message={asCodeBlock(part.text)} />
-          : <UiBlockCard key={i} {...blocks} block={part} />;
+          : <UiBlockCard key={i} {...blocks} files={files} block={part} />;
     }
   });
 };
-
-// Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
-function useAttachmentObjectUrl(content: Uint8Array | undefined, mimeType: string): string | null {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!content) {
-      setObjectUrl(null);
-      return;
-    }
-
-    const url = URL.createObjectURL(
-      new Blob([content as BlobPart], {type: mimeType || "application/octet-stream"}));
-    setObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [content, mimeType]);
-  return objectUrl;
-}
-
-type AttachmentDownloadHandler = (attachment: ChatAttachmentRef) => void;
-
-type AttachmentPreviewModalProps = {
-  attachment: ChatAttachmentRef | null;
-  onClose: () => void;
-  onDownload?: AttachmentDownloadHandler;
-};
-
-const AttachmentPreviewModal = memo(function AttachmentPreviewModal(
-  {
-    attachment,
-    onClose,
-    onDownload,
-  }: AttachmentPreviewModalProps,
-) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const isImage = (attachment?.mimeType ?? "").startsWith("image/");
-  const objectUrl = useAttachmentObjectUrl(
-    isImage ? attachment?.content : undefined, attachment?.mimeType ?? "");
-
-  // Dialog keyboard handling: Escape closes, Tab stays trapped, focus restores on close.
-  useEffect(() => {
-    if (!attachment) return;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key === "Tab" && containerRef.current) {
-        const focusable = containerRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], iframe, [tabindex]:not([tabindex="-1"])');
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    // Defer to after paint so the close button exists.
-    const raf = requestAnimationFrame(() => {
-      containerRef.current?.querySelector<HTMLElement>("button")?.focus();
-    });
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      cancelAnimationFrame(raf);
-      previouslyFocused?.focus?.();
-    };
-  }, [attachment, onClose]);
-
-  if (!attachment) return null;
-
-  const sizeLabel = formatAttachmentSize(attachment.size);
-  const title = attachment.name ?? "Attached file";
-  const modalWidthClass = isImage
-    ? "w-[min(1120px,calc(100vw-32px))]"
-    : "w-[min(520px,calc(100vw-32px))]";
-  const modalSurfaceClass = "rounded-2xl border border-kumo-line/70 bg-kumo-base";
-  const modalPaddingClass = "p-3 sm:p-4";
-
-  return (
-    <div
-      className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[1px]"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Preview ${title}`}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div ref={containerRef} className={`relative max-h-[calc(var(--app-height)-32px)] ${modalWidthClass} overflow-hidden ${modalSurfaceClass} p-0 shadow-[0_24px_80px_rgba(0,0,0,0.28)]`}>
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-3 top-3 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-kumo-line bg-kumo-base/90 text-kumo-subtle shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-sm transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-base hover:text-kumo-default active:scale-[0.96]"
-          aria-label="Close preview"
-        >
-          <X size={18} />
-        </button>
-
-        <div className={modalPaddingClass}>
-          {isImage && objectUrl ? (
-            <img
-              src={objectUrl}
-              alt={title}
-              className="max-h-[calc(var(--app-height)-96px)] w-full rounded-xl object-contain"
-            />
-          ) : (
-            <div className="grid min-h-56 place-items-center rounded-xl border border-kumo-line/70 bg-kumo-elevated/40 p-6 py-10 text-center">
-              <div className="max-w-sm space-y-2">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-kumo-line/70 bg-kumo-base text-kumo-inactive">
-                  <FileIcon size={26} />
-                </div>
-                <div className="text-[14px] font-medium text-kumo-default">{title}</div>
-                <div className="text-[12px] leading-5 text-kumo-subtle">
-                  {attachment.mimeType || "Unknown file type"}{sizeLabel ? ` · ${sizeLabel}` : ""}
-                </div>
-                <div className="text-[12px] leading-5 text-kumo-inactive">This file can’t be previewed here.</div>
-                {onDownload && (
-                  <button
-                    type="button"
-                    onClick={() => onDownload(attachment)}
-                    className="mt-1 inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-kumo-line/70 bg-kumo-base px-3 py-1.5 text-[12px] font-medium text-kumo-default transition-colors hover:bg-kumo-tint/40"
-                  >
-                    Download
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-type ChatAttachmentThumbnailProps = {
-  attachment: ChatAttachmentRef;
-  onPreview: (id: string) => void;
-};
-
-const ChatAttachmentThumbnail = memo(function ChatAttachmentThumbnail(
-  {
-    attachment,
-    onPreview,
-  }: ChatAttachmentThumbnailProps,
-) {
-  const isImage = attachment.mimeType.startsWith("image/");
-  const objectUrl = useAttachmentObjectUrl(isImage ? attachment.content : undefined, attachment.mimeType);
-  const [imageState, setImageState] = useState<"loading" | "loaded" | "error">("loading");
-
-  return (
-    <button
-      type="button"
-      onClick={() => onPreview(attachment.id)}
-      className="relative h-28 w-36 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-kumo-line/70 bg-kumo-elevated text-left transition-[border-color,background-color,transform] duration-150 ease-out hover:border-kumo-line hover:bg-kumo-tint/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand/40 active:scale-[0.98]"
-      aria-label={`Preview ${attachment.name ?? "attached file"}`}
-    >
-      {isImage && objectUrl && imageState !== "error" ? (
-        <>
-          {/* Kept in layout (not display:none) so lazy-loading actually triggers. */}
-          <img
-            src={objectUrl}
-            alt={attachment.name ?? "Attached image"}
-            loading="lazy"
-            className="block h-full w-full object-cover"
-            onLoad={() => setImageState("loaded")}
-            onError={() => setImageState("error")}
-          />
-          {imageState !== "loaded" && (
-            <div className="absolute inset-0 grid place-items-center bg-kumo-elevated text-[11px] text-kumo-inactive">Loading image…</div>
-          )}
-        </>
-      ) : (
-        <div className="flex h-full w-full min-w-0 items-center justify-center gap-2 p-3 text-[12px] leading-4 text-kumo-subtle">
-          <FileIcon size={20} className="shrink-0 text-kumo-inactive" />
-          <span className="min-w-0 truncate">{attachment.name ?? "Attached file"}</span>
-        </div>
-      )}
-    </button>
-  );
-});
-
-type ChatAttachmentGridProps = {
-  attachments: ChatAttachmentRef[];
-  onDownload?: AttachmentDownloadHandler;
-};
-
-const ChatAttachmentGrid = memo(function ChatAttachmentGrid(
-  {
-    attachments,
-    onDownload,
-  }: ChatAttachmentGridProps,
-) {
-  const [previewAttachmentId, setPreviewAttachmentId] = useState<string | null>(null);
-  const previewAttachment = previewAttachmentId === null
-    ? null
-    : attachments.find((attachment) => attachment.id === previewAttachmentId) ?? null;
-  const handlePreview = useCallback((id: string) => setPreviewAttachmentId(id), []);
-  const handleClose = useCallback(() => setPreviewAttachmentId(null), []);
-
-  return (
-    <>
-      <div className="mb-2 flex flex-wrap gap-2">
-        {attachments.map((attachment) => (
-          <ChatAttachmentThumbnail
-            key={attachment.id}
-            attachment={attachment}
-            onPreview={handlePreview}
-          />
-        ))}
-      </div>
-      <AttachmentPreviewModal
-        attachment={previewAttachment}
-        onClose={handleClose}
-        onDownload={onDownload}
-      />
-    </>
-  );
-});
 
 const ToolCallDetails = memo(function ToolCallDetails(
   { toolCall: tc }: { toolCall: AiToolCall },
@@ -2105,6 +1933,7 @@ export type StreamingAnswer = {
   author: AiChatAuthorInfo;
   text: string;
   reasoning: string;
+  embeds?: ChatEmbeds;
 };
 
 export function buildChatDisplayEntries(
@@ -2350,7 +2179,7 @@ export function buildChatDisplayEntries(
 
   // Drawn as the message it will become, after the model-change row that message will get.
   if (answers.streaming) {
-    const {key, chatId, author, text, reasoning} = answers.streaming;
+    const {key, chatId, author, text, reasoning, embeds} = answers.streaming;
     const message: AiChatMessage = {
       type: "message",
       chatId,
@@ -2361,6 +2190,7 @@ export function buildChatDisplayEntries(
       author,
       message: text,
       reasoning,
+      embeds,
     };
     maybePushModelChange(message);
     result.push({type: "message", key, message, streaming: true});
@@ -2552,6 +2382,7 @@ function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo
 }
 
 function fallbackToStoredModelSelection(
+  userId: string | undefined,
   modelId: string | null,
   availableModels: AiChatAuthorInfo[],
 ): string | null {
@@ -2559,7 +2390,7 @@ function fallbackToStoredModelSelection(
     return modelId;
   }
 
-  return getStoredSelectedModel(availableModels);
+  return getStoredSelectedModel(userId, availableModels);
 }
 
 interface ChatInterfaceProps {
@@ -2569,20 +2400,28 @@ interface ChatInterfaceProps {
   // Latched actions are never auto-approved, so the always-approve affordance is hidden.
   restricted?: boolean;
   selectedChatId: number | null;
+  // The chat whose code the host's code view shows, when that isn't the selected chat: the
+  // Workshop shows a spawned agent's chat over the chat the user works in, whose code it keeps
+  // showing. The reports below marked "the code chat's" follow it. Defaults to `selectedChatId`.
+  codeChatId?: number | null;
+  // The chat Back returns to (by calling `onNavigateToChat(null)`) when that isn't the list: the
+  // chat a spawned agent's chat is shown over. Only names it.
+  returnChatId?: number | null;
   onNavigateToChat: (
     chatId: number | null,
     options?: { replace?: boolean },
   ) => void;
-  // The selected chat's code-branch snapshot (see ChatCodeChanges): its code base and the
+  // The code chat's code-branch snapshot (see ChatCodeChanges): its code base and the
   // current epoch's recorded changes, delivered together so the code view always layers a
   // consistent pair.
   onChatChangesChange?: (changes: ChatCodeChanges | undefined) => void;
-  // The selected chat's live (unmaterialized) change rows, delivered separately from the durable
+  // The code chat's live (unmaterialized) change rows, delivered separately from the durable
   // snapshot so per-keystroke row arrivals don't churn it (see ChatLiveChangeRows).
   onLiveRowsChange?: (rows: ChatLiveChangeRows | undefined) => void;
-  // The selected chat's live edit-preview stream, stable per chat like the row stream (see
+  // The code chat's live edit-preview stream, stable per chat like the row stream (see
   // ChatLiveEditPreviews).
   onLiveEditPreviewsChange?: (previews: ChatLiveEditPreviews | undefined) => void;
+  // The file the code chat's agent is editing.
   onStreamingActiveFileChange?: (chatId: number, file: ActiveFileTarget | null | undefined) => void;
   // The selected chat's uncommitted content, which accepting its changes first checks for merge
   // conflicts nobody resolved. Without it the changes are accepted unchecked.
@@ -2593,10 +2432,16 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
-  onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
-  // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
-  // Auto-approval list reflects it without a reload.
-  onAutoApproveChange?: () => void;
+  // Reports the workspace's chats once they have loaded, and again whenever any changes.
+  onChatListChange?: (chats: readonly AiChatMetadata[]) => void;
+  // Whether the code chat's agent is running; with no code chat, whether any chat's is.
+  onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
+  // Shared with the Activity pane, which is the other surface that changes these rules. Rules
+  // are not subscribable (listAutoApprovedActionKinds is a one-shot read), so without this a
+  // rule changed there would stay stale here until the chat remounts.
+  autoApproval?: AutoApprovalChannel;
+  // Opens the Activity pane, which is where a standing auto-approval rule is turned off again.
+  onViewActivity?: (view: ActivityView) => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2704,6 +2549,7 @@ type ProvisionalToolCallState = {
 
 type ProvisionalChatState = {
   text: string;
+  embeds?: ChatEmbeds;
   reasoning: string;
   // The React key of the row the streamed text and reasoning are drawn in, minted when they start.
   // The stored message keeps it (see answerKeysRef), so the views in it keep running.
@@ -2729,6 +2575,7 @@ function createProvisionalChatState(): ProvisionalChatState {
 
 function clearProvisionalTextState(state: ProvisionalChatState) {
   state.text = "";
+  state.embeds = undefined;
   state.reasoning = "";
   state.answerKey = undefined;
   state.toolCalls = [];
@@ -2783,6 +2630,8 @@ function ChatInterface({
   overseer,
   restricted,
   selectedChatId,
+  codeChatId: codeChatIdProp,
+  returnChatId,
   onNavigateToChat,
   onChatChangesChange,
   onLiveRowsChange,
@@ -2795,8 +2644,10 @@ function ChatInterface({
   onConsumeConsoleLogs,
   onDiscardConsoleLogs,
   onChatCountChange,
+  onChatListChange,
   onAgentActiveChange,
-  onAutoApproveChange,
+  autoApproval,
+  onViewActivity,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -2809,7 +2660,12 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
-  const { currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
+  // Whose remembered models to show: nobody's until the server has confirmed who is signed in.
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined;
+  // Read through a ref so that the chat subscription is not restarted when only this changes.
+  const authenticatedApiRef = useRef(authenticatedApi);
+  authenticatedApiRef.current = authenticatedApi;
   const unread = useUnreadState();
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
@@ -2848,13 +2704,30 @@ function ChatInterface({
   // we've already auto-opened for, so dismissing it doesn't immediately reopen.
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const usageModalShownForRef = useRef<number | null>(null);
-  const [chatListScope, setChatListScope] = useState<ChatListScope>("all");
+  const [listTab, setListTab] = useState<ChatListTab>("chats");
+  // Agents the user opened in the list. Keyed by AgentSummary.key; an agent that stops existing
+  // simply stops being looked up.
+  const [openAgents, setOpenAgents] = useState<ReadonlySet<string>>(new Set());
+  // The agent whose runs the detail pane shows, with the chat that was selected when it opened.
+  // Held by key rather than index so an agent that stops existing (its last run deleted) simply
+  // stops being found; `overChatId` is what lets the route take the pane back (see below).
+  const [agentScreen, setAgentScreen] =
+    useState<{ key: string; overChatId: number | null } | null>(null);
   const [chatListVersion, setChatListVersion] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   // Fetching the page before the selected chat's compaction boundary.
   const [isLoadingEarlier, setIsLoadingEarlier] = useState(false);
   const [updateCounter, setUpdateCounter] = useState(0); // Force re-render when cache updates
-  const [proposedChangesVersion, setProposedChangesVersion] = useState(0); // Incremented only for change-affecting messages
+  // Each chat's count of change-affecting events (a "changes" or "revert" message, a loaded page).
+  // Kept per chat so that one chat's events don't resend another's unchanged code snapshot, which
+  // the editor would take as new code and reload a draft's preview for.
+  const changesVersionsRef = useRef(new Map<number, number>());
+  const [, setChangesVersionTick] = useState(0);
+  // Reads only refs and a state setter, so the subscriber's first-render copy stays current.
+  const bumpChangesVersion = (chatId: number) => {
+    changesVersionsRef.current.set(chatId, (changesVersionsRef.current.get(chatId) ?? 0) + 1);
+    setChangesVersionTick((prev) => prev + 1);
+  };
   // Rows live in refs (chatChangeRowsRef); this state only forces re-renders of their readers (the
   // draft banner) as rows arrive or get pruned. Subscribed consumers are fed synchronously and
   // don't depend on it (see ChatLiveChangeRows).
@@ -2904,6 +2777,7 @@ function ChatInterface({
     vendorId: string;
     resourceUrl?: string;
     resourceUrlPattern?: string;
+    resourceTypeId?: string;
   } | null>(null);
   // Read via this ref inside handleConnectionCreated to avoid a stale closure: that callback is
   // passed as the `onCreated` prop to GatekeeperModal, so it would otherwise capture an outdated
@@ -2913,10 +2787,10 @@ function ChatInterface({
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
-  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(
-    [],
-  );
+  // Starts on what this browser last saw, so a new chat's selector doesn't wait on the server.
+  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(() => getCachedModels(userId));
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
     "chat" | "connections"
   >("chat");
@@ -3038,7 +2912,7 @@ function ChatInterface({
     let oldest = cacheRef.current.compacted.get(chatId)?.[0];
     if (oldest === undefined || await refreshBoundaryRef.current(chatId, oldest.to + 1)) {
       staleBoundaryChatsRef.current.delete(chatId);
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(chatId);
     }
   };
 
@@ -3055,6 +2929,9 @@ function ChatInterface({
 
   // Refs for accessing current values in subscriber callbacks
   const selectedChatIdRef = useRef<number | null>(null);
+  const codeChatId = codeChatIdProp === undefined ? selectedChatId : codeChatIdProp;
+  const codeChatIdRef = useRef(codeChatId);
+  codeChatIdRef.current = codeChatId;
   const onNavigateToChatRef = useRef(onNavigateToChat);
   onNavigateToChatRef.current = onNavigateToChat;
 
@@ -3107,22 +2984,61 @@ function ChatInterface({
     ),
     [chatListVersion],
   );
+  // Every request awaiting this user, driving the Agents badge and the per-run marks.
+  const { status: pendingStatus, pending: pendingActions } = useActions(overseer);
+
+  // The live line for a chat's row: what its agent is doing right now, read from the same
+  // provisional stream the transcript draws from. Undefined until the turn's first event
+  // reaches us, so a page loaded mid-turn shows none until the next one.
+  const activityLineOf = (chatId: number): string | undefined => {
+    const provisional = provisionalRef.current.get(chatId);
+    if (!provisional) return undefined;
+    if (provisional.compacting) return "Summarizing earlier messages";
+    if (provisional.toolCalls.length > 0) {
+      return buildProvisionalToolSummary(provisional.toolCalls).label;
+    }
+    return provisional.reasoning ? "Thinking" : undefined;
+  };
+
+  // The list's relative times ("11m", "Yesterday") have to move on in a workspace where nothing
+  // else changes, so the list keeps a minute clock while it, or an agent's screen, is showing.
+  const listShowing = sidebarMode === true || selectedChatId === null || agentScreen !== null;
+  const [listClock, setListClock] = useState(() => new Date());
+  useEffect(() => {
+    if (!listShowing) return;
+    setListClock(new Date());
+    const timer = setInterval(() => setListClock(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, [listShowing]);
+
   const {
     visibleChatList,
     chatListNow,
     bucketedVisibleChats,
-    chatListScopes,
+    agents,
+    agentAttention,
+    pendingForRun,
   } = useMemo(() => {
-    const directCount = chatList.filter((chat) => !chat.spawnerName).length;
-    const agentCount = chatList.length - directCount;
-    const visible = chatList.filter((chat) => {
-      if (chatListScope === "direct") return !chat.spawnerName;
-      if (chatListScope === "agents") return Boolean(chat.spawnerName);
-      return true;
-    });
-    const now = new Date();
+    const now = listClock;
+
+    // A request with no chat -- a hook's, or gadget code's outside any chat -- is no run's.
+    const byRun = new Map<number, ActionLogEntry[]>();
+    for (const record of pendingActions) {
+      if (record.chatId === undefined) continue;
+      const existing = byRun.get(record.chatId);
+      if (existing) existing.push(record);
+      else byRun.set(record.chatId, [record]);
+    }
+    const unreadByRun = new Map<number, number>();
+    for (const item of unread?.chats ?? []) {
+      if (item.workspaceId === workspaceId && item.unreadMessageCount > 0 && item.notificationsEnabled !== false) {
+        unreadByRun.set(item.chatId, item.unreadMessageCount);
+      }
+    }
+
+    const conversations = ownConversations(chatList);
     const buckets = new Map<ChatTimeBucket, AiChatMetadata[]>();
-    for (const chat of visible) {
+    for (const chat of conversations) {
       const bucket = getChatTimeBucket(chat.lastActive, now);
       let arr = buckets.get(bucket);
       if (!arr) {
@@ -3132,21 +3048,29 @@ function ChatInterface({
       arr.push(chat);
     }
 
+    const derived = deriveAgents(chatList, byRun, now, unreadByRun);
     return {
-      visibleChatList: visible,
+      visibleChatList: conversations,
       chatListNow: now,
       bucketedVisibleChats: CHAT_TIME_BUCKET_ORDER.flatMap((bucket) => {
         const items = buckets.get(bucket);
         if (!items || items.length === 0) return [];
         return [{ bucket, items }];
       }),
-      chatListScopes: [
-        { value: "all" as const, count: chatList.length },
-        { value: "direct" as const, count: directCount },
-        { value: "agents" as const, count: agentCount },
-      ],
+      agents: derived,
+      agentAttention: agentsNeedingAttention(derived),
+      pendingForRun: byRun as ReadonlyMap<number, ActionLogEntry[]>,
     };
-  }, [chatList, chatListScope]);
+  }, [chatList, pendingActions, unread?.chats, workspaceId, listClock]);
+
+  // The agent's own screen and the route's chat compete for the detail pane. The agent wins,
+  // because opening it was the user's latest move -- until the route selects a different chat,
+  // which is a later move still: a link, a notification, the browser's Back button. Standing the
+  // pane down during render rather than from an Effect, as React prescribes for state that has
+  // to follow a prop, keeps it from covering the new chat for a frame first.
+  const shownScreen = agentScreen?.overChatId === selectedChatId ? agentScreen : null;
+  if (shownScreen !== agentScreen) setAgentScreen(null);
+  const selectedAgent = shownScreen && agents.find((agent) => agent.key === shownScreen.key);
 
   // Notify parent when chat list changes. Gated on chatListReady so that we
   // don't report 0 from the empty initial cache before listChats() has completed.
@@ -3158,6 +3082,12 @@ function ChatInterface({
       onChatCountChangeRef.current?.(chatList.length, hasChatZero);
     }
   }, [chatList.length, chatListReady, hasChatZero]);
+
+  const onChatListChangeRef = useRef(onChatListChange);
+  onChatListChangeRef.current = onChatListChange;
+  useEffect(() => {
+    if (chatListReady) onChatListChangeRef.current?.(chatList);
+  }, [chatList, chatListReady]);
 
   // Notify parent which workpieces any chat proposes changes to (code written but not merged).
   // Keyed on the set's content, since chat metadata is redelivered wholesale on every lastActive
@@ -3252,6 +3182,7 @@ function ChatInterface({
   const streamingKey = currentProvisionalState?.answerKey;
   const streamingAuthor = currentChatMetadata?.activeAgent;
   const streamingText = currentProvisionalState?.text ?? "";
+  const streamingEmbeds = currentProvisionalState?.embeds;
   const streamingReasoning = showThinkingTraces ? (currentProvisionalState?.reasoning ?? "") : "";
   const displayEntries = useMemo(
     () =>
@@ -3265,11 +3196,11 @@ function ChatInterface({
             streaming: selectedChatId !== null && streamingKey !== undefined && streamingAuthor &&
                 (streamingText.trim() !== "" || streamingReasoning !== "")
               ? {key: streamingKey, chatId: selectedChatId, author: streamingAuthor,
-                 text: streamingText, reasoning: streamingReasoning}
+                 text: streamingText, reasoning: streamingReasoning, embeds: streamingEmbeds}
               : undefined,
           }),
     [currentMessages, messageStates, currentCompactions, resolveToolOutput, selectedChatId,
-     streamingKey, streamingAuthor, streamingText, streamingReasoning],
+     streamingKey, streamingAuthor, streamingText, streamingReasoning, streamingEmbeds],
   );
 
   const entryTopClasses = useMemo(() => {
@@ -3320,48 +3251,27 @@ function ChatInterface({
     }
   }, [lastMessage]);
 
-  // Download a committed chat attachment. Image bytes are already inlined on the message; other
-  // attachments are fetched on demand over the authenticated RPC connection.
-  const downloadChatAttachment = useCallback(async (chatId: number, attachment: ChatAttachmentRef) => {
-    try {
-      let bytes = attachment.content;
-      const mimeType = attachment.mimeType;
-      const name = attachment.name;
-      if (!bytes) {
-        bytes = await overseer.getChatAttachmentContent(chatId, attachment.id);
-      }
-      const url = URL.createObjectURL(
-        new Blob([bytes as BlobPart], {type: mimeType || "application/octet-stream"}));
-      try {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name ?? "attachment";
-        a.click();
-      } finally {
-        setTimeout(() => URL.revokeObjectURL(url), 0);
-      }
-    } catch (err: any) {
-      console.error("Failed to download chat attachment:", err);
-      toasts.add({ title: err?.message || "Failed to download attachment", variant: "error" });
-    }
-  }, [overseer, toasts]);
-
   const onSelectedChatProposedChangesChangeRef = useRef(onSelectedChatProposedChangesChange);
   onSelectedChatProposedChangesChangeRef.current = onSelectedChatProposedChangesChange;
   // Keyed on the list's *content*: metadata is redelivered wholesale on every lastActive bump,
   // and pushing a fresh (but equal) array into the parent's state each time would re-render it
   // for nothing.
-  const currentProposedWorkpieces = currentChatMetadata?.proposedChangeWorkpieces;
-  const currentProposedWorkpiecesKey = currentProposedWorkpieces?.join(",") ?? "";
-  const metadataLoaded = currentChatMetadata !== undefined;
+  const codeChatMetadata =
+    codeChatId !== null ? cacheRef.current.chats.get(codeChatId) : null;
+  const returnChat =
+    returnChatId != null ? cacheRef.current.chats.get(returnChatId) : undefined;
+  const backLabel = returnChat ? `Back to ${returnChat.title}` : "Back to conversations";
+  const codeProposedWorkpieces = codeChatMetadata?.proposedChangeWorkpieces;
+  const codeProposedWorkpiecesKey = codeProposedWorkpieces?.join(",") ?? "";
+  const codeMetadataLoaded = codeChatMetadata !== undefined;
   useEffect(() => {
-    if (selectedChatId !== null && !metadataLoaded) {
+    if (codeChatId !== null && !codeMetadataLoaded) {
       return;
     }
 
-    onSelectedChatProposedChangesChangeRef.current?.(currentProposedWorkpieces ?? []);
-    // oxlint-disable-next-line exhaustive-deps -- currentProposedWorkpieces is covered by its key.
-  }, [currentProposedWorkpiecesKey, metadataLoaded, selectedChatId]);
+    onSelectedChatProposedChangesChangeRef.current?.(codeProposedWorkpieces ?? []);
+    // oxlint-disable-next-line exhaustive-deps -- codeProposedWorkpieces is covered by its key.
+  }, [codeProposedWorkpiecesKey, codeMetadataLoaded, codeChatId]);
 
   const currentRowBuffer =
     selectedChatId !== null ? (chatChangeRowsRef.current.get(selectedChatId) ?? null) : null;
@@ -3376,13 +3286,15 @@ function ChatInterface({
   const provisionalToolCalls = currentProvisionalState?.toolCalls ?? [];
   const useConstrainedChatWidth = sidebarMode || constrainChatWidth;
 
-  const currentStreamingActiveFile = currentProvisionalState?.activeEditingFile;
-  // The selected chat's live-row stream in the subscription shape the code view consumes (see
+  const codeStreamingActiveFile = codeChatId !== null
+    ? provisionalRef.current.get(codeChatId)?.activeEditingFile
+    : undefined;
+  // The code chat's live-row stream in the subscription shape the code view consumes (see
   // ChatLiveChangeRows). Identity is stable per chat -- the subscription itself outlives row
   // arrivals and buffer pruning -- so consumers subscribe once per chat.
-  const currentLiveRows = useMemo((): ChatLiveChangeRows | undefined => {
-    if (selectedChatId === null) return undefined;
-    const chatId = selectedChatId;
+  const codeLiveRows = useMemo((): ChatLiveChangeRows | undefined => {
+    if (codeChatId === null) return undefined;
+    const chatId = codeChatId;
     return {
       chatId,
       subscribe: (listener) => {
@@ -3402,13 +3314,13 @@ function ChatInterface({
         };
       },
     };
-  }, [selectedChatId]);
+  }, [codeChatId]);
 
-  // The selected chat's edit-preview stream in subscription shape (see ChatLiveEditPreviews),
+  // The code chat's edit-preview stream in subscription shape (see ChatLiveEditPreviews),
   // stable per chat like the row stream above.
-  const currentLiveEditPreviews = useMemo((): ChatLiveEditPreviews | undefined => {
-    if (selectedChatId === null) return undefined;
-    const chatId = selectedChatId;
+  const codeLiveEditPreviews = useMemo((): ChatLiveEditPreviews | undefined => {
+    if (codeChatId === null) return undefined;
+    const chatId = codeChatId;
     return {
       chatId,
       subscribe: (listener) => {
@@ -3440,7 +3352,7 @@ function ChatInterface({
         };
       },
     };
-  }, [selectedChatId]);
+  }, [codeChatId]);
 
   const isCompacting = currentProvisionalState?.compacting === true;
 
@@ -3456,18 +3368,18 @@ function ChatInterface({
   // Names the chat's own model in the composer even when the picker no longer offers it.
   const chatAgent = activeAgent ?? inferChatAgentFromMessages(currentMessages);
 
-  // Notify parent when agent active state changes
+  const isCodeChatActive = codeChatId === null
+    ? chatList.some(chat => !!chat.activeAgent) : !!codeChatMetadata?.activeAgent;
   const onAgentActiveChangeRef = useRef(onAgentActiveChange);
   onAgentActiveChangeRef.current = onAgentActiveChange;
-  const previousAgentStateRef = useRef({chatId: selectedChatId, active: isAgentActive});
+  const previousAgentStateRef = useRef<{chatId: number | null; active: boolean} | null>(null);
   useEffect(() => {
-    let previous = previousAgentStateRef.current;
-    if (selectedChatId !== null &&
-        (selectedChatId !== previous.chatId || isAgentActive !== previous.active)) {
-      onAgentActiveChangeRef.current?.(selectedChatId, isAgentActive);
+    const previous = previousAgentStateRef.current;
+    if (!previous || codeChatId !== previous.chatId || isCodeChatActive !== previous.active) {
+      onAgentActiveChangeRef.current?.(codeChatId, isCodeChatActive);
     }
-    previousAgentStateRef.current = {chatId: selectedChatId, active: isAgentActive};
-  }, [isAgentActive, selectedChatId]);
+    previousAgentStateRef.current = {chatId: codeChatId, active: isCodeChatActive};
+  }, [isCodeChatActive, codeChatId]);
 
   // Loads the page before the oldest message on screen. Held in a ref because the scroll handler is
   // built once, while the loader closes over state that changes each render.
@@ -3541,32 +3453,36 @@ function ChatInterface({
   // Update selected model when switching chats
   useEffect(() => {
     if (selectedChatId === null) {
-      setSelectedModel(getStoredSelectedModel(availableModels));
+      setSelectedModel(getStoredSelectedModel(userId, availableModels));
     } else {
       // An existing thread takes its active agent's model, else the one that last spoke.
-      setSelectedModel(fallbackToStoredModelSelection(chatAgent?.id ?? null, availableModels));
+      setSelectedModel(
+        fallbackToStoredModelSelection(userId, chatAgent?.id ?? null, availableModels));
     }
-  }, [selectedChatId, availableModels, chatAgent?.id]);
+  }, [selectedChatId, availableModels, chatAgent?.id, userId]);
 
   // Keep the ref in sync with selectedChatId state
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  // Notify parent when the selected chat's code-branch snapshot changes (see ChatCodeChanges):
+  // Notify parent when the code chat's code-branch snapshot changes (see ChatCodeChanges):
   // its ChatCodeBase plus the current epoch's recorded changes, derived together so the code
-  // view never pairs one's stale value with the other's fresh one. Recomputes when
-  // proposedChangesVersion changes (i.e. a "changes" or "revert" message arrives, or a history
-  // page loads) or when the codeBase's *content* changes -- metadata is redelivered on every
+  // view never pairs one's stale value with the other's fresh one. Recomputes when the code chat's
+  // changes version moves (i.e. a "changes" or "revert" message arrives in it, or a page of its
+  // history loads) or when the codeBase's *content* changes -- metadata is redelivered on every
   // chat activity (title, lastActive, ...), so it is deduped by signature. "merge" messages bump
   // neither directly: the epoch reset they perform arrives through the metadata's codeBase
   // (advanced epoch, cleared pins, bumped generation), redelivered with the merge.
-  const currentCodeBaseSignature = currentChatMetadata
-    ? JSON.stringify(currentChatMetadata.codeBase ?? null) : undefined;
+  const codeBaseSignature = codeChatMetadata
+    ? JSON.stringify(codeChatMetadata.codeBase ?? null) : undefined;
+  const codeChangesVersion =
+    codeChatId !== null ? (changesVersionsRef.current.get(codeChatId) ?? 0) : 0;
+  const readFileBlob = useCallback((oid: string) => overseer.readBlob(oid), [overseer]);
   useEffect(() => {
-    if (selectedChatId === null || currentCodeBaseSignature === undefined ||
-        !cacheRef.current.messages.has(selectedChatId) ||
-        staleBoundaryChatsRef.current.has(selectedChatId)) {
+    if (codeChatId === null || codeBaseSignature === undefined ||
+        !cacheRef.current.messages.has(codeChatId) ||
+        staleBoundaryChatsRef.current.has(codeChatId)) {
       // No chat selected, its metadata or history hasn't loaded yet, or a revert left its oldest
       // boundary stale -- the code view can't build the chat's doc until all are current.
       onChatChangesChange?.(undefined);
@@ -3575,39 +3491,39 @@ function ChatInterface({
 
     // Read messages and metadata directly from the cache (always current) rather than using the
     // memoized currentMessages, so we don't need them as dependencies.
-    const messages = (cacheRef.current.messages.get(selectedChatId) || []).filter(
+    const messages = (cacheRef.current.messages.get(codeChatId) || []).filter(
       (msg) => msg !== undefined,
     );
-    const codeBase = cacheRef.current.chats.get(selectedChatId)?.codeBase;
+    const codeBase = cacheRef.current.chats.get(codeChatId)?.codeBase;
     const { epochChange, rowsThrough } = computeChatEpochChanges(
       messages,
-      cacheRef.current.compacted.get(selectedChatId)?.[0],
+      cacheRef.current.compacted.get(codeChatId)?.[0],
       codeBase,
     );
 
-    onChatChangesChange?.({ chatId: selectedChatId, codeBase, epochChange, rowsThrough });
+    onChatChangesChange?.({ chatId: codeChatId, codeBase, epochChange, rowsThrough });
   }, [
-    proposedChangesVersion,
-    selectedChatId,
-    currentCodeBaseSignature,
+    codeChangesVersion,
+    codeChatId,
+    codeBaseSignature,
     onChatChangesChange,
   ]);
 
   useEffect(() => {
-    onLiveRowsChange?.(currentLiveRows);
-  }, [currentLiveRows, onLiveRowsChange]);
+    onLiveRowsChange?.(codeLiveRows);
+  }, [codeLiveRows, onLiveRowsChange]);
 
   useEffect(() => {
-    onLiveEditPreviewsChange?.(currentLiveEditPreviews);
-  }, [currentLiveEditPreviews, onLiveEditPreviewsChange]);
+    onLiveEditPreviewsChange?.(codeLiveEditPreviews);
+  }, [codeLiveEditPreviews, onLiveEditPreviewsChange]);
 
   const onStreamingActiveFileChangeRef = useRef(onStreamingActiveFileChange);
   onStreamingActiveFileChangeRef.current = onStreamingActiveFileChange;
   useEffect(() => {
-    if (selectedChatId !== null) {
-      onStreamingActiveFileChangeRef.current?.(selectedChatId, currentStreamingActiveFile);
+    if (codeChatId !== null) {
+      onStreamingActiveFileChangeRef.current?.(codeChatId, codeStreamingActiveFile);
     }
-  }, [currentStreamingActiveFile, selectedChatId]);
+  }, [codeStreamingActiveFile, codeChatId]);
 
   // Deliver one edit-preview event to a chat's subscribers. Touches only refs, so the
   // first-render closures the subscriber instance captures stay correct.
@@ -3769,7 +3685,7 @@ function ChatInterface({
       // -- recomputing here as well would race the metadata and transiently pair the old epoch's
       // updates with the new epoch's (empty) pin set.
       if (msg.type === "changes" || msg.type === "revert") {
-        setProposedChangesVersion((prev) => prev + 1);
+        bumpChangesVersion(msg.chatId);
       }
 
       // A revert reaching past the oldest loaded boundary changed it on the server; see
@@ -3858,6 +3774,7 @@ function ChatInterface({
           break;
         case "textDelta":
           provisional.text += event.delta;
+          if (event.embeds) provisional.embeds = {...provisional.embeds, ...event.embeds};
           break;
         case "reasoningDelta":
           provisional.reasoning += event.delta;
@@ -3901,7 +3818,7 @@ function ChatInterface({
           provisional.activeEditingFile = event.file ?? null;
           // Also tell the editor straight away. The effect above only runs on re-render, which is
           // too late for the tab to follow the very first file of a turn.
-          if (chatId === selectedChatIdRef.current) {
+          if (chatId === codeChatIdRef.current) {
             onStreamingActiveFileChangeRef.current?.(chatId, event.file ?? null);
           }
           break;
@@ -4004,9 +3921,10 @@ function ChatInterface({
 
           // After subscribing, load the list of chats and models
           // This is safe because subscription will catch any new activity
-          const [chats, models] = await Promise.all([
+          const [chats, models, syncedUserId] = await Promise.all([
             overseer.listChats(),
             overseer.listModels(),
+            syncSelectedModel(authenticatedApiRef.current),
           ]);
 
           chats.forEach((chat) => {
@@ -4015,13 +3933,15 @@ function ChatInterface({
           bumpChatListVersion();
           setChatListReady(true);
 
+          // The effect that follows the selected chat picks the model from these.
+          cacheModels(syncedUserId, models);
           setAvailableModels(models);
-
-          setSelectedModel(getStoredSelectedModel(models));
+          setModelsLoading(false);
 
           forceUpdate();
         }
       } catch (err) {
+        if (isMounted) setModelsLoading(false);
         if (!logRpcFailure("Failed to subscribe to chats:", err)) {
           reportIssue('chat.subscription-load', err)
           toasts.add({ title: "Unable to load conversations", variant: "error" });
@@ -4104,6 +4024,28 @@ function ChatInterface({
   }, [selectedChatId]);
 
 
+  // Caches a chat's freshly loaded tail page.
+  const applyLoadedHistory = (chatId: number, page: AiChatHistoryPage) => {
+    cacheHistoryPage(chatId, page);
+
+    // Update last message timestamp if needed
+    if (page.messages.length > 0) {
+      const lastMsg = page.messages[page.messages.length - 1];
+      if (
+        !cacheRef.current.lastMessageTimestamp ||
+        lastMsg.timestamp > cacheRef.current.lastMessageTimestamp
+      ) {
+        cacheRef.current.lastMessageTimestamp = lastMsg.timestamp;
+      }
+    }
+
+    // History may contain change-affecting messages that the subscriber
+    // didn't deliver (they predated the subscription). Bump the version so
+    // the proposed-changes effect re-evaluates with the loaded messages.
+    bumpChangesVersion(chatId);
+    forceUpdate();
+  };
+
   // Load chat history when selectedChatId changes to a non-null value
   useEffect(() => {
     if (selectedChatId === null) return;
@@ -4116,25 +4058,7 @@ function ChatInterface({
         try {
           const page = await overseer.getChatHistory(selectedChatId);
           if (cancelled) return;
-
-          cacheHistoryPage(selectedChatId, page);
-
-          // Update last message timestamp if needed
-          if (page.messages.length > 0) {
-            const lastMsg = page.messages[page.messages.length - 1];
-            if (
-              !cacheRef.current.lastMessageTimestamp ||
-              lastMsg.timestamp > cacheRef.current.lastMessageTimestamp
-            ) {
-              cacheRef.current.lastMessageTimestamp = lastMsg.timestamp;
-            }
-          }
-
-          // History may contain change-affecting messages that the subscriber
-          // didn't deliver (they predated the subscription). Bump the version so
-          // the proposed-changes effect re-evaluates with the loaded messages.
-          setProposedChangesVersion((prev) => prev + 1);
-          forceUpdate();
+          applyLoadedHistory(selectedChatId, page);
         } catch (err) {
           console.error("Failed to load chat history:", err);
           // If loading fails (e.g., invalid chat ID), navigate back to chat list
@@ -4155,6 +4079,24 @@ function ChatInterface({
     // LSP reports an error here, but tsc does not.
     // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [selectedChatId, overseer]);
+
+  // The code chat's history too, when another chat is shown over it: the code view's snapshot
+  // is built from it, and after a reload nothing else would load it.
+  useEffect(() => {
+    if (codeChatId === null || codeChatId === selectedChatId ||
+        cacheRef.current.messages.has(codeChatId)) return;
+    const chatId = codeChatId;
+    let cancelled = false;
+    overseer.getChatHistory(chatId).then(
+      (page) => { if (!cancelled) applyLoadedHistory(chatId, page); },
+      (err) => {
+        if (!cancelled && !logRpcFailure("Failed to load the code chat's history:", err)) {
+          reportIssue("chat.code-chat-history", err);
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [codeChatId, selectedChatId, overseer]);
 
   // While the chat is shown, the workspace keeps the model provider's cache of it warm. Disposing
   // the call's promise disposes the lease it resolves to, even if it hasn't resolved yet.
@@ -4181,7 +4123,7 @@ function ChatInterface({
       cacheHistoryPage(selectedChatId, page);
 
       // The page's own change-affecting messages now stand in for the boundary's merged update.
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(selectedChatId);
       forceUpdate();
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
@@ -4266,7 +4208,7 @@ function ChatInterface({
   // Handle model change
   const handleModelChange = (modelId: string | null) => {
     setSelectedModel(modelId);
-    persistSelectedModel(modelId);
+    persistSelectedModel(authenticatedApi, userId, modelId);
   };
 
   // Handle stopping the agent
@@ -4412,6 +4354,7 @@ function ChatInterface({
     listTree: (commitId) => overseer.listTree(commitId),
     readFilesAtCommit: (commitId, paths) => overseer.readFilesAtCommit(commitId, paths),
     listChangedPaths: (fromCommit, toCommit) => overseer.listChangedPaths(fromCommit, toCommit),
+    readBlob: (oid) => overseer.readBlob(oid),
   };
   const handleAcceptChanges = async () => {
     const chatId = selectedChatId;
@@ -4652,13 +4595,173 @@ function ChatInterface({
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
   // server applies the now-eligible pending action(s) via its drain, and the action state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
+  const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
+    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
 
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
     });
+
+  // Everything the workspace is waiting on, grouped by the resource it touches, for the tray
+  // above the composer. Workspace-scoped rather than chat-scoped: a hook firing, a scheduled
+  // task, or another conversation queues requests that wait on a decision just as much, and the
+  // chat surfaces never showed them at all. The open chat's action messages mark which ones this
+  // conversation asked for -- `ActionLogEntry` carries no caller, so that is the only record.
+  const { pending: workspacePending, status: workspacePendingStatus } = useActions(overseer);
+  const openChatRequestIds = useMemo(() => chatRequestIds(currentMessages), [currentMessages]);
+  const trayGroups = useMemo(
+    () => pendingChangeGroups(workspacePending, openChatRequestIds, !hasEarlierMessages),
+    [workspacePending, openChatRequestIds, hasEarlierMessages],
+  );
+  // Which requests the tray can actually show. Having loaded a queue is not the same as holding
+  // this request: `pendingChangeGroups` drops anything that is not an action or has no
+  // gatekeeperId, and the workspace subscription can lag the chat message that announced it.
+  // Deferring to the tray in either case leaves the card saying "Waiting for review" while no
+  // surface offers the decision at all.
+  const trayActionIds = useMemo(
+    () => new Set(trayGroups.flatMap(group => group.entries.map(entry => entry.id))),
+    [trayGroups],
+  );
+
+  // The real rule list, not an inference from a request still being pending: the drain stops at
+  // the first manual gate and never skips ahead, so a covered request can sit behind an uncovered
+  // one indefinitely.
+  const {
+    enabledRuleKeys,
+    vendorIdByGatekeeper,
+    isLoading: autoApprovalLoading,
+    loadError: autoApprovalLoadError,
+    refresh: refreshAutoApproval,
+  } = useStandingRules(overseer, trayGroups.length > 0);
+  const autoApproveReload = autoApproval?.reloadTrigger;
+  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
+  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
+  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
+  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
+  // as off.
+  const rulesReadFor = useRef(autoApproveReload);
+  useEffect(() => {
+    if (autoApproveReload === rulesReadFor.current) return;
+    rulesReadFor.current = autoApproveReload;
+    void refreshAutoApproval().then(applied => {
+      if (applied) forgetOptimisticTags();
+    });
+  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
+
+  const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
+    // A rule enabled in this session counts before the catalog is re-read, so the affordance
+    // disappears on the click rather than a round trip later.
+    isEnabled: (gatekeeperId, tag) =>
+      enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
+    restricted: restricted === true,
+  }), [enabledRuleKeys, isTagAutoApproved, restricted]);
+
+  // The pending snapshot pages in, and a run that trusted a partial one could apply a later
+  // request while earlier ones on the same connection were still out of sight.
+  const pendingSnapshotReady = workspacePendingStatus === "ready";
+  // A queue that has not finished loading -- or failed, which leaves the store empty for the life
+  // of the connection -- gives the tray nothing to show and nothing to decide with. The
+  // transcript takes its own requests back until the queue is settled, rather than leaving them
+  // reading "Waiting for review" with no way to answer them.
+  const trayUnavailable = workspacePendingStatus !== "ready";
+  // Bulk needs the rule list too. Half-loaded it reports every request as a manual gate, and a
+  // run reading it that way races the drain to the requests it is about to take. The run reads
+  // this as it goes, not only at the click, since a refresh that fails mid-run clears the list.
+  // Only the rule list: the vendor catalog beside it is for logos and gates nothing.
+  const autoApprovalRulesReady = !autoApprovalLoading && !autoApprovalLoadError;
+  const bulkReady = pendingSnapshotReady && autoApprovalRulesReady;
+  const actionOutcome = useActionOutcomes(overseer);
+  const bulkResolve = useBulkResolve(overseer, {
+    pending: workspacePending,
+    pendingReady: pendingSnapshotReady,
+    rules: autoApprovalRules,
+    rulesReady: autoApprovalRulesReady,
+    outcome: actionOutcome,
+  });
+
+  // Vendor logos for the tray's group rows; a connection with no known vendor falls back to its
+  // resource title's initial.
+  const vendorBranding = useVendorBranding(authenticatedApi);
+
+  const trayActions = useMemo(() => ({
+    processing: processingActions,
+    onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
+    onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
+    onAlwaysApprove: (entry: PendingChange) => {
+      if (!entry.description.actionKind) return;
+      setAutoApproveConfirm({
+        actionId: entry.id,
+        gatekeeperId: entry.gatekeeperId,
+        resourceTitle: entry.resourceTitle,
+        actionKind: entry.description.actionKind,
+        actionLabel: entry.description.title,
+      });
+    },
+    onManageRules: () => onViewActivity?.("auto"),
+  }), [processingActions, resolveAction, onViewActivity]);
+
+  // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
+  // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
+  // list otherwise hid an outstanding queue, and a request from a hook or a scheduled task --
+  // which belongs to no conversation at all -- reached that screen only through Activity. A
+  // stopped run's message keeps it mounted after the queue empties (see `PendingChangesTray`).
+  const workspaceTray = trayGroups.length === 0 && bulkResolve.failure === null ? null : (
+    <PendingChangesTray
+      groups={trayGroups}
+      rules={autoApprovalRules}
+      ready={bulkReady}
+      vendorIdByGatekeeper={vendorIdByGatekeeper}
+      vendorBranding={vendorBranding}
+      actions={trayActions}
+      bulk={bulkResolve}
+    />
+  );
+
+  // The gadget's own code draft, docked under the tray. Accepting always merges everything the
+  // chat proposes (drafts swept in, no partial accepts -- see Overseer.mergeChanges()), so the
+  // bar needs no accept cut of its own. Discard-all still uses sequence zero, which covers every
+  // batch including the compacted prefix's.
+  //
+  // `isTop` rather than a `first:` variant: the composer card renders its attachment-drag overlay
+  // ahead of this slot, so :first-child is not ours to claim whenever a file is being dragged.
+  const renderCodeDraftBar = (chat: AiChatMetadata, isTop: boolean) => {
+    const isDiscardingChanges = discardingChangesChatIds.has(chat.id);
+    const changesActionsDisabled = isAgentActive || isDiscardingChanges;
+    return (
+      <div className={`themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2 ${isTop ? "rounded-t-[calc(1rem-1px)]" : ""}`}>
+        <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
+          Pending changes
+        </span>
+        <DiscardPendingChangesPopover
+          open={discardChangesTarget?.chatId === chat.id}
+          disabled={changesActionsDisabled}
+          isDiscarding={isDiscardingChanges}
+          onOpenChange={(open) => {
+            if (isDiscardingChanges) return;
+            setDiscardChangesTarget(open ? { chatId: chat.id } : null);
+          }}
+          onConfirm={handleDiscardPendingChanges}
+        />
+        <Tooltip content={isAgentActive
+          ? "Wait for the agent to finish before accepting changes."
+          : isDiscardingChanges
+            ? "Wait for pending changes to finish discarding."
+            : "Keep this draft and make it the gadget's current version."} asChild>
+          <WorkshopButton
+            disabled={changesActionsDisabled}
+            onClick={() => { void handleAcceptChanges(); }}
+            tone="primary"
+            className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+          >
+            <Check size={11} weight="bold" />
+            Accept changes
+          </WorkshopButton>
+        </Tooltip>
+      </div>
+    );
+  };
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
@@ -4691,6 +4794,7 @@ function ChatInterface({
       vendorId: msg.vendorId,
       resourceUrl: msg.resourceUrl,
       resourceUrlPattern: msg.resourceUrlPattern,
+      resourceTypeId: msg.resourceTypeId,
     });
   };
 
@@ -5136,6 +5240,11 @@ function ChatInterface({
     const state = log.state;
     const open = expandedActions.has(msg.actionId);
     const isProc = processingActions.has(msg.actionId);
+    // A blocking request reaches the tray's queue too -- `pendingChangeGroups` does not filter
+    // out `awaitDecision` -- so a bulk run may be about to decide it. The run owns the view it is
+    // shown in, and this callout is in that view: locked for the same reason as the tray's rows
+    // (see `PendingChangesTray`).
+    const decisionLocked = isProc || bulkResolve.progress !== null;
     const safeResourceUrl = safeExternalUrl(log.resourceUrl);
 
     if (log.type === "bindHook") {
@@ -5255,28 +5364,41 @@ function ChatInterface({
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
-    // A pending request is never collapsed: its description is the thing the user has to read in
-    // order to answer it, so hiding it behind a disclosure would just add a step before every
-    // decision. Resolved actions are history, and collapse so a long thread stays scannable.
-    const showDescription = isPending || open;
+    // Every other pending request is decided in the tray above the composer, which groups them by
+    // resource and can resolve them together. The transcript keeps a quiet trace of where the
+    // request was made, so the conversation still reads correctly, but repeating the decision here
+    // would split the queue across two surfaces with no way to see it whole in either. Unless the
+    // tray never loaded its queue, or does not hold this request, in which case the transcript is
+    // the only surface left.
+    const decidedInTray = isPending && !isBlocking && !trayUnavailable && trayActionIds.has(log.id);
+    // Where the decision is taken: the blocking callout, or any pending request the tray cannot
+    // show.
+    const decideHere = isPending && !decidedInTray;
+    // A request answered here is never collapsed: its description is the thing the user has to
+    // read in order to answer it, so hiding it behind a disclosure would just add a step before
+    // the decision -- and leave Approve in the header of a card showing nothing. That covers the
+    // blocking callout and every fallback the tray cannot show. Everything else is history or a
+    // trace, and collapses so a long thread stays scannable.
+    const showDescription = decideHere || open;
     const metadata = log.resourceTitle;
     const stateLabel = isApproved
       ? "Approved"
       : isRejected
         ? "Denied"
-        : null;
+        : decidedInTray
+          ? "Waiting for review"
+          : null;
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
     // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.) Not offered while
-    // restricted.
+    // actually apply this action. Same check the tray makes, against the same rule list -- a
+    // request a rule already covers can still be pending, queued behind a manual gate the drain
+    // stops at, and offering a rule that exists would do nothing.
     const autoApproveTarget =
-      !restricted &&
       log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
+      canOfferAlwaysApprove(
+        { gatekeeperId: log.gatekeeperId, description: log.description }, autoApprovalRules)
         ? {
             actionId: msg.actionId,
             gatekeeperId: log.gatekeeperId,
@@ -5289,7 +5411,7 @@ function ChatInterface({
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
     // a render closure, not a component, so useId is unavailable, and one card renders per action.
-    const restrictedReview = restricted && isPending;
+    const restrictedReview = restricted && decideHere;
     const noticeId = `action-${msg.actionId}-restricted-notice`;
     const requestId = `action-${msg.actionId}-request`;
     const fieldsId = `action-${msg.actionId}-fields`;
@@ -5305,15 +5427,17 @@ function ChatInterface({
       ].join(" ")
       : undefined;
 
-    const actionControls = isPending ? (
+    // Only a request the tray is not going to show still decides itself inline; everything else
+    // is decided there, where the whole queue is visible at once. That covers both a tray whose
+    // queue never loaded and one whose queue loaded without this request in it.
+    const actionControls = decideHere ? (
       <>
-        {autoApproveTarget &&
-          !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
+        {autoApproveTarget && (
           <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
             <span className="flex">
               <AlwaysApproveButton
                 onClick={() => setAutoApproveConfirm(autoApproveTarget)}
-                disabled={isProc}
+                disabled={decisionLocked}
               />
             </span>
           </Tooltip>
@@ -5321,14 +5445,14 @@ function ChatInterface({
         <ResolveButton
           tone="deny"
           onClick={() => void resolveAction(log, "deny")}
-          disabled={isProc}
+          disabled={decisionLocked}
           describedBy={describedBy}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(log, "approve")}
-          disabled={isProc}
+          disabled={decisionLocked}
           describedBy={describedBy}
         />
       </>
@@ -5408,21 +5532,11 @@ function ChatInterface({
 
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-        {isPending ? (
-          <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1">
-            <div className="flex min-w-[8rem] flex-1 items-center gap-3">
-              {titleIcon}
-              <span className="min-w-0 flex-1 truncate text-kumo-default">
-                {log.description.title}
-              </span>
-            </div>
-            <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">{actionControls}</div>
-          </div>
-        ) : (
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
             aria-expanded={open}
           >
             {titleIcon}
@@ -5440,7 +5554,12 @@ function ChatInterface({
               />
             </span>
           </button>
-        )}
+          {/* Only reached when the tray could not load its queue, or loaded it without this
+              request: the cases a non-blocking request still has to be answered here. */}
+          {actionControls && (
+            <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
+          )}
+        </div>
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
             {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
@@ -5463,48 +5582,16 @@ function ChatInterface({
   // ─── sidebar list content (reused in both modes) ──────────────────────────
   const chatListPanel = (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Chat list header — title doubles as the scope switcher */}
-      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-4">
-        <DropdownMenu>
-          <DropdownMenu.Trigger
-            render={
-              <button
-                type="button"
-                className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-none data-[popup-open]:bg-kumo-tint/60"
-                aria-label="Filter conversations"
-              >
-                <span className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                  {CHAT_LIST_SCOPE_LABELS[chatListScope]}
-                </span>
-                <CaretDown
-                  size={10}
-                  weight="bold"
-                  className="text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
-                />
-              </button>
-            }
-          />
-          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[200px] rounded-lg border border-kumo-line bg-kumo-base p-1">
-            {chatListScopes.map((scope) => {
-              const active = chatListScope === scope.value;
-              return (
-                <DropdownMenu.Item
-                  key={scope.value}
-                  onClick={() => setChatListScope(scope.value)}
-                  className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
-                >
-                  <span className="inline-flex h-3 w-3 items-center justify-center text-kumo-default">
-                    {active ? <Check size={11} weight="bold" /> : null}
-                  </span>
-                  <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-1 font-mono text-[11px] text-kumo-inactive">
-                    {scope.count}
-                  </span>
-                </DropdownMenu.Item>
-              );
-            })}
-          </DropdownMenu.Content>
-        </DropdownMenu>
+      {/* Chat list header — Chats and Agents as peers */}
+      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-3">
+        <ChatListTabs
+          tab={listTab}
+          onTabChange={(next) => {
+            setListTab(next);
+            if (next === "chats") setAgentScreen(null);
+          }}
+          attention={agentAttention}
+        />
       </div>
       {/* Chat list */}
       <div
@@ -5516,6 +5603,46 @@ function ChatInterface({
           <div className="flex items-center justify-center py-10">
             <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
           </div>
+        ) : listTab === "agents" ? (
+          agents.length === 0 ? (
+            <div className="py-8 text-center">
+              <p className="text-[13px] leading-[18px] text-kumo-inactive">
+                No agents have run yet
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              {agents.map((agent) => (
+                <AgentListRow
+                  key={agent.key}
+                  agent={agent}
+                  now={chatListNow}
+                  expanded={openAgents.has(agent.key)}
+                  onToggle={() => setOpenAgents((open) => {
+                    const next = new Set(open);
+                    if (!next.delete(agent.key)) next.add(agent.key);
+                    return next;
+                  })}
+                  onOpenAgent={() => setAgentScreen({ key: agent.key, overChatId: selectedChatId })}
+                  workspaceId={workspaceId}
+                  overseer={overseer}
+                  pendingForRun={pendingForRun}
+                  restricted={restricted === true}
+                  selectedChatId={selectedChatId}
+                  onOpenRun={onNavigateToChat}
+                  activityLineOf={activityLineOf}
+                />
+              ))}
+              {/* An incomplete request list leaves every run looking idle and the tab unbadged,
+                  which is a confident all-clear from the one surface whose job is to say an agent
+                  is stuck. Say so instead, as the Activity pane and its bell do. */}
+              {pendingStatus !== "ready" && (
+                <p className="m-0 px-1 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+                  {pendingStatus === "error" ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY}
+                </p>
+              )}
+            </div>
+          )
         ) : chatList.length === 0 ? (
           <p className="text-sm text-kumo-inactive text-center py-8">
             No conversations yet
@@ -5523,18 +5650,18 @@ function ChatInterface({
         ) : (
           <div className="flex flex-col gap-1">
             {visibleChatList.length === 0 ? (
-              // Only reachable when a non-"all" scope filters everything out;
-              // the all-empty case is handled by the outer chatList.length check.
+              // Every chat in the workspace was started by an agent, so the Chats tab is empty
+              // while the Agents tab has all of them.
               <div className="py-8 text-center">
                 <p className="text-[13px] leading-[18px] text-kumo-inactive">
-                  No conversations started by {chatListScope === "agents" ? "agents" : "people"} yet
+                  No conversations of your own yet
                 </p>
                 <button
                   type="button"
-                  onClick={() => setChatListScope("all")}
+                  onClick={() => setListTab("agents")}
                   className="mt-2 cursor-pointer rounded-md px-2 py-1 text-[12px] leading-4 font-medium text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
                 >
-                  Show all
+                  See agents
                 </button>
               </div>
             ) : (
@@ -5548,8 +5675,10 @@ function ChatInterface({
               <div key={chat.id} className="relative">
                 {(() => {
                   const isRenaming = renamingChatId === chat.id;
-                  const unreadMessageCount = unread?.chats?.find(item =>
-                    item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0;
+                  const readState = unread?.chats?.find(item =>
+                    item.workspaceId === workspaceId && item.chatId === chat.id);
+                  const unreadMessageCount = unreadCountOf(unread, workspaceId, chat.id);
+                  const notificationsEnabled = readState?.notificationsEnabled ?? !chat.notificationsRequireParticipation;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5616,26 +5745,33 @@ function ChatInterface({
                         ) : null}
                       </div>
                       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-kumo-inactive">
-                        {chat.spawnerName && (
-                          <>
-                            <span className="truncate">Agent · {chat.spawnerName}</span>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                          </>
-                        )}
-                        <span className="flex-shrink-0">
-                          {formatChatRowTime(chat.lastActive, bucket, chatListNow)}
-                        </span>
-                        {chat.totalCost != null && (
-                          <>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                            <span className="flex-shrink-0 font-mono">
-                              ${chat.totalCost.toFixed(4)}
-                            </span>
-                          </>
-                        )}
+                        {(() => {
+                          // While an agent works, its current step replaces the row's metadata:
+                          // that is the thing worth knowing about a chat you are not looking at,
+                          // and the time and cost are still moving anyway.
+                          const activity = chat.activeAgent ? activityLineOf(chat.id) : undefined;
+                          if (activity) {
+                            return <span className="min-w-0 truncate">{activity}</span>;
+                          }
+                          return (
+                            <>
+                              <span className="flex-shrink-0">
+                                {formatChatRowTime(chat.lastActive, bucket, chatListNow)}
+                              </span>
+                              {chat.totalCost != null && (
+                                <>
+                                  <span className="flex-shrink-0" aria-hidden="true">·</span>
+                                  <span className="flex-shrink-0 font-mono">
+                                    ${chat.totalCost.toFixed(4)}
+                                  </span>
+                                </>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
-                    {!isRenaming && (
+                    {!isRenaming && notificationsEnabled && (
                       <UnreadBadge count={unreadMessageCount} />
                     )}
                     {!isRenaming && (
@@ -5661,6 +5797,9 @@ function ChatInterface({
                           <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount > 0} onClick={() => {
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
+                          <ChatNotificationsMenu overseer={overseer} chatId={chat.id}
+                            enabled={notificationsEnabled} override={readState?.notificationsEnabledOverride}
+                            disabled={!unread?.chats} />
                           <DropdownMenu.Item
                             icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}
@@ -5708,11 +5847,13 @@ function ChatInterface({
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
+            modelsLoading={modelsLoading}
             onModelChange={handleModelChange}
             showThinkingTraces={showThinkingTraces}
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}
             newChat
+            draftUpdateBanner={workspaceTray}
             draftStorageKey={currentUser && workspaceId
               ? composerDraftStorageKey(currentUser.id, `workspace:${workspaceId}:new`)
               : undefined}
@@ -5752,8 +5893,25 @@ function ChatInterface({
         </>
       )}
 
-      {/* ── Non-sidebar mode: show list OR chat ────────────────────────────── */}
-      {!sidebarMode && selectedChatId === null ? (
+      {/* ── Detail pane: an agent's runs, a chat, or (outside sidebar mode) the list ──── */}
+      {selectedAgent ? (
+        <AgentRunsPane
+          agent={selectedAgent}
+          now={chatListNow}
+          workspaceId={workspaceId}
+          overseer={overseer}
+          pendingForRun={pendingForRun}
+          restricted={restricted === true}
+          selectedChatId={selectedChatId}
+          onOpenRun={(chatId) => {
+            setAgentScreen(null);
+            onNavigateToChat(chatId);
+          }}
+          // In sidebar mode the agent list is still on screen, so the pane needs no way back.
+          onBack={sidebarMode ? undefined : () => setAgentScreen(null)}
+          activityLineOf={activityLineOf}
+        />
+      ) : !sidebarMode && selectedChatId === null ? (
         chatListPanel
       ) : selectedChatId !== null ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -5801,8 +5959,8 @@ function ChatInterface({
                   <WorkshopIconButton
                     onClick={() => onNavigateToChat(null)}
                     className="!h-8 !w-8 flex-shrink-0"
-                    title="Back to conversations"
-                    aria-label="Back to conversations"
+                    title={backLabel}
+                    aria-label={backLabel}
                   >
                     <CaretLeft size={14} />
                   </WorkshopIconButton>
@@ -6187,35 +6345,39 @@ function ChatInterface({
                         {msg.type === "message" && (
                           msg.author.type === "user" ? (
                             <div className="group/message relative flex flex-col items-end">
-                              <div className={userBubbleClassName}>
-                                {msg.attachments && msg.attachments.length > 0 && (
-                                  <ChatAttachmentGrid
-                                    attachments={msg.attachments}
-                                    onDownload={(attachment) => { void downloadChatAttachment(msg.chatId, attachment); }}
-                                  />
-                                )}
-                                {entry.slashCommand ? (
-                                  // What the command expanded into is the agent's context, not
-                                  // something to re-read here.
-                                  <div className="whitespace-pre-wrap">
-                                    <SlashCommandMention
-                                      name={entry.slashCommand.skillName}
-                                      args={entry.slashCommand.request.args}
-                                      id={entry.slashCommand.request.id}
-                                      commandPosition={entry.slashCommand.request.commandPosition}
+                              {msg.attachments && msg.attachments.length > 0 && (
+                                <ChatAttachmentGrid
+                                  attachments={msg.attachments}
+                                  loadContent={(attachment) =>
+                                    overseer.getChatAttachmentContent(msg.chatId, attachment.id)}
+                                />
+                              )}
+                              {/* A message that is only attachments has no bubble. */}
+                              {(entry.slashCommand || msg.message.trim()) && (
+                                <div className={userBubbleClassName}>
+                                  {entry.slashCommand ? (
+                                    // What the command expanded into is the agent's context, not
+                                    // something to re-read here.
+                                    <div className="whitespace-pre-wrap">
+                                      <SlashCommandMention
+                                        name={entry.slashCommand.skillName}
+                                        args={entry.slashCommand.request.args}
+                                        id={entry.slashCommand.request.id}
+                                        commandPosition={entry.slashCommand.request.commandPosition}
+                                        formats={msg.formats}
+                                        getOverseer={getOverseer}
+                                      />
+                                    </div>
+                                  ) : msg.message.trim() && (
+                                    <MarkdownMessage
+                                      message={msg.message}
+                                      capsules={msg.capsules}
                                       formats={msg.formats}
-                                      getOverseer={getOverseer}
+                                      preserveLineBreaks
                                     />
-                                  </div>
-                                ) : msg.message.trim() && (
-                                  <MarkdownMessage
-                                    message={msg.message}
-                                    capsules={msg.capsules}
-                                    formats={msg.formats}
-                                    preserveLineBreaks
-                                  />
-                                )}
-                              </div>
+                                  )}
+                                </div>
+                              )}
                               {endsUserGroup && (
                                 <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
                                   {/* hideOwnUserName implies currentUser is non-null (see memo). */}
@@ -6268,7 +6430,8 @@ function ChatInterface({
                                   {msg.author.type === "agent" ? (
                                     <AgentAnswer
                                       message={msg.message}
-                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom,
+                                        scrollRoot: messagesContainerRef, files: msg.embeds ? {oids: msg.embeds, readBlob: readFileBlob} : undefined }}
                                       streaming={entry.streaming === true}
                                     />
                                   ) : (
@@ -6776,6 +6939,7 @@ function ChatInterface({
                       id: selectedModel,
                       name: chatAgent?.id === selectedModel ? chatAgent.name : undefined,
                     }}
+                    modelsLoading={modelsLoading}
                     onModelChange={handleModelChange}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}
@@ -6794,52 +6958,23 @@ function ChatInterface({
                       : undefined}
                     blockedReason={sendBlockedReason}
                     draftUpdateBanner={(() => {
-                      if (!currentChatMetadata ||
-                          !(chatHasProposedChanges(currentChatMetadata) ||
-                            hasPendingBlueprintProposal)) return null;
+                      // Two unrelated things dock here, and both are "changes" in plain English:
+                      // the gadget's own code draft, and requests waiting on someone else's
+                      // service. They are kept apart by language ("Pending changes" against "N
+                      // requests waiting") and by weight -- only the local, reversible accept
+                      // carries a filled primary. The tray sits above, nearer the transcript the
+                      // requests came from.
+                      const codeDraft = currentChatMetadata &&
+                        (chatHasProposedChanges(currentChatMetadata) ||
+                          hasPendingBlueprintProposal);
+                      if (!workspaceTray && !codeDraft) return null;
 
-                      // Accepting always merges everything the chat proposes (drafts swept in,
-                      // no partial accepts -- see Overseer.mergeChanges()), so the banner needs
-                      // no accept cut of its own. Discard-all still uses sequence zero, which
-                      // covers every batch including the compacted prefix's.
-                      const isDiscardingChanges = discardingChangesChatIds.has(
-                        currentChatMetadata.id,
-                      );
-                      const changesActionsDisabled = isAgentActive || isDiscardingChanges;
                       return (
-                        <div className="themed-surface-inset relative flex items-center gap-2 overflow-hidden rounded-t-[calc(1rem-1px)] border-b border-kumo-line bg-kumo-elevated px-3.5 py-2">
-                          <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
-                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
-                            Pending changes
-                          </span>
-                          <DiscardPendingChangesPopover
-                            open={discardChangesTarget?.chatId === currentChatMetadata.id}
-                            disabled={changesActionsDisabled}
-                            isDiscarding={isDiscardingChanges}
-                            onOpenChange={(open) => {
-                              if (isDiscardingChanges) return;
-                              setDiscardChangesTarget(open ? {
-                                chatId: currentChatMetadata.id,
-                              } : null);
-                            }}
-                            onConfirm={handleDiscardPendingChanges}
-                          />
-                          <Tooltip content={isAgentActive
-                            ? "Wait for the agent to finish before accepting changes."
-                            : isDiscardingChanges
-                              ? "Wait for pending changes to finish discarding."
-                              : "Keep this draft and make it the gadget's current version."} asChild>
-                            <WorkshopButton
-                              disabled={changesActionsDisabled}
-                              onClick={() => { void handleAcceptChanges(); }}
-                              tone="primary"
-                              className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-                            >
-                              <Check size={11} weight="bold" />
-                              Accept changes
-                            </WorkshopButton>
-                          </Tooltip>
-                        </div>
+                        <>
+                          {workspaceTray}
+                          {codeDraft && currentChatMetadata &&
+                            renderCodeDraftBar(currentChatMetadata, !workspaceTray)}
+                        </>
                       );
                     })()}
                   />
@@ -6976,6 +7111,7 @@ function ChatInterface({
         onCreated={handleConnectionCreated}
         initialVendorId={connectionAccept?.vendorId}
         initialResourceUrl={connectionAccept?.resourceUrl}
+        initialResourceTypeId={connectionAccept?.resourceTypeId}
         initialResourceUrlPattern={connectionAccept?.resourceUrlPattern}
       />
       <OutOfCreditsModal

@@ -3,7 +3,7 @@
 // touch keeps its exact bytes, attribute order, namespace declarations and whitespace, which is
 // what lets a tracked change in one paragraph leave the rest of a document as Word wrote it.
 
-import { decodeEntities, MAX_ATTRIBUTES } from "./xml";
+import { decodeEntities, MAX_ATTRIBUTES } from "@gadgets/office-content/xml";
 
 /** An element and the source offsets of its tags. */
 export interface RawElement {

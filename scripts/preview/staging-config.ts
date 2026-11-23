@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
+  INTERNAL_WORKERS, gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
   type BindingDecl, type DeployablePackage, type ObservabilityConfig, type ServiceBinding,
   type WranglerConfig,
 } from "../release/manifest-lib.ts";
@@ -136,6 +136,52 @@ const PREVIEW_NAME_HASH_LENGTH = 8;
  */
 export function gatekeeperBindingName(pkgName: string): string {
   return pkgName.toUpperCase().replaceAll("-", "_");
+}
+
+// The tiers a preview's workers deploy in, first to last. A worker binds only workers of the tiers
+// before its own, because a binding can name a sibling preview only once that preview exists.
+const PREVIEW_TIERS = ["internal", "gatekeeper", "backend", "router"] as const;
+
+/** The tier a deployable package's preview is deployed in. */
+export function previewTier(pkgName: string): (typeof PREVIEW_TIERS)[number] {
+  if (INTERNAL_WORKERS.has(pkgName)) return "internal";
+  if (isGatekeeperPackage(pkgName)) return "gatekeeper";
+  if (pkgName === "workshop-backend") return "backend";
+  if (pkgName === "router") return "router";
+  throw new Error(`cannot build a preview config for package: ${pkgName}`);
+}
+
+/**
+ * The workers a preview is deleted from, in the groups they are deleted in, first group first: the
+ * tiers last to first, so that no worker is left bound to a preview that is gone. `workers` is
+ * whichever of the deployable packages carry the preview, which need not be all of them.
+ */
+export function previewDeletionOrder<T extends { name: string }>(workers: readonly T[]): T[][] {
+  return PREVIEW_TIERS.toReversed()
+      .map((tier) => workers.filter((pkg) => previewTier(pkg.name) === tier))
+      .filter((group) => group.length > 0);
+}
+
+/**
+ * A gatekeeper's preview config with every `previews.services` entry pointed at the preview of the
+ * internal worker it names. `previewIds` maps each internal worker that was deployed to its
+ * preview's id. An entry left without an id would bind the baseline worker and say nothing, so one
+ * that names a worker with no preview is refused.
+ */
+export function bindInternalPreviews(
+  pkgName: string,
+  config: StagingConfig,
+  previewIds: Readonly<Record<string, string>>,
+): StagingConfig {
+  const services = config.previews?.services?.map((service) => {
+    const id = Object.hasOwn(previewIds, service.service) ? previewIds[service.service] : undefined;
+    if (!id) {
+      throw new Error(`${pkgName}'s ${service.binding} names ${service.service}, which has no ` +
+          "preview for the binding to name");
+    }
+    return { ...service, preview_id: id };
+  });
+  return services ? { ...config, previews: { ...config.previews, services } } : config;
 }
 
 /**
@@ -310,6 +356,12 @@ function routerGatekeeperServices(gatekeepers: string[]): PreviewService[] {
   }));
 }
 
+function applyInternal(config: StagingConfig): void {
+  // Reached only through the bindings of the workers deployed after it, so it is told nothing of
+  // the instance: no origin, no mount, no resources.
+  config.previews = { observability: previewObservability(config) };
+}
+
 function applyGatekeeper(
   pkgName: string,
   config: StagingConfig,
@@ -336,6 +388,18 @@ function applyGatekeeper(
   if (kvNamespaces) config.previews.kv_namespaces = kvNamespaces;
   const r2Buckets = previewResourceBindings(config.r2_buckets);
   if (r2Buckets) config.previews.r2_buckets = r2Buckets;
+
+  // The few gatekeepers that bind a worker bind an internal one: bindInternalPreviews gives each
+  // entry its preview_id once the internal previews exist. No other worker has a preview when the
+  // gatekeepers deploy, so a binding to one would resolve to its baseline.
+  if (config.services) {
+    const stray = config.services.find(({ service }) => !INTERNAL_WORKERS.has(service));
+    if (stray) {
+      throw new Error(`${pkgName} binds ${stray.service}, which is not deployed before the ` +
+          "gatekeepers, so no preview of it exists for the binding to name");
+    }
+    config.previews.services = structuredClone(config.services);
+  }
 }
 
 function applyBackend(
@@ -350,13 +414,12 @@ function applyBackend(
   // Cloudflare Access pair are uploaded as *secrets* instead, out of band, because Wrangler prints
   // every plain-text var's value in its deploy summary and this workflow's logs are public. See
   // {@link backendSecrets} and preview.ts.
-  config.vars = {
-    ...config.vars,
-    PUBLIC_BASE_URL: baseUrl,
-  };
+  config.vars = { ...config.vars, PUBLIC_BASE_URL: baseUrl };
   config.previews = {
     observability: previewObservability(config),
-    vars: { ...config.vars },
+    // Writes on, so that they can be tried on a preview (docs/admin-access.md), but only there:
+    // the top-level vars are also the shared baseline's (see deployBaselineWorker() in preview.ts).
+    vars: { ...config.vars, ADMIN_WORKSPACE_WRITES: "on" },
     ...(config.unsafe ? { unsafe: config.unsafe } : {}),
     // preview.ts patches each entry's preview_id once the gatekeeper previews exist.
     services: backendGatekeeperServices(gatekeepers, baseUrl),
@@ -432,10 +495,11 @@ export function buildPreviewConfigs({
     delete config.routes;
     stripBaselineResources(config);
 
-    if (isGatekeeperPackage(pkg.name)) applyGatekeeper(pkg.name, config, context);
-    else if (pkg.name === "workshop-backend") applyBackend(config, context);
-    else if (pkg.name === "router") applyRouter(config, context);
-    else throw new Error(`cannot build a preview config for package: ${pkg.name}`);
+    const tier = previewTier(pkg.name);
+    if (tier === "gatekeeper") applyGatekeeper(pkg.name, config, context);
+    else if (tier === "backend") applyBackend(config, context);
+    else if (tier === "router") applyRouter(config, context);
+    else applyInternal(config);
 
     configs.set(pkg.name, config);
   }
@@ -538,13 +602,13 @@ export function resolveAccess({
  * account is required, because `AiGatewayConfig` (ai-gateway.ts) throws without it. That throw
  * would otherwise land in a chat rather than in this deploy.
  *
- * The Run + Read token is not required with it. Every preview backend binds Workers AI (see
- * {@link applyBackend}), and the binding is the gateway transport whenever it is present: those
- * requests are pre-authenticated in-account, so neither inference nor a cost-log read needs a
- * token. Two configurations still do, and each is the deploy-time mirror of a constructor throw:
- * CF_AI_GATEWAY_USE_BINDING=false, which marks the gateway as living in a *different* account and
- * so forces the HTTPS transport, and the google provider, whose pi adapter refuses the binding's
- * fetch.
+ * The Run + Read token is not required with it. Every preview backend binds
+ * Workers AI (see {@link applyBackend}), and the binding is the gateway
+ * transport whenever it is present: those requests are pre-authenticated
+ * in-account, so neither inference nor a cost-log read needs a token. The one
+ * configuration that still does, and is the deploy-time mirror of a
+ * constructor throw, is `CF_AI_GATEWAY_USE_BINDING=false`, which marks the
+ * gateway as living in a different account and so forces the HTTPS transport.
  *
  * The environment is read in the parameter defaults rather than the body so that
  * env-passthrough.test.js, whose discovery is textual, can see every name.
@@ -588,17 +652,13 @@ export function resolveAiGateway({
     throw new Error(`CF_AI_GATEWAY_USE_BINDING must be "true" or "false", not ` +
         `"${rawUseBinding}": the backend reads any other value as unset.`);
   }
-  // The two AiGatewayConfig throws the Workers AI binding does not cover. Raised here so a
-  // half-configured preview fails its deploy rather than its first chat.
+  // The AiGatewayConfig throw the Workers AI binding does not cover. Raised
+  // here so a half-configured preview fails its deploy rather than its first
+  // chat.
   if (!apiToken && useBinding === "false") {
     throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is " +
         "false: opting out of the binding leaves the HTTPS transport, which needs a Run + Read " +
         "token. Drop the opt-out unless the gateway is in another account.");
-  }
-  if (!apiToken && providers?.split(",").some(p => p.trim() === "google")) {
-    throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled: " +
-        "pi's Google adapter refuses a custom fetch, so Google inference cannot ride the Workers " +
-        "AI binding.");
   }
   return {
     CF_AI_GATEWAY: gateway,

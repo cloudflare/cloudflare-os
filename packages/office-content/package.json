@@ -1,0 +1,31 @@
+{
+  "name": "@gadgets/office-content",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reads Office Open XML files (Word, PowerPoint, Excel) with no dependencies, in a Worker or a browser. Not a deployable Worker.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./docx": "./src/docx.ts",
+    "./docx-document": "./src/docx-document.ts",
+    "./errors": "./src/errors.ts",
+    "./markdown": "./src/markdown.ts",
+    "./ooxml": "./src/ooxml.ts",
+    "./pptx": "./src/pptx.ts",
+    "./pptx-slides": "./src/pptx-slides.ts",
+    "./test-fixtures": "./__tests__/test-fixtures.ts",
+    "./text": "./src/text.ts",
+    "./xlsx-sheets": "./src/xlsx-sheets.ts",
+    "./xml": "./src/xml.ts",
+    "./zip": "./src/zip.ts"
+  },
+  "scripts": {
+    "test:run": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

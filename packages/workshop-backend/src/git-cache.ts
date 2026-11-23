@@ -27,7 +27,7 @@
 //   read: whatever is stored is returned, inline or chunked, whatever its size. What bounds a row
 //   is chunking, which keeps every row written now within about CHUNK_MAX_SIZE; what bounds
 //   memory is streaming, which pulls (consumePack), pushes (buildPack), `GitCache.get()`,
-//   `readFilesAtCommit()`, streamed writes (`writeBlobStream`) and ranged reads (`openBlob`,
+//   streamed writes (`writeBlobStream`) and ranged reads (`openBlob`,
 //   `openFileAtCommit`) do for a large blob. Every caller writes objects before moving any
 //   record to name them, and a chunked blob's chunks are written before its index row, so a
 //   failure only leaves earlier objects dangling.
@@ -193,6 +193,18 @@ export interface GitPullDelegate {
  * as a skip note.
  */
 export class UnreadableContentError extends Error {}
+
+/** A regular file's tree entry, given as is: its mode and its blob's oid. */
+export interface FileEntry {
+  mode: "100644" | "100755";
+  oid: GitOid;
+}
+
+/**
+ * Thrown when changes to a tree would make a path both a file and a directory, or would write or
+ * delete a file where the tree has something else.
+ */
+export class TreeShapeError extends Error {}
 
 // =======================================================================================
 // Tree entry kinds (the agent-facing vocabulary for the five git modes)
@@ -500,6 +512,19 @@ export class WorkspaceGitCache {
   }
 
   /**
+   * `writeChangedTree` over a tree rather than a commit's, where a change may also be a file's
+   * whole entry (`FileEntry`), written with the mode it gives. The trees along the changed paths
+   * fault in if missing, and throws TreeShapeError where the changes don't fit the tree's shape.
+   */
+  async writeChangedTreeOf(
+      baseTree: GitOid, changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+      : Promise<GitOid> {
+    if (changes.size === 0) return baseTree;
+    return await this.#rebuildTree({ oid: baseTree }, buildChangeNode(changes), "")
+        ?? EMPTY_TREE_OID;
+  }
+
+  /**
    * The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid.
    * Every commit the workspace authors is written by `encodeGitCommit()`, here or in
    * blueprint-release.ts, which throws on a name or email that a signature cannot hold rather
@@ -521,11 +546,13 @@ export class WorkspaceGitCache {
   // Rebuilds one tree level for the writers above: base entries are copied through untouched
   // (mode + oid verbatim) except where the change node names them. Returns the new tree oid, or
   // undefined when the resulting tree is empty (the entry is then pruned).
-  async #rebuildTree(base: { oid: GitOid, referencedBy: GitOid } | undefined, node: ChangeNode,
+  async #rebuildTree(base: { oid: GitOid, referencedBy?: GitOid } | undefined, node: ChangeNode,
                      prefix: string): Promise<GitOid | undefined> {
     let entries = new Map<string, GitTreeEntry>();
     if (base !== undefined) {
-      let tree = await this.ensureObject(base.oid, { type: "tree", referencedBy: base.referencedBy });
+      let tree = await this.ensureObject(base.oid, {
+        type: "tree", ...(base.referencedBy !== undefined && { referencedBy: base.referencedBy }),
+      });
       for (let entry of parseGitTree(tree.payload, base.oid)) entries.set(entry.name, entry);
     }
     for (let [name, child] of node) {
@@ -537,7 +564,7 @@ export class WorkspaceGitCache {
       }
       if (child instanceof Map) {
         if (existing !== undefined && existing.mode !== "40000") {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         let sub = await this.#rebuildTree(
             existing && { oid: existing.oid, referencedBy: base!.oid }, child, `${path}/`);
@@ -547,11 +574,17 @@ export class WorkspaceGitCache {
           entries.set(name, { mode: "40000", name, oid: sub });
         }
       } else if (child === null) {
-        if (existing?.mode === "40000") throw new Error(`cannot delete ${path}: it is a directory`);
+        if (existing?.mode === "40000") {
+          throw new TreeShapeError(`cannot delete ${path}: it is a directory`);
+        }
         entries.delete(name);  // deleting an absent file is a no-op
       } else {
         if (existing !== undefined && existing.mode !== "100644" && existing.mode !== "100755") {
-          throw new Error(`cannot write ${path}: not a regular file`);
+          throw new TreeShapeError(`cannot write ${path}: not a regular file`);
+        }
+        if (typeof child === "object" && "mode" in child) {
+          entries.set(name, { mode: child.mode, name, oid: child.oid });
+          continue;
         }
         let oid = this.#writeFileBlob(child);
         // A changed file keeps its base entry's mode; only new files default to 100644.
@@ -619,9 +652,13 @@ export class WorkspaceGitCache {
   /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
    * to `depth` commits' metadata, each commit once. Traversal order for merge commits follows
-   * git log's default (reverse chronological).
+   * git log's default (reverse chronological). With `stopAtMissing`, a parent this store does not
+   * hold ends that line of the walk instead of throwing: a commit pulled without its history (a
+   * worktree's checkout) still lists as far as the store goes. `oid` itself must be held either
+   * way.
    */
-  readCommitLog(oid: string, options: { depth?: number } = {}): CommitInfo[] {
+  readCommitLog(oid: string, options: { depth?: number, stopAtMissing?: boolean } = {})
+      : CommitInfo[] {
     // A commit that two parents of a merge both lead to is listed once, however its date
     // compares with the commits between: commits written in the same second tie. A gadget that
     // has merged releases of blueprints has such commits: the releases that those were built on.
@@ -645,6 +682,7 @@ export class WorkspaceGitCache {
       for (let parent of next.commit.parents) {
         if (reached.has(parent)) continue;
         reached.add(parent);
+        if (options.stopAtMissing && !this.hasLocalObject(parent)) continue;
         tips.push({ oid: parent, commit: this.readCommitObject(parent) });
       }
     }
@@ -765,18 +803,27 @@ export class WorkspaceGitCache {
    * one throws, but in production it nearly doubled a vscode-size mount's CPU.
    *
    * A delta's base comes from the held objects, else from the store: whole if inline, or by
-   * range from a chunked blob (which includes one this pack streamed in earlier).
+   * range from a chunked blob (which includes one this pack streamed in earlier). If
+   * `selfContained`, the base must be an object of this pack, so that a pack can't borrow the
+   * content of objects its sender has no access to.
+   *
+   * A null `gatekeeperId` stores the objects attributed to no remote, as `importObjects` does
+   * (for a replica's submission, see worktree-replica.ts).
    */
-  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId, pack: ReadableStream<Uint8Array>)
+  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId | null,
+                                  pack: ReadableStream<Uint8Array>, selfContained = false)
       : Promise<GitOid[]> {
     let held = new Map<GitOid, PackableObject>();
     let stored: GitOid[] = [];
+    let inPack = new Set<GitOid>();
+    let usable = (oid: GitOid) => !selfContained || inPack.has(oid);
     let objects = decodePackStream(pack, {
       resolveBase: oid => {
+        if (!usable(oid)) return undefined;
         let object = held.get(oid) ?? this.#readLocalShallow(oid);
         return object?.payload === undefined ? undefined : object;
       },
-      resolveLargeBase: oid => this.openLocalBlob(oid),
+      resolveLargeBase: oid => usable(oid) ? this.openLocalBlob(oid) : undefined,
       openBlobSink: size => {
         if (size <= CHUNK_MAX_SIZE) return undefined;
         let writer = new BlobWriter(this.storage.gitObjects, size);
@@ -792,6 +839,7 @@ export class WorkspaceGitCache {
       },
     });
     for await (let { oid, ...object } of objects) {
+      inPack.add(oid);
       if (object.stored) {
         stored.push(oid);
       } else if (object.type === "blob") {
@@ -960,6 +1008,28 @@ export class WorkspaceGitCache {
     return this.#wholeObject(oid, local);
   }
 
+  /**
+   * `ensureObject`, but for packing with `buildPackStream()`: a blob over MAX_BUFFERED_BLOB_SIZE
+   * comes back as its pieces, streamed from storage, and is never assembled.
+   */
+  async packEntry(oid: GitOid, expected: { type: GitObjectType, referencedBy?: GitOid })
+      : Promise<PackEntrySource> {
+    if (expected.type === "blob") {
+      let reader = this.openLocalBlob(oid);
+      if (reader === undefined) {
+        await this.ensureGitObjects([oid], this.#exactObjectHints("blob", expected.referencedBy));
+        reader = this.openLocalBlob(oid);
+      }
+      if (reader !== undefined) {
+        let opened = reader;
+        return opened.size > MAX_BUFFERED_BLOB_SIZE
+            ? { type: "blob", size: opened.size, pieces: () => opened.pieces() }
+            : { type: "blob", payload: opened.read(0, opened.size) };
+      }
+    }
+    return await this.ensureObject(oid, expected);
+  }
+
   // The pull-hint defaults for an exact-object fault: depth-1 (never deepen history), tree:0
   // alongside a commit want, and tree:1 alongside a tree want (which already excludes the
   // entries' blobs). A blob want carries no filter: a blob of any size is stored.
@@ -1069,7 +1139,7 @@ export class WorkspaceGitCache {
    * comparison with a stamp from `readFileAtCommitWithOid` or `blobOid` -- at tree-walk cost.
    */
   async fileOidAtCommit(commitOid: GitOid, path: string): Promise<GitOid | undefined> {
-    let { entry } = await this.#resolveEntryAt(commitOid, path);
+    let { entry } = await this.#resolveEntryAt(commitOid, path, false);
     return entry?.mode === "100644" || entry?.mode === "100755" ? entry.oid : undefined;
   }
 
@@ -1106,19 +1176,18 @@ export class WorkspaceGitCache {
   // segment is absent, or an intermediate segment is absent or not a directory (absence takes
   // one shape so readFileAtCommitIfExists can report "no base text" uniformly).
   //
-  // This is the worktree base resolver, so a miss anywhere along the walk pulls eagerly
-  // (`eagerTree`): the first fault against a base commit brings the whole tree closure and
-  // every small blob in one round trip -- the same shape as the worktree-creation pull --
-  // rather than one gatekeeper round trip per path segment. Reads that follow hit locally.
-  async #resolveEntryAt(commitOid: GitOid, path: string)
+  // Content reads fault eagerly: the first miss brings the tree closure and small blobs in
+  // one round trip, as worktree creation does. Metadata-only OID lookups use exact-object
+  // pulls instead, leaving all blobs untouched.
+  async #resolveEntryAt(commitOid: GitOid, path: string, eagerTree = true)
       : Promise<{ tree: GitOid, entry: GitTreeEntry | undefined }> {
     let segments = splitTreePath(path);
     let name = segments.pop()!;
-    let commit = await this.ensureObject(commitOid, { type: "commit", eagerTree: true });
+    let commit = await this.ensureObject(commitOid, { type: "commit", eagerTree });
     let treeOid = parseGitCommitRefs(commit.payload, commitOid).tree;
     let referencedBy = commitOid;
     for (let segment of segments) {
-      let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree: true });
+      let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree });
       let entry = parseGitTree(tree.payload, treeOid).find(e => e.name === segment);
       if (entry === undefined || entry.mode !== "40000") {
         return { tree: treeOid, entry: undefined };
@@ -1126,7 +1195,7 @@ export class WorkspaceGitCache {
       referencedBy = treeOid;
       treeOid = entry.oid;
     }
-    let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree: true });
+    let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree });
     return { tree: treeOid, entry: parseGitTree(tree.payload, treeOid).find(e => e.name === name) };
   }
 
@@ -1201,11 +1270,11 @@ export class WorkspaceGitCache {
    * The content of several files at a commit in one round trip (the read behind
    * `Overseer.readFilesAtCommit`; see its doc for the contract). Entries resolve along the
    * eager-tree walk, every missing blob is pulled in one batch (`ensureBlobs`), and the results
-   * come back in request order -- stopping once the accumulated blob bytes exceed
+   * come back in request order -- stopping once the accumulated text bytes exceed
    * READ_FILES_RESPONSE_BUDGET, so the remaining paths are simply omitted. Per-file conditions
-   * become `absent`/`unreadable` entries; a pull failure throws. A regular file over
-   * MAX_BUFFERED_BLOB_SIZE comes back as a `stream` of its raw bytes, never read whole here and
-   * not counted toward the budget; a smaller one is decoded as text.
+   * become `absent`/`blob`/`unreadable` entries; a pull failure throws. A regular file over
+   * MAX_BUFFERED_BLOB_SIZE comes back as a `blob`, not decoded here and not counted toward the
+   * budget; a smaller one is decoded as text, or is a `blob` if it is not text.
    */
   async readFilesAtCommit(commitOid: GitOid, paths: string[])
       : Promise<[path: string, FileAtCommit][]> {
@@ -1233,30 +1302,103 @@ export class WorkspaceGitCache {
       } else if (entry.kind === "submodule") {
         out.push([path, { kind: "unreadable", message: submoduleMessage(path, entry.oid) }]);
       } else {
-        try {
-          // Local by now (ensureBlobs), so this opens the blob, never faults.
-          let reader = await this.openBlob(entry.oid, entry.referencedBy);
-          if (entry.kind !== "symlink" && reader.size > MAX_BUFFERED_BLOB_SIZE) {
-            // Its bytes travel outside the response message, so they count against no budget.
-            out.push([path, { kind: "stream", byteLength: reader.size,
-                              content: blobByteStream(reader) }]);
-            continue;
-          }
-          let payload = reader.read(0, reader.size);
-          if (entry.kind === "symlink") {
-            out.push([path, { kind: "unreadable", message: symlinkMessage(path, payload) }]);
-          } else {
-            let text = decodeBlobText(payload, path);
-            bytes += payload.byteLength;
-            out.push([path, { kind: "text", text }]);
-          }
-        } catch (err) {
-          if (!(err instanceof UnreadableContentError)) throw err;
-          out.push([path, { kind: "unreadable", message: err.message }]);
+        // Local by now (ensureBlobs), so this opens the blob, never faults.
+        let reader = await this.openBlob(entry.oid, entry.referencedBy);
+        if (entry.kind === "symlink") {
+          let target = reader.read(0, reader.size);
+          out.push([path, { kind: "unreadable", message: symlinkMessage(path, target) }]);
+          continue;
+        }
+        // A file over the limit is left for the client to read and check (see FileAtCommit).
+        let text = reader.size > MAX_BUFFERED_BLOB_SIZE
+            ? undefined : blobText(reader.read(0, reader.size));
+        if (text === undefined) {
+          out.push([path, { kind: "blob", blob: { oid: entry.oid, byteLength: reader.size } }]);
+        } else {
+          bytes += reader.size;
+          out.push([path, { kind: "text", text }]);
         }
       }
     }
     return out;
+  }
+
+  /**
+   * A commit's whole tree, as readCommitTree() gives it, read only from objects this store holds:
+   * never pulls, so it never reaches a connection. Throws when the commit or a tree is missing or
+   * of another type.
+   */
+  readLocalCommitTree(commitOid: GitOid): TreeNode[] {
+    let walk = (treeOid: GitOid): TreeNode[] =>
+        parseGitTree(this.#requireHeld(treeOid, "tree"), treeOid).map(entry => {
+          let kind = MODE_KINDS[entry.mode];
+          return kind === "dir"
+              ? { name: entry.name, kind, children: walk(entry.oid) }
+              : { name: entry.name, kind };
+        });
+    return walk(parseGitCommitRefs(this.#requireHeld(commitOid, "commit"), commitOid).tree);
+  }
+
+  /**
+   * One file of a commit as text, as readFileAtCommitIfExists() reads it (undefined for a path
+   * naming nothing or a directory; a submodule or content that is not text throws its descriptive
+   * error; a file of any size is read whole), read only from objects this store holds: never
+   * pulls. A symlink throws without naming its target: the target is the link's content, and
+   * this reader serves a caller that returns none. The base resolver of a chat's worktree content
+   * when it is folded for a reader that must not reach a connection.
+   */
+  readLocalFileAtCommitIfExists(commitOid: GitOid, path: string): string | undefined {
+    let entry = this.#localEntryAt(commitOid, path);
+    if (entry === undefined || entry.mode === "40000") return undefined;
+    if (entry.mode === "160000") throw new Error(submoduleMessage(path, entry.oid));
+    if (entry.mode === "120000") throw new Error(`${path} is a symlink`);
+    return decodeBlobText(this.#requireHeld(entry.oid, "blob"), path);
+  }
+
+  /**
+   * The kind and oid of the entry at `path` in a commit's tree, undefined when the path names
+   * nothing, read only from objects this store holds: never pulls, and never reads a blob. What
+   * pathEntryAtCommit() gives for a path below the root; an empty path, which names the root
+   * there, is invalid here. Throws for an invalid path, and when the commit or a tree along the
+   * path is missing.
+   */
+  localPathEntryAtCommit(commitOid: GitOid, path: string)
+      : { kind: GitTreeEntryKind, oid: GitOid } | undefined {
+    let entry = this.#localEntryAt(commitOid, path);
+    return entry && { kind: MODE_KINDS[entry.mode], oid: entry.oid };
+  }
+
+  /**
+   * The paths that differ between two commits' trees, as changedFilePathsBetween() gives them,
+   * read only from objects this store holds: never pulls. Throws when a commit or a differing tree
+   * is missing.
+   */
+  async changedLocalFilePathsBetween(aCommit: GitOid, bCommit: GitOid): Promise<Set<string>> {
+    let out = new Set<string>();
+    if (aCommit === bCommit) return out;
+    let treeOf = (oid: GitOid) =>
+        parseGitCommitRefs(this.#requireHeld(oid, "commit"), oid).tree;
+    await this.#diffTrees(oid => ({ type: "tree", payload: this.#requireHeld(oid, "tree") }),
+                          treeOf(aCommit), aCommit, treeOf(bCommit), bCommit, "", out);
+    return out;
+  }
+
+  // The entry at `path` in a commit's tree, read only from objects this store holds; undefined
+  // when the path names nothing, or runs through something that is not a directory. Throws for an
+  // invalid path and when the commit or a tree along the path is missing.
+  #localEntryAt(commitOid: GitOid, path: string): GitTreeEntry | undefined {
+    let segments = splitTreePath(path);
+    let name = segments.pop()!;
+    let treeOid =
+        parseGitCommitRefs(this.#requireHeld(commitOid, "commit"), commitOid).tree;
+    let entryIn = (oid: GitOid, segment: string) =>
+        parseGitTree(this.#requireHeld(oid, "tree"), oid).find(e => e.name === segment);
+    for (let segment of segments) {
+      let dir = entryIn(treeOid, segment);
+      if (dir === undefined || dir.mode !== "40000") return undefined;
+      treeOid = dir.oid;
+    }
+    return entryIn(treeOid, name);
   }
 
   /**
@@ -1273,19 +1415,24 @@ export class WorkspaceGitCache {
       let commit = await this.ensureObject(oid, { type: "commit", eagerTree: true });
       return parseGitCommitRefs(commit.payload, oid).tree;
     };
-    await this.#diffTreesLazy(
+    await this.#diffTrees(
+        (oid, referencedBy) =>
+            this.ensureObject(oid, { type: "tree", referencedBy, eagerTree: true }),
         await treeOf(aCommit), aCommit, await treeOf(bCommit), bCommit, "", out);
     return out;
   }
 
   // Accumulates the differing non-directory paths of two trees (either may be absent) into
-  // `out`. `aRef`/`bRef` are the referencing objects for pull hints.
-  async #diffTreesLazy(aOid: GitOid | undefined, aRef: GitOid, bOid: GitOid | undefined,
-                       bRef: GitOid, prefix: string, out: Set<string>): Promise<void> {
+  // `out`, reading each tree through `readTree` alone. `aRef`/`bRef` are the referencing objects,
+  // which a reader that pulls takes as its hints.
+  async #diffTrees(
+      readTree: (oid: GitOid, referencedBy: GitOid) => PackableObject | Promise<PackableObject>,
+      aOid: GitOid | undefined, aRef: GitOid, bOid: GitOid | undefined, bRef: GitOid,
+      prefix: string, out: Set<string>): Promise<void> {
     if (aOid === bOid) return;
     let entriesOf = async (oid: GitOid | undefined, referencedBy: GitOid) => {
       if (oid === undefined) return new Map<string, GitTreeEntry>();
-      let tree = await this.ensureObject(oid, { type: "tree", referencedBy, eagerTree: true });
+      let tree = await readTree(oid, referencedBy);
       return new Map(parseGitTree(tree.payload, oid).map(entry => [entry.name, entry]));
     };
     let aEntries = await entriesOf(aOid, aRef);
@@ -1299,8 +1446,8 @@ export class WorkspaceGitCache {
       let bDir = b?.mode === "40000";
       if (aDir || bDir) {
         // Descend the tree side(s); a non-tree entry opposite a tree is one more difference.
-        await this.#diffTreesLazy(aDir ? a!.oid : undefined, aOid ?? aRef,
-                                  bDir ? b!.oid : undefined, bOid ?? bRef, `${path}/`, out);
+        await this.#diffTrees(readTree, aDir ? a!.oid : undefined, aOid ?? aRef,
+                              bDir ? b!.oid : undefined, bOid ?? bRef, `${path}/`, out);
         if ((a !== undefined && !aDir) || (b !== undefined && !bDir)) out.add(path);
       } else {
         out.add(path);
@@ -1699,17 +1846,7 @@ export class WorkspaceGitCache {
 
     const marks = this.#recordsMarkedFor(actionId), cache = this;
     async function* objects(): AsyncGenerator<PackEntrySource> {
-      for (const mark of marks) {
-        // A large blob streams into the pack from its reader; it is never assembled.
-        const reader = mark.type === "blob" ? cache.openLocalBlob(mark.oid) : undefined;
-        if (reader !== undefined && reader.size > MAX_BUFFERED_BLOB_SIZE) {
-          yield { type: "blob", size: reader.size, pieces: () => reader.pieces() };
-        } else if (reader !== undefined) {
-          yield { type: "blob", payload: reader.read(0, reader.size) };
-        } else {
-          yield await cache.ensureObject(mark.oid, {type: mark.type});
-        }
-      }
+      for (const mark of marks) yield await cache.packEntry(mark.oid, { type: mark.type });
     }
     return buildPackStream(marks.length, objects());
   }
@@ -1786,7 +1923,13 @@ export class WorkspaceGitCache {
   // its referents as pull routing (see `#extendToReferents`). An object already present,
   // measured, and proven for this gatekeeper is left as it is: a pull sends no `have`s, so a
   // retried one, or one for another commit of a mounted repository, carries mostly such objects.
-  #storeVerifiedObject(gatekeeperId: WorkpieceId, oid: GitOid, object: StorableObject): void {
+  // With no gatekeeper, nothing is recorded.
+  #storeVerifiedObject(gatekeeperId: WorkpieceId | null, oid: GitOid, object: StorableObject)
+      : void {
+    if (gatekeeperId === null) {
+      if (!this.hasLocalObject(oid)) this.#putObject(oid, object);
+      return;
+    }
     let { meta } = this.#metaFor(gatekeeperId, oid, object.type, "measured");
     if (meta.size !== undefined && meta.onRemote.includes(gatekeeperId) &&
         this.hasLocalObject(oid)) {
@@ -1911,14 +2054,21 @@ function submoduleMessage(path: string, target: GitOid): string {
   return `${path} is a submodule (gitlink) pointing at commit ${target}`;
 }
 
-/** Decode a Git blob payload as strict text. */
-export function decodeBlobText(payload: Uint8Array, path: string): string {
-  if (payload.includes(0)) throw new UnreadableContentError(`${path} is not a text file`);
+// A Git blob payload as strict text, or undefined if it is not text.
+function blobText(payload: Uint8Array): string | undefined {
+  if (payload.includes(0)) return undefined;
   try {
     return TEXT_DECODER_STRICT.decode(payload);
   } catch {
-    throw new UnreadableContentError(`${path} is not a text file`);
+    return undefined;
   }
+}
+
+/** Decode a Git blob payload as strict text. */
+export function decodeBlobText(payload: Uint8Array, path: string): string {
+  let text = blobText(payload);
+  if (text === undefined) throw new UnreadableContentError(`${path} is not a text file`);
+  return text;
 }
 
 /**
@@ -1946,13 +2096,14 @@ function splitTreePath(path: string): string[] {
   return segments;
 }
 
-// A parsed-but-unwritten change set: new file contents (or null = delete) at the leaves,
-// touched subtrees within.
-type ChangeNode = Map<string, ChangeNode | FileContent | null>;
+// A parsed-but-unwritten change set: new file contents or entries (or null = delete) at the
+// leaves, touched subtrees within.
+type ChangeNode = Map<string, ChangeNode | FileContent | FileEntry | null>;
 
 // Converts a flat `path -> content | null` change map into nested nodes, validating path shape:
 // a path can't be both a file and a directory.
-function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): ChangeNode {
+function buildChangeNode(changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+    : ChangeNode {
   let root: ChangeNode = new Map();
   for (let [path, content] of changes) {
     let segments = splitTreePath(path);
@@ -1960,14 +2111,16 @@ function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): Chan
     for (let [i, segment] of segments.entries()) {
       let existing = node.get(segment);
       if (i === segments.length - 1) {
-        if (existing !== undefined) throw new Error(`conflicting file paths at: ${path}`);
+        if (existing !== undefined) {
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
+        }
         node.set(segment, content);
       } else {
         if (existing === undefined) {
           existing = new Map();
           node.set(segment, existing);
         } else if (!(existing instanceof Map)) {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         node = existing;
       }

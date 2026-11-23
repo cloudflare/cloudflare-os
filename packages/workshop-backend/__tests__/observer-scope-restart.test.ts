@@ -49,7 +49,9 @@ async function withImpl(
 // what the restart gate counts (an entry in the sharing table is not: a collaborator who isn't
 // connected has no session to sever).
 function joinSession(impl: any, holds: "build" | number = "build"): () => void {
-  return holds === "build" ? impl.joinSession("build") : impl.joinSession("use", holds);
+  return holds === "build"
+    ? impl.joinSession({ kind: "build", profileId: "alice" })
+    : impl.joinSession({ kind: "use", profileId: "alice" }, holds);
 }
 
 function seedGatekeeper(impl: any, id: number): void {
@@ -110,6 +112,17 @@ const CONNECTION_SPEC = {
 };
 
 describe("restarting sessions when verification scope widens", () => {
+  it("forwards the stored type ID in observer requirements", () => withImpl(async impl => {
+    seedGatekeeper(impl, 1);
+    const record = impl.storage.gatekeepers.get(1);
+    impl.storage.gatekeepers.put({ ...record,
+      creationSpec: { ...record.creationSpec, resourceTypeId: "document" },
+    });
+    expect(impl.listObserverRequirements("workspace")).toMatchObject([
+      { gatekeeperId: 1, resourceTypeId: "document" },
+    ]);
+  }));
+
   it("adding a connection restarts a connected build collaborator",
       () => withImpl(async (impl, restarts) => {
     joinSession(impl);
@@ -270,7 +283,7 @@ describe("restarting sessions when verification scope widens", () => {
       () => withImpl(async (impl, restarts) => {
     // The shell lists gadgets but shows nothing any gadget read; each gadget is verified as it is
     // got, and a session holding it counts for it then.
-    impl.joinSession("use");
+    impl.joinSession({ kind: "use", profileId: "alice" });
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
@@ -363,88 +376,14 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toHaveLength(1);
   }));
 
-  it("an external message counts as a live build session once its caller is authorized",
-      () => withImpl(async (impl, restarts, instance) => {
-    stubFacets(impl);
-    // A workspace owned by someone else, so the caller is a collaborator. The call parks *after*
-    // authorization (on the caller's model lookup), which is when the lease must be held: this
-    // path never constructs a counted client interface, so without its own lease a widening
-    // mid-call would find no session to sever and the reply would be produced under stale
-    // verification.
-    impl.ownerId = "owner-user-id";
-    let fail!: (err: Error) => void;
-    let reached = new Promise<void>(resolve => {
-      impl.users = {
-        getByName: () => ({
-          id: { toString: () => "caller-user-id" },
-          whoamiIfExists: async () => ({ type: "user", id: "carol", name: "Carol" }),
-          getExternalMessageChatContext: () => {
-            resolve();
-            return new Promise((_, reject) => { fail = reject; });
-          },
-        }),
-      };
-    });
-    impl.authorizeCollaborator = async () => ({ role: "build" });
-
-    let pending = instance.receiveExternalMessage({
-      callerEmail: "carol@example.com", externalChatKey: "k", idempotencyKey: "i",
-      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
-    } as any);
-    await reached;
-
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toHaveLength(1);
-
-    fail(new Error("model lookup failed"));
-    await expect(pending).rejects.toThrow(/model lookup failed/);
-
-    // The lease died with the call.
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toHaveLength(1);
-  }));
-
-  it("an external-message caller who is denied never joins the count",
-      () => withImpl(async (impl, restarts, instance) => {
-    stubFacets(impl);
-    impl.ownerId = "owner-user-id";
-    impl.users = {
-      getByName: () => ({
-        id: { toString: () => "caller-user-id" },
-        whoamiIfExists: async () => ({ type: "user", id: "mallory", name: "Mallory" }),
-      }),
-    };
-    // Authorization itself is covered by authorizeCollaborator's own internal lease (which counts
-    // nobody until a role is resolved), so this path must not take its lease up front: a stranger
-    // parked in authorization racing an addGatekeeper would otherwise cause a needless reset.
-    let deny!: () => void;
-    let reached = new Promise<void>(resolve => {
-      impl.authorizeCollaborator = () => {
-        resolve();
-        return new Promise(resolveAuth => { deny = () => resolveAuth(null); });
-      };
-    });
-
-    let pending = instance.receiveExternalMessage({
-      callerEmail: "mallory@example.com", externalChatKey: "k", idempotencyKey: "i",
-      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
-    } as any);
-    await reached;
-
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toEqual([]);
-
-    deny();
-    expect((await pending).accepted).toBe(false);
-  }));
-
   it("a retained connection capability holds the gate open after its interface is gone",
       () => withImpl(async (impl, restarts) => {
     stubFacets(impl);
 
     // A connection capability minted into a collaborator's session (joinAs "build") counts for
     // its own lifetime: the client can dispose the interface that minted it and retain this.
-    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER, "build");
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER,
+        { kind: "build", profileId: "alice" });
     expect(restarts).toEqual([]);
 
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
@@ -464,7 +403,7 @@ describe("restarting sessions when verification scope widens", () => {
     let client = await openFakeOverseer(
         { gadgets: impl.storage.gadgets },
         { role: "use", impl: {
-            joinSession: (kind: string, gadgetId?: number) => impl.joinSession(kind, gadgetId),
+            joinSession: (holder: unknown, gadgetId?: number) => impl.joinSession(holder, gadgetId),
             authorizeGadget: async () => true,
             getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
           } });

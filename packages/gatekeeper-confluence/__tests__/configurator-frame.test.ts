@@ -308,7 +308,7 @@ describe("a connection to two sites", () => {
 
     await picker.frame().getByRole("radio", { name: /Acme/ }).click();
     await poll(() => picker.wholeSite().innerText()).toContain("All of Acme");
-    expect(picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
+    await poll(() => picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
     expect(await picker.chosen()).toEqual([]);
     expect((await picker.state()).ready).not.toBe(true);
   });

@@ -5,9 +5,9 @@
 // When a revision is given, every paragraph, run and table row is marked as a tracked insertion.
 
 import type { MdAlign, MdBlock, MdInline, MdListItem } from "./markdown-parse";
-import type { TextStyle } from "./markdown";
-import { escapeAttribute, escapeText } from "./ooxml";
-import { isoSeconds } from "./ooxml";
+import type { TextStyle } from "@gadgets/office-content/markdown";
+import { escapeAttribute, escapeText } from "@gadgets/office-content/ooxml";
+import { isoSeconds } from "@gadgets/office-content/ooxml";
 import { listIndent, type NumberingAllocator } from "./docx-numbering";
 import type { StyleCatalog, StyleRole } from "./docx-styles";
 

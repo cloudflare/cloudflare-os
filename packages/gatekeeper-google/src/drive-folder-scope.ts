@@ -1,5 +1,6 @@
 import {
-  isListableFolderFile, isListableFolderNode, type DriveFile, type DriveScopeNode,
+  isListableFolderFile, isListableFolderNode, SHORTCUT_MIME_TYPE, type DriveFile,
+  type DriveScopeNode,
 } from "./drive-api";
 
 const MAX_PATH_NODES = 101;
@@ -8,10 +9,15 @@ const MAX_PATH_NODES = 101;
  * Internal root-to-position path; never accepted from an agent.
  *
  * `folderIds[0]` is the bound root, so there is no separate root field to keep in agreement with
- * the path it heads.
+ * the path it heads. Each later folder is a direct child of the one before it, or, where
+ * `shortcuts` names one for it, the target of that shortcut, a direct child of the one before.
+ * Only reads follow shortcuts: a write's saved path carries `folderIds` alone, which a folder
+ * reached through one fails to prove.
  */
 export type FolderLocation = {
   folderIds: readonly string[];
+  /** The shortcut each folder reached through one was opened by, keyed by the folder's ID. */
+  shortcuts?: Readonly<Record<string, string>>;
 };
 
 /** The single refusal for folder-scope failures. */
@@ -30,7 +36,10 @@ export async function readFolderRoot(
   return file;
 }
 
-/** Refetches and validates every saved edge from the bound root to the current folder. */
+/**
+ * Refetches and validates every saved edge from the bound root to the current folder, and the
+ * shortcut behind each edge that has one, in one batch.
+ */
 export async function readFolderLocation(
   location: FolderLocation,
   getScopeNodes: (fileIds: readonly string[]) => Promise<(DriveScopeNode | undefined)[]>,
@@ -40,20 +49,27 @@ export async function readFolderLocation(
       new Set(ids).size !== ids.length) {
     outsideScope();
   }
+  let shortcutIds = ids.map(id => location.shortcuts?.[id]);
+  if (shortcutIds[0] !== undefined) outsideScope();
+  let viaIds = shortcutIds.filter(id => id !== undefined);
 
-  let nodes = await getScopeNodes(ids);
-  if (nodes.length !== ids.length) outsideScope();
-  let root = nodes[0];
-  if (!root) outsideScope();
+  let nodes = await getScopeNodes([...ids, ...viaIds]);
+  if (nodes.length !== ids.length + viaIds.length) outsideScope();
+  let vias = nodes.splice(ids.length);
 
   for (let index = 0; index < ids.length; index++) {
     let node = nodes[index];
-    if (!node || node.id !== ids[index] || !isListableFolderNode(node) ||
-        node.driveId !== root.driveId) {
-      outsideScope();
-    }
-    if (index > 0 && (node.parents?.length !== 1 || node.parents[0] !== ids[index - 1])) {
-      outsideScope();
+    if (!node || node.id !== ids[index] || !isListableFolderNode(node)) outsideScope();
+    if (index === 0) continue;
+    let parent = nodes[index - 1]!;
+    let shortcutId = shortcutIds[index];
+    if (shortcutId === undefined) {
+      if (!isDirectChild(node, parent)) outsideScope();
+    } else {
+      let shortcut = vias.shift();
+      if (!shortcut || shortcut.id !== shortcutId || !isShortcutChild(shortcut, node.id, parent)) {
+        outsideScope();
+      }
     }
   }
   return nodes as DriveScopeNode[];
@@ -63,4 +79,12 @@ export async function readFolderLocation(
 export function isDirectChild(file: DriveScopeNode, parent: DriveScopeNode): boolean {
   return file.trashed === false && file.driveId === parent.driveId &&
     file.parents?.length === 1 && file.parents[0] === parent.id;
+}
+
+/** Whether a fresh node is a live shortcut to `targetId` and a direct child of `parent`. */
+export function isShortcutChild(
+  node: DriveScopeNode, targetId: string, parent: DriveScopeNode,
+): boolean {
+  return node.mimeType === SHORTCUT_MIME_TYPE && node.shortcutTargetId === targetId &&
+    isDirectChild(node, parent);
 }

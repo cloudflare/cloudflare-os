@@ -1,12 +1,12 @@
 // This file declares the type of a worktree binding -- a binding that basically provides access
-// to a file tree, with git integration. An agent can create a worktree binding from a git commit,
-// then use its regular file-edit tooling to read and write the files in the worktree. It can also
+// to a file tree, with git integration. An agent can create an empty worktree or start from a
+// git commit, then use its regular file-edit tooling to read and write the files in the worktree. It can also
 // access the worktree programmatically in `executeCode` tool calls, where the binding has the API
 // defined below.
 //
 // Agents can create a worktree using the `createWorktree` tool call, similar to `createGadget`
-// but takes a commit ID. The commit ID can be obtained from various gatekeeper APIs, e.g. the
-// GitHub gatekeeper. Commits created on a worktree can then be pushed back to the gatekeeper.
+// but optionally takes a commit ID. Omit it to start empty, or obtain it from gatekeeper APIs
+// such as the GitHub gatekeeper. Commits created on a worktree can then be pushed back to the gatekeeper.
 //
 // Any code -- gadgets and agents alike -- can also create in-memory worktrees programmatically
 // through the `Git` binding, present as `env.GIT` in every environment (see git-binding.ts).
