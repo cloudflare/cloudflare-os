@@ -73,12 +73,12 @@ jobs:
 
       # The platform binary straight from the registry, checked against a pinned sha256 so the
       # reviewer cannot change under the same version. Bump the version and hash together, and
-      # check `opencode models cloudflare-ai-gateway --verbose` still lists both models' variants.
+      # check `opencode models cloudflare-ai-gateway --verbose` still lists the model's variants.
       - name: Install opencode
         if: steps.prepare.outputs.review == 'true'
         env:
-          OPENCODE_TARBALL: https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.18.33.tgz
-          OPENCODE_SHA256: 149a676b59224b196626abda2fdbd34c8329ac326b57c4891ba3de446f3ca3c1
+          OPENCODE_TARBALL: https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.19.6.tgz
+          OPENCODE_SHA256: 378f7ba827c63e61390e35b9b26336c56b202bfe71a531cd10b488da771321ff
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/opencode.tgz" "$OPENCODE_TARBALL"
           echo "$OPENCODE_SHA256  $RUNNER_TEMP/opencode.tgz" | sha256sum -c -
