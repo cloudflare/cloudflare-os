@@ -45,6 +45,16 @@ export function httpStatusFromError(errorMessage: string, response: ModelHandle[
 }
 
 /**
+ * Whether a failed request was AI Gateway Guardrails blocking the prompt (error code 2016), for
+ * example as a prompt injection. The prompt never reached the model, and every request that
+ * still carries it is blocked the same way, so the turn's new messages must be left out of the
+ * conversation rather than retried (see the "prompt_blocked" error code).
+ */
+export function isBlockedPromptError(errorMessage: string): boolean {
+  return /"code"\s*:\s*2016\b/.test(errorMessage);
+}
+
+/**
  * Run a single non-streaming-style completion against a ModelHandle and return the response
  * text. Used for one-shot calls: title generation, binding naming, compaction summaries, and
  * LanguageModelBinding.run. Requests thinking off unless asked (one-shots should be quick, and

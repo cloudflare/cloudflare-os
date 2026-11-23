@@ -47,7 +47,7 @@ import {
   getModel,
   UserGatewayRouting,
 } from "./ai-models";
-import { AgentTurnError, completeText } from "./ai-invoke";
+import { AgentTurnError, completeText, isBlockedPromptError } from "./ai-invoke";
 import {
   AiGatewayLogRetryableError,
   getAiGatewayConfig,
@@ -8538,7 +8538,10 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      failure = {message: errorMessage};
+      failure = apiError && isBlockedPromptError(apiError.message)
+        ? {message: "Your message was blocked by a safety filter and left out of the " +
+                    "conversation. Send a new message to continue.", code: "prompt_blocked"}
+        : {message: errorMessage};
     } finally {
       if (owns()) {
         // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in

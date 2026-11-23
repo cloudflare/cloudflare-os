@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AiModelConfig } from "@gadgets/workshop-shared/api";
-import { completeText, httpStatusFromError } from "../src/ai-invoke.js";
+import { completeText, httpStatusFromError, isBlockedPromptError } from "../src/ai-invoke.js";
 import { getModel } from "../src/ai-models.js";
 
 describe("httpStatusFromError", () => {
@@ -35,6 +35,24 @@ describe("httpStatusFromError", () => {
     expect(httpStatusFromError("429 Too many requests", { status: 200 })).toBe(429);
     expect(httpStatusFromError("OpenAI API error (429): slow down", { status: 200 })).toBe(429);
     expect(httpStatusFromError("Connection error.", undefined)).toBeUndefined();
+  });
+});
+
+describe("isBlockedPromptError", () => {
+  it("recognizes AI Gateway Guardrails blocking a prompt", () => {
+    expect(isBlockedPromptError('424 {"success":false,"error":[{"code":2016,' +
+        '"message":"Prompt blocked due to security configurations"}]}')).toBe(true);
+  });
+
+  it("does not take other failures for one", () => {
+    for (let message of [
+      '424 {"success":false,"error":[{"code":2017,"message":"Response blocked"}]}',
+      "400 prompt is 2016 tokens too long",
+      '429 {"error":{"code":20160}}',
+      "Connection error.",
+    ]) {
+      expect(isBlockedPromptError(message), message).toBe(false);
+    }
   });
 });
 

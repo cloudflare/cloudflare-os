@@ -2331,11 +2331,30 @@ async function runAgentPass(
         (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
+
+  // Messages a "prompt_blocked" error answered: the user's (or gadget's) messages since the
+  // agent last spoke, which AI Gateway Guardrails refused before they reached the model. Replaying
+  // them would get every later request blocked too, so they are left out of the conversation.
+  let blockedPrompts = new Set<number>();
+  {
+    let unanswered: number[] = [];
+    for (let msg of chatMessages) {
+      if (msg.type === "message") {
+        if (msg.author.type === "agent") unanswered = [];
+        else unanswered.push(msg.sequence);
+      } else if (msg.type === "error" && msg.code === "prompt_blocked") {
+        for (let sequence of unanswered) blockedPrompts.add(sequence);
+        unanswered = [];
+      }
+    }
+  }
+
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
     switch (msg.type) {
       case "message": {
+        if (blockedPrompts.has(msg.sequence)) break;
         let content = msg.message;
 
         if (msg.capsules) {
