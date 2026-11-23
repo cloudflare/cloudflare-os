@@ -23,7 +23,9 @@ Writes packages/gatekeeper-<name>, a gatekeeper built on gatekeeper-kit.
   <name>             The vendor id, e.g. "pagerduty": 1-20 lowercase letters and digits.
   --auth <kind>      How a user connects: "oauth", an authorization-code grant with PKCE, or
                      "api-key", a key the user pastes into the connect page.
-  --hooks            Push events to gadgets, from a webhook the provider delivers to.
+  --hooks <kind>     Push events to gadgets, from webhooks the provider delivers to: "app", one
+                     webhook for the deployment, set up by hand or in the provider's OAuth app,
+                     or "subscription", webhooks the gatekeeper adds through the provider's API.
   --display <text>   The provider's name as users read it, e.g. "PagerDuty".
   --openapi <file>   The provider's OpenAPI description, a JSON or YAML file. The package gets a script
                      that generates the typed client's schema from it, pinned by its hash, and
@@ -73,7 +75,7 @@ function replaceOnce(path: string, pattern: RegExp, replacement: string): void {
 }
 
 /** Adds the gatekeeper to the lists the repository keeps by hand. Safe to repeat. */
-function register(names: Names, auth: ScaffoldOptions["auth"], hooks: boolean): void {
+function register(names: Names, auth: ScaffoldOptions["auth"], hooks: ScaffoldOptions["hooks"]): void {
   // The release manifest's test builds every deployable package from a stand-in bundle.
   const fixture = join(ROOT, "scripts", "release", "testdata", "fixture-bundles", `gatekeeper-${names.name}`);
   mkdirSync(fixture, { recursive: true });
@@ -85,9 +87,10 @@ function register(names: Names, auth: ScaffoldOptions["auth"], hooks: boolean): 
       `  "gatekeeper-${names.name}": { id: "${names.constant}_CLIENT_ID", secret: "${names.constant}_CLIENT_SECRET" },`);
   }
   if (hooks) {
-    // The dev server passes the webhook's signing secret through from the shell or `.dev.vars`.
+    // The dev server passes through, from the shell or `.dev.vars`, the secret an app's webhook
+    // signs with, or the origin of the tunnel a gatekeeper's own webhooks deliver to.
     insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
-      `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_SECRET"],`);
+      `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_${hooks === "app" ? "SECRET" : "ORIGIN"}"],`);
     // Wrangler's generated types lack `restore`, which a hook's delivery stub is made with.
     replaceOnce(join(ROOT, "scripts", "generate-worker-types.ts"), /"\]\.includes\(basename\(pkgDir\)\)/,
       `", "gatekeeper-${names.name}"].includes(basename(pkgDir))`);
@@ -203,7 +206,7 @@ try {
     options: {
       auth: { type: "string" },
       display: { type: "string" },
-      hooks: { type: "boolean" },
+      hooks: { type: "string" },
       openapi: { type: "string" },
       "openapi-url": { type: "string" },
       fetch: { type: "boolean" },
@@ -243,7 +246,7 @@ let files: ReturnType<typeof scaffold>;
 let described: ReturnType<typeof readOpenApi> | undefined;
 let dir: string;
 try {
-  const options = { name: positionals[0], display: values.display, auth: values.auth as ScaffoldOptions["auth"], hooks: values.hooks };
+  const options = { name: positionals[0], display: values.display, auth: values.auth as ScaffoldOptions["auth"], hooks: values.hooks as ScaffoldOptions["hooks"] };
   names = namesFor(options);
   dir = values.out ?? join(ROOT, "packages", `gatekeeper-${names.name}`);
   // A release folds the hyphens out of a package's name to make its install slug, the route and
@@ -272,7 +275,7 @@ for (const [path, file] of files) {
 console.log(`Wrote ${files.size} files to ${relative(process.cwd(), dir) || dir}.`);
 
 if (values.out === undefined) {
-  register(names, values.auth as ScaffoldOptions["auth"], values.hooks === true);
+  register(names, values.auth as ScaffoldOptions["auth"], values.hooks as ScaffoldOptions["hooks"]);
   console.log("Registered it in README.md, the scripts that list gatekeepers by name, and the release test's fixture bundles.");
   if (!values["no-install"]) {
     // The new package is not in the lockfile, which an install in CI would otherwise refuse to change.

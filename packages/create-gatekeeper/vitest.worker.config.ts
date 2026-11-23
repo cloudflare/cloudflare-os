@@ -9,7 +9,7 @@ import { generate } from "./__tests__/workerd/generate.ts";
  * sources as `#gatekeeper/<module>`. `@validateRpc()` is applied in memory by the capnweb-validate
  * plugin, as in a gatekeeper's own workerd suite.
  */
-const gatekeeper = generate({ auth: "api-key", hooks: true });
+const gatekeeper = generate({ auth: "api-key", hooks: "subscription" });
 
 export default defineConfig({
   resolve: { alias: { "#gatekeeper": `${gatekeeper}/src` } },
@@ -32,8 +32,8 @@ export default defineConfig({
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
         },
         bindings: {
-          BASE_URL: "http://localhost:8787/gatekeeper/acme",
-          ACME_WEBHOOK_SECRET: "test-webhook-secret",
+          // An `https` one, which a gatekeeper that adds its own webhooks needs.
+          BASE_URL: "https://gadgets.test/gatekeeper/acme",
         },
       },
     }),

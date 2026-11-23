@@ -23,7 +23,7 @@ export class TestCallback extends WorkerEntrypoint<unknown, UserProps> {
 
   /** A reconnect's handoff carries its stage id as the ticket, so a test can commit that stage. */
   async reconnectComplete(stageId: string) {
-    return { targetOrigin: "http://localhost:8787", ticket: stageId };
+    return { targetOrigin: "https://gadgets.test", ticket: stageId };
   }
 }
 
