@@ -631,6 +631,34 @@ describe("a submission an earlier activation never saw answered", () => {
     expect(names(next.pending())).toEqual(["held", "unanswered"]);
   });
 
+  it("asks again about a submission left unconfirmed while an earlier one was being settled",
+    async () => {
+      const { set } = activation(fakeKv());
+      const lost: ActionSessionQueue = {
+        submitAction: async () => { throw new Error("Reply lost."); },
+        holdsAction: (async () => { throw new Error("Down."); }) as
+          ActionSessionQueue["holdsAction"],
+      };
+      const existing = await set.session(lost, A);
+      await expect(existing.submit("note", { text: "first" })).rejects.toThrow("Reply lost.");
+
+      // A session's scan is waiting for the first one's answer when the second is left.
+      const asked = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<boolean>();
+      const settling = set.session({
+        submitAction: async () => {},
+        holdsAction: (() => { asked.resolve(); return answer.promise; }) as
+          ActionSessionQueue["holdsAction"],
+      }, A);
+      await asked.promise;
+      await expect(existing.submit("note", { text: "second" })).rejects.toThrow("Reply lost.");
+      answer.resolve(true);
+      expect(names((await settling).pending())).toEqual(["first"]);
+
+      const next = await set.session(acceptingQueue(() => true).queue, A);
+      expect(names(next.pending())).toEqual(["first", "second"]);
+    });
+
   it("counts a submission whose call failed as made once an apply names it", async () => {
     const { journal, set } = activation(fakeKv());
     const answer = Promise.withResolvers<boolean>();

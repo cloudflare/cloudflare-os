@@ -984,7 +984,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       let recovered = false;
       const settleUnconfirmed = (queue: ActionSessionQueue): Promise<void> => {
         if (recovered) return Promise.resolve();
-        recovery ??= resolutionQueue.run(async () => {
+        if (recovery) return recovery;
+        const scan: Promise<void> = resolutionQueue.run(async () => {
           const inFlight = submitting.get(journal);
           const unconfirmed = journal.listUnconfirmed().filter(id => !inFlight?.has(id));
           const held = await Promise.all(unconfirmed.map(id => queue.holdsAction(id)));
@@ -1001,13 +1002,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             });
           }
         }).then(() => {
-          recovered = true;
+          // Unless a submission was left unconfirmed meanwhile, which this scan did not cover.
+          if (recovery === scan) recovered = true;
         }, (error: unknown) => {
           // Asked again by the next session: this one fails, as it may not read meanwhile.
-          recovery = undefined;
+          if (recovery === scan) recovery = undefined;
           throw error;
         });
-        return recovery;
+        return recovery = scan;
       };
 
       // The batch that starts at `actions[start]`, or `[]` when no batch hook takes it: a run of
