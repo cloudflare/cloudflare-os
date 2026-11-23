@@ -179,11 +179,11 @@ describe("redeemShareKey", () => {
     let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
     let fetched = 0;
-    expect(await mgr.redeemShareKey({
+    await mgr.redeemShareKey({
       rawKey: key,
       profileId: "newbie",
       fetchProfile: async () => { fetched++; return profile("newbie"); },
-    })).toBe(true);
+    });
 
     expect(fetched).toBe(1);
     expect(edgesOf(storage, "newbie"))
@@ -215,10 +215,10 @@ describe("redeemShareKey", () => {
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
 
     let fetched = 0;
-    expect(await mgr.redeemShareKey({
+    await mgr.redeemShareKey({
       rawKey: key, profileId: "a",
       fetchProfile: async () => { fetched++; return profile("a"); },
-    })).toBe(true);
+    });
 
     expect(fetched).toBe(0);
     expect(edgesOf(storage, "a")).toHaveLength(2);
@@ -230,65 +230,25 @@ describe("redeemShareKey", () => {
     let { storage, mgr } = makeManager();
     let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
-    let redeem = () => mgr.redeemShareKey({
+    await mgr.redeemShareKey({
       rawKey: key, profileId: "a",
       fetchProfile: async () => profile("a"),
     });
-    expect(await redeem()).toBe(true);
-    expect(await redeem()).toBe(true);
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
 
     expect(edgesOf(storage, "a")).toHaveLength(1);
   });
 
-  it("says the link works for a collaborator who already had what it gives", async () => {
+  it("is a no-op for an unknown key", async () => {
     let { storage, mgr } = makeManager();
-    let { key } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 } });
-    seedCollaborator(storage, "a", [userEdge(OWNER)]);
-
-    expect(await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
+    // A syntactically-valid raw key (hex) that was never created.
+    await mgr.redeemShareKey({
+      rawKey: "00112233445566778899aabbccddeeff", profileId: "a",
       fetchProfile: async () => profile("a"),
-    })).toBe(true);
-    expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
-  });
-
-  it("redeems nothing from a revoked link or its deleted copy", async () => {
-    let { storage, mgr } = makeManager();
-    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
-    mgr.revokeShareLink(owner, linkId, []);
-
-    for (let rawKey of [key, copy]) {
-      expect(await mgr.redeemShareKey({
-        rawKey, profileId: "a",
-        fetchProfile: async () => profile("a"),
-      })).toBe(false);
-    }
-    expect(storage.collaborators.get("a")).toBeUndefined();
-  });
-
-  it("says a link whose creator can no longer share does not work", async () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "bob", [userEdge(OWNER)]);
-    let { key } = await mgr.createShareLink({ caller: collab("bob"), grant: "workspace" });
-    mgr.removeCollaborator(owner, "bob", []);
-
-    expect(await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    })).toBe(false);
-    expect(mgr.getEffectiveAccess("a")).toBeUndefined();
-  });
-
-  it("is a no-op for an unknown key, or one that is no key at all", async () => {
-    let { storage, mgr } = makeManager();
-    // A syntactically-valid raw key (hex) that was never created, and strings no key can be.
-    for (let rawKey of ["00112233445566778899aabbccddeeff", "bogus", "abc", ""]) {
-      expect(await mgr.redeemShareKey({
-        rawKey, profileId: "a",
-        fetchProfile: async () => profile("a"),
-      })).toBe(false);
-    }
+    });
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
@@ -333,8 +293,7 @@ describe("redeemShareKey", () => {
     seedCollaborator(storage, "a", [keyEdge(linkId, "use", 2)]);
     gadgets.delete(2);
 
-    expect(await mgr.redeemShareKey({ rawKey: key, profileId: "b", fetchProfile: async () => profile("b") }))
-        .toBe(false);
+    await mgr.redeemShareKey({ rawKey: key, profileId: "b", fetchProfile: async () => profile("b") });
 
     expect(storage.collaborators.get("b")).toBeUndefined();
     // The existing recipient's grant confers nothing either, and its edge is not rewritten.
@@ -855,6 +814,19 @@ describe("revokeShareLink", () => {
     expect(mgr.getEffectiveAccess("b")).toEqual(only(1, 2, 3));
   });
 
+  it("a revoked link's keys can no longer be redeemed", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
+
+    mgr.revokeShareLink(owner, linkId, []);
+
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+    expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
   it("keeps everyone, including whoever joined since the preview, when asked to", async () => {
     let { storage, mgr } = makeManager();
     let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
@@ -874,7 +846,6 @@ describe("revokeShareLink", () => {
     }
     // Nobody gains what they did not have through the link.
     expect(mgr.getEffectiveAccess("c")).toEqual(only(2));
-    expect(await join("d")).toBe(false);
   });
 
   it("forbids a non-owner from revoking a link they didn't create", () => {

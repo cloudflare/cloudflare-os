@@ -1203,8 +1203,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * has `ownerInvitesOnly` set (see `WorkspaceMetadata`), a caller the owner has not added directly
    * is refused with a `shareLinksDisabled` coded exception. This design
    * allows share-key redemption and workspace opening in a single round trip, and further calls
-   * can be pipelined on the returned Overseer. redeemWorkspaceShareLink() redeems a key apart from
-   * opening, saying whether the link works.
+   * can be pipelined on the returned Overseer.
    *
    * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
    * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
@@ -1218,18 +1217,6 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   openWorkspace(id: string, shareKey?: string,
       configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
-
-  /**
-   * Redeem a share link's key for workspace `id`, adding the caller as a collaborator with what
-   * the link grants, without opening the workspace: openWorkspace() then opens it, without the key,
-   * and asks the caller to confirm their access where it needs to, so that a confirmation declined
-   * (`ACCESS_CONFIRMATION_ERROR_CODES`) is told apart from a link that no longer works. Redeeming a
-   * key again is harmless. Resolves false for a key no link of the workspace has, or whose link was
-   * revoked or grants nothing that can still be shared, which says nothing of the workspace: a
-   * missing one gives false too. If the workspace has `ownerInvitesOnly` set, a caller the owner
-   * has not added directly is refused with a `shareLinksDisabled` coded exception.
-   */
-  redeemWorkspaceShareLink(id: string, shareKey: string): Promise<boolean>;
 
   /**
    * Create a new workspace. It will start out titled "Untitled Workspace".
@@ -5775,9 +5762,8 @@ export interface Overseer extends RpcTarget {
    * does) instead of creating a second, and returns that link's id. Otherwise it behaves as any
    * other link, and revoking it leaves the caller with none until they create another.
    *
-   * A signed-in user redeems the key with AuthenticatedApi.redeemWorkspaceShareLink(), which adds
-   * them as a collaborator, or by passing it as `shareKey` to AuthenticatedApi.openWorkspace(),
-   * which also opens the workspace.
+   * A signed-in user redeems the key by passing it as `shareKey` to
+   * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
   createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }>;

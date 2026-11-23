@@ -460,8 +460,6 @@ test("search reads a command's option names and the callback methods it may be a
 test("search finds the commands for agents' everyday tasks in the API's own words", () => {
   const gatekeeperApp = /^cf-os api (get-gatekeeper-app|provision-ambient-account) /;
   const openWorkspace = /^cf-os api open-workspace <id>$/;
-  // Redeeming a key is done apart from opening, or in the same step.
-  const redeem = /^cf-os api (open-workspace <id>|redeem-workspace-share-link <id> <shareKey>)$/;
   // Each task, what it should find, and the rank that must reach: the first, or among the first `top`.
   const cases: [string, RegExp, number][] = [
     // Skills/Context collections, a gatekeeper app.
@@ -490,9 +488,8 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["rename workspace", /^cf-os api open-workspace <id> set-title </, 1],
     // Sharing, and redeeming a share link's key.
     ["share workspace with another user", / add-collaborator </, 3],
-    // Redeeming a link's key is about sharing too.
-    ["share a workspace", / create-share-link </, 4],
-    ["share a workspace", / add-collaborator </, 6],
+    ["share a workspace", / create-share-link </, 3],
+    ["share a workspace", / add-collaborator </, 5],
     ["invite user to workspace", / add-collaborator </, 1],
     ["give another user access to my workspace", / add-collaborator </, 1],
     ["share with bob by username", / add-collaborator </, 1],
@@ -501,10 +498,10 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["list who has access to workspace", / list-collaborators$/, 1],
     ...["redeem share link", "redeem a share link", "open workspace with share key", "join workspace from link",
       "join a shared workspace", "open a workspace shared with me", "configure observers"]
-      .map((task): [string, RegExp, number] => [task, redeem, 1]),
+      .map((task): [string, RegExp, number] => [task, openWorkspace, 1]),
     ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
-    ["share key", redeem, 2],
+    ["share key", openWorkspace, 3],
     // An admin's write to a workspace.
     ["write to a workspace", / write-workspace </, 1],
   ];
@@ -514,7 +511,7 @@ test("search finds the commands for agents' everyday tasks in the API's own word
   }
   // A share link's key says where it is redeemed.
   assert.match(flat(commandHelp(realTable, "Overseer", "create-share-link", ["open-workspace", "w", "create-share-link"])),
-    /redeems the key with `redeem-workspace-share-link` \(on AuthenticatedApi\)/);
+    /redeems the key by passing it as `shareKey` to `open-workspace` \(on AuthenticatedApi\)/);
 });
 
 test("search finds the commands for gadget-worded tasks, by what the API says of gadgets", () => {
@@ -548,7 +545,7 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
     // Round 3's workspace-worded tasks still find theirs.
     ["list my workspaces", /^cf-os api list-workspaces$/, 1],
     ["rename a workspace", /^cf-os api open-workspace <id> set-title <title>$/, 1],
-    ["share a workspace", / create-share-link </, 4],
+    ["share a workspace", / create-share-link </, 3],
     ["list schedules", / list-hooks$/, 1],
     ["wait for the agent to finish", / wait-for-agent <chatId>$/, 1],
   ];

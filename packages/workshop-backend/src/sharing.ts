@@ -282,16 +282,15 @@ export class SharingManager {
    * Redeem a raw share key on behalf of a user opening the gadget. If the key exists, ensures the
    * user is a collaborator with the `shareKey` edges for its link -- one for the workspace, or one
    * per gadget it grants -- adding those missing, or creating the collaborator record if they're
-   * new. Does nothing if the key is unknown. Resolves to whether the caller has access through
-   * the link or already had it, which for a key it cannot redeem reveals nothing of the workspace.
+   * new. Does nothing if the key is unknown.
    *
    * The raw key is hashed internally; the plaintext is never stored. `fetchProfile` is invoked
    * (an RPC, in production) only when a brand-new collaborator must be created, so existing
    * collaborators are redeemed without any RPC.
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed), as does one
-   * whose link grants only gadgets that can no longer be shared, or whose creator can no longer
-   * share. A link to several gadgets grants those of them that still can be.
+   * whose link grants only gadgets that can no longer be shared. A link to several gadgets grants
+   * those of them that still can be.
    *
    * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: a collaborator the
    * owner added directly is left as they are (so reopening an old link doesn't fail), and anyone
@@ -306,17 +305,16 @@ export class SharingManager {
     rawKey: string;
     profileId: string;
     fetchProfile: () => Promise<AiChatAuthorInfo>;
-  }): Promise<boolean> {
-    // Every key minted is hex (see createShareLink); anything else matches no link.
-    if (!/^(?:[0-9a-f]{2})+$/i.test(opts.rawKey)) return false;
-    let keyRecord = this.storage.shareKeys.get(await hashShareKey(opts.rawKey));
-    if (!keyRecord) return false;
+  }): Promise<void> {
+    let hash = await hashShareKey(opts.rawKey);
+    let keyRecord = this.storage.shareKeys.get(hash);
+    if (!keyRecord) return;
 
     // Edges point at the link, not the individual key, so a link's keys collapse to one grant.
     // A copy of a link is an alias; follow it to the link that owns the metadata.
     let link = keyRecord.alias === undefined
         ? keyRecord : asLink(this.storage.shareKeys.get(keyRecord.alias));
-    if (!link || link.revoked) return false;
+    if (!link || link.revoked) return;
     let linkId = link.id;
 
     if (this.ownerInvitesOnly()) {
@@ -325,11 +323,11 @@ export class SharingManager {
       if (!this.getEffectiveAccess(opts.profileId)) {
         this.#requireShareLinksAllowed({ redeeming: true });
       }
-      return true;
+      return;
     }
 
     let ceiling = this.#existingCeiling(link);
-    if (!ceiling) return false;
+    if (!ceiling) return;
 
     // One edge per gadget, as direct grants have, so that removing the recipient from one gadget
     // of a link to several leaves them the others.
@@ -354,9 +352,6 @@ export class SharingManager {
       this.#requireShareLinksAllowed({ redeeming: true });
       this.storage.collaborators.put({ profile, addedBy: edges });
     }
-
-    // The edges confer nothing while the link's creator lacks "build" (see computeEffectiveAccess).
-    return this.getEffectiveAccess(opts.profileId) !== undefined;
   }
 
   // ---------------------------------------------------------------------------------------

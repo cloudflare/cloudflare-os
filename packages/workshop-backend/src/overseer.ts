@@ -12666,23 +12666,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Redeem `shareKey` for the user `userId` (profile `profileId`), opening no session: see
-   * AuthenticatedApi.redeemWorkspaceShareLink(). A workspace never initialised or being deleted
-   * answers false, as an unknown key does, and is left as it was.
-   */
-  async redeemShareLink(userId: string, profileId: string, shareKey: string): Promise<boolean> {
-    if (!this.impl.ownerId || this.impl.storage.deleting.get()) return false;
-    // The owner already has full access and should not appear in the collaborators table.
-    if (userId === this.impl.ownerId) return true;
-    let clientUser = this.impl.users.get(this.impl.users.idFromString(userId));
-    return (await this.impl.getSharingManager()).redeemShareKey({
-      rawKey: shareKey,
-      profileId,
-      fetchProfile: () => clientUser.whoami(),
-    });
-  }
-
-  /**
    * Mint a deployment admin's read-only view of this workspace (AdminWorkspaceView), for
    * AdminApiImpl.inspectWorkspace(): reachable only over the Workshop's Durable Object binding,
    * never through a capability a user holds. Every environment read on this path goes through the

@@ -383,17 +383,6 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
-  async redeemWorkspaceShareLink(id: string, shareKey: string): Promise<boolean> {
-    let overseerId;
-    try {
-      overseerId = this.overseers.idFromString(id);
-    } catch {
-      return false;
-    }
-    return this.overseers.get(overseerId)
-        .redeemShareLink(this.#userId.toString(), this.#userId.name!, shareKey);
-  }
-
   async newWorkspace(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
     await this.#user.newWorkspace(id, "Untitled Workspace");
