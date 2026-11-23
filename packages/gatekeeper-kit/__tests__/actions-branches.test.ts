@@ -485,6 +485,20 @@ describe("stageList", () => {
     expect(await waiting).toBe(1);
     expect(onlooker.pending()).toEqual([]);
   });
+
+  it("confirms a record with no view that is still waiting for its reply", async () => {
+    const { journal, set } = activation(fakeKv());
+    void set.submit({
+      submitAction: () => new Promise<void>(() => {}),
+    }, "note", { text: "legacy" });
+    await vi.waitFor(() => expect(journal.get(1)?.state).toBe("staged"));
+
+    await set.stageList(A, [1]);
+    expect(journal.get(1)?.state).toBe("pending");
+    expect(journal.get(1)?.view).toBeUndefined();
+    const onlooker = await set.session(acceptingQueue().queue, B);
+    expect(names(onlooker.pending())).toEqual(["legacy"]);
+  });
 });
 
 describe("rejectAction", () => {

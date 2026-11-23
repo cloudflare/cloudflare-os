@@ -1231,7 +1231,10 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           resolutionQueue.run(() => applyList(actions, context)),
 
         stageList: (_branch, actions) =>
-          resolutionQueue.run(() => { for (const id of actions) journal.restage(id); }),
+          resolutionQueue.run(() => {
+            // Naming a record confirms it, one with no view to change included.
+            for (const id of actions) { journal.markSubmitted(id); journal.restage(id); }
+          }),
 
         rejectAction: id => resolutionQueue.run(() => rejectRecord(id, true)),
 
