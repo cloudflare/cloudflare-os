@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import { CirclesFourIcon, CpuIcon, FolderIcon, GearIcon, MoonIcon, SparkleIcon, MagnifyingGlassIcon, NotePencilIcon, SidebarSimpleIcon, UserIcon, WarningIcon } from '@phosphor-icons/react'
+import {
+  AiMagicIcon, Alert02Icon, ChipIcon, DashboardCircleIcon, Folder02Icon, Moon02Icon, PanelLeftIcon,
+  PencilEdit02Icon, Search01Icon, Settings01Icon, UserIcon,
+} from '@/components/icons'
 import { SearchDialog, type SearchEntry, type SearchPage } from '@/blocks/SearchDialog'
 import { Button } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
@@ -45,9 +48,9 @@ export const SearchPreview = () => {
   // The library is read as it opens, the first time: until then what is found of it is not there yet.
   const [libraryRead, setLibraryRead] = useState(true)
   const entries: SearchEntry[] = [
-    { title: 'New chat', group: 'Go to', keywords: ['home', 'start'], icon: <NotePencilIcon /> },
-    { title: 'Workspaces', group: 'Go to', icon: <FolderIcon /> },
-    { title: 'Library', group: 'Go to', keywords: ['apps', 'files'], icon: <CirclesFourIcon /> },
+    { title: 'New chat', group: 'Go to', keywords: ['home', 'start'], icon: <PencilEdit02Icon /> },
+    { title: 'Workspaces', group: 'Go to', icon: <Folder02Icon /> },
+    { title: 'Library', group: 'Go to', keywords: ['apps', 'files'], icon: <DashboardCircleIcon /> },
     workspace('Garden planning', 'GP', 'Just now'),
     workspace('Launch readiness', 'LR', 'Yesterday'),
     workspace('Weekly digest', 'WD', 'Monday'),
@@ -64,7 +67,7 @@ export const SearchPreview = () => {
       group: 'Models',
       title: choice,
       detail: choice === model ? 'Current' : undefined,
-      icon: <CpuIcon />,
+      icon: <ChipIcon />,
       onSelect: async () => {
         await wait(400)
         setModel(choice)
@@ -96,15 +99,15 @@ export const SearchPreview = () => {
       })),
     }),
   })
-  const motionEntry = choice('motion', 'Animations', MOTION, motion, setMotion, <SparkleIcon />, 'Preferences')
-  const themeEntry = choice('theme', 'Theme', THEMES, theme, setTheme, <MoonIcon />, 'Preferences')
+  const motionEntry = choice('motion', 'Animations', MOTION, motion, setMotion, <AiMagicIcon />, 'Preferences')
+  const themeEntry = choice('theme', 'Theme', THEMES, theme, setTheme, <Moon02Icon />, 'Preferences')
   const modelEntry: SearchEntry = modelsRead
-    ? { key: 'model', group: 'Models', title: 'Default model', keywords: MODELS, detail: model, icon: <CpuIcon />, onSelect: modelPage }
+    ? { key: 'model', group: 'Models', title: 'Default model', keywords: MODELS, detail: model, icon: <ChipIcon />, onSelect: modelPage }
     : {
         key: 'model',
         group: 'Models',
         title: 'Default model',
-        icon: <CpuIcon />,
+        icon: <ChipIcon />,
         onSelect: () => {
           throw new Error('Still loading. Try again in a moment.')
         },
@@ -115,7 +118,7 @@ export const SearchPreview = () => {
     onInvite: where === 'workspace' ? () => setSaid('Asked to invite people to Garden planning.') : undefined,
   })
   const made = libraryEntries(libraryRead ? LIBRARY : [], (output) => setSaid(`Opened ${output.title}.`))
-  const settingsEntry: SearchEntry = { key: 'settings', group: 'Go to', title: 'Settings', icon: <GearIcon />, onSelect: () => setSaid('Went to Settings.') }
+  const settingsEntry: SearchEntry = { key: 'settings', group: 'Go to', title: 'Settings', icon: <Settings01Icon />, onSelect: () => setSaid('Went to Settings.') }
   const settings: SearchEntry[] = [
     {
       key: 'auto-open',
@@ -123,7 +126,7 @@ export const SearchPreview = () => {
       title: 'Auto-open outputs',
       keywords: ['side pane'],
       on: autoOpen,
-      icon: <SidebarSimpleIcon />,
+      icon: <PanelLeftIcon />,
       keepOpen: true,
       onSelect: () => setAutoOpen(!autoOpen),
     },
@@ -153,7 +156,7 @@ export const SearchPreview = () => {
       key: 'workspace-model',
       group: 'Models',
       title: 'Model for a workspace…',
-      icon: <CpuIcon />,
+      icon: <ChipIcon />,
       onSelect: () => ({
         kind: 'list',
         title: 'Workspace',
@@ -165,7 +168,7 @@ export const SearchPreview = () => {
       key: 'refused',
       group: 'Account',
       title: 'Change something that is refused',
-      icon: <WarningIcon />,
+      icon: <Alert02Icon />,
       onSelect: () => {
         throw new Error('Not connected. Try again once the connection is back.')
       },
@@ -178,7 +181,7 @@ export const SearchPreview = () => {
 
   return (
     <Section title="SearchDialog (the sidebar’s Search, and ⌘K anywhere in the app: before anything is typed, a new chat, in the workspace from a chat or a workspace’s page (with the model from a chat, inviting from the page), with no heading; three recent workspaces; the pages gone to most; then a few settings reached for under Settings (the model is there before its value is read) ending in the way to Settings; then what fits, best first, under what each is, the library included; the arrow keys and Enter, or a click, to go; a setting changes in place, staying open to show it, or goes on to a page to type or choose it, with Backspace or Escape to come back (what was typed goes on into the page where it still finds something: “haiku” finds the model, and goes on to Haiku alone), and says why under the field when it is refused; while the library is still being read, a search that finds nothing says it is looking)">
-      <Button icon={MagnifyingGlassIcon} onClick={() => setOpen(true)}>Search</Button>
+      <Button icon={Search01Icon} onClick={() => setOpen(true)}>Search</Button>
       <Button onClick={() => setWhere(NEXT[where])}>{SAYS[NEXT[where]]}</Button>
       <Button onClick={() => setLibraryRead(!libraryRead)}>{libraryRead ? 'Show library as still being read' : 'Show library as read'}</Button>
       <Button onClick={() => setModelsRead(!modelsRead)}>{modelsRead ? 'Show models as still loading' : 'Show models as read'}</Button>

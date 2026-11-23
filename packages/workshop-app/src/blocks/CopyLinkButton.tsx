@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckIcon, LinkIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, Link04Icon, Tick02Icon } from '@/components/icons'
 import { Button } from '@gadgets/ui'
 
 export type CopyLinkButtonProps = {
@@ -24,9 +24,9 @@ export type CopyLinkButtonProps = {
 const SHOWN_FOR = 1500
 
 const STATES = {
-  ready: { icon: LinkIcon, label: (title: string) => `Copy a link to ${title}`, text: 'Copy link' },
-  copied: { icon: CheckIcon, label: () => 'Link copied', text: 'Copied' },
-  failed: { icon: XIcon, label: () => 'Couldn’t copy the link', text: 'Couldn’t copy' },
+  ready: { icon: Link04Icon, label: (title: string) => `Copy a link to ${title}`, text: 'Copy link' },
+  copied: { icon: Tick02Icon, label: () => 'Link copied', text: 'Copied' },
+  failed: { icon: Cancel01Icon, label: () => 'Couldn’t copy the link', text: 'Couldn’t copy' },
 }
 
 /** Puts a link on the clipboard, then shows a tick for a moment, or a cross when that was refused. */

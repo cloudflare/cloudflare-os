@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { matchesResourceUrlPattern, type SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
-import { GitBranchIcon, LightningIcon } from '@phosphor-icons/react'
+import { FlashIcon, GitBranchIcon } from '@/components/icons'
 import { ATTACHMENT_KIND_ICONS } from '@/blocks/attachmentKindIcons'
 import { ContextRow } from '@/blocks/ContextRow'
 import { ContextSection } from '@/blocks/ContextSection'
@@ -77,7 +77,7 @@ export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAtta
         <ContextRow key={output.key} icon={outputIcon(output, formats.get(output.workpieceId))} title={output.title} href={outputHref?.(output)} onSelect={() => onOpenOutput(output)} />
       )))}
       {section('automations', 'Automations', hooks.length, hooks.map((hook) => (
-        <ContextRow key={hook.key} icon={<LightningIcon aria-hidden="true" />} title={hook.title} href={automationHref?.(hook)} onSelect={onOpenAutomation && (() => onOpenAutomation(hook))} />
+        <ContextRow key={hook.key} icon={<FlashIcon aria-hidden="true" />} title={hook.title} href={automationHref?.(hook)} onSelect={onOpenAutomation && (() => onOpenAutomation(hook))} />
       )))}
       {section('files', 'Uploads', files.length, files.map((file) => (
         <ContextRow key={file.id} icon={fileIcon(file)} title={file.name} onSelect={() => onOpenAttachment(file)} />

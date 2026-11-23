@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { asideItemFor, type AsideItem } from '@/aside/asideItems'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { AutomationRow } from '@/blocks/AutomationRow'
-import { LightningIcon } from '@phosphor-icons/react'
+import { FlashIcon } from '@/components/icons'
 import { Button, EmptyState, type EmptyStateAction, ListGroup } from '@gadgets/ui'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -124,7 +124,7 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
         <EmptyState
           size="section"
           tinted
-          icon={LightningIcon}
+          icon={FlashIcon}
           title="Nothing runs by itself yet"
           description={empty.description}
           actions={empty.action && [empty.action]}

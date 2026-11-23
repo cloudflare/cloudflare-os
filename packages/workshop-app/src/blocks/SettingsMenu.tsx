@@ -1,4 +1,4 @@
-import { CaretRightIcon, SignOutIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, Logout05Icon } from '@/components/icons'
 import { Avatar, ConfirmMenu, LinkButton } from '@gadgets/ui'
 import type { SettingsNavGroup } from './SettingsSidebar'
 
@@ -39,7 +39,7 @@ export const SettingsMenu = ({ user, groups, onSelect, onSignOut }: SettingsMenu
               <span className="truncate font-medium text-kumo-default">{label}</span>
               {summary && <span className="truncate text-kumo-subtle">{summary}</span>}
             </span>
-            <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
+            <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
           </LinkButton>
         ))}
       </section>
@@ -48,7 +48,7 @@ export const SettingsMenu = ({ user, groups, onSelect, onSignOut }: SettingsMenu
       <div className="flex justify-center">
         <ConfirmMenu
           label="Sign out"
-          icon={SignOutIcon}
+          icon={Logout05Icon}
           triggerVariant="ghost"
           side="top"
           title="Sign out?"

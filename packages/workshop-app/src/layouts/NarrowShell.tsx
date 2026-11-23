@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, spring, usePresence } from 'motion/react'
 import { Button, HeaderBubble, useReducedMotion } from '@gadgets/ui'
-import { SidebarSimpleIcon } from '@phosphor-icons/react'
+import { PanelLeftIcon } from '@/components/icons'
 import { OPENING_TIMING } from './useEdgeHint'
 
 export type NarrowShellProps = {
@@ -165,7 +165,7 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside }: N
             // Where the page's header starts, which leaves it the room (`--header-lead`).
             <div className="absolute top-3 left-3 z-20 flex">
               <HeaderBubble>
-                <Button icon={SidebarSimpleIcon} aria-label="Show the sidebar" title="Sidebar" aria-expanded={sidebarOpen} onClick={() => sidebar.onOpenChange(true)} />
+                <Button icon={PanelLeftIcon} aria-label="Show the sidebar" title="Sidebar" aria-expanded={sidebarOpen} onClick={() => sidebar.onOpenChange(true)} />
               </HeaderBubble>
             </div>
           )}

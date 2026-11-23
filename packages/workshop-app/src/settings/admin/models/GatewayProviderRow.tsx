@@ -1,4 +1,4 @@
-import { ArrowDownIcon, ArrowUpIcon, DotsThreeIcon, FlaskIcon } from '@phosphor-icons/react'
+import { ArrowDown02Icon, ArrowUp02Icon, FlaskConicalIcon, MoreHorizontalIcon } from '@/components/icons'
 import type { AdminGatewayProvider } from '@gadgets/workshop-shared/api'
 import { DropdownMenu, LIST_ACTION, SettingRow, Switch } from '@gadgets/ui'
 import { GatewayTestStatus } from './GatewayTest'
@@ -39,10 +39,10 @@ export const GatewayProviderRow = ({ entry, busy, test, onEnabledChange, onMoveU
       )}
     >
       <Switch aria-label={label} checked={entry.enabledBy !== undefined} disabled={locked} busy={busy} onCheckedChange={onEnabledChange} />
-      <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${label}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
-        <DropdownMenu.Item icon={FlaskIcon} disabled={test?.state === 'testing'} onSelect={onTest}>Test</DropdownMenu.Item>
-        <DropdownMenu.Item icon={ArrowUpIcon} disabled={!onMoveUp} onSelect={onMoveUp}>Move up</DropdownMenu.Item>
-        <DropdownMenu.Item icon={ArrowDownIcon} disabled={!onMoveDown} onSelect={onMoveDown}>Move down</DropdownMenu.Item>
+      <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${label}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
+        <DropdownMenu.Item icon={FlaskConicalIcon} disabled={test?.state === 'testing'} onSelect={onTest}>Test</DropdownMenu.Item>
+        <DropdownMenu.Item icon={ArrowUp02Icon} disabled={!onMoveUp} onSelect={onMoveUp}>Move up</DropdownMenu.Item>
+        <DropdownMenu.Item icon={ArrowDown02Icon} disabled={!onMoveDown} onSelect={onMoveDown}>Move down</DropdownMenu.Item>
       </DropdownMenu>
     </SettingRow>
   )

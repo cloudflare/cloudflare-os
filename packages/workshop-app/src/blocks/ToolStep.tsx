@@ -1,12 +1,11 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ComponentType } from 'react'
-import {
-  ArrowDown01Icon, BookOpen01Icon, Brain03Icon, Chat01Icon, CodeIcon, Edit02Icon, File01Icon, GitBranchIcon, GlobeIcon, Link01Icon,
-  ListIcon, PlugIcon, PlusSignIcon, Search01Icon, StopIcon,
-} from '@hugeicons/core-free-icons'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge, Loader } from '@cloudflare/kumo'
 import { CodeBlock } from '@/components/CodeBlock'
-import { hugeIcon, type HugeIconProps } from '@/components/HugeIcon'
+import {
+  ArrowDown01Icon, BookOpen01Icon, Brain03Icon, Chat01Icon, CodeIcon, Edit02Icon, File01Icon, GitBranchIcon, GlobeIcon, Link01Icon,
+  ListIcon, PlugIcon, PlusSignIcon, Search01Icon, StopIcon, type Icon,
+} from '@/components/icons'
 import { ShimmerSwitchText } from '@/components/ShimmerSwitchText'
 import { Disclosure } from '@/components/Disclosure'
 import { Markdown, useReducedMotion } from '@gadgets/ui'
@@ -18,28 +17,23 @@ import { LeavingSlot, MascotSlot, usePresenceSlot } from './presenceSlot'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import './ToolStep.css'
 
-type StepIconType = ComponentType<HugeIconProps>
-
-// Hugeicons, the free set: a step's mark is the icon of what it did.
-const Code = hugeIcon(CodeIcon)
+// A step's mark is the icon of what it did.
 const ICONS = {
-  file: hugeIcon(File01Icon),
-  edit: hugeIcon(Edit02Icon),
-  terminal: Code,
-  globe: hugeIcon(GlobeIcon),
-  search: hugeIcon(Search01Icon),
-  link: hugeIcon(Link01Icon),
-  plus: hugeIcon(PlusSignIcon),
-  branch: hugeIcon(GitBranchIcon),
-  list: hugeIcon(ListIcon),
-  stop: hugeIcon(StopIcon),
-  plug: hugeIcon(PlugIcon),
-} satisfies Record<string, StepIconType>
-const Thinking = hugeIcon(Brain03Icon)
-const Writing = hugeIcon(Chat01Icon)
-const Observation = hugeIcon(BookOpen01Icon)
-// The chevron beside a step that opens: small, so a little bolder than the icons.
-const Caret = hugeIcon(ArrowDown01Icon, 2.25)
+  file: File01Icon,
+  edit: Edit02Icon,
+  terminal: CodeIcon,
+  globe: GlobeIcon,
+  search: Search01Icon,
+  link: Link01Icon,
+  plus: PlusSignIcon,
+  branch: GitBranchIcon,
+  list: ListIcon,
+  stop: StopIcon,
+  plug: PlugIcon,
+} satisfies Record<string, Icon>
+const Thinking = Brain03Icon
+const Writing = Chat01Icon
+const Observation = BookOpen01Icon
 
 /**
  * One step in the making of a reply: a tool the agent called, a resource that call read, or what
@@ -120,7 +114,7 @@ const Detail = ({ entry }: { entry: ToolStepEntry }) => {
   )
 }
 
-const summaryOf = (entry: ToolStepEntry): { icon: StepIconType; label: string } => {
+const summaryOf = (entry: ToolStepEntry): { icon: Icon; label: string } => {
   switch (entry.type) {
     case 'thinking':
       return { icon: Thinking, label: entry.running ? 'Thinking…' : 'Thought' }
@@ -129,7 +123,7 @@ const summaryOf = (entry: ToolStepEntry): { icon: StepIconType; label: string } 
     case 'observation':
       return { icon: Observation, label: entry.label }
     case 'call':
-      return { icon: ICONS[entry.icon] ?? Code, label: entry.label }
+      return { icon: ICONS[entry.icon] ?? CodeIcon, label: entry.label }
   }
 }
 
@@ -229,8 +223,10 @@ const Row = ({ entry, label, open, onToggle, detail, fresh, enter, mascot }: { e
             <ShimmerSwitchText active={false} truncate>{label}</ShimmerSwitchText>
           </span>
           {entry.type === 'call' && entry.error && <Badge variant="error">Error</Badge>}
-          <Caret
+          {/* The chevron beside a step that opens: small, so a little bolder than the icons. */}
+          <ArrowDown01Icon
             aria-hidden="true"
+            weight="bold"
             className={cn('size-3 shrink-0 transition-[opacity,transform] duration-300 group-data-panel-open:rotate-180 motion-reduce:transition-none', detail ? 'opacity-100 group-has-data-waiting:opacity-0 group-has-data-waiting:transition-none' : '-translate-x-1 opacity-0')}
           />
         </>

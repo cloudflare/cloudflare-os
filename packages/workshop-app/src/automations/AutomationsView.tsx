@@ -1,4 +1,4 @@
-import { LightningIcon } from '@phosphor-icons/react'
+import { FlashIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { AutomationRow, type AutomationRowProps } from '@/blocks/AutomationRow'
 import { AutomationsEmpty, type AutomationExample } from '@/blocks/AutomationsEmpty'
@@ -51,7 +51,7 @@ export const AutomationsView = ({ status, groups, total, controls, onShowAll, on
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-            <LightningIcon aria-hidden="true" />
+            <FlashIcon aria-hidden="true" />
             Automations
           </h1>
         </HeaderBubble>

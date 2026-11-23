@@ -1,7 +1,10 @@
 import { useId, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Button, Markdown, useReducedMotion } from '@gadgets/ui'
-import { CaretDownIcon, CaretRightIcon, CheckCircleIcon, ShieldCheckIcon, ShieldWarningIcon, WarningCircleIcon, WarningIcon } from '@phosphor-icons/react'
+import {
+  Alert02Icon, AlertCircleIcon, ArrowDown01Icon, ArrowRight01Icon, CheckmarkCircle02Icon, SecurityCheckIcon,
+  SecurityWarningIcon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { ActionFields, type ActionField } from './ActionFields'
@@ -69,7 +72,7 @@ const GroupIcon = ({ service }: { service?: GadgetAskGroup['service'] }) =>
     <ServiceLogo name={service.name} src={service.logoUrl} color={service.color} small />
   ) : (
     <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-kumo-fill text-kumo-default">
-      <ShieldCheckIcon aria-hidden="true" className="size-4" />
+      <SecurityCheckIcon aria-hidden="true" className="size-4" />
     </span>
   )
 
@@ -116,7 +119,7 @@ const Group = ({ group, restricted, transition, onAllow, onAllowOnce, onDeny }: 
             className="flex shrink-0 cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1 text-sm font-medium text-kumo-default outline-none hover:bg-kumo-fill focus-visible:ring-2 focus-visible:ring-kumo-ring"
           >
             {open ? 'Hide' : 'Details'}
-            <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-3 text-kumo-subtle transition-transform duration-200 motion-reduce:transition-none', open && 'rotate-90')} />
+            <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('size-3 text-kumo-subtle transition-transform duration-200 motion-reduce:transition-none', open && 'rotate-90')} />
           </button>
         )}
       </div>
@@ -133,7 +136,7 @@ const Group = ({ group, restricted, transition, onAllow, onAllowOnce, onDeny }: 
       )}
       {group.incomplete && (
         <p id={`${id}-incomplete`} role="note" className="flex items-start gap-2 text-sm text-kumo-default">
-          <WarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
+          <Alert02Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
           Part of what this will send isn’t shown.
         </p>
       )}
@@ -200,7 +203,7 @@ export const GadgetAsk = ({ gadgetTitle, groups, restricted = false, folded, onF
               </span>
               <Button
                 variant="ghost"
-                icon={<CaretDownIcon weight="bold" className={cn('transition-transform duration-200 motion-reduce:transition-none', folded && 'rotate-180')} />}
+                icon={<ArrowDown01Icon weight="bold" className={cn('transition-transform duration-200 motion-reduce:transition-none', folded && 'rotate-180')} />}
                 aria-label={folded ? 'Show what it asks' : 'Put away for now'}
                 aria-expanded={!folded}
                 aria-controls={`${id}-groups`}
@@ -215,7 +218,7 @@ export const GadgetAsk = ({ gadgetTitle, groups, restricted = false, folded, onF
           <AnimatePresence initial={false}>
             {notice && !asking && (
               <motion.p key="notice" role="status" {...ROW} transition={transition} className="flex shrink-0 items-center gap-2.5 overflow-hidden py-1.5 ps-4 pe-1.5 text-sm text-kumo-default">
-                <CheckCircleIcon aria-hidden="true" weight="fill" className="size-4 shrink-0 text-kumo-success" />
+                <CheckmarkCircle02Icon aria-hidden="true" weight="fill" className="size-4 shrink-0 text-kumo-success" />
                 <span className="min-w-0 flex-1 py-2">{notice.text}</span>
                 {notice.action && (
                   <Button variant="ghost" disabled={noticePending} onClick={() => runNotice(notice.action!.onClick)}>{notice.action.label}</Button>
@@ -228,7 +231,7 @@ export const GadgetAsk = ({ gadgetTitle, groups, restricted = false, folded, onF
             {problem && (
               <motion.div key="problem" {...ROW} transition={transition} className="shrink-0 overflow-hidden">
                 <p role="alert" className={cn('mx-1.5 flex items-start gap-2 rounded-2xl bg-kumo-danger-tint px-3 py-2 text-sm text-kumo-danger', asking ? 'mb-1.5' : 'my-1.5')}>
-                  <WarningCircleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                  <AlertCircleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
                   <span className="min-w-0 flex-1 wrap-break-word">{problem}</span>
                   {onDismissProblem && <button type="button" className="shrink-0 cursor-pointer font-medium hover:underline" onClick={onDismissProblem}>Dismiss</button>}
                 </p>
@@ -238,7 +241,7 @@ export const GadgetAsk = ({ gadgetTitle, groups, restricted = false, folded, onF
 
           {asking && restricted && !folded && (
             <p role="note" className="mx-1.5 mb-1.5 flex shrink-0 items-start gap-2 rounded-2xl bg-kumo-warning-tint px-3 py-2 text-sm text-kumo-default">
-              <ShieldWarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
+              <SecurityWarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
               This workspace has read sensitive data. Read each request in full before allowing it: you are responsible for making sure it contains none of that data.
             </p>
           )}

@@ -1,5 +1,5 @@
 import type { ReactNode, Ref } from 'react'
-import { CaretDoubleRightIcon } from '@phosphor-icons/react'
+import { ArrowRightDoubleIcon } from '@/components/icons'
 import { Button } from '@gadgets/ui'
 
 export type ContextSideProps = {
@@ -25,7 +25,7 @@ export const ContextSide = ({ children, onMinimize, minimizeRef }: ContextSidePr
       <Button
         ref={minimizeRef}
         variant="ghost"
-        icon={<CaretDoubleRightIcon aria-hidden="true" weight="bold" className="size-3.5!" />}
+        icon={<ArrowRightDoubleIcon aria-hidden="true" weight="bold" className="size-3.5!" />}
         aria-label="Minimize"
         title="Minimize"
         onClick={onMinimize}

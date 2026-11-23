@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { ClockCounterClockwiseIcon } from '@phosphor-icons/react'
+import { HistoryIcon } from '@/components/icons'
 import { ActivityRow } from '@/blocks/ActivityRow'
 import { Button, EmptyState, groupSurface, LinkButton, ListGroup, ListToolbar, NoMatches, useListView } from '@gadgets/ui'
 import { activityList, type ActivityItem } from './activityList'
@@ -104,7 +104,7 @@ export const HistoryView = ({ history, viewerId, chatOf, chatHref, onOpenChat, o
         <EmptyState
           size="section"
           tinted
-          icon={ClockCounterClockwiseIcon}
+          icon={HistoryIcon}
           title="Nothing has happened yet"
           description="What the agents and apps here ask to do, read and set up is listed here."
         />

@@ -1,4 +1,4 @@
-import { ArrowUUpLeftIcon, ChatCircleIcon, PlusIcon } from '@phosphor-icons/react'
+import { MessageCircleIcon, PlusSignIcon, Undo03Icon } from '@/components/icons'
 import { Button, DropdownMenu } from '@gadgets/ui'
 
 /** A chat in the workspace an item is in, to carry on in with the item beside it. */
@@ -43,14 +43,14 @@ export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, back, comp
   const label = compact ? undefined : 'Chat'
   if (chats?.length === 0 && !back) {
     return (
-      <Button variant="primary" icon={ChatCircleIcon} aria-label={`New chat with ${title} beside it`} title="New chat" onClick={onNewChat} className={compact ? undefined : TRIGGER}>
+      <Button variant="primary" icon={MessageCircleIcon} aria-label={`New chat with ${title} beside it`} title="New chat" onClick={onNewChat} className={compact ? undefined : TRIGGER}>
         {label}
       </Button>
     )
   }
   return (
     <DropdownMenu
-      icon={ChatCircleIcon}
+      icon={MessageCircleIcon}
       label={label}
       aria-label={`Chat with ${title} beside it`}
       triggerVariant="primary"
@@ -60,20 +60,20 @@ export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, back, comp
     >
       {back && (
         <>
-          <DropdownMenu.Item icon={ArrowUUpLeftIcon} label={back.title ?? 'Back to the chat'} onSelect={back.onBack}>
+          <DropdownMenu.Item icon={Undo03Icon} label={back.title ?? 'Back to the chat'} onSelect={back.onBack}>
             <ChatRow title={back.title ?? 'The chat'} detail="Back to where you were" />
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
         </>
       )}
-      <DropdownMenu.Item icon={PlusIcon} label="New chat" onSelect={onNewChat}>
+      <DropdownMenu.Item icon={PlusSignIcon} label="New chat" onSelect={onNewChat}>
         <ChatRow title="New chat" detail={`With ${title} beside it`} />
       </DropdownMenu.Item>
       {chats?.length !== 0 && <DropdownMenu.Separator />}
       {chats === undefined ? (
-        <DropdownMenu.Item icon={ChatCircleIcon} disabled>Loading chats…</DropdownMenu.Item>
+        <DropdownMenu.Item icon={MessageCircleIcon} disabled>Loading chats…</DropdownMenu.Item>
       ) : chats.map((chat) => (
-        <DropdownMenu.Item key={chat.key} icon={ChatCircleIcon} label={chat.title} onSelect={() => onOpenChat(chat.key)}>
+        <DropdownMenu.Item key={chat.key} icon={MessageCircleIcon} label={chat.title} onSelect={() => onOpenChat(chat.key)}>
           <ChatRow title={chat.title} detail={chat.showing ? `Had ${title} open · ${chat.time}` : chat.time} />
         </DropdownMenu.Item>
       ))}

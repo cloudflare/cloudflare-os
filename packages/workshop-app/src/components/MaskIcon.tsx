@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 
 /**
- * A one-colour icon from an image's address, drawn in the text's colour as a Phosphor icon is, so
+ * A one-colour icon from an image's address, drawn in the text's colour as the app's icons are, so
  * that it is subtle, current or pointed at as the icons beside it are. As big as one of those.
  */
 export const MaskIcon = ({ src }: { src: string }) => {

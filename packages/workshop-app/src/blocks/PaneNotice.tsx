@@ -1,4 +1,4 @@
-import type { Icon } from '@phosphor-icons/react'
+import type { Icon } from '@/components/icons'
 import { EmptyState } from '@gadgets/ui'
 
 export type PaneNoticeProps = {

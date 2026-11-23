@@ -1,4 +1,4 @@
-import { ArrowDownIcon, ArrowUpIcon, CaretRightIcon, TrashIcon, WarningIcon } from '@phosphor-icons/react'
+import { Alert02Icon, ArrowDown02Icon, ArrowRight01Icon, ArrowUp02Icon, Delete02Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { OUTPUT_ICONS, type AdminFormat, type AdminFormatPatch, type OutputIcon } from '@gadgets/workshop-shared/api'
 import { Button, CardAction, DropdownMenu, LIST_ACTION, type SaveOutcome, SettingField, SettingRow, SettingsCard, Switch, Tag } from '@gadgets/ui'
@@ -65,7 +65,7 @@ export const FormatCard = ({ format, open, onToggle, busy, onMove, onPatch, onSe
       <div className="group flex items-center gap-3 py-3">
         <button type="button" aria-expanded={open} onClick={onToggle} className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left">
           <span className={cn('grid size-9 shrink-0 place-items-center rounded-xl bg-kumo-base ring-1 ring-kumo-line', format.missing ? 'text-kumo-danger' : 'text-kumo-subtle')}>
-            {format.missing ? <WarningIcon aria-hidden="true" className="size-5" /> : <FormatIcon name={icon} className="size-5" />}
+            {format.missing ? <Alert02Icon aria-hidden="true" className="size-5" /> : <FormatIcon name={icon} className="size-5" />}
           </span>
           <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-snug">
             <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-medium text-kumo-default">
@@ -82,12 +82,12 @@ export const FormatCard = ({ format, open, onToggle, busy, onMove, onPatch, onSe
                   : `${format.blueprintTitle} · under ${format.output!.plural} in the Library`}
             </span>
           </span>
-          <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
+          <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
         </button>
         {onMove && (
           <CardAction shown={open}>
-            <Button variant="ghost" icon={ArrowUpIcon} aria-label={`Move ${format.blueprintTitle} up`} disabled={busy || !onMove.up} onClick={onMove.up} className={LIST_ACTION} />
-            <Button variant="ghost" icon={ArrowDownIcon} aria-label={`Move ${format.blueprintTitle} down`} disabled={busy || !onMove.down} onClick={onMove.down} className={LIST_ACTION} />
+            <Button variant="ghost" icon={ArrowUp02Icon} aria-label={`Move ${format.blueprintTitle} up`} disabled={busy || !onMove.up} onClick={onMove.up} className={LIST_ACTION} />
+            <Button variant="ghost" icon={ArrowDown02Icon} aria-label={`Move ${format.blueprintTitle} down`} disabled={busy || !onMove.down} onClick={onMove.down} className={LIST_ACTION} />
           </CardAction>
         )}
         <Switch aria-label={`Offer ${format.blueprintTitle}`} checked={format.enabled} disabled={format.missing} busy={busy} onCheckedChange={(enabled) => onSet({ enabled })} />
@@ -95,7 +95,7 @@ export const FormatCard = ({ format, open, onToggle, busy, onMove, onPatch, onSe
       {open && (format.missing
         ? (
             <SettingRow title="Remove it" description="The blueprint behind it was deleted, so nobody is offered it.">
-              <Button icon={TrashIcon} disabled={busy} onClick={onRemove}>Remove</Button>
+              <Button icon={Delete02Icon} disabled={busy} onClick={onRemove}>Remove</Button>
             </SettingRow>
           )
         : (
@@ -163,7 +163,7 @@ export const FormatCard = ({ format, open, onToggle, busy, onMove, onPatch, onSe
                 title={format.bundled ? 'Ships with the deployment' : 'Stop offering'}
                 description={`${format.enabled ? 'Switched off, it is offered to nobody and left out of the agent’s catalog. What was made from it keeps working.' : 'Offered to nobody, and left out of the agent’s catalog.'}${format.bundled ? ' It stays in this list either way, with its name, hint and place.' : ''}`}
               >
-                {!format.bundled && <Button icon={TrashIcon} disabled={busy} onClick={onRemove}>Stop offering</Button>}
+                {!format.bundled && <Button icon={Delete02Icon} disabled={busy} onClick={onRemove}>Stop offering</Button>}
               </SettingRow>
             </>
           ))}

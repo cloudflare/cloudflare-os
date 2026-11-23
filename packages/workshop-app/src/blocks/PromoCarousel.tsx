@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { ArrowLeftIcon, ArrowRightIcon } from '@phosphor-icons/react'
+import { ArrowLeft02Icon, ArrowRight02Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button, LinkButton, isMotionOff } from '@gadgets/ui'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
@@ -91,8 +91,8 @@ export const PromoCarousel = ({ title, description, items }: PromoCarouselProps)
         </div>
         {items.length > 1 && (
           <div className="flex items-center gap-2">
-            <Button icon={ArrowLeftIcon} aria-label="Previous" title="Previous" onClick={() => move(-1)} />
-            <Button icon={ArrowRightIcon} aria-label="Next" title="Next" onClick={() => move(1)} />
+            <Button icon={ArrowLeft02Icon} aria-label="Previous" title="Previous" onClick={() => move(-1)} />
+            <Button icon={ArrowRight02Icon} aria-label="Next" title="Next" onClick={() => move(1)} />
           </div>
         )}
       </div>

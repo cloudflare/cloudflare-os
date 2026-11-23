@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { LayoutIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, Layout01Icon } from '@/components/icons'
 import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import type { SetupModel } from './UseTemplateDialog'
 
@@ -60,7 +60,7 @@ const Header = ({ title, description, pending }: { title: string; description: s
       <Dialog.Title className="text-lg font-medium text-kumo-default">{title}</Dialog.Title>
       <Dialog.Description className="text-sm text-pretty text-kumo-subtle">{description}</Dialog.Description>
     </div>
-    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
   </header>
 )
 
@@ -123,7 +123,7 @@ const UpdateContent = ({ gadget, template, models, reviewer, onReviewerChange, o
         <div className="flex flex-col rounded-(--surface-radius) bg-kumo-tint p-2">
           <div className="flex items-start gap-3 p-2 text-base">
             <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-              <LayoutIcon className="size-5" />
+              <Layout01Icon className="size-5" />
             </span>
             <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-snug">
               {template === undefined ? <span role="status" className="appears-late py-2.5 text-sm text-kumo-subtle">Reading the template…</span>

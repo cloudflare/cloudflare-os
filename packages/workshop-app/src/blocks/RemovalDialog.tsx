@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Checkbox } from '@cloudflare/kumo'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { Avatar, Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 
@@ -75,7 +75,7 @@ const RemovalContent = ({ name, outcome, unknown, removing, onRemovingChange, on
             {outcome ? said(name, outcome, gadget) : unknown ? `Couldn’t check who this affects: ${unknown}` : 'Checking who this affects…'}
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       {outcome && outcome.dependents.length > 0 && (
         <section aria-label={`People ${name} let in`} className="appears flex min-h-0 flex-col gap-3 overflow-y-auto px-6 pt-2 pb-1">

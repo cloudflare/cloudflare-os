@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { CaretDownIcon } from '@phosphor-icons/react'
+import { ArrowDown01Icon } from '@/components/icons'
 import { AgentCrumb } from '@/blocks/AgentCrumb'
 import { AgentMark } from '@/blocks/AgentMark'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
@@ -246,7 +246,7 @@ const AgentRuns = ({ runs, more, now, onOpenRun, runHref }: AgentRunsProps) => {
           {folded.length > 0 && (
             <Button
               variant="ghost"
-              icon={<CaretDownIcon aria-hidden="true" className={cn('transition-transform duration-150 motion-reduce:transition-none', opened && 'rotate-180')} />}
+              icon={<ArrowDown01Icon aria-hidden="true" className={cn('transition-transform duration-150 motion-reduce:transition-none', opened && 'rotate-180')} />}
               aria-label={opened ? `Fold the ${folded.length} earlier runs` : `Show the ${folded.length} earlier runs`}
               aria-expanded={opened}
               className="ms-1 shrink-0 text-kumo-subtle"

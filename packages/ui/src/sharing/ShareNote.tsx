@@ -1,14 +1,14 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { CheckCircleIcon, InfoIcon, ShieldWarningIcon } from '@phosphor-icons/react'
+import { CheckmarkCircle02Icon, InformationCircleIcon, SecurityWarningIcon } from '../icons/icons'
 
 const TONES = {
   /** It changed nothing, and why. */
-  info: { icon: InfoIcon, role: 'status', colour: 'text-kumo-subtle' },
+  info: { icon: InformationCircleIcon, role: 'status', colour: 'text-kumo-subtle' },
   /** It was done. */
-  success: { icon: CheckCircleIcon, role: 'status', colour: 'text-kumo-success' },
+  success: { icon: CheckmarkCircle02Icon, role: 'status', colour: 'text-kumo-success' },
   /** Something to know before sharing, such as that it holds data others need access to. */
-  caution: { icon: ShieldWarningIcon, role: undefined, colour: 'text-kumo-warning' },
+  caution: { icon: SecurityWarningIcon, role: undefined, colour: 'text-kumo-warning' },
 } as const
 
 export type ShareNoteProps = {

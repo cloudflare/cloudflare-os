@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon } from '@/components/icons'
 import type { AdminFormat, AdminFormatPatch, BlueprintPublicInfo, BlueprintUserSummary } from '@gadgets/workshop-shared/api'
 import { Button, DropdownMenu, SettingRow, SettingsCard, SettingsGroup } from '@gadgets/ui'
 import { FormatIcon } from '@/components/FormatIcon'
@@ -36,9 +36,9 @@ const useBlueprints = () => {
 /** The way to offer another blueprint as a format: a menu of those that could be, each with what it makes. */
 const PromoteMenu = ({ candidates, busy, onPromote }: { candidates: Promotable[]; busy: boolean; onPromote: (id: string) => void }) =>
   candidates.length === 0 || busy
-    ? <Button icon={PlusIcon} disabled>Promote</Button>
+    ? <Button icon={PlusSignIcon} disabled>Promote</Button>
     : (
-        <DropdownMenu label="Promote" icon={PlusIcon} align="end" caret>
+        <DropdownMenu label="Promote" icon={PlusSignIcon} align="end" caret>
           {candidates.map(({ id, title, declared }) => (
             <DropdownMenu.Item key={id} label={title} onSelect={() => onPromote(id)}>
               <FormatIcon name={declared?.icon} className="shrink-0 text-kumo-subtle" />

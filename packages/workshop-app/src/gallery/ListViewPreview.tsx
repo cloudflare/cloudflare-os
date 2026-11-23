@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FileTextIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
+import { FileTextIcon, Presentation01Icon, TableIcon } from '@/components/icons'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { Button, DropdownMenu, ListToolbar, Switch, formatActivity, useListView } from '@gadgets/ui'
 import { WorkspaceCard } from '@/blocks/WorkspaceCard'
@@ -87,7 +87,7 @@ export const ListViewPreview = () => {
             <DropdownMenu label="New" caret triggerVariant="primary" side={under ? 'top' : 'bottom'} align="end" inPlace>
               <DropdownMenu.Item icon={FileTextIcon} onSelect={() => say('new document')}>Document</DropdownMenu.Item>
               <DropdownMenu.Item icon={TableIcon} onSelect={() => say('new spreadsheet')}>Spreadsheet</DropdownMenu.Item>
-              <DropdownMenu.Item icon={PresentationIcon} onSelect={() => say('new presentation')}>Presentation</DropdownMenu.Item>
+              <DropdownMenu.Item icon={Presentation01Icon} onSelect={() => say('new presentation')}>Presentation</DropdownMenu.Item>
             </DropdownMenu>
           )}
         />

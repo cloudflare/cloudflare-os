@@ -1,6 +1,6 @@
 import { useId } from 'react'
 import { Badge } from '@cloudflare/kumo'
-import { GlobeIcon, ShieldWarningIcon } from '@phosphor-icons/react'
+import { Globe02Icon, SecurityWarningIcon } from '@/components/icons'
 import { Button } from '@gadgets/ui'
 import { Card } from '@/components/Card'
 import { usePending, type ActionResult } from './usePending'
@@ -34,7 +34,7 @@ export const WebFetchRequestCard = ({ url, ...props }: WebFetchRequestCardProps)
       <section aria-labelledby={`${id}-title`} className="contents">
         <div className="flex items-start gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-            <GlobeIcon aria-hidden="true" className="size-5" />
+            <Globe02Icon aria-hidden="true" className="size-5" />
           </span>
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -47,7 +47,7 @@ export const WebFetchRequestCard = ({ url, ...props }: WebFetchRequestCardProps)
         </div>
         {props.state === 'pending' && props.restricted && (
           <p id={`${id}-restricted`} role="note" className="flex items-start gap-2 rounded-xl bg-kumo-warning-tint px-3 py-2 text-sm text-kumo-default">
-            <ShieldWarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
+            <SecurityWarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
             This workspace has read sensitive data. Read the whole address before approving: you are responsible for making sure it contains none of that data.
           </p>
         )}

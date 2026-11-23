@@ -1759,6 +1759,15 @@ big as it gets: it does not expand or go full screen, and the step down is that 
 fills the window, so the bar squares off its surface's corners as in full screen. The scripted
 chats (`/mock/*`) are laid out the same way on a narrow screen.
 
+## Icons
+
+Icons are Hugeicons, the free set (`@hugeicons/core-free-icons`), never Phosphor. Each one the app
+draws is a component in `components/icons.ts`, named as in Hugeicons and made by `@gadgets/ui`'s
+`hugeIcon`: import it from there, and add a line there for a new one. It is drawn as Phosphor's were,
+1em unless a class sizes it, in the text's colour, with a `weight`: `regular`, `bold` (small marks
+such as carets and closes), `fill` and `duotone`, which the free set lacks and `hugeIcon` draws from
+its lines. Kumo's own components still draw a few Phosphor icons inside them.
+
 ## Theming
 
 This app restyles Kumo at the token level, in `src/theme.css` only. That is a deliberate departure

@@ -1,4 +1,4 @@
-import { CheckCircleIcon, CircleNotchIcon, HandPalmIcon, PencilSimpleLineIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, CheckmarkCircle02Icon, HandIcon, LoaderCircleIcon, PenLineIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@gadgets/ui'
 
@@ -21,11 +21,11 @@ export type AgentRunRowProps = {
 }
 
 const MARKS = {
-  running: { Icon: CircleNotchIcon, colour: 'text-kumo-default motion-safe:animate-spin', words: 'text-kumo-subtle' },
-  waiting: { Icon: HandPalmIcon, colour: 'text-kumo-warning', words: 'text-kumo-warning' },
-  failed: { Icon: WarningCircleIcon, colour: 'text-kumo-danger', words: 'text-kumo-danger' },
-  changes: { Icon: PencilSimpleLineIcon, colour: 'text-kumo-default', words: 'text-kumo-subtle' },
-  done: { Icon: CheckCircleIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
+  running: { Icon: LoaderCircleIcon, colour: 'text-kumo-default motion-safe:animate-spin', words: 'text-kumo-subtle' },
+  waiting: { Icon: HandIcon, colour: 'text-kumo-warning', words: 'text-kumo-warning' },
+  failed: { Icon: AlertCircleIcon, colour: 'text-kumo-danger', words: 'text-kumo-danger' },
+  changes: { Icon: PenLineIcon, colour: 'text-kumo-default', words: 'text-kumo-subtle' },
+  done: { Icon: CheckmarkCircle02Icon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
 } as const
 
 /**

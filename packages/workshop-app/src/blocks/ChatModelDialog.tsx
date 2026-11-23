@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { SparkleIcon, XIcon } from '@phosphor-icons/react'
+import { AiMagicIcon, Cancel01Icon } from '@/components/icons'
 import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import type { ModelChoice } from './ModelBindingDialog'
 
@@ -42,13 +42,13 @@ const ChatModelContent = ({ models, initialModel, onBack, onAdd, onDone }: Omit<
     <form className="contents" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <header className="flex items-start gap-3 p-6">
         <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          <SparkleIcon className="size-6" />
+          <AiMagicIcon className="size-6" />
         </span>
         <div className="flex min-h-12 min-w-0 flex-1 flex-col justify-center gap-0.5 leading-snug">
           <Dialog.Title className="text-lg font-medium text-kumo-default">Add an AI model</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">The agent can give it to a gadget, whose code can then write text or decide things with it.</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto px-6">
         <div className="flex items-center justify-between gap-4 max-sm:flex-col max-sm:items-stretch max-sm:gap-2">

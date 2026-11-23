@@ -1,5 +1,5 @@
 import { useMemo, useState, type KeyboardEvent } from 'react'
-import { CaretRightIcon, FolderSimpleIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, Folder01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { CodeFileMenu } from './CodeFileMenu'
 import { CodeNameField } from './CodeNameField'
@@ -265,8 +265,8 @@ export const CodeFileTree = ({ files, shown, onShow, editing, adding, onAddingEn
               style={indent(depth)}
               className="group flex h-(--control-size) shrink-0 cursor-pointer items-center gap-1.5 rounded-xl pe-3 text-left text-(length:--control-text) text-kumo-subtle outline-none hover:bg-kumo-fill hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring"
             >
-              <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none', open && 'rotate-90')} />
-              <FolderSimpleIcon aria-hidden="true" weight={open ? 'regular' : 'fill'} className="size-[1.125em] shrink-0 opacity-80" />
+              <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none', open && 'rotate-90')} />
+              <Folder01Icon aria-hidden="true" weight={open ? 'regular' : 'fill'} className="size-[1.125em] shrink-0 opacity-80" />
               <span className="truncate">{node.name}</span>
             </button>
           )

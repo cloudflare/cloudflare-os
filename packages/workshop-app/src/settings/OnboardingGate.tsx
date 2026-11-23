@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon } from '@/components/icons'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { useApi } from '@/rpc/ApiContext'
 import { Onboarding } from './Onboarding'
@@ -44,7 +44,7 @@ export const OnboardingGate = ({ children }: { children: ReactNode }) => {
   if (known.status === 'failed') {
     return (
       <div className="flex h-dvh bg-kumo-canvas">
-        <PaneNotice icon={WarningCircleIcon} title="Couldn’t check whether you’re set up" description={known.message} action={{ label: 'Try again', onClick: () => setAttempt((at) => at + 1) }} />
+        <PaneNotice icon={AlertCircleIcon} title="Couldn’t check whether you’re set up" description={known.message} action={{ label: 'Try again', onClick: () => setAttempt((at) => at + 1) }} />
       </div>
     )
   }

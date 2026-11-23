@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon } from '@/components/icons'
 import { GATEWAY_MODEL_MODES, REASONING_LEVELS, type AdminModelView, type AdminSettingsView, type AiModelProvider, type GatewayModelMode, type GatewayModelSettings, type ReasoningLevel } from '@gadgets/workshop-shared/api'
 import { Button, Select, SettingRow, SettingsCard, SettingsGroup, Switch } from '@gadgets/ui'
 import { messageOf, useAttempt } from '../useAttempt'
@@ -201,7 +201,7 @@ const GatewayModels = ({ admin, gateway, reload }: GatewayModelsProps) => {
           : added.length === 0
             ? 'No models added yet. Those added are listed under their providers, marked Added.'
             : `Listed under their providers, marked Added. To shut one off, disable it. Removing one frees its ID instead: gadget model bindings made for it ${freed}.`}
-        action={<Button icon={PlusIcon} disabled={gateway.providers.length === 0} onClick={() => setAdding(true)}>Add model</Button>}
+        action={<Button icon={PlusSignIcon} disabled={gateway.providers.length === 0} onClick={() => setAdding(true)}>Add model</Button>}
       >
         <SettingRow
           title="Suggest models from models.dev"

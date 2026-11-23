@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { MagnifyingGlassIcon } from '@phosphor-icons/react'
+import { Search01Icon } from '@/components/icons'
 import { motion } from 'motion/react'
 import { useMotionTransition, useReducedMotion } from '@gadgets/ui'
 import { codeFileIcon } from './codeFileIcon'
@@ -100,7 +100,7 @@ export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, 
         transition={transition}
       >
         <div className="flex items-center gap-3 border-b border-kumo-line px-5">
-          <MagnifyingGlassIcon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />
+          <Search01Icon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />
           <input
             autoFocus
             role="combobox"

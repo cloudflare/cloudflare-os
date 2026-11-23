@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CaretRightIcon, LightningIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, Cancel01Icon, FlashIcon } from '@/components/icons'
 import { Banner, Button, Dialog } from '@gadgets/ui'
 import { formatCountdown, useCountdown } from '@/hooks/useCountdown'
 import { usePending, type ActionResult } from './usePending'
@@ -121,7 +121,7 @@ const OutOfCreditsContent = ({ state, onConnect, onChooseAccount, onAddCredits, 
             {state.status === 'ready' && <Said state={state} onReset={onReset} />}
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       {state.status === 'ready' && step === 'choose' && (
         <section aria-label="Cloudflare accounts" className="appears flex min-h-0 flex-col overflow-y-auto px-6 pt-2">
@@ -141,7 +141,7 @@ const OutOfCreditsContent = ({ state, onConnect, onChooseAccount, onAddCredits, 
                   <span className="min-w-0 flex-1 truncate">{account.name}</span>
                   {pending && choosing === account.id
                     ? <span className="shrink-0 text-sm text-kumo-subtle">Choosing…</span>
-                    : <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
+                    : <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
                 </button>
               ))}
             </div>
@@ -162,7 +162,7 @@ const OutOfCreditsContent = ({ state, onConnect, onChooseAccount, onAddCredits, 
           {state.status === 'failed' && <Button onClick={state.onRetry}>Try again</Button>}
           <Dialog.Close render={(props) => <Button {...props}>{step === 'connect' ? 'Maybe later' : 'Close'}</Button>} />
           {step === 'connect' && (
-            <Button variant="primary" icon={LightningIcon} disabled={pending} onClick={() => attempt('Couldn’t connect Cloudflare', onConnect)}>
+            <Button variant="primary" icon={FlashIcon} disabled={pending} onClick={() => attempt('Couldn’t connect Cloudflare', onConnect)}>
               Connect Cloudflare
             </Button>
           )}

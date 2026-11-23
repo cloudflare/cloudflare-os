@@ -1,6 +1,8 @@
 import { useId, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { BuildingsIcon, CaretLeftIcon, CompassIcon, PencilSimpleIcon, StarIcon, TrashIcon, UserIcon } from '@phosphor-icons/react'
+import {
+  ArrowLeft01Icon, Building06Icon, Delete02Icon, DiscoverCircleIcon, PenIcon, StarIcon, UserIcon,
+} from '@/components/icons'
 import { ConnectionNeeds } from '@/blocks/ConnectionNeeds'
 import { EditTemplateDialog } from '@/blocks/EditTemplateDialog'
 import { TemplatePreview } from '@/blocks/TemplatePreview'
@@ -65,8 +67,8 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
       <HeaderBubble name="templates">
         {narrow
-          ? <Button icon={CaretLeftIcon} aria-label="Back to Templates" onClick={onBack} />
-          : <Button icon={CompassIcon} onClick={onBack}>Templates</Button>}
+          ? <Button icon={ArrowLeft01Icon} aria-label="Back to Templates" onClick={onBack} />
+          : <Button icon={DiscoverCircleIcon} onClick={onBack}>Templates</Button>}
       </HeaderBubble>
       {template && (
         // Cut off where there is not room for all of it.
@@ -117,9 +119,9 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
           <div className="ms-auto flex items-center gap-2">
             {owner && (
               <>
-                <Button icon={PencilSimpleIcon} aria-label="Edit template" title="Edit" disabled={owner.busy} onClick={() => setEditing(true)} />
+                <Button icon={PenIcon} aria-label="Edit template" title="Edit" disabled={owner.busy} onClick={() => setEditing(true)} />
                 <ConfirmMenu
-                  icon={TrashIcon}
+                  icon={Delete02Icon}
                   aria-label="Delete template"
                   title="Delete template?"
                   description="It’s removed for everyone, including anyone with its link. What people already made from it stays as it is. This can’t be undone."
@@ -146,7 +148,7 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
             { label: 'Makes', value: <FormatIcon name={icon} />, detail: noun },
             // The logos, as a card shows them, where there are any to show.
             { label: 'Connections', value: needs.length > 0 ? <ServiceStack label="Needs" services={templateServices(template)} /> : 'None', detail: names || 'Nothing to connect' },
-            { label: 'Author', value: creator.organization ? <BuildingsIcon aria-hidden="true" /> : <UserIcon aria-hidden="true" />, detail: creator.name },
+            { label: 'Author', value: creator.organization ? <Building06Icon aria-hidden="true" /> : <UserIcon aria-hidden="true" />, detail: creator.name },
             { label: 'Updated', value: day.format(lastUpdated), detail: String(lastUpdated.getFullYear()) },
             { label: 'Version', value: version, detail: `Since ${month.format(created)}` },
           ]}

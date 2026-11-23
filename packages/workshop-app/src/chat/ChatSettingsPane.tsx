@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon, TrayIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, InboxIcon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
@@ -95,7 +95,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
           {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} onOpen={onOpenWorkspace} />}
           <HeaderBubble>
-            <Button icon={CaretLeftIcon} onClick={onBack}>Back to chat</Button>
+            <Button icon={ArrowLeft01Icon} onClick={onBack}>Back to chat</Button>
           </HeaderBubble>
         </nav>
       )}
@@ -124,10 +124,10 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
               <EmptyState
                 size="section"
                 tinted
-                icon={TrayIcon}
+                icon={InboxIcon}
                 title="Nothing made here yet"
                 description="The apps, documents and files this workspace’s chats make show here, this chat’s among them."
-                actions={[{ label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack }]}
+                actions={[{ label: 'Back to chat', icon: ArrowLeft01Icon, onClick: onBack }]}
               />
             )}
             {groups.map(({ key, label, entries }) => (
@@ -163,7 +163,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                 itemHref={itemHref}
                 empty={{
                   description: 'Ask in this chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
-                  action: { label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack },
+                  action: { label: 'Back to chat', icon: ArrowLeft01Icon, onClick: onBack },
                 }}
               />
             )}

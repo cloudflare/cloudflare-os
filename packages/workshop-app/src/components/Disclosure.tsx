@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Collapsible } from '@cloudflare/kumo/primitives/collapsible'
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon } from './icons'
 import { cn } from '@cloudflare/kumo/utils'
 import './Disclosure.css'
 
@@ -29,7 +29,7 @@ export const Disclosure = ({ summary, children, open, onToggle, hideCaret, trigg
     <Collapsible.Trigger className={cn('group flex max-w-full cursor-pointer items-center gap-2 self-start rounded-full px-2 py-1 text-left text-kumo-subtle hover:text-kumo-default', triggerClassName)}>
       {summary}
       {!hideCaret && (
-        <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
+        <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90 motion-reduce:transition-none" />
       )}
     </Collapsible.Trigger>
     <Collapsible.Panel className="disclosure-panel">{children}</Collapsible.Panel>

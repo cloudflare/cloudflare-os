@@ -1,6 +1,6 @@
 import { Badge } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
-import { ArrowUpRightIcon, GitBranchIcon } from '@phosphor-icons/react'
+import { ArrowUpRight01Icon, GitBranchIcon } from '@/components/icons'
 import { CARD } from '@/components/Card'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { LinkButton } from '@gadgets/ui'
@@ -41,6 +41,6 @@ export const OutputCard = ({ title, kind, draft, format, href, onOpen }: OutputC
         <span className="truncate">{caption({ kind, draft, format })}</span>
       </span>
     </span>
-    <ArrowUpRightIcon aria-hidden="true" weight="bold" className="size-4 shrink-0 text-kumo-subtle group-hover:text-kumo-default" />
+    <ArrowUpRight01Icon aria-hidden="true" weight="bold" className="size-4 shrink-0 text-kumo-subtle group-hover:text-kumo-default" />
   </LinkButton>
 )

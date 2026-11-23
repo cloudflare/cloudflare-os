@@ -20,7 +20,8 @@
     "react": "^19.3.1"
   },
   "dependencies": {
-    "@phosphor-icons/react": "^2.1.10",
+    "@hugeicons/core-free-icons": "^4.4.0",
+    "@hugeicons/react": "^1.1.10",
     "motion": "^14.11.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"

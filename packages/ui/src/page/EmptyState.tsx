@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { Icon } from '@phosphor-icons/react'
+import type { Icon } from '../icons/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '../Button'
 import { DropdownMenu } from '../menu/DropdownMenu'

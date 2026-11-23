@@ -1,5 +1,5 @@
 import { useState, type Ref } from 'react'
-import { ArrowClockwiseIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, FileArrowDownIcon } from '@phosphor-icons/react'
+import { CollapseIcon, FileDownIcon, FullScreenIcon, MoreHorizontalIcon, RedoIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button, DropdownMenu } from '@gadgets/ui'
 import { ExportItems, type ExportItemsProps } from './ExportItems'
@@ -65,18 +65,18 @@ export const SnapshotPreview = ({ gadgetTitle, workspaceTitle, ownerName, snapsh
               the room it is given beside that. There from the start, so that nothing arrives in
               the bar once the snapshot has. */}
           <div className="flex shrink-0 items-center">
-            <DropdownMenu icon={DotsThreeIcon} aria-label={`More for the snapshot of ${gadgetTitle}`} triggerVariant="ghost" triggerClassName={BAR_BUTTON} align="end">
-              <DropdownMenu.Item icon={ArrowClockwiseIcon} disabled={!ready || refreshing} onSelect={refresh}>Refresh snapshot</DropdownMenu.Item>
+            <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for the snapshot of ${gadgetTitle}`} triggerVariant="ghost" triggerClassName={BAR_BUTTON} align="end">
+              <DropdownMenu.Item icon={RedoIcon} disabled={!ready || refreshing} onSelect={refresh}>Refresh snapshot</DropdownMenu.Item>
               {exports && ready && (
                 // Its items are only there while it is open, so that each opening reads what there is again.
-                <DropdownMenu.Submenu label="Export snapshot" icon={FileArrowDownIcon}>
+                <DropdownMenu.Submenu label="Export snapshot" icon={FileDownIcon}>
                   <ExportItems {...exports} />
                 </DropdownMenu.Submenu>
               )}
             </DropdownMenu>
             {expanded
-              ? <Button variant="ghost" icon={CornersInIcon} aria-label="Collapse" title="Collapse" onClick={() => onExpandedChange(false)} className={BAR_BUTTON} />
-              : <Button variant="ghost" icon={CornersOutIcon} aria-label="Expand" title="Expand" onClick={() => onExpandedChange(true)} className={BAR_BUTTON} />}
+              ? <Button variant="ghost" icon={CollapseIcon} aria-label="Collapse" title="Collapse" onClick={() => onExpandedChange(false)} className={BAR_BUTTON} />
+              : <Button variant="ghost" icon={FullScreenIcon} aria-label="Expand" title="Expand" onClick={() => onExpandedChange(true)} className={BAR_BUTTON} />}
           </div>
         </div>
         <div aria-busy={refreshing || undefined} className={cn('relative min-h-0 overflow-hidden bg-kumo-base transition-opacity motion-reduce:transition-none', refreshing && 'opacity-50', expanded ? 'h-[calc(100dvh-21rem)]' : 'aspect-video')}>

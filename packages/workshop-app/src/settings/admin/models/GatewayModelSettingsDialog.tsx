@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { COMPACTION_TRIGGER_RATIO, type AdminModelView, type AiModelProvider, type GatewayModelSettings, type ReasoningLevel } from '@gadgets/workshop-shared/api'
 import { Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { AllowedModelsEditor } from './AllowedModelsEditor'
@@ -129,7 +129,7 @@ export const GatewayModelSettingsDialog = ({ model, onClose, ...settings }: Gate
             <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{model.name}</Dialog.Title>
             <Dialog.Description className="font-mono text-sm wrap-anywhere text-kumo-subtle">{model.id}</Dialog.Description>
           </div>
-          <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+          <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
         </header>
         <ModelSettingsForm key={model.id} model={model} {...settings} />
       </>

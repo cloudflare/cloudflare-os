@@ -1,4 +1,6 @@
-import { ArrowSquareOutIcon, DotsThreeIcon, EnvelopeOpenIcon, EyeSlashIcon, LinkIcon, TrashIcon } from '@phosphor-icons/react'
+import {
+  Delete02Icon, Link04Icon, LinkSquare02Icon, MailOpen01Icon, MoreHorizontalIcon, ViewOffSlashIcon,
+} from '@/components/icons'
 import { type ButtonProps, DropdownMenu } from '@gadgets/ui'
 
 /**
@@ -33,17 +35,17 @@ const copyLink = (href: string) => {
  * from the list, whichever is the viewer's.
  */
 export const WorkspaceMoreMenu = ({ title, href, onMarkRead, removal, triggerVariant = 'ghost', triggerClassName }: WorkspaceMoreMenuProps) => (
-  <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
-    {onMarkRead && <DropdownMenu.Item icon={EnvelopeOpenIcon} onSelect={onMarkRead}>Mark as read</DropdownMenu.Item>}
+  <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
+    {onMarkRead && <DropdownMenu.Item icon={MailOpen01Icon} onSelect={onMarkRead}>Mark as read</DropdownMenu.Item>}
     {onMarkRead && (href || removal) && <DropdownMenu.Separator />}
     {href && (
       <>
-        <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={() => window.open(href, '_blank', 'noopener')}>Open in new tab</DropdownMenu.Item>
-        <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
+        <DropdownMenu.Item icon={LinkSquare02Icon} onSelect={() => window.open(href, '_blank', 'noopener')}>Open in new tab</DropdownMenu.Item>
+        <DropdownMenu.Item icon={Link04Icon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
       </>
     )}
     {href && removal && <DropdownMenu.Separator />}
-    {removal?.kind === 'delete' && <DropdownMenu.Item icon={TrashIcon} danger onSelect={removal.onSelect}>Delete workspace…</DropdownMenu.Item>}
-    {removal?.kind === 'dismiss' && <DropdownMenu.Item icon={EyeSlashIcon} onSelect={removal.onSelect}>Remove from my list…</DropdownMenu.Item>}
+    {removal?.kind === 'delete' && <DropdownMenu.Item icon={Delete02Icon} danger onSelect={removal.onSelect}>Delete workspace…</DropdownMenu.Item>}
+    {removal?.kind === 'dismiss' && <DropdownMenu.Item icon={ViewOffSlashIcon} onSelect={removal.onSelect}>Remove from my list…</DropdownMenu.Item>}
   </DropdownMenu>
 )

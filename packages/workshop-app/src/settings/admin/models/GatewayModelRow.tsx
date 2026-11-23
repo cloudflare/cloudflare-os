@@ -1,4 +1,6 @@
-import { ArrowDownIcon, ArrowUpIcon, DotsThreeIcon, FlaskIcon, SlidersHorizontalIcon, TrashIcon } from '@phosphor-icons/react'
+import {
+  ArrowDown02Icon, ArrowUp02Icon, Delete02Icon, FilterHorizontalIcon, FlaskConicalIcon, MoreHorizontalIcon,
+} from '@/components/icons'
 import { GATEWAY_MODEL_MODES, modelKind, type AdminModelView, type GatewayModelMode } from '@gadgets/workshop-shared/api'
 import { DropdownMenu, LIST_ACTION, Select, Tag } from '@gadgets/ui'
 import { GatewayTestStatus } from './GatewayTest'
@@ -66,15 +68,15 @@ export const GatewayModelRow = ({ model, behavesLikeName, test, onModeChange, on
               if (mode !== model.mode) onModeChange(mode)
             }}
           />
-          <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${model.name}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
-            {!decision && <DropdownMenu.Item icon={FlaskIcon} disabled={test?.state === 'testing'} onSelect={onTest}>Test</DropdownMenu.Item>}
-            {!decision && <DropdownMenu.Item icon={SlidersHorizontalIcon} onSelect={onOpenSettings}>Settings…</DropdownMenu.Item>}
-            <DropdownMenu.Item icon={ArrowUpIcon} disabled={!onMoveUp} onSelect={onMoveUp}>Move up</DropdownMenu.Item>
-            <DropdownMenu.Item icon={ArrowDownIcon} disabled={!onMoveDown} onSelect={onMoveDown}>Move down</DropdownMenu.Item>
+          <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${model.name}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
+            {!decision && <DropdownMenu.Item icon={FlaskConicalIcon} disabled={test?.state === 'testing'} onSelect={onTest}>Test</DropdownMenu.Item>}
+            {!decision && <DropdownMenu.Item icon={FilterHorizontalIcon} onSelect={onOpenSettings}>Settings…</DropdownMenu.Item>}
+            <DropdownMenu.Item icon={ArrowUp02Icon} disabled={!onMoveUp} onSelect={onMoveUp}>Move up</DropdownMenu.Item>
+            <DropdownMenu.Item icon={ArrowDown02Icon} disabled={!onMoveDown} onSelect={onMoveDown}>Move down</DropdownMenu.Item>
             {onRemove && (
               <>
                 <DropdownMenu.Separator />
-                <DropdownMenu.Item icon={TrashIcon} danger onSelect={onRemove}>Remove…</DropdownMenu.Item>
+                <DropdownMenu.Item icon={Delete02Icon} danger onSelect={onRemove}>Remove…</DropdownMenu.Item>
               </>
             )}
           </DropdownMenu>

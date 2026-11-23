@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
-import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
+import {
+  ArrowLeft01Icon, DashboardCircleIcon, FileTextIcon, Logout05Icon, PlusSignIcon, Presentation01Icon,
+  Search01Icon, TableIcon,
+} from '@/components/icons'
 import { WORKSPACE_ICON_COLORS, WORKSPACE_ICON_SHAPES, type WorkspaceLook } from '@/prefs/preferenceFields'
 import { Composer } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
@@ -213,7 +216,7 @@ const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
   <>
     <DropdownMenu.Item icon={FileTextIcon} onSelect={() => onSelect('Document')}>Document</DropdownMenu.Item>
     <DropdownMenu.Item icon={TableIcon} onSelect={() => onSelect('Spreadsheet')}>Spreadsheet</DropdownMenu.Item>
-    <DropdownMenu.Item icon={PresentationIcon} onSelect={() => onSelect('Presentation')}>Presentation</DropdownMenu.Item>
+    <DropdownMenu.Item icon={Presentation01Icon} onSelect={() => onSelect('Presentation')}>Presentation</DropdownMenu.Item>
   </>
 )
 
@@ -234,9 +237,9 @@ const DURATIONS = [280, 360, 420, 840, 1680]
 
 const triggerContent = (kind: TriggerKind) =>
   kind === 'icon'
-    ? ({ icon: PlusIcon, 'aria-label': 'New' } as const)
+    ? ({ icon: PlusSignIcon, 'aria-label': 'New' } as const)
     : kind === 'icon-text'
-      ? ({ icon: PlusIcon, label: 'New' } as const)
+      ? ({ icon: PlusSignIcon, label: 'New' } as const)
       : ({ label: 'Create' } as const)
 
 /** One trigger with toggles for every placement, so each opening direction can be reviewed. */
@@ -289,17 +292,17 @@ const BasicsPage = () => (
   <>
     <Section title="Button">
       <Button>Refactor conditional rendering logic</Button>
-      <Button icon={CaretLeftIcon}>Back to chat</Button>
-      <Button icon={CirclesFourIcon} aria-label="Apps" />
+      <Button icon={ArrowLeft01Icon}>Back to chat</Button>
+      <Button icon={DashboardCircleIcon} aria-label="Apps" />
       <Button disabled>Disabled</Button>
-      <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+      <Button icon={Search01Icon} aria-label="Search" />
       <Button variant="ghost">Ghost</Button>
       <Button variant="primary">Primary</Button>
       <Button variant="danger">Danger</Button>
     </Section>
     <Section title="ConfirmMenu (what cannot be taken back, asked in place: growing up from the end, and down from an icon)">
       <ConfirmMenu label="Delete chat" title="Delete this chat?" description="What was said in it goes for everyone in the workspace. What it made stays in the library." confirmLabel="Delete chat" onConfirm={() => {}} />
-      <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
+      <ConfirmMenu icon={Logout05Icon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
     </Section>
     <Section title="Banner (something wrong: said alone, and with what to do about it and the way to)">
       <div className="flex w-full max-w-lg flex-col gap-3">

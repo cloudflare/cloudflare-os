@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CaretLeftIcon, CaretRightIcon, FunnelSimpleIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, ArrowRight01Icon, Cancel01Icon, ListFilterIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import type { AdminAuditKind, AdminAuditPage } from '@gadgets/workshop-shared/api'
 import { Button, DropdownMenu, OptionPicker, SettingsCard } from '@gadgets/ui'
@@ -44,7 +44,7 @@ const FilterMenu = ({ filter, admins, targets, onFilterChange }: FilterMenuProps
   const on = Object.values(filter).filter((value) => value !== undefined).length
   const pick = (key: 'admin' | 'method' | 'owner') => (id: string) => onFilterChange({ ...filter, [key]: filter[key] === id ? undefined : id })
   return (
-    <DropdownMenu icon={FunnelSimpleIcon} aria-label={on > 0 ? `Filter (${on} on)` : 'Filter'} triggerClassName={cn(on > 0 && NARROWED)} align="end" inPlace>
+    <DropdownMenu icon={ListFilterIcon} aria-label={on > 0 ? `Filter (${on} on)` : 'Filter'} triggerClassName={cn(on > 0 && NARROWED)} align="end" inPlace>
       <DropdownMenu.Label>Show only</DropdownMenu.Label>
       <DropdownMenu.RadioGroup
         aria-label="Kind"
@@ -151,7 +151,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, admins, reloads, resta
           <Button
             key={key}
             variant="secondary"
-            icon={<XIcon weight="bold" />}
+            icon={<Cancel01Icon weight="bold" />}
             aria-label={`Stop showing only: ${label}`}
             onClick={() => onFilterChange({ ...filter, [key]: undefined })}
             className="max-w-full min-w-0"
@@ -188,11 +188,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, admins, reloads, resta
           </div>
           {(pageNumber > 1 || page.nextCursor !== undefined) && (
             <nav aria-label="Audit log pages" className="flex items-center justify-between gap-3 px-5">
-              <Button icon={CaretLeftIcon} disabled={pageNumber === 1} onClick={() => turnTo(cursors.slice(0, -1))}>Newer</Button>
+              <Button icon={ArrowLeft01Icon} disabled={pageNumber === 1} onClick={() => turnTo(cursors.slice(0, -1))}>Newer</Button>
               <span aria-live="polite" className="text-sm text-kumo-subtle">Page {pageNumber}</span>
               <Button disabled={page.nextCursor === undefined} onClick={() => page.nextCursor !== undefined && turnTo([...cursors, page.nextCursor])}>
                 Older
-                <CaretRightIcon aria-hidden="true" />
+                <ArrowRight01Icon aria-hidden="true" />
               </Button>
             </nav>
           )}

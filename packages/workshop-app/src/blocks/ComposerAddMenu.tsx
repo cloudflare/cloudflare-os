@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Combobox } from '@cloudflare/kumo/primitives/combobox'
-import { PaperclipIcon, PlugIcon, PlusIcon } from '@phosphor-icons/react'
+import { AttachmentIcon, PlugSocketIcon, PlusSignIcon } from '@/components/icons'
 import { DropdownMenu } from '@gadgets/ui'
 import { stored } from '@/prefs/stored'
 import { commandGlyph, type ComposerCommand } from './ComposerCommandPicker'
@@ -32,7 +32,7 @@ type ComposerAddMenuProps = ComposerAddActions & {
 /** The composer's action picker. Its callers supply capabilities; absent actions stay disabled. */
 export const ComposerAddMenu = ({ anchorRef, inPlace, onOpen, ...actions }: ComposerAddMenuProps) => (
   <DropdownMenu
-    icon={<PlusIcon weight="bold" />}
+    icon={<PlusSignIcon weight="bold" />}
     aria-label="Add to conversation"
     triggerClassName="size-(--composer-button) text-kumo-subtle not-data-disabled:hover:text-kumo-default [&>svg]:size-[calc(var(--composer-button)*0.47)]"
     triggerVariant="ghost"
@@ -56,8 +56,8 @@ const ROW =
 const NOTE = 'px-[calc(var(--menu-pad-x)+0.375rem)] py-4 text-(length:--menu-text) leading-(--menu-line) text-kumo-subtle'
 
 const ACTIONS = {
-  upload: { icon: PaperclipIcon, label: 'Upload files or photos' },
-  connection: { icon: PlugIcon, label: 'Add a new connection' },
+  upload: { icon: AttachmentIcon, label: 'Upload files or photos' },
+  connection: { icon: PlugSocketIcon, label: 'Add a new connection' },
 } as const
 
 // How tall the menu was when its skills were last listed, in this browser: while they are read

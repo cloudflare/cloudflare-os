@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { ArrowsInLineVerticalIcon, ScrollIcon, type Icon } from '@phosphor-icons/react'
+import { FoldVerticalIcon, ScrollIcon, type Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 /** Something the composer can send in place of words alone: a skill, or a built-in command. */
@@ -29,7 +29,7 @@ export type ComposerCommandPickerProps = {
 
 /** A command's glyph: a skill's scroll, or what a built-in does. */
 export const commandGlyph = (command: Pick<ComposerCommand, 'kind' | 'name'>): Icon =>
-  command.kind === 'builtin' && command.name === 'compact' ? ArrowsInLineVerticalIcon : ScrollIcon
+  command.kind === 'builtin' && command.name === 'compact' ? FoldVerticalIcon : ScrollIcon
 
 /** A command's glyph, drawn. */
 export const CommandIcon = ({ command, className }: { command: Pick<ComposerCommand, 'kind' | 'name'>; className?: string }) => {

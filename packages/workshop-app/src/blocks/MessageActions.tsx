@@ -1,7 +1,7 @@
-import { ArrowBendUpLeftIcon, BracketsCurlyIcon, CopyIcon, DotsThreeIcon, EyeSlashIcon, HashIcon, InfoIcon } from '@phosphor-icons/react'
-import { Brain03Icon } from '@hugeicons/core-free-icons'
+import {
+  Brain03Icon, BracesIcon, Copy01Icon, HashIcon, InformationCircleIcon, MoreHorizontalIcon, ReplyIcon, ViewOffSlashIcon,
+} from '@/components/icons'
 import { Button, DropdownMenu } from '@gadgets/ui'
-import { hugeIcon } from '@/components/HugeIcon'
 
 export type MessageActionsProps = {
   /** Start a reply to the message. */
@@ -24,9 +24,6 @@ export type MessageActionsProps = {
 /** Compact, fill-free actions beside a message or its details panel. */
 export const MESSAGE_ACTION_STYLE = 'size-7 text-sm text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default not-data-disabled:hover:bg-transparent'
 
-// The thinking button's brain, from Hugeicons, the free set, as the steps' icons are.
-const Brain = hugeIcon(Brain03Icon)
-
 // The clipboard is refused without permission and is not there at all on a page that is not served
 // securely: either way nothing is copied, which there is no more to say of.
 const copy = (text: string) => void navigator.clipboard.writeText(text).catch(() => {})
@@ -34,11 +31,11 @@ const copy = (text: string) => void navigator.clipboard.writeText(text).catch(()
 /** What can be done with a message: reply to it, see how it came about, and in more, its details (a click on the message shows them as well), copy it (and in developer mode its ID and raw JSON) or mark the chat unread from it. */
 export const MessageActions = ({ onReply, copyText, developerCopies, onMarkUnread, details, thinking }: MessageActionsProps) => (
   <div className="flex items-center">
-    <Button variant="ghost" icon={ArrowBendUpLeftIcon} aria-label="Reply" title="Reply" className={MESSAGE_ACTION_STYLE} onClick={onReply} />
+    <Button variant="ghost" icon={ReplyIcon} aria-label="Reply" title="Reply" className={MESSAGE_ACTION_STYLE} onClick={onReply} />
     {thinking && (
       <Button
         variant="ghost"
-        icon={Brain}
+        icon={Brain03Icon}
         aria-label={thinking.open ? 'Hide thinking' : 'Show thinking'}
         title={thinking.open ? 'Hide thinking' : 'Show thinking'}
         aria-expanded={thinking.open}
@@ -48,12 +45,12 @@ export const MessageActions = ({ onReply, copyText, developerCopies, onMarkUnrea
       />
     )}
     {(copyText !== undefined || developerCopies || onMarkUnread || details) && (
-      <DropdownMenu icon={DotsThreeIcon} aria-label="More" triggerVariant="ghost" triggerClassName={MESSAGE_ACTION_STYLE}>
-        {details && <DropdownMenu.Item icon={InfoIcon} onSelect={details.onToggle}>{details.open ? 'Hide details' : 'Show details'}</DropdownMenu.Item>}
-        {copyText !== undefined && <DropdownMenu.Item icon={CopyIcon} onSelect={() => copy(copyText)}>Copy</DropdownMenu.Item>}
+      <DropdownMenu icon={MoreHorizontalIcon} aria-label="More" triggerVariant="ghost" triggerClassName={MESSAGE_ACTION_STYLE}>
+        {details && <DropdownMenu.Item icon={InformationCircleIcon} onSelect={details.onToggle}>{details.open ? 'Hide details' : 'Show details'}</DropdownMenu.Item>}
+        {copyText !== undefined && <DropdownMenu.Item icon={Copy01Icon} onSelect={() => copy(copyText)}>Copy</DropdownMenu.Item>}
         {developerCopies && <DropdownMenu.Item icon={HashIcon} onSelect={() => copy(developerCopies.id)}>Copy message ID</DropdownMenu.Item>}
-        {developerCopies && <DropdownMenu.Item icon={BracketsCurlyIcon} onSelect={() => { const json = developerCopies.json(); if (json !== undefined) copy(json) }}>Copy raw JSON</DropdownMenu.Item>}
-        {onMarkUnread && <DropdownMenu.Item icon={EyeSlashIcon} onSelect={onMarkUnread}>Mark as unread</DropdownMenu.Item>}
+        {developerCopies && <DropdownMenu.Item icon={BracesIcon} onSelect={() => { const json = developerCopies.json(); if (json !== undefined) copy(json) }}>Copy raw JSON</DropdownMenu.Item>}
+        {onMarkUnread && <DropdownMenu.Item icon={ViewOffSlashIcon} onSelect={onMarkUnread}>Mark as unread</DropdownMenu.Item>}
       </DropdownMenu>
     )}
   </div>

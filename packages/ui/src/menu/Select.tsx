@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react'
-import { CaretDownIcon } from '@phosphor-icons/react'
+import { ArrowDown01Icon } from '../icons/icons'
 import { DropdownMenu } from './DropdownMenu'
 import { OptionPicker } from './OptionPicker'
 
@@ -66,7 +66,7 @@ export const Select = <Value extends string>({ value, onValueChange, options, 'a
         <>
           {typed ? <span className="w-24" /> : <span className="min-w-0 truncate">{said}</span>}
           {/* Its own chevron rather than the menu's (`caret`): quieter than what it says, as a field's is. */}
-          <span className="-me-0.5 flex text-kumo-subtle"><CaretDownIcon aria-hidden="true" weight="bold" className="size-3" /></span>
+          <span className="-me-0.5 flex text-kumo-subtle"><ArrowDown01Icon aria-hidden="true" weight="bold" className="size-3" /></span>
         </>
       )}
       aria-label={`${label}: ${said}`}

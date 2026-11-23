@@ -1,6 +1,6 @@
 import { useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
-import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
+import { ArrowUp02Icon, StopIcon } from '@/components/icons'
 import { Button } from '@gadgets/ui'
 import type { FormatIconName } from '@/components/FormatIcon'
 import { byRecentUse, recordCommandUse } from '@/prefs/recentCommands'
@@ -525,7 +525,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
             {showSend && (
               <Button
                 type="submit"
-                icon={<ArrowUpIcon weight="bold" />}
+                icon={<ArrowUp02Icon weight="bold" />}
                 aria-label="Send"
                 disabled={!canSend}
                 className={COMPOSER_BUTTON}

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Tabs as BaseTabs } from '@cloudflare/kumo/primitives/tabs'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from './icons/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type TabsTab<Value extends string> = {
@@ -101,7 +101,7 @@ const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-labe
                         onClick={tab.onClose}
                         className="me-1.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-full text-kumo-subtle hover:bg-kumo-contrast/5 hover:text-kumo-default"
                       >
-                        <XIcon aria-hidden="true" weight="bold" className="size-3" />
+                        <Cancel01Icon aria-hidden="true" weight="bold" className="size-3" />
                       </button>
                     )}
               </span>

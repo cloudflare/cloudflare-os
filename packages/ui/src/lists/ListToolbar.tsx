@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from 'react'
-import { FunnelSimpleIcon, RowsIcon, SortAscendingIcon, SquaresFourIcon } from '@phosphor-icons/react'
+import { GridViewIcon, ListFilterIcon, SortByDown02Icon, ViewAgendaIcon } from '../icons/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '../Button'
 import { DropdownMenu } from '../menu/DropdownMenu'
@@ -56,7 +56,7 @@ const FilterMenu = ({ value, options, facetMenus = {}, choices = [], onChange, s
 
   return (
     <DropdownMenu
-      icon={FunnelSimpleIcon}
+      icon={ListFilterIcon}
       aria-label={count > 0 ? `Filter (${count} on)` : 'Filter'}
       triggerClassName={cn(count > 0 && NARROWED, className)}
       side={side}
@@ -129,11 +129,11 @@ export const ListToolbar = ({ noun, search, searchExpanded = false, view, order,
         {view && (
           // It shows the view it goes to, as the button of a thing to do.
           view.value === 'list'
-            ? <Button icon={SquaresFourIcon} aria-label="Show as cards" title="Show as cards" className={lifted} onClick={() => view.onChange('cards')} />
-            : <Button icon={RowsIcon} aria-label="Show as a list" title="Show as a list" className={lifted} onClick={() => view.onChange('list')} />
+            ? <Button icon={GridViewIcon} aria-label="Show as cards" title="Show as cards" className={lifted} onClick={() => view.onChange('cards')} />
+            : <Button icon={ViewAgendaIcon} aria-label="Show as a list" title="Show as a list" className={lifted} onClick={() => view.onChange('list')} />
         )}
         {order && (
-          <DropdownMenu icon={SortAscendingIcon} aria-label={order.groups ? 'Group and sort' : 'Sort'} triggerClassName={lifted} side={at} align="end" inPlace>
+          <DropdownMenu icon={SortByDown02Icon} aria-label={order.groups ? 'Group and sort' : 'Sort'} triggerClassName={lifted} side={at} align="end" inPlace>
             {order.groups && (
               <>
                 <DropdownMenu.Label>Group by</DropdownMenu.Label>

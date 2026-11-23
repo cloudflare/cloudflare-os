@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppWindowIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, AppWindowIcon } from '@/components/icons'
 import type { GatekeeperUiFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { useApi } from '@/rpc/ApiContext'
@@ -63,7 +63,7 @@ export const GatekeeperAppPane = ({ gatekeeperId, title, onOpenWorkspace, onOpen
   if (opened.status === 'failed') {
     return (
       <PaneNotice
-        icon={WarningCircleIcon}
+        icon={AlertCircleIcon}
         title={`Couldn’t open ${title ?? 'the app'}`}
         description={opened.message}
         action={{

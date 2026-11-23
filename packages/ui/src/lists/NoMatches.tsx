@@ -1,4 +1,4 @@
-import { MagnifyingGlassIcon } from '@phosphor-icons/react'
+import { Search01Icon } from '../icons/icons'
 import { EmptyState } from '../page/EmptyState'
 
 export type NoMatchesProps = {
@@ -13,7 +13,7 @@ export const NoMatches = ({ noun, onShowAll }: NoMatchesProps) => (
   <EmptyState
     size="section"
     tinted
-    icon={MagnifyingGlassIcon}
+    icon={Search01Icon}
     title={noun ? `No ${noun} match` : 'Nothing matches'}
     description="Try another search, or clear the filters to see everything again."
     actions={[{ label: 'Show all', onClick: onShowAll }]}

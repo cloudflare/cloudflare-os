@@ -1,4 +1,4 @@
-import { PlusIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, PlusSignIcon } from '@/components/icons'
 import { Button, CardAction, DropdownMenu, LIST_ACTION, OptionPicker, SettingsGroup } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/prefs/preferenceFields'
@@ -44,7 +44,7 @@ export const MutedWorkspaces = ({ title, description, muted, others, loading = f
       title={title}
       description={description}
       action={others.length > 0 && (
-        <DropdownMenu icon={PlusIcon} label="Mute workspace" picker inPlace align="end">
+        <DropdownMenu icon={PlusSignIcon} label="Mute workspace" picker inPlace align="end">
           {(close) => (
             <OptionPicker
               single
@@ -76,7 +76,7 @@ export const MutedWorkspaces = ({ title, description, muted, others, loading = f
               </span>
               {/* Seen while the workspace is pointed at or has the focus, and always to a finger. */}
               <CardAction>
-                <Button variant="ghost" icon={XIcon} aria-label={`Unmute ${workspace.title}`} title="Unmute" onClick={() => onUnmute(workspace.id)} className={LIST_ACTION} />
+                <Button variant="ghost" icon={Cancel01Icon} aria-label={`Unmute ${workspace.title}`} title="Unmute" onClick={() => onUnmute(workspace.id)} className={LIST_ACTION} />
               </CardAction>
             </li>
           ))}

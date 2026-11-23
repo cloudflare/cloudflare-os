@@ -1,4 +1,4 @@
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type CapturedLogsChipProps = {
@@ -34,7 +34,7 @@ export const CapturedLogsChip = ({ count, severity, preview, onAdd, onDiscard }:
           onClick={onDiscard}
           className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-full hover:bg-kumo-tint hover:text-kumo-default"
         >
-          <XIcon aria-hidden="true" className="size-3" />
+          <Cancel01Icon aria-hidden="true" className="size-3" />
         </button>
       </div>
     </div>

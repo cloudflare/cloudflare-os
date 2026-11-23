@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { MagnifyingGlassIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, Search01Icon } from '../icons/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type SearchFieldProps = {
@@ -40,7 +40,7 @@ export const SearchField = ({ value, onValueChange, label, expanded = false, cla
       )}
     >
       <span className="grid size-(--control-size) shrink-0 place-items-center">
-        <MagnifyingGlassIcon aria-hidden="true" className="size-[1.125em]" />
+        <Search01Icon aria-hidden="true" className="size-[1.125em]" />
       </span>
       <input
         ref={inputRef}
@@ -71,7 +71,7 @@ export const SearchField = ({ value, onValueChange, label, expanded = false, cla
           }}
           className="-ms-3 grid size-(--control-size) shrink-0 cursor-pointer place-items-center rounded-full text-kumo-subtle hover:text-kumo-default"
         >
-          <XIcon aria-hidden="true" weight="bold" className="size-3.5" />
+          <Cancel01Icon aria-hidden="true" weight="bold" className="size-3.5" />
         </button>
       )}
     </label>

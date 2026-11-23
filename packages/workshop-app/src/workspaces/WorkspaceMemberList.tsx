@@ -2,7 +2,7 @@ import { AccessMenu, Button, ListGroup, ListToolbar, MemberListItem, useListView
 import { RemovalDialog } from '@/blocks/RemovalDialog'
 import { useApi } from '@/rpc/ApiContext'
 import { memberList } from './memberList'
-import { UserPlusIcon } from '@phosphor-icons/react'
+import { UserAdd01Icon } from '@/components/icons'
 import { canChange, shareStanding } from './sharingRules'
 import type { SharingSession, SharingSnapshot } from './SharingSession'
 import { useRemoval } from './useRemoval'
@@ -46,7 +46,7 @@ export const WorkspaceMemberList = ({ snapshot, session, onInvite }: WorkspaceMe
         <ListToolbar
           noun="members"
           {...(standing ? { search: list.controls.search, order: list.controls.order } : {})}
-          action={onInvite && <Button variant="primary" icon={UserPlusIcon} onClick={onInvite}>Invite</Button>}
+          action={onInvite && <Button variant="primary" icon={UserAdd01Icon} onClick={onInvite}>Invite</Button>}
         />
       )}
       {snapshot.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading members…</p>}

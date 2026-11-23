@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { ArrowCounterClockwiseIcon, UploadSimpleIcon } from '@phosphor-icons/react'
+import { UndoIcon, Upload01Icon } from '@/components/icons'
 import { DropdownMenu } from '@gadgets/ui'
 import { LogoIcon } from '@/components/LogoIcon'
 
@@ -38,8 +38,8 @@ export const SiteLogoPicker = ({ src, busy = false, onChoose, onRestore }: SiteL
         keepTrigger
         align="end"
       >
-        <DropdownMenu.Item icon={UploadSimpleIcon} disabled={busy} onSelect={() => input.current?.click()}>Upload</DropdownMenu.Item>
-        <DropdownMenu.Item icon={ArrowCounterClockwiseIcon} disabled={busy || !src} onSelect={onRestore}>Restore default</DropdownMenu.Item>
+        <DropdownMenu.Item icon={Upload01Icon} disabled={busy} onSelect={() => input.current?.click()}>Upload</DropdownMenu.Item>
+        <DropdownMenu.Item icon={UndoIcon} disabled={busy || !src} onSelect={onRestore}>Restore default</DropdownMenu.Item>
       </DropdownMenu>
       <input
         ref={input}

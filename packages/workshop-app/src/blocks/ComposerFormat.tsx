@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
 import { Button, useReducedMotion } from '@gadgets/ui'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
@@ -43,7 +43,7 @@ export const ComposerFormat = ({ format, onRemove }: ComposerFormatProps) => {
           {/* Quiet until pointed at, as the actions beside a message are. */}
           <Button
             variant="ghost"
-            icon={<XIcon weight="bold" />}
+            icon={<Cancel01Icon weight="bold" />}
             aria-label={`Don’t start with ${written?.noun}`}
             title="Remove"
             onClick={onRemove}

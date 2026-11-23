@@ -1,4 +1,4 @@
-import { CheckIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, Tick02Icon } from '@/components/icons'
 import { Avatar, Banner, Button, Dialog } from '@gadgets/ui'
 import { InviteField, type InviteSuggestions } from './InviteField'
 
@@ -39,7 +39,7 @@ export const UserPickerDialog = ({ appTitle, value, onValueChange, onPick, picke
         <Dialog.Title className="text-lg font-medium text-kumo-default">Choose people</Dialog.Title>
         <Dialog.Description className="text-sm text-kumo-subtle">{appTitle} is told who you choose, for what you’re doing in it.</Dialog.Description>
       </div>
-      <Button variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={closing} onClick={onClose} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />
+      <Button variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={closing} onClick={onClose} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />
     </header>
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-1 pb-1">
       <InviteField
@@ -60,7 +60,7 @@ export const UserPickerDialog = ({ appTitle, value, onValueChange, onPick, picke
             <li key={person.id} className="flex items-center gap-3 py-1 text-base text-kumo-default">
               <Avatar name={person.name} small />
               <span className="min-w-0 flex-1 truncate">{person.name}</span>
-              <CheckIcon aria-label="Added" weight="bold" className="size-4 text-kumo-success" />
+              <Tick02Icon aria-label="Added" weight="bold" className="size-4 text-kumo-success" />
             </li>
           ))}
         </ul>

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
+import { AudioWave01Icon, FileTextIcon, Image03Icon } from '@/components/icons'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { WebFetchRequestCard } from '@/blocks/WebFetchRequestCard'
@@ -142,10 +142,10 @@ export const CardBlocksPreview = () => {
               onSelect={() => say('open the document')}
               more={{ onRename: (title) => say(`rename it “${title}”`), onInvite: () => say('invite people to it'), onOpenSettings: () => say('open its settings'), onDelete: () => say('delete it') }}
             />
-            <FileListItem title="my-favourite-image.jpg" icon={<ImageIcon aria-hidden="true" />} time="4 hours ago" onSelect={() => say('open the image')} />
+            <FileListItem title="my-favourite-image.jpg" icon={<Image03Icon aria-hidden="true" />} time="4 hours ago" onSelect={() => say('open the image')} />
           </ListGroup>
           <ListGroup label="Since Monday">
-            <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<WaveformIcon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
+            <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<AudioWave01Icon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
             <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" waiting={2} onSelect={() => say('open the checklist')} />
           </ListGroup>
         </Column>

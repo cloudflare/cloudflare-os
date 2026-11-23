@@ -17,6 +17,11 @@ patterns and composed components.
 - A Tailwind consumer must include `packages/ui/src` as an `@source`, because the shared components'
   utility classes are compiled by the consuming app.
 
+## Icons
+
+Icons are Hugeicons, the free set. `icons/hugeIcon.tsx` (exported) makes a component of one, which
+the apps' own icon modules use; this package's components draw theirs from `icons/icons.ts`.
+
 ## Styles And App-Provided State
 
 `styles.css` carries the Gadgets design tokens (Kumo overrides as `light-dark()` pairs, control and

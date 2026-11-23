@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
 import { Button, useReducedMotion } from '@gadgets/ui'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { CommandIcon, type ComposerCommand } from './ComposerCommandPicker'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
@@ -43,7 +43,7 @@ export const ComposerCommandLine = ({ command, refusal, onCancel }: {
           </span>
           <Button
             variant="ghost"
-            icon={<XIcon weight="bold" />}
+            icon={<Cancel01Icon weight="bold" />}
             aria-label={written?.kind === 'skill' ? 'Don’t use the skill' : 'Remove the command'}
             title={written?.kind === 'skill' ? 'Don’t use the skill' : 'Remove the command'}
             onClick={onCancel}

@@ -1,5 +1,7 @@
 import { useReducer } from 'react'
-import { BrainIcon, CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
+import {
+  AiMagicIcon, Brain03Icon, CodeIcon, ComputerIcon, Moon02Icon, PaintBoardIcon, PanelLeftIcon, Sun03Icon,
+} from '@/components/icons'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
 import { type MotionLevel, useMotionLevel } from '@gadgets/ui'
@@ -26,10 +28,10 @@ export const usePreferenceSettings = () => {
     title: 'Theme',
     description: 'Follows your system unless you choose. Saved in this browser.',
     keywords: ['appearance', 'color', 'colour', 'mode'],
-    icon: PaletteIcon,
+    icon: PaintBoardIcon,
     value: theme,
     options: THEME_OPTIONS,
-    optionIcons: { system: DesktopIcon, light: SunIcon, dark: MoonIcon },
+    optionIcons: { system: ComputerIcon, light: Sun03Icon, dark: Moon02Icon },
     placeholder: 'System',
     set: (next) => {
       writeTheme(next)
@@ -42,7 +44,7 @@ export const usePreferenceSettings = () => {
     title: 'Animations',
     description: 'Follows your system unless you choose. Saved in this browser.',
     keywords: ['motion', 'reduce', 'reduced', 'transitions'],
-    icon: SparkleIcon,
+    icon: AiMagicIcon,
     value: motion,
     options: MOTION_OPTIONS,
     placeholder: 'Full',
@@ -54,7 +56,7 @@ export const usePreferenceSettings = () => {
     title: 'Auto-open outputs',
     description: 'Open apps, documents and other outputs in the side pane as soon as the assistant creates them. Saved in this browser.',
     keywords: ['side pane', 'apps', 'documents', 'open'],
-    icon: SidebarSimpleIcon,
+    icon: PanelLeftIcon,
     checked: opensNewOutputs,
     set: (next) => {
       writeLayoutPrefs({ opensNewOutputs: next })
@@ -69,7 +71,7 @@ export const usePreferenceSettings = () => {
     title: 'Always show thinking',
     description: 'Show what the assistant is doing while it works, and how each reply came about, without having to open it. Clicking the assistant while it works turns this on or off too. Saved in this browser.',
     keywords: ['thinking', 'reasoning', 'steps', 'work', 'tools', 'history', 'trace', 'expand'],
-    icon: BrainIcon,
+    icon: Brain03Icon,
     checked: liveWorkOpen,
     set: writeLiveWorkOpen,
   }

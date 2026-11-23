@@ -1,4 +1,7 @@
-import { AppWindowIcon, ArrowSquareOutIcon, DotsThreeIcon, GearSixIcon, LinkIcon, PencilSimpleIcon, StackPlusIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
+import {
+  AppWindowIcon, Delete02Icon, LayersPlusIcon, Link04Icon, LinkSquare02Icon, MoreHorizontalIcon, PenIcon,
+  Settings02Icon, UserAdd01Icon,
+} from '@/components/icons'
 import { type ButtonProps, DropdownMenu } from '@gadgets/ui'
 
 /** What can be done to an output from its more menu, besides opening it: each left out for whoever may not. */
@@ -39,20 +42,20 @@ const copyLink = (href: string) => {
  * another tab, and copy its link; then, for whoever builds in its workspace, rename it, invite people to it, go to its settings and create a template from it; and after a line, delete it, which asks first.
  */
 export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onInvite, onOpenSettings, onCreateTemplate, onDelete, triggerVariant = 'ghost', triggerClassName }: LibraryMoreMenuProps) => (
-  <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
+  <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
     <DropdownMenu.Item icon={AppWindowIcon} onSelect={onOpen}>Open</DropdownMenu.Item>
     {href && (
       <>
-        <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={() => window.open(href, '_blank', 'noopener')}>Open in new tab</DropdownMenu.Item>
-        <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
+        <DropdownMenu.Item icon={LinkSquare02Icon} onSelect={() => window.open(href, '_blank', 'noopener')}>Open in new tab</DropdownMenu.Item>
+        <DropdownMenu.Item icon={Link04Icon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
       </>
     )}
     {(onRename || onInvite || onOpenSettings || onCreateTemplate) && <DropdownMenu.Separator />}
-    {onRename && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={onRename}>Rename</DropdownMenu.Item>}
-    {onInvite && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onInvite}>Invite user…</DropdownMenu.Item>}
-    {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
-    {onCreateTemplate && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onCreateTemplate}>Create template…</DropdownMenu.Item>}
+    {onRename && <DropdownMenu.Item icon={PenIcon} onSelect={onRename}>Rename</DropdownMenu.Item>}
+    {onInvite && <DropdownMenu.Item icon={UserAdd01Icon} onSelect={onInvite}>Invite user…</DropdownMenu.Item>}
+    {onOpenSettings && <DropdownMenu.Item icon={Settings02Icon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
+    {onCreateTemplate && <DropdownMenu.Item icon={LayersPlusIcon} onSelect={onCreateTemplate}>Create template…</DropdownMenu.Item>}
     {onDelete && <DropdownMenu.Separator />}
-    {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
+    {onDelete && <DropdownMenu.Item icon={Delete02Icon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
   </DropdownMenu>
 )

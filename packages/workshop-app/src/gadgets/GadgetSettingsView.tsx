@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { CaretLeftIcon, FileArrowDownIcon, PlugIcon, PlusIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import {
+  AlertCircleIcon, ArrowLeft01Icon, FileDownIcon, PlugSocketIcon, PlusSignIcon, Share08Icon,
+} from '@/components/icons'
 import { BindingRow } from '@/blocks/BindingRow'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import type { MadeTemplate, TemplateChanges } from '@/blocks/CreateTemplateDialog'
@@ -138,7 +140,7 @@ export const GadgetSettingsView = ({
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
       {workspace && onOpenWorkspace && <WorkspaceCrumb id={workspace.id} title={workspace.title} label={workspace.label} look={workspace.look} onOpen={onOpenWorkspace} />}
       <HeaderBubble>
-        <Button icon={CaretLeftIcon} onClick={onBack}>Back to app</Button>
+        <Button icon={ArrowLeft01Icon} onClick={onBack}>Back to app</Button>
       </HeaderBubble>
     </nav>
   )
@@ -154,14 +156,14 @@ export const GadgetSettingsView = ({
       <>
         <div className="flex min-h-[60vh] flex-col">
           {state.status === 'denied' ? (
-            <PaneNotice icon={WarningCircleIcon} title={`You don’t have access to ${title || 'this gadget'}`} description="Ask whoever shared it to add you to its workspace." />
+            <PaneNotice icon={AlertCircleIcon} title={`You don’t have access to ${title || 'this gadget'}`} description="Ask whoever shared it to add you to its workspace." />
           ) : state.status === 'gone' ? (
-            <PaneNotice icon={WarningCircleIcon} title="This gadget isn’t here" description="It may have been deleted, or the link is wrong." />
+            <PaneNotice icon={AlertCircleIcon} title="This gadget isn’t here" description="It may have been deleted, or the link is wrong." />
           ) : state.status === 'failed' ? (
-            <PaneNotice icon={WarningCircleIcon} title="Couldn’t load the gadget" description={state.message} action={{ label: 'Try again', onClick: state.onRetry }} />
+            <PaneNotice icon={AlertCircleIcon} title="Couldn’t load the gadget" description={state.message} action={{ label: 'Try again', onClick: state.onRetry }} />
           ) : (
             <PaneNotice
-              icon={ShareNetworkIcon}
+              icon={Share08Icon}
               title={`${title || 'This gadget'} was shared with you`}
               description="Its settings are for whoever builds in its workspace."
               action={{ label: 'Back to app', onClick: onBack }}
@@ -229,10 +231,10 @@ export const GadgetSettingsView = ({
                     <EmptyState
                       size="section"
                       tinted
-                      icon={PlugIcon}
+                      icon={PlugSocketIcon}
                       title="No connections yet"
                       description="The services and models it uses on your behalf show here. Ask the agent in a chat to connect it to something."
-                      actions={onConnect && [{ label: 'Add connection', icon: PlusIcon, variant: 'primary', onClick: onConnect }]}
+                      actions={onConnect && [{ label: 'Add connection', icon: PlusSignIcon, variant: 'primary', onClick: onConnect }]}
                     />
                   )
                 : (
@@ -275,7 +277,7 @@ export const GadgetSettingsView = ({
                 )}
                 {exports && (
                   <SettingRow title="Export" description="Save it to this device as a file, or to one of your accounts.">
-                    <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+                    <DropdownMenu icon={FileDownIcon} label="Export" caret keepTrigger align="end">
                       <ExportItems {...exports} />
                     </DropdownMenu>
                   </SettingRow>

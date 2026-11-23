@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { isAgentRun, type AiChatAuthorInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { ChatsCircleIcon, EyeIcon, NotePencilIcon, QuestionIcon, ShieldCheckIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import {
+  AlertCircleIcon, HelpCircleIcon, MessageMultiple02Icon, PencilEdit02Icon, SecurityCheckIcon, ViewIcon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ChatListItem, type ChatBadge } from '@/blocks/ChatListItem'
 import { Button, EmptyState, formatActivity, formatActivityShort, ListGroup, ListToolbar, NoMatches, useListView } from '@gadgets/ui'
@@ -47,10 +49,10 @@ const BADGES: Record<ChatState['kind'], ChatBadge | undefined> = { approval: 'wa
 // At work, it says so under its title, in place of its latest message, and needs no pill.
 // On a narrow screen, an icon in place of the words.
 const PILLS: Record<Exclude<ChatState['kind'], 'working'>, Pick<StatusPillProps, 'tone' | 'icon'>> = {
-  approval: { tone: 'warning', icon: ShieldCheckIcon },
-  answer: { tone: 'warning', icon: QuestionIcon },
-  failed: { tone: 'danger', icon: WarningCircleIcon },
-  review: { tone: 'info', icon: EyeIcon },
+  approval: { tone: 'warning', icon: SecurityCheckIcon },
+  answer: { tone: 'warning', icon: HelpCircleIcon },
+  failed: { tone: 'danger', icon: AlertCircleIcon },
+  review: { tone: 'info', icon: ViewIcon },
 }
 
 /**
@@ -155,7 +157,7 @@ export const ChatListView = (props: ChatListViewProps) => {
           action={(
             <span className="flex gap-2">
               {markRead && <Button variant="ghost" onClick={markRead}>Mark all read</Button>}
-              <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>
+              <Button variant="primary" icon={PencilEdit02Icon} onClick={onNewChat}>New chat</Button>
             </span>
           )}
         />
@@ -167,10 +169,10 @@ export const ChatListView = (props: ChatListViewProps) => {
         <EmptyState
           size="section"
           tinted
-          icon={ChatsCircleIcon}
+          icon={MessageMultiple02Icon}
           title="No chats yet"
           description="Chats in this workspace show here. Ask for an app, a document or something to run by itself, and it’s made here."
-          actions={[{ label: 'New chat', icon: NotePencilIcon, variant: 'primary', onClick: onNewChat }]}
+          actions={[{ label: 'New chat', icon: PencilEdit02Icon, variant: 'primary', onClick: onNewChat }]}
         />
       )}
       {(list.narrowed || runs !== 'needing') && shown.length === 0 && (

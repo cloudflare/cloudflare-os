@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ShieldCheckIcon } from '@phosphor-icons/react'
+import { SecurityCheckIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { LIST_ACTION, Switch } from '@gadgets/ui'
 import { AutomationDialog } from './AutomationDialog'
@@ -47,7 +47,7 @@ export const AutomationRow = ({ waiting, ...automation }: AutomationRowProps) =>
         </span>
         {/* Its switch says so, for whoever has one. */}
         {!enabled && !onEnabledChange && <span className="shrink-0 text-kumo-subtle">Off</span>}
-        {waiting && <StatusPill words={waiting.words} tone="warning" icon={ShieldCheckIcon} count={waiting.count} />}
+        {waiting && <StatusPill words={waiting.words} tone="warning" icon={SecurityCheckIcon} count={waiting.count} />}
       </button>
       {onEnabledChange && (
         <span className="relative flex shrink-0 px-1.5">

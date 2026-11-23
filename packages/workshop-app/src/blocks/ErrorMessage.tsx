@@ -1,4 +1,4 @@
-import { ArrowClockwiseIcon, LightningIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, FlashIcon, RedoIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
@@ -17,7 +17,7 @@ export type ErrorMessageProps = {
 export const ErrorMessage = ({ children, variant = 'error', onRetry, onContinue }: ErrorMessageProps) => {
   const [pending, run] = usePending()
   const limit = variant === 'usageLimit'
-  const StateIcon = limit ? LightningIcon : WarningCircleIcon
+  const StateIcon = limit ? FlashIcon : AlertCircleIcon
 
   return (
     <div className="flex flex-col items-start gap-2">
@@ -31,8 +31,8 @@ export const ErrorMessage = ({ children, variant = 'error', onRetry, onContinue 
         <span className="min-w-0">{children}</span>
       </div>
       {limit
-        ? onContinue && <Button variant="primary" icon={LightningIcon} disabled={pending} onClick={() => run(onContinue)}>Continue</Button>
-        : onRetry && <Button icon={ArrowClockwiseIcon} disabled={pending} onClick={() => run(onRetry)}>Retry</Button>}
+        ? onContinue && <Button variant="primary" icon={FlashIcon} disabled={pending} onClick={() => run(onContinue)}>Continue</Button>
+        : onRetry && <Button icon={RedoIcon} disabled={pending} onClick={() => run(onRetry)}>Retry</Button>}
     </div>
   )
 }

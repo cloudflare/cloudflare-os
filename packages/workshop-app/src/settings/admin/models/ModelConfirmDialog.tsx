@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { Button, Dialog } from '@gadgets/ui'
 
 export type ModelConfirmDialogProps = {
@@ -28,7 +28,7 @@ export const ModelConfirmDialog = ({ title, description, confirmLabel, pendingLa
         <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
         <Dialog.Description className="text-sm text-kumo-subtle">{description}</Dialog.Description>
       </div>
-      <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+      <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
     </header>
     <footer className="flex justify-end gap-2 p-6 pt-4">
       <Dialog.Close render={(props) => <Button {...props} disabled={pending}>Cancel</Button>} />

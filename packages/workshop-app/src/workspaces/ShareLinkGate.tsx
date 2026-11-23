@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { LinkBreakIcon, ShieldCheckIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, SecurityCheckIcon, Unlink04Icon } from '@/components/icons'
 import { getAccessConfirmationErrorCode, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES } from '@gadgets/workshop-shared/api'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { useAskAccessAgain } from '@/connections/ObserverAccessProvider'
@@ -90,7 +90,7 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
   if (state.status === 'dead') return <BrokenShareLink because={state.because} onContinue={() => setState({ status: 'done' })} />
   const notice = state.status === 'unconfirmed'
     ? {
-        icon: ShieldCheckIcon,
+        icon: SecurityCheckIcon,
         title: 'You didn’t confirm your access',
         description: 'The link let you in. To open what it shares, choose which of your accounts it reads through.',
         action: { label: 'Confirm access', onClick: () => {
@@ -99,7 +99,7 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
           setState({ status: 'done' })
         } },
       }
-    : { icon: WarningCircleIcon, title: 'Couldn’t open the shared link', description: state.message, action: { label: 'Try again', onClick: () => setState({ status: state.retry }) } }
+    : { icon: AlertCircleIcon, title: 'Couldn’t open the shared link', description: state.message, action: { label: 'Try again', onClick: () => setState({ status: state.retry }) } }
   return <div className="flex h-dvh"><PaneNotice {...notice} /></div>
 }
 
@@ -110,7 +110,7 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
 export const BrokenShareLink = ({ because, onContinue }: { because?: string; onContinue: () => void }) => (
   <div className="flex h-dvh">
     <PaneNotice
-      icon={LinkBreakIcon}
+      icon={Unlink04Icon}
       title="This link doesn’t work any more"
       description={because ?? DEAD_LINK}
       action={{ label: 'Continue', onClick: onContinue }}

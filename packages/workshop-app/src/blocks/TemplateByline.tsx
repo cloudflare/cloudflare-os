@@ -1,4 +1,4 @@
-import { BuildingsIcon } from '@phosphor-icons/react'
+import { Building06Icon } from '@/components/icons'
 import { Avatar, Tooltip } from '@gadgets/ui'
 import { ServiceStack } from '@/components/ServiceStack'
 
@@ -28,7 +28,7 @@ export const TemplateByline = ({ creator, connections = [], spread = false }: Te
         {creator.organization
           ? (
               <span className="grid size-6 place-items-center rounded-full bg-kumo-base text-kumo-subtle">
-                <BuildingsIcon size={13} />
+                <Building06Icon size={13} />
               </span>
             )
           // Between a menu line's picture and a row's, as the line it ends has room for.

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 
@@ -43,7 +43,7 @@ const DeleteGadgetContent = ({ title, workspace, onConfirm, pending, run }: Pick
             run it. What it’s connected to stays in the workspace. This can’t be undone.
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <footer className="flex flex-col gap-3 p-6 pt-4">
         {problem && <Banner title={`Couldn’t delete “${title}”`} description={problem} />}

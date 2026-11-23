@@ -9,7 +9,7 @@ import type {
   UserDirectoryRecord,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { BuildingsIcon, UsersThreeIcon } from '@phosphor-icons/react'
+import { Building06Icon, UserGroupIcon } from '@/components/icons'
 import { AccessMenu, Banner, Button, ListGroup, MemberListItem, ShareNote } from '@gadgets/ui'
 import { ConfirmAccessForm, type ConfirmAccessRow } from '@/blocks/ConfirmAccessForm'
 import { InviteField } from '@/blocks/InviteField'
@@ -191,9 +191,9 @@ const RowsPreview = () => {
             />
           ))}
           <MemberListItem name="Katherine Johnson" role="Can use" />
-          <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
+          <MemberListItem icon={UserGroupIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
-            icon={BuildingsIcon}
+            icon={Building06Icon}
             name="Anyone with your link"
             detail="Signed in to Cloudflare OS"
             role=""

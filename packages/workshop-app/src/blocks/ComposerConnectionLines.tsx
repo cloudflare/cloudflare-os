@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Button, DropdownMenu, useReducedMotion } from '@gadgets/ui'
-import { CaretRightIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, Cancel01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { ServiceStack } from '@/components/ServiceStack'
@@ -75,7 +75,7 @@ const Line = ({ connection, refusal, onRemove }: { connection: ComposerConnectio
         : <Button onClick={ask.onAct} className={ASK}>{ask.label}</Button>)}
       <Button
         variant="ghost"
-        icon={<XIcon weight="bold" />}
+        icon={<Cancel01Icon weight="bold" />}
         aria-label={`Don’t add ${connection.title}`}
         title={`Don’t add ${connection.title}`}
         onClick={onRemove}
@@ -123,7 +123,7 @@ export const ComposerConnectionLines = ({ connections, refusal, onRemove }: {
               <ServiceStack services={services} label="On" />
               <span className="min-w-0 shrink truncate font-medium text-kumo-default">{done.length} connections</span>
               <span className="min-w-0 flex-1 truncate text-kumo-subtle">{refusal && shown.length === 0 ? refusal : 'going with this message'}</span>
-              <CaretRightIcon aria-hidden="true" weight="bold" className={cn('me-1.5 size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', unfolded && 'rotate-90')} />
+              <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('me-1.5 size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', unfolded && 'rotate-90')} />
             </button>
           </div>
         </motion.div>

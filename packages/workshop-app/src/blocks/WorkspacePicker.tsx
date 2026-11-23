@@ -1,4 +1,4 @@
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon } from '@/components/icons'
 import { DropdownMenu, OptionPicker } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/prefs/preferenceFields'
@@ -52,7 +52,7 @@ export const WorkspacePicker = ({ workspaces, value, onValueChange }: WorkspaceP
           single
           aria-label="Workspace"
           options={[
-            { id: NEW, label: NEW_TITLE, icon: <PlusIcon aria-hidden="true" className="size-4" /> },
+            { id: NEW, label: NEW_TITLE, icon: <PlusSignIcon aria-hidden="true" className="size-4" /> },
             ...workspaces.map((workspace) => ({ id: workspace.id, label: workspace.title, icon: <WorkspaceIcon label={workspace.label} {...workspace.look} small /> })),
           ]}
           value={chosen?.id ?? NEW}

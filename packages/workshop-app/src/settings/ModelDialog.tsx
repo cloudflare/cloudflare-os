@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
-import { PlusIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, PlusSignIcon } from '@/components/icons'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
 import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { Disclosure } from '@/components/Disclosure'
@@ -103,13 +103,13 @@ const HeaderRows = ({ rows, usable, problems, disabled, onChange }: {
             <span className="min-w-0 flex-1">
               <SecretField aria-label="Header value" placeholder="Value" disabled={disabled} saved={headerIsSaved({ ...row, value: null }, usable)} value={row.value} onValueChange={(value) => update(row.id, (each) => ({ ...each, value }))} />
             </span>
-            <Button variant="ghost" icon={<XIcon weight="bold" />} aria-label={`Remove ${row.name.trim() || 'this header'}`} disabled={disabled} onClick={() => onChange(rows.filter(({ id }) => id !== row.id))} className="text-kumo-subtle" />
+            <Button variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label={`Remove ${row.name.trim() || 'this header'}`} disabled={disabled} onClick={() => onChange(rows.filter(({ id }) => id !== row.id))} className="text-kumo-subtle" />
           </div>
           {problems[row.id] && <p role="alert" className="text-sm text-pretty text-kumo-danger">{problems[row.id]}</p>}
         </div>
       ))}
       <div>
-        <Button variant="ghost" icon={PlusIcon} disabled={disabled} onClick={() => onChange([...rows, newHeaderRow()])}>Add header</Button>
+        <Button variant="ghost" icon={PlusSignIcon} disabled={disabled} onClick={() => onChange([...rows, newHeaderRow()])}>Add header</Button>
       </div>
     </div>
   )
@@ -189,7 +189,7 @@ const ModelFormContent = ({ mode, providers, gateway, onSave, onDone }: Omit<Mod
               : mode.kind === 'edit' ? `Changes to ${source!.profile.name} apply to new messages.` : `A new model with the same provider${gateway ? '' : ' and key'} as ${source!.profile.name}.`}
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
       <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto px-6 pb-1">
@@ -293,7 +293,7 @@ export const ModelDialog = ({ open, onOpenChange, mode, ...props }: ModelDialogP
       <div className="flex flex-col gap-4 p-6">
         <div className="flex items-start gap-3">
           <Dialog.Title className="min-w-0 flex-1 text-lg font-medium text-kumo-default">{TITLE[mode.kind]}</Dialog.Title>
-          <Dialog.Close render={(close) => <Button {...close} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+          <Dialog.Close render={(close) => <Button {...close} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
         </div>
         {mode.problem
           ? <Banner title={`Couldn’t read the model: ${mode.problem}`} />

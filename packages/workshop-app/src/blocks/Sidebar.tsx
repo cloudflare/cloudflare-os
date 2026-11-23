@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react'
-import { AppWindowIcon, CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon, SignOutIcon } from '@phosphor-icons/react'
+import {
+  AppWindowIcon, DashboardCircleIcon, FlashIcon, Folder02Icon, Logout05Icon, PuzzleIcon, Search01Icon,
+  Settings01Icon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Avatar, Button, DropdownMenu, Markdown, useNarrowScreen } from '@gadgets/ui'
 import { ConnectButton } from '@/components/ConnectButton'
@@ -218,7 +221,7 @@ export const Sidebar = ({
   )
   const workspacesButton = (
     <Button
-      icon={FolderIcon}
+      icon={Folder02Icon}
       aria-label="Workspaces"
       aria-current={workspacesPage?.current ? 'page' : undefined}
       onClick={workspacesPage?.onOpen}
@@ -229,7 +232,7 @@ export const Sidebar = ({
   const libraryButton = (
     <span className="relative flex">
       <Button
-        icon={CirclesFourIcon}
+        icon={DashboardCircleIcon}
         aria-label={waitingLabel('Library', waiting) ?? 'Library'}
         aria-current={library?.current ? 'page' : undefined}
         onClick={library?.onOpen}
@@ -240,7 +243,7 @@ export const Sidebar = ({
   )
   const automationsButton = (
     <Button
-      icon={LightningIcon}
+      icon={FlashIcon}
       aria-label="Automations"
       aria-current={automationsPage?.current ? 'page' : undefined}
       onClick={automationsPage?.onOpen}
@@ -257,7 +260,7 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   ))
-  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
+  const search = <Button icon={Search01Icon} aria-label="Search" onClick={onSearch} />
   const account = (
     <DropdownMenu
       icon={<Avatar name={user.name} src={user.avatarUrl} />}
@@ -269,8 +272,8 @@ export const Sidebar = ({
       // About the sidebar's own width (248px, from 208), rather than as wide as two short words.
       popupClassName="w-56 max-w-(--available-width)"
     >
-      <DropdownMenu.Item icon={GearIcon} onSelect={settingsPage?.onOpen}>Settings</DropdownMenu.Item>
-      {onSignOut && <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut}>Sign out</DropdownMenu.Item>}
+      <DropdownMenu.Item icon={Settings01Icon} onSelect={settingsPage?.onOpen}>Settings</DropdownMenu.Item>
+      {onSignOut && <DropdownMenu.Item icon={Logout05Icon} onSelect={onSignOut}>Sign out</DropdownMenu.Item>}
     </DropdownMenu>
   )
   const connect = (
@@ -316,7 +319,7 @@ export const Sidebar = ({
           {automationsButton}
           {appButtons}
           <Button
-            icon={PuzzlePieceIcon}
+            icon={PuzzleIcon}
             aria-label="Connections"
             aria-current={connectionsPage?.current ? 'page' : undefined}
             onClick={connectionsPage?.onOpen}
@@ -335,7 +338,7 @@ export const Sidebar = ({
           {home}
           {/* A keyboard's shortcut says nothing on a phone. */}
           {narrow ? search : (
-            <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch}>
+            <Button icon={Search01Icon} aria-label="Search" onClick={onSearch}>
               <kbd className="font-sans font-normal text-kumo-subtle">{searchKeys()}</kbd>
             </Button>
           )}
@@ -344,16 +347,16 @@ export const Sidebar = ({
         {nav}
         <footer className="mt-0.5">
           <NavRows>
-            <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
+            <NavRow icon={<Folder02Icon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
             <NavRow
-              icon={<CirclesFourIcon />}
+              icon={<DashboardCircleIcon />}
               label="Library"
               aria-label={waitingLabel('Library', waiting)}
               current={library?.current}
               onClick={library?.onOpen}
               waiting={waiting}
             />
-            <NavRow icon={<LightningIcon />} label="Automations" current={automationsPage?.current} onClick={automationsPage?.onOpen} />
+            <NavRow icon={<FlashIcon />} label="Automations" current={automationsPage?.current} onClick={automationsPage?.onOpen} />
             {apps.map((app) => <NavRow key={app.id} icon={appIcon(app)} label={app.title} current={app.current} onClick={app.onOpen} />)}
           </NavRows>
           {/* The account is in from the edge as a row's circle is (`p-2`), so that it lines up with them; the connect button ends where the search button does, over it. */}

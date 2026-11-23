@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ArrowRightIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowRight02Icon, Cancel01Icon } from '@/components/icons'
 import { Banner, Button, ConfirmMenu, Dialog, LinkButton, Markdown, Switch } from '@gadgets/ui'
 import { AutomationGlyph } from './AutomationGlyph'
 import { deletionProblem, deletionWords, type AutomationDetails } from './automationDetails'
@@ -53,7 +53,7 @@ const AutomationDialogContent = ({ title, description, resource, gadget, workspa
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">{enabled ? 'On' : 'Off'}</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-1">
@@ -64,7 +64,7 @@ const AutomationDialogContent = ({ title, description, resource, gadget, workspa
             <Fact label="Runs app">
               <LinkButton href={gadget.href} onClick={go(gadget.onOpen)} className={LINK}>
                 <span className="truncate">{gadget.title}</span>
-                <ArrowRightIcon aria-hidden="true" className="size-3.5 text-kumo-subtle" weight="bold" />
+                <ArrowRight02Icon aria-hidden="true" className="size-3.5 text-kumo-subtle" weight="bold" />
               </LinkButton>
             </Fact>
           )}

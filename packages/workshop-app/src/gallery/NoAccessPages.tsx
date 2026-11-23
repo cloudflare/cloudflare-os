@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowCounterClockwiseIcon } from '@phosphor-icons/react'
+import { UndoIcon } from '@/components/icons'
 import { asideItemFor, itemPageId, keptVersion } from '@/aside/asideItems'
 import { AsidePane } from '@/aside/AsidePane'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
@@ -135,7 +135,7 @@ const Controls = ({ which, onSelect, template, onTemplateChange, onRestart }: No
           <DropdownMenu.Item key={id} onSelect={() => onSelect(id)}>{label}</DropdownMenu.Item>
         ))}
       </DropdownMenu>
-      <Button variant="ghost" icon={ArrowCounterClockwiseIcon} aria-label="Start over" title="Start over" onClick={onRestart} />
+      <Button variant="ghost" icon={UndoIcon} aria-label="Start over" title="Start over" onClick={onRestart} />
       <Button variant="ghost" aria-pressed={template} onClick={() => onTemplateChange(!template)}>{template ? 'With a template' : 'No template'}</Button>
       <Tooltip content={shown.description}>
         <span tabIndex={0} className="max-w-96 truncate max-md:hidden">{shown.description}</span>

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowsLeftRightIcon, BrainIcon, LinkBreakIcon, PencilSimpleIcon } from '@phosphor-icons/react'
+import { ArrowLeftRightIcon, Brain03Icon, PenIcon, Unlink04Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button, CardAction, ConfirmMenu, LIST_ACTION, LinkButton, type SaveOutcome, Tag, Tooltip, useEditedField } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
@@ -91,7 +91,7 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
             </span>
           )
         : kind === 'model'
-          ? <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><BrainIcon className="size-5" /></span>
+          ? <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><Brain03Icon className="size-5" /></span>
           : <ServiceLogo name={service?.name ?? title} src={service?.logoUrl} color={service?.color} small />}
       <span className="min-w-0 flex-1 leading-snug">
         {onOpen
@@ -121,7 +121,7 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
                 className="field-sizing-content min-w-0 appearance-none border-0 bg-transparent p-0 font-mono text-inherit outline-none max-md:text-[16px]"
               />
               {/* That it can be edited, until it is. */}
-              <PencilSimpleIcon aria-hidden="true" className="hidden size-3 shrink-0 text-kumo-subtle group-hover/name:block group-has-focus/name:hidden pointer-coarse:block" />
+              <PenIcon aria-hidden="true" className="hidden size-3 shrink-0 text-kumo-subtle group-hover/name:block group-has-focus/name:hidden pointer-coarse:block" />
             </label>
           ) : <code className="shrink-0 rounded-md bg-kumo-fill px-1.5 py-px font-mono text-[0.85em] text-kumo-default">env.{name}</code>}
           {through && <span className="min-w-0 truncate">{through}</span>}
@@ -136,12 +136,12 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
         <CardAction>
           {onChangeModel && (
             <Tooltip content="Change model">
-              <Button variant="ghost" icon={ArrowsLeftRightIcon} aria-label={`Change the model of env.${name}`} className={LIST_ACTION} onClick={onChangeModel} />
+              <Button variant="ghost" icon={ArrowLeftRightIcon} aria-label={`Change the model of env.${name}`} className={LIST_ACTION} onClick={onChangeModel} />
             </Tooltip>
           )}
           {onRemove && (
             <ConfirmMenu
-              icon={LinkBreakIcon}
+              icon={Unlink04Icon}
               aria-label={`${removal.label} ${title}`}
               triggerVariant="ghost"
               triggerClassName={LIST_ACTION}

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowSquareOutIcon, BuildingsIcon, CaretLeftIcon, CaretRightIcon, EyeIcon, LockSimpleIcon, UsersThreeIcon, XIcon } from '@phosphor-icons/react'
+import {
+  ArrowLeft01Icon, ArrowRight01Icon, Building06Icon, Cancel01Icon, LinkSquare02Icon, SquareLock01Icon,
+  UserGroupIcon, ViewIcon,
+} from '@/components/icons'
 import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { resolveSiteName } from '@gadgets/workshop-shared/api'
 import { AccessMenu, Banner, Button, Dialog, ListGroup, MemberListItem, ShareNote, webUrl } from '@gadgets/ui'
@@ -266,7 +269,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, expanded, 
                   <MemberListItem name={standing.owner.name} role="Owner" you={standing.isOwner} />
                   {gadget && editors.length > 0 && (
                     <MemberListItem
-                      icon={UsersThreeIcon}
+                      icon={UserGroupIcon}
                       name={`Everyone in ${title}`}
                       detail={editors.length === 1 ? editors[0]!.profile.name : `${editors.length} people`}
                       role="Can edit"
@@ -305,7 +308,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, expanded, 
                   })}
                   {link && (
                     <MemberListItem
-                      icon={BuildingsIcon}
+                      icon={Building06Icon}
                       name="Anyone with your link"
                       // Who that can be: only those who can sign in where it is.
                       detail={link.status === 'failed' ? 'Couldn’t check your link' : `Signed in to ${siteName}`}
@@ -321,12 +324,12 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, expanded, 
                   onClick={() => setSubpage('snapshot')}
                   className="flex cursor-pointer items-center gap-3 rounded-(--surface-radius) p-3 text-left text-base ring-1 ring-kumo-line hover:bg-kumo-contrast/5 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
                 >
-                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-tint text-kumo-subtle"><EyeIcon aria-hidden="true" className="size-[1.125em]" /></span>
+                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-tint text-kumo-subtle"><ViewIcon aria-hidden="true" className="size-[1.125em]" /></span>
                   <span className="flex min-w-0 flex-1 flex-col leading-snug">
                     <span className="truncate font-medium text-kumo-default">Viewers can see a snapshot</span>
                     <span className="text-sm text-pretty text-kumo-subtle">A read-only copy with no connections that does not require verification</span>
                   </span>
-                  <CaretRightIcon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-subtle" />
+                  <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-subtle" />
                 </button>
               )}
             </>
@@ -341,10 +344,10 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, expanded, 
               onClick={() => setSubpage('resources')}
               className="inline-flex h-(--control-size) min-w-0 cursor-pointer items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
             >
-              <LockSimpleIcon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
+              <SquareLock01Icon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
               <span className="truncate">Protected resources</span>
               <span className="opacity-70">({resources.length})</span>
-              <CaretRightIcon aria-hidden="true" weight="bold" className="size-[0.875em] shrink-0" />
+              <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-[0.875em] shrink-0" />
             </button>
           )}
           <span className="flex-1" />
@@ -360,7 +363,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, expanded, 
 
 // The dialog's own close, at the end of each page's header.
 const CloseButton = () => (
-  <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+  <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
 )
 
 // How long the dialog takes to glide to a page's height (`SurfaceGlide`), and a little.
@@ -423,7 +426,7 @@ const Snapshot = ({ workspaceId, gadget, workspaceTitle, owner, expanded, onExpa
   return (
     <>
       <header className="flex items-center gap-2 p-6 pb-2">
-        <Button variant="ghost" icon={<CaretLeftIcon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
+        <Button variant="ghost" icon={<ArrowLeft01Icon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
         <h2 className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Snapshot</h2>
         <CloseButton />
       </header>
@@ -451,7 +454,7 @@ const Snapshot = ({ workspaceId, gadget, workspaceTitle, owner, expanded, onExpa
 const ProtectedResources = ({ gadget, resources, onBack }: { gadget: boolean; resources: ProtectedResource[]; onBack: () => void }) => (
   <>
     <header className="flex items-center gap-2 p-6 pb-2">
-      <Button variant="ghost" icon={<CaretLeftIcon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
+      <Button variant="ghost" icon={<ArrowLeft01Icon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
       {/* A heading rather than the dialog's title, which stays the sharing's, kept under it. */}
       <h2 className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Protected resources</h2>
       <CloseButton />
@@ -475,7 +478,7 @@ const ProtectedResources = ({ gadget, resources, onBack }: { gadget: boolean; re
           return href ? (
             <a key={key} href={href} target="_blank" rel="noreferrer noopener" className="group flex items-center gap-3 rounded-2xl p-3 text-base hover:bg-kumo-contrast/5">
               {row}
-              <ArrowSquareOutIcon aria-label="Opens in a new tab" className="size-4 shrink-0 text-kumo-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100" />
+              <LinkSquare02Icon aria-label="Opens in a new tab" className="size-4 shrink-0 text-kumo-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100" />
             </a>
           ) : (
             <div key={key} className="flex items-center gap-3 rounded-2xl p-3 text-base">{row}</div>

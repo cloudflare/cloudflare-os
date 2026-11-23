@@ -1,4 +1,4 @@
-import { ArrowRightIcon, ClockIcon, LightningIcon, PlusIcon } from '@phosphor-icons/react'
+import { ArrowRight02Icon, Clock01Icon, FlashIcon, PlusSignIcon } from '@/components/icons'
 import { EmptyState, ListGroup } from '@gadgets/ui'
 
 /** Something to ask for in a chat, which would set up an automation. */
@@ -20,11 +20,11 @@ export type AutomationsEmptyProps = {
  */
 export const AutomationsEmpty = ({ examples, onTry, onAdd }: AutomationsEmptyProps) => (
   <EmptyState
-    icon={ClockIcon}
-    badge={LightningIcon}
+    icon={Clock01Icon}
+    badge={FlashIcon}
     title="Nothing runs by itself yet"
     description="Ask in any chat for something to happen on a schedule, or whenever something happens, like a new email. It shows up here, to pause or turn back on."
-    actions={[{ label: 'Add automation', icon: PlusIcon, variant: 'primary', onClick: onAdd }]}
+    actions={[{ label: 'Add automation', icon: PlusSignIcon, variant: 'primary', onClick: onAdd }]}
     className="max-w-md"
   >
     <div className="mt-1 flex w-full flex-col gap-2 text-left">
@@ -38,10 +38,10 @@ export const AutomationsEmpty = ({ examples, onTry, onAdd }: AutomationsEmptyPro
             className="group flex cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-base text-kumo-default hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5 focus-visible:outline-none"
           >
             <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-subtle">
-              <LightningIcon className="size-5" />
+              <FlashIcon className="size-5" />
             </span>
             <span className="min-w-0 flex-1 text-pretty">{prompt}</span>
-            <ArrowRightIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+            <ArrowRight02Icon aria-hidden="true" className="size-4 shrink-0 text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
           </button>
         ))}
       </ListGroup>

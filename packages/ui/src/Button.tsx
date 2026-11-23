@@ -11,7 +11,7 @@ type ButtonContent =
 
 export type ButtonProps = BaseButtonProps &
   ButtonContent & {
-    /** A Phosphor icon component, or an element (e.g. an avatar). Shown before `children`. */
+    /** An icon component (`hugeIcon`), or an element (e.g. an avatar). Shown before `children`. */
     icon?: ElementType | ReactElement
     /**
      * `ghost` drops the fill and ring until hovered, for secondary actions inside another surface.

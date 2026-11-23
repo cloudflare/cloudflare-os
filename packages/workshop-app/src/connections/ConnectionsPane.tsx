@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PuzzlePieceIcon } from '@phosphor-icons/react'
+import { PuzzleIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ConnectDialog } from '@/blocks/ConnectDialog'
 import { ConnectionCard } from '@/blocks/ConnectionCard'
@@ -125,7 +125,7 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-            <PuzzlePieceIcon aria-hidden="true" />
+            <PuzzleIcon aria-hidden="true" />
             Connections
           </h1>
         </HeaderBubble>
@@ -145,7 +145,7 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
         )}
         {state.status === 'ready' && all.length === 0 && (
           <EmptyState
-            icon={PuzzlePieceIcon}
+            icon={PuzzleIcon}
             title="Nothing to connect yet"
             description="Services like email, calendars and documents show here once this deployment offers them. Connected, your chats and apps can use them on your behalf."
           />

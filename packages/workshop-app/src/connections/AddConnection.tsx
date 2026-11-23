@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from 'react'
-import { SparkleIcon } from '@phosphor-icons/react'
+import { AiMagicIcon } from '@/components/icons'
 import type { RpcPromise } from 'capnweb'
 import { AGENT_SPAWNER_CONNECTION_ID, type GatekeeperClient } from '@gadgets/workshop-shared/api'
 import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
@@ -46,7 +46,7 @@ export type AddConnectionProps = {
 // One of the user's models, offered with the services, which has a page of its own.
 const MODEL_KEY = 'ai-model'
 // A sparkle, as the Workshop's own cloud carries, rather than a brain.
-const MODEL_SERVICE = { name: 'AI model', glyph: <SparkleIcon aria-hidden="true" /> }
+const MODEL_SERVICE = { name: 'AI model', glyph: <AiMagicIcon aria-hidden="true" /> }
 const MODEL_CHOICE: ConnectionChoice = {
   key: MODEL_KEY,
   service: MODEL_SERVICE,

@@ -1,4 +1,4 @@
-import { PushPinIcon, StarIcon } from '@phosphor-icons/react'
+import { PinIcon, StarIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button, LIST_ACTION } from '@gadgets/ui'
 
@@ -19,7 +19,7 @@ export type StarButtonProps = {
 export const StarButton = ({ title, starred, onStarredChange, pin = false, className }: StarButtonProps) => (
   <Button
     variant="ghost"
-    icon={pin ? <PushPinIcon weight={starred ? 'fill' : 'regular'} /> : <StarIcon weight={starred ? 'fill' : 'regular'} />}
+    icon={pin ? <PinIcon weight={starred ? 'fill' : 'regular'} /> : <StarIcon weight={starred ? 'fill' : 'regular'} />}
     aria-label={`${pin ? 'Pin' : 'Star'} ${title}`}
     aria-pressed={starred}
     onClick={() => onStarredChange(!starred)}

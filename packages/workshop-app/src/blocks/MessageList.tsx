@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
-import { ArrowDownIcon } from '@phosphor-icons/react'
+import { ArrowDown02Icon } from '@/components/icons'
 import { Button, isMotionOff, readMotionLevel, useScrollFadeFallback } from '@gadgets/ui'
 import { MessageScrollContext } from './messageScroll'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
@@ -173,7 +173,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
         <div className="absolute inset-x-0 bottom-[calc(var(--composer-half,0px)+0.75rem)] flex justify-center pe-(--side-width,0px) pointer-events-none">
           <Button
             className="pointer-events-auto shadow-sm"
-            icon={ArrowDownIcon}
+            icon={ArrowDown02Icon}
             aria-label="Scroll to latest message"
             title="Scroll to latest message"
             onClick={scrollToBottom}

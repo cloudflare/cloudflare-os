@@ -14,9 +14,9 @@ const contrast = (amount: number) => `color-mix(in oklch, var(--color-kumo-contr
 /** The face code is set in: the system's own monospace, which is the one its readers know. */
 export const CODE_FONT = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
 
-// A caret, as the fold gutter's markers: the app's own, drawn as Phosphor draws its CaretDown.
+// A caret, as the fold gutter's markers: the app's own, Hugeicons' ArrowDown01 drawn bold, as carets are.
 const caret = (rotate: number) =>
-  `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><path transform='rotate(${rotate} 128 128)' d='M213.66 101.66l-80 80a8 8 0 0 1-11.32 0l-80-80a8 8 0 0 1 11.32-11.32L128 164.69l74.34-74.35a8 8 0 0 1 11.32 11.32Z'/></svg>`)}")`
+  `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'><path transform='rotate(${rotate} 12 12)' d='M18 9C18 9 13.5811 15 12 15C10.4188 15 6 9 6 9' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/></svg>`)}")`
 
 /**
  * The editor's frame: the card's surface, a gutter of quiet line numbers that brightens the one the

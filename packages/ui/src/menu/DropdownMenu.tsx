@@ -1,7 +1,7 @@
 import { createElement, isValidElement, useRef, type CSSProperties, type ElementType, type ReactElement, type ReactNode, type RefObject } from 'react'
 import { Menu } from '@cloudflare/kumo/primitives/menu'
 import { cn } from '@cloudflare/kumo/utils'
-import { CaretDownIcon, CaretRightIcon, CheckIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowDown01Icon, ArrowRight01Icon, Cancel01Icon, Tick02Icon } from '../icons/icons'
 import { useMotionLevel } from '../motion/useMotionLevel'
 import { Button, type ButtonProps } from '../Button'
 import { useMenuMorph } from './useMenuMorph'
@@ -95,7 +95,7 @@ const DropdownMenuRoot = ({
   const iconNode = renderIcon(icon)
   // In a span, so that it keeps a chevron's size rather than taking the Button's size for an icon.
   const labelNode = caret && label !== undefined
-    ? <>{label}<span className="-me-1 flex"><CaretDownIcon aria-hidden="true" weight="bold" className="size-3" /></span></>
+    ? <>{label}<span className="-me-1 flex"><ArrowDown01Icon aria-hidden="true" weight="bold" className="size-3" /></span></>
     : label
   // Only at full motion does the surface morph out of the trigger. Otherwise the trigger stays
   // as it is, or fades out under a menu that opens over it, and the menu fades in.
@@ -108,7 +108,7 @@ const DropdownMenuRoot = ({
   // A circle as tall as the trigger, at its start edge (where an icon sits) or its end edge.
   const close = closesFromTrigger && (
     <span aria-hidden="true" className={cn('dropdown-menu-close absolute inset-y-0 aspect-square', align === 'end' ? 'end-0' : 'start-0')}>
-      <XIcon weight="bold" className="size-3.5" />
+      <Cancel01Icon weight="bold" className="size-3.5" />
     </span>
   )
 
@@ -244,7 +244,7 @@ const DropdownMenuLabel = ({ children }: { children: ReactNode }) => (
 
 // The tick an item that is chosen ends with. Its room is kept, so that choosing moves nothing.
 const TICK_SLOT = 'ms-auto grid size-(--menu-icon) shrink-0 place-items-center'
-const tick = <CheckIcon aria-hidden="true" weight="bold" className="size-(--menu-icon)" />
+const tick = <Tick02Icon aria-hidden="true" weight="bold" className="size-(--menu-icon)" />
 
 type DropdownMenuRadioGroupProps<Value extends string> = {
   value: Value
@@ -344,7 +344,7 @@ const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children, picker = fal
       {label}
       <span className="ms-auto flex items-center gap-2 text-kumo-subtle">
         {detail}
-        <CaretRightIcon aria-hidden="true" weight="bold" className="size-3" />
+        <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3" />
       </span>
     </Menu.SubmenuTrigger>
     <Menu.Portal>

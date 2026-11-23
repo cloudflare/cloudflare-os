@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CaretLeftIcon, GearIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, Settings01Icon } from '@/components/icons'
 import { SettingsMenu } from '@/blocks/SettingsMenu'
 import { Button, HeaderBubble, PageLayout, useNarrowScreen } from '@gadgets/ui'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -70,7 +70,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref }: Settings
 
   // What the page is, which its header says and nothing under it repeats: the part that is
   // showing, or the settings, where the page is the list of them.
-  const Glyph = info?.icon ?? GearIcon
+  const Glyph = info?.icon ?? Settings01Icon
   const name = (
     // The one bubble from part to part, which grows or shrinks to the next one's name.
     <HeaderBubble name="settings">
@@ -90,7 +90,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref }: Settings
               // Gone into from the list, which the way back is to, before what it is.
               <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
                 <HeaderBubble>
-                  <Button icon={CaretLeftIcon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
+                  <Button icon={ArrowLeft01Icon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
                 </HeaderBubble>
                 {name}
               </nav>

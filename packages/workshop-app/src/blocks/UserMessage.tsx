@@ -1,4 +1,4 @@
-import { LinkSimpleIcon } from '@phosphor-icons/react'
+import { Link04Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
@@ -45,7 +45,7 @@ const Part = ({ part }: { part: UserMessagePart }) => {
     case 'text':
       return part.text
     case 'capsule':
-      return <Chip icon={<LinkSimpleIcon aria-hidden="true" />} href={part.url}>{part.title}</Chip>
+      return <Chip icon={<Link04Icon aria-hidden="true" />} href={part.url}>{part.title}</Chip>
     case 'format':
       return <Chip icon={<FormatIcon name={part.icon} />}>{part.noun}</Chip>
     case 'command':

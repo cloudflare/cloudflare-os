@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { Banner, Button, Dialog, TextField } from '@gadgets/ui'
 
 type Fields = { title: string; description: string }
@@ -43,7 +43,7 @@ const EditTemplateContent = ({ template, onSave, onOpenChange }: Omit<EditTempla
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Edit template</Dialog.Title>
           <Dialog.Description className="text-sm text-pretty text-kumo-subtle">What people see of it on its page. Its code stays as it is: releasing an update is separate.</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-6 pb-1">
         <TextField label="Title" autoFocus value={title} onValueChange={setTitle} />

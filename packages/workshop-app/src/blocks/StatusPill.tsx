@@ -1,4 +1,4 @@
-import type { Icon } from '@phosphor-icons/react'
+import type { Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type StatusPillTone = 'warning' | 'danger' | 'info'

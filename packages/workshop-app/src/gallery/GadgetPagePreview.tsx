@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CodeIcon, PresentationIcon } from '@phosphor-icons/react'
+import { CodeIcon, Presentation01Icon } from '@/components/icons'
 import { SidePane } from '@/blocks/SidePane'
 import { Button } from '@gadgets/ui'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -45,7 +45,7 @@ export const GadgetPagePreview = () => {
             onNewChat: () => say('started a new chat with Slides beside it'),
             back: fromChat ? { title: 'Q4 board deck', onBack: () => say('went back to Q4 board deck') } : undefined,
           }}
-          active={{ key: 'slides', title: 'Slides', icon: <PresentationIcon /> }}
+          active={{ key: 'slides', title: 'Slides', icon: <Presentation01Icon /> }}
           link="https://example.com/app/slides"
           onReload={() => say('reloaded Slides')}
           exports={{
@@ -63,7 +63,7 @@ export const GadgetPagePreview = () => {
         >
           {viewingCode
             ? <PaneNotice onTint icon={CodeIcon} title="Its code" description="What runs Slides shows here, in its place." />
-            : <PaneNotice onTint icon={PresentationIcon} title="Slides" description="The gadget runs here." />}
+            : <PaneNotice onTint icon={Presentation01Icon} title="Slides" description="The gadget runs here." />}
         </SidePane>
       </div>
       <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>

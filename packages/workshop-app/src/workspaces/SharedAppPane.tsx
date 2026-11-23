@@ -1,4 +1,4 @@
-import { AppWindowIcon, LockSimpleIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, SquareLock01Icon } from '@/components/icons'
 import type { OutputSummary, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { DropdownMenu, EmptyState, type EmptyStateAction, PageLayout } from '@gadgets/ui'
@@ -51,7 +51,7 @@ export const SharedAppPane = ({ workspace, onOpenOutput, onOpenLibrary }: Shared
       )}
     >
       <EmptyState
-        icon={LockSimpleIcon}
+        icon={SquareLock01Icon}
         title="You’re not a member of this workspace"
         description={`${who} shared ${apps.length > 1 ? 'some apps' : 'an app'} from ${title} with you to use, not the workspace itself. ${apps.length > 1 ? 'They’re' : 'It’s'} in your Library.`}
         actions={[action]}

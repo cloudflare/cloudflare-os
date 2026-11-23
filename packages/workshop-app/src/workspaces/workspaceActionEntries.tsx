@@ -1,4 +1,4 @@
-import { NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { PencilEdit02Icon, UserAdd01Icon } from '@/components/icons'
 import type { SearchEntry } from '@/blocks/SearchDialog'
 
 /**
@@ -20,7 +20,7 @@ export const workspaceActionEntries = ({ workspaceTitle, onNewChat, onInvite }: 
     title: 'New chat',
     keywords: ['start', 'chat', 'here'],
     detail: workspaceTitle,
-    icon: <NotePencilIcon />,
+    icon: <PencilEdit02Icon />,
     onSelect: onNewChat,
   },
   invite: onInvite && {
@@ -29,7 +29,7 @@ export const workspaceActionEntries = ({ workspaceTitle, onNewChat, onInvite }: 
     title: 'Invite',
     keywords: ['share', 'people', 'members', 'collaborate', 'access', 'add', 'workspace'],
     detail: workspaceTitle,
-    icon: <UserPlusIcon />,
+    icon: <UserAdd01Icon />,
     onSelect: onInvite,
   },
 })

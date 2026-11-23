@@ -1,4 +1,4 @@
-import { CloudIcon, CoinsIcon, CreditCardIcon } from '@phosphor-icons/react'
+import { CloudIcon, Coins01Icon, CreditCardIcon } from '@/components/icons'
 import type { SearchEntry } from '@/blocks/SearchDialog'
 import { openConnectWindow } from '@/connections/connectHandoff'
 import { useApi } from '@/rpc/ApiContext'
@@ -69,7 +69,7 @@ export const useUsageEntries = (enabled: boolean): SearchEntry[] => {
     title: 'Add AI Gateway credits',
     keywords: ['billing', 'pay', 'cloudflare', 'balance'],
     detail: usage.balance === null ? undefined : `$${usage.balance.toFixed(2)}`,
-    icon: <CoinsIcon />,
+    icon: <Coins01Icon />,
     onSelect: () => void window.open(creditsUrl(usage.accountId), '_blank', 'noopener'),
   }]
 }

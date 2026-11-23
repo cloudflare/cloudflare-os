@@ -1,5 +1,5 @@
 import { useContext, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { CaretUpIcon } from '@phosphor-icons/react'
+import { ArrowUp01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
 import { Button } from '@gadgets/ui'
@@ -294,7 +294,7 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
                       <div className="min-w-0 flex-1">{details.summary}</div>
                       <Button
                         variant="ghost"
-                        icon={<CaretUpIcon weight="bold" />}
+                        icon={<ArrowUp01Icon weight="bold" />}
                         aria-label="Hide details"
                         title="Hide details"
                         // Into the panel's corner, level with the line, and the size and weight

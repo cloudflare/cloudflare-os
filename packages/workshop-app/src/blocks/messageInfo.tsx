@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CalendarBlankIcon, CpuIcon, TimerIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { Calendar04Icon, ChipIcon, StopWatchIcon, UserIcon, type Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { formatDuration } from '@/components/usageFormat'
 import type { ToolStepEntry } from './ToolStep'
@@ -39,13 +39,13 @@ const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; ch
  * `MessageBubble`), under it: their first line, and the rest, when there is more.
  */
 export const messageInfo = ({ sender, sentAt, reply, workedFor }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
-  const from = sender && <Line icon={reply ? CpuIcon : UserIcon} name="From">{sender}</Line>
+  const from = sender && <Line icon={reply ? ChipIcon : UserIcon} name="From">{sender}</Line>
   const sent = (
-    <Line icon={CalendarBlankIcon} name="Sent">
+    <Line icon={Calendar04Icon} name="Sent">
       {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
     </Line>
   )
-  const took = workedFor !== undefined && <Line icon={TimerIcon} name="Took">{formatDuration(workedFor)}</Line>
+  const took = workedFor !== undefined && <Line icon={StopWatchIcon} name="Took">{formatDuration(workedFor)}</Line>
 
   if (!from && !took) return { summary: sent }
   return {

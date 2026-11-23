@@ -1,4 +1,4 @@
-import { CaretRightIcon, PlusIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, PlusSignIcon } from '@/components/icons'
 
 export type ConnectionMarkProps = {
   /** An account that is connected, which opens, rather than a service that could be, which is added. */
@@ -15,6 +15,6 @@ export const ConnectionMark = ({ connected = false }: ConnectionMarkProps) => (
     aria-hidden="true"
     className="grid size-(--control-size) shrink-0 place-items-center text-(length:--control-text) text-kumo-subtle group-hover:text-kumo-default group-focus-visible:text-kumo-default [&>svg]:size-[1.125em]"
   >
-    {connected ? <CaretRightIcon /> : <PlusIcon />}
+    {connected ? <ArrowRight01Icon /> : <PlusSignIcon />}
   </span>
 )

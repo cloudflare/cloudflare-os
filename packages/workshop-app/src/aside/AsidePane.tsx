@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'rea
 import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { cn } from '@cloudflare/kumo/utils'
-import { FileDashedIcon, LockSimpleIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, InboxIcon, NotepadTextDashedIcon, SquareLock01Icon } from '@/components/icons'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { UiUnderway } from '@/blocks/UiUnderway'
@@ -386,7 +386,7 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
     {problem ? (
       <PaneNotice
         onTint
-        icon={WarningCircleIcon}
+        icon={AlertCircleIcon}
         title="Couldn’t load the library"
         description={problem}
         action={onRetry && { label: 'Try again', onClick: onRetry }}
@@ -394,7 +394,7 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
     ) : reading ? (
       <PaneNotice title="Loading…" />
     ) : (
-      <PaneNotice onTint icon={TrayIcon} title="Nothing made here yet" description="The apps, documents and files this workspace’s chats make open here, beside the page." />
+      <PaneNotice onTint icon={InboxIcon} title="Nothing made here yet" description="The apps, documents and files this workspace’s chats make open here, beside the page." />
     )}
   </SidePane>
 )
@@ -440,7 +440,7 @@ const gadgetBody = ({ title, ui, frame, question, onReload, onAskAccess }: Omit<
       return (
         <PaneNotice
           onTint
-          icon={LockSimpleIcon}
+          icon={SquareLock01Icon}
           title={`Confirm your access to open ${title}`}
           description="It was shared with you and reads things kept in other services, such as a Google doc. Before it opens, confirm that your own accounts can see them too."
           action={onAskAccess && { label: 'Confirm access', onClick: onAskAccess }}
@@ -450,7 +450,7 @@ const gadgetBody = ({ title, ui, frame, question, onReload, onAskAccess }: Omit<
       return (
         <PaneNotice
           onTint
-          icon={WarningCircleIcon}
+          icon={AlertCircleIcon}
           title={`Couldn’t show ${title}`}
           description={ui.message}
           action={onReload && { label: 'Try again', onClick: onReload }}
@@ -490,9 +490,9 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
     case 'loading':
       return <PaneNotice title="Loading…" />
     case 'unreachable':
-      return <PaneNotice onTint icon={FileDashedIcon} title={file.name} description="Open it from the chat it was sent in to see it." />
+      return <PaneNotice onTint icon={NotepadTextDashedIcon} title={file.name} description="Open it from the chat it was sent in to see it." />
     case 'failed':
-      return <PaneNotice onTint icon={WarningCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
+      return <PaneNotice onTint icon={AlertCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
     case 'ready': {
       const { name, mimeType, size } = state.file
       const details = [mimeType, size > 0 && SIZE.format(size)].filter(Boolean).join(' · ')

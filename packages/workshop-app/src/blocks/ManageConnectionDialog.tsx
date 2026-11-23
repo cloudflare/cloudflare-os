@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { SignOutIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { Logout05Icon, UserAdd01Icon } from '@/components/icons'
 import { Banner, Button, ConfirmMenu, Dialog } from '@gadgets/ui'
 import { ServiceDialogBody } from './ServiceDialogBody'
 import { ServiceDialogHeader } from './ServiceDialogHeader'
@@ -90,7 +90,7 @@ const ManageConnectionDialogContent = ({ name, logoUrl, color, tagline, descript
           label: account,
           // The same as Disconnect at the foot, beside what it disconnects.
           action: (
-            <ConfirmMenu {...disconnect} icon={SignOutIcon} aria-label={`Disconnect ${account}`} triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" />
+            <ConfirmMenu {...disconnect} icon={Logout05Icon} aria-label={`Disconnect ${account}`} triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" />
           ),
         }}
         label="Has access to"
@@ -139,7 +139,7 @@ const ManageConnectionDialogContent = ({ name, logoUrl, color, tagline, descript
               <ConfirmMenu {...disconnect} label={waiting('disconnect') ? 'Disconnecting…' : 'Disconnect'} align="start" />
               <span className="ms-auto flex items-center gap-2">
                 {onConnectAnother && (
-                  <Button icon={UserPlusIcon} disabled={pending} onClick={() => ask('another', onConnectAnother)}>
+                  <Button icon={UserAdd01Icon} disabled={pending} onClick={() => ask('another', onConnectAnother)}>
                     {waiting('another') ? 'Opening…' : 'Add account'}
                   </Button>
                 )}

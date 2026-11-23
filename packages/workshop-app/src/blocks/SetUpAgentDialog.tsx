@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { AgentMark } from './AgentMark'
 
@@ -65,7 +65,7 @@ const SetUpAgentContent = ({ reason, models, initialModel, onBack, onSetUp, onDo
           <Dialog.Title className="text-lg font-medium text-kumo-default">Set up an agent</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">It works on its own whenever it’s called on, each run a chat of its own.</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto px-6">

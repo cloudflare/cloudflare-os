@@ -1,4 +1,4 @@
-import { PlusIcon, TrayIcon } from '@phosphor-icons/react'
+import { InboxIcon, PlusSignIcon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { workspaceAsideItems, type AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
@@ -67,10 +67,10 @@ export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref, output
         <EmptyState
           size="section"
           tinted
-          icon={TrayIcon}
+          icon={InboxIcon}
           title="Nothing made here yet"
           description="The apps, documents and files this workspace’s chats make show here, to open beside the page."
-          actions={onMake && [{ label: 'Make something', icon: PlusIcon, variant: 'primary', onClick: onMake }]}
+          actions={onMake && [{ label: 'Make something', icon: PlusSignIcon, variant: 'primary', onClick: onMake }]}
         />
       )}
       {items.length > 0 && shown.length === 0 && <NoMatches onShowAll={list.showAll} />}

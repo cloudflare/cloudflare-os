@@ -1,9 +1,9 @@
-import { CodeIcon, InfoIcon, type Icon } from '@phosphor-icons/react'
+import { CodeIcon, InformationCircleIcon, type Icon } from '@/components/icons'
 import { CodeBlock } from '@/components/CodeBlock'
 
 const ICONS = {
   code: CodeIcon,
-  info: InfoIcon,
+  info: InformationCircleIcon,
 } satisfies Record<string, Icon>
 
 export type SystemRowProps = {

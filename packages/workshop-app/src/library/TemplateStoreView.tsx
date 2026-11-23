@@ -1,4 +1,4 @@
-import { CaretLeftIcon, CompassIcon, LayoutIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, DiscoverCircleIcon, Layout01Icon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { Button, EmptyState, HeaderBubble, type ListOrder, ListToolbar, type ListView, NoMatches, PageLayout, Tabs, useNarrowScreen } from '@gadgets/ui'
 import { PromoCarousel } from '@/blocks/PromoCarousel'
@@ -91,12 +91,12 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, o
           {/* The way back to the library, then the templates, which is where this is. */}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
             <HeaderBubble>
-              <Button icon={CaretLeftIcon} aria-label="Back to Library" title="Back to Library" onClick={onBack} />
+              <Button icon={ArrowLeft01Icon} aria-label="Back to Library" title="Back to Library" onClick={onBack} />
             </HeaderBubble>
             {/* With the icon a template's page has on its way back here, which carries on from this. */}
             <HeaderBubble name="templates">
               <h1 aria-current="page" className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-                <CompassIcon aria-hidden="true" />
+                <DiscoverCircleIcon aria-hidden="true" />
                 Templates
               </h1>
             </HeaderBubble>
@@ -111,10 +111,10 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, o
       {nothing ? (
         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col pt-2 pb-8">
           <EmptyState
-            icon={LayoutIcon}
+            icon={Layout01Icon}
             title="No templates yet"
             description="Templates are apps shared to start from, by you or others in this deployment. Make one from an app of yours with Create template."
-            actions={[{ label: 'Back to library', icon: CaretLeftIcon, onClick: onBack }]}
+            actions={[{ label: 'Back to library', icon: ArrowLeft01Icon, onClick: onBack }]}
           />
         </div>
       ) : (

@@ -1,4 +1,4 @@
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon } from '@/components/icons'
 import { Button, HeaderBubble } from '@gadgets/ui'
 import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
@@ -45,7 +45,7 @@ export const ChatHeader = ({ workspace, agent, title, onOpenSettings, agents }: 
           {/* Wrapped, so the caret keeps a chevron's size rather than an icon's. */}
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate">{title}</span>
-            {onOpenSettings && <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
+            {onOpenSettings && <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
           </span>
         </Button>
       </HeaderBubble>

@@ -1,5 +1,5 @@
 import { AgentRow } from '@/blocks/AgentRow'
-import { PlusIcon, RobotIcon } from '@phosphor-icons/react'
+import { PlusSignIcon, RoboticIcon } from '@/components/icons'
 import { Button, EmptyState, ListGroup } from '@gadgets/ui'
 import { attentionWords, gadgetsOf, gadgetTitles, runsWords, type Agent } from './agents'
 import type { WorkspaceAgentsSnapshot } from './WorkspaceAgents'
@@ -50,10 +50,10 @@ export const AgentsTab = ({ state, onRetry, onOpenAgent, agentHref, now, onAddAg
       <EmptyState
         size="section"
         tinted
-        icon={RobotIcon}
+        icon={RoboticIcon}
         title="No agents yet"
         description="An app can have agents of its own that work while you’re away, such as one that answers each email that arrives. Ask for one in a chat."
-        actions={onAddAgent && [{ label: 'Add agent', icon: PlusIcon, variant: 'primary', onClick: onAddAgent }]}
+        actions={onAddAgent && [{ label: 'Add agent', icon: PlusSignIcon, variant: 'primary', onClick: onAddAgent }]}
       />
     )
   }

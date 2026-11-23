@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { CheckIcon, CircleNotchIcon } from '@phosphor-icons/react'
+import { LoaderCircleIcon, Tick02Icon } from '@/components/icons'
 import { Button, ScrollArea, Switch } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { ConnectionMark } from './ConnectionMark'
@@ -78,7 +78,7 @@ const ServiceLine = ({ name, logoUrl, color, tagline, status, onConnect, disable
           <ConnectionMark />
         ) : (
           <span aria-hidden="true" className="grid size-(--control-size) shrink-0 place-items-center text-(length:--control-text) [&>svg]:size-[1.125em]">
-            {connected ? <CheckIcon weight="bold" className="text-kumo-success" /> : <CircleNotchIcon className="text-kumo-subtle motion-safe:animate-spin" />}
+            {connected ? <Tick02Icon weight="bold" className="text-kumo-success" /> : <LoaderCircleIcon className="text-kumo-subtle motion-safe:animate-spin" />}
           </span>
         )}
       </button>

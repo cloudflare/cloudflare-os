@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon, UserAdd01Icon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { runsWantingAttention, type Agent } from '@/automations/agents'
@@ -215,8 +215,8 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
             {canInvite && (
               <HeaderBubble origin="end">
                 {narrow
-                  ? <Button icon={UserPlusIcon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
-                  : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Invite</Button>}
+                  ? <Button icon={UserAdd01Icon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
+                  : <Button icon={UserAdd01Icon} onClick={() => setInviting(true)}>Invite</Button>}
               </HeaderBubble>
             )}
           </span>
@@ -273,7 +273,7 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
               itemHref={itemHref}
               empty={{
                 description: 'Ask in a chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
-                action: { label: 'Add automation', icon: PlusIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
+                action: { label: 'Add automation', icon: PlusSignIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
               }}
               waiting={{ asks: outsideAsks, onOpen: () => onTabChange('library') }}
             />

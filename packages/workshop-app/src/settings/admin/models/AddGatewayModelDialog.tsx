@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { REASONING_LEVELS, type AiModelProvider, type GatewayModel, type GatewayModelCapabilities, type GatewayModelLevelTest, type ReasoningLevel } from '@gadgets/workshop-shared/api'
 import { Banner, Button, Dialog, DropdownMenu, Select, TextField } from '@gadgets/ui'
 import { messageOf } from '../../useAttempt'
@@ -122,7 +122,7 @@ const AddGatewayModelForm = ({ providers, behavesLikeOptions, suggestions, onAdd
     <form noValidate onSubmit={(event) => void add(event)} className="flex min-h-0 flex-col">
       <header className="flex items-center gap-3 p-6 pb-5">
         <Dialog.Title className="min-w-0 flex-1 text-lg font-medium text-kumo-default">Add a model</Dialog.Title>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <div className="grid min-h-0 grid-cols-1 items-start gap-4 overflow-y-auto px-6 pb-1 sm:grid-cols-2">
         <Labelled label="Provider">

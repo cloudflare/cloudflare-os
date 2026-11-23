@@ -1,4 +1,4 @@
-import { ArrowCircleUpIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, CircleArrowUp02Icon } from '@/components/icons'
 import { Button, HeaderBubble } from '@gadgets/ui'
 
 export type UpdateNoticeViewProps = {
@@ -16,10 +16,10 @@ export type UpdateNoticeViewProps = {
 export const UpdateNoticeView = ({ onOpen, onDismiss }: UpdateNoticeViewProps) => (
   <div role="status" className="flex items-center gap-1.5">
     <HeaderBubble name="update-notice">
-      <Button icon={ArrowCircleUpIcon} onClick={onOpen}>Update available</Button>
+      <Button icon={CircleArrowUp02Icon} onClick={onOpen}>Update available</Button>
     </HeaderBubble>
     <HeaderBubble name="update-notice-dismiss">
-      <Button icon={<XIcon weight="bold" />} aria-label="Dismiss the update notice" title="Dismiss" onClick={onDismiss} />
+      <Button icon={<Cancel01Icon weight="bold" />} aria-label="Dismiss the update notice" title="Dismiss" onClick={onDismiss} />
     </HeaderBubble>
   </div>
 )

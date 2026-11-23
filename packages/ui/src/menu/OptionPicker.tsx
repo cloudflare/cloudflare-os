@@ -1,6 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { Combobox } from '@cloudflare/kumo/primitives/combobox'
-import { CheckIcon } from '@phosphor-icons/react'
+import { Tick02Icon } from '../icons/icons'
 
 export type PickerOption = {
   id: string
@@ -81,7 +81,7 @@ export const OptionPicker = ({ options, 'aria-label': label, ...choice }: Option
             {option.icon !== undefined && <span className="flex size-5 shrink-0 items-center justify-center text-kumo-subtle">{option.icon}</span>}
             <span className="min-w-0 flex-1 truncate">{option.label}</span>
             <span className="grid size-(--menu-icon) shrink-0 place-items-center">
-              <Combobox.ItemIndicator><CheckIcon aria-hidden="true" weight="bold" className="size-(--menu-icon)" /></Combobox.ItemIndicator>
+              <Combobox.ItemIndicator><Tick02Icon aria-hidden="true" weight="bold" className="size-(--menu-icon)" /></Combobox.ItemIndicator>
             </span>
           </Combobox.Item>
         )}

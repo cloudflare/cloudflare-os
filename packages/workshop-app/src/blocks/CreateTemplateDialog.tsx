@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { CheckCircleIcon, LayoutIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, CheckmarkCircle02Icon, Layout01Icon } from '@/components/icons'
 import { Banner, Button, Dialog, LinkButton, ListGroup, TextField } from '@gadgets/ui'
 import { CopyLinkButton } from './CopyLinkButton'
 
@@ -57,7 +57,7 @@ const Header = ({ title, description }: { title: string; description: string }) 
       <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
       <Dialog.Description className="text-sm text-pretty text-kumo-subtle">{description}</Dialog.Description>
     </div>
-    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
   </header>
 )
 
@@ -120,7 +120,7 @@ const CreateTemplateContent = ({ title: gadgetTitle, existing, onCreate, onRelea
         />
         {card ? <div className="appears px-6 py-4">{card}</div> : (
           <div className="flex justify-center px-6 pb-2">
-            <CheckCircleIcon aria-hidden="true" weight="fill" className="appears size-12 text-kumo-success" />
+            <CheckmarkCircle02Icon aria-hidden="true" weight="fill" className="appears size-12 text-kumo-success" />
           </div>
         )}
         <footer className="flex justify-end gap-2 p-6">
@@ -139,7 +139,7 @@ const CreateTemplateContent = ({ title: gadgetTitle, existing, onCreate, onRelea
           <ListGroup label="Made from this workspace">
             {templates.map(({ id, title: templateTitle, version, changes }) => (
               <div key={id} className="flex items-center gap-3 rounded-2xl p-3 text-base">
-                <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><LayoutIcon className="size-5" /></span>
+                <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><Layout01Icon className="size-5" /></span>
                 <span className="flex min-w-0 flex-1 flex-col leading-snug">
                   <LinkButton href={templateHref?.(id)} onClick={() => onViewTemplate(id)} className="max-w-full truncate text-left font-medium text-kumo-default underline-offset-2 hover:underline">
                     {templateTitle}

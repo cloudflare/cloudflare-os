@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChecksIcon, FolderIcon, PlusIcon } from '@phosphor-icons/react'
+import { Folder02Icon, PlusSignIcon, TickDouble02Icon } from '@/components/icons'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button, EmptyState, HeaderBubble, ListToolbar, NoMatches, PageLayout, formatActivity, useListView, useNarrowScreen } from '@gadgets/ui'
@@ -113,7 +113,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
         <span className="flex gap-2">
           {/* While anything is unread, which the Unread filter narrows to. */}
           {unread && unread.totals.total > 0 && (
-            <Button icon={ChecksIcon} aria-label="Mark all read" title="Mark all read" onClick={() => markRead('everything', unread.markAllRead)} />
+            <Button icon={TickDouble02Icon} aria-label="Mark all read" title="Mark all read" onClick={() => markRead('everything', unread.markAllRead)} />
           )}
           <Button variant="primary" onClick={onNewWorkspace}>New</Button>
         </span>
@@ -131,7 +131,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-            <FolderIcon aria-hidden="true" />
+            <Folder02Icon aria-hidden="true" />
             Workspaces
           </h1>
         </HeaderBubble>
@@ -143,10 +143,10 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
         {workspaces.status === 'failed' && <p className="px-4 text-base text-kumo-subtle">Couldn’t load workspaces: {workspaces.message}</p>}
         {workspaces.status === 'ready' && all.length === 0 && (
           <EmptyState
-            icon={FolderIcon}
+            icon={Folder02Icon}
             title="No workspaces yet"
             description="A workspace keeps chats together with everything they make, for you and whoever you invite. Each chat you start makes one."
-            actions={[{ label: 'New workspace', icon: PlusIcon, variant: 'primary', onClick: onNewWorkspace }]}
+            actions={[{ label: 'New workspace', icon: PlusSignIcon, variant: 'primary', onClick: onNewWorkspace }]}
           />
         )}
         {all.length > 0 && shown.length === 0 && <NoMatches noun="workspaces" onShowAll={list.showAll} />}

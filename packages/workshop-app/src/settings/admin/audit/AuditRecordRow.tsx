@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from 'react'
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon } from '@/components/icons'
 import type { AdminAccessRecord, AdminAuditRecord, AdminSettingChange, AdminUserAccessRecord, AdminWriteRecord } from '@gadgets/workshop-shared/api'
 import { Tag } from '@gadgets/ui'
 import { targetUserOf, type AuditFilter } from './auditFilter'
@@ -100,7 +100,7 @@ export const AuditRecordRow = ({ record, onFilterBy }: AuditRecordRowProps) => {
       >
         {/* On the first line's middle, however many lines there are. */}
         <span className="flex h-[1lh] items-center text-kumo-subtle group-hover:text-kumo-default">
-          <CaretRightIcon aria-hidden="true" weight="bold" className={`size-3 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`} />
+          <ArrowRight01Icon aria-hidden="true" weight="bold" className={`size-3 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`} />
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">

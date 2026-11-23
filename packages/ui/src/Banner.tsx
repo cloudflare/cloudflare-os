@@ -1,4 +1,4 @@
-import { WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon } from './icons/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from './Button'
 
@@ -38,7 +38,7 @@ export const Banner = ({ title, description, action, tone = 'danger' }: BannerPr
     )}
   >
     <span className={cn('flex h-(--banner-button) shrink-0 items-center', tone === 'warning' && 'text-kumo-warning')}>
-      <WarningCircleIcon aria-hidden="true" className="size-5" />
+      <AlertCircleIcon aria-hidden="true" className="size-5" />
     </span>
     {/* Its first line where the middle of the button is, and as far from the banner's foot. */}
     <div className="flex min-w-0 flex-1 flex-col gap-1 py-[calc((var(--banner-button)-1lh)/2)]">

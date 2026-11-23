@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { CaretRightIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon, Cancel01Icon } from '@/components/icons'
 import { Button, Dialog, TextField } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
@@ -47,7 +47,7 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
           <Dialog.Title className="text-lg font-medium text-kumo-default">Add a connection</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">Choose what {to} can use. You pick which one next, in the service’s own form.</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <div className="px-6 pb-3">
         <TextField aria-label="Find a service" type="search" placeholder="Find a service" value={query} onValueChange={setQuery} autoFocus />
@@ -77,7 +77,7 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
                     <span className="truncate font-medium text-kumo-default">{choice.title}</span>
                     <span className="truncate text-kumo-subtle">{choice.description ? `${choice.service.name} · ${choice.description}` : choice.service.name}</span>
                   </span>
-                  <CaretRightIcon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-subtle transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transition-none" />
+                  <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-subtle transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transition-none" />
                 </button>
               ))}
             </section>

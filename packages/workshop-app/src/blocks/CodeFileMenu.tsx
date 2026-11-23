@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowCounterClockwiseIcon, CopyIcon, DotsThreeIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react'
+import { Copy01Icon, Delete02Icon, MoreHorizontalIcon, PenIcon, UndoIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { DropdownMenu } from '@gadgets/ui'
 import { CodeFileCautionDialog } from './CodeFileCautionDialog'
@@ -46,7 +46,7 @@ export const CodeFileMenu = ({ name, offers, blocked, onRename, onDuplicate, onD
   return (
     <>
       <DropdownMenu
-        icon={quiet ? <DotsThreeIcon weight="bold" /> : DotsThreeIcon}
+        icon={quiet ? <MoreHorizontalIcon weight="bold" /> : MoreHorizontalIcon}
         aria-label={`More for ${name}`}
         triggerVariant="ghost"
         triggerClassName={cn('size-8 text-kumo-subtle', quiet && 'not-data-disabled:hover:bg-transparent hover:text-kumo-default')}
@@ -54,18 +54,18 @@ export const CodeFileMenu = ({ name, offers, blocked, onRename, onDuplicate, onD
       >
         {blocked && <DropdownMenu.Label>{blocked}</DropdownMenu.Label>}
         {offers.rename && (
-          <DropdownMenu.Item icon={PencilSimpleIcon} label="Rename" disabled={!!blocked} onSelect={() => choose('rename')}>Rename</DropdownMenu.Item>
+          <DropdownMenu.Item icon={PenIcon} label="Rename" disabled={!!blocked} onSelect={() => choose('rename')}>Rename</DropdownMenu.Item>
         )}
         {offers.duplicate && (
-          <DropdownMenu.Item icon={CopyIcon} label="Duplicate" disabled={!!blocked} onSelect={onDuplicate}>Duplicate</DropdownMenu.Item>
+          <DropdownMenu.Item icon={Copy01Icon} label="Duplicate" disabled={!!blocked} onSelect={onDuplicate}>Duplicate</DropdownMenu.Item>
         )}
         {offers.restore && (
-          <DropdownMenu.Item icon={ArrowCounterClockwiseIcon} label="Restore" disabled={!!blocked} onSelect={onRestore}>
+          <DropdownMenu.Item icon={UndoIcon} label="Restore" disabled={!!blocked} onSelect={onRestore}>
             <Labelled label="Restore" detail="As it was before your changes" />
           </DropdownMenu.Item>
         )}
         {(offers.rename || offers.duplicate || offers.restore) && <DropdownMenu.Separator />}
-        <DropdownMenu.Item icon={TrashIcon} label="Delete" danger disabled={!!blocked || offers.delete !== true} onSelect={() => choose('delete')}>
+        <DropdownMenu.Item icon={Delete02Icon} label="Delete" danger disabled={!!blocked || offers.delete !== true} onSelect={() => choose('delete')}>
           <Labelled label="Delete" detail={offers.delete === true ? undefined : offers.delete} />
         </DropdownMenu.Item>
       </DropdownMenu>

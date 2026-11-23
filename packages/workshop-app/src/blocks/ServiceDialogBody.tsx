@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { UserIcon } from '@phosphor-icons/react'
+import { UserIcon } from '@/components/icons'
 import { ClampedText } from '@/components/ClampedText'
 import { Switch, Tooltip } from '@gadgets/ui'
 

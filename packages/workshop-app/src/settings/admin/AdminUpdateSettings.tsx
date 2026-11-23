@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ArrowSquareOutIcon } from '@phosphor-icons/react'
+import { LinkSquare02Icon } from '@/components/icons'
 import { MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type DeploymentUpdateStatus } from '@gadgets/workshop-shared/api'
 import { Banner, Button, type SaveOutcome, SettingField, SettingRow, SettingsGroup, Switch, webUrl } from '@gadgets/ui'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -88,7 +88,7 @@ const UpdateSettings = ({ admin, update, onChanged }: UpdateSettingsProps) => {
             : outcome ? <span role="status">{outcome}</span> : 'New releases are installed through the deploy flow, where anyone with access to this deployment’s Cloudflare account can finish the update.'}
         >
           <Button disabled={checking} onClick={() => void checkNow()}>{checking ? 'Checking…' : 'Check now'}</Button>
-          {updateUrl && <Button variant="primary" icon={ArrowSquareOutIcon} onClick={() => window.open(updateUrl, '_blank', 'noopener')}>Update</Button>}
+          {updateUrl && <Button variant="primary" icon={LinkSquare02Icon} onClick={() => window.open(updateUrl, '_blank', 'noopener')}>Update</Button>}
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Update notice">
