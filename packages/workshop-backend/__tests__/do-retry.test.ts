@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  isDoResetError, isLoopLimitError, retryOnDoReset, withTimeout, wrapDoStubForTelemetry,
+  isDoResetError, isLoopLimitError, retryOnDoReset, TimeoutError, withTimeout, wrapDoStubForTelemetry,
 } from "../src/do-retry";
 import { createWorkshopLogger } from "../src/observability";
 
@@ -289,7 +289,7 @@ describe("withTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("rejects with the message once the time has passed, and drops a late answer", async () => {
+  it("rejects with a TimeoutError once the time has passed, and drops a late answer", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const request = Promise.withResolvers<string>();
     let outcome: unknown;
@@ -300,11 +300,12 @@ describe("withTimeout", () => {
     expect(outcome).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
     await settled;
-    expect(outcome).toEqual(new Error("Timed out."));
+    expect(outcome).toBeInstanceOf(TimeoutError);
+    expect(outcome).toMatchObject({ message: "Timed out." });
 
     request.resolve("late");
     await request.promise;
-    expect(outcome).toEqual(new Error("Timed out."));
+    expect(outcome).toMatchObject({ message: "Timed out." });
     expect(vi.getTimerCount()).toBe(0);
   });
 });
