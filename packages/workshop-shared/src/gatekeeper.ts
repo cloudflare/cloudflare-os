@@ -1409,8 +1409,9 @@ export interface Gatekeeper<Session> extends DurableObject {
    * them, as it does any staged action (see `BranchView`), in ID order among the staged actions.
    * They are applied later, by `applyActions()`, like any other. The Workshop calls this only for
    * a gatekeeper that implements `applyActions()`, when a user accepts a branch's changes to a
-   * resource that is not created yet (see `applyCreation()`); one that offers creation should
-   * implement it, or the accepted actions stay private to their branch.
+   * resource that is not created yet (see `applyCreation()`). One that offers creation must
+   * implement it: the Workshop treats the accepted actions as staged either way, and passes them
+   * to `applyActions()` with a staged view once the resource is created.
    *
    * The list is complete, as `applyActions()`'s is: it names every action the Workshop holds
    * pending on the branch and its ancestors with an ID up to the highest it names. A gatekeeper

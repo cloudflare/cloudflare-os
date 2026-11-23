@@ -6151,6 +6151,8 @@ class OverseerImpl implements AgentHooks {
         if (!list(gatekeeperId, false).some(record => record.applyError)) throw error;
         return false;
       }
+      // A staged action submitted meanwhile waited for this accept of staging (see #stagedRun).
+      if (chatId === null) this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
       if (auto && list(gatekeeperId, false).length > 0) return false;
     }
     return true;
@@ -6470,8 +6472,8 @@ class OverseerImpl implements AgentHooks {
 
   // Finishes each move to staging recorded on the connection (ActionRecord.moving): tells the
   // gatekeeper, through Gatekeeper.stageActions(), that the moving actions of each branch are
-  // staged, and once it returns, records them so. A gatekeeper without the method keeps them
-  // private to the branch. Runs before anything else on the connection (a session starting, an
+  // staged, and once it returns, records them so. One without the method is told
+  // nothing, and is recorded so all the same (it must implement it to offer creation). Runs before anything else on the connection (a session starting, an
   // apply, an accept), so that a move an earlier activation left unfinished, whether or not the
   // gatekeeper had already staged them, is brought into agreement first: the call is idempotent.
   // One runs at a time on a connection (#moves); a throw propagates and leaves the marks.

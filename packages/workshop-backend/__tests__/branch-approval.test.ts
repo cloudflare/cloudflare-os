@@ -1344,6 +1344,40 @@ describe("staging during a chat's accept", () => {
   });
 });
 
+describe("staging during an accept of staging", () => {
+  it("applies a staged action submitted meanwhile once the accept is done", async () => {
+    const parked = Promise.withResolvers<void>();
+    const applying = Promise.withResolvers<void>();
+    const applied: number[] = [];
+    let refuse = true;
+    const {visit} = await workspace({
+      async applyAction(action: number) {
+        if (refuse) throw new Error("Try again.");
+        if (action === 1) {
+          applying.resolve();
+          await parked.promise;
+        }
+        applied.push(action);
+      },
+    });
+    await visit(async impl => {
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(record(impl, 1).applyError?.retryable).toBe(true);
+      refuse = false;
+      const accept = impl.acceptBranch(null, impl.branchSnapshot(null), USER);
+      await applying.promise;
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(applied).toEqual([]);
+      parked.resolve();
+      await expect(accept).resolves.toBe(true);
+      await vi.waitFor(() => expect(applied).toEqual([1, 2]));
+      expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
+    });
+  });
+});
+
 describe("gadgets", () => {
   const branchGadgets = (impl: Impl, chatId: number) =>
     impl.chatMetaForClient(impl.storage.chatMeta.get(chatId)!).branchGadgets;
