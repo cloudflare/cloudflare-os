@@ -1,11 +1,14 @@
 import type { WorkpieceSummary } from "@gadgets/workshop-shared/api";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { EvalVerifier, resolveGadget, type VerifierSession } from "./verifier.js";
 import type { EvalCheck } from "./task.js";
-import { ViewHostError } from "./view-host.js";
+import { closeViewBrowser, ViewHostError } from "./view-host.js";
+
+afterAll(() => closeViewBrowser());
 
 const unusedSession: VerifierSession = {
   openGadget: async () => { throw new Error("openGadget is not used by this test"); },
+  readBlobText: async () => { throw new Error("readBlobText is not used by this test"); },
   connectionDrops: 0,
 };
 
@@ -149,5 +152,20 @@ describe("EvalVerifier", () => {
     expect(await collect(async verifier => {
       await verifier.check("renders", async () => { throw new Error("The view never loaded"); });
     })).toEqual([{ id: "renders", pass: false, evidence: "Error: The view never loaded" }]);
+  });
+});
+
+describe("EvalVerifier.openView", { timeout: 60_000 }, () => {
+  it("gives the view its message's pinned files, read through the session", async () => {
+    const read: string[] = [];
+    const session: VerifierSession = { ...unusedSession, readBlobText: async oid => { read.push(oid); return '{"Food":420}'; } };
+    const verifier = new EvalVerifier(session, []);
+    await using view = await verifier.openView(`
+      <p id="out"></p>
+      <script type="module">
+        document.getElementById("out").textContent = (await embeds.json("worktree://OUTPUTS/totals.json")).Food;
+      </script>`, { "worktree://OUTPUTS/totals.json": "a".repeat(40) });
+    expect((await view.text()).trim()).toBe("420");
+    expect(read).toEqual(["a".repeat(40)]);
   });
 });
