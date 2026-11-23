@@ -1,3 +1,4 @@
+@import "@fontsource-variable/inter/wght.css";
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 @source "../../ui/src/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles";

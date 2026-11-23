@@ -4,6 +4,11 @@
  * unlayered `light-dark()` pairs). Components use semantic tokens only.
  */
 :root {
+  /* Inter, self-hosted as a variable font (`@fontsource-variable/inter`, imported in `styles.css`),
+     over Tailwind's own stack for what it does not cover. Every weight comes from the one file. */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    'Segoe UI Symbol', 'Noto Color Emoji';
+
   /* The connection island is the window's own, as a phone's is: in light all black, and flipped
      in dark with the rest of what is in contrast. */
   --color-island: light-dark(#000, oklch(98.5% 0 0));
