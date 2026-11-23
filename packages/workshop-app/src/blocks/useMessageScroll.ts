@@ -78,6 +78,22 @@ export const useMessageScroll = () => {
     if (state.isAtBottom) state.scrollTop = state.targetScrollTop
   }, [state])
 
+  /** `MessageScroll.keepPlace`: what the reader sees stays where it is as something above it changes height. */
+  const keepPlace = useCallback((change: number, at: Element) => {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    // At the end of the conversation, it is kept there, in step.
+    if (state.isAtBottom) {
+      state.scrollTop = state.targetScrollTop
+      return
+    }
+    // What is below `at` moved by `change`: for a reader looking at it, or past it, the view goes with it.
+    if (at.getBoundingClientRect().top < scroll.getBoundingClientRect().bottom) {
+      state.scrollTop += change
+      capture()
+    }
+  }, [scrollRef, state, capture])
+
   const jumpToLatest = useCallback(() => {
     void scrollToBottom({ animation })
   }, [scrollToBottom, animation])
@@ -247,5 +263,5 @@ export const useMessageScroll = () => {
   // Preserve React-driven replacements before paint; observers cover subsequent layout changes.
   useLayoutEffect(reconcile)
 
-  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile, followNow }
+  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile, followNow, keepPlace }
 }

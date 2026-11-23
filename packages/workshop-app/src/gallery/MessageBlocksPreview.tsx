@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
-import { messageInfo } from '@/blocks/messageInfo'
+import { messageInfo, thinkingOf } from '@/blocks/messageInfo'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
 import { answerParts } from '@/chat/answerParts'
@@ -83,15 +83,16 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
+      <Section title="Message details (a click on the message shows a bubble under it of what there is to know about it, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; a click or the chevron puts them away; the brain button on a reply that took steps shows them above it, apart from the details)">
         <Column>
           <AssistantMessage
             text="I’ll build a personal Jira dashboard."
-            details={{ ...of('no-trace'), ...messageInfo({ sender: 'Mock Model Fast', sentAt: SENT, trace: { steps: [], openSteps: open, onToggleStep: toggle } }) }}
+            details={{ ...of('no-trace'), ...messageInfo({ sender: 'Mock Model Fast', sentAt: SENT, reply: true }) }}
           />
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
-            details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, trace: { steps: TRACE, openSteps: open, onToggleStep: toggle } }) }}
+            details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, reply: true }) }}
+            thinking={{ ...of('thinking'), content: thinkingOf({ steps: TRACE, openSteps: open, onToggleStep: toggle }) }}
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}

@@ -1,8 +1,9 @@
-import { useEffect, useEffectEvent, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { useContext, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { CaretUpIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
 import { Button } from '@gadgets/ui'
+import { MessageScrollContext } from './messageScroll'
 import { MessageActions, MESSAGE_ACTION_STYLE, type MessageActionsProps } from './MessageActions'
 import './MessageBubble.css'
 import { useDetailsStage } from './useDetailsStage'
@@ -38,10 +39,18 @@ export type MessageBubbleProps = {
   /** Marks the chat unread from this message on, from more. Left out where it is not the viewer's to mark. */
   onMarkUnread?: () => void
   /**
-   * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open.
+   * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open:
+   * a click on the message shows it and puts it away, as in other messaging apps.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
    */
   details?: MessageDetails
+  /**
+   * The way to show and put away how the message came about, which is a button among its actions. Hand it
+   * to the bubble that has them, and `trace` to the one it is shown above, which may be another.
+   */
+  thinking?: { open: boolean; onToggle: () => void }
+  /** How the message came about, above it as wide as the conversation while `open` (see `messageInfo`'s `thinkingOf`). */
+  trace?: { open: boolean; content: ReactNode }
 }
 
 export type MessageDetails = {
@@ -51,6 +60,37 @@ export type MessageDetails = {
   summary: ReactNode
   /** The rest of it, beneath that line. */
   more?: ReactNode
+}
+
+/**
+ * What led to a reply, above it, the way the thinking indicator shows its steps: rows with no fill
+ * or outline, as wide as the conversation. Opens and closes with the message's details (their stage),
+ * and keeps the reader's place as it does: what it grows above is pushed down, and the view goes with it,
+ * so that the message stays where it was looked at (see `MessageScrollContext`).
+ */
+const MessageTrace = ({ ref, id, stage, children }: { ref: RefObject<HTMLDivElement | null>; id: string; stage: string; children: ReactNode }) => {
+  const scroll = useContext(MessageScrollContext)
+  useLayoutEffect(() => {
+    const element = ref.current!
+    let height = element.getBoundingClientRect().height
+    const watch = new ResizeObserver(() => {
+      const next = element.getBoundingClientRect().height
+      const change = next - height
+      height = next
+      if (change) scroll?.keepPlace(change, element)
+    })
+    watch.observe(element)
+    return () => watch.disconnect()
+  }, [ref, scroll])
+  return (
+    <div ref={ref} id={id} data-stage={stage} inert={stage === 'row' || stage === 'leaving'} className="message-trace w-full text-kumo-default">
+      {/* The padding is inside what is clipped: on the clipped box itself it would be there when the rest is shut,
+          and go when the trace is taken away. */}
+      <div>
+        <div className="pt-1.5 pb-1">{children}</div>
+      </div>
+    </div>
+  )
 }
 
 // The viewer's own messages are the page's opposite in light. In dark that would be a run of near
@@ -111,8 +151,8 @@ const ACTIONS =
   'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100 has-data-popup-open:pointer-events-auto has-data-popup-open:opacity-100 ' +
   'pointer-coarse:pointer-events-none group-data-[actions=shown]/message:pointer-events-auto group-data-[actions=shown]/message:opacity-100'
 
-// What a tap on a message is for already, rather than for showing its actions.
-const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
+// What a tap or a click on a message is for already, rather than for showing its actions or its details.
+const OWN_TAP = 'a, button, input, textarea, select, summary, label, iframe, video, audio, [role="button"], [data-message-actions]'
 
 /**
  * One chat message: the user's on the right in a bubble of their own colour, the assistant's and errors on the left.
@@ -121,12 +161,13 @@ const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, developerCopies, onMarkUnread, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, developerCopies, onMarkUnread, details, thinking, trace: thought }: MessageBubbleProps) => {
   const detailsId = useId()
+  const traceId = useId()
   const open = details?.open ?? false
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
-  const actions = (onReply || copyText !== undefined || developerCopies || onMarkUnread || details) &&
-    <MessageActions onReply={onReply} copyText={copyText} developerCopies={developerCopies} onMarkUnread={onMarkUnread} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  const actions = (onReply || copyText !== undefined || developerCopies || onMarkUnread || details || thinking) &&
+    <MessageActions onReply={onReply} copyText={copyText} developerCopies={developerCopies} onMarkUnread={onMarkUnread} details={details && { open, onToggle: details.onToggle, controls: detailsId }} thinking={thinking && { ...thinking, controls: traceId }} />
 
   // Shown by a tap, rather than by a pointer that is there, until the message is tapped again or
   // anything else is.
@@ -141,28 +182,36 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
     document.addEventListener('click', tapElsewhere)
     return () => document.removeEventListener('click', tapElsewhere)
   }, [tapped])
-  // Not a tap that was for something in the message, such as a link, nor one that ends choosing
-  // some of its text.
+  // A click on the message shows its details, and puts them away: not one that was for something in it,
+  // such as a link or a button, nor one that ends choosing some of its text. A tap on a screen that is
+  // touched shows the actions too.
   const tap = ({ target }: ReactMouseEvent) => {
-    if (!actions || !touched.current || !(target instanceof Element) || target.closest(OWN_TAP)) return
+    if (!(target instanceof Element) || target.closest(OWN_TAP)) return
     if (document.getSelection()?.isCollapsed === false) return
-    setTapped((shown) => !shown)
+    if (actions && touched.current) setTapped((shown) => !shown)
+    details?.onToggle()
   }
 
-  // A click anywhere outside the details puts them away, the message they are about included.
-  // The button that shows them is left to do its own switching.
+  // A click anywhere outside the details puts them away, except on the message, which shows and puts
+  // them away itself, and on what is above it, which is another thing's, and in a menu, whose item may
+  // be to show them. A click on another message puts these away as that one's are shown.
   //
   // On the click, not the press: closing moves what is below, and a button that moved between the
   // press and the release would not be clicked at all. That is what asking for another message's
   // details is, and this way the one closes and the other opens together.
   const panel = useRef<HTMLDivElement>(null)
+  const trace = useRef<HTMLDivElement>(null)
   const stage = useDetailsStage(open, details?.more != null)
+  // What is above the message is there as long as it is asked for, and goes as the details do.
+  const traceStage = useDetailsStage(thought?.open ?? false, false)
+  const traced = !!thought && traceStage !== 'gone'
+  const traceFolded = traceStage === 'row' || traceStage === 'leaving'
   // The message's own bubble meets the panel as it would the next message, while it is there.
   const joinsDetails = stage !== 'gone' && stage !== 'leaving'
   const folded = stage === 'row' || stage === 'leaving'
   const clickElsewhere = useEffectEvent(({ target }: MouseEvent) => {
-    if (!(target instanceof Element) || panel.current?.contains(target)) return
-    if (target.closest('[aria-controls]')?.getAttribute('aria-controls') === detailsId) return
+    if (!(target instanceof Element) || panel.current?.contains(target) || bubble.current?.contains(target) || trace.current?.contains(target)) return
+    if (target.closest('[role="menu"]')) return
     details?.onToggle()
   })
   useEffect(() => {
@@ -174,8 +223,11 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
   return (
     <div
       data-role={role}
-      className={cn('flex items-start [container-type:inline-size]', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+      className={cn('flex items-start [container-type:inline-size]', traced && 'flex-col', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
     >
+      {traced && (
+        <MessageTrace ref={trace} id={traceId} stage={traceStage}>{thought.content}</MessageTrace>
+      )}
       <div
         className={cn(
           'arrives message-bubble rounded-[21px] text-base/5 break-words',
@@ -184,7 +236,9 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
           role === 'user' ? 'origin-top-right' : 'origin-top-left',
           'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
           RUN[role].bubble,
-          joins?.above && JOINED[role].above,
+          // Not tucked into the message above while what led to it is between them (and only as it goes, so
+          // that the corner has come back by the time it is gone).
+          joins?.above && !(traced && !traceFolded) && JOINED[role].above,
           joins?.below && JOINED[role].below,
         )}
       >
@@ -205,8 +259,8 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
           )}
         >
           {children}
-          {actions && role === 'user' && <div className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
-          {actions && role === 'assistant' && <div className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}
+          {actions && role === 'user' && <div data-message-actions="" className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
+          {actions && role === 'assistant' && <div data-message-actions="" className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}
         </div>
         {/* The details are a bubble of their own in width too: as wide as what is in them, up to
             the limit a message has, whatever the message's own width. The wrapper keeps them out

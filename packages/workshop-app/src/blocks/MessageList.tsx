@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
 import { Button, isMotionOff, readMotionLevel, useScrollFadeFallback } from '@gadgets/ui'
+import { MessageScrollContext } from './messageScroll'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
 import { useMessageScroll } from './useMessageScroll'
 
@@ -62,7 +63,7 @@ const markArriving = (row: Element) => {
 
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
 export const MessageList = ({ messages, children, history, streaming, ref }: MessageListProps) => {
-  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile, followNow } = useMessageScroll()
+  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile, followNow, keepPlace } = useMessageScroll()
   useImperativeHandle(ref, () => ({
     scrollToMessage: (id) => {
       const sequence = messages.find((message) => message.id === id)?.sequence
@@ -70,6 +71,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
     },
     scrollToLatest: scrollToBottom,
   }), [messages, scrollToRow, scrollToBottom])
+  const scroll = useMemo(() => ({ keepPlace }), [keepPlace])
   const startRef = useRef<HTMLDivElement>(null)
   useScrollFadeFallback(scrollRef)
   // Sequence buckets stay stable when history is prepended or an existing message is updated.
@@ -161,7 +163,9 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
               </div>
             )}
           </div>
-          {pages.map((page) => <MessagePage key={page.id} page={page} scrollRef={scrollRef} onLayout={reconcile} />)}
+          <MessageScrollContext value={scroll}>
+            {pages.map((page) => <MessagePage key={page.id} page={page} scrollRef={scrollRef} onLayout={reconcile} />)}
+          </MessageScrollContext>
           <div ref={liveRef} data-message-anchor="live" className="flex flex-col gap-2">{children}</div>
         </div>
       </div>

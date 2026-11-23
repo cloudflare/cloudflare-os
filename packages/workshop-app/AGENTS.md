@@ -246,19 +246,24 @@ gone the moment they open and, as they close, wait for the mascot to be there be
 (`.presence-label`, told by `useFlight`'s `onArrive`); they are 10px from it. The steps are put away by the
 mascot (there is no button), and focus that was on the words goes to it.
 
-A reply becomes a message only once it is written. Its
-steps then go with it (`AssistantItem.trace`), out of the conversation but there for whoever asks:
-a message's details (`messageInfo`) show in a separate outlined panel under it. In width it is a
-bubble of its own: as wide as what is in it, up to the limit a message has. The model/other
-sender and time have their own icon rows, with a divider before the trace when present. The
-viewer's own messages only show the time. Everything in the panel is one text size (`text-sm/5`)
-and its row icons are all `size-4`, centred on their line; every chevron, here and on anything
-else that opens, is `size-3` and bold. The panel arrives whole, the way a message does.
-Putting it away takes two steps (`useDetailsStage`): it folds to its first line the way a step
-closes, and the line then leaves. Its heights are grid
-rows, never measured, so closing cannot make the scroll position jump. It joins the message's
-bubble run with the same 2px spacing and meeting corners. A chevron in its top right corner
-puts it away again, and so does a click anywhere outside the panel.
+A reply becomes a message only once it is written. Its steps then go with it (`AssistantItem.trace`), out of the
+conversation but there for whoever asks. How it came about is shown above the message, as the history that led
+up to it, the steps as the indicator draws them (`thinkingOf`, `MessageBubble`'s `trace`, as wide as the
+conversation), shown by a brain button among the message's actions (`thinking`; it opens as set by Always show
+thinking, below). What there is to know about the message (`messageInfo`: the model, the time, in developer
+mode how long it took) is a bubble of its own under it, shown by a click on the message, as in other messaging
+apps, and in more as Show details (a link, a button, a view or a selection in the message is not a click for
+that, and a click anywhere else puts it away). The two are independent, each with its own open state
+(`DisclosureStore` keys `item.key` and `item.key:thinking`), and neither opens by itself when a reply arrives.
+The panel is `text-sm/5` lines with `size-4` icons, only the time for the viewer's own messages; every chevron,
+here and on anything else that opens, is `size-3` and bold. It arrives whole, the way a message does, and
+putting it away takes two steps (`useDetailsStage`): it folds to its first line the way a step closes, and the
+line then leaves. Its heights are grid rows, never measured, so closing cannot make the scroll position jump. It
+joins the message's bubble run with the same 2px spacing and meeting corners, and the message does not tuck into
+the one above while its trace is between them. The trace opens and closes on the same stages, with its padding
+inside what is clipped, so that nothing is there that goes at the end, and keeps the reader's place as it does
+(`MessageScroll.keepPlace`): at the end of the conversation that follows it, and elsewhere, if what it moves is
+what the reader can see or is beyond, the view goes with it, so that the message stays where it was looked at.
 The mascot's room is always kept, so its coming and going moves nothing.
 
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is

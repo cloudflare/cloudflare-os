@@ -158,3 +158,37 @@
 :root[data-motion='off'] .message-details-more {
   transition: none;
 }
+
+/* What led to a reply, above it, comes and goes with its details (see `MessageTrace`): a row of a grid
+   going between none and all of its content, so nothing is measured, with the content fading as it goes.
+   It is there while the details are in any stage but gone; it is shut from the stage they fold in. */
+.message-trace {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 160ms ease-out;
+}
+
+.message-trace > div {
+  min-height: 0;
+  /* Only downwards: what is in it may be set out wider than the rows, such as a row's pointed-at ring. */
+  overflow-y: clip;
+}
+
+.message-trace:is([data-stage='row'], [data-stage='leaving']) {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+@starting-style {
+  .message-trace[data-stage='arriving'] {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+:root[data-motion='off'] .message-trace {
+  transition: none;
+}
