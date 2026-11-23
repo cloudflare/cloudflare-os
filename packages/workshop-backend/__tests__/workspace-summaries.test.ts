@@ -143,6 +143,25 @@ it("clears a request-only wait when the user stops the paused turn", async () =>
     .toMatchObject({waiting: {chats: 0, runs: 0, gadgets: []}}));
 });
 
+it("shows what a later turn asks, not a request a stopped turn left pending", async () => {
+  const {workspace, owner} = await setup();
+  const agent: AiChatAuthorInfo = {type: "agent", id: "model", name: "Model"};
+  const summary = await withImpl(workspace, impl => {
+    impl.addChatMessages(1, agent, [
+      {type: "webFetchRequest", requestId: "1:a", url: "https://a.example.test/", state: "pending"},
+    ]);
+    impl.cancelAgent(1);
+    impl.addChatMessages(1, owner, [{type: "message", message: "Try the other one"}]);
+    impl.addChatMessages(1, agent, [
+      {type: "webFetchRequest", requestId: "1:b", url: "https://b.example.test/", state: "pending"},
+    ]);
+    return impl.workspaceSummary();
+  });
+  expect(summary.waitingChats).toMatchObject([
+    {chatId: 1, waiting: "action", ask: {type: "webFetch", url: "https://b.example.test/"}},
+  ]);
+});
+
 it("pushes changes to the owner and admitted builders, and drops a summary when access narrows", async () => {
   const fixture = await setup();
   const {reader} = await addReader(fixture);

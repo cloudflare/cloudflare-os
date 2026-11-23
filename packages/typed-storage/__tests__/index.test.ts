@@ -971,10 +971,8 @@ describe("non-unique index rebuild", () => {
 
     let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
 
-    // Declared over pre-existing records, the index starts empty -- and resolving one of those
-    // records would throw on the index's remove.
+    // Declared over pre-existing records, the index starts empty.
     expect([...storage.users.byLevel.list()]).toStrictEqual([]);
-    expect(() => storage.users.put({...ALICE, level: 0})).toThrow("inconsistent");
 
     storage.users.byLevel.rebuild();
     expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE, CAROL]);
@@ -1039,6 +1037,56 @@ describe("non-unique index rebuild", () => {
     storage.users.byLevel.rebuild();
     expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE]);
     expect([...storage.users.byLevel.get(1)]).toStrictEqual([]);
+  });
+});
+
+describe("non-unique index indexRecords", () => {
+  // Users written before byLevel or byGroup was declared, so each index starts empty.
+  function legacyStorage<S extends typeof INDEXED_SCHEMA | typeof GROUP_SCHEMA>(schema: S) {
+    let mockStorage = makeMockStorage();
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    for (let user of [ALICE, BOB, CAROL, DAVE, EVE]) legacy.users.put(user);
+    return {mockStorage, storage: createTypedStorage(mockStorage, schema)};
+  }
+
+  it("indexes only the records a ranged listing of the collection streams", () => {
+    let {storage} = legacyStorage(GROUP_SCHEMA);
+    // The listing stays open while the records it yields are indexed.
+    storage.users.byGroup.indexRecords(storage.users.list({prefix: "c"}));
+    storage.users.byGroup.indexRecords(storage.users.list({start: "d", end: "e"}));
+
+    expect([...storage.users.byGroup.get("everyone")]).toStrictEqual([CAROL, DAVE]);
+    expect([...storage.users.byGroup.get("admin")]).toStrictEqual([CAROL]);
+    expect([...storage.users.byGroup.listKeys()]).toStrictEqual(["admin", "everyone", "interns"]);
+  });
+
+  it("is idempotent, for records indexed before and as they were written", () => {
+    let {mockStorage, storage} = legacyStorage(GROUP_SCHEMA);
+    let ABE = {...EVE, name: "abe", groups: ["admin"]};
+    storage.users.byGroup.indexRecords([ALICE, BOB]);
+    storage.users.put(ABE);
+    let written = new Map(mockStorage.kv.list({prefix: "users.byGroup"}));
+
+    storage.users.byGroup.indexRecords(storage.users.list({end: "c"}));
+    expect(new Map(mockStorage.kv.list({prefix: "users.byGroup"}))).toStrictEqual(written);
+    expect([...storage.users.byGroup.get("admin")]).toStrictEqual([ABE, ALICE]);
+    expect([...storage.users.byGroup.get("everyone")]).toStrictEqual([ALICE, BOB]);
+  });
+
+  it("lets a record it left out be updated and deleted, indexing only its new keys", () => {
+    let {storage} = legacyStorage(INDEXED_SCHEMA);
+    storage.users.byLevel.indexRecords([BOB]);
+
+    storage.users.put({...ALICE, level: 0});  // level 8, never indexed, to none
+    storage.users.put({...CAROL, level: 4});  // level 8, never indexed, to BOB's
+    storage.users.delete("dave");             // level 1, never indexed
+    expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, {...CAROL, level: 4}]);
+
+    // Leaving out a record of an indexed group leaves the group's other records.
+    storage.users.put({...BOB, level: 0});
+    storage.users.put({...ALICE, level: 4});
+    storage.users.put({...ALICE, level: 2});
+    expect([...storage.users.byLevel.list()]).toStrictEqual([{...ALICE, level: 2}, {...CAROL, level: 4}]);
   });
 });
 

@@ -96,10 +96,20 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
   /**
    * Discard the index's contents and re-derive them from the collection's records. Indexes are
    * only maintained at write time, so an index declared after records already exist starts empty
-   * (and updates to those records would corrupt it, or throw); a migration must rebuild() such an
-   * index before the records are touched.
+   * and leaves those records out; a migration must rebuild() such an index, or indexRecords() the
+   * records it must find, before reading it. Updating or deleting a record the index leaves out
+   * changes nothing in it beyond the keys the record's new value adds.
    */
   rebuild(): void;
+
+  /**
+   * Index `records`, which must be stored in the collection, leaving every other entry as it is:
+   * a backfill of chosen records where rebuild() would read them all. Idempotent, so a record
+   * already indexed may be passed again. Each record costs only point reads and writes, so
+   * `records` may be a listing of the collection itself (e.g. its `list({prefix})`), consumed as
+   * it streams.
+   */
+  indexRecords(records: Iterable<T>): void;
 }
 
 type Key = string | number;
@@ -647,11 +657,9 @@ function createCollection<
         child.put(pk, {});
       },
       remove(idxKey: Key, pk: Key) {
+        // A record the index leaves out (see indexRecords()) has no entry to remove.
         let id = idxKv.get(idxKey);
-        if (id === undefined) {
-          throw new Error(
-              `Index '${name}.${idxName}' is inconsistent: removed record is not present.`);
-        }
+        if (id === undefined) return;
 
         let child = idxKv.getChild(id.toString());
         child.delete(pk);
@@ -726,6 +734,11 @@ function createCollection<
             addToIndex(record);
           }
         });
+      },
+      indexRecords(records: Iterable<T>): void {
+        for (let record of records) {
+          addToIndex(record);
+        }
       },
     };
     result[idxName] = index;

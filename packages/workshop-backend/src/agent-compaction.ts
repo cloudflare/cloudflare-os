@@ -94,6 +94,16 @@ export function isTurnPrompt(message: AiChatMessage): boolean {
 }
 
 /**
+ * A message that ends the search back through a chat's log for decisions the current turn has
+ * not consumed: a prompt, a callback, a nudge or a built-in /compact.
+ */
+export function isDecisionBoundary(msg: AiChatMessage): boolean {
+  return msg.type === "agentCallback" || msg.type === "agentNudge" ||
+      (msg.type === "slashCommand" && msg.request.id.builtin === true &&
+       msg.request.id.commandId === "compact") || isTurnPrompt(msg);
+}
+
+/**
  * A message that begins an agent turn: the user or a gadget prompted, a callback or a nudge with
  * text arrived, or an accepted connection or approved web fetch resumed the agent. Each produces a
  * `user` model message, so cutting here keeps the retained messages from opening mid-turn.

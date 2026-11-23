@@ -90,7 +90,7 @@ import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
 import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import {
-  chatChangeStatuses, foldCompactedCode, isCompactionTurn, isTurnPrompt,
+  chatChangeStatuses, foldCompactedCode, isCompactionTurn, isDecisionBoundary, isTurnPrompt,
 } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
@@ -788,13 +788,6 @@ function workpieceSummary(record: WorkpieceRecord, includeUpstream: boolean): Wo
 // none: the default can change, and attribution must not (see GatekeeperCaller).
 function callerGadgetId(caller: GatekeeperCaller): WorkpieceId | undefined {
   return caller.from === "gadget" || caller.from === "hook" ? caller.gadgetId : undefined;
-}
-
-// These log records end the search for unconsumed decisions from the current turn.
-function isDecisionBoundary(msg: AiChatMessage): boolean {
-  return msg.type === "agentCallback" || msg.type === "agentNudge" ||
-      (msg.type === "slashCommand" && msg.request.id.builtin === true &&
-       msg.request.id.commandId === "compact") || isTurnPrompt(msg);
 }
 
 function actionRecordToLog(record: ActionRecord): ActionLogEntry {
@@ -7474,15 +7467,20 @@ class OverseerImpl implements AgentHooks {
     // A chat stopped on a decision has a pending request or a pending action (see
     // #decisionWait()), so only chats with a pending request and no pending action need their log
     // read. Listed whole first: #decisionWait() lists a chat's log, which would end this listing.
-    for (let request of Array.from(this.storage.chats.pendingRequestsByChat.list())) {
-      let {chatId} = request;
-      if (waitingOn.has(chatId) || this.storage.chatMeta.get(chatId)?.activeAgent ||
-          !this.#decisionWait(chatId)?.pending) continue;
-      waitingOn.set(chatId, {waiting: "action", ask:
-        request.type === "connectionRequest" ? {type: "connection",
-          vendorName: request.vendorName.slice(0, 240), reason: request.reason.slice(0, 240)}
-        : request.type === "webFetchRequest" ? {type: "webFetch", url: request.url.slice(0, 240)}
-        : undefined});
+    // Only a request of the turn's current segment is what it waits on: stopping a paused turn
+    // leaves its request pending, ahead of any a later turn asks.
+    let pendingRequests = Map.groupBy(this.storage.chats.pendingRequestsByChat.list(), ({chatId}) => chatId);
+    for (let [chatId, requests] of pendingRequests) {
+      if (waitingOn.has(chatId) || this.storage.chatMeta.get(chatId)?.activeAgent) continue;
+      let wait = this.#decisionWait(chatId);
+      let request = wait?.pending
+          ? requests.find(msg => "requestId" in msg && wait.requestIds.includes(msg.requestId)) : undefined;
+      if (request?.type === "connectionRequest") {
+        waitingOn.set(chatId, {waiting: "action", ask: {type: "connection",
+          vendorName: request.vendorName.slice(0, 240), reason: request.reason.slice(0, 240)}});
+      } else if (request?.type === "webFetchRequest") {
+        waitingOn.set(chatId, {waiting: "action", ask: {type: "webFetch", url: request.url.slice(0, 240)}});
+      }
     }
     let runs = 0, chats = 0;
     let waitingChats: WorkspaceWaitingChat[] = [];
@@ -8156,6 +8154,31 @@ class OverseerImpl implements AgentHooks {
     this.storage.nextChatId.put(result + 1);
     this.storage.nextChatSequences.put({chatId: result, nextSequence: 0, notificationParticipants: []});
     return result;
+  }
+
+  /**
+   * Whether the chats artifactsByChat index holds every message of `chatId` that records what the
+   * chat has: always for a chat created since the version-8 migration, and for one before it once
+   * indexChatArtifacts() has indexed it.
+   */
+  chatArtifactsIndexed(chatId: number): boolean {
+    return chatId >= this.storage.chatArtifactsIndexedFrom.get() ||
+        this.storage.chatArtifactsBackfilled.get(chatId) !== undefined;
+  }
+
+  /**
+   * Completes the chats artifactsByChat index for `chatId` before it is read. The first time, a
+   * chat that predates the index (see chatArtifactsIndexedFrom) has its messages indexed and is
+   * recorded in chatArtifactsBackfilled, synchronously and in one transaction. A deleted chat has
+   * nothing to index and is not recorded.
+   */
+  indexChatArtifacts(chatId: number): void {
+    if (this.chatArtifactsIndexed(chatId) || !this.storage.chatMeta.get(chatId)) return;
+    this.ctx.storage.transactionSync(() => {
+      this.storage.chats.artifactsByChat.indexRecords(
+          this.storage.chats.list({prefix: chatKeyPrefix(chatId)}));
+      this.storage.chatArtifactsBackfilled.put({chatId});
+    });
   }
 
   // Get the sequence number that should be assigned to the next message in the given chat thread.
@@ -14279,6 +14302,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new TypeError(`Invalid afterSequence: ${afterSequence}`);
     }
     let storage = this.impl.storage;
+    this.impl.indexChatArtifacts(chatId);
     // The +1 message probes whether there is a page after this one.
     let messages = [...storage.chats.artifactsByChat.get(keyString(chatId), {
       startAfter: afterSequence === undefined ? undefined : chatKey(chatId, afterSequence),
@@ -14325,6 +14349,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined> {
     let key = chatAttachmentKey(chatId, validateChatAttachmentId(id));
+    this.impl.indexChatArtifacts(chatId);
     for (let msg of this.impl.storage.chats.artifactsByChat.get(key)) {
       let ref = msg.type === "message" ? msg.attachments?.find(a => a.id === id) : undefined;
       if (ref) return chatAttachmentInfo(ref, msg.sequence);
@@ -14575,6 +14600,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.removeChatWorkpieces(chatId);
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
+    this.impl.storage.chatArtifactsBackfilled.delete(chatId);
     for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
       this.impl.storage.chatNotifications.deleteRecord(event);
     }
@@ -15455,11 +15481,14 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   // A message's ChatAttachmentRef is the one record of an attachment's metadata, read off the
   // index of the messages that record what a chat has (see listChatArtifacts()). Each entry names
   // the fields its type declares, since a stored reference also holds its path in the chat's
-  // scratch worktree, and can hold bytes.
+  // scratch worktree, and can hold bytes. A view writes nothing, so a chat the index does not yet
+  // hold whole (see OverseerImpl.indexChatArtifacts()) is read through instead.
   async listChatAttachments(chatId: number): Promise<ChatAttachmentInfo[]> {
     return this.#call("listChatAttachments", {chatId}, () => {
+      let {chats} = this.#impl.storage;
       let attachments: ChatAttachmentInfo[] = [];
-      for (let msg of this.#impl.storage.chats.artifactsByChat.get(keyString(chatId))) {
+      for (let msg of this.#impl.chatArtifactsIndexed(chatId)
+          ? chats.artifactsByChat.get(keyString(chatId)) : chats.list({prefix: chatKeyPrefix(chatId)})) {
         if (msg.type !== "message") continue;
         for (let ref of msg.attachments ?? []) {
           attachments.push(chatAttachmentInfo(ref, msg.sequence));

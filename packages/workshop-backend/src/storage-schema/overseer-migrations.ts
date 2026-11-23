@@ -18,6 +18,7 @@ import {
   chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
   type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
+import { isDecisionBoundary } from "../agent-compaction";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
 import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
@@ -431,21 +432,40 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
 
 /**
  * Version 7 -> 8: backfill the indexes that answer for one chat what it has and what it waits
- * on (chats' artifactsByChat and pendingRequestsByChat, actions' connectionsByChat), and the
- * chatMeta byListing index, which Overseer.listChats() pages. Like migrateToActionIndexes, the
- * rebuilds and the stamp are one transaction, so a crash mid-rebuild retries whole, and nothing
+ * on, and the chatMeta byListing index, which Overseer.listChats() pages, without reading any
+ * chat's transcript whole, since the migration blocks the workspace's start:
+ * - actions' connectionsByChat and chatMeta's byListing are rebuilt, as migrateToActionIndexes
+ *   rebuilds the action indexes;
+ * - chats' pendingRequestsByChat indexes only the requests of each chat's current decision
+ *   segment, read back to its last decision boundary as OverseerImpl.#decisionWait() reads it:
+ *   a request an earlier turn left pending is not what the chat waits on;
+ * - chats' artifactsByChat reads nothing now: chatArtifactsIndexedFrom records the first chat
+ *   created after the migration, and each chat before it is indexed on its first read of what it
+ *   has (see OverseerImpl.indexChatArtifacts()).
+ * The backfills and the stamp are one transaction, so a crash midway retries whole, and nothing
  * can update a record before its indexes exist.
  */
 export function migrateToChatIndexes(host: OverseerMigrationHost): void {
   if (host.storage.version.get() !== 7) return;
+  let {storage} = host;
   host.ctx.storage.transactionSync(() => {
-    host.storage.chats.artifactsByChat.rebuild();
-    host.storage.chats.pendingRequestsByChat.rebuild();
-    host.storage.actions.connectionsByChat.rebuild();
-    host.storage.chatMeta.byListing.rebuild();
-    host.storage.version.put(8);
+    for (let chatId of Array.from(storage.chatMeta.list(), ({id}) => id)) {
+      storage.chats.pendingRequestsByChat.indexRecords(currentDecisionSegment(storage, chatId));
+    }
+    storage.chatArtifactsIndexedFrom.put(storage.nextChatId.get());
+    storage.actions.connectionsByChat.rebuild();
+    storage.chatMeta.byListing.rebuild();
+    storage.version.put(8);
   });
   host.logger.info("backfilled the chat indexes", {
     event: "storage.migration.chat-indexes.completed",
   });
+}
+
+// A chat's messages since its last decision boundary, newest first.
+function* currentDecisionSegment(storage: OverseerStorage, chatId: number) {
+  for (let msg of storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+    if (isDecisionBoundary(msg)) return;
+    yield msg;
+  }
 }

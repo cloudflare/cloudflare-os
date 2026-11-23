@@ -1399,10 +1399,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
-      //   8 = the chats collection's artifactsByChat and pendingRequestsByChat indexes, the
-      //       actions collection's connectionsByChat index, and the chatMeta collection's
-      //       byListing index exist and are backfilled (see migrateToChatIndexes() in
-      //       overseer-migrations.ts).
+      //   8 = the actions collection's connectionsByChat index and the chatMeta collection's
+      //       byListing index exist and are backfilled; the chats collection's
+      //       pendingRequestsByChat index holds every request each chat's current decision
+      //       segment still asks, and its artifactsByChat index each chat from
+      //       chatArtifactsIndexedFrom on, and each one before it once its id is in
+      //       chatArtifactsBackfilled (see migrateToChatIndexes() in overseer-migrations.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1441,6 +1443,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatId: 0,
       nextHookId: 0,
       nextAgentCallId: 0,
+
+      // The first chat id whose every message the chats collection's artifactsByChat index has
+      // indexed as it was written: the workspace's nextChatId when the version-8 migration ran, 0
+      // in a workspace born at version 8 or later. A chat before it is indexed on its first read
+      // of what it has (see OverseerImpl.indexChatArtifacts()).
+      chatArtifactsIndexedFrom: 0,
 
       // OBSOLETE: deadWorktreeIds existed to facilitate hiding worktrees from clients, but we
       // no longer do that. Noted here since old workspaces may still have a singleton by this
@@ -1735,12 +1743,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         uniqueIndexes: {
           byTimestamp(msg: StoredChatMessage) { return msg.timestamp.valueOf(); }
         },
-        // Both backfilled by the version-8 migration.
+        // Neither is backfilled whole: see the version-8 migration.
         nonUniqueIndexes: {
           // The messages that record what a chat has (see listChatArtifacts()): the gadgets and
           // worktrees it created, and the files sent in it. Each is under its chat's key
           // (keyString(chatId)), to page through, and a message with files under each file's
-          // chatAttachmentKey too, to find one by its id.
+          // chatAttachmentKey too, to find one by its id. A chat before chatArtifactsIndexedFrom
+          // is complete here only once it is in chatArtifactsBackfilled; read it through
+          // OverseerImpl.indexChatArtifacts().
           artifactsByChat(msg: StoredChatMessage): string[] {
             let files = msg.type === "message" ? msg.attachments ?? [] : [];
             let created = msg.type === "changes" &&
@@ -1751,13 +1761,20 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
           // Sparse index over the connection and web fetch requests still waiting on a
           // decision, keyed by chat (see OverseerImpl.#waiting()). A request is decided in
-          // place, which drops it from here.
+          // place, which drops it from here. A request a workspace stored before version 8 is
+          // here only if it was in its chat's current decision segment then: one an earlier
+          // turn left pending is no longer what its chat waits on.
           pendingRequestsByChat(msg: StoredChatMessage) {
             return (msg.type === "connectionRequest" || msg.type === "webFetchRequest") &&
                 msg.state === "pending" ? msg.chatId : null;
           },
         },
       }),
+
+      // The chats before chatArtifactsIndexedFrom whose messages the chats collection's
+      // artifactsByChat index now holds (see OverseerImpl.indexChatArtifacts()). Deleted with the
+      // chat.
+      chatArtifactsBackfilled: collection<{chatId: number}>()({primaryKey: "chatId"}),
 
       // READ-ONLY LEGACY: pre-git-storage live drafts. Retained only as migration input (the
       // conversion change folds them in and deletes them); nothing else reads or writes it, apart
