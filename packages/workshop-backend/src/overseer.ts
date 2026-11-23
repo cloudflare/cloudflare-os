@@ -658,6 +658,10 @@ const ALARM_HANDLER_BUDGET_MS = 10 * 60_000;
 // that budget is exhausted; agent resumes have their own per-execution budget below.
 const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
+// A turn resumed this often without persisting a step waits to restart alone: turns that keep
+// being interrupted together may be resetting the object by their combined load. Two, not one,
+// because resuming after a decision counts too, and one restart must not make such a turn wait.
+const AGENT_RESUME_QUEUE_ATTEMPTS = 2;
 
 // The agent-authored records Overseer.waitForAgent() returns (see there).
 const WAIT_FOR_AGENT_RESULT_TYPES =
@@ -1011,6 +1015,10 @@ class OverseerImpl implements AgentHooks {
   // A failed replay-safe model lookup hands the existing row back to the alarm. Its attempt
   // budget lives on that row, since another concern can reschedule the shared alarm.
   #resumeErrors = new Map<number, unknown>();
+
+  // The line of turns that restart one at a time (see #resumeInterruptedAgents). It settles when
+  // the #resumeAgent of the last turn in it has, which is when the next to join starts.
+  #resumeLine = Promise.resolve();
 
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
   // for the connection. Held in memory only: a gatekeeper that gains a catalog in a later version
@@ -1779,6 +1787,9 @@ class OverseerImpl implements AgentHooks {
       this.#unregisterRunningAgent(record.chatId);
       this.#finishAgentTurn(record.chatId);
     };
+    // A turn that waited to restart alone may have been stopped since, or its chat deleted or
+    // prompted again. Every other caller owns the chat here.
+    if (!owns()) return;
     // A reset can land after a request or final response committed but before teardown. Honor
     // that logged pause/completion instead of issuing another model request -- unless steers were
     // queued after the final response: as in #finishAgentTurn, they prompt the next turn.
@@ -2003,7 +2014,25 @@ class OverseerImpl implements AgentHooks {
       let liveChat = this.#getLiveChat(record.chatId);
 
       this.#resumeErrors.delete(record.chatId);
-      this.#resumeAgent(record, liveChat);
+      // A spent budget ends the turn without I/O, so that turn does not wait either.
+      let attempts = record.resumeAttempts ?? 0;
+      if (attempts < AGENT_RESUME_QUEUE_ATTEMPTS || attempts >= AGENT_RESUME_MAX_ATTEMPTS) {
+        this.#resumeAgent(record, liveChat);
+        continue;
+      }
+      this.logger.info("agent resume queued", {
+        event: "agent.resume.queued", chatId: record.chatId,
+      });
+      // A waiting turn has no task whose teardown would end it. Stop aborts its signal: release
+      // it then, and cancelAgent ends it at once, as it does a lookup handed to the alarm.
+      let signal = liveChat.cancelController.signal;
+      let release = () => this.#unregisterRunningAgent(record.chatId);
+      signal.addEventListener("abort", release);
+      // The next turn starts whether this one resolves or rejects, and a rejection stays unhandled.
+      this.#resumeLine = this.#resumeLine.then(() => new Promise<void>(next => {
+        signal.removeEventListener("abort", release);
+        this.#resumeAgent(record, liveChat).finally(next);
+      }));
     }
 
     // Backwards compatibility: Prior to the introduction of the `activeAgents` table, we could
@@ -8090,8 +8119,9 @@ class OverseerImpl implements AgentHooks {
     if (ctx) {
       ctx.cancelController.abort(new Error("User requested to stop agent."));
     }
-    // A retryable lookup has already released its task to the alarm, so no finally is left to
-    // clear the busy marker. Stop must finish that handoff synchronously too.
+    // A retryable lookup has already released its task to the alarm, and a turn waiting to restart
+    // alone was released by the abort above (see #resumeInterruptedAgents), so no finally is left
+    // to clear the busy marker. Stop must finish that handoff synchronously too.
     if (!this.#runningAgents.has(chatId)) {
       let meta = this.storage.chatMeta.get(chatId);
       if (meta?.activeAgent) {

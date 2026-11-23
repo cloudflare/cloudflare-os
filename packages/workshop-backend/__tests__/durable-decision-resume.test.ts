@@ -29,7 +29,8 @@ declare module "cloudflare:workers" {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 // Answers each model request with "Done.", or, while `stages()` holds, with an executeCode call.
-function inference(gate?: Promise<void>, stages = () => false) {
+// `gate` holds the answers back: every request on one promise, or each on the one it returns.
+function inference(gate?: Promise<void> | (() => Promise<void>), stages = () => false) {
   let count = 0;
   const fetch = globalThis.fetch;
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
@@ -53,9 +54,26 @@ function inference(gate?: Promise<void>, stages = () => false) {
     const response = new Response(events.map(e =>
       `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""),
       {headers: {"content-type": "text/event-stream"}});
-    return gate ? gate.then(() => response) : Promise.resolve(response);
+    const held = typeof gate === "function" ? gate() : gate;
+    return held ? held.then(() => response) : Promise.resolve(response);
   });
   return () => count;
+}
+
+// Holds each model request until the test releases it, oldest first. `held()` counts those in
+// flight, `requests()` all that were made.
+function heldInference() {
+  const gates: PromiseWithResolvers<void>[] = [];
+  const requests = inference(() => {
+    const gate = Promise.withResolvers<void>();
+    gates.push(gate);
+    return gate.promise;
+  });
+  return {requests, held: () => gates.length, release: () => {
+    const gate = gates.shift();
+    if (!gate) throw new Error("No model request is in flight");
+    gate.resolve();
+  }};
 }
 
 // Records the body of each model request, passing it on to the current fetch stub.
@@ -138,6 +156,43 @@ async function reset(stub: DurableObjectStub<OverseerDurableObject>) {
   await expect(runInDurableObject(env.TEST_OVERSEER.get(stub.id), (_, ctx) => {
     ctx.abort("Injected decision recovery reset");
   })).rejects.toThrow("Injected decision recovery reset");
+}
+
+// A workspace reset while a turn ran in each of its chats: the turn of chat `i + 1` had been
+// resumed `attempts[i]` times since it last persisted a step.
+async function interrupted(attempts: number[]) {
+  const s = await scenario(null);
+  await expect(s.visit(async impl => {
+    const timestamp = impl.getChatTimestamp();
+    for (const [index, resumeAttempts] of attempts.entries()) {
+      const chatId = index + 1;
+      impl.storage.chatMeta.put({id: chatId, title: "Resume", started: timestamp, lastActive: timestamp,
+        activeAgent: MODEL.profile});
+      impl.storage.chatContext.put({chatId, bindings: {}, alwaysAvailableCapsuleIds: []});
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Do the work"}]);
+      impl.storage.activeAgents.put({chatId, modelId: MODEL.profile.id,
+        initiatorUserId: s.user.id.toString(), initiator: USER, callbackInitiated: false, resumeAttempts});
+    }
+    await impl.ctx.storage.sync();
+    impl.ctx.abort("Injected reset during the turns");
+  })).rejects.toThrow(/Injected reset/);
+  return s;
+}
+
+// The resumes charged to each turn still recorded, by chat.
+function resumes(impl: Impl) {
+  return Object.fromEntries([...impl.storage.activeAgents.list()].map(r => [r.chatId, r.resumeAttempts]));
+}
+
+// The chats that show their agent as responding.
+function busy(impl: Impl) {
+  return [...impl.storage.chatMeta.list()].filter(m => m.activeAgent).map(m => m.id);
+}
+
+// What each turn ended with, as `<chat>:<type>`: a reply is a message, a failure an error.
+function ended(impl: Impl) {
+  return [...impl.storage.chats.list()]
+      .filter(m => m.author.type === "agent" && m.type !== "agentNudge").map(m => `${m.chatId}:${m.type}`);
 }
 
 // A gatekeeper class cannot be minted in a test: record connection 31 with one the workspace
@@ -1027,6 +1082,260 @@ describe("decision handoff using the existing execution row", () => {
       await impl.waitForAllAgentsToComplete();
     });
     expect(requests()).toBe(1);
+  });
+});
+
+describe("turns interrupted together twice without progress", () => {
+  it("restarts turns that failed two resumes together one at a time, and all complete", async () => {
+    const model = heldInference(), s = await interrupted([2, 2, 2]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      // A waiting turn is charged no attempt until its own restart begins.
+      expect(resumes(impl)).toEqual({1: 3, 2: 2, 3: 2});
+      expect(busy(impl)).toEqual([1, 2, 3]);
+      model.release();
+      await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect(model.held()).toBe(1);
+      expect(resumes(impl)).toEqual({2: 3, 3: 2});
+      model.release();
+      await vi.waitFor(() => expect(model.requests()).toBe(3));
+      expect(model.held()).toBe(1);
+      expect(resumes(impl)).toEqual({3: 3});
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(busy(impl)).toEqual([]);
+      expect(ended(impl)).toEqual(["1:message", "2:message", "3:message"]);
+    });
+    expect(model.requests()).toBe(3);
+  });
+
+  it("charges a reset to the turn that had restarted, not to the turns still waiting", async () => {
+    const stalled = inference(new Promise(() => {})), s = await interrupted([2, 2]);
+    await expect(s.visit(async impl => {
+      await vi.waitFor(() => expect(stalled()).toBe(1));
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during the restarted turn");
+    })).rejects.toThrow(/Injected reset/);
+    const model = heldInference();
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      expect(resumes(impl)).toEqual({1: 4, 2: 2});
+      model.release();
+      await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect(resumes(impl)).toEqual({2: 3});
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:message", "2:message"]);
+    });
+    expect(stalled()).toBe(1);
+  });
+
+  it("restarts turns that failed fewer than two resumes all together, as before", async () => {
+    const model = heldInference(), s = await interrupted([0, 1, 1]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(3));
+      expect(resumes(impl)).toEqual({1: 1, 2: 2, 3: 2});
+      for (let turn = 0; turn < 3; turn++) model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:message", "2:message", "3:message"]);
+    });
+    expect(model.requests()).toBe(3);
+  });
+
+  it("does not make a turn that failed fewer than two resumes wait for those that failed two", async () => {
+    const model = heldInference(), s = await interrupted([2, 2, 1]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(2));
+      expect(resumes(impl)).toEqual({1: 3, 2: 2, 3: 2});
+      model.release();
+      model.release();
+      // Both end, and the turn that waited starts once the one before it in the line has.
+      await vi.waitFor(() => expect(model.requests()).toBe(3));
+      await vi.waitFor(() => expect(resumes(impl)).toEqual({2: 3}));
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:message", "2:message", "3:message"]);
+    });
+  });
+
+  it("Stop ends a turn waiting for its restart at once, and the turn never runs", async () => {
+    const model = heldInference(), s = await interrupted([2, 2, 2]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.requests()).toBeGreaterThan(0));
+      impl.cancelAgent(2);
+      expect(busy(impl)).toEqual([1, 3]);
+      expect(() => impl.assertChatNotActive(2)).not.toThrow();
+      expect(resumes(impl)).toEqual({1: 3, 3: 2});
+      expect(model.held()).toBe(1);  // The turn at the front has not ended.
+      model.release();
+      // The turn behind the stopped one is next.
+      await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect(resumes(impl)).toEqual({3: 3});
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:message", "3:message"]);
+    });
+    await reset(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(resumes(impl)).toEqual({});
+      expect(busy(impl)).toEqual([]);
+    });
+    expect(model.requests()).toBe(2);
+  });
+
+  it("Stop ends the turn that has started as it ends any running turn, then the next starts", async () => {
+    const model = heldInference(), s = await interrupted([2, 2]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      impl.cancelAgent(1);
+      expect(busy(impl)).toEqual([1, 2]);
+      model.release();  // The stub ignores the abort signal; the stopped turn discards the reply.
+      await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect([...impl.storage.chats.list()]).toContainEqual(
+          expect.objectContaining({chatId: 1, type: "error", code: "stopped"}));
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:error", "2:message"]);
+    });
+  });
+
+  it("ends a turn whose resume budget is spent at once, while the turn before it still runs", async () => {
+    const model = heldInference(), s = await interrupted([2, 4]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      expect([...impl.storage.chats.list()]).toContainEqual(
+          expect.objectContaining({chatId: 2, type: "error", code: "resume_exhausted"}));
+      expect(busy(impl)).toEqual([1]);
+      expect(resumes(impl)).toEqual({1: 3});
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(["1:message", "2:error"]);
+    });
+    expect(model.requests()).toBe(1);
+  });
+
+  it("restarts the turn behind one whose resume fails", async () => {
+    const model = heldInference(), s = await interrupted([2, 2]);
+    // The failed resume's rejection is left unhandled, which fails a run. Take that one here.
+    const unhandled = Promise.withResolvers<unknown>();
+    const reporters = process.listeners("unhandledRejection");
+    process.removeAllListeners("unhandledRejection");
+    process.on("unhandledRejection", unhandled.resolve);
+    try {
+      await s.visit(async impl => {
+        await vi.waitFor(() => expect(model.held()).toBe(1));
+        const failure = new Error("Injected teardown failure");
+        vi.spyOn(impl, "reconcilePendingGadgets").mockRejectedValueOnce(failure);
+        model.release();
+        await vi.waitFor(() => expect(model.requests()).toBe(2));
+        expect(await unhandled.promise).toBe(failure);
+        model.release();
+        await vi.waitFor(() => expect(busy(impl)).not.toContain(2));
+        expect(ended(impl)).toEqual(["1:message", "2:message"]);
+      });
+    } finally {
+      process.removeAllListeners("unhandledRejection");
+      for (const reporter of reporters) process.on("unhandledRejection", reporter);
+    }
+  });
+
+  it("takes a message sent to a chat whose turn is waiting as a steer, read when the turn starts", async () => {
+    const model = heldInference(), bodies = modelRequestBodies(), s = await interrupted([2, 2]);
+    using closed = new RpcStub(() => {});
+    using client = await env.TEST_OVERSEER.get(s.stub.id).open(s.user.id.toString(), USER.id, closed);
+    await vi.waitFor(() => expect(model.held()).toBe(1));
+    await client.sendChatMessage(2, "Make it dark.", MODEL.profile.id);
+    await s.visit(async impl => {
+      expect(impl.storage.chatMeta.get(2)?.queuedSteers).toEqual(
+          [expect.objectContaining({text: "Make it dark."})]);
+      expect(bodies).toHaveLength(1);
+      model.release();
+      await vi.waitFor(() => expect(bodies).toHaveLength(2));
+      expect(bodies[1]).toContain("Make it dark.");
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()]).toContainEqual(
+          expect.objectContaining({chatId: 2, type: "message", message: "Make it dark.", steered: true}));
+      expect(impl.storage.chatMeta.get(2)?.queuedSteers).toBeUndefined();
+      expect(ended(impl)).toEqual(["1:message", "2:message"]);
+    });
+    expect(model.requests()).toBe(2);
+  });
+
+  it.each(["deleted", "stopped and prompted again"] as const)(
+      "leaves a chat alone when its waiting turn's place comes up after it was %s", async change => {
+    const model = heldInference(), s = await interrupted([2, 2, 2]);
+    using closed = new RpcStub(() => {});
+    using client = await env.TEST_OVERSEER.get(s.stub.id).open(s.user.id.toString(), USER.id, closed);
+    await vi.waitFor(() => expect(model.held()).toBe(1));
+    const prompted = change !== "deleted";
+    if (prompted) {
+      await client.stopAgent(2);
+      await client.sendChatMessage(2, "Do it another way", MODEL.profile.id);
+      await vi.waitFor(() => expect(model.held()).toBe(2));
+    } else {
+      await client.deleteChat(2);
+    }
+    await s.visit(async impl => {
+      const turn = impl.storage.activeAgents.get(2);
+      expect(turn !== undefined).toBe(prompted);
+      expect(turn?.resumeAttempts).toBeUndefined();
+      // The turn at the front ends, the place of the one that waited comes up, and the third starts.
+      model.release();
+      await vi.waitFor(() => expect(model.requests()).toBe(prompted ? 3 : 2));
+      expect(resumes(impl)[3]).toBe(3);
+      expect(impl.storage.activeAgents.get(2)).toEqual(turn);
+      expect(busy(impl)).toEqual(prompted ? [2, 3] : [3]);
+      while (model.held()) model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(ended(impl)).toEqual(
+          prompted ? ["1:message", "2:message", "3:message"] : ["1:message", "3:message"]);
+      expect(resumes(impl)).toEqual({});
+    });
+  });
+
+  it.each(["runs", "is stopped"] as const)(
+      "adds a turn that a later alarm pass brings back to the same line, where it %s", async outcome => {
+    const model = heldInference(), s = await interrupted([2, 2, 2]);
+    await s.visit(async impl => {
+      // Only the alarm below runs: one that had fired by itself would already be waiting on the
+      // turns, and the call below would join it instead of making a pass.
+      await impl.ctx.storage.deleteAlarm();
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      // The second turn's model lookup fails as a reset of the user's object does, also when
+      // read again after a pause of up to 250 ms. That hands the turn to the alarm, and the
+      // third turn starts.
+      const lost = Object.assign(new Error("reset"), {durableObjectReset: true});
+      modelLookup(impl, vi.fn().mockRejectedValueOnce(lost).mockRejectedValueOnce(lost)
+          .mockResolvedValue({profile: USER, aiModel: MODEL}));
+      model.release();
+      await vi.waitFor(() => expect(model.requests()).toBe(2), {timeout: 5_000});
+      expect(resumes(impl)).toEqual({2: 3, 3: 3});
+      const alarm = impl.runAlarmTasks(0);
+      // A start writes its charge before its first await. Yield once, so that a start the line's
+      // promise had deferred would have run too.
+      await impl.ctx.storage.sync();
+      expect(resumes(impl)).toEqual({2: 3, 3: 3});
+      expect(model.held()).toBe(1);
+      if (outcome === "is stopped") {
+        impl.cancelAgent(2);
+        expect(busy(impl)).toEqual([3]);
+      }
+      model.release();
+      if (outcome === "runs") {
+        await vi.waitFor(() => expect(model.requests()).toBe(3));
+        expect(model.held()).toBe(1);
+        expect(resumes(impl)).toEqual({2: 4});
+        model.release();
+      }
+      await alarm;
+      expect(busy(impl)).toEqual([]);
+      expect(ended(impl)).toEqual(
+          outcome === "runs" ? ["1:message", "2:message", "3:message"] : ["1:message", "3:message"]);
+      expect(model.requests()).toBe(outcome === "runs" ? 3 : 2);
+    });
   });
 });
 
