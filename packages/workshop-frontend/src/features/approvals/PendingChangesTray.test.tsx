@@ -197,7 +197,8 @@ describe('PendingChangesTray approval', () => {
       }
       await render({ groups: [group([failed])], actions: branch([]) })
       await openGroup()
-      expect(document.querySelector('[role="alert"]')?.textContent).toBe('Could not apply: Timed out.')
+      expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not apply: Timed out. It may have been applied anyway. Check the resource before you deny it.')
       expect(button('Retry')).toBeUndefined()
     })
 })

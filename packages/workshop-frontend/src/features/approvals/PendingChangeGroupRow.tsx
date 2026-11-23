@@ -4,7 +4,7 @@ import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
 import { ReviewRequest } from './ReviewRequest'
 import {
-  describeGroupSize, isFromElsewhere, needsReview, type PendingChange,
+  describeGroupSize, isFromElsewhere, needsReview, OUTCOME_UNKNOWN_COPY, type PendingChange,
   type PendingChangeGroup,
 } from './pendingChangeGroups'
 
@@ -130,6 +130,7 @@ export const PendingChangeGroupRow = ({
                     >
                       <span className="min-w-0">
                         Could not apply: {entry.applyError.message}
+                        {entry.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
                       </span>
                       {entry.applyError.retryable && (
                         <button

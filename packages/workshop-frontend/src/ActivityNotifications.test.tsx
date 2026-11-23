@@ -167,6 +167,30 @@ describe('ActivityNotifications approval', () => {
         .filter(button => button.textContent === 'Deny')).toHaveLength(3)
   })
 
+  it('offers no Approve for a change to an unsaved resource, only for saving it', async () => {
+    const server = makeOverseer()
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    const description = { description: '', implementsRevert: false, autoApprovable: true }
+    const by = { type: 'user' as const, id: 'ada', name: 'Ada' }
+    const accepted = { by, at: new Date(0), autoApproved: false }
+    await server.resolvePendingQuery({
+      entries: [
+        entry(1, {
+          chatId: 4, gatekeeperId: 9, creation: true, accepted,
+          description: { ...description, title: 'Create sheet' },
+        }),
+        entry(2, {
+          chatId: 4, gatekeeperId: 9, accepted,
+          description: { ...description, title: 'Accepted edit' },
+        }),
+        entry(3, { gatekeeperId: 9, description: { ...description, title: 'Gadget edit' } }),
+      ],
+    })
+    flushFrames()
+    expect(approvableTitles()).toEqual(['Create sheet'])
+  })
+
   it("tells the approver why an approval failed, since the gatekeeper's message says what to do",
       async () => {
     const message = 'The previous Gmail send outcome is still unknown. Deny this request to clear it.'

@@ -16,7 +16,7 @@ import { ReviewRequest } from './features/approvals/ReviewRequest'
 import { ActionFields, entryFields } from './components/ActionFields'
 import { StagedChangesBar } from './features/approvals/StagedChangesBar'
 import {
-  awaitsSave, chatBranchPending, unsavedConnections,
+  awaitsSave, chatBranchPending, unsavedConnections, OUTCOME_UNKNOWN_COPY,
 } from './features/approvals/pendingChangeGroups'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
@@ -274,6 +274,7 @@ export default function Activity({
                   {record.type === 'action' && record.applyError && (
                     <p role="alert" className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger">
                       Could not apply: {record.applyError.message}
+                      {record.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
                     </p>
                   )}
                   <ReviewRequest

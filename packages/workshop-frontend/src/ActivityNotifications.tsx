@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
@@ -8,7 +8,7 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './componen
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
-import { canApproveAlone } from './features/approvals/pendingChangeGroups'
+import { canApproveAlone, unsavedConnections } from './features/approvals/pendingChangeGroups'
 import {
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
@@ -37,6 +37,7 @@ export default function ActivityNotifications({
   const [processing, setProcessing] = useState<Set<number>>(new Set())
   const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
   const { status, pending } = useActions(overseer)
+  const unsaved = useMemo(() => unsavedConnections(pending), [pending])
   // While restricted each request's approve/deny buttons name the shared notice and their own
   // request text as their description: both follow the controls in DOM order.
   const noticeId = useId()
@@ -143,7 +144,7 @@ export default function ActivityNotifications({
                       />
                       {/* A chat's requests apply only when its changes are accepted, so only
                           some are offered for approval on their own. */}
-                      {canApproveAlone(action) && (
+                      {canApproveAlone(action, unsaved) && (
                         <ResolveButton
                           tone="approve"
                           disabled={isProcessing}

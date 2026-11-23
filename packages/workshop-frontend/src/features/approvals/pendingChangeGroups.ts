@@ -196,11 +196,16 @@ export function needsReview(log: ActionLogEntry): boolean {
 /**
  * Whether the UI offers to approve `log` on its own: one the agent waits on (`awaitDecision`)
  * cannot wait for its chat's accept, and one no chat made is covered by no chat's accept. A chat's
- * other requests apply only when its changes are accepted.
+ * other requests apply only when its changes are accepted. Never a change to a resource among
+ * `unsaved` (see unsavedConnections), which can apply only once the resource is saved.
  */
-export function canApproveAlone(log: ActionLogEntry): boolean {
-  return (log.type === 'action' && log.description.awaitDecision === true) ||
-    branchChatId(log) === undefined
+export function canApproveAlone(
+  log: ActionLogEntry,
+  unsaved: ReadonlyMap<number, unknown>,
+): boolean {
+  if (log.type !== 'action') return branchChatId(log) === undefined
+  if (!log.creation && log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)) return false
+  return log.description.awaitDecision === true || branchChatId(log) === undefined
 }
 
 /**
@@ -221,6 +226,14 @@ export function isFromElsewhere(group: PendingChangeGroup): boolean {
 export function acceptThrough(shown: readonly ActionLogEntry[]): number {
   return shown.reduce((highest, log) => Math.max(highest, log.id), -1)
 }
+
+/**
+ * Said after a failed request's error when its provider may have applied it anyway
+ * (ActionLogEntry.applyError.outcomeUnknown): it is never retried, so denying it is what is left,
+ * and that is a call to make only once the user has looked.
+ */
+export const OUTCOME_UNKNOWN_COPY =
+  'It may have been applied anyway. Check the resource before you deny it.'
 
 /** Every pending request across `groups`, in the order a bulk resolve would take them. */
 export function pendingChangeEntries(groups: readonly PendingChangeGroup[]): PendingChange[] {

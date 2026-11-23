@@ -125,6 +125,7 @@ import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/cha
 import {
   acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
   pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, needsReview,
+  OUTCOME_UNKNOWN_COPY,
   type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
@@ -4724,7 +4725,7 @@ function ChatInterface({
     processing: processingActions,
     onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
     onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
-    canApprove: canApproveAlone,
+    canApprove: (entry: PendingChange) => canApproveAlone(entry, unsavedResources),
     // A chat's other requests apply only with its accept, which resumes at the failed one.
     onRetry: (entry: PendingChange) => {
       if (branchChatId(entry) === undefined || entry.description.awaitDecision) {
@@ -4733,7 +4734,7 @@ function ChatInterface({
         acceptChangesRef.current();
       }
     },
-  }), [processingActions, resolveAction]);
+  }), [processingActions, resolveAction, unsavedResources]);
 
   // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
   // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
@@ -5626,6 +5627,7 @@ function ChatInterface({
         {saveError && (
           <p role="alert" className="m-0 ml-8 text-[12px] leading-4 break-words text-kumo-danger">
             Could not apply: {saveError.message}
+            {saveError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
           </p>
         )}
         {showDescription && (
