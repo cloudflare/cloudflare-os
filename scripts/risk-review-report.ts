@@ -12,7 +12,7 @@
 
 import { parseArgs } from "node:util";
 
-import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
+import { maybeJson, maybeObject, type Json, type JsonObject } from "./automerge/json.ts";
 import { isMain } from "./automerge/main.ts";
 import { SEVERITIES } from "./automerge/verdict/parse-review.ts";
 import { CHECK_NAME } from "./risk-review.ts";
@@ -44,6 +44,12 @@ interface VerdictCell {
   findings: string;
 }
 
+/**
+ * Why a cell has no value: the head's deciding check run holds no decision for the pull request,
+ * or the gate cut the value from a record too long to keep whole.
+ */
+type Missing = "no record" | "truncated";
+
 /** A pull request merged after another whose title or body names it; a revert when its title says so. */
 interface FollowUp {
   number: number;
@@ -54,20 +60,21 @@ interface FollowUp {
 interface ReportRow {
   number: number;
   merged: string;
-  /** The risk level, or `no record` when the merged head has no decision. */
+  /** The risk level. */
   band: string;
-  bonk: VerdictCell | undefined;
-  opus: VerdictCell | undefined;
+  /** A reviewer's verdict, or `absent` when the gate recorded that it had none. */
+  bonk: VerdictCell | "absent" | Missing;
+  opus: VerdictCell | "absent" | Missing;
   would: string;
   person: string;
   followUps: FollowUp[];
 }
 
-function verdictCell(value: Json | undefined): VerdictCell | undefined {
+function verdictCell(value: Json | undefined): VerdictCell | "absent" {
   const input = maybeObject(value);
   const findings = maybeObject(input?.findings);
   const confidence = input?.merge_confidence;
-  if (!input || !findings || (confidence !== null && typeof confidence !== "number")) return undefined;
+  if (!input || !findings || (confidence !== null && typeof confidence !== "number")) return "absent";
   const counts = SEVERITIES.map((severity) => {
     const count = findings[severity];
     return typeof count === "number" ? count : 0;
@@ -77,22 +84,24 @@ function verdictCell(value: Json | undefined): VerdictCell | undefined {
 
 /**
  * Reads one pull request's entry from a `risk-review` check run's summary, which leads with the
- * decision JSON in a fenced block.
+ * decision JSON in a fenced block. A record too long for the summary keeps each entry without its
+ * inputs, or no entry at all (`renderOutput`).
  *
- * @returns The risk level, verdicts and what the gate would have done, or `undefined` when the
- *     summary has none.
+ * @returns The risk level, verdicts and what the gate would have done; each says so when the
+ *     summary does not hold it.
  */
-export function readDecision(summary: string, number: number):
-  Pick<ReportRow, "band" | "bonk" | "opus" | "would"> | undefined {
-  const pulls = recordOf(summary)?.pulls;
-  if (!Array.isArray(pulls)) return undefined;
+export function readDecision(summary: string | undefined, number: number): Pick<ReportRow, "band" | "bonk" | "opus" | "would"> {
+  const record = summary === undefined ? undefined : recordOf(summary);
+  const missing = record?.truncated === true ? "truncated" : "no record";
+  const pulls = Array.isArray(record?.pulls) ? record.pulls : [];
   const pull = pulls.map(maybeObject).find((entry) => entry?.number === number);
   const band = pull?.band;
   const { decision, rung } = maybeObject(pull?.would) ?? {};
   const would = decision === "person" ? "person" : decision === "auto" && typeof rung === "string" ? `merge (${rung})` : undefined;
-  if (typeof band !== "string" || would === undefined) return undefined;
+  if (typeof band !== "string" || would === undefined) return { band: missing, would: missing, bonk: missing, opus: missing };
   const inputs = maybeObject(pull?.inputs);
-  return { band, would, bonk: verdictCell(inputs?.bonk), opus: verdictCell(inputs?.opus) };
+  if (!inputs) return { band, would, bonk: missing, opus: missing };
+  return { band, would, bonk: verdictCell(inputs.bonk), opus: verdictCell(inputs.opus) };
 }
 
 /** What people did: the strongest human review other than the author's. */
@@ -125,8 +134,8 @@ export function followUps(pull: MergedPull, merged: MergedPull[], repository: st
   });
 }
 
-function cell(verdict: VerdictCell | undefined): string {
-  return verdict ? `${verdict.confidence ?? "–"} (${verdict.findings})` : "absent";
+function cell(verdict: ReportRow["bonk"]): string {
+  return typeof verdict === "string" ? verdict : `${verdict.confidence ?? "–"} (${verdict.findings})`;
 }
 
 /** Renders the rows as a Markdown table. */
@@ -224,6 +233,30 @@ function recordOf(summary: string): { [key: string]: Json } | undefined {
   return record?.schema === 1 ? record : undefined;
 }
 
+/**
+ * The summary of the check run that decided `sha`: the App's newest, by the gate's own rule that
+ * the run whose check run was created last decides and every earlier one cancels itself
+ * (`runRiskReview`). Undefined when the App posted none there, or its newest has no summary, as
+ * one still in progress has none.
+ */
+async function decidingSummary(get: GitHubGet, { repository, app, sha }: { repository: string; app: string; sha: string }): Promise<string | undefined> {
+  let newest: JsonObject | undefined;
+  for (let page = 1; ; page++) {
+    const listed = maybeObject(await get(
+      `/repos/${repository}/commits/${sha}/check-runs?check_name=${CHECK_NAME}&filter=all&per_page=100&page=${page}`,
+    ))?.check_runs;
+    const runs = Array.isArray(listed) ? listed : [];
+    for (const run of runs.map(maybeObject)) {
+      const id = run?.id;
+      const newestId = newest?.id;
+      if (run && typeof id === "number" && maybeObject(run.app)?.slug === app && (typeof newestId !== "number" || id > newestId)) newest = run;
+    }
+    if (runs.length < 100) break;
+  }
+  const summary = maybeObject(newest?.output)?.summary;
+  return typeof summary === "string" ? summary : undefined;
+}
+
 /** Builds the report's rows for pull requests merged in `[since, until)`. */
 export async function buildReport(get: GitHubGet, { repository, app, since, until }: {
   repository: string;
@@ -235,13 +268,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
 
   const rows: ReportRow[] = [];
   for (const pull of inWindow) {
-    const runs = maybeObject(await get(
-      `/repos/${repository}/commits/${pull.head.sha}/check-runs?check_name=${CHECK_NAME}&filter=latest&per_page=100`,
-    ))?.check_runs;
-    const run = (Array.isArray(runs) ? runs : []).map(maybeObject).find((entry) =>
-      maybeObject(entry?.app)?.slug === app && entry?.status === "completed");
-    const summary = maybeObject(run?.output)?.summary;
-    const decision = typeof summary === "string" ? readDecision(summary, pull.number) : undefined;
+    const decision = readDecision(await decidingSummary(get, { repository, app, sha: pull.head.sha }), pull.number);
     const reviewsJson = await listPages(get, `/repos/${repository}/pulls/${pull.number}/reviews`);
     const reviews = reviewsJson.flatMap((value) => {
       const review = maybeObject(value);
@@ -254,10 +281,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
     rows.push({
       number: pull.number,
       merged: pull.merged_at?.slice(0, 10) ?? "",
-      band: decision?.band ?? "no record",
-      bonk: decision?.bonk,
-      opus: decision?.opus,
-      would: decision?.would ?? "",
+      ...decision,
       person: personAction(reviews, pull.user?.login),
       followUps: followUps(pull, merged, repository),
     });
