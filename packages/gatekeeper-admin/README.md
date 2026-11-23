@@ -1,8 +1,10 @@
 # Admin gatekeeper
 
 Gives the agents of a workspace this deployment's [Admin API](../../docs/admin-access.md), as the
-deployment admin who connected it. The connection is called "Deployment admin", its binding is
-`ADMIN`, and its vendor id is `admin` (the Worker bound as `GATEKEEPER_ADMIN`).
+deployment admin who connected it: they read what admins read, and what they would write to a
+workspace or ask of the admins waits as an action for a person to approve. The connection is
+called "Deployment admin", its binding is `ADMIN`, and its vendor id is `admin` (the Worker bound
+as `GATEKEEPER_ADMIN`).
 
 It is an ordinary gatekeeper, built from the
 [`write-gatekeeper`](../../.agents/skills/write-gatekeeper/SKILL.md) skeleton, with one
@@ -46,7 +48,8 @@ kind, and the package does not compile while the two differ:
 | Kind | Methods | Through the binding |
 | --- | --- | --- |
 | `read` | `getSettings`, `listUsers`, `listWorkspaces`, `inspectWorkspace`, `inspectUser`, `listAdminAudit`, `getAdminAuditStats`, `listContentAccessRequests`, `getContentAccessRequest` | Runs at once. A view answers each of its methods, under the checks the view makes itself. |
-| `omitted` | Every setter, the gateway tests, `checkForUpdates`, `getUpdateStatus`, `isBlueprintFeatured`, `writeWorkspace`, `requestContentAccess`, `approveContentAccess`, `denyContentAccess`, `endWorkspaceGrant` | Absent from the agent's declarations and from the session, so it cannot be called. |
+| `act` | `writeWorkspace`, `requestContentAccess` | Never runs when called: it is queued as an [action](#actions) and resolves to `undefined`. |
+| `omitted` | Every setter, the gateway tests, `checkForUpdates`, `getUpdateStatus`, `isBlueprintFeatured`, `approveContentAccess`, `denyContentAccess`, `endWorkspaceGrant` | Absent from the agent's declarations and from the session, so it cannot be called. |
 
 `scripts/generate-schema.ts` cuts the schema the Worker bundles from the Workshop API's generated
 schema (`packages/api-schema`), leaving the omitted methods out. The sessions' methods, the
@@ -54,6 +57,31 @@ declarations the agent reads and the check of each call's arguments all come fro
 (`src/surface.ts`), so a method added to `AdminApi` is served once it has a kind and the Worker is
 rebuilt. `surface.ts` refuses, at load, a schema it cannot forward faithfully: a parameter that
 takes a capability or a stream, a result the schema does not describe, anything tagged `secret`.
+
+## Actions
+
+An `act` call is queued as one of two action kinds, defined with the kit's `defineActions`
+(`src/actions.ts`). Neither may be auto-approved, so each waits as a card in the workspace until
+a person who may approve its actions decides:
+
+| Kind (tag) | Queued by | Once approved |
+| --- | --- | --- |
+| `workspace-write-request` | `writeWorkspace(workspaceId, action, args, reason)` | Makes the write, as the admin who connected the account. The card is the only check between the agent and that workspace. |
+| `content-access-request` | `requestContentAccess(workspaceId, reason)` | Files the request, as the admin who connected the account. Another deployment admin must then approve it from the admin panel: the admin it is filed as cannot. |
+
+- **Queuing reads nothing.** The card is built from the call's arguments alone, which are checked
+  first (a reason, and the arguments the write's action takes), so a queued action is no
+  observation and does not mark the workspace.
+- **Applying is one call.** `applyAction()` opens the Admin API from the account's grant, as a
+  session does, and makes the action's one call. The action is claimed first, so it never runs
+  twice.
+- **Failures.** A demoted admin's action, and one whose account was removed, makes no call and
+  stays pending. A refusal the Admin API makes before it writes anything (writes or content access
+  turned off, an unknown workspace, a request already pending) is final. After any other failure
+  nobody knows whether the call was carried out, so the action is never run again: a person
+  checks the audit log and rejects it.
+- **Following one.** A write's record in the audit log, and a filed request, say
+  `via: "gatekeeper"` and name the connecting admin.
 
 ## Who sees what it read
 
@@ -77,14 +105,15 @@ deployment admin may read.
 A standing capability. The grant names its user and carries no authority of its own: it reads
 `ADMINS` each time it is used. But until the account is removed, this Worker can open the Admin
 API as that admin at any time, not only while a session runs, and it receives the whole API: what
-an agent cannot call is this package's decision (the table above), not the Workshop's. The
+an agent cannot call, and what waits for a person, is this package's decision (the tables above),
+not the Workshop's. The
 Worker is trusted as the backend's own configuration is, which is why the release build reserves
 the `admin` install slug for this package.
 
 ## Tests
 
 - `__tests__/surface.test.ts` (Node): the schema, its generation and the load-time checks.
-- `__tests__/workerd/` (workerd): the connect flow and the account, observer verification, and
-  the sessions, over a faked grant.
-- `packages/integration-tests/__tests__/admin-gatekeeper.test.ts`: the real Worker beside the
-  Workshop, end to end.
+- `__tests__/workerd/` (workerd): the connect flow and the account, observer verification, the
+  sessions and the actions, over a faked grant.
+- `packages/integration-tests/__tests__/admin-gatekeeper.test.ts` and
+  `admin-gatekeeper-actions.test.ts`: the real Worker beside the Workshop, end to end.

@@ -885,9 +885,21 @@ name that user and nothing else:
 So the account holds a standing capability, valid for as long as its user is a deployment admin
 and until the account is removed. Every call through it is made as the admin who connected the
 account, whichever workspace or collaborator's agent makes it. The Workshop does not restrict
-which methods the gatekeeper may call: the gatekeeper serves its agents the reads alone
-(`ADMIN_AGENT_KINDS`), and its Worker is trusted as the backend's own configuration is. The
-release build reserves the `admin` install slug for it.
+which methods the gatekeeper may call: the gatekeeper serves its agents the reads, queues a write
+and a content request as actions, and leaves the rest out (`ADMIN_AGENT_KINDS`), and its Worker
+is trusted as the backend's own configuration is. The release build reserves the `admin` install
+slug for it.
+
+**Writes and content requests.** An agent's `writeWorkspace()` and `requestContentAccess()` do
+not run when called: the gatekeeper queues each as an action of its own, never auto-approved,
+and makes the call once a person approves the card in the workspace
+([the package's README](../packages/gatekeeper-admin/README.md#actions)). The Workshop sees an
+ordinary call of the connecting admin's, labelled `"gatekeeper"`:
+
+- a write is checked and recorded as any admin's (see [Writes](#writes)). The card's approval is
+  the only check added, and whoever may approve actions in that workspace gives it;
+- a content request is filed as the connecting admin's, so the second-admin rule holds against
+  them alone: any other deployment admin may approve it, one who approved the card included.
 
 **Who is offered it.** The admin gatekeeper's `GatekeeperVendor.getSupportedResources()` is told
 whether the user it is asked for is a deployment admin (`isAdmin`; no other vendor is told), and
@@ -901,7 +913,8 @@ passes the gatekeeper's observer check: one whose user is a deployment admin now
 [observers](observers.md)).
 
 **What the audit log holds.** View opens and view calls, of a workspace and of a user's account,
-carry `via: "gatekeeper"` and the connecting admin. They do not say which workspace or chat the
+and a write and a content request made through an approved action, carry `via: "gatekeeper"` and
+the connecting admin. They do not say which workspace or chat the
 call came from. Listings of users and workspaces, settings and the audit log itself leave no audit
 record, as for any admin: their only trace is the observation in the activity of the workspace
 that called.
