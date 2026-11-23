@@ -123,8 +123,9 @@ message carries the bytes only of images up to 4 MiB to clients, which stream la
 with `readBlob()`. Uploads are limited to 100 MiB per file and five files per message.
 
 Uploads count toward the workspace's storage quota. A workspace is one Durable Object, which holds
-at most 10 GB and refuses every write when full, so the git store refuses new blobs over 1 MiB
-from 8 GB (uploaded, written, or pulled by a read) and agent turns stop starting from 9.5 GB, each
+at most 10 GB and refuses every write when full, so the git store refuses a new blob over 1 MiB
+that would take it past 8 GB (uploaded, written, or pulled by a read) and agent turns stop
+starting from 9.5 GB, each
 with a message that says why; clients warn from 7 GB (see `OverseerImpl.sampleStorageBytes()` and
 `WorkspaceMetadata.storageBytes`). Smaller blobs are never refused, so ordinary work goes on.
 

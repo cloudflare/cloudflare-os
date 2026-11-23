@@ -19,6 +19,13 @@ export type GrepScan = {
   matches: GrepMatch[], errors: GrepFileError[], single: boolean, omitted?: number,
 };
 
+/**
+ * The longest line a large blob's search holds, in characters. A longer one, such as a whole
+ * JSON export on one line, is passed over unsearched and reported, so a search never holds a
+ * line that could crowd the Durable Object's memory.
+ */
+export const MAX_SEARCHED_LINE_CHARS = 1024 * 1024;
+
 // One file to search: an overlay path (content in hand) or a base tree entry (blob by oid, in
 // the commit it was found in).
 type GrepCandidate = { path: string } | { path: string, oid: GitOid, base: string };
@@ -32,7 +39,8 @@ type GrepCandidate = { path: string } | { path: string, oid: GitOid, base: strin
  * -- and listed paths that don't exist degrade to error entries, except that when *every* listed
  * scope fails, the whole call throws (so a lone bad path is an exception, not an easily-missed
  * one-line result). A file of any size is searched: one over MAX_BUFFERED_BLOB_SIZE is streamed
- * line by line rather than decoded whole (see matchBlob). Missing base blobs are filled in one
+ * line by line rather than decoded whole (see matchBlob), and its lines over
+ * MAX_SEARCHED_LINE_CHARS are passed over and reported as an error entry. Missing base blobs are filled in one
  * batched pull across all scopes -- the reason the argument accepts an array -- never a serial
  * walk-and-fetch.
  */
@@ -120,14 +128,17 @@ export async function scanWorkpieceForGrep(
   // prove binary.
   let matches: GrepMatch[] = [];
   let omitted = 0, room = maxChars;
+  // Files searched but for lines too long to hold, reported once their scopes are settled.
+  let partlySearched = new Map<string, string>();
   for (let candidate of [...candidates.values()]
       .toSorted((a, b) => a.path < b.path ? -1 : 1)) {
     try {
       let value = "oid" in candidate ? candidate : overlay.get(candidate.path)!;
+      let skipped = { lines: 0 };
       let found = typeof value === "string" ? matchingLines(value, pattern)
           : matchingBlobLines(
               await gitCache.openBlob(value.oid, "base" in value ? value.base : undefined),
-              pattern, candidate.path);
+              pattern, candidate.path, skipped);
       let kept: GrepMatch[] = [], fileOmitted = 0, fileRoom = room;
       let prefix = single ? 0 : candidate.path.length + 1;
       for (let match of found) {
@@ -142,6 +153,10 @@ export async function scanWorkpieceForGrep(
       matches.push(...kept);
       omitted += fileOmitted;
       room = fileRoom;
+      if (skipped.lines > 0) {
+        partlySearched.set(candidate.path, `${candidate.path}: ${skipped.lines} ` +
+            `line${skipped.lines === 1 ? "" : "s"} over ${MAX_SEARCHED_LINE_CHARS} characters not searched`);
+      }
     } catch (err) {
       if (err instanceof UnreadableContentError) {
         errorByFile.set(candidate.path, err.message);
@@ -163,6 +178,7 @@ export async function scanWorkpieceForGrep(
     throw new Error([...failedScopes.values()].join("; "));
   }
   for (let [file, message] of failedScopes) errorByFile.set(file, message);
+  for (let [file, message] of partlySearched) errorByFile.set(file, message);
 
   let errors = [...errorByFile]
       .map(([file, message]) => ({ file, error: message }))
@@ -204,17 +220,18 @@ function lineMatcher(pattern: RegExp): (line: string) => boolean {
  * MAX_BUFFERED_BLOB_SIZE, else streamed a piece at a time, carrying a partial line across
  * pieces, and decoded leniently (invalid UTF-8 as U+FFFD), so that only the line being matched
  * is ever held. Either way a NUL byte makes the file binary: UnreadableContentError, which
- * callers report as a skip note. (A streamed file with no newline at all is the one case that
- * still holds the file whole, as its single line.)
+ * callers report as a skip note. A streamed line over MAX_SEARCHED_LINE_CHARS, such as a whole
+ * file with no newline, is passed over unsearched rather than held.
  */
 export function matchBlob(reader: BlobReader, pattern: RegExp, path: string)
     : { line: number, text: string }[] {
   return [...matchingBlobLines(reader, pattern, path)];
 }
 
-// matchBlob, one match at a time.
-function* matchingBlobLines(reader: BlobReader, pattern: RegExp, path: string)
-    : Generator<{ line: number, text: string }> {
+// matchBlob, one match at a time. Lines over MAX_SEARCHED_LINE_CHARS are passed over, unsearched,
+// and counted in `skipped`.
+function* matchingBlobLines(reader: BlobReader, pattern: RegExp, path: string,
+                            skipped = { lines: 0 }): Generator<{ line: number, text: string }> {
   if (reader.size <= MAX_BUFFERED_BLOB_SIZE) {
     yield* matchingLines(decodeBlobText(reader.read(0, reader.size), path), pattern);
     return;
@@ -223,19 +240,40 @@ function* matchingBlobLines(reader: BlobReader, pattern: RegExp, path: string)
   let decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
   let line = 0;
   let partial = "";
+  // Whether the current line has grown past MAX_SEARCHED_LINE_CHARS and is being passed over.
+  let passing = false;
   for (let piece of reader.pieces()) {
     if (piece.includes(0)) throw new UnreadableContentError(`${path} is not a text file`);
-    let lines = (partial + decoder.decode(piece, { stream: true })).split("\n");
+    let decoded = decoder.decode(piece, { stream: true });
+    if (passing) {
+      let end = decoded.indexOf("\n");
+      if (end < 0) continue;
+      passing = false;
+      ++line;
+      ++skipped.lines;
+      decoded = decoded.slice(end + 1);
+    }
+    let lines = (partial + decoded).split("\n");
     partial = lines.pop()!;
     for (let text of lines) {
       ++line;
+      if (text.length > MAX_SEARCHED_LINE_CHARS) {
+        // It ended in this piece, so it is held, but it is passed over like the longer ones.
+        ++skipped.lines;
+        continue;
+      }
       if (text.endsWith("\r")) text = text.slice(0, -1);
       if (test(text)) yield { line, text };
+    }
+    if (partial.length > MAX_SEARCHED_LINE_CHARS) {
+      partial = "";
+      passing = true;
     }
   }
   // A final line without a newline keeps a trailing CR, as matchLines keeps it.
   partial += decoder.decode();
-  if (partial !== "" && test(partial)) yield { line: line + 1, text: partial };
+  if (passing) ++skipped.lines;
+  else if (partial !== "" && test(partial)) yield { line: line + 1, text: partial };
 }
 
 /**

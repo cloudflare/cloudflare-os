@@ -34,7 +34,7 @@ import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
-import { assertNoNul } from "./git-cache";
+import { assertNoNul, assertWholeTextSize } from "./git-cache";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -1813,10 +1813,16 @@ async function runAgentPass(
   // The live-read variant of faultWorktreeBase: a path the chat's change stream has removed
   // reports absent instead of resurrecting from the base. Only the tool-facing reads use this;
   // replay seeding deliberately does not (see seedWorktreeBasesForChange).
+  // It is a new read or edit, so a file too large to hold as text is refused before it is read;
+  // replay (faultWorktreeBase) still reads one, to apply edits saved before that limit.
   let readWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
-      : Promise<string | undefined> =>
-      worktreeRemovedPaths.get(worktreeId)?.has(filename)
-          ? undefined : await faultWorktreeBase(worktreeId, filename);
+      : Promise<string | undefined> => {
+    if (worktreeRemovedPaths.get(worktreeId)?.has(filename)) return undefined;
+    let base = worktreeBase(worktreeId);
+    let file = base === undefined ? undefined : await hooks.openFileAtCommit(base, filename);
+    if (file) assertWholeTextSize(file.reader.size, filename);
+    return await faultWorktreeBase(worktreeId, filename);
+  };
 
   // Reading a blob-backed UTF-8 upload must not change its representation: text edits over
   // byte replacements still require a separate composition protocol.

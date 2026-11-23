@@ -7,7 +7,8 @@ import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
-import type {CodeChange} from "@gadgets/workshop-shared/code-change";
+import {replaceSpanChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
+import {MAX_WHOLE_TEXT_BYTES} from "../src/git-cache";
 import type {AiChatStreamEvent} from "@gadgets/workshop-shared/api";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -399,6 +400,42 @@ describe("attachment worktree ingress", () => {
       expect(JSON.stringify(result.content)).toContain("needle");
     }
   }));
+
+  // An edit saved before the whole-text limit existed still applies to its base on replay, and
+  // the file, whose text replay holds anyway, can still be edited. A first edit of a file that
+  // large is refused before it is read.
+  it("replays a saved edit of a file over the whole-text limit, and refuses a first one", async () => {
+    const name = crypto.randomUUID();
+    const text = "a row of the forecast\n".repeat(Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / 22));
+    const {chatId, worktreeId} = await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      const ref = impl.gitCache.writeBlob(new TextEncoder().encode(text));
+      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", undefined, [
+        {oid: ref.oid, mimeType: "text/csv", name: "edited.csv"},
+        {oid: ref.oid, mimeType: "text/csv", name: "untouched.csv"}]);
+      const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
+      await step(impl, chatId, {[worktreeId]: [["edited.csv",
+        {edit: replaceSpanChange(text.length, 0, "a row", "A ROW")}]]});
+      return {chatId, worktreeId};
+    });
+    // A fresh object, with nothing cached, folds and replays the saved edit over the base.
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
+      expect(content.get(worktreeId)!.get("edited.csv")).toMatch(/^A ROW of the/);
+      const window = (filename: string) =>
+        fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename, lineCount: 2});
+      const edit = (filename: string, textToReplace: string) => fauxToolCall("editFile",
+        {workpiece: "ATTACHMENTS", filename, textToReplace, replacement: "The row"});
+      const requests = await scriptedTurn(impl, chatId, [
+        window("edited.csv"), edit("edited.csv", "A ROW"),
+        window("untouched.csv"), edit("untouched.csv", "a row")]);
+      const [, edited, , untouched] = fileToolResults(requests.at(-1)!);
+      expect(edited.isError).toBe(false);
+      expect(untouched.isError).toBe(true);
+      expect(JSON.stringify(untouched.content)).toContain("too large to read or edit as whole text");
+    });
+  });
 
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());

@@ -18,7 +18,7 @@ import type { CommitMetadata, Git, Worktree } from "./worktree-binding";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
 
-import type { WorkspaceGitCache } from "./git-cache";
+import { assertWholeTextSize, type WorkspaceGitCache } from "./git-cache";
 import type { WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost }
   from "./worktree-session";
@@ -82,6 +82,8 @@ export class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost
     let existing = this.#files.get(path);
     if (existing !== undefined) return textOf(existing);
     if (this.#removed.has(path)) return undefined;
+    let file = await this.gitCache.openFileAtCommit(this.base, path);
+    if (file) assertWholeTextSize(file.reader.size, path);
     let text = await this.gitCache.readFileAtCommitIfExists(this.base, path);
     // A concurrent call may have written or deleted the file while the read was in flight;
     // its change wins over the base text.
