@@ -1,16 +1,13 @@
 // Gives a reviewer the head commit's code with every file that steers an agent taken from the base
 // commit instead: a fresh copy written from git objects for the Opus runner, or the checkout itself
 // for Bonk, which reads the working tree.
-import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import { git } from "../git.ts";
+import { git, gitWithInput } from "../git.ts";
 import { isInstructionPath } from "../instructions.ts";
 
 const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
-// The largest single read: the whole tree's blobs, which is about 40 MiB at main today.
-const MAX_TREE_BYTES = 1024 * 1024 * 1024;
 
 interface TreeEntry {
   mode: string;
@@ -29,8 +26,7 @@ function listTree(repo: string, commit: string): TreeEntry[] {
 /** Blob contents by object id, read in one `git cat-file --batch` pass. */
 function readBlobs(repo: string, objects: string[]): Map<string, Buffer> {
   if (objects.length === 0) return new Map();
-  const output = execFileSync("git", ["-C", repo, "cat-file", "--batch"],
-    { input: objects.join("\n") + "\n", maxBuffer: MAX_TREE_BYTES });
+  const output = gitWithInput(["cat-file", "--batch"], objects.join("\n") + "\n", repo);
   const blobs = new Map<string, Buffer>();
   let offset = 0;
   while (offset < output.length) {
@@ -126,9 +122,7 @@ export function replaceInstructionFiles(worktree: string, headSha: string, baseS
     assertRealParents(worktree, path);
     writeFileSync(join(worktree, path), content, { mode: 0o644 });
   }
-  if (head.length > 0) {
-    execFileSync("git", ["-C", worktree, "update-index", "--skip-worktree", "-z", "--stdin"], { input: `${head.join("\0")}\0` });
-  }
+  if (head.length > 0) gitWithInput(["update-index", "--skip-worktree", "-z", "--stdin"], `${head.join("\0")}\0`, worktree);
   const tracked = new Set(head);
   const untracked = base.map(entry => entry.path).filter(path => !tracked.has(path));
   if (untracked.length > 0) {

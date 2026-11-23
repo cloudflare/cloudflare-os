@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { git, mergeBase } from "../git.ts";
+import { git, mergeBase, tryGit } from "../git.ts";
 import { INSTRUCTION_PATHS } from "../instructions.ts";
 import { field, list, parseJson, type Json } from "../json.ts";
 import { isMain } from "../main.ts";
@@ -175,8 +175,7 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
       if (!match) return [];
       const path = match[1];
       // The head's blob, or the old one when the head deleted it or put a directory in its place.
-      const headType = spawnSync("git", ["-C", repo, "cat-file", "-t", `${pr.headSha}:${path}`], { encoding: "utf8" }).stdout.trim();
-      const side = headType === "blob" ? pr.headSha : from;
+      const side = tryGit(["cat-file", "-t", `${pr.headSha}:${path}`], repo)?.trim() === "blob" ? pr.headSha : from;
       return [{ path, bytes: Number(git(["cat-file", "-s", `${side}:${path}`], repo).trim()) }];
     });
     writeFileSync(files.pullRequest, `# ${pr.title}\n\n${pr.body}\n`);
@@ -405,7 +404,7 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
  * always come from that run's base commit.
  */
 export function canReviewSince(repo: string, previousSha: string, pr: Pick<PullRequest, "headSha" | "baseSha">): boolean {
-  const ok = (args: string[]) => spawnSync("git", ["-C", repo, ...args]).status === 0;
+  const ok = (args: string[]) => tryGit(args, repo) !== undefined;
   return ok(["merge-base", "--is-ancestor", previousSha, pr.headSha]) &&
     git(["rev-list", "--merges", `${previousSha}..${pr.headSha}`], repo).trim() === "" &&
     ok(["diff", "--quiet", pr.baseSha, previousSha, "--", WORKFLOW]);

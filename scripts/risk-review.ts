@@ -932,7 +932,6 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const staleBase = notBefore > 0 && (pushed === undefined || Date.parse(pushed) <= notBefore)
     ? "the base changed after the head was pushed; producers count again after the next push"
     : undefined;
-  const shared = staleBase;
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
   const runsOf = async (workflow: string) => {
     const cached = runsByWorkflow.get(workflow);
@@ -958,8 +957,8 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
   for (const [name, producer] of Object.entries(PRODUCERS)) {
     if (!isProducerName(name)) continue;
-    if (shared) {
-      inputs[name] = { absent: shared };
+    if (staleBase) {
+      inputs[name] = { absent: staleBase };
       continue;
     }
     const expected = {
