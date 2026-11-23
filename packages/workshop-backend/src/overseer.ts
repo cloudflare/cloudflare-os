@@ -12656,13 +12656,14 @@ type OverseerRestoreParams = {
   // gadget (or the default gadget was deleted), restoration fails with an explicit error.
   gadgetId?: WorkpieceId;
 
-  // Present when the stub was minted to run the gadget with this chat's proposed changes
-  // (getGadgetFacetFetcher only sets it once #resolveGadgetChatId has confirmed the chat really
-  // does propose changes to the gadget). Because the gadget's own ctx.restore() chains off the
-  // stub it was called through, a persistent stub minted by the proposed version carries this
-  // too, and so keeps restoring to that version for as long as the chat still proposes changes
-  // to the gadget -- the code that created the stub is the code that knows what to do with it.
-  // Once the chat is committed, discarded or deleted, the same params resolve to main.
+  // Present when the stub was minted to run the gadget on this chat's branch
+  // (getGadgetFacetFetcher only sets it once #resolveGadgetChatId has confirmed the gadget runs
+  // there). Because the gadget's own ctx.restore() chains off the stub it was called through, a
+  // persistent stub minted on the branch carries this too, and so restores to the branch
+  // whenever the gadget runs there -- the code that created the stub is the code that knows what
+  // to do with it. Otherwise, and once the chat is deleted, the same params resolve to main.
+  // TODO: Resolve to main for good once the changes the stub was minted under are accepted. A
+  //   chat that stays forked, or is changed again, takes a live hook's callback back with it.
   chatId?: number;
 
   // A hack: If present, and if the code injection table currently contains this ID, then
