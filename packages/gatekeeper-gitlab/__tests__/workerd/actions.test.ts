@@ -1370,4 +1370,74 @@ describe("submit failure", () => {
     expect((await unwrap(await hooks().openIssue(name, props, "~2"))).title).toBe("Accepted");
     expect((await hooks().queueLog(name)).submitted.map(entry => entry.actionId)).toEqual([next.approvalId]);
   });
+
+  // The overseer's auto-approval drain can apply an action, or a user discard it, while
+  // `submitAction()` is still awaited; that resolution must stand once the submission returns.
+  async function raceSetup(name: string) {
+    const { gitlab, props } = await setup(name);
+    let created = 0;
+    let down = false;
+    gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues$`), request => {
+      if (down) return json({ message: "502 Bad Gateway" }, { status: 502 });
+      created++;
+      return json(issue({ iid: 77, title: JSON.parse(request.body!).title }), { status: 201 });
+    });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/77\\?`), () => json(issue({ iid: 77, title: "Raced" })));
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), () => json(created ? [issue({ iid: 77, title: "Raced" })] : []));
+    gitlab.install();
+    const queue = async () => (await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "Raced" }], DESC))).approvalId;
+    return {
+      props, queue, created: () => created, setDown: (value: boolean) => { down = value; },
+      listedIds: async () => (await unwrap(await hooks().listIssuesAll(name, props, 20))).map(i => i.id),
+    };
+  }
+
+  it("leaves an action applied before its submission replied applied, its provisional id bound to the real issue", async () => {
+    const name = "submit-race-apply";
+    const race = await raceSetup(name);
+    await hooks().resolveNextSubmit(name, race.props, "apply", false);
+    const actionId = await race.queue();
+    expect(race.created()).toBe(1);
+    expect(await unwrap(await hooks().openIssue(name, race.props, "~1"))).toMatchObject({ id: "77" });
+    // Not simulated again on top of the issue it created, and a re-delivered apply runs nothing.
+    expect(await race.listedIds()).toEqual(["77"]);
+    await unwrap(await hooks().applyAction(name, race.props, actionId));
+    expect(race.created()).toBe(1);
+  });
+
+  it("leaves an action discarded before its submission replied discarded", async () => {
+    const name = "submit-race-reject";
+    const race = await raceSetup(name);
+    await hooks().resolveNextSubmit(name, race.props, "reject", false);
+    const actionId = await race.queue();
+    await expect(unwrap(await hooks().openIssue(name, race.props, "~1"))).rejects.toThrow(/No provisional issue exists/);
+    expect(await race.listedIds()).toEqual([]);
+    await expect(unwrap(await hooks().applyAction(name, race.props, actionId))).rejects.toThrow(DISCARDED);
+    expect(race.created()).toBe(0);
+  });
+
+  it("reports success when the reply is lost after the action applied", async () => {
+    const name = "submit-race-lost";
+    const race = await raceSetup(name);
+    await hooks().resolveNextSubmit(name, race.props, "apply", true);
+    const actionId = await race.queue();
+    expect(await unwrap(await hooks().openIssue(name, race.props, "~1"))).toMatchObject({ id: "77" });
+    expect(await race.listedIds()).toEqual(["77"]);
+    await unwrap(await hooks().applyAction(name, race.props, actionId));
+    expect(race.created()).toBe(1);
+  });
+
+  it("keeps an action whose apply failed for a retry when the reply is lost", async () => {
+    const name = "submit-race-lost-failed";
+    const race = await raceSetup(name);
+    race.setDown(true);
+    await hooks().resolveNextSubmit(name, race.props, "apply", true);
+    const actionId = await race.queue();
+    // The overseer holds it for a retry, so it still reads as queued, and the retry runs.
+    expect(await unwrap(await hooks().openIssue(name, race.props, "~1"))).toMatchObject({ id: "~1", title: "Raced" });
+    race.setDown(false);
+    await unwrap(await hooks().applyAction(name, race.props, actionId));
+    expect(race.created()).toBe(1);
+    expect(await unwrap(await hooks().openIssue(name, race.props, "~1"))).toMatchObject({ id: "77" });
+  });
 });

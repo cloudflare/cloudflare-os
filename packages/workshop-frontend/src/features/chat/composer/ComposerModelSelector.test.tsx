@@ -23,7 +23,7 @@ afterEach(() => {
   container = null;
 });
 
-function renderTriggerLabel(selectedModel: SelectedModel): string {
+function render(selectedModel: SelectedModel, loading = false): HTMLDivElement {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -31,10 +31,15 @@ function renderTriggerLabel(selectedModel: SelectedModel): string {
     <ComposerModelSelector
       models={models}
       selectedModel={selectedModel}
+      loading={loading}
       onModelChange={() => {}}
     />,
   ));
-  return container.querySelector('[aria-label="Select model"]')!.textContent!;
+  return container;
+}
+
+function renderTriggerLabel(selectedModel: SelectedModel, loading = false): string {
+  return render(selectedModel, loading).querySelector('[aria-label="Select model"]')!.textContent!;
 }
 
 describe("ComposerModelSelector", () => {
@@ -49,5 +54,20 @@ describe("ComposerModelSelector", () => {
 
   it("falls back to the raw id when no name is known", () => {
     expect(renderTriggerLabel({ id: "claude-opus-5" })).toBe("claude-opus-5");
+  });
+
+  // "No agent" is a choice, so it must not show while the model to start on is still unknown.
+  it("shows a placeholder rather than \"No agent\" until the models have loaded", () => {
+    const rendered = render(null, true);
+    expect(rendered.querySelector('[aria-label="Loading models"]')).not.toBeNull();
+    expect(rendered.textContent).not.toContain("No agent");
+  });
+
+  it("shows an existing chat's model while the models are still loading", () => {
+    expect(renderTriggerLabel({ id: "claude-opus-5", name: "Claude Opus 5" }, true)).toBe("Claude Opus 5");
+  });
+
+  it("shows \"No agent\" once the models have loaded and none is selected", () => {
+    expect(renderTriggerLabel(null)).toBe("No agent");
   });
 });

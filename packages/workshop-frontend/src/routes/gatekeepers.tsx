@@ -473,7 +473,7 @@ function ConnectorsPage() {
   const [disconnecting, setDisconnecting] = useState(false)
 
   const [reconnectingAccountId, setReconnectingAccountId] = useState<number | null>(null)
-  const [ensuringResourceUrlPatterns, setEnsuringResourceUrlPatterns] = useState<string[]>([])
+  const [ensuringResourceTypeIds, setEnsuringResourceTypeIds] = useState<string[]>([])
 
   useEffect(() => () => connectCancellation.current?.abort(), [])
 
@@ -567,10 +567,10 @@ function ConnectorsPage() {
 
   const handleCloseModal = () => {
     setModalTarget(null)
-    setEnsuringResourceUrlPatterns([])
+    setEnsuringResourceTypeIds([])
   }
 
-  const handleConfirmConnect = async (resourceUrlPatterns?: string[]) => {
+  const handleConfirmConnect = async (resourceTypeIds?: string[]) => {
     if (!modalTarget || modalTarget.kind !== 'connect') return
     const vendorId = modalTarget.vendorId
     const cancellation = new AbortController()
@@ -585,7 +585,7 @@ function ConnectorsPage() {
         // If the gatekeeper provides a management UI, its nav entry should appear without a reload.
         refreshGatekeeperApps(authenticatedApi)
       } else {
-        const flow = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
+        const flow = await authenticatedApi.connectAccount(vendorId, resourceTypeIds)
         setCanCancelConnect(!!nativeApp()?.authentication)
         await openConnectWindow(flow, authenticatedApi, cancellation.signal)
       }
@@ -601,13 +601,13 @@ function ConnectorsPage() {
     }
   }
 
-  const handleEnsureResources = async (resourceUrlPatterns: string[]) => {
+  const handleEnsureResources = async (resourceTypeIds: string[]) => {
     if (!modalTarget || modalTarget.kind !== 'manage') return
-    setEnsuringResourceUrlPatterns((prev) => [...new Set([...prev, ...resourceUrlPatterns])])
+    setEnsuringResourceTypeIds((prev) => [...new Set([...prev, ...resourceTypeIds])])
     try {
       const flow = await authenticatedApi.ensureAccountResources(
         modalTarget.accountId,
-        resourceUrlPatterns,
+        resourceTypeIds,
       )
       if (flow) await openConnectWindow(flow, authenticatedApi)
       // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
@@ -617,8 +617,8 @@ function ConnectorsPage() {
       console.error('Failed to expand account access:', err)
       toasts.add({ title: err instanceof Error ? err.message : 'Failed to request additional access', variant: 'error' })
     } finally {
-      setEnsuringResourceUrlPatterns((prev) =>
-        prev.filter((p) => !resourceUrlPatterns.includes(p)),
+      setEnsuringResourceTypeIds((prev) =>
+        prev.filter((p) => !resourceTypeIds.includes(p)),
       )
     }
   }
@@ -877,9 +877,10 @@ function ConnectorsPage() {
           onConfirm={handleConfirmConnect}
           accountDescription={activeAccount?.accountDescription}
           credentialsValid={activeAccount?.credentialsValid}
+          grantedResourceTypeIds={activeAccount?.accountDescription.grantedResourceTypeIds}
           grantedResourceUrlPatterns={activeAccount?.accountDescription.grantedResourceUrlPatterns}
           onEnsureResources={handleEnsureResources}
-          ensuringResourceUrlPatterns={ensuringResourceUrlPatterns}
+          ensuringResourceTypeIds={ensuringResourceTypeIds}
           disconnecting={disconnecting}
           onDisconnect={handleDisconnect}
           onOpenChange={(open) => {

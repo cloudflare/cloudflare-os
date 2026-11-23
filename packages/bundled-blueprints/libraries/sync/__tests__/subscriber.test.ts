@@ -27,6 +27,19 @@ describe("createSubscriber", () => {
     expect(events).toEqual([{ revision: 1 }, { clientId: "ada" }]);
   });
 
+  it("keeps a disposer, which the RPC layer calls when the server drops the subscriber", () => {
+    let disposed: unknown = null;
+    const subscriber = createSubscriber(RpcTarget, {
+      operation() {},
+      [Symbol.dispose](this: unknown) {
+        disposed = this;
+      },
+    });
+    expect(Object.getOwnPropertySymbols(subscriber)).toEqual([]);
+    subscriber[Symbol.dispose]();
+    expect(disposed).toBe(subscriber);
+  });
+
   it("refuses a callback that is not a function", () => {
     expect(() => createSubscriber(RpcTarget, { operation: 1 as unknown as () => void })).toThrow('Subscriber callback "operation" is not a function.');
   });

@@ -12,9 +12,9 @@ import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 export function useAlwaysApproveTag(
     overseer: RpcStub<Overseer>,
     setProcessingActions: Dispatch<SetStateAction<Set<number>>>,
-    // Invoked after a rule is successfully enabled, so other views (e.g. the Connections rule list)
-    // can refresh without waiting to be re-opened.
-    onEnabled?: () => void) {
+    // Told once the change settles, whichever way it went, so other surfaces re-read the rules;
+    // see `AutoApprovalChannel`.
+    onChanged?: () => void) {
   const toasts = useKumoToastManager()
   const [enabledTags, setEnabledTags] = useState<Set<string>>(new Set())
 
@@ -27,24 +27,30 @@ export function useAlwaysApproveTag(
     try {
       await overseer.setAutoApprovedActionKind(gatekeeperId, actionKind)
       setEnabledTags(prev => new Set(prev).add(`${gatekeeperId}:${actionKind.tag}`))
-      onEnabled?.()
       return true
     } catch (err) {
       console.error('Failed to enable auto-approval:', err)
       toasts.add({ title: 'Failed to enable auto-approval', variant: 'error' })
       return false
     } finally {
+      onChanged?.()
       setProcessingActions(prev => {
         const next = new Set(prev)
         next.delete(actionId)
         return next
       })
     }
-  }, [overseer, setProcessingActions, toasts, onEnabled])
+  }, [overseer, setProcessingActions, toasts, onChanged])
 
   const isTagAutoApproved = useCallback(
       (gatekeeperId: number, tag: string) => enabledTags.has(`${gatekeeperId}:${tag}`),
       [enabledTags])
 
-  return { alwaysApproveTag, isTagAutoApproved }
+  // Drops the overlay once the caller has re-read the real rule list, which now says everything
+  // this one did. Keeping it would outrank that list for the life of the component, so a rule
+  // turned off elsewhere would go on reading as enabled.
+  const forgetOptimisticTags = useCallback(() => setEnabledTags(previous =>
+      previous.size === 0 ? previous : new Set()), [])
+
+  return { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags }
 }

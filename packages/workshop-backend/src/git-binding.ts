@@ -41,10 +41,11 @@ const IN_MEMORY_WORKTREE_ID = 0;
  * overlay and removal maps are replaced rather than mutated, so a session operation iterating one
  * across an await sees a consistent snapshot.
  */
-class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
+export class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
   #head: string;
   #files = new Map<string, FileContent>();  // replaced, never mutated
   #removed = new Set<string>();  // likewise
+  #revision = 0;
 
   constructor(readonly gitCache: WorkspaceGitCache, private base: string) {
     this.#head = base;
@@ -102,10 +103,22 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
       removed.delete(path);
     }
     this.#removed = removed;
+    this.#revision++;
   }
 
   appendCommit(_worktreeId: unknown, commit: string): void {
     this.#head = commit;
+  }
+
+  reRoot(_worktreeId: unknown, commit: string): void {
+    this.base = commit;
+    this.#files = new Map();
+    this.#removed = new Set();
+    this.#revision++;
+  }
+
+  getRevision(): number {
+    return this.#revision;
   }
 }
 

@@ -125,13 +125,14 @@ export class SubscriberRegistry<Callbacks extends object, Info = void> {
    * or rejects is dropped rather than failing the caller, and the rest are told it left; one that
    * never settles holds up nothing but its own client. A caller that broadcasts from inside its
    * mutation queue therefore neither blocks the queue on a slow browser nor deadlocks when a
-   * callback re-enters it.
+   * callback re-enters it. `send` is also given what the subscriber said about itself, for a
+   * gadget whose subscribers hear an event in different forms.
    */
-  broadcast(send: (subscriber: Callbacks) => unknown): void {
-    for (const stub of Array.from(this.#subscribers.keys())) {
+  broadcast(send: (subscriber: Callbacks, info: Info) => unknown): void {
+    for (const [stub, info] of Array.from(this.#subscribers)) {
       let delivery: unknown;
       try {
-        delivery = send(stub);
+        delivery = send(stub, info);
       } catch {
         this.#dropAndAnnounce(stub);
         continue;

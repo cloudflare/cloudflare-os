@@ -266,6 +266,12 @@ export type AccountDescription = {
   grantedResourceUrlPatterns?: string[];
 
   /**
+   * Stable IDs of the independently grantable types enabled on this account. Takes precedence over
+   * the legacy pattern list, including when empty. Omit both lists only for a full/legacy grant.
+   */
+  grantedResourceTypeIds?: string[];
+
+  /**
    * If set, this account provides an agent singleton: a gatekeeper (see
    * GatekeeperUser.getSingletonGatekeeperClass) that the Workshop installs into the owner's gadgets
    * and whose session it auto-provides as an unnamed capsule. `tsType` names the session's interface
@@ -333,6 +339,14 @@ export type ResourceDescription = {
  * Mailbox") rather than a specific instance.
  */
 export type SupportedResource = {
+  /**
+   * Stable identifier for this type, unique within its vendor (e.g. "repository"). Never reuse
+   * it for another type or change it when the title or URL pattern changes. Older gatekeepers
+   * omit it; their exact URL pattern remains their identity until they advertise an ID. Supplying
+   * an ID also advertises support for IDs in configurator, creation and grant-selection calls.
+   */
+  id?: string;
+
   /** URLPattern string for matching URLs, e.g. "https://jira.cfdata.org/*" */
   urlPattern: string;
 
@@ -375,7 +389,24 @@ export type SupportedResource = {
   creationConfigurator?: boolean;
 
   /**
-   * The urlPattern of the type whose connect card this type appears on, instead of a card of its
+   * With `creationConfigurator`: what a configuration of this type is, as a noun phrase for the
+   * agent, e.g. "the URL of the Google Drive folder to create it in". It lets the agent suggest one
+   * with createExternalResource's `configuration`, which the approver's configurator opens on; a
+   * type without it takes no suggestion. The configuration is the vendor-defined URL the
+   * configurator returns, so it may carry several settings.
+   */
+  creationConfigurationDescription?: string;
+
+  /**
+   * With `creationConfigurator`: the content types (MIME) of files the user can save as a resource
+   * of this type through GatekeeperUser.saveFile(), best first, e.g. a word processor's document
+   * type lists the docx MIME type. The Workshop offers a save for a gadget export whose content
+   * type is exactly a listed one. Callers gate on this rather than probing.
+   */
+  savableFrom?: string[];
+
+  /**
+   * The stable ID of the type whose connect card this type appears on, instead of a card of its
    * own. A card's types share one configurator, which may return a URL of any of them, so
    * startResourceConfigurator must return that configurator for each of them.
    *
@@ -384,6 +415,60 @@ export type SupportedResource = {
    * in a single consent request, so a user connecting any type on the card is asked for all of them.
    */
   groupedWith?: string;
+}
+
+/** This type's vendor-scoped identity; the pattern fallback supports older gatekeepers. */
+export function getResourceTypeId(resource: SupportedResource): string {
+  return resource.id ?? resource.urlPattern;
+}
+
+/**
+ * Resolve a stored type reference within one vendor. An ID is authoritative; only records without
+ * one may fall back to an exact current URL pattern. Never infer a type from overlapping patterns.
+ */
+export function findResourceType(
+    resources: readonly SupportedResource[], resourceTypeId?: string, legacyUrlPattern?: string)
+    : SupportedResource | undefined {
+  return resourceTypeId !== undefined
+    ? resources.find(resource => getResourceTypeId(resource) === resourceTypeId)
+    : resources.find(resource => resource.urlPattern === legacyUrlPattern);
+}
+
+/**
+ * The account's granted type IDs. Legacy pattern grants translate only by exact current match;
+ * undefined retains the existing full-grant semantics, whereas an empty list grants nothing.
+ */
+export function getGrantedResourceTypeIds(
+    account: Pick<AccountDescription, "grantedResourceTypeIds" | "grantedResourceUrlPatterns">,
+    resources: readonly SupportedResource[]): string[] | undefined {
+  if (account.grantedResourceTypeIds !== undefined) return account.grantedResourceTypeIds;
+  return account.grantedResourceUrlPatterns?.flatMap(pattern => {
+    const resource = findResourceType(resources, undefined, pattern);
+    return resource ? [getResourceTypeId(resource)] : [];
+  });
+}
+
+/**
+ * Translate a type selector at an upgraded gatekeeper's legacy implementation boundary. Also
+ * accepts an exact current pattern for calls from an older Workshop; unknown selectors fail closed.
+ */
+export function resourceTypeUrlPattern(
+    resources: readonly SupportedResource[], resourceTypeId: string): string {
+  const resource = findResourceType(resources, resourceTypeId)
+    ?? findResourceType(resources, undefined, resourceTypeId);
+  if (!resource) throw new Error(`Unknown resource type: ${resourceTypeId}`);
+  return resource.urlPattern;
+}
+
+/** Resolve account-connect type IDs to the patterns used by a gatekeeper's OAuth scope mapping. */
+export function requestedResourceUrlPatterns(
+    options: GatekeeperConnectOptions | undefined, resources: readonly SupportedResource[])
+    : string[] | undefined {
+  if (options?.resourceTypeIds === undefined) return options?.resourceUrlPatterns;
+  if (options.resourceUrlPatterns !== undefined) {
+    throw new Error("Specify resourceTypeIds or legacy resourceUrlPatterns, not both.");
+  }
+  return options.resourceTypeIds.map(id => resourceTypeUrlPattern(resources, id));
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -450,7 +535,14 @@ export type ResolveRequestedResourceResult =
  */
 export function resolveRequestedResource(
     supportedResources: SupportedResource[],
-    resourceUrl: string | undefined): ResolveRequestedResourceResult {
+    resourceUrl: string | undefined, resourceTypeId?: string): ResolveRequestedResourceResult {
+  if (resourceTypeId !== undefined) {
+    const resource = findResourceType(supportedResources, resourceTypeId);
+    return resource ? { ok: true, resource } : {
+      ok: false,
+      reason: `Unknown resourceTypeId "${resourceTypeId}". Call listConnectableResources for available types.`,
+    };
+  }
   if (resourceUrl) {
     const matched = supportedResources.find(
       r => r.urlPattern !== 'https://*' && matchesResourceUrlPattern(r.urlPattern, resourceUrl));
@@ -507,7 +599,9 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * The concrete resource URL the configurator should pre-fill to (e.g. supplied by an AI agent's
    * connection request), together with this resource's urlPattern, or null for a fresh/manual
    * configuration. The iframe runtime uses this to seed the form's initial values so it opens
-   * pre-filled and editable.
+   * pre-filled and editable. For a creation configurator, `resourceUrl` is the configuration the
+   * agent suggested (createExternalResource's `configuration`), not a URL of
+   * `resourceUrlPattern`, the type being created.
    */
   getInitialResource(): Promise<{ resourceUrl: string; resourceUrlPattern: string } | null>;
 
@@ -585,12 +679,8 @@ export type GatekeeperUiFrame = {
 export type ResourceConfiguratorFrame = GatekeeperUiFrame;
 
 /**
- * The root interface of an Adapter, as provided to the Gadget Workshop.
- *
- * An installation of the Gadget Workshop is provided with a set of Adapters to allow it to
- * interface with other services.
  * Options for GatekeeperVendor.connectAccount(). `scopes` selects the access tier (see that
- * method). `resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+ * method). `resourceTypeIds`, if given, limits the connection to the authorization needed for
  * those grantable resource types; if omitted, authorization for all the vendor's resource types
  * is requested. An **empty array is meaningful and distinct from omitting it**: it requests no
  * resource authorization at all, which is how a caller connects an account for a non-resource
@@ -598,6 +688,9 @@ export type ResourceConfiguratorFrame = GatekeeperUiFrame;
  */
 export type GatekeeperConnectOptions = {
   scopes?: "auth" | "full";
+  /** Stable vendor-scoped type IDs to grant; omitted means all, [] means none. */
+  resourceTypeIds?: string[];
+  /** Legacy Workshop callers send exact current patterns. Do not combine with resourceTypeIds. */
   resourceUrlPatterns?: string[];
 };
 
@@ -620,6 +713,7 @@ export type ConnectHandoff = {
   ticket: string;
 };
 
+/** Root interface of a gatekeeper Worker: describes its service and connects user accounts. */
 export interface GatekeeperVendor extends WorkerEntrypoint {
   /** Get display info for the service, suitable for display to a user. */
   describe(): Promise<VendorDescription>;
@@ -658,7 +752,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    *     transient — after `complete()` lets the caller read getAuthenticatedEmail(), the gatekeeper
    *     discards it. Vendors without `providesAuth` ignore this and always use their full scopes.
    *
-   * `options.resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+   * `options.resourceTypeIds` (or legacy `options.resourceUrlPatterns`), if given, limits the
+   * connection to the authorization needed for
    * those grantable resource types. If omitted, authorization for all of the vendor's resource
    * types is requested. An empty array is not the same as omitting it: it requests no resource
    * authorization, so a vendor must treat `[]` as "none" rather than falling back to "all" -- doing
@@ -711,7 +806,7 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   createAccount?(): Promise<Fetcher<GatekeeperUser>>;
 
   /**
-   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceUrlPattern`,
+   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceTypeId`,
    * titled `title`, and the `action` that creates it. Like createAccount(), this takes no user
    * identity, so the class belongs to no account: it simulates the resource locally, with no
    * account to reach the provider through, though it may still be asked to describe() itself.
@@ -722,7 +817,7 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * Present only on vendors with a `creatable` resource type. The `action` (the creation card) sets
    * `autoApprovable: false`: approving it means choosing the account to create the resource in.
    */
-  createResource?(resourceUrlPattern: string, title: string): Promise<{
+  createResource?(resourceTypeId: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
     action: ActionDescription;
@@ -851,20 +946,36 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
   /**
    * Get the UI used to choose a specific resource.
-   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   * `resourceTypeId` is the type's stable vendor-scoped ID. Older gatekeepers without IDs receive
+   * their exact current pattern instead. Upgraded implementations accept that legacy form too.
    */
   startResourceConfigurator(
-    resourceUrlPattern: string,
+    resourceTypeId: string,
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
-   * Get the UI in which the approver of a creation of the creatable type `resourceUrlPattern`
+   * Get the UI in which the approver of a creation of the creatable type `resourceTypeId`
    * configures it in this account, e.g. where to create it. The frame starts on the vendor's
-   * default, and its collectResourceUrl() returns the vendor-defined value passed to
+   * default, or on the configuration the agent suggested (see ResourceConfiguratorHost.
+   * getInitialResource()), and its collectResourceUrl() returns the vendor-defined value passed to
    * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
-   * Present when the type sets SupportedResource.creationConfigurator.
+   * With `purpose` "save" (omitted means "create") the user is instead choosing where saveFile()
+   * puts a new resource, there is no agent, and the frame is ready only once this account can save
+   * there. Present when the type sets SupportedResource.creationConfigurator.
    */
-  startCreationConfigurator?(resourceUrlPattern: string): Promise<GatekeeperUiFrame>;
+  startCreationConfigurator?(resourceTypeId: string, purpose?: "create" | "save")
+      : Promise<GatekeeperUiFrame>;
+
+  /**
+   * Save `file`, of the MIME type `contentType`, as a resource of the type `resourceTypeId` in
+   * this account, at the user's own request: no agent is involved and nothing is simulated.
+   * `destination` is either what the creation configurator returned for purpose "save", which
+   * makes a new resource named `name`, or the URL an earlier save returned, which replaces that
+   * resource's content and keeps its name. Returns the saved resource's URL. Present when the type
+   * sets SupportedResource.savableFrom, which lists `contentType`.
+   */
+  saveFile?(resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }>;
 
   /**
    * Revoke this account connection. The GatekeeperUser, and all Gatekeepers created through it,
@@ -928,7 +1039,7 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * SECURITY: As with reconnect(), any returned URL is a bearer capability, so the flow must stage
    * the widened grant rather than write it live, and the URL must include a cryptographic nonce.
    */
-  ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}>;
+  ensureResources(resourceTypeIds: string[]): Promise<{url?: string}>;
 
   // ---------------------------------------------------------------------------
   // Singleton / management-UI capabilities. Present only on accounts created by
@@ -994,7 +1105,22 @@ export interface GitPullTransfer extends RpcTarget {
   stream(): Promise<ReadableStream<Uint8Array>>;
   /** Snapshot; a consumer that fails before end-of-stream may still see `streaming`. */
   status(): Promise<GitPullStatus>;
+  /**
+   * How the pack changes the requester's shallow boundary, as reported by the provider before
+   * the pack itself. Both lists are empty unless the pull limited `commitHistory` or passed
+   * `shallow` commits. A native Git consumer needs this alongside the pack, which doesn't carry
+   * it.
+   */
+  shallowInfo(): Promise<GitShallowInfo>;
 }
+
+/** How a pull changes the requester's shallow boundary: Git's `shallow-info` section. */
+export type GitShallowInfo = {
+  /** Commits the pack includes without their parents. */
+  shallow: GitOid[];
+  /** Commits from the pull's `shallow` hint whose history the pack now includes. */
+  unshallow: GitOid[];
+};
 
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
@@ -1121,11 +1247,10 @@ export interface Gatekeeper<Session> extends DurableObject {
 
   /**
    * Required of a gatekeeper whose observations report `ObservationDescription.subresources`:
-   * which of `observers` can read every one of `subresources` now. The Workshop calls this to check
-   * collaborators against the subresource IDs this gatekeeper reported: before authorizing a read
-   * that reports them, for every collaborator who can see the context that made it, and at
-   * admission, alongside `addObserver()`, for everything the collaborator's role reaches. The
-   * answer must not depend on which of the two is asking, and the Workshop does not say.
+   * which of `observers` can read every one of `subresources` now. See
+   * `ObservationDescription.subresources` for the Workshop's audience and scheduling policy.
+   * Answers must not depend on whether the check is for read authorization or admission; the
+   * Workshop does not identify which.
    *
    * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
    * unique within one call. It is not a cache key: the same observer may arrive later with a
@@ -1162,17 +1287,24 @@ export interface Gatekeeper<Session> extends DurableObject {
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * Each requested object must be included or the stream must fail. The returned RPC capability
-   * also reports the terminal status: Workers RPC can replace a stream's original exception with
-   * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
-   * the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A filter may omit objects only beyond those
-   * requested: the overseer requests an exact blob with no `filterBlobSize`, and stores blobs of
-   * any size.
+   * Each requested object must be included (unless it is reachable from `options.haves`) or the
+   * stream must fail. The returned RPC capability also reports the terminal status: Workers RPC
+   * can replace a stream's original exception with a generic disconnect, so consumers must check
+   * `status()` after ingestion fails to recover the producer's error. After draining the stream,
+   * require `complete` before accepting the transfer. Dispose the capability when finished. A
+   * filter may omit objects only beyond those requested: the overseer requests an exact blob with
+   * no `filterBlobSize`, and stores blobs of any size.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
-   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
-   * their storage/transfer limits.
+   * commits. This supports native Git as well as lazy cache population. Consumers own their
+   * storage/transfer limits.
+   *
+   * The workspace also pulls history it has never stored, to serve native Git in a container
+   * that has mounted a worktree (see `WorktreeReplicator.gitPull()`). Such pulls pass the
+   * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
+   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of a
+   * commit the gatekeeper is known to have, with a commit-only pull (`filterTreeDepth: 0`) of the
+   * commit whose `haves` are those known commits: an empty pack means it is an ancestor.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
@@ -1285,8 +1417,7 @@ export interface ObservationAuthorizer extends RpcTarget {
    * data to the gadget, this is OK.
    *
    * When `description.subresources` is present, returning normally also means the Workshop
-   * recorded them and confirmed that every collaborator who can see the read may access them (see
-   * `ObservationDescription.subresources`).
+   * recorded them and completed the checks required by `ObservationDescription.subresources`.
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
 
@@ -1300,6 +1431,39 @@ export interface ObservationAuthorizer extends RpcTarget {
    * of possession.
    */
   getGitCache(): Promise<GitCache>;
+
+  /**
+   * Throws unless this session can still act: for a session the agent's code opened, unless that
+   * code execution (an `executeCode` call) is still running and the user hasn't stopped its turn;
+   * for a hook firing, unless the hook is still enabled; for any session, unless its gatekeeper
+   * connection still exists. A broken stub (say, because the workspace restarted) throws too.
+   * Either way, the session is over.
+   */
+  requireLive(): Promise<void>;
+
+  /**
+   * Holds `watcher` until this session ends, then releases it, which runs its
+   * `[Symbol.dispose]()`. That happens however the session ends. Most importantly, if the
+   * workspace crashes or restarts, its stub is dropped, so the runtime disposes `watcher` without
+   * the workspace's help. It is also released when the session's execution finishes or times
+   * out, or the user stops its turn (even if the execution's code is still running, since running
+   * code can't be interrupted); when its hook is disabled or deleted; when its gatekeeper
+   * connection is removed; or when the gatekeeper releases this authorizer. Use it to stop work
+   * the session started, such as a container command. If the session has already ended,
+   * `watcher` is released at once.
+   *
+   * Dispose of the returned handle to stop watching; `watcher` is then released at once. A handle
+   * whose connection to the workspace breaks is disposed too, so `watcher` is released then.
+   */
+  watchSession(watcher: RpcStub<RpcTarget>): Promise<RpcStub<RpcTarget>>;
+
+  /**
+   * The ID of the agent's code execution (an `executeCode` call) that opened this session, the
+   * same for every session it opens, on any gatekeeper; undefined for a session with none (a
+   * user's, a gadget's, a hook firing's). It only identifies the execution: no API accepts it as
+   * proof of anything.
+   */
+  getExecutionId(): Promise<string | undefined>;
 }
 
 /**
@@ -1567,8 +1731,10 @@ export type ObservationDescription = {
    * Workshop checks collaborators against through this gatekeeper's
    * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting them must implement it. Before
    * authorizing the read, the Workshop checks every collaborator who can see the chat or gadget
-   * that made it, refusing the read if any is denied; it then records the IDs and checks them again
-   * at each collaborator's admission, alongside `Gatekeeper.addObserver()`.
+   * that made it and holds a live session, refusing the read if any is denied; it then records the
+   * IDs and checks them again at each collaborator's admission, alongside
+   * `Gatekeeper.addObserver()`, which is where a collaborator without a live session is first
+   * checked against them.
    *
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
    * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
@@ -1866,9 +2032,10 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
- * The size, in bytes, above which an RPC that can return a git object's (or file's) content
- * either whole or as a stream returns a stream: `GitCache.get()` returns a `Uint8Array` for an
- * object of at most this many bytes, and a `ReadableStream` for a larger one.
+ * The size, in bytes, above which an RPC does not return a git object's (or file's) content
+ * whole. `GitCache.get()` returns a `Uint8Array` for an object of at most this many bytes, and a
+ * `ReadableStream` for a larger one. `Overseer.readFilesAtCommit()` (see
+ * `@gadgets/workshop-shared/api`) names a larger file by its blob, to read as a stream.
  *
  * This is a choice of representation, not a storage limit: no object is refused for its size.
  * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
@@ -2051,7 +2218,25 @@ export type GitPullHints = {
   commitHistory:
     | { kind: "full" }
     | { kind: "depth", depth: number }
-    | { kind: "since", since: Date };
+    | { kind: "since", since: Date }
+    /** `depth` more commits beyond the requester's `shallow` commits (Git's `--deepen`). */
+    | { kind: "relative", depth: number };
+
+  /**
+   * Commits the requester already has, along with their history down to its `shallow` commits.
+   * The pack leaves out objects reachable from them, but stays self-contained: no object in it
+   * is a delta against one left out. The workspace's Git cache never sets this, because it may
+   * hold a commit without its trees (from a filtered pull). It is set when the workspace serves
+   * native Git, which negotiates what it has (see `Gatekeeper.gitPull()`).
+   */
+  haves?: GitOid[];
+
+  /**
+   * The requester's shallow boundary: commits it has without their parents, as in Git's
+   * `shallow` lines. The provider needs it to deepen the history (see `commitHistory`) and to
+   * interpret `haves`.
+   */
+  shallow?: GitOid[];
 
   /**
    * Omit blobs of at least this size. 0 = do not fetch blobs at all.

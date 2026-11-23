@@ -1,7 +1,6 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
-import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -15,11 +14,9 @@ import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
-import { ReadGate } from "./read-gate";
+import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
-import {
-  batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
-} from "./sheets-actions";
+import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
 import {
   BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges,
   type SheetArea,
@@ -46,14 +43,11 @@ import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
 
-// A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
-const MAX_CHANGE_BYTES = 100 * 1024;
 // A format read's result, in UTF-16 units of its JSON: Google's own answer is capped at 5 MiB.
 const MAX_FORMATS_READ_LENGTH = 5 * 1024 * 1024;
 // The markers batches left, each deleted by a later batch once no send of it can still commit.
 // Outside the journal's `sheets:action:` prefix and its counter.
 const STALE_MARKERS_KEY = "sheets:staleMarkers";
-const MAX_STALE_MARKERS = 20;
 
 type Env = Cloudflare.Env;
 
@@ -66,28 +60,6 @@ function randomId(): number {
   return id;
 }
 
-// Throws if `value` would not fit in the one storage value a queued change is.
-function checkQueuedSize(value: unknown): void {
-  // Storage serializes a string holding any non-Latin-1 character at two bytes a unit.
-  let bytes = JSON.stringify(value).length * 2;
-  if (bytes > MAX_CHANGE_BYTES) {
-    throw new Error(`This change is too large to queue (${bytes} bytes, limit ` +
-      `${MAX_CHANGE_BYTES}). Split it up.`);
-  }
-}
-
-/**
- * The markers to store: every one a send could still commit, and of the rest the
- * `MAX_STALE_MARKERS` most recently sent. The first part is bounded too: Google takes at most 60
- * write requests a minute from a user, so about 600 markers at most are sent within the window, a
- * few tens of KB, under the 128 KiB a stored value may hold.
- */
-function retainedMarkers(entries: readonly MarkerEntry[], now: number): MarkerEntry[] {
-  let open = (entry: MarkerEntry) => now < entry.sentAt + MARKER_RETENTION_MS;
-  let closed = new Set(entries.filter(entry => !open(entry))
-    .toSorted((a, b) => a.sentAt - b.sentAt).slice(-MAX_STALE_MARKERS));
-  return entries.filter(entry => open(entry) || closed.has(entry));
-}
 
 let sheetsTypesCode: string | undefined;
 
@@ -168,9 +140,12 @@ export class GoogleSheetsGatekeeperImpl
     },
     now: () => Date.now(),
   });
-  #reads = new ReadGate();
-  #preparing = new SerialTaskQueue();
-  #inPreparation = 0;
+  #changes = new QueuedChanges<SheetsAction>({
+    journal: this.#journal,
+    select: action => action,
+    outOfOrder: earlier => "Google Sheets changes apply in the order they were queued. Approve or " +
+      `reject change ${earlier} first.`,
+  });
 
   /** The account and spreadsheet this binding reaches, which a spreadsheet not yet created has not. */
   get #bound(): { userObjectId: string; spreadsheetId: string } {
@@ -225,22 +200,19 @@ export class GoogleSheetsGatekeeperImpl
     return new GoogleSpreadsheetSessionImpl(
       this.#api, props.spreadsheetId, queue, read,
       {
-        snapshot: read => this.#reads.read(() => read(this.#journal.listUndecided())),
-        queue: (kind, prepare) => this.#prepareExclusively(async () => {
-          let { payload, result } = await prepare();
-          checkQueuedSize(payload);
-          await this.#actions.submit(queue, kind, payload);
-          return result;
-        }),
+        snapshot: read => this.#changes.snapshot(read),
+        queue: (kind, prepare) =>
+          this.#changes.queue(prepare, payload => this.#actions.submit(queue, kind, payload)),
         editable: () => this.#drive.canEdit(props.spreadsheetId),
       },
     );
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     return this.#creating.run(async () => {
-      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "sheets",
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(
+          this.ctx, creator, "sheets", configuration,
           (title, tokens) => new GoogleSheetsApi(tokens).createSpreadsheet(title));
       return {
         class: this.ctx.exports.GoogleSheetsGatekeeperImpl({props: {userObjectId, spreadsheetId: fileId}}),
@@ -249,37 +221,12 @@ export class GoogleSheetsGatekeeperImpl
     });
   }
 
-  #prepareExclusively<T>(body: () => Promise<T>): Promise<T> {
-    this.#inPreparation++;
-    return this.#preparing.run(body).finally(() => this.#inPreparation--);
-  }
-
   applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    return this.#reads.resolve(async () => {
-      // Each change was checked against those queued before it, so they apply in that order. A
-      // decided or failed change is left to the action set, which answers it without a write.
-      let state = this.#journal.get(actionId)?.state;
-      let earlier = (state === "staged" || state === "pending") &&
-        this.#journal.listPending().find(({ id }) => id < actionId);
-      if (earlier) {
-        throw new Error(
-          `Google Sheets changes apply in the order they were queued. Approve or reject change ` +
-          `${earlier.id} first.`);
-      }
-      await this.#actions.apply(actionId);
-    });
+    return this.#changes.apply(actionId, () => this.#actions.apply(actionId));
   }
 
   rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    return this.#reads.resolve(async () => {
-      let pending = this.#journal.listPending();
-      let shown = pending.some(({ id }) => id === actionId);
-      // Changes queued or being prepared after it were checked against it, and the gadget has
-      // read them on top of it.
-      let builtOn = pending.at(-1)?.id !== actionId || this.#inPreparation > 0;
-      await this.#actions.reject(actionId);
-      if (shown && builtOn) return { restart: true };
-    });
+    return this.#changes.reject(actionId, () => this.#actions.reject(actionId));
   }
 
   revertAction(_action: number): Promise<void> {

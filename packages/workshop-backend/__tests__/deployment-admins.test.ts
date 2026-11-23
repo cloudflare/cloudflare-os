@@ -24,6 +24,12 @@ describe("isDeploymentAdmin", () => {
     expect(isDeploymentAdmin(env, "admin@example.com")).toBe(true);
   });
 
+  it("never takes an empty or absent name for an admin", () => {
+    let env = withAdmins([""]);
+    expect(isDeploymentAdmin(env, "")).toBe(false);
+    expect(isDeploymentAdmin(env, undefined)).toBe(false);
+  });
+
   it("names no admin while the binding is unset, and refuses one that is not a list", () => {
     expect(isDeploymentAdmin(withAdmins(undefined), "admin")).toBe(false);
     expect(() => isDeploymentAdmin(withAdmins(JSON.stringify({ admin: true })), "admin"))

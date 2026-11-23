@@ -5,6 +5,7 @@ import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GitImpl } from "../src/git-binding";
 import type { GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { ReplicableWorktree } from "@gadgets/workshop-shared/worktree-replica";
 import { COMMIT_1, COMMIT_2, FIXTURE_OBJECTS, PACKED_OIDS, TREE_1, b64Bytes }
   from "./git-cache-fixtures";
 
@@ -85,6 +86,11 @@ describe("env.GIT worktrees", () => {
       }
       expect(await new Response(await worktree.readBytes(path)).bytes()).toEqual(data);
     }
+  }));
+
+  it("can't be replicated", () => withImpl(async impl => {
+    let worktree = await (await openGit(impl)).newWorktree(await commitFiles(impl, {}));
+    await expect((worktree as unknown as ReplicableWorktree).getReplicator()).rejects.toThrow("can't be replicated");
   }));
 
   it("read a commit's tree", () => withImpl(async impl => {

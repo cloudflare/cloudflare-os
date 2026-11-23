@@ -104,7 +104,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   expect(initial.latestActivityAt).toBeInstanceOf(Date);
   expect(await owner.getUnreadThreads()).toEqual([initial]);
   expect(await owner.getWorkspaceUnreadState(workspaceId)).toEqual([
-    {workspaceId, chatId, unreadMessageCount: 1, readThroughSequence: -1},
+    {workspaceId, chatId, unreadMessageCount: 1, readThroughSequence: -1, notificationsEnabled: true},
   ]);
   expect(await owner.getUnreadSummary()).toEqual({unreadChatCount: 1, unreadMessageCount: 1,
     workspaces: [{workspaceId, unreadChatCount: 1, unreadMessageCount: 1}]});
@@ -157,17 +157,20 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await workspace.addCollaborator(viewerName, {gadgetId});
   using _builderWorkspace = await builder.openWorkspace(workspaceId);
   using _viewerWorkspace = await viewer.openWorkspace(workspaceId);
-  await waitFor("a build collaborator's independent cursor", async () =>
-    (await builder.getWorkspaceUnreadState(workspaceId)).length === 1 ? true : null,
-  );
+  expect(await builder.getWorkspaceUnreadState(workspaceId)).toEqual([]);
   await expect(_viewerWorkspace.markChatRead(chatId)).rejects.toThrow();
   await expect(_viewerWorkspace.markChatUnread(chatId)).rejects.toThrow();
   expect(await viewer.getUnreadThreads()).toEqual([]);
   expect(await viewer.getWorkspaceUnreadState(workspaceId)).toEqual([]);
   expect((await viewer.getUnreadSummary()).workspaces).toEqual([]);
-  // First admission starts with the existing history read.
+  // Workspace admission does not enroll untouched chats. First view catches up their history.
   expect((await builder.getUnreadSummary()).unreadChatCount).toBe(0);
   expect((await owner.getUnreadSummary()).unreadChatCount).toBe(1);
+  using _builderView = await _builderWorkspace.viewChat(chatId);
+  const builderInitial = await waitFor("first-view catch-up for the build collaborator", async () =>
+    (await builder.getWorkspaceUnreadState(workspaceId))[0] ?? null);
+  expect(builderInitial).toMatchObject({readThroughSequence: -1, unreadMessageCount: 2, notificationsEnabled: false});
+  await _builderWorkspace.markChatRead(chatId);
 
   const builderUpdates = new UnreadRecorder(), viewerUpdates = new UnreadRecorder();
   using builderStub = stubFor(builderUpdates);
@@ -179,6 +182,9 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
       ? true : null,
   );
 
+  // Opening is not participation. A reader can still explicitly follow a chat before posting.
+  expect((await builder.getWorkspaceUnreadState(workspaceId))[0].notificationsEnabled).toBe(false);
+  await _builderWorkspace.setChatNotificationsEnabled(chatId, true);
   // No polling/reopening the workspace: ordinary message fanout must drive every user's badges.
   await workspace.sendChatMessage(chatId, "Third persisted item\nNot part of the preview", null);
   await waitFor("the same message reaching both users' live subscriptions", async () =>
@@ -219,10 +225,11 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
       : null,
   );
   const other = await workspace.newChat("Another thread", null);
-  await waitFor("another unread thread", async () =>
-    (await owner.getWorkspaceUnreadState(workspaceId)).some((chat) => chat.chatId === other) &&
-    (await builder.getWorkspaceUnreadState(workspaceId)).some((chat) => chat.chatId === other) ? true : null,
-  );
+  expect((await builder.getWorkspaceUnreadState(workspaceId)).some(chat => chat.chatId === other)).toBe(false);
+  using _otherView = await _builderWorkspace.viewChat(other);
+  await waitFor("another enrolled thread", async () =>
+    (await owner.getWorkspaceUnreadState(workspaceId)).some(chat => chat.chatId === other) &&
+    (await builder.getWorkspaceUnreadState(workspaceId)).some(chat => chat.chatId === other) ? true : null);
   // Deletion returns after owner cleanup; collaborator cleanup is durable background work.
   // A session holding an open workspace is intentionally disconnected by its restart. Observe
   // eventual cleanup from a separate session, like a hidden native badge listener.

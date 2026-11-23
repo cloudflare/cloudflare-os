@@ -1352,3 +1352,84 @@ function bufferSink(target: Uint8Array): DeltaSink {
     filled += piece.length;
   };
 }
+
+/** Combine complete packs without decoding or caching their objects; memory is chunk-bounded. */
+export async function mergePackStreams(streams: ReadableStream<Uint8Array>[]): Promise<ReadableStream<Uint8Array>> {
+  const sources: {reader: ReadableStreamDefaultReader<Uint8Array>; header: Uint8Array; rest: Uint8Array}[] = [];
+  let released = false;
+  const release = async (reason?: unknown) => {
+    if (released) return;
+    released = true;
+    await Promise.allSettled(sources.map(source => source.reader.cancel(reason)));
+    for (const source of sources) source.reader.releaseLock();
+    await Promise.allSettled(streams.slice(sources.length).map(stream => stream.cancel(reason)));
+  };
+  try {
+    for (const stream of streams) {
+      const reader = stream.getReader();
+      const header = new Uint8Array(12);
+      sources.push({reader, header, rest: new Uint8Array()});
+      const source = sources.at(-1)!;
+      let filled = 0;
+      while (filled < 12) {
+        const next = await reader.read();
+        if (next.done) throw new Error("Truncated Git pack header.");
+        const count = Math.min(12 - filled, next.value.length);
+        header.set(next.value.subarray(0, count), filled);
+        filled += count;
+        source.rest = next.value.subarray(count);
+      }
+      const view = new DataView(header.buffer);
+      if (new TextDecoder().decode(header.subarray(0, 4)) !== "PACK" || view.getUint32(4) !== 2)
+        throw new Error("Unsupported Git pack header.");
+    }
+  } catch (error) {
+    await release(error);
+    throw error;
+  }
+  async function* chunks() {
+    const combined = createHash("sha1");
+    const header = sources[0]?.header.slice() ?? new Uint8Array(12);
+    const count = sources.reduce((n, source) => n + new DataView(source.header.buffer).getUint32(8), 0);
+    if (!sources.length || count > 0xffffffff) throw new Error("Invalid combined Git pack.");
+    new DataView(header.buffer).setUint32(8, count);
+    combined.update(header);
+    yield header;
+    try {
+      for (const source of sources) {
+        const original = createHash("sha1").update(source.header);
+        let tail = new Uint8Array();
+        let part = source.rest;
+        for (;;) {
+          const bytes = concatBytes([tail, part]);
+          const end = Math.max(0, bytes.length - 20);
+          const body = bytes.subarray(0, end);
+          original.update(body); combined.update(body);
+          tail = bytes.slice(end);
+          if (body.length) yield body;
+          const next = await source.reader.read();
+          if (next.done) break;
+          part = next.value;
+        }
+        if (tail.length !== 20 || !new Uint8Array(original.digest()).every((byte, i) => byte === tail[i]))
+          throw new Error("Git pack checksum mismatch.");
+      }
+      yield new Uint8Array(combined.digest());
+    } finally {
+      await release();
+    }
+  }
+  const iterator = chunks();
+  return new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      const result = await iterator.next();
+      // Byte-stream enqueue transfers its buffer. Keep iterator-local tails/header independent.
+      if (result.done) controller.close(); else controller.enqueue(result.value.slice());
+    },
+    async cancel() {
+      await release();
+      await iterator.return(undefined);
+    },
+  }, {highWaterMark: 0});
+}

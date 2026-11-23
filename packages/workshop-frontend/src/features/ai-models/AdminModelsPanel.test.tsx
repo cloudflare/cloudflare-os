@@ -52,10 +52,10 @@ const ADDED: AdminModelView = {
 const GATEWAY_MODELS: GatewayModels = {
   providers: ['anthropic', 'openai'],
   providerSettings: [
-    { provider: 'anthropic', enabledBy: 'environment', needsApiToken: false },
-    { provider: 'openai', enabledBy: 'admin', needsApiToken: false },
-    { provider: 'google', needsApiToken: true },
-    { provider: 'cloudflare', needsApiToken: false },
+    { provider: 'anthropic', enabledBy: 'environment' },
+    { provider: 'openai', enabledBy: 'admin' },
+    { provider: 'google' },
+    { provider: 'cloudflare' },
   ],
   models: [SONNET, LEGACY, ADDED],
   defaultReasoning: null,
@@ -562,8 +562,7 @@ describe('AdminModelsPanel', () => {
         ['Cloudflare Workers AI', 'false', false],
       ])
       expect(describedBy(providerSwitch('Anthropic'))).toBe('Set by CF_AI_GATEWAY_PROVIDERS')
-      expect(describedBy(providerSwitch('Google'))).toBe(
-        'Needs CF_AI_GATEWAY_API_TOKEN: requests to this provider fail until the deployment sets it.')
+      expect(providerSwitch('Google').hasAttribute('aria-describedby')).toBe(false)
       // Above the models.
       expect(providersSection().compareDocumentPosition(row('Claude Sonnet'))
         & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

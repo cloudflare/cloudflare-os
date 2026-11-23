@@ -7,9 +7,10 @@
 // resolved values (or, where laziness matters, a callback) into this module.
 //
 // ACCESS: A collaborator holds "build" access to the whole workspace, or "use" access to some of
-// its gadgets (see CollaboratorAccess). Each permission edge or share link confers its own grant
-// only while its sharer (a link's creator) holds "build". A collaborator holds the union over all
-// their valid edges; "use" access, including legacy access to every gadget, supports no grants.
+// its gadgets, each live or only as a static snapshot ("view"; see CollaboratorAccess). Each
+// permission edge or share link confers its own grant only while its sharer (a link's creator)
+// holds "build". A collaborator holds the union over all their valid edges, in which a live grant
+// of a gadget covers a view of it; "use" access supports no grants.
 //
 // LAZY REVOCATION MODEL: Access is determined by reachability from the owner in the permission
 // graph, recomputed live at every open() (see `getEffectiveAccess`). Revocation is therefore lazy:
@@ -37,68 +38,86 @@ import type { CollaboratorRecord, ShareKeyRecord, ShareLinkRecord }
 const BUILD: CollaboratorAccess = {role: "build"};
 
 /**
- * Whether `access` lets its holder open gadget `gadgetId`. Says nothing about whether that gadget
- * exists: a grant naming a gadget that doesn't confers nothing (see SharingManager), but "build"
- * and "all" include every id.
+ * Whether `access` lets its holder open gadget `gadgetId`, live or only as a snapshot. Says
+ * nothing about whether that gadget exists: a grant naming a gadget that doesn't confers nothing
+ * (see SharingManager), but "build" includes every id.
  */
 export function accessIncludesGadget(access: CollaboratorAccess, gadgetId: WorkpieceId): boolean {
-  return access.role === "build" || access.gadgetIds === "all" ||
-      access.gadgetIds.includes(gadgetId);
+  return access.role === "build" || access.gadgetIds.includes(gadgetId);
 }
 
-// Whether `a` grants everything `b` does.
+/** Whether `access` lets its holder open gadget `gadgetId` live (see accessIncludesGadget). */
+export function accessIncludesLiveGadget(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : boolean {
+  return access.role === "build" ||
+      (access.gadgetIds.includes(gadgetId) && !access.viewOnly?.includes(gadgetId));
+}
+
+// "use" of `gadgetIds`, those of them in `viewOnly` only as snapshots, omitting the field when
+// there are none.
+function useAccess(gadgetIds: WorkpieceId[], viewOnly: WorkpieceId[] = []): CollaboratorAccess {
+  return viewOnly.length > 0 ? {role: "use", gadgetIds, viewOnly} : {role: "use", gadgetIds};
+}
+
+// Whether `a` grants everything `b` does. A live grant of a gadget covers a view of it.
 function accessCovers(a: CollaboratorAccess, b: CollaboratorAccess): boolean {
   if (a.role === "build") return true;
   if (b.role === "build") return false;
-  if (a.gadgetIds === "all") return true;
-  if (b.gadgetIds === "all") return false;
-  let held = a.gadgetIds;
-  return b.gadgetIds.every(id => held.includes(id));
+  return b.gadgetIds.every(id => accessIncludesGadget(a, id) &&
+      (!accessIncludesLiveGadget(b, id) || accessIncludesLiveGadget(a, id)));
 }
 
 // What either `a` or `b` grants.
 function unionAccess(a: CollaboratorAccess, b: CollaboratorAccess): CollaboratorAccess {
   if (a.role === "build" || b.role === "build") return BUILD;
-  if (a.gadgetIds === "all" || b.gadgetIds === "all") return {role: "use", gadgetIds: "all"};
-  return {
-    role: "use",
-    gadgetIds: [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y),
-  };
+  let gadgetIds = [...new Set([...a.gadgetIds, ...b.gadgetIds])].toSorted((x, y) => x - y);
+  return useAccess(gadgetIds, gadgetIds.filter(
+      id => !accessIncludesLiveGadget(a, id) && !accessIncludesLiveGadget(b, id)));
 }
 
 // What `prior` grants that `now` does not cover (see accessCovers), as access to restore.
 function lostAccess(prior: CollaboratorAccess, now: CollaboratorAccess | undefined)
     : CollaboratorAccess {
-  if (!now || now.role === "build" || now.gadgetIds === "all" ||
-      prior.role === "build" || prior.gadgetIds === "all") {
-    return prior;
-  }
-  let kept = now.gadgetIds;
-  return {role: "use", gadgetIds: prior.gadgetIds.filter(id => !kept.includes(id))};
+  if (!now || now.role === "build" || prior.role === "build") return prior;
+  let lost = prior.gadgetIds.filter(id => !accessCovers(now, narrowAccess(prior, id)!));
+  return useAccess(lost, lost.filter(id => !accessIncludesLiveGadget(prior, id)));
 }
 
-// The fields of a permission edge or share link that say what it grants.
-type GrantFields = {role?: CollaboratorRole; gadgetId?: WorkpieceId};
+// What `access` grants of gadget `gadgetId` alone, if anything.
+function narrowAccess(access: CollaboratorAccess, gadgetId: WorkpieceId)
+    : CollaboratorAccess | undefined {
+  if (!accessIncludesGadget(access, gadgetId)) return undefined;
+  return useAccess([gadgetId], accessIncludesLiveGadget(access, gadgetId) ? [] : [gadgetId]);
+}
+
+// The fields of a permission edge or share link that say what it grants. Only a link names
+// several gadgets.
+type GrantFields = {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[]; mode?: "view";
+};
 
 type UserEdge = Extract<PermissionEdge, {type: "user"}>;
 
 // What `record` confers at most: its role (absent on records from before roles, meaning "build"),
-// narrowed to the one gadget it names, if any.
+// narrowed to the gadgets it names, as snapshots only for a view grant. A "use" grant naming
+// none confers nothing.
 function ceilingOf(record: GrantFields): CollaboratorAccess {
   if ((record.role ?? "build") === "build") return BUILD;
-  return {role: "use", gadgetIds: record.gadgetId === undefined ? "all" : [record.gadgetId]};
+  let gadgetIds = record.gadgetIds ?? (record.gadgetId === undefined ? [] : [record.gadgetId]);
+  return useAccess(gadgetIds, record.mode === "view" ? gadgetIds : []);
 }
 
 // The edges conferring `access`: one per gadget, since an edge names at most one.
 function grantFieldsFor(access: CollaboratorAccess): GrantFields[] {
   if (access.role === "build") return [{role: "build"}];
-  if (access.gadgetIds === "all") return [{role: "use"}];
-  return access.gadgetIds.map(gadgetId => ({role: "use", gadgetId}));
+  return access.gadgetIds.map(gadgetId => accessIncludesLiveGadget(access, gadgetId)
+      ? {role: "use", gadgetId} : {role: "use", gadgetId, mode: "view"});
 }
 
 // Identifies what an edge or link grants, so what each grant confers is computed once.
 function grantKey(record: GrantFields): string {
-  return (record.role ?? "build") === "build" ? "build" : `use:${record.gadgetId ?? "all"}`;
+  if ((record.role ?? "build") === "build") return "build";
+  return `${record.mode ?? "use"}:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
 }
 
 // Fixed 256-bit key used to domain-separate share key hashes from other hashes in the system.
@@ -197,13 +216,13 @@ export class SharingManager {
     }
   }
 
-  // What `record` confers now (see ceilingOf): nothing if the one gadget it names can't be shared.
-  #liveCeiling(record: GrantFields): CollaboratorAccess | undefined {
-    if (record.role === "use" && record.gadgetId !== undefined &&
-        !this.gadgetExists(record.gadgetId)) {
-      return undefined;
-    }
-    return ceilingOf(record);
+  // What `record` confers now (see ceilingOf): only the gadgets it names that can still be shared,
+  // and nothing if none can.
+  #existingCeiling(record: GrantFields): CollaboratorAccess | undefined {
+    let ceiling = ceilingOf(record);
+    if (ceiling.role === "build") return ceiling;
+    let gadgetIds = ceiling.gadgetIds.filter(id => this.gadgetExists(id));
+    return gadgetIds.length > 0 ? ceilingOf({...record, gadgetIds}) : undefined;
   }
 
   // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
@@ -212,7 +231,8 @@ export class SharingManager {
     if (!this.gadgetExists(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
-    return {role: "use", gadgetId: grant.gadgetId};
+    let {gadgetId, mode} = grant;
+    return mode ? {role: "use", gadgetId, mode} : {role: "use", gadgetId};
   }
 
   // Throw unless `caller` holds "build": only then do the grants they make confer anything (see
@@ -222,6 +242,19 @@ export class SharingManager {
         this.computeEffectiveAccess().get(caller.profileId)?.role !== "build") {
       throw new Error("You do not have permission to share this workspace.");
     }
+  }
+
+  // The edge fields recording `grant` from `caller`, as addCollaborator() shares it: refused once
+  // `ownerInvitesOnly` is set unless the caller is the owner, for a gadget that can't be shared,
+  // and unless the caller holds "build" (see #requireCanShare).
+  #sharedGrantFields(caller: SharingCaller, grant: CollaboratorGrant): GrantFields {
+    if (this.ownerInvitesOnly() && !caller.isOwner) {
+      throw new Error(
+          "Only the workspace owner can add people to a workspace that contains sensitive data.");
+    }
+    let fields = this.#grantFields(grant);
+    this.#requireCanShare(caller);
+    return fields;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -247,17 +280,17 @@ export class SharingManager {
 
   /**
    * Redeem a raw share key on behalf of a user opening the gadget. If the key exists, ensures the
-   * user is a collaborator with a `shareKey` edge for its link (adding the edge if missing, or
-   * creating the collaborator record if they're new). Does nothing if the key is unknown.
+   * user is a collaborator with the `shareKey` edges for its link -- one for the workspace, or one
+   * per gadget it grants -- adding those missing, or creating the collaborator record if they're
+   * new. Does nothing if the key is unknown.
    *
    * The raw key is hashed internally; the plaintext is never stored. `fetchProfile` is invoked
    * (an RPC, in production) only when a brand-new collaborator must be created, so existing
    * collaborators are redeemed without any RPC.
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed), as does one
-   * whose link grants a gadget that can no longer be shared. A link granting every gadget, made
-   * before gadgets were shared individually, still redeems to that legacy grant, though no new
-   * such link can be created.
+   * whose link grants only gadgets that can no longer be shared. A link to several gadgets grants
+   * those of them that still can be.
    *
    * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: a collaborator the
    * owner added directly is left as they are (so reopening an old link doesn't fail), and anyone
@@ -293,24 +326,23 @@ export class SharingManager {
       return;
     }
 
-    let ceiling = this.#liveCeiling(link);
+    let ceiling = this.#existingCeiling(link);
     if (!ceiling) return;
 
-    let edge: PermissionEdge = {
-      type: "shareKey",
-      keyId: linkId,
-      created: new Date(),
-      role: link.role ?? "build",
-      ...(link.gadgetId !== undefined ? {gadgetId: link.gadgetId} : {}),
-    };
+    // One edge per gadget, as direct grants have, so that removing the recipient from one gadget
+    // of a link to several leaves them the others.
+    let created = new Date();
+    let edges: PermissionEdge[] = grantFieldsFor(ceiling).map(fields =>
+        ({type: "shareKey", keyId: linkId, created, ...fields}));
     let existing = this.storage.collaborators.get(opts.profileId);
     if (existing) {
-      // User is already a collaborator. Only add an edge if they don't already have one for this
-      // link (redeeming a second key of the same link is a no-op).
-      let alreadyHasEdge = existing.addedBy.some(
-          e => e.type === "shareKey" && e.keyId === linkId);
-      if (!alreadyHasEdge) {
-        existing.addedBy.push(edge);
+      // User is already a collaborator. Only add the edges they don't already have for this link
+      // (redeeming a second key of the same link is a no-op).
+      let held = existing.addedBy;
+      let missing = edges.filter(edge => !held.some(
+          e => e.type === "shareKey" && e.keyId === linkId && e.gadgetId === edge.gadgetId));
+      if (missing.length > 0) {
+        held.push(...missing);
         this.storage.collaborators.put(existing);
       }
     } else {
@@ -318,7 +350,7 @@ export class SharingManager {
       // setting ownerInvitesOnly, so check again right before the write.
       let profile = await opts.fetchProfile();
       this.#requireShareLinksAllowed({ redeeming: true });
-      this.storage.collaborators.put({ profile, addedBy: [edge] });
+      this.storage.collaborators.put({ profile, addedBy: edges });
     }
   }
 
@@ -362,13 +394,7 @@ export class SharingManager {
       throw new Error("Cannot add the workspace owner as a collaborator.");
     }
 
-    if (this.ownerInvitesOnly() && !opts.caller.isOwner) {
-      throw new Error(
-          "Only the workspace owner can add people to a workspace that contains sensitive data.");
-    }
-
-    let fields = this.#grantFields(opts.grant);
-    this.#requireCanShare(opts.caller);
+    let fields = this.#sharedGrantFields(opts.caller, opts.grant);
 
     let record = this.storage.collaborators.get(opts.profile.id) ??
         {profile: opts.profile, addedBy: []};
@@ -382,11 +408,11 @@ export class SharingManager {
   }
 
   // Give `record` a user edge from `sharer` conferring `fields`, keeping that sharer's edges to it
-  // minimal. "build" covers every gadget, and so does a legacy grant of every gadget, so anything
-  // else from the same sharer would only repeat it: the one way a sharer holds several edges to one
-  // person is several individual gadgets. A grant one of their edges already covers only updates
-  // that edge's note -- granting less never narrows anyone. A wider grant takes over the first edge
-  // it covers (keeping its note unless given one) and drops the rest.
+  // minimal. "build" covers every gadget, so anything else from the same sharer would only repeat
+  // it: the one way a sharer holds several edges to one person is several individual gadgets. A
+  // grant one of their edges already covers only updates that edge's note -- granting less never
+  // narrows anyone. A wider grant takes over the first edge it covers (keeping its note unless
+  // given one) and drops the rest.
   #grantEdge(record: CollaboratorRecord, sharer: string, fields: GrantFields, note?: string): void {
     let granted = ceilingOf(fields);
     let own = record.addedBy.filter(
@@ -404,6 +430,8 @@ export class SharingManager {
     kept.role = fields.role;
     if (fields.gadgetId === undefined) delete kept.gadgetId;
     else kept.gadgetId = fields.gadgetId;
+    if (fields.mode === undefined) delete kept.mode;
+    else kept.mode = fields.mode;
     if (note !== undefined) kept.note = note;
     let droppedEdges = new Set<PermissionEdge>(dropped);
     record.addedBy = record.addedBy.filter(edge => !droppedEdges.has(edge));
@@ -440,10 +468,12 @@ export class SharingManager {
    *
    * `keepUsers` is optional re-root sugar: any listed dependent whose access would otherwise narrow
    * is granted fresh edges from the caller restoring what they lost (see `#reRootKeptUsers`).
+   * `keepView`, with `gadgetId`, then gives the target a view of that gadget from the caller, as
+   * addCollaborator() would, in this same synchronous step.
    * Returns the collaborators whose access actually narrowed, excluding kept users.
    */
   removeCollaborator(caller: SharingCaller, profileId: string, keepUsers: string[],
-                     gadgetId?: WorkpieceId): AffectedCollaborator[] {
+                     gadgetId?: WorkpieceId, keepView = false): AffectedCollaborator[] {
     let target = this.storage.collaborators.get(profileId);
     if (!target) {
       throw new Error("User is not a collaborator.");
@@ -456,11 +486,20 @@ export class SharingManager {
       throw new Error("You can only remove users that you added.");
     }
 
+    // The view is shared as addCollaborator() shares it, so it is refused as that would be, before
+    // anything is severed.
+    let view: GrantFields | undefined;
+    if (keepView) {
+      if (gadgetId === undefined) throw new Error("Only a gadget's grants can keep its view.");
+      view = this.#sharedGrantFields(caller, {gadgetId, mode: "view"});
+    }
+
     let baseline = this.computeEffectiveAccess();
 
     // Sever the edges that grant the target access. The record is retained even if it becomes
     // empty, so the target's own outgoing grants survive and the removal can be undone.
     target.addedBy = target.addedBy.filter(edge => !severed(profileId, edge));
+    if (view) this.#grantEdge(target, caller.profileId, view);
     this.storage.collaborators.put(target);
 
     this.#reRootKeptUsers(caller, baseline, new Set(keepUsers));
@@ -488,29 +527,62 @@ export class SharingManager {
     return link;
   }
 
-  async createShareLink(
-      opts: { caller: SharingCaller; grant: CollaboratorGrant; note?: string })
-      : Promise<{ key: string; linkId: string }> {
+  async createShareLink(opts: {
+    caller: SharingCaller;
+    grant: CollaboratorGrant;
+    note?: string;
+    default?: boolean;
+  }): Promise<{ key: string; linkId: string }> {
     let fields = this.#grantFields(opts.grant);
     this.#requireCanShare(opts.caller);
 
-    // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
+
+    // Looked up after the await, right before the write, so that concurrent calls cannot both
+    // create the caller's default link: the later one becomes a copy of the earlier.
+    let existing = opts.default
+        ? this.#findDefaultLink(opts.caller.profileId, fields) : undefined;
+    if (existing) {
+      this.storage.shareKeys.put({ id: hash, alias: existing.id });
+      return { key, linkId: existing.id };
+    }
+
+    // The link is stored as its first key: the record is keyed by that key's hash.
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
       created: new Date(),
       createdBy: opts.caller.profileId,
       ...fields,
+      ...(opts.default ? { default: true } : {}),
     });
     return { key, linkId: hash };
   }
 
-  /** Mints another key for an existing link. */
-  async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
+  // `creator`'s live default link for the grant `fields` records, if they have one.
+  #findDefaultLink(creator: string, fields: GrantFields): ShareLinkRecord | undefined {
+    let grant = grantKey(fields);
+    for (let link of this.#listLinks()) {
+      if (link.default && !link.revoked && link.createdBy === creator &&
+          grantKey(link) === grant) {
+        return link;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Mints another key for an existing link. `requireViewSharing` throws unless the deployment
+   * allows view grants; it is awaited for a view link once the caller may copy it.
+   */
+  async newShareLinkKey(opts: {
+    caller: SharingCaller;
+    linkId: string;
+    requireViewSharing: () => Promise<void>;
+  }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
-    let ceiling = this.#liveCeiling(link);
+    let ceiling = this.#existingCeiling(link);
     if (link.revoked || !ceiling) {
       throw new Error("Share link not found.");
     }
@@ -519,6 +591,7 @@ export class SharingManager {
     // The caller may have lost "build" since creating the link, which left it conferring nothing
     // (see computeEffectiveAccess): a fresh key must not hand it out.
     this.#requireCanShare(opts.caller);
+    if (link.mode === "view") await opts.requireViewSharing();
 
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
@@ -610,7 +683,8 @@ export class SharingManager {
    * The owner is the implicit root with "build". Each edge confers its grant only while its
    * sharer holds "build", and a collaborator holds the union of what their valid edges grant:
    *   - A "user" edge's sharer is the owner or another collaborator.
-   *   - A "shareKey" edge's "sharer" is the link's creator, and what it confers is the link's.
+   *   - A "shareKey" edge's "sharer" is the link's creator, and what it confers is the link's,
+   *     narrowed to the one gadget the edge names, if any.
    * A grant naming a gadget that can no longer be shared confers nothing (see `gadgetExists`).
    * The computation is a least fixed point: access only grows across passes, so it converges,
    * and a cycle of grants unreachable from the owner supports nothing.
@@ -634,7 +708,7 @@ export class SharingManager {
     let ceilings = new Map<string, CollaboratorAccess | undefined>();
     let ceiling = (record: GrantFields): CollaboratorAccess | undefined => {
       let key = grantKey(record);
-      if (!ceilings.has(key)) ceilings.set(key, this.#liveCeiling(record));
+      if (!ceilings.has(key)) ceilings.set(key, this.#existingCeiling(record));
       return ceilings.get(key);
     };
 
@@ -666,7 +740,9 @@ export class SharingManager {
             let info = linkInfo.get(edge.keyId);
             if (!info) continue;  // link revoked or no longer exists
             source = info.creator;
-            conferred = info.ceiling;
+            // A link to several gadgets gives one edge per gadget, each conferring its own.
+            conferred = edge.gadgetId === undefined ? info.ceiling
+                : narrowAccess(info.ceiling, edge.gadgetId);
           } else {
             if (ownerGrantsOnly && edge.sharer !== this.ownerProfileId) continue;
             source = edge.sharer;
@@ -723,8 +799,7 @@ export class SharingManager {
   // edge/key has already been severed in storage. `baseline` is the effective-access map from
   // before the severance. Each kept user whose access narrowed is given fresh `user` edges from the
   // caller restoring what they lost, so they retain it independently of the severed path; a caller
-  // without "build" keeps no one, since their edges would confer nothing. Restoring access to every
-  // gadget writes such a grant again: it is not newly assigned, only kept.
+  // without "build" keeps no one, since their edges would confer nothing.
   #reRootKeptUsers(
       caller: SharingCaller, baseline: Map<string, CollaboratorAccess>,
       keepSet: Set<string>): void {

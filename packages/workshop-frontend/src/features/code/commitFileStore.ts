@@ -1,6 +1,8 @@
 import {
   MAX_READ_FILES_PER_CALL, type FileAtCommit, type TreeNode,
 } from '@gadgets/workshop-shared/api'
+import type { BytesRef } from '@gadgets/workshop-shared/code-change'
+import { MAX_BUFFERED_BLOB_SIZE } from '@gadgets/workshop-shared/gatekeeper'
 
 // The per-commit file store behind the code view: the client-side cache of Overseer.listTree(),
 // Overseer.readFilesAtCommit() and Overseer.listChangedPaths(). Commits are immutable, so
@@ -16,23 +18,25 @@ import {
 // until every requested path has an answer (the server always returns at least one entry per
 // non-empty request, so the loop terminates).
 //
-// A large file arrives as a byte stream rather than text (see FileAtCommit). The store reads it
-// whole and decodes it under the server's own rules, so it holds, and callers see, only the
-// forms the server sends for small files. There is deliberately no size limit here: the editor
-// shows the whole file.
+// A large file arrives named by its blob rather than as text, and unchecked (see FileAtCommit).
+// The store reads it with Overseer.readBlob() and decodes it under the server's own rules, so it
+// holds, and callers see, only what the server sends for small files: a `blob` here is never
+// text. There is deliberately no size limit here: the editor shows the whole file.
 
 /** The subset of Overseer the store reads through (the stub itself satisfies it). */
 export interface CommitFileReader {
   listTree(commitId: string): Promise<TreeNode[]>
   readFilesAtCommit(commitId: string, paths: string[]): Promise<[path: string, FileAtCommit][]>
   listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>
+  readBlob(oid: string): Promise<ReadableStream<Uint8Array>>
 }
 
 /**
- * A file as the store holds it: a FileAtCommit as the server sends it for a small file. A
- * streamed file has been read and decoded into `text`, or `unreadable` if it is not text.
+ * A file as the store holds it: a FileAtCommit as the server sends it for a small file. A large
+ * file has been read and decoded into `text`, or stays the `blob` it arrived as if it is not
+ * text.
  */
-export type CommitFile = Exclude<FileAtCommit, { kind: 'stream' }>
+export type CommitFile = FileAtCommit
 
 // A memoized read: settled once `value` is set.
 type Memo<T> = { value?: T; promise: Promise<T> }
@@ -141,7 +145,7 @@ export class CommitFileStore {
 
   // Fetch one chunk, re-requesting whatever the server omitted under its byte budget, and
   // settle each path's slot. A thrown RPC fails (and evicts) every path still unanswered; a
-  // streamed file that fails to read fails (and evicts) just its own path.
+  // large file that fails to read fails (and evicts) just its own path.
   async #fetchChunk(reader: CommitFileReader, commitId: string, paths: string[]): Promise<void> {
     let remaining = paths
     try {
@@ -151,12 +155,9 @@ export class CommitFileStore {
         for (const [path, value] of entries) {
           answered.add(path)
           const slot = this.#files.get(commitId)?.get(path)
-          if (slot === undefined || slot.value !== undefined) {
-            if (value.kind === 'stream') void value.content.cancel().catch(() => {})
-            continue
-          }
-          if (value.kind === 'stream') {
-            readStreamedFile(path, value).then(
+          if (slot === undefined || slot.value !== undefined) continue
+          if (value.kind === 'blob' && value.blob.byteLength > MAX_BUFFERED_BLOB_SIZE) {
+            readLargeFile(reader, path, value.blob).then(
               file => settle(slot, file),
               err => this.#evict(commitId, [path], err))
           } else {
@@ -193,35 +194,37 @@ function settle(slot: FileSlot, value: CommitFile): void {
   for (const waiter of waiters) waiter.resolve(value)
 }
 
-const TEXT_DECODER_STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
-
-// Reads a streamed file whole, and decodes it as the server decodes a small file: text with no
-// NUL byte and valid UTF-8, else the same `unreadable` entry the server would have sent.
-async function readStreamedFile(
-  path: string, { byteLength, content }: { byteLength: number; content: ReadableStream<Uint8Array> },
+// Reads a large file, which the server names without checking (see FileAtCommit), and decodes
+// it as the server decodes a small one: text with no NUL byte and valid UTF-8, else the `blob`
+// it arrived as. The read stops at the first piece that shows the file is not text.
+async function readLargeFile(
+  reader: CommitFileReader, path: string, blob: BytesRef,
 ): Promise<CommitFile> {
-  const bytes = new Uint8Array(byteLength)
-  let filled = 0
-  const reader = content.getReader()
+  const stream = (await reader.readBlob(blob.oid)).getReader()
+  // Holds a character split between two pieces, so each read needs its own.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+  let text = ''
+  let read = 0
   try {
     for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value.byteLength > byteLength - filled) throw new Error(`${path}: more bytes than expected`)
-      bytes.set(value, filled)
-      filled += value.byteLength
+      const { done, value } = await stream.read()
+      if (done) {
+        if (read !== blob.byteLength) throw new Error(`${path}: fewer bytes than expected`)
+      } else {
+        read += value.byteLength
+        if (read > blob.byteLength) throw new Error(`${path}: more bytes than expected`)
+        if (value.includes(0)) return { kind: 'blob', blob }
+      }
+      try {
+        text += decoder.decode(value, { stream: !done })
+      } catch {
+        // Not valid UTF-8.
+        return { kind: 'blob', blob }
+      }
+      if (done) return { kind: 'text', text }
     }
-  } catch (err) {
-    await reader.cancel(err).catch(() => {})
-    throw err
-  }
-  if (filled !== byteLength) throw new Error(`${path}: fewer bytes than expected`)
-  const unreadable: CommitFile = { kind: 'unreadable', message: `${path} is not a text file` }
-  if (bytes.includes(0)) return unreadable
-  try {
-    return { kind: 'text', text: TEXT_DECODER_STRICT.decode(bytes) }
-  } catch {
-    return unreadable
+  } finally {
+    await stream.cancel().catch(() => {})
   }
 }
 

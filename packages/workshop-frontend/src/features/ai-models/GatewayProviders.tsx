@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { Banner, Switch } from '@cloudflare/kumo'
+import { Switch } from '@cloudflare/kumo'
 import type {
   AdminGatewayProvider,
   AiModelProvider,
@@ -20,10 +20,8 @@ const ProviderRow = ({ entry, busy, test, move, onEnabledChange, onTest }: {
   onTest: () => void
 }) => {
   const lockedNote = useId()
-  const tokenWarning = useId()
   const label = PROVIDER_LABELS[entry.provider]
   const locked = entry.enabledBy === 'environment'
-  const described = [locked && lockedNote, entry.needsApiToken && tokenWarning].filter(Boolean)
 
   return (
     <li className="rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5">
@@ -39,27 +37,13 @@ const ProviderRow = ({ entry, busy, test, move, onEnabledChange, onTest }: {
         <GatewayTestButton name={label} testing={test?.state === 'testing'} onTest={onTest} />
         <Switch
           aria-label={label}
-          aria-describedby={described.join(' ') || undefined}
+          aria-describedby={locked ? lockedNote : undefined}
           checked={entry.enabledBy !== undefined}
           disabled={busy || locked}
           onCheckedChange={onEnabledChange}
         />
         <MoveButtons name={label} move={move} busy={busy} />
       </div>
-      {entry.needsApiToken && (
-        <Banner
-          id={tokenWarning}
-          className="mt-2"
-          variant="alert"
-          size="sm"
-          description={
-            <>
-              Needs <code className="font-mono">CF_AI_GATEWAY_API_TOKEN</code>: requests to this
-              provider fail until the deployment sets it.
-            </>
-          }
-        />
-      )}
       <GatewayTestStatus test={test} subject="provider" />
     </li>
   )

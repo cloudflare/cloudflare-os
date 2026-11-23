@@ -6,6 +6,8 @@ import {
   applyGitDelta,
   bytesDeltaBase,
   buildPackBytes,
+  buildPackStream,
+  mergePackStreams,
   concatBytes,
   decodeLooseObject,
   decodePackStream,
@@ -71,6 +73,20 @@ const X_BLOB = "587be6b4c3f93f93c489c0111bba5596147a26cb";
 
 /** `git mktree </dev/null` */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+it("streams a Git pack lazily with the same objects and trailer as the buffered codec", async () => {
+  const objects = [fixture(COMMIT_1), fixture(TREE_1), {type: "blob" as const, payload: new TextEncoder().encode("x\n")}];
+  let read = 0;
+  async function* next() { for (const object of objects) { ++read; yield object; } }
+  const stream = buildPackStream(objects.length, next());
+  expect(read).toBe(0);
+  const decoded = [];
+  for await (const object of decodePackStream(stream, {
+    maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024, resolveBase: () => undefined,
+  })) decoded.push({type: object.type, payload: object.payload});
+  expect(read).toBe(objects.length);
+  expect(decoded).toEqual(objects);
+});
 
 /** A tree entry for a file named `file`, but for the fields given. */
 function entry(fields: Partial<GitTreeEntry>): GitTreeEntry {
@@ -1344,5 +1360,48 @@ describe("validateGitOid", () => {
     expect(() => validateGitOid(COMMIT_1.slice(0, 39))).toThrow(/Invalid git object id/);
     expect(() => validateGitOid(COMMIT_1.toUpperCase())).toThrow(/Invalid git object id/);
     expect(() => validateGitOid("")).toThrow(/Invalid git object id/);
+  });
+});
+
+
+describe("streamed Git pack composition", () => {
+  const stream = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let offset = 0; offset < bytes.length; offset += 7) controller.enqueue(bytes.slice(offset, offset + 7));
+      controller.close();
+    },
+  });
+  it("preserves upstream delta entries and recomputes the combined count and checksum", async () => {
+    const local = {type: "blob" as const, payload: Uint8Array.from([0, 255, 7, 0])};
+    const extra = concatBytes(await buildPackBytes([local]));
+    const merged = await mergePackStreams([stream(b64Bytes(PACK_OFS_DELTA)), stream(extra)]);
+    const objects = [];
+    const bases = new Map<string, PackableObject>();
+    for await (const object of decodePackStream(merged, {maxPackSize: 1024 * 1024, maxObjectSize: 1024 * 1024,
+      resolveBase: oid => bases.get(oid)})) {
+      objects.push(object);
+      bases.set(object.oid, object);
+    }
+    expect(objects).toHaveLength(PACKED_OIDS.length + 1);
+    expect(objects.at(-1)).toMatchObject(local);
+  });
+  it("rejects a corrupted source checksum instead of blessing it with a new trailer", async () => {
+    const bytes = concatBytes(await buildPackBytes([{type: "blob", payload: Uint8Array.of(42)}]));
+    bytes[bytes.length - 1] ^= 1;
+    const merged = await mergePackStreams([stream(bytes)]);
+    await expect(new Response(merged).arrayBuffer()).rejects.toThrow("checksum");
+  });
+  it("cancels every upstream reader when its consumer leaves during transfer", async () => {
+    const pack = concatBytes(await buildPackBytes([]));
+    let cancelled = 0;
+    const upstream = () => new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(pack.slice(0, 12)); },
+      cancel() { ++cancelled; },
+    });
+    const sources = [upstream(), upstream()];
+    const merged = await mergePackStreams(sources);
+    await merged.cancel();
+    expect(cancelled).toBe(2);
+    expect(sources.every(source => !source.locked)).toBe(true);
   });
 });

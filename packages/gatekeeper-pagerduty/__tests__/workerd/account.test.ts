@@ -98,8 +98,8 @@ describe("connecting", () => {
     ["signed with a key PagerDuty never published", async pd => {
       pd.idTokenKey = (await generateKeyPair("RS256")).privateKey;
     }],
-    ["from another issuer", pd => {
-      pd.claims = (_user, claims) => ({ ...claims, iss: "https://identity.example.com" });
+    ["from another issuer, such as the identity host PagerDuty's docs name", pd => {
+      pd.claims = (_user, claims) => ({ ...claims, iss: "https://identity.pagerduty.com/global/oauth/anonymous" });
     }],
     ["that has expired", pd => {
       pd.claims = (_user, claims) => ({ ...claims, exp: Math.floor(Date.now() / 1000) - 60 });

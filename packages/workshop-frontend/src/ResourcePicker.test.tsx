@@ -62,9 +62,10 @@ describe('ResourcePicker', () => {
   const renderPicker = async (
     vendor: GatekeeperVendorInfo,
     searchText: string,
-    { accounts = [], accountResources, onSelectAccount = () => {}, onItems, onRefine, activateRef }: {
+    { accounts = [], accountResources, accountVendorIds, onSelectAccount = () => {}, onItems, onRefine, activateRef }: {
       accounts?: AccountDescription[]
       accountResources?: SupportedResource[][]
+      accountVendorIds?: string[]
       onSelectAccount?: () => void
       onItems?: ComponentProps<typeof ResourcePicker>['onItems']
       onRefine?: ComponentProps<typeof ResourcePicker>['onRefine']
@@ -75,7 +76,7 @@ describe('ResourcePicker', () => {
       subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
         for (const [i, account] of accounts.entries()) {
           subscriber.add(i + 1, account, vendor.description,
-            accountResources?.[i] ?? vendor.supportedResources, true, vendor.id)
+            accountResources?.[i] ?? vendor.supportedResources, true, accountVendorIds?.[i] ?? vendor.id)
         }
         subscriber.ready()
         return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
@@ -139,6 +140,18 @@ describe('ResourcePicker', () => {
       expect(onSelectAccount).toHaveBeenLastCalledWith(3, vendor.id, resource, accounts[2], vendor.description)
     },
   )
+
+  it('scopes a type ID to its vendor even when vendor display names match', async () => {
+    const resource = { id: 'repository', urlPattern: 'https://git.example/:repo', title: 'Repository', description: '' }
+    const vendor = { id: 'git', description: { displayName: 'Git', url: 'https://git.example' }, supportedResources: [resource] }
+    const onItems = vi.fn<NonNullable<ComponentProps<typeof ResourcePicker>['onItems']>>()
+    const picker = await renderPicker(vendor, '', {
+      accounts: [{ displayName: 'other-account', avatar: { url: '' } }], accountVendorIds: ['other-git'],
+      accountResources: [[{ ...resource, urlPattern: 'https://other-git.example/:repo' }]], onItems,
+    })
+    expect(onItems.mock.lastCall?.[0].filter(item => item.type === 'account')).toEqual([])
+    expect(picker.textContent).not.toContain('other-account')
+  })
 
   it('names the placeholder still blocking an account, rather than offering to grant access', async () => {
     const thread: SupportedResource = {

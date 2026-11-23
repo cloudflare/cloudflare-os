@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from "react";
+import { act, createElement, Fragment } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import ReactMarkdown from "react-markdown";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MarkdownMessage } from "./ChatInterface";
+import type { Overseer } from "@gadgets/workshop-shared/api";
+import { AgentAnswer, MarkdownMessage } from "./ChatInterface";
+
+vi.mock("react-markdown", async importOriginal => {
+  const original = await importOriginal<typeof import("react-markdown")>();
+  return { ...original, default: vi.fn<typeof original.default>(original.default) };
+});
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -93,5 +100,30 @@ describe("MarkdownMessage line breaks", () => {
     await act(async () => button?.click());
 
     expect(writeText).toHaveBeenCalledWith("const answer = 42;");
+  });
+
+  it("does not reparse a completed file reply while later text streams, but updates new pins", async () => {
+    const source = "worktree://OUTPUTS/source.cpp";
+    const message = `[Source](${source})`;
+    const oids = { [source]: "a".repeat(40) };
+    const readBlob = vi.fn<Overseer["readBlob"]>();
+    const blocks = { onSendMessage: async () => {}, onHeightChange: () => {}, scrollRoot: { current: null } };
+    await render("");
+    vi.mocked(ReactMarkdown).mockClear();
+    const update = async (text: string, pins: typeof oids | Record<string, null> = oids) => {
+      await act(async () => root.render(createElement(Fragment, null,
+        createElement(AgentAnswer, { message, streaming: false,
+          blocks: { ...blocks, files: { oids: pins, readBlob } } }),
+        createElement(MarkdownMessage, { message: text }),
+      )));
+    };
+    const parses = () => vi.mocked(ReactMarkdown).mock.calls.filter(([props]) => props.children === message).length;
+    await update("Next");
+    await update("Next reply");
+    expect(parses()).toBe(1);
+    await update("Next reply", { [source]: null });
+    expect(parses()).toBe(2);
+    expect(container.textContent).toContain("Source (unavailable)");
+    expect(readBlob).not.toHaveBeenCalled();
   });
 });

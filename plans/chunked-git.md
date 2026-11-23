@@ -1,5 +1,10 @@
 # Plan: Chunked storage for large git blobs
 
+This is the original plan. Since it was written, `Overseer.readFilesAtCommit()` stopped
+returning a stream for a file over `MAX_BUFFERED_BLOB_SIZE`: it names the file's blob, and the
+browser reads the blob with `Overseer.readBlob()`. Locked decision 10 and step 9 of commit 3
+describe the stream that this replaced.
+
 ## Overview (plain language)
 
 Each workspace keeps its files in a small git database inside its Durable Object (see

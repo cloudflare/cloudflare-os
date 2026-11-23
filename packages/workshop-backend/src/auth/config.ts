@@ -26,11 +26,12 @@ export function hasAuthGatekeepers(env: Cloudflare.Env): boolean {
  * Whether the user `name` is one of the deployment admins the ADMINS binding lists. Names match
  * regardless of the case of ASCII letters, as Cloudflare Access matches its email rules: the
  * list is typed by hand, while a sign-in names its user by the email as the identity provider
- * spells it, or by a password username, which is stored lowercased.
+ * spells it, or by a password username, which is stored lowercased. False for an empty or absent
+ * name.
  */
-export function isDeploymentAdmin(env: Cloudflare.Env, name: string): boolean {
+export function isDeploymentAdmin(env: Cloudflare.Env, name: string | undefined): boolean {
   let admins: unknown = env.ADMINS;
-  if (!admins) return false;
+  if (!name || !admins) return false;
 
   if (typeof admins === "string") {
     // Admins should be a JSON binding of array type, but `.env` doesn't actually let you
