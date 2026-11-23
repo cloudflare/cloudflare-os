@@ -436,7 +436,7 @@ export interface AgentHooks {
    * Read a commit's full file map from the workspace's git object store. Commits are immutable,
    * so results are cacheable by oid.
    */
-  readCommitFiles(oid: string): Map<string, string>;
+  readCommitFiles(oid: string): ReadonlyMap<string, string>;
 
   /**
    * The paths of the files whose entry differs between two commits' trees, added and removed
@@ -2182,7 +2182,7 @@ async function runAgentPass(
       }
     }
     sessionContent = new Map(sessionContent);
-    sessionContent.set(pin.gadgetId, files);
+    sessionContent.set(pin.gadgetId, new Map(files));
     pinnedGadgets.add(pin.gadgetId);
     let knowledge = await knowledgeAtPin(pin.gadgetId, pin.baseCommit);
     if (knowledge !== undefined) filesRead.set(pin.gadgetId, knowledge);
@@ -3164,7 +3164,7 @@ async function runAgentPass(
   // pinWorktreeInSession).
   let appendAgentEdit = (
       workpieceId: WorkpieceId, change: CodeChange,
-      pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
+      pin?: {baseCommit: string, baseFiles: ReadonlyMap<string, string>}) => {
     try { validateCodeChangeSchema(change); }
     catch (error) {
       logger.warn("invalid agent transform rejected before buffering", {
@@ -3200,7 +3200,7 @@ async function runAgentPass(
     let newContent = sessionContent;
     if (pin !== undefined) {
       newContent = new Map(newContent);
-      newContent.set(workpieceId, pin.baseFiles);
+      newContent.set(workpieceId, new Map(pin.baseFiles));
     }
     validateCodeChangeContent(change, newContent);
     newContent = applyCodeChange(newContent, change);
@@ -3593,7 +3593,7 @@ async function runAgentPass(
           // knowledgeAtPin). Gadgets with no committed code stay unpinned; their content
           // builds up from changes. (A worktree's first-write pin needs no declaration;
           // appendAgentEdit handles it.)
-          let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
+          let pin: {baseCommit: string, baseFiles: ReadonlyMap<string, string>} | undefined;
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = hooks.getGadgetHead(resolved.workpieceId);
             if (head !== undefined) {
@@ -3664,7 +3664,7 @@ async function runAgentPass(
           // the workpiece no longer has) fails the same way. The same gate guards an unpinned
           // worktree's first edit, against its accepted commit (which pins it, with nothing to
           // declare; see appendAgentEdit).
-          let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
+          let pin: {baseCommit: string, baseFiles: ReadonlyMap<string, string>} | undefined;
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = unpinnedBase(resolved.workpieceId);
             if (head !== undefined) {

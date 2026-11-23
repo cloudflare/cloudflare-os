@@ -90,7 +90,7 @@ async function chatFiles(impl: any, chatId = CHAT): Promise<Record<string, strin
 }
 
 async function commitTree(impl: any, commitId: string): Promise<CodeContent> {
-  return new Map([[GADGET, impl.gitCache.readCommitFiles(commitId)]]);
+  return new Map([[GADGET, new Map(impl.gitCache.readCommitFiles(commitId))]]);
 }
 
 // The user edits the chat's copy of the gadget from `before` to `after`, declaring the pin if

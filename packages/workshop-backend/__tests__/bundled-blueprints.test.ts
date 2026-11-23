@@ -88,7 +88,7 @@ let workspaces = 0;
  * faked.
  */
 async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
-    : Promise<Map<string, string>> {
+    : Promise<ReadonlyMap<string, string>> {
   let stub = env.TEST_OVERSEER.getByName(`bundled-blueprints-${++workspaces}`);
   return await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;

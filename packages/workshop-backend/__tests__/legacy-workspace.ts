@@ -165,7 +165,7 @@ export class LegacyWorkspace {
     let conversion = this.conversionMessage(chatId);
     let content: CodeContent = new Map();
     for (let pin of conversion.pins ?? []) {
-      content.set(pin.gadgetId, this.gitCache.readCommitFiles(pin.baseCommit));
+      content.set(pin.gadgetId, new Map(this.gitCache.readCommitFiles(pin.baseCommit)));
     }
     return conversion.change !== undefined ? applyCodeChange(content, conversion.change) : content;
   }

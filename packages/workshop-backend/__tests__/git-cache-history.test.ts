@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { deserialize, serialize } from "capnweb";
 import { commitIdentityForAuthor, type WorkspaceGitCache } from "../src/git-cache";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
@@ -405,6 +405,32 @@ describe("local history", () => {
     expect(() => store.readCommitFiles(INITIAL_COMMIT_OID))
         .toThrow(/not in the workspace's git store/);
     expect(store.readCommitFilesIfHeld("deadbeef".repeat(5))).toBeUndefined();
+  });
+
+  it("reads a commit's files from storage once while a reader holds them", async () => {
+    let { objects, store } = makeStore();
+    await writeFixtureHistory(store);
+    let held = store.readCommitFiles(INITIAL_COMMIT_OID);
+    let reads = vi.spyOn(objects, "get");
+
+    expect(store.readCommitFiles(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
+    expect(store.readCommitFilesIfHeld(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
+    expect(reads).not.toHaveBeenCalled();
+    expect(held).toEqual(INITIAL_FILES);
+  });
+
+  it("reads a commit's files once the object that was missing arrives", async () => {
+    let { objects, store } = makeStore();
+    await writeFixtureHistory(store);
+    let readme = parseGitTree(decodeLooseObject(objects.get(
+        store.commitTree(INITIAL_COMMIT_OID))!.data).payload)
+        .find(entry => entry.name === "README.md")!;
+    let record = objects.get(readme.oid)!;
+    objects.delete(readme.oid);
+    expect(store.readCommitFilesIfHeld(INITIAL_COMMIT_OID)).toBeUndefined();
+
+    objects.put(record);
+    expect(store.readCommitFiles(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
   });
 });
 

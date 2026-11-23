@@ -2725,7 +2725,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // AgentHooks implementation: read a commit's file map (see WorkspaceGitCache.readCommitFiles).
-  readCommitFiles(oid: string): Map<string, string> {
+  readCommitFiles(oid: string): ReadonlyMap<string, string> {
     return this.gitCache.readCommitFiles(oid);
   }
 
@@ -2837,7 +2837,7 @@ class OverseerImpl implements AgentHooks {
           worktreeBases.set(pin.gadgetId, pin.baseCommit);
           content.set(pin.gadgetId, new Map());
         } else {
-          content.set(pin.gadgetId, this.gitCache.readCommitFiles(pin.baseCommit));
+          content.set(pin.gadgetId, new Map(this.gitCache.readCommitFiles(pin.baseCommit)));
         }
       }
       if (msg.change !== undefined) {
@@ -3001,7 +3001,7 @@ class OverseerImpl implements AgentHooks {
           // Lazy, like buildChatContent's worktree pins.
           if (!content.has(pin.gadgetId)) content.set(pin.gadgetId, new Map());
         } else {
-          content.set(pin.gadgetId, this.gitCache.readCommitFiles(pin.baseCommit));
+          content.set(pin.gadgetId, new Map(this.gitCache.readCommitFiles(pin.baseCommit)));
         }
       }
 
@@ -3684,7 +3684,7 @@ class OverseerImpl implements AgentHooks {
     // seedWorktreeEditBases), resolved against the chat's worktree pins plus the ones this step
     // establishes. A re-rooted worktree's content restarts empty at its new base, which the
     // step's remaining changes to it compose on.
-    let baseFilesByCommit = new Map<string, Map<string, string>>();
+    let baseFilesByCommit = new Map<string, ReadonlyMap<string, string>>();
     let worktreeBases = new Map<WorkpieceId, string>();
     let worktreeSeeds = new Map<string, string | null>();
     let applyReRoots = (content: CodeContent): CodeContent => {
@@ -3773,7 +3773,7 @@ class OverseerImpl implements AgentHooks {
                 newPins.push({gadgetId: pin.gadgetId, baseCommit: pin.baseCommit,
                               mergedCommit: pin.baseCommit});
                 content = new Map(content);
-                content.set(pin.gadgetId, baseFilesByCommit.get(pin.baseCommit)!);
+                content.set(pin.gadgetId, new Map(baseFilesByCommit.get(pin.baseCommit)!));
               }
             }
             let seeded = this.#applyPrefetchedWorktreeSeeds(
@@ -4143,7 +4143,7 @@ class OverseerImpl implements AgentHooks {
       }
       newPins.push({gadgetId, baseCommit, mergedCommit: baseCommit});
       if (validationContent === content) validationContent = new Map(content);
-      validationContent.set(gadgetId, this.gitCache.readCommitFiles(baseCommit));
+      validationContent.set(gadgetId, new Map(this.gitCache.readCommitFiles(baseCommit)));
     }
 
     // Every gadget the transformed change still touches must have its content in the stream: a pin
@@ -4296,7 +4296,7 @@ class OverseerImpl implements AgentHooks {
     // the user (or their agent) to clean up. Every merge is computed before anything is written.
     let content = await this.getCurrentChatContent(chatId, meta);
     let merges: {pin: ChatGadgetPinState, head: string, bindingName: string,
-                 chatFiles: Map<string, string>, mainlineFiles: Map<string, string>,
+                 chatFiles: Map<string, string>, mainlineFiles: ReadonlyMap<string, string>,
                  result: MergeResult}[] = [];
     for (let {record, pin} of stale) {
       let base = this.gitCache.readCommitFiles(pin.mergedCommit);
@@ -4530,7 +4530,7 @@ class OverseerImpl implements AgentHooks {
   // files to be wrong about or the release's history holds the very same tree.
   #blueprintMergeBase(upstream: GadgetUpstream | undefined, head: string, release: string,
                       blueprintId: string)
-      : {commitId: string, files: Map<string, string>, unverified: boolean} | undefined {
+      : {commitId: string, files: ReadonlyMap<string, string>, unverified: boolean} | undefined {
     let common = this.gitCache.mergeBases(head, release);
     if (common.length === 0) {
       let commitId = upstream?.commitId ?? this.#firstCommitWithFiles(head);
@@ -4542,7 +4542,7 @@ class OverseerImpl implements AgentHooks {
       return {commitId, files, unverified};
     }
 
-    let held: {commitId: string, files: Map<string, string>, unverified: boolean}[] = [];
+    let held: {commitId: string, files: ReadonlyMap<string, string>, unverified: boolean}[] = [];
     for (let commitId of common) {
       let files = this.gitCache.readCommitFilesIfHeld(commitId);
       if (files !== undefined) held.push({commitId, files, unverified: false});

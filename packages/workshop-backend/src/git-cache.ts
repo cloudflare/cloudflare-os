@@ -277,6 +277,14 @@ const TEXT_DECODER_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: t
 export class WorkspaceGitCache {
   constructor(private storage: GitCacheStorage, private puller: GitPullDelegate) {}
 
+  // Each commit's decoded files, for as long as a reader holds them. An oid names its content,
+  // so a held map is never wrong; holding it weakly keeps nothing in memory that its readers
+  // do not.
+  #commitFiles = new Map<string, WeakRef<ReadonlyMap<string, string>>>();
+  #collectedCommitFiles = new FinalizationRegistry<string>(oid => {
+    if (this.#commitFiles.get(oid)?.deref() === undefined) this.#commitFiles.delete(oid);
+  });
+
   // -------------------------------------------------------------------------------------
   // Local object access
 
@@ -606,13 +614,14 @@ export class WorkspaceGitCache {
 
   /**
    * Reads back the full file map of a commit: the inverse of `writeFilesAsCommit()`, with nested
-   * trees flattened to `/`-joined paths, in git's tree order.
+   * trees flattened to `/`-joined paths, in git's tree order. Readers of the same commit share
+   * one map, so it is read-only.
    *
    * Only regular-file blobs (modes 100644/100755) are supported; symlinks and submodules --
    * which we never write, but an imported history could contain -- are rejected rather than
    * misread. Throws if the store does not hold the commit with its whole tree.
    */
-  readCommitFiles(oid: string): Map<string, string> {
+  readCommitFiles(oid: string): ReadonlyMap<string, string> {
     let files = this.readCommitFilesIfHeld(oid);
     if (files === undefined) {
       throw new Error(`The files of commit ${oid} are not in the workspace's git store.`);
@@ -625,7 +634,9 @@ export class WorkspaceGitCache {
    * its whole tree. A blueprint release's ancestors arrive as commits alone, most of them, so
    * holding a commit says nothing about holding its files.
    */
-  readCommitFilesIfHeld(oid: string): Map<string, string> | undefined {
+  readCommitFilesIfHeld(oid: string): ReadonlyMap<string, string> | undefined {
+    let shared = this.#commitFiles.get(oid)?.deref();
+    if (shared !== undefined) return shared;
     let commit = this.#heldPayload(oid, "commit");
     if (commit === undefined) return undefined;
     let files = new Map<string, string>();
@@ -646,7 +657,10 @@ export class WorkspaceGitCache {
       }
       return true;
     };
-    return collect(parseGitCommitRefs(commit, oid).tree, "") ? files : undefined;
+    if (!collect(parseGitCommitRefs(commit, oid).tree, "")) return undefined;
+    this.#commitFiles.set(oid, new WeakRef(files));
+    this.#collectedCommitFiles.register(files, oid);
+    return files;
   }
 
   /**
