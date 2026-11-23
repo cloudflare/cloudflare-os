@@ -120,10 +120,8 @@ describe("a camera", () => {
     await doorbell.call("setName", "  Porch  ");
     const { actionId, description } = lastSubmitted(await doorbell.queue());
     expect(description).toMatchObject({
-      title: "Rename a UniFi camera to “Porch”", autoApprovable: true, actionKind: { tag: "unifi.cameraSettings" },
+      title: "Rename camera “Front Door”", autoApprovable: true, actionKind: { tag: "unifi.cameraSettings" },
     });
-    // Action history reaches collaborators unchecked, so the camera's current name isn't in it.
-    expect(JSON.stringify(description)).not.toContain("Front Door");
     expect(await doorbell.call("describe")).toMatchObject({ name: "Porch" });
     expect(console.writes()).toEqual([]);
     await doorbell.apply(actionId);
@@ -142,7 +140,7 @@ describe("a camera", () => {
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
     await doorbell.call("setDoorbellMessage", { kind: "text", text: " Back in 10 minutes " });
     const { actionId, description } = lastSubmitted(await doorbell.queue());
-    expect(description.title).toBe("Change a UniFi doorbell's message");
+    expect(description.title).toBe("Change the message on doorbell “Front Door”");
     // Shown to whoever comes to the door, so it never applies without a decision.
     expect(description).toMatchObject({ autoApprovable: false, actionKind: { tag: "unifi.doorbellMessage" } });
     expect(JSON.stringify(description.fields)).toContain("the doorbell's default timeout");
@@ -179,7 +177,7 @@ describe("a camera", () => {
     expect(await doorbell.failure("setMicVolume", 0)).toMatch(/whole number from 1 to 100/);
     await doorbell.call("setMicVolume", 40);
     const { actionId, description } = lastSubmitted(await doorbell.queue());
-    expect(description).toMatchObject({ title: "Set a UniFi camera's microphone volume to 40", autoApprovable: false });
+    expect(description).toMatchObject({ title: "Set the microphone volume of “Front Door” to 40", autoApprovable: false });
     expect(await doorbell.call("describe")).toMatchObject({ micVolume: 40 });
     await doorbell.apply(actionId);
     expect(console.writes()[0]!.body).toEqual({ micVolume: 40 });
@@ -200,7 +198,7 @@ describe("a camera", () => {
     await driveway.call("stopPatrol");
     const { submitted } = await driveway.queue();
     expect(submitted.map(s => s.description.title)).toEqual([
-      "Turn a UniFi PTZ camera to its home position", "Start patrol 1 on a UniFi PTZ camera", "Stop a UniFi PTZ camera's patrol",
+      "Turn “Driveway” to its home position", "Start patrol 1 on “Driveway”", "Stop the patrol on “Driveway”",
     ]);
     expect(submitted.every(s => s.description.awaitDecision === true && s.description.autoApprovable === true)).toBe(true);
     for (const { actionId } of submitted) await driveway.apply(actionId);
@@ -221,15 +219,13 @@ describe("a camera", () => {
     expect(console.writes()).toHaveLength(1);
   });
 
-  it("presents itself as a camera, without the camera's name, and links into Protect", async () => {
+  it("presents itself with the camera's name and a link into Protect", async () => {
     installFake();
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
-    const described = await doorbell.describe();
-    expect(described).toMatchObject({
-      title: "UniFi camera", tsType: "UnifiCamera", suggestedBindingName: "UNIFI_CAMERA",
+    expect(await doorbell.describe()).toMatchObject({
+      title: "Front Door", tsType: "UnifiCamera", suggestedBindingName: "UNIFI_CAMERA",
       url: `https://unifi.ui.com/consoles/${HOME.hostId}/protect/dashboard`,
     });
-    expect(JSON.stringify(described)).not.toContain("Front Door");
   });
 
   it("explains a camera that's gone", async () => {
@@ -258,7 +254,7 @@ describe("a floodlight", () => {
     const light = binding(await connectCloud(), RESOURCES.light);
     await light.call("setForcedOn", true);
     const { actionId, description } = lastSubmitted(await light.queue());
-    expect(description).toMatchObject({ title: "Turn on a UniFi floodlight", autoApprovable: true });
+    expect(description).toMatchObject({ title: "Turn on floodlight “Backyard Floodlight”", autoApprovable: true });
     expect(await light.call("describe")).toMatchObject({ forcedOn: true, isOn: true });
     await light.apply(actionId);
     expect(console.writes()[0]!.body).toEqual({ isLightForceEnabled: true });

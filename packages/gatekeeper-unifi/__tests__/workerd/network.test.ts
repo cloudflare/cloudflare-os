@@ -126,7 +126,7 @@ describe("a device", () => {
     expect(console.writes()).toEqual([]);
     const { actionId, description } = lastSubmitted(await ap.queue());
     expect(description).toMatchObject({
-      title: "Restart a UniFi device", implementsRevert: false, awaitDecision: true, autoApprovable: true,
+      title: "Restart “Living Room AP”", implementsRevert: false, awaitDecision: true, autoApprovable: true,
       actionKind: { tag: "unifi.restartDevice" }, descriptionIsComplete: true,
     });
     await ap.apply(actionId);
@@ -143,8 +143,7 @@ describe("a device", () => {
     const gateway = binding(await connectCloud(), RESOURCES.device(HOME.gatewayId));
     await gateway.call("restart");
     const { description } = lastSubmitted(await gateway.queue());
-    expect(description.title).toBe("Restart the UniFi gateway");
-    expect(JSON.stringify(description)).not.toContain("UDM Pro");
+    expect(description.title).toBe("Restart the gateway “UDM Pro”");
     expect(description.description).toMatch(/whole network and its internet connection go down/);
     // A kind of its own, so it can't share the auto-approval a user granted for restarting devices.
     expect(description.actionKind?.tag).toBe("unifi.restartGateway");
@@ -175,7 +174,7 @@ describe("a device", () => {
     expect(await sw.failure("powerCyclePort", 1.5)).toMatch(/whole number/);
     await sw.call("powerCyclePort", 2);
     const { actionId, description } = lastSubmitted(await sw.queue());
-    expect(description).toMatchObject({ title: "Power-cycle port 2 on a UniFi device", awaitDecision: true });
+    expect(description).toMatchObject({ title: "Power-cycle port 2 on “Garage Switch”", awaitDecision: true });
     await sw.apply(actionId);
     expect(console.writes().map(w => [w.path, w.body])).toEqual([
       [`/v1/sites/${HOME.siteId}/devices/${HOME.switchId}/interfaces/ports/2/actions`, { action: "POWER_CYCLE" }],
@@ -199,7 +198,7 @@ describe("a WiFi network", () => {
     expect(await guest.call("getPassphrase")).toBe("welcome-guests");
     await guest.call("update", { passphrase: "brand-new-pass", name: "Visitors" });
     const { actionId, description } = lastSubmitted(await guest.queue());
-    expect(description).toMatchObject({ title: "Change a UniFi WiFi network", autoApprovable: false });
+    expect(description).toMatchObject({ title: "Change WiFi network “Guest”", autoApprovable: false });
     // Action history reaches every collaborator, so a password that will work isn't written into it.
     expect(description.description).toMatch(/Sets a new password/);
     expect(JSON.stringify(description)).not.toContain("brand-new-pass");
@@ -270,9 +269,8 @@ describe("the guest hotspot", () => {
     await hotspot.call("authorizeGuest", HOME.guestId, { durationMinutes: 120, dataLimitMB: 500 });
     const { actionId, description } = lastSubmitted(await hotspot.queue());
     expect(description).toMatchObject({
-      title: "Let a guest use the WiFi", autoApprovable: false, actionKind: { tag: "unifi.guestAccess" },
+      title: "Let guest “Visitor Pixel” use the WiFi", autoApprovable: false, actionKind: { tag: "unifi.guestAccess" },
     });
-    expect(JSON.stringify(description)).not.toContain("Visitor Pixel");
     expect(description.awaitDecision).toBeUndefined();
     expect(await hotspot.call("getGuest", HOME.guestId)).toMatchObject({ guest: { authorized: true, dataLimitMB: 500 } });
     await hotspot.apply(actionId);
@@ -314,8 +312,7 @@ describe("the guest hotspot", () => {
     await hotspot.call("deleteVoucher", HOME.voucherId);
     expect(await hotspot.call("listVouchers")).toEqual([]);
     const { actionId, description } = lastSubmitted(await hotspot.queue());
-    expect(description.title).toBe("Delete a guest WiFi voucher");
-    expect(JSON.stringify(description)).not.toContain("Book club");
+    expect(description.title).toBe("Delete guest WiFi voucher “Book club”");
     // The code still works until the deletion is approved, so it isn't written into history.
     expect(JSON.stringify(description)).not.toContain("1234567890");
     console.network!.sites[0]!.vouchers = [];
@@ -345,18 +342,15 @@ describe("pending actions survive a restart", () => {
 });
 
 describe("the binding", () => {
-  it("presents itself by its kind of resource, never UniFi's names, and links into UniFi", async () => {
-    // Every collaborator sees this, unchecked, so it names nothing a UniFi role might hide.
+  it("presents itself with the resource's name and a link into UniFi", async () => {
     installFake();
     const accountId = await connectCloud();
-    const ap = await binding(accountId, RESOURCES.device(HOME.apId)).describe();
-    expect(ap).toMatchObject({
-      title: "UniFi device", tsType: "UnifiNetworkDevice", suggestedBindingName: "UNIFI_DEVICE",
+    expect(await binding(accountId, RESOURCES.device(HOME.apId)).describe()).toMatchObject({
+      title: "Living Room AP", tsType: "UnifiNetworkDevice", suggestedBindingName: "UNIFI_DEVICE",
       url: `https://unifi.ui.com/consoles/${HOME.hostId}/network/default/dashboard`,
     });
-    expect(JSON.stringify(ap)).not.toContain("Living Room AP");
     expect(await binding(accountId, RESOURCES.hotspot).describe()).toMatchObject({
-      title: "UniFi guest hotspot", tsType: "UnifiHotspot",
+      title: "Guest hotspot · Default", tsType: "UnifiHotspot",
     });
   });
 

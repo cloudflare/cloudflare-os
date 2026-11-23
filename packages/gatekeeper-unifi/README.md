@@ -93,10 +93,9 @@ Every read is recorded as an observation. Every change waits for approval:
 Changes to WiFi and guest access are never auto-approvable because they change who can use the
 network, and a doorbell message isn't because it's shown to whoever comes to the door. A device
 the device list doesn't classify can't be restarted, since it can't be told apart from the
-gateway. Action history is visible to every collaborator without a check, so an approval names its target
-by its UniFi ID ("Restart a UniFi device", with the device's ID) and shows nothing else read from
-UniFi: no device, camera, client or network names, and never a WiFi password or voucher code that
-still works. What the agent asked for, such as a new name or a doorbell message, is shown as asked.
+gateway. Approvals name what they change ("Restart “Living Room AP”"). Action history is visible to
+everyone the workspace is shared with, which is fine for names, but an approval never shows a WiFi
+password or voucher code that still works: a new password is described as changing.
 
 Nothing is reverted automatically. A change UniFi refuses, or whose target is gone, fails
 without a retry. A restart, power-cycle, guest grant, or voucher batch interrupted after it was
@@ -135,8 +134,9 @@ Checks:
   consoles the collaborator owns. A collaborator who only administers the console passes nothing,
   since nothing can show what their role may read.
 
-A binding's title names only its kind of resource ("UniFi camera"), never what UniFi calls it,
-since the Workshop shows binding titles to every collaborator unchecked.
+A binding's title is what UniFi calls the resource, as are the names in approvals: the Workshop
+shows both to everyone the workspace is shared with, and sharing a workspace shares those names.
+The data behind them stays behind the checks above.
 
 A check that can't be made (the console doesn't answer, the binding owner's own connection no
 longer reaches it, or the collaborator reconnects with another key while it runs) refuses everyone

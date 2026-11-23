@@ -66,16 +66,19 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
   }
 
   /**
-   * The Workshop stores this and shows it to every collaborator without an observation check, so
-   * the title names the kind of resource, never what UniFi calls it: a camera's or site's name is
-   * for the authorized session reads.
+   * Titled with what UniFi calls the resource. The Workshop shows this to everyone the workspace is
+   * shared with, without a check, which is fine for names: sharing a workspace shares what its
+   * bindings are called. What the resource holds stays behind the session's checked reads.
    */
   async describe(): Promise<ResourceDescription> {
     const { resource } = this.ctx.props;
     const presentation = PRESENTATION[resource.kind];
+    const [title, url] = await Promise.all([
+      this.#title().catch(() => presentation.title),
+      this.#uiUrl().catch(() => "https://unifi.ui.com"),
+    ]);
     return {
-      url: await this.#uiUrl().catch(() => "https://unifi.ui.com"),
-      title: presentation.title, snippet: presentation.snippet,
+      url, title, snippet: presentation.snippet,
       suggestedBindingName: presentation.binding, tsType: presentation.tsType,
     };
   }
@@ -159,6 +162,21 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
   async #consoleName(): Promise<string> {
     const consoles = await this.#account().listConsoles();
     return consoles.find(c => c.id === this.ctx.props.resource.consoleId)?.name ?? "the UniFi console";
+  }
+
+  async #title(): Promise<string> {
+    const resource = this.ctx.props.resource;
+    const api = this.#api;
+    switch (resource.kind) {
+      case "site": return (await api.getSite(resource.siteId)).name;
+      case "device": return (await api.getDevice(resource.siteId, resource.deviceId)).name;
+      case "wifi": return (await api.getWifi(resource.siteId, resource.wifiNetworkId)).name;
+      case "hotspot": return `Guest hotspot · ${(await api.getSite(resource.siteId)).name}`;
+      case "protect": return `UniFi Protect · ${await this.#consoleName()}`;
+      case "camera": return (await api.getCamera(resource.cameraId)).name;
+      case "sensor": return (await api.getSensor(resource.sensorId)).name;
+      case "light": return (await api.getLight(resource.lightId)).name;
+    }
   }
 
   async #uiUrl(): Promise<string> {
