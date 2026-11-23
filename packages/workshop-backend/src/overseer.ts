@@ -2805,11 +2805,16 @@ class OverseerImpl implements AgentHooks {
       messages = messages.filter(msg => msg.sequence <= through);
     }
     let statuses = chatChangeStatuses(messages);
+    // Nothing before the last boundary survives it, so the fold starts there.
+    let start = messages.findLastIndex(msg => msg.type === "merge" ? msg.epochBoundary
+        : msg.type === "changes" && msg.conversionBoundary &&
+          statuses.get(msg.sequence) !== "reverted");
     let content: CodeContent = new Map();
     // Worktree pins established in the current epoch: their bases are lazy (see the worktree
     // branch below), so this map is what seedWorktreeEditBases resolves against.
     let worktreeBases = new Map<WorkpieceId, string>();
-    for (let msg of messages) {
+    for (let i = Math.max(start, 0); i < messages.length; i++) {
+      let msg = messages[i];
       if (msg.type === "merge" && msg.epochBoundary) {
         content = new Map();
         worktreeBases.clear();
