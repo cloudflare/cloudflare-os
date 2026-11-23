@@ -27,7 +27,7 @@ type ConnectionPreviewPaneProps = {
 }
 
 /**
- * A connection's content in the gadget UI frame, with the connection's session as the frame's
+ * A connection drawn in the gadget UI frame as a gadget is, with its session as the frame's
  * `gadget` stub. The frame only reads; applying and discarding are drawn here, outside it.
  */
 export const ConnectionPreviewPane = (
@@ -35,13 +35,11 @@ export const ConnectionPreviewPane = (
 ) => {
   const { gatekeeperId } = preview
 
-  const [source, setSource] = useState<GadgetUiSource | null>(null)
+  // Wrapped, since a stub is callable and useState would call it for the state.
+  const [source, setSource] = useState<{ gadget: GadgetUiSource } | null>(null)
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
-    setSource({
-      getUiBundle: () => client.getPreviewUi(),
-      connectToGadget: () => client.openSession(),
-    })
+    setSource({ gadget: client })
     return () => {
       setSource(null)
       client[Symbol.dispose]()
@@ -84,7 +82,7 @@ export const ConnectionPreviewPane = (
     <div className="relative flex h-full flex-col">
       <div className="min-h-0 flex-1">
         {source && (
-          <GadgetUI gadget={source} height="100%" refreshSignal={refreshSignal} />
+          <GadgetUI gadget={source.gadget} height="100%" refreshSignal={refreshSignal} />
         )}
       </div>
       {next?.type === 'action' && (

@@ -2433,7 +2433,7 @@ describe("Google Doc pending changes", () => {
   it("offers a preview", async () => {
     new DocsModel().install();
 
-    expect(await hooks().describe("pending-preview")).toMatchObject({ hasPreview: true });
+    expect(await hooks().describe("pending-preview")).toMatchObject({ hasGadgetUi: true });
     let files = await hooks().previewUi("pending-preview");
     expect(files.map(({ path }) => path)).toEqual(PREVIEW_PATHS);
     expect(files[0].code).toContain("gadget.getPendingChanges(");

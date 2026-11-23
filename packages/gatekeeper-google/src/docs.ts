@@ -240,7 +240,7 @@ export class GoogleDocGatekeeperImpl
         snippet: `Google Doc: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_DOC",
         tsType: "GoogleDocSession",
-        hasPreview: true,
+        hasGadgetUi: true,
       };
     }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
@@ -256,7 +256,7 @@ export class GoogleDocGatekeeperImpl
       snippet: `Google Doc: ${doc.title}`,
       suggestedBindingName: "GOOGLE_DOC",
       tsType: "GoogleDocSession",
-      hasPreview: true,
+      hasGadgetUi: true,
     };
   }
 
@@ -264,7 +264,7 @@ export class GoogleDocGatekeeperImpl
     return getGoogleDocTypesCode();
   }
 
-  async getPreviewUi(): Promise<UiFile[]> {
+  async getGadgetUi(): Promise<UiFile[]> {
     return [
       { path: "client.js", code: DOCS_PREVIEW_CLIENT },
       { path: "draw.js", code: DOCS_PREVIEW_DRAW },

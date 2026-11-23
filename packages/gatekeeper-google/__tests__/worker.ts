@@ -390,7 +390,7 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   previewUi(facetName: string): Promise<UiFile[]> {
-    return this.#gatekeeper(facetName).getPreviewUi();
+    return this.#gatekeeper(facetName).getGadgetUi();
   }
 
   async #withReadSession<Session, T>(

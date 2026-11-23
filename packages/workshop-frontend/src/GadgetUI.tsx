@@ -310,8 +310,8 @@ export type GadgetUIFocus = {
 
 /**
  * What the frame runs: its code, and the stub that code calls as `gadget`. A gadget supplies both
- * (GadgetClient, or GadgetSnapshotClient for a snapshot); a connection preview supplies code for
- * the connection's own session.
+ * (GadgetClient, or GadgetSnapshotClient for a snapshot), and so does a connection
+ * (GatekeeperClient), whose session stands where a gadget's server would.
  */
 export type GadgetUiSource = {
   getUiBundle(chatId?: number): PromiseLike<UiBundle | null>

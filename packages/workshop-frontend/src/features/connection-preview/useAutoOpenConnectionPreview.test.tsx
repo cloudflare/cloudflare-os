@@ -32,7 +32,7 @@ const mount = async () => {
         described.push(id)
         if (id === BUSY && described.length === 1) throw new Error('Google is busy')
         if (id === SLOW) await slow
-        return { hasPreview: [DOC, BUSY, SLOW].includes(id) ? true : undefined }
+        return { hasGadgetUi: [DOC, BUSY, SLOW].includes(id) ? true : undefined }
       },
       getCreationSpec: async () => (
         { type: 'gatekeeper', vendorId: 'google', resourceUrl: 'https://docs.google.com/document/d/1/edit' }),

@@ -60,8 +60,8 @@ export const previewOffers = (listVendors: ListVendors): OffersPreview => {
   const describes = async (overseer: RpcStub<Overseer>, gatekeeperId: WorkpieceId) => {
     const client = overseer.getGatekeeperById(gatekeeperId)
     try {
-      const { hasPreview, url } = await client.describe()
-      if (!hasPreview) return undefined
+      const { hasGadgetUi, url } = await client.describe()
+      if (!hasGadgetUi) return undefined
       const spec = await client.getCreationSpec().catch(() => undefined)
       if (spec?.type === 'gatekeeper' && !spec.resourceUrl) known.delete(gatekeeperId)
       // A preview whose type cannot be told is drawn without an icon.

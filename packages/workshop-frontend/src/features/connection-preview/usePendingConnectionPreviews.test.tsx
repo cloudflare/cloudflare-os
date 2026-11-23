@@ -32,7 +32,7 @@ it('lists each connection with changes waiting that offers a preview, once', asy
   const server = makeOverseer()
   const overseer = Object.assign(server.overseer, {
     getGatekeeperById: (id: WorkpieceId) => ({
-      describe: async () => ({ hasPreview: id === DOC ? true : undefined }),
+      describe: async () => ({ hasGadgetUi: id === DOC ? true : undefined }),
       getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},
     }),
@@ -66,7 +66,7 @@ it('links to the document as it is once it is created, though changes queued bef
   let url = home
   const overseer = Object.assign(server.overseer, {
     getGatekeeperById: () => ({
-      describe: async () => ({ hasPreview: true, url }),
+      describe: async () => ({ hasGadgetUi: true, url }),
       getCreationSpec: async () => ({ ...SPEC, resourceUrl: url === home ? undefined : url }),
       [Symbol.dispose]: () => {},
     }),
@@ -100,7 +100,7 @@ it('asks a connection again after a lookup that failed, and no more once it has 
     getGatekeeperById: () => ({
       describe: async () => {
         if (++asked === 1) throw new Error('Google is busy')
-        return { hasPreview: true }
+        return { hasGadgetUi: true }
       },
       // A connection whose type cannot be told is drawn without an icon.
       getCreationSpec: async () => { throw new Error('Not a gatekeeper') },
@@ -123,7 +123,7 @@ it('lists a connection that could not be asked once it can be, and nothing anoth
     getGatekeeperById: () => ({
       describe: async () => {
         if (++asked === 1) throw new Error('Google is busy')
-        return { hasPreview: true }
+        return { hasGadgetUi: true }
       },
       getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},
@@ -159,7 +159,7 @@ it('asks again as soon as at first once every connection has answered', async ()
       // Each connection fails the first time it is asked.
       describe: async () => {
         if (++asked % 2) throw new Error('Google is busy')
-        return { hasPreview: true }
+        return { hasGadgetUi: true }
       },
       getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},

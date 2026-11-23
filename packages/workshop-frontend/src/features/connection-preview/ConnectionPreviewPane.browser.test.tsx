@@ -106,11 +106,11 @@ class DocConnection extends RpcTarget {
     super()
   }
 
-  openSession() {
+  connectToGadget() {
     return new DocSession(this.doc)
   }
 
-  getPreviewUi() {
+  getUiBundle() {
     return DOCS_PREVIEW_BUNDLE
   }
 }

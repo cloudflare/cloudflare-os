@@ -424,7 +424,7 @@ Found against real documents, and each is drawn as near as the API allows:
 
 What any preview of this gatekeeper needs is a module of its own, `previews/shared/chrome.js`,
 imported as `./ui/chrome.js`: the theme, the outline sheet and the dot it puts on what holds a
-change, the change navigator, the part navigator, the stale banner, the loading, updating and error states, and the refresh handling. `getPreviewUi()`
+change, the change navigator, the part navigator, the stale banner, the loading, updating and error states, and the refresh handling. `getGadgetUi()`
 returns all of them, listed once in `previews/files.ts`. The gatekeeper's bundler imports only
 `.txt` and `.svg` as text, so each file is imported through a `.txt` symlink beside it, and
 `previews/docs/ui` links to `previews/shared` so the import resolves on disk too. The frame calls
