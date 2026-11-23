@@ -2515,9 +2515,10 @@ export class GoogleDriveGatekeeperImpl
   }
 
   /**
-   * The preview of a file an edit's `previewOf` names, which draws what `openPreview()` opens:
-   * the one each kind of file has when connected on its own, all three behind one entry, since
-   * this is asked before any file is named. A Drive connection has no preview of itself.
+   * The preview of a file an edit's `previewOf` names: the one each kind of file has when
+   * connected on its own, all three behind one entry, since this is asked before any file is
+   * named. The entry opens the file its host sends it to, with `openPreview()`, and starts the
+   * preview of its kind. A Drive connection has no preview of itself.
    */
   async getGadgetUi(): Promise<UiFile[]> {
     return DRIVE_PREVIEW_FILES;
@@ -2883,9 +2884,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Opens the file an edit's `previewOf` names, for its preview: through each folder between the
-   * connected one and the file, as an agent reaches it, so its place in the binding's scope is
-   * proven the same way. Not in the agent's types: an agent opens a file by the methods above.
+   * Opens the file an edit's `previewOf` names, for the preview (`getGadgetUi()`), whose host
+   * sends it that name: through each folder between the connected one and the file, as an agent
+   * reaches it, so its place in the binding's scope is proven the same way. Not in the agent's
+   * types: an agent opens a file by the methods above.
    */
   async openPreview(previewOf: string) {
     let { editor, folderIds, fileId } = parseDrivePreviewId(previewOf);

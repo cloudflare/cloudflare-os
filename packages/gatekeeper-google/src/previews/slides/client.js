@@ -1,6 +1,6 @@
 // The Google Slides preview (GooglePresentationGatekeeperImpl.getGadgetUi()): gadget-format client
-// code that runs in the gadget UI frame, whose page starts it with main(gadget), at the end of this
-// file. There `gadget` is a GooglePresentationSession rather than a gadget server.
+// code that runs in the gadget UI frame, whose page starts it with main(gadget, host), at the end of
+// this file. There `gadget` is a GooglePresentationSession rather than a gadget server.
 // The gatekeeper imports it as text through client.txt, a symlink to this file, and returns it
 // with slide.js and shapes.js, which draw one slide, and ui/chrome.js, which the previews of this
 // gatekeeper share.
@@ -11,13 +11,15 @@
 
 import {
   dataUrl, flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page,
-  partNavigator, press, segmented, setOutline, setStops, showError, showLoading, showPage, showStale, status,
-  SYSTEM_FONT,
+  partNavigator, press, reportSpot, segmented, setOutline, setStops, showError, showLoading, showPage, showStale,
+  status, SYSTEM_FONT,
 } from './ui/chrome.js';
 import { boxOf, drawSlide, slideStyles, LINE_HEIGHT } from './slide.js';
 
 // The session main() is handed, which every read below goes through.
 let gadget;
+// Tells the host where the reader is, once main() has one to tell.
+let saySpot = () => {};
 
 // How many slides are drawn, the rest being listed by title, and how many are read at once.
 const MAX_DRAWN = 50;
@@ -609,6 +611,8 @@ function fill(card, slide) {
 
 let films = [];
 let current;
+// The slide the view is on, by its place among the rows.
+let viewed = 0;
 
 function renderFilmstrip() {
   let number = 0;
@@ -657,6 +661,8 @@ function markSlide() {
   const nodes = rows.map(({ id }) => cards.get(id).node);
   if (rows[on]?.slide) pager.show(nodes, on, before + 1, total);
   else pager.show(nodes, on, '–', total, `Deleted slide, ${before ? `after slide ${before}` : 'before slide 1'} of ${total}`);
+  viewed = on;
+  saySpot();
   if (outline.hidden) return;
   films.forEach((film, n) => film.setAttribute('aria-current', String(n === on)));
   if (on === 0) outlineList.scrollTop = 0;
@@ -869,6 +875,7 @@ async function load() {
     showStops();
     status('');
     loaded = true;
+    saySpot();
     void awaitOutlines(now, waiting);
   } catch (error) {
     if (now !== generation) return;
@@ -877,17 +884,45 @@ async function load() {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Where the reader is
+
+// The slide the view is on, in a deck of several, by its ID: its number moves with the deck.
+function here() {
+  const row = loaded && rows.length > 1 ? rows[viewed] : undefined;
+  if (!row) return undefined;
+  const number = rows.slice(0, viewed + 1).filter(kept => kept.slide).length;
+  return { anchor: row.id, label: row.slide ? `Slide ${number}` : `Deleted slide: ${row.title}` };
+}
+
+// Shows the slide `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
+// from anywhere, so it only chooses what to show. False for a slide no longer there.
+async function goTo(anchor) {
+  if (!loaded) await load();
+  // Not read, as when Google could not be reached: the slide may well still be there.
+  if (!loaded) return true;
+  const card = rows.some(row => row.id === anchor) && cards.get(anchor);
+  if (!card) return false;
+  card.node.scrollIntoView({ block: 'start' });
+  markSlide();
+  return true;
+}
+
 export default {
-  main(session) {
+  async main(session, host) {
     gadget = session;
     // Built here, not on import: a Drive connection's frame holds the previews of all three
     // kinds of file and starts one.
     document.head.append(slideStyles, styleSheet);
     pager = partNavigator('slide');
+    saySpot = reportSpot(host, here);
     addEventListener('scroll', () => requestAnimationFrame(markSlide), { passive: true });
     outline.addEventListener('outlinechange', markSlide);
     // The slides are drawn after they are laid out, which moves those under them.
     new ResizeObserver(() => markSlide()).observe(page);
     loadOnRefresh(load);
+    // The host sends this to the slide the reader left, if there is one, once the deck is read.
+    await host.onNavigate(goTo);
+    if (!generation) void load();
   },
 };

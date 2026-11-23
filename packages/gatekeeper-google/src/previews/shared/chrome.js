@@ -553,12 +553,39 @@ export function showError(error, resource, retry) {
 }
 
 /**
- * Calls `load` now and whenever the Workshop says an action on this connection was queued,
- * applied or discarded. A gadget cannot see the action log, so nothing inside the frame could tell.
+ * Calls `load` whenever the Workshop says an action on this connection was queued, applied or
+ * discarded. A gadget cannot see the action log, so nothing inside the frame could tell.
  */
 export function loadOnRefresh(load) {
   addEventListener('message', event => {
     if (event.source === parent && event.data?.type === 'refresh') void load();
   });
-  void load();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Where the reader is
+
+// The longest label a host takes (MAX_FOCUS_LABEL_LENGTH).
+const LONGEST_LABEL = 120;
+
+/** `label` cut to what a host takes. */
+export const fitLabel = label => label.length > LONGEST_LABEL ? `${label.slice(0, LONGEST_LABEL - 1)}…` : label;
+
+/**
+ * Tells the frame's `host` where the reader is (GadgetHost.reportFocus()), so that the preview
+ * can be sent back there. `spot()` gives the place as `{ anchor, label }`, or nothing when it is
+ * nowhere more particular than the resource. Returns what to call when the place may have moved:
+ * the host hears only of one that has.
+ */
+export function reportSpot(host, spot) {
+  // A frame that has said nothing is nowhere in particular, which is what null says.
+  let said = 'null';
+  return () => {
+    const { anchor, label } = spot() ?? {};
+    const focus = anchor === undefined ? null : { anchor, label: fitLabel(label) };
+    const saying = JSON.stringify(focus);
+    if (saying === said) return;
+    said = saying;
+    host.reportFocus(focus);
+  };
 }

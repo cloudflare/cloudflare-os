@@ -4,6 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
+import { previewHost } from './previewBundle'
 import { SLIDES_PREVIEW_BUNDLE } from './slidesPreviewBundle'
 
 type Run = { fontFamily: string, fontSize: number, fontWeight: number, color: string, text: string, link?: string, italic?: boolean }
@@ -51,8 +52,9 @@ let frame: HTMLIFrameElement | undefined
 
 afterEach(() => frame?.remove())
 
-/** Draws `deck` and resolves once every slide it is to draw is drawn. */
-async function draw(deck: Deck, width = 1100, height = 700) {
+/** Draws `deck` and resolves once every slide it is to draw is drawn. `at` is the spot its host sends it to. */
+async function draw(deck: Deck, width = 1100, height = 700, at?: string) {
+  const { host, said, go } = previewHost(at)
   const calls: [string, ...unknown[]][] = []
   let loads = 0
   const called = (name: string) => calls.filter(([method]) => method === name).map(([, ...args]) => args)
@@ -93,14 +95,14 @@ async function draw(deck: Deck, width = 1100, height = 700) {
       return { mimeType: 'image/png', width: 1600, height: 900, content: PIXEL.buffer }
     },
   }
-  Object.assign(window, { slidesPreviewGadget: gadget })
+  Object.assign(window, { slidesPreviewGadget: gadget, slidesPreviewHost: host })
   frame = document.body.appendChild(document.createElement('iframe'))
   frame.style.cssText = `width:${width}px;height:${height}px`
-  // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
+  // Started as the gadget UI frame starts it: main(gadget, host) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(SLIDES_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
     import client from ${JSON.stringify(entryUrl)}
-    client.main(parent.slidesPreviewGadget)
+    client.main(parent.slidesPreviewGadget, parent.slidesPreviewHost)
   </script>`
   const doc = () => frame!.contentDocument!
   const all = (selector: string) => [...doc().querySelectorAll<HTMLElement>(selector)]
@@ -115,7 +117,7 @@ async function draw(deck: Deck, width = 1100, height = 700) {
     await expect.poll(() => loads).toBeGreaterThan(before)
   }
   return {
-    doc: doc(), all, called,
+    doc: doc(), all, called, said, go,
     card: (id: string) => doc().querySelector<HTMLElement>(`.card[data-slide="${id}"]`)!,
     film: (id: string) => doc().querySelector<HTMLElement>(`.film[data-slide="${id}"]`)!,
     text: (selector: string) => all(selector).map(node => node.textContent),
@@ -842,4 +844,29 @@ it('says so when a presentation has no slides, and offers to try again when it c
   error.querySelector('button')!.click()
   await expect.poll(() => failed.card('s1')?.querySelector('.sheet [data-id="s1-title"]')?.textContent).toBe('s1')
   expect(failed.doc.getElementById('error')).toBeNull()
+})
+
+it('tells its host the slide the reader is on, and goes to one its host names', async () => {
+  // Its host sends it to the slide the reader left, which it opens on, not on its first change.
+  const { all, said, go } = await draw({
+    saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six'),
+    changes: [edit(1, 's1', 's1-title')], drawings: { s1: retitled('s1') },
+  }, 1100, 700, 's3')
+  const top = (slide: number) => Math.round(all('.card')[slide].getBoundingClientRect().top)
+  const third = { anchor: 's3', label: 'Slide 3' }
+
+  await expect.poll(() => said.at(-1)).toEqual(third)
+  // The scroll to the first change, which a deck opens with, has not carried it off.
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), top(2) < 700 / 3]).toEqual([third, true])
+
+  expect(await go('s2')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2' })
+  // The reader's own move is told too.
+  frame!.contentWindow!.scrollTo(0, 0)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's1', label: 'Slide 1' })
+
+  // A slide that is not there leaves the reader where they are.
+  expect(await go('s9')).toBe(false)
+  expect(top(0)).toBeGreaterThanOrEqual(0)
 })

@@ -290,12 +290,17 @@ gatekeeper):
 
 - Set `previewOf: { id, title, url? }` on the action's description. `id` is the gatekeeper's own
   name for the item, enough to find it again and nothing anyone else reads; parse it strictly.
-- `getGadgetUi()` returns the code that draws whichever item's session it is handed, and asks the
+- `getGadgetUi()` returns the code that draws whichever item it is sent to, and asks the
   provider nothing: it is asked before any item is named. Do not report `hasGadgetUi` unless that
   code draws the resource as a whole too.
-- The session implements `openPreview(id)`, returning the session that code reads through,
-  independent of the session it was opened from. It checks access as any open does. The Workshop
-  calls it and gives the frame the result alone.
+- That code is started as `main(session, host)` with the connection's session, and is told the
+  item as a gadget's UI is told where its user was: it registers `host.onNavigate()`, and the
+  anchor it is called with is the item's `id`, or begins with it. Every spot it reports
+  (`host.reportFocus()`) begins with the `id` too, so that a frame started again is sent to the
+  same item. Keep an `id` well under the 256 characters an anchor may have.
+- The anchor may come from any client, so it only chooses what to draw: resolve it through the
+  session, which checks access as any open does (the Drive session's `openPreview(id)`, which is
+  not in the agent's types).
 
 #### Revealing pending changes
 

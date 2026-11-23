@@ -10,7 +10,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { Toasty } from '@cloudflare/kumo'
 import { RpcStub, RpcTarget } from 'capnweb'
-import type { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ActionsSubscriber, GadgetFocus, Overseer } from '@gadgets/workshop-shared/api'
 import type { ConnectionPreview } from './connectionPreview'
 import { ConnectionPreviewPane } from './ConnectionPreviewPane'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
@@ -38,7 +38,7 @@ const DRAFTED = '- **Playoff résumé**: the all\\-time leader in playoff points
 
 const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
-type Doc = { saved: string, markdown: string, changes: object[], calls: string[], folder?: true }
+type Doc = { saved: string, markdown: string, changes: object[], calls: string[], folder?: true, tabs?: string[] }
 
 const action = (id: number, over: Partial<ActionLogEntry> = {}) => ({
   id,
@@ -62,7 +62,7 @@ class DocSession extends RpcTarget {
 
   listTabs() {
     this.doc.calls.push('listTabs')
-    return [{ id: 't.0', title: 'Tab 1', index: 0, nestingLevel: 0 }]
+    return (this.doc.tabs ?? ['t.0']).map((id, index) => ({ id, title: `Tab ${index + 1}`, index, nestingLevel: 0 }))
   }
 
   getContent() {
@@ -117,10 +117,6 @@ class FolderSession extends RpcTarget {
     this.doc.calls.push(`openPreview ${item}`)
     return new DocSession(this.doc)
   }
-
-  [Symbol.dispose]() {
-    this.doc.calls.push('dispose folder')
-  }
 }
 
 class DocConnection extends RpcTarget {
@@ -145,15 +141,21 @@ afterEach(() => {
   container?.remove()
 })
 
-const renderPane = (pending: ActionLogEntry[], item?: string) => {
+/**
+ * Renders the pane on a document, or on the `item` of a connection that reaches several. Its frame
+ * is sent to `at`, the spot a preview was left at, or else to the item.
+ */
+const renderPane = (pending: ActionLogEntry[], item?: string, { at = item, tabs }: { at?: string, tabs?: string[] } = {}) => {
   // One change is already pending when the pane opens: a bullet reworded.
   const doc: Doc = {
     saved: SAVED,
     markdown: SAVED.replace(DURABILITY, LONGEVITY),
     changes: [{ id: 11, type: 'replaceText', oldMarkdown: DURABILITY, newMarkdown: LONGEVITY }],
     calls: [],
+    tabs,
     ...(item === undefined ? {} : { folder: true }),
   }
+  const said: (GadgetFocus | null)[] = []
   const resolved: string[] = []
   const created: ConnectionPreview[] = []
   const discarded = vi.fn<() => void>()
@@ -181,12 +183,13 @@ const renderPane = (pending: ActionLogEntry[], item?: string) => {
         overseer={overseer}
         preview={{ gatekeeperId: DOC_ID, item, title: 'Paul Pierce' }}
         restricted={false}
+        focus={{ anchor: at, latestAnchor: () => at, navigation: 0, onFocusChange: focus => said.push(focus) }}
         onCreated={preview => created.push(preview)}
         onDiscarded={discarded}
       />
     </Toasty>,
   ))
-  return { doc, resolved, created, discarded, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
+  return { doc, resolved, created, discarded, said, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
 }
 
 // The frame's origin is opaque, so its DOM is out of this page's reach and the session's call log
@@ -314,7 +317,7 @@ it('closes when the document it draws is discarded uncreated, which removes its 
   expect(created).toEqual([])
 })
 
-it('draws one item of a connection from a session of that item, with only its changes on the card', async () => {
+it('draws the item of a connection its frame is sent to, with only its changes on the card', async () => {
   await page.viewport(1100, 800)
   const on = (id: string, n: number) => ({
     description: {
@@ -324,9 +327,9 @@ it('draws one item of a connection from a session of that item, with only its ch
   } as Partial<ActionLogEntry>)
   const { doc, resolved, emit } = renderPane([action(1, on('other', 1)), action(2, on('file', 2))], 'file')
 
-  // The frame is handed the item's session, and the one it was opened from is let go.
+  // The frame holds the connection's session, and its code opens the item it is sent to.
   await expect.poll(() => doc.calls).toContain('getPendingChanges')
-  expect(doc.calls).toEqual(expect.arrayContaining(['openPreview file', 'dispose folder']))
+  expect(doc.calls[0]).toBe('openPreview file')
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
   await expect.element(page.getByText('Change 2')).toBeVisible()
 
@@ -353,4 +356,20 @@ it('reads an item again once a change to its connection is approved, which may h
 
   emit(action(1, { state: 'approved' }))
   await expect.poll(() => doc.calls.length).toBeGreaterThan(reads)
+})
+
+it('sends the frame to the spot its preview was left at, and hears from it where the reader is', async () => {
+  const { said } = renderPane([], undefined, { at: '?tab=t.1', tabs: ['t.0', 't.1'] })
+
+  // Sent nowhere it would open on the first tab.
+  await expect.poll(() => said).toEqual([{ anchor: '?tab=t.1', label: 'Tab 2' }])
+})
+
+it('hears of a spot in an item by the item\'s name, which sends the frame back to both', async () => {
+  const { doc, said } = renderPane([], 'file', { at: 'file ?tab=t.1', tabs: ['t.0', 't.1'] })
+
+  await expect.poll(() => said).toEqual([
+    { anchor: 'file', label: 'Document' }, { anchor: 'file ?tab=t.1', label: 'Document › Tab 2' },
+  ])
+  expect(doc.calls[0]).toBe('openPreview file')
 })

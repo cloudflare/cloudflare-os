@@ -64,8 +64,9 @@ client needs to draw the resource faithfully. Nothing else changes for it.
   collaborators are checked against too (`docs/observers.md` §10), so a preview drawn from one
   could lock such a collaborator out of an unrelated gadget on the same connection.
 - **The preview holds a session and nothing more.** The frame's `gadget` stub is what
-  `GatekeeperClient.connectToGadget()` returns, or for a preview of one item what that session's
-  `openPreview()` returns. The preview can therefore do only what a gadget bound to the resource
+  `GatekeeperClient.connectToGadget()` returns, for a preview of one item too: the connection's
+  code opens the item through that session (section 1a). The preview can therefore do only what
+  a gadget bound to the resource
   could, every read it makes is authorized and logged as an observation, and any action it
   submitted would go through the approval queue like any other. No new trust is introduced.
 - **Read-only is a property of a preview, not a kernel limit.** The frame holds the full session;
@@ -161,7 +162,8 @@ type ActionDescription = {
 }
 ```
 
-- `id` is the gatekeeper's own name for the item and opaque to the Workshop, which hands it back.
+- `id` is the gatekeeper's own name for the item and opaque to the Workshop, which hands it back
+  as the anchor the connection's code is sent to (below).
   It is not one of `ObservationDescription.subresources`: those are enforced and never shown,
   this is shown and enforces nothing. `title` and `url` are for the pane's heading and link, as
   `describe()`'s are for a whole resource.
@@ -169,7 +171,7 @@ type ActionDescription = {
   sent to clients whole. `gatekeeper-kit` carries the field from a
   definition's `describe()` to the queue.
 - `getGadgetUi()` is not told the item: a connection has one set of files, which draws whichever
-  item's session it is handed. What the item holds is read by that code through the session,
+  item its host sends it to. What the item holds is read by that code through the session,
   where the gatekeeper checks access as for any read.
 - Nor is it one of the action's `fields`, which are what an approver reads and which a gatekeeper
   words for a person. `previewOf` is read by the Workshop to decide what to draw, and has to mean
@@ -177,13 +179,21 @@ type ActionDescription = {
 - A preview is therefore offered in two ways, and the Workshop looks for both: `hasGadgetUi` on
   `describe()` offers one of the whole resource, and an action that names an item offers one of
   that item. A connection can do either, both or neither, and the second needs no `hasGadgetUi`.
-- The session an item's preview draws from is not in the kernel's types. The Workshop calls
-  `openPreview(id)` on the connection's session and hands the frame what it returns. That is a
-  convention between a gatekeeper and the Workshop (on `PreviewItem.id` and in the
-  write-gatekeeper skill), checked by
-  no interface: `Session` is opaque to the kernel, and a typed method there would put a preview's
-  shape into it. A gatekeeper that names items and has no `openPreview()` gets a pane that fails
-  to load, which a test of its preview catches.
+- The Workshop names the item to the connection's code the way a host tells any gadget UI where
+  its user was: `GadgetHost.onNavigate()`, with `id` as the anchor (`plans/focus-tracking.md`,
+  and "Where the reader is" below). The frame holds the connection's session, and its code gets
+  from the name to what it draws however its gatekeeper likes; the Drive entry calls
+  `openPreview(id)` on its session. So nothing of a preview is in the kernel's types and the
+  Workshop calls no method of a session, which is opaque to both: the one convention is that an
+  anchor starts with the item's `id` (on `PreviewItem.id` and in the write-gatekeeper skill). A
+  gatekeeper that names items and registers no `onNavigate()` gets a pane that draws nothing,
+  which a test of its preview catches.
+- This replaced a first design in which the Workshop called `openPreview(id)` itself and handed
+  the frame the item's session alone. That needed a method of a gatekeeper's session known to the
+  Workshop and a cast to call it, and kept the item out of the frame's focus. What it gave is
+  given up: the frame of an item's preview now holds the connection's session, which reaches
+  every item, where it held one item's. The code in the frame is the gatekeeper's own, and what
+  it reads is still authorized and recorded read by read.
 - On actions only. A read that names an item would open a preview for everything an agent skims,
   and a preview's own reads are recorded against the connection, not a chat.
 - Tested by the integration test above: an action carries `previewOf` to a client.
@@ -249,7 +259,8 @@ None of this names a vendor or a resource type; it works from `hasGadgetUi`, the
 the connection's ID.
 
 - `ConnectionPreviewPane`: hands `GadgetUI` the connection's `GatekeeperClient` as its source, as
-  a gadget's client is handed to it (for one item, a source that opens the item's session),
+  a gadget's client is handed to it, and the focus that sends the frame to an item or to the spot
+  it was left at,
   relays a debounced refresh when an `action` entry arrives for the connection, and draws the
   "changes waiting" card. Observation entries are ignored: the preview's own reads are logged on
   its connection and would refresh it forever. In a restricted workspace the card points to the
@@ -260,6 +271,8 @@ the connection's ID.
   on a reconnection or a return to the workspace. A connection whose preview the user closed stays closed until reload or until another
   workspace is opened (connections are numbered per workspace), and a single-pane layout is left
   alone.
+- `usePreviewFocus`: the spot each preview's frame last reported, kept for a stay in a workspace
+  ("Where the reader is" below).
 - `usePendingConnectionPreviews`: the connections that offer a preview and have changes waiting.
   The editor shows a button in the top bar for each one whose preview is not showing.
 - `connectionPreview.ts`: `previewOffers()` asks `describe()` once per connection for a stay in a
@@ -269,6 +282,40 @@ the connection's ID.
   more for it.
 - The pane takes the Activity pane's place in `GadgetEditor` and shares its open and close
   handling. The top bar's Activity button switches back.
+
+### 5. Where the reader is (each preview, and the Workshop pane)
+
+A gadget's UI tells its host where its user is and is sent back there (`GadgetHost.reportFocus()`
+and `onNavigate()`, `plans/focus-tracking.md`). A preview runs in the same frame and is handed the
+same `host`, so it does the same, and the pane keeps what it says:
+
+- **A preview reports the reader's spot** as `{ anchor, label }`, each time it moves: the anchor
+  is the preview's own and stable (an ID, not a title or a number that a change moves), the label
+  is what a person would call the place. Nothing is reported where there is only one place to be
+  (a spreadsheet of one sheet). `reportSpot()` in `previews/shared/chrome.js` tells the host only
+  of a spot that has moved, and keeps the label within the host's limit.
+- **A preview registers `onNavigate()` before its first read**, and makes that read only if the
+  host sends it nowhere: a preview sent to a spot opens on it, with one read instead of two. It
+  answers false for a spot that is gone, having left the reader where they are, or opened where
+  it would have. An anchor may come from any client, so it only chooses what to show among what
+  the session reads.
+- **The spots**: Google Docs, the tab and the heading the view has passed, as `?tab=<id>` and
+  `?tab=<id>#heading=<id>`, the form the document's own links have; Google Sheets, the sheet's
+  ID; Google Slides, the slide's ID.
+- **An item's spot starts with the item**: `<previewOf.id> <spot>`. The Drive entry is sent the
+  file's name, opens it, and starts the file's preview with a host of its own making, which puts
+  the name before each spot that preview reports and takes it off each it is sent to. The three
+  previews do not know whether a connection or the Drive entry started them. A frame draws one
+  file: sent to another it answers false, and the Workshop gives each file a frame of its own.
+- **The Workshop keeps each preview's last anchor** (`usePreviewFocus`), by connection and item,
+  for a stay in a workspace, and `GadgetUI` sends a frame to it as the frame registers. So a
+  preview closed and opened again, or left for another and returned to, opens where it was left.
+  The preview of an item that has reported nothing is sent to the item. Only the frame's own
+  reports move the spot: nothing navigates a preview that is running.
+- **Not built: the agent is not told.** A message's focus (`ChatMessageOptions.focus`) names a
+  gadget, and the kernel refuses any other workpiece, so the chat's focus chip and the agent's
+  `<user-focus>` block stay a gadget's. Letting a focus name a connection is a kernel change of
+  its own (see Punted).
 
 ## Verification of the framework
 
@@ -760,17 +807,18 @@ differs is which file, which section 1a answers:
 - **`getGadgetUi()`** is asked before any file is named, so it returns the previews of all three
   kinds, from one list the gatekeepers share (`previews/files.ts`), each client under its kind's
   name beside an entry (`previews/drive/client.js`). UI code cannot `import()`, so the entry
-  imports all three and starts the one whose kind the file's session gives (`getPreviewKind()`,
+  imports all three, opens the file its host sends it to, and starts the one whose kind the
+  file's session gives (`getPreviewKind()`,
   which like `openPreview()` is not in the agent's types). A preview therefore builds nothing
   into the frame until its `main()` is called. It asks Google nothing. A Drive connection reports
   no `hasGadgetUi`: it has no preview of itself.
 - **`openPreview(previewOf)`** on the Drive session walks the folders and opens the file with
   `openGoogleDoc()` and its siblings, so the file's place in the binding's scope is proven as it
-  is for an agent. The session convention is in the write-gatekeeper skill. It is not in the
-  agent's types.
+  is for an agent. The entry calls it with the name it is sent, which may come from any client:
+  a name that is not a file of the connection is refused there. It is not in the agent's types.
 - **The Workshop** tells previews apart by connection and item. It asks for the connection's
-  code, opens the connection's session, calls `openPreview()` on it and hands the frame only the
-  result, letting the Drive session go: the frame holds one file, not the binding. The card and
+  code, hands the frame the connection's session, and sends the frame to the item (section 5).
+  The card and
   the refresh take only actions that name the same item, which matches Drive ordering approvals
   by file. An item's preview opens when a change to it is queued, never on a read: a preview's
   reads are recorded against the connection, and an agent skims many files.
@@ -786,6 +834,10 @@ differs is which file, which section 1a answers:
    rides with it.
 2. **The Workshop pane and the first preview, stacked on the first.** Google Docs' session
    reads, its client, and the pane with auto-open, one commit each.
+3. **Google Sheets and Google Slides**, and **4. files reached through Google Drive**, each
+   stacked on the one before.
+5. **Where the reader is**, stacked on the fourth: section 5, and the item named by an anchor
+   in place of a session the Workshop opened (section 1a).
 
 ## Punted / future work
 
@@ -809,7 +861,15 @@ differs is which file, which section 1a answers:
   kind, which `previewOf.id` hides on purpose: either a kind beside `id` and `title`, or the
   gatekeeper naming the type of session `openPreview()` returns, as `describe().tsType` does for
   a connection. Such a gadget is bound to the folder's connection, so it also calls
-  `openPreview()` itself.
+  `openPreview()` itself, as the Drive entry does.
+- **Telling the agent what the user is looking at in a preview.** A preview already reports it
+  (section 5). What is missing is in the kernel: `MessageFocus` names a gadget, and
+  `#stampFocus()` refuses any other workpiece. Accepting a connection there, titled by its
+  `resourceTitle`, is a few lines and leaves the stored shape and the `<user-focus>` block as
+  they are. The Workshop would then offer the pane's preview as a message's focus, and a chip's
+  click would open it. With that, a preview is worth giving a `context`: the text selected.
+- **A file's name in its spot's label.** A file reached through Drive is labelled by its kind
+  ("Document › Costs"): its session does not say its name, which the action that named it did.
 - **Change notification beyond the Workshop frame.** Either a live callback on the session (no
   precedent for a non-persistent callback; lost when the gatekeeper is evicted) or a hook through
   `bindHook()` (persistent stub, user approval, one logged read per delivery). Open: whether a

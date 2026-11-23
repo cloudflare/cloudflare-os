@@ -8,7 +8,10 @@ import { safeExternalUrl } from '../../utils/safeExternalUrl'
 /** A connection's content, or one item of it, that can be drawn beside the chat. */
 export type ConnectionPreview = {
   gatekeeperId: WorkpieceId
-  /** The one item drawn, by its gatekeeper's name for it: a file of a folder connection. */
+  /**
+   * The one item drawn, by its gatekeeper's name for it: a file of a folder connection. It is the
+   * anchor the connection's code is sent to, which draws that item.
+   */
   item?: string
   title: string
   /** The real file, for the pane's link out. */
@@ -41,12 +44,6 @@ export const previewOf = (
     iconUrl: offer?.iconUrl,
   }
 }
-
-/**
- * What the session of a connection whose actions name items offers: the session an item's
- * preview draws from, in place of the connection's own.
- */
-export type ItemPreviews = { openPreview(item: string): RpcStub<object> }
 
 /** What tells one preview from another: its connection and, of a connection with several, its item. */
 export const previewKey = ({ gatekeeperId, item = '' }: Pick<ConnectionPreview, 'gatekeeperId' | 'item'>) =>

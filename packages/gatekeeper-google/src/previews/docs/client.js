@@ -1,6 +1,6 @@
 // The Google Doc preview (GoogleDocGatekeeperImpl.getGadgetUi()): gadget-format client code that
-// runs in the gadget UI frame, whose page starts it with main(gadget), at the end of this file.
-// There `gadget` is a GoogleDocSession rather than a gadget server.
+// runs in the gadget UI frame, whose page starts it with main(gadget, host), at the end of this
+// file. There `gadget` is a GoogleDocSession rather than a gadget server.
 // The gatekeeper imports it as text through client.txt, a symlink to this file, and returns it
 // with the modules beside it and ui/chrome.js, which the previews of this gatekeeper share.
 //
@@ -13,8 +13,8 @@
 
 import {
   addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion,
-  outline, outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale,
-  status, touch, ITSELF,
+  outline, outlineList, page, partNavigator, press, reportSpot, segmented, setOutline, setStops, showError, showPage,
+  showStale, status, touch, ITSELF,
 } from './ui/chrome.js';
 import { drawer, drawStyles, faceMeasures, headingLevel, newList, showPicture } from './draw.js';
 import { pageStyles, paginate } from './pages.js';
@@ -22,6 +22,8 @@ import { BOLD, ITALIC, STRIKE, blockKey, diff, pairEdits, parseBlocks, tablesOf,
 
 // The session main() is handed, which every read below goes through.
 let gadget;
+// Tells the host where the reader is, once main() has one to tell.
+let saySpot = () => {};
 
 // How far under the head of the frame a page stepped to stops.
 const HEAD = 52;
@@ -755,6 +757,47 @@ async function followLink(event) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Where the reader is
+
+// How far under the top of the view a heading is passed.
+const PASSED = 96;
+
+// The tab shown, in a document of several, and the heading the view has passed: an address of the
+// form the document's own links to its tabs and headings have.
+function here() {
+  const listed = loaded && tabs.find(found => found.id === tabId);
+  if (!listed) return undefined;
+  // At the foot of the tab every heading has been read, as markPage() has its last page: one
+  // near the end scrolls no higher.
+  const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
+  const ended = scrollTop > 0 && scrollTop + clientHeight >= scrollHeight - 1;
+  const heading = headings.findLast(found => found.dataset.heading &&
+    (ended || found.getBoundingClientRect().top <= PASSED));
+  if (tabs.length < 2 && !heading) return undefined;
+  return {
+    anchor: `?tab=${encodeURIComponent(tabId)}${heading ? `#heading=${encodeURIComponent(heading.dataset.heading)}` : ''}`,
+    label: [tabs.length > 1 && listed.title, heading && headingText(heading)].filter(Boolean).join(' › '),
+  };
+}
+
+// Shows the spot `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
+// from anywhere, so it only chooses what to show. False for a tab or a heading no longer there:
+// the reader stays on the tab they are on, or starts on the one load() opens on.
+async function goTo(anchor) {
+  const [, to, id] = /^\?tab=([^#]*)(?:#heading=(.*))?$/.exec(anchor) ?? [];
+  if (to === undefined || loaded && !tabs.some(listed => listed.id === decoded(to))) return false;
+  if (decoded(to) !== tabId) selectTab(decoded(to));
+  if (!loaded) await load();
+  if (decoded(to) !== tabId) return false;
+  // Not read, as when Google could not be reached: the spot may well still be there.
+  if (!loaded) return true;
+  const heading = id === undefined ? undefined : headingAt(decoded(id));
+  heading?.scrollIntoView({ block: 'start' });
+  saySpot();
+  return id === undefined || !!heading;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Loading and refreshing
 
 function selectTab(id) {
@@ -858,6 +901,7 @@ async function load() {
     showStale(stale, 'document');
     status('');
     loaded = true;
+    saySpot();
   } catch (error) {
     if (current !== generation) return;
     status('');
@@ -867,7 +911,7 @@ async function load() {
 }
 
 export default {
-  main(session) {
+  async main(session, host) {
     gadget = session;
     // Built here, not on import: a Drive connection's frame holds the previews of all three
     // kinds of file and starts one.
@@ -876,13 +920,19 @@ export default {
     pager = partNavigator('page');
     new ResizeObserver(fit).observe(page);
     addControl(views);
+    saySpot = reportSpot(host, here);
     addEventListener('scroll', () => requestAnimationFrame(() => {
       markHeading();
       markPage();
+      saySpot();
     }), { passive: true });
     outline.addEventListener('outlinechange', markHeading);
     page.addEventListener('keydown', pressLink);
     page.addEventListener('click', followLink);
     loadOnRefresh(load);
+    // The host sends this to the spot the reader left, if there is one, before anything is read:
+    // the first tab read is then the one it names.
+    await host.onNavigate(goTo);
+    if (!generation) void load();
   },
 };

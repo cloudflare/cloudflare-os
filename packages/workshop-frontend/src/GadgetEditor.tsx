@@ -90,6 +90,7 @@ import { previewKey, previewOffers, type ConnectionPreview } from './features/co
 import { ClosedPreviewsMenu } from './features/connection-preview/ClosedPreviewsMenu'
 import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
 import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
+import { usePreviewFocus } from './features/connection-preview/usePreviewFocus'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -1110,6 +1111,7 @@ export default function GadgetEditor() {
   const shownPreview = showingActivity && connectionPreview ? previewKey(connectionPreview) : undefined
   const pendingPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
   const closedPreviews = pendingPreviews.filter(preview => previewKey(preview) !== shownPreview)
+  const previewFocus = usePreviewFocus(id)
 
   const closeWorkspacePane = useCallback(() => {
     if (!showingActivity) {
@@ -2491,6 +2493,7 @@ export default function GadgetEditor() {
                   key={`${previewKey(panePreview)} ${panePreview.url}`}
                   overseer={overseer.stub}
                   preview={panePreview}
+                  focus={previewFocus(panePreview)}
                   onCreated={setConnectionPreview}
                   onDiscarded={closeWorkspacePane}
                   restricted={metadata?.containsRestrictedData === true}

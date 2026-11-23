@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
+import { previewHost } from './previewBundle'
 
 type Doc = {
   savedMarkdown: string, markdown?: string, revisionId?: string, drawing?: object, tabs?: string[], titles?: string[]
@@ -21,10 +22,11 @@ const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
 
 /**
  * Draws `doc` and resolves to the frame's document once the page has its blocks. What `session`
- * holds answers in place of the scripted session's own.
+ * holds answers in place of the scripted session's own, and `at` is the spot its host sends it to.
  */
-async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
+async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}, at?: string) {
   const fonts: [string, number, boolean][] = []
+  const { host, said, go } = previewHost(at)
   const gadget = {
     // No font is served here: each is asked for, and the text is drawn without.
     readFont: async (...font: [string, number, boolean]) => {
@@ -44,14 +46,14 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
     readImage: async () => Promise.reject(new Error('no image')),
     ...session,
   }
-  Object.assign(window, { docsPreviewGadget: gadget })
+  Object.assign(window, { docsPreviewGadget: gadget, docsPreviewHost: host })
   frame = document.body.appendChild(document.createElement('iframe'))
   Object.assign(frame.style, { width: '900px', height: '600px' })
-  // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
+  // Started as the gadget UI frame starts it: main(gadget, host) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(DOCS_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
     import client from ${JSON.stringify(entryUrl)}
-    client.main(parent.docsPreviewGadget)
+    client.main(parent.docsPreviewGadget, parent.docsPreviewHost)
   </script>`
   const page = () => frame!.contentDocument?.getElementById('page')
   // The first drawing waits a moment for its fonts.
@@ -61,6 +63,9 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
     page: page()!,
     /** The fonts asked for, in order: family, weight and whether italic. */
     fonts,
+    /** Each focus the host was told, and what sends the preview to a spot as its host does. */
+    said,
+    go,
     blocks,
     sheets: () => [...page()!.querySelectorAll<HTMLElement>('.sheet')],
     look: (element: Element) => frame!.contentWindow!.getComputedStyle(element),
@@ -947,4 +952,60 @@ it('opens on the first tab with changes waiting, and marks each that has them', 
   expect(text(page)).toBe('t.1')
   expect(buttons.map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
     [['Tab 1', 'none'], ['Tab 2 (has pending edits)', '"Edited"'], ['Tab 3 (has pending edits)', '"Edited"']])
+})
+
+it('tells its host the heading the reader is under, and goes to one its host names', async () => {
+  const filler = Array.from({ length: 55 }, (_, line) => `Line ${line}`).join('\n\n')
+  const savedMarkdown = `# Intro\n\nOld text\n\n${filler}\n\n# Middle\n\n${filler}\n\n# Last\n\nEnd\n`
+  const heading = (name: string, headingId: string) => paragraph(savedMarkdown.split('\n').indexOf(`# ${name}`),
+    [{ text: name, look: HEADING, at: 2 }], { style: 'HEADING_1', look: HEADING, headingId })
+  const headings = drawing([heading('Intro', 'h.intro'), heading('Middle', 'h.middle'), heading('Last', 'h.last')])
+  // Its host sends it to the heading the reader left, which it opens on, not on its first change.
+  const { page, said, go } = await draw(
+    { savedMarkdown, markdown: savedMarkdown.replace('Old text', 'New text'), drawing: headings }, {}, '?tab=t.0#heading=h.middle')
+  const top = (level: number) => Math.round(page.querySelectorAll('[aria-level="1"]')[level].getBoundingClientRect().top)
+  const middle = { anchor: '?tab=t.0#heading=h.middle', label: 'Middle' }
+
+  await expect.poll(() => said.at(-1)).toEqual(middle)
+  expect(top(1)).toBeLessThan(60)
+  // The scroll to the first change, which a tab opens with, has not carried it off.
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), top(1) < 60]).toEqual([middle, true])
+
+  // At the foot of the tab the last heading is the one read, though it scrolls no higher.
+  expect(await go('?tab=t.0#heading=h.last')).toBe(true)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.0#heading=h.last', label: 'Last' })
+  // Above its first heading, a document of one tab has no spot to tell of.
+  frame!.contentWindow!.scrollTo(0, 0)
+  await expect.poll(() => said.at(-1)).toBeNull()
+  expect(await go('?tab=t.0#heading=h.intro')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#heading=h.intro', label: 'Intro' })
+
+  // A heading or a tab that is not there leaves the reader where they are.
+  expect([await go('?tab=t.0#heading=h.gone'), await go('?tab=t.9'), await go('nowhere')]).toEqual([false, false, false])
+  expect(top(0)).toBeGreaterThan(0)
+})
+
+it('tells its host the tab shown, opens on the one its host names, and on its own choice when that is gone', async () => {
+  const titles = ['Notes', 'Plan', 'Costs']
+  const tabs = ['t.0', 't.1', 't.2']
+  const { page, said, go } = await draw({ savedMarkdown: '', tabs, titles, edited: ['t.1'] }, {}, '?tab=t.2')
+
+  expect(text(page)).toBe('t.2')
+  expect(said).toEqual([{ anchor: '?tab=t.2', label: 'Costs' }])
+
+  expect(await go('?tab=t.0')).toBe(true)
+  expect(text(page)).toBe('t.0')
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0', label: 'Notes' })
+  // The reader's own move is told too.
+  frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.1', label: 'Plan' })
+  expect(await go('?tab=t.9')).toBe(false)
+  expect(text(page)).toBe('t.1')
+  frame!.remove()
+
+  // Sent to a tab that is gone, it opens where it would have: on the first with changes waiting.
+  const anew = await draw({ savedMarkdown: '', tabs, titles, edited: ['t.1'] }, {}, '?tab=t.9')
+  expect(text(anew.page)).toBe('t.1')
+  expect(anew.said).toEqual([{ anchor: '?tab=t.1', label: 'Plan' }])
 })

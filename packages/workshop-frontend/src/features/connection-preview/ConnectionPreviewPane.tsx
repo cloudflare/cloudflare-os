@@ -5,11 +5,11 @@ import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { entryFields } from '../../components/ActionFields'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from '../../components/IncompleteDescriptionNotice'
-import GadgetUI, { type GadgetUiSource } from '../../GadgetUI'
+import GadgetUI, { type GadgetUIFocus, type GadgetUiSource } from '../../GadgetUI'
 import { useActions } from '../../useActions'
 import { useResolveAction } from '../../useResolveAction'
 import { ChangeFields, ChangeProse } from './ChangeDetail'
-import { itemOf, previewOf, type ConnectionPreview, type ItemPreviews } from './connectionPreview'
+import { itemOf, previewOf, type ConnectionPreview } from './connectionPreview'
 import { useNewActionEntries } from './useNewActionEntries'
 
 // Long enough to fold a burst of queued edits into one redraw.
@@ -18,6 +18,8 @@ const REFRESH_DEBOUNCE_MS = 300
 type ConnectionPreviewPaneProps = {
   overseer: RpcStub<Overseer>
   preview: ConnectionPreview
+  /** Where the frame is sent as it starts, and what hears where the reader goes (`usePreviewFocus`). */
+  focus: GadgetUIFocus
   /** A restricted workspace reviews in the chat, where the approval notices are. */
   restricted: boolean
   /** The connection's resource was created, so the connection now reads that one: the preview of it. */
@@ -28,10 +30,11 @@ type ConnectionPreviewPaneProps = {
 
 /**
  * A connection drawn in the gadget UI frame as a gadget is, with its session as the frame's
- * `gadget` stub. The frame only reads; applying and discarding are drawn here, outside it.
+ * `gadget` stub. One item of it is drawn by the same code, which the frame's host sends to the
+ * item. The frame only reads; applying and discarding are drawn here, outside it.
  */
 export const ConnectionPreviewPane = (
-  { overseer, preview, restricted, onCreated, onDiscarded }: ConnectionPreviewPaneProps,
+  { overseer, preview, focus, restricted, onCreated, onDiscarded }: ConnectionPreviewPaneProps,
 ) => {
   const { gatekeeperId, item } = preview
 
@@ -39,24 +42,12 @@ export const ConnectionPreviewPane = (
   const [source, setSource] = useState<{ gadget: GadgetUiSource } | null>(null)
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
-    setSource({ gadget: item === undefined ? client : {
-      getUiBundle: () => client.getUiBundle(),
-      connectToGadget: async () => {
-        // The frame is given the item's session alone, which outlives the one it was opened from.
-        // A session's type is its gatekeeper's own: this much of it is the convention.
-        const session = client.connectToGadget() as unknown as RpcStub<ItemPreviews>
-        try {
-          return await session.openPreview(item)
-        } finally {
-          session[Symbol.dispose]()
-        }
-      },
-    } })
+    setSource({ gadget: client })
     return () => {
       setSource(null)
       client[Symbol.dispose]()
     }
-  }, [overseer, gatekeeperId, item])
+  }, [overseer, gatekeeperId])
 
   // What is drawn here: the connection's changes, or those of the one item.
   const drawn = (entry: ActionLogEntry): entry is Extract<ActionLogEntry, { type: 'action' }> =>
@@ -104,7 +95,7 @@ export const ConnectionPreviewPane = (
     <div className="relative flex h-full flex-col">
       <div className="min-h-0 flex-1">
         {source && (
-          <GadgetUI gadget={source.gadget} height="100%" refreshSignal={refreshSignal} />
+          <GadgetUI gadget={source.gadget} height="100%" refreshSignal={refreshSignal} focus={focus} />
         )}
       </div>
       {next?.type === 'action' && (

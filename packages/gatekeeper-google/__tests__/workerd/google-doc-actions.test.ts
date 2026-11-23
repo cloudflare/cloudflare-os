@@ -3944,7 +3944,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
       "client.js", "docs.js", ...PREVIEW_PATHS.slice(1, -1), "sheets.js", "slides.js", "slide.js", "shapes.js",
       "ui/chrome.js",
     ]);
-    expect(files[0].code).toContain("session.getPreviewKind()");
+    expect(files[0].code).toContain("file.getPreviewKind()");
     expect((await hooks().callDoc(facet, "getPreviewKind" as keyof GoogleDocSession, [])).value).toBe("docs");
 
     expect(await hooks().readPendingChanges(facet, MAIN_TAB)).toMatchObject({
