@@ -52,6 +52,11 @@ describe("the branch harness", () => {
       /After another branch applied, a session outside any chat sees/);
   });
 
+  it("refuses a gatekeeper that drops a submission whose reply was lost", async () => {
+    await expect(runBranchHarness(subject("forgetful"))).rejects.toThrow(
+      /is kept when its reply is lost.*does not see/);
+  });
+
   it("refuses a gatekeeper whose reads cross branches", async () => {
     await expect(runBranchHarness(subject("leaky"))).rejects.toThrow(
       /two branches do not see each other's pending actions.*A session on another branch sees/);

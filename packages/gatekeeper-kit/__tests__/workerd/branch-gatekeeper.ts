@@ -3,7 +3,8 @@
  * handle per session, `applyActions()`, `stageActions()` and `rejectAction()` delegated to the
  * bound set, and reads that overlay the handle's pending actions on what the provider holds. Its
  * provider is a set of markers in its own storage. A facet named `leaky-…` overlays every branch's
- * pending actions instead, the mistake the branch harness exists to catch.
+ * pending actions instead, the mistake the branch harness exists to catch. One named `forgetful-…`
+ * never asks whether the Workshop holds a submission, so it drops one whose reply was lost.
  */
 
 import { DurableObject, RpcTarget, type RpcStub } from "cloudflare:workers";
@@ -17,6 +18,7 @@ import {
   ActionJournal,
   defineActions,
   type ActionSession,
+  type ActionSessionQueue,
   type BoundActionSet,
   type TaggedAction,
 } from "../../src/actions";
@@ -91,7 +93,14 @@ export class BranchGatekeeper extends DurableObject {
 
   async startSession(queue: RpcStub<ApprovalQueue>, branch?: BranchView): Promise<MarkerSession> {
     const kept = queue.dup();
-    return new MarkerSession(kept, await this.#actions.session(kept, branch), this);
+    const asked: ActionSessionQueue = this.ctx.id.name?.startsWith("forgetful")
+      ? {
+          submitAction: ((id, description) => kept.submitAction(id, description)) as
+            ActionSessionQueue["submitAction"],
+          holdsAction: (async () => false) as never,
+        }
+      : kept;
+    return new MarkerSession(kept, await this.#actions.session(asked, branch), this);
   }
 
   applyActions(branch: BranchView, actions: number[], _cache: RpcStub<GitCache>)

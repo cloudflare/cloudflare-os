@@ -75,6 +75,8 @@ export type BranchHarnessCase = {
 type Behavior =
   | { kind: "accept" }
   | { kind: "refuse" }
+  /** Records the action, then throws, as when only the reply is lost. */
+  | { kind: "lose-reply" }
   | { kind: "pause"; release: Promise<void>; entered: () => void }
   | { kind: "apply-first"; applied: (result: ApplyActionsResult) => void };
 
@@ -131,6 +133,10 @@ class HarnessQueue extends RpcTarget implements ApprovalQueue {
     const behavior = this.#behavior;
     this.#ledger.submitted.push(action);
     if (behavior.kind === "refuse") throw new Error("The branch harness refused this action.");
+    if (behavior.kind === "lose-reply") {
+      this.#ledger.held.add(action);
+      throw new Error("The branch harness lost this reply.");
+    }
     if (behavior.kind === "pause") {
       behavior.entered();
       await behavior.release;
@@ -269,6 +275,22 @@ export function branchHarnessCases<Session>(subject: BranchHarnessSubject<Sessio
         }
       }
       await expectReads(await open(view), refused, false, "After an apply named it, a session");
+    }),
+
+    guarded("a submission the Workshop recorded is kept when its reply is lost", async () => {
+      const view = branch("lost");
+      const losing = await open(view, { kind: "lose-reply" });
+      const mark = marker("lost");
+      const before = ledger.submitted.length;
+      // Whether the caller is told it failed is the gatekeeper's to choose.
+      await subject.submit(losing, mark).catch(() => {});
+      const ids = ledger.submitted.slice(before);
+      if (ids.length !== 1) {
+        throw new Error(`Submitting "${mark}" made ${ids.length} submitAction() calls, not one.`);
+      }
+      await expectReads(await open(view), mark, true,
+        "After the reply to its submission was lost, a session on its branch");
+      await expectApplied(view, ids[0]!);
     }),
 
     guarded("a submission awaiting its reply shows a concurrent read nothing", async () => {
