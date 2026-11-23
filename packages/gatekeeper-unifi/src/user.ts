@@ -39,7 +39,7 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
     const summary = await this.#account().summary();
     return {
       displayName: summary?.displayName ?? "UniFi",
-      uniqueName: summary?.uniqueName ?? "UniFi",
+      ...(summary?.uniqueName !== undefined && { uniqueName: summary.uniqueName }),
       avatar: { url: UNIFI_LOGO_URL },
     };
   }

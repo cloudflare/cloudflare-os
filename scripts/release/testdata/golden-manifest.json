@@ -1216,6 +1216,12 @@
             "UnifiGatekeeper"
           ],
           "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "UnifiWifiLane"
+          ],
+          "tag": "v1"
         }
       ],
       "modules": [

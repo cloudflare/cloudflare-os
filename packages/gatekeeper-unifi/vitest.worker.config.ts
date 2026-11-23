@@ -24,6 +24,7 @@ export default defineConfig({
         durableObjects: {
           UNIFI_ACCOUNT: { className: "UnifiAccount", useSQLite: true },
           UNIFI_GATEKEEPER: { className: "UnifiGatekeeper", useSQLite: true },
+          UNIFI_WIFI_LANE: { className: "UnifiWifiLane", useSQLite: true },
           // A gatekeeper DO reads `ctx.props`, and a `DurableObjectClass` carrying props is only
           // reachable through `ctx.facets` -- so tests drive it from a hook Durable Object, exactly
           // as the overseer does in production, rather than a plain namespace binding.

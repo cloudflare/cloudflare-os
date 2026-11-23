@@ -34,6 +34,8 @@ describe("subresource IDs", () => {
     [hotspot, { kind: "client", siteId: SITE, clientId: "c" }, `${NETWORK}/site/${SITE}/client/c`],
     [hotspot, { kind: "vouchers", siteId: SITE }, `${NETWORK}/vouchers/${SITE}`],
     [protect, { kind: "list", id: "cameras" }, `${PROTECT}/list/cameras`],
+    [protect, { kind: "app" }, PROTECT],
+    [site, { kind: "app" }, NETWORK],
     [site, { kind: "wifiPassword", siteId: SITE, wifiNetworkId: WIFI }, `${NETWORK}/site/${SITE}/wifiPassword/${WIFI}`],
     [protect, { kind: "nvr", id: NVR }, `${PROTECT}/nvr/${NVR}`],
     [protect, { kind: "camera", id: CAMERA }, `${PROTECT}/camera/${CAMERA}`],
@@ -45,7 +47,7 @@ describe("subresource IDs", () => {
 
   it.each<[string, UnifiResource, string]>([
     ["another application", site, PROTECT],
-    ["the Network application alone, which no Network read reports", site, NETWORK],
+    ["the application, from a device binding", device, NETWORK],
     ["another console", site, `console/other/app/network/site/${SITE}`],
     ["another site's data", site, `${NETWORK}/devices/${OTHER_SITE}`],
     ["another site's password", site, `${NETWORK}/site/${OTHER_SITE}/wifi/${WIFI}`],
@@ -58,22 +60,22 @@ describe("subresource IDs", () => {
     ["a non-canonical spelling", site, `console/${CONSOLE}/app/network/site/${SITE}`],
     ["an unknown kind", protect, `${PROTECT}/doorlock/${CAMERA}`],
     ["an unknown list", protect, `${PROTECT}/list/doorlocks`],
-    ["the Protect application alone", protect, PROTECT],
     ["the global requirement", site, "global"],
   ])("refuses %s", (_name, resource, id) => {
     expect(() => parseRequirement(resource, id)).toThrow(/isn't a subresource this UniFi binding reports/);
   });
 
   it("checks each requirement at the endpoint its read calls", () => {
-    expect(probeFor({ kind: "camera", id: CAMERA })).toEqual({ path: `/v1/cameras/${CAMERA}` });
-    expect(probeFor({ kind: "nvr", id: NVR })).toEqual({ path: "/v1/nvrs" });
-    expect(probeFor({ kind: "clients", siteId: SITE })).toEqual({ path: `/v1/sites/${SITE}/clients`, query: { limit: "1" } });
-    expect(probeFor({ kind: "deviceStatistics", siteId: SITE, deviceId: "d" }))
+    expect(probeFor({ kind: "camera", id: CAMERA }, "protect")).toEqual({ path: `/v1/cameras/${CAMERA}` });
+    expect(probeFor({ kind: "nvr", id: NVR }, "protect")).toEqual({ path: "/v1/nvrs" });
+    expect(probeFor({ kind: "clients", siteId: SITE }, "network")).toEqual({ path: `/v1/sites/${SITE}/clients`, query: { limit: "1" } });
+    expect(probeFor({ kind: "deviceStatistics", siteId: SITE, deviceId: "d" }, "network"))
       .toEqual({ path: `/v1/sites/${SITE}/devices/d/statistics/latest` });
-    expect(probeFor({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }))
+    expect(probeFor({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, "network"))
       .toEqual({ path: `/v1/sites/${SITE}/wifi/broadcasts/${WIFI}` });
-    expect(probeFor({ kind: "site", siteId: SITE })).toEqual({ path: "/v1/sites", query: { limit: "200" } });
-    expect(probeFor({ kind: "list", id: "cameras" })).toEqual({ path: "/v1/cameras" });
+    expect(probeFor({ kind: "site", siteId: SITE }, "network")).toEqual({ path: "/v1/sites", query: { limit: "200" } });
+    expect(probeFor({ kind: "list", id: "cameras" }, "protect")).toEqual({ path: "/v1/cameras" });
+    expect(probeFor({ kind: "app" }, "protect")).toEqual({ path: "/v1/meta/info" });
   });
 
   it("passes a probe only when its answer shows what the requirement needs", () => {

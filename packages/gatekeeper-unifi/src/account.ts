@@ -19,7 +19,6 @@ import {
   commitStagedCredentials, discardStagedCredentials, stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
-import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import { wifiPutBody } from "./actions";
 import { UnifiApi } from "./api";
 import type { ConnectInput, ConnectPageMode } from "./connect-form";
@@ -72,7 +71,11 @@ export type ConnectOutcome =
 export type AccountSummary = {
   mode: "cloud" | "direct";
   displayName: string;
-  uniqueName: string;
+  /**
+   * What tells this account apart from every other, which the Workshop treats two accounts sharing
+   * as one: the account's email, or the console's URL. Left out when UniFi didn't report an email.
+   */
+  uniqueName?: string;
 };
 
 const CONNECTION_KEY = "connection";
@@ -84,8 +87,6 @@ const GET_TTL_MS = 5_000;
 export class UnifiAccount extends DurableObject<UnifiEnv> {
   readonly #buckets = new Map<string, TokenBucket>();
   readonly #cache = new ResponseCache<UnifiResponse>();
-  /** One queue per WiFi network a change is being written to; see `updateWifi`. */
-  readonly #wifiWrites = new Map<string, SerialTaskQueue>();
 
   // -------------------------------------------------------------------------
   // Connect and reconnect
@@ -213,11 +214,13 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       return {
         mode: "cloud",
         displayName: identity.fullName ?? identity.email ?? "UniFi account",
-        uniqueName: identity.email ?? `UniFi account (${identity.consoleIds.length} consoles)`,
+        ...(identity.email !== null && { uniqueName: identity.email }),
       };
     }
-    const where = credentials.mode === "direct" ? new URL(credentials.baseUrl).host : identity.consoleId;
-    return { mode: "direct", displayName: identity.consoleName, uniqueName: `${identity.consoleName} at ${where}` };
+    return {
+      mode: "direct", displayName: identity.consoleName,
+      ...(credentials.mode === "direct" && { uniqueName: credentials.baseUrl }),
+    };
   }
 
   /**
@@ -303,7 +306,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
         if (consoleId === null) return false;
         const probe = await this.#send(
-          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement) }, GET_TTL_MS, connection);
+          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
         if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined);
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
@@ -340,20 +343,25 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   async updateWifi(
     consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
   ): Promise<UnifiFailure | null> {
-    const lane = JSON.stringify([consoleId, siteId, wifiNetworkId]);
-    let queue = this.#wifiWrites.get(lane);
-    if (!queue) this.#wifiWrites.set(lane, queue = new SerialTaskQueue());
-    return await queue.run(async () => {
-      const api = new UnifiApi(request => this.#send(request, null), consoleId);
-      try {
-        const raw = await api.getWifiRaw(siteId, wifiNetworkId);
-        await api.putWifi(siteId, wifiNetworkId, wifiPutBody(raw, changes));
-        return null;
-      } catch (error) {
-        if (error instanceof UnifiError) return error.toFailure();
-        throw error;
-      }
-    });
+    // Queued in the network's lane, which every connection in the deployment shares (wifi-lane.ts).
+    const lanes = this.ctx.exports.UnifiWifiLane;
+    const lane = lanes.get(lanes.idFromName(JSON.stringify([siteId, wifiNetworkId])));
+    return await lane.write(this.ctx.id.toString(), consoleId, siteId, wifiNetworkId, changes);
+  }
+
+  /** `updateWifi`'s read, merge and write, run when the network's lane reaches it. */
+  async writeWifi(
+    consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
+  ): Promise<UnifiFailure | null> {
+    const api = new UnifiApi(request => this.#send(request, null), consoleId);
+    try {
+      const raw = await api.getWifiRaw(siteId, wifiNetworkId);
+      await api.putWifi(siteId, wifiNetworkId, wifiPutBody(raw, changes));
+      return null;
+    } catch (error) {
+      if (error instanceof UnifiError) return error.toFailure();
+      throw error;
+    }
   }
 
   /**

@@ -36,6 +36,12 @@
         "UnifiAccount",
         "UnifiGatekeeper"
       ]
+    },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "UnifiWifiLane"
+      ]
     }
   ]
 }

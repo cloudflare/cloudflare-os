@@ -22,6 +22,7 @@ export { UnifiGatekeeper } from "./gatekeeper";
 export { GatekeeperVendor } from "./vendor";
 export { UnifiUser } from "./user";
 export { UnifiVerifier } from "./verifier";
+export { UnifiWifiLane } from "./wifi-lane";
 
 const CONNECT_PATH = /^\/([0-9a-f]{64})\/([0-9a-f]{64})$/;
 

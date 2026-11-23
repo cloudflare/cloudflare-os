@@ -44,11 +44,22 @@ describe("the account", () => {
     expect(await hooks().user(accountId, "describe")).toMatchObject({ ok: { displayName: "Dan Carter", uniqueName: "dan@example.com" } });
   });
 
-  it("names a direct connection after its console and where it is", async () => {
+  it("names a direct connection after its console, told apart by its full URL", async () => {
+    // Not the console's name and host: two same-named consoles can share a host under different paths.
     installFake();
     const accountId = await connectDirect();
     expect(await hooks().user(accountId, "describe"))
-      .toMatchObject({ ok: { displayName: "Dream Machine Pro", uniqueName: "Dream Machine Pro at unifi.home.example" } });
+      .toMatchObject({ ok: { displayName: "Dream Machine Pro", uniqueName: CONSOLE_URL } });
+  });
+
+  it("leaves a cloud account's unique name out when UniFi doesn't report its email", async () => {
+    // The Workshop treats two accounts with one unique name as one, so a made-up one would merge them.
+    const { unifi, console } = installFake();
+    unifi.addCloudKey("unnamed-key-0123456789abcdefABCD", { email: null, fullName: "Someone", owned: [console] });
+    const accountId = await connectCloud("unnamed-key-0123456789abcdefABCD");
+    const described = await hooks().user(accountId, "describe") as { ok: Record<string, unknown> };
+    expect(described.ok).toMatchObject({ displayName: "Someone" });
+    expect(described.ok).not.toHaveProperty("uniqueName");
   });
 
   it("offers every kind of resource", async () => {
@@ -213,6 +224,16 @@ describe("checking collaborators", () => {
     expect(await verify(protect, sam, [`${app}/camera/${HOME.doorbellId}`])).toEqual(ALLOWED);
     expect(await verify(protect, sam, [`${app}/list/cameras`, `${app}/camera/${HOME.doorbellId}`])).toEqual(DENIED);
     expect(await verify(protect, sam, [`${app}/list/sensors`])).toEqual(ALLOWED);
+  });
+
+  it("checks the application's own information, such as its version, at its info endpoint", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, ["/v1/meta/info"]]]);
+    const protect = binding(owner, { kind: "protect", consoleId });
+    const app = appSubresource(protect.props.resource);
+    expect(await verify(protect, sam, [`${app}/nvr/${HOME.nvrId}`])).toEqual(ALLOWED);
+    expect(await verify(protect, sam, [`${app}/nvr/${HOME.nvrId}`, app])).toEqual(DENIED);
   });
 
   it("checks a camera's images apart from its details, which can be allowed separately", async () => {

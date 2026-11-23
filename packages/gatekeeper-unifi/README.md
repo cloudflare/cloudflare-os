@@ -101,8 +101,8 @@ password or voucher code that still works: a new password is described as changi
 Nothing is reverted automatically. A change UniFi refuses, or whose target is gone, fails
 without a retry. A restart, power-cycle, guest grant, or voucher batch interrupted after it was
 sent is reported as having an unknown outcome and is never sent again. WiFi changes are written
-one at a time per network, from a fresh read, so changes approved through two bindings at once
-both take effect. UniFi's error messages aren't passed on, since a console or a proxy in front of
+one at a time per network, from a fresh read, across every connection in the deployment (two
+people's keys to one console included), so changes approved at once all take effect. UniFi's error messages aren't passed on, since a console or a proxy in front of
 it can echo what a request carried; errors are described by their status.
 
 ## Observers
@@ -112,7 +112,8 @@ UniFi endpoint it came from, and the Workshop shows it only to a collaborator wh
 read all of it there. UniFi roles differ in what they can see: a Network role can be limited to
 some sites, a Protect role to some cameras, and not every role may read WiFi passwords.
 
-All IDs start `console/<consoleId>/app/<network|protect>`. Then:
+All IDs start `console/<consoleId>/app/<network|protect>`, which alone names the application's own
+information, such as the version a site's or Protect's `describe()` returns. Then:
 
 - Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
   `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists;

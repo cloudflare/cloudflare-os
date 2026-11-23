@@ -64,14 +64,7 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
       const failure = await this.#account().updateWifi(this.ctx.props.resource.consoleId, siteId, wifiNetworkId, changes);
       if (failure) throw new UnifiError(failure);
     },
-    recordVoucherBatch: (batch, voucherIds) => {
-      const kv = this.ctx.storage.kv;
-      // The most recent batches only: one older than these can still be found with listVouchers().
-      const batches = [...(kv.get<string[]>(VOUCHER_BATCHES_KEY) ?? []).filter(b => b !== batch), batch];
-      for (const old of batches.splice(0, Math.max(0, batches.length - MAX_VOUCHER_BATCHES))) kv.delete(voucherBatchKey(old));
-      kv.put(voucherBatchKey(batch), voucherIds);
-      kv.put(VOUCHER_BATCHES_KEY, batches);
-    },
+    recordVoucherBatch: (batch, voucherIds) => this.#recordVoucherBatch(batch, voucherIds),
   });
 
   #account(): DurableObjectStub<UnifiAccount> {
@@ -135,7 +128,23 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
   }
 
   async rejectAction(action: number): Promise<void> {
+    const pending = this.#journal.listPending().find(entry => entry.id === action)?.action;
     await this.#actions.reject(action);
+    // A declined batch is recorded as one that created nothing, so looking it up answers that,
+    // rather than that the batch is unknown.
+    if (pending?.kind === "createVouchers") this.#recordVoucherBatch(pending.payload.batch, []);
+  }
+
+  /**
+   * Keeps the IDs of the vouchers a batch created, for `getVoucherBatch()`. Only the most recent
+   * batches are kept; looking up an older one fails, rather than answering that it created nothing.
+   */
+  #recordVoucherBatch(batch: string, voucherIds: string[]): void {
+    const kv = this.ctx.storage.kv;
+    const batches = [...(kv.get<string[]>(VOUCHER_BATCHES_KEY) ?? []).filter(b => b !== batch), batch];
+    for (const old of batches.splice(0, Math.max(0, batches.length - MAX_VOUCHER_BATCHES))) kv.delete(voucherBatchKey(old));
+    kv.put(voucherBatchKey(batch), voucherIds);
+    kv.put(VOUCHER_BATCHES_KEY, batches);
   }
 
   async revertAction(_action: number): Promise<void> {

@@ -6,13 +6,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
-import { account, binding, connectCloud, connectDirect, hooks, installFake, RESOURCES } from "./helpers.js";
+import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
 import { HOME, rawVoucher } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+/** A binding to the guest WiFi network through a direct connection. */
+async function guestWifiOf(accountId: string) {
+  const identity = await account(accountId).identity() as { consoleId: string };
+  return binding(accountId, { kind: "wifi", consoleId: identity.consoleId, siteId: HOME.siteId, wifiNetworkId: HOME.guestWifiId });
+}
 
 function lastSubmitted(queue: { submitted: { actionId: number; description: ActionDescription }[] }) {
   const entry = queue.submitted.at(-1);
@@ -30,7 +36,7 @@ describe("every read is authorized before it returns", () => {
   const ap = item("device", HOME.apId);
   // [read, step, what it reports, whether it returns a credential that works]
   const reads: [string, Step, string[], boolean?][] = [
-    ["describe", { call: "describe" }, [ofSite("site")]],
+    ["describe", { call: "describe" }, [ofSite("site"), NETWORK]],
     ["listDevices", { call: "listDevices" }, [ofSite("devices")]],
     ["listClients", { call: "listClients" }, [ofSite("clients")]],
     ["getClient", { call: "getClient", args: [HOME.phoneId] }, [item("client", HOME.phoneId)]],
@@ -258,6 +264,32 @@ describe("a WiFi network", () => {
     expect(puts[1]!.body).toMatchObject({ hideName: true, securityConfiguration: { passphrase: "brand-new-pass" } });
   });
 
+  it("writes changes approved through two people's connections to one console one after the other", async () => {
+    // Separate keys mean separate accounts, but the same network: their writes still take turns.
+    const { unifi, console } = installFake();
+    const SECOND_KEY = "second-local-key-0123456789abcdef";
+    unifi.direct.get(CONSOLE_URL)!.keys.add(SECOND_KEY);
+    const mine = await guestWifiOf(await connectDirect());
+    const theirs = await guestWifiOf(await connectDirect({ localApiKey: SECOND_KEY }));
+    await mine.call("update", { passphrase: "brand-new-pass" });
+    await theirs.call("update", { hidden: true });
+    // Hold my write until their read has gone out, or a moment has passed: without the shared lane
+    // they'd read the old settings and write them back over mine.
+    const { promise: theyRead, resolve: sawTheirRead } = Promise.withResolvers<void>();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const sent = new Request(input, init);
+      const key = sent.headers.get("x-api-key");
+      if (key === SECOND_KEY && sent.method === "GET" && sent.url.includes("/wifi/broadcasts/")) sawTheirRead();
+      if (key === LOCAL_KEY && sent.method === "PUT") await Promise.race([theyRead, new Promise(resolve => setTimeout(resolve, 300))]);
+      return unifi.fetch(sent);
+    });
+    await Promise.all([mine.apply(lastSubmitted(await mine.queue()).actionId), theirs.apply(lastSubmitted(await theirs.queue()).actionId)]);
+    const puts = console.writes().filter(call => call.method === "PUT");
+    expect(puts).toHaveLength(2);
+    expect(puts[1]!.body).toMatchObject({ securityConfiguration: { passphrase: "brand-new-pass" } });
+    expect(puts[1]!.body).toMatchObject({ hideName: true });
+  });
+
   it("forgets a rejected change", async () => {
     const { console } = installFake();
     const guest = binding(await connectCloud(), RESOURCES.wifi(HOME.guestWifiId));
@@ -348,6 +380,16 @@ describe("the guest hotspot", () => {
     // Working codes, which the Workshop keeps from leaving the workspace.
     expect((await hotspot.queue()).observations.at(-1)).toMatchObject({ containsRestrictedData: true });
     expect(await hotspot.failure("getVoucherBatch", "not-a-batch")).toMatch(/isn't a voucher batch ID/);
+  });
+
+  it("tells a declined batch, which created nothing, from one it can't look up", async () => {
+    installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240 });
+    await hotspot.reject(lastSubmitted(await hotspot.queue()).actionId);
+    expect(await hotspot.call("getVoucherBatch", batch)).toEqual([]);
+    // One it never recorded, as for a batch older than the most recent it keeps.
+    expect(await hotspot.failure("getVoucherBatch", crypto.randomUUID())).toMatch(/can't be looked up/);
   });
 
   it("finds a batch's vouchers on a site with more than listVouchers() returns", async () => {

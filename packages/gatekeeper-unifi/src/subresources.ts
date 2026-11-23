@@ -5,7 +5,8 @@
  * limited to some sites, and a Protect role to some cameras.
  *
  * IDs start `console/<consoleId>/app/<network|protect>`, the console ID being the one in the
- * binding's resource URL, which never changes for a binding. Then, in Network, a site's own details
+ * binding's resource URL, which never changes for a binding; alone, that names the application's
+ * own information, such as its version. Then, in Network, a site's own details
  * are `/site/<siteId>`; its devices, clients, LAN networks, WiFi network list and voucher codes are
  * `/devices/<siteId>`, `/clients/<siteId>`, `/networks/<siteId>`, `/wifiNetworks/<siteId>` and
  * `/vouchers/<siteId>`; one WiFi network's settings, password included, are
@@ -25,12 +26,14 @@
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { asObject, parseNetworkPage, parseNvr, wifiPassphrase } from "./parse";
 import { isValidId, resourceApp, type UnifiResource } from "./resources";
+import type { UnifiApp } from "./transport";
 
 /**
  * One thing a read depends on, within the bound console's application. A Protect requirement names
  * a device, a Network one a site (and, for a WiFi network's settings, the network).
  */
 export type UnifiRequirement =
+  | { kind: "app" }
   | { kind: "list"; id: "cameras" | "sensors" | "lights" }
   | { kind: "nvr"; id: string }
   | { kind: "camera"; id: string }
@@ -95,7 +98,7 @@ function decode(id: string): UnifiRequirement | null {
   if (consoleFragment?.name !== "console" || app?.name !== "app") return null;
   if (!rest.every(f => isValidId(f.id))) return null;
   const [first, second] = rest;
-  if (!first) return null;
+  if (!first) return { kind: "app" };
   if (second) {
     if (rest.length !== 2 || first.name !== "site") return null;
     switch (second.name) {
@@ -130,7 +133,7 @@ function isOneOf<T extends string>(value: string, options: readonly T[]): value 
 function reports(resource: UnifiResource, requirement: UnifiRequirement): boolean {
   const inSite = "siteId" in resource && "siteId" in requirement && requirement.siteId === resource.siteId;
   switch (resource.kind) {
-    case "site": return inSite;
+    case "site": return inSite || requirement.kind === "app";
     case "device":
       return inSite && (requirement.kind === "devices" || requirement.kind === "clients" ||
         (requirement.kind === "device" || requirement.kind === "deviceStatistics") && requirement.deviceId === resource.deviceId);
@@ -139,7 +142,7 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
         requirement.wifiNetworkId === resource.wifiNetworkId;
     case "hotspot":
       return inSite && (requirement.kind === "clients" || requirement.kind === "client" || requirement.kind === "vouchers");
-    case "protect": return requirement.kind === "list" || isOneOf(requirement.kind, PROTECT_ITEMS);
+    case "protect": return requirement.kind === "app" || requirement.kind === "list" || isOneOf(requirement.kind, PROTECT_ITEMS);
     case "camera":
       return (requirement.kind === "camera" || requirement.kind === "snapshot" || requirement.kind === "packageSnapshot") &&
         requirement.id === resource.cameraId;
@@ -153,10 +156,13 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
  * it calls, so whatever a role is refused there is refused here. A successful answer must also
  * satisfy `probeConfirms`.
  */
-export function probeFor(requirement: UnifiRequirement): { path: string; query?: Record<string, string>; accept?: "jpeg" } {
+export function probeFor(
+  requirement: UnifiRequirement, app: UnifiApp,
+): { path: string; query?: Record<string, string>; accept?: "jpeg" } {
   const at = encodeURIComponent;
   const first = { limit: "1" };
   switch (requirement.kind) {
+    case "app": return { path: app === "network" ? "/v1/info" : "/v1/meta/info" };
     case "list": return { path: `/v1/${requirement.id}` };
     case "nvr": return { path: "/v1/nvrs" };
     case "camera": return { path: `/v1/cameras/${at(requirement.id)}` };

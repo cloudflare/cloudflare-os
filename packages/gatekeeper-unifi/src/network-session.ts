@@ -74,7 +74,7 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
       api.getSite(this.#siteId), api.networkInfo(), this.#ctx.shared.consoleName(),
     ]);
     await this.#ctx.observe("Read a UniFi site", `Read the name of UniFi site ${md(site.name)} on ${md(consoleName)}.`,
-      [{ kind: "site", siteId: this.#siteId }]);
+      [{ kind: "site", siteId: this.#siteId }, { kind: "app" }]);
     return { consoleId: api.consoleId, consoleName, siteId: site.id, name: site.name, networkVersion: info.applicationVersion };
   }
 
@@ -375,7 +375,14 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     if (queued.length > 0) {
       vouchers = simulateVouchers([], this.#siteId, queued);
     } else {
-      const ids = voucherBatch(batchId) ?? [];
+      const ids = voucherBatch(batchId);
+      if (ids === null) {
+        throw new UnifiError({
+          kind: "notFound",
+          message: "That voucher batch can't be looked up: only this connection's 50 most recent batches are kept, " +
+            "and one whose creation failed isn't. listVouchers() lists the vouchers that exist.",
+        });
+      }
       // Looked up afresh by ID: listVouchers() stops at 1,000 in no promised order.
       const current = await api.findVouchers(this.#siteId, ids);
       // Simulation hides pending deletions; it would add other batches' placeholders, which are dropped.

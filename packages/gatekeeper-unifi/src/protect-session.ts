@@ -38,7 +38,7 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
     const { api, consoleName } = this.#ctx.shared;
     const [info, nvr, name] = await Promise.all([api.protectInfo(), api.getNvr(), consoleName()]);
     await this.#ctx.observe("Read UniFi Protect", `Read the version and alarm state of UniFi Protect on ${md(name)}.`,
-      [{ kind: "nvr", id: nvr.id }]);
+      [{ kind: "nvr", id: nvr.id }, { kind: "app" }]);
     return { consoleId: api.consoleId, consoleName: name, protectVersion: info.applicationVersion, alarm: nvr.alarm };
   }
 

@@ -22,7 +22,7 @@ describe("every read is authorized before it returns", () => {
   const PROTECT = `console/${encodeURIComponent(HOME.hostId)}/app/protect`;
   // What each read reports: every Protect device it disclosed, or else the application.
   const reads: [string, Step, string[]][] = [
-    ["describe", { call: "describe" }, [`${PROTECT}/nvr/${HOME.nvrId}`]],
+    ["describe", { call: "describe" }, [`${PROTECT}/nvr/${HOME.nvrId}`, PROTECT]],
     ["listCameras", { call: "listCameras" },
       [`${PROTECT}/list/cameras`, `${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
     ["listSensors", { call: "listSensors" }, [`${PROTECT}/list/sensors`, `${PROTECT}/sensor/${HOME.sensorId}`]],

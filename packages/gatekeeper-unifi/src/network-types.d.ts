@@ -467,8 +467,9 @@ export interface UnifiHotspot {
 
   /**
    * The vouchers one `createVouchers()` call made, however many others the site has. Each one's
-   * `code` is `null` until the console issues it; the list is empty if they were never created, and
-   * leaves out any deleted since.
+   * `code` is `null` until the console issues it; the list is empty if the batch was declined, and
+   * leaves out any deleted since. Throws for a batch older than this connection's 50 most recent,
+   * or one whose creation failed; `listVouchers()` still lists the vouchers that exist.
    */
   getVoucherBatch(batchId: string): Promise<UnifiVoucher[]>;
 

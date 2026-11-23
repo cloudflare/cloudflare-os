@@ -122,7 +122,7 @@ describe("submitting the form", () => {
     });
     expect(identity?.mode === "direct" && identity.consoleId).toMatch(/^local-[0-9a-f]{16}$/);
     expect(await account(accountId).summary()).toEqual({
-      mode: "direct", displayName: "Dream Machine Pro", uniqueName: "Dream Machine Pro at unifi.home.example",
+      mode: "direct", displayName: "Dream Machine Pro", uniqueName: CONSOLE_URL,
     });
   });
 
