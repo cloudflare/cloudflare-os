@@ -227,4 +227,10 @@ describe("readArtifactFile", () => {
     assert.ok("absent" in readArtifactFile(zip({ "automerge-verdict-bonk.json": " ".repeat(1_048_577) }, 0), "automerge-verdict-bonk.json"));
     assert.ok("absent" in readArtifactFile(new Uint8Array(Buffer.from("not a zip")), "automerge-verdict-bonk.json"));
   });
+
+  // The reason is published on the check run, and the archive is whatever the download returned.
+  it("does not repeat the name of the file an archive holds", () => {
+    const read = readArtifactFile(zip({ "sk-live.json": "{}" }), "automerge-verdict-bonk.json");
+    assert.ok("absent" in read && !read.absent.includes("sk-live"), JSON.stringify(read));
+  });
 });

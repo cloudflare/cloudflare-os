@@ -283,7 +283,8 @@ export function readArtifactFile(zip: Uint8Array, filename: string): { text: str
   const nameLength = data.readUInt16LE(central + 28);
   const local = data.readUInt32LE(central + 42);
   const name = data.toString("utf8", central + 46, central + 46 + nameLength);
-  if (name !== filename) return { absent: `the archive holds ${name}, not ${filename}` };
+  // Not the name it does hold: the archive is whatever the download returned, and this is published.
+  if (name !== filename) return { absent: `the archive does not hold ${filename}` };
   if (size > MAX_ARTIFACT_BYTES) return { absent: "the file is too large" };
   if (local + 30 > data.length || data.readUInt32LE(local) !== 0x04034b50) return { absent: "corrupt archive" };
   const start = local + 30 + data.readUInt16LE(local + 26) + data.readUInt16LE(local + 28);

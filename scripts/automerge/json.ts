@@ -1,8 +1,9 @@
 // JSON read from outside the process: files, GitHub's API, event payloads, registries, opencode's
 // event stream. Two families narrow it, and a caller picks by what malformed input must do:
 //
-// - `parseJson` and the `as*` functions throw, naming what was malformed. Producers use them: the
-//   error becomes an `error` artifact, which the gate counts as absent.
+// - `parseJson` and the `as*` functions throw, naming what was malformed and quoting none of it:
+//   a producer's error becomes an `error` artifact and a line of its job log, both public, and the
+//   text may be a server's answer. The gate counts that artifact as absent.
 // - `maybeJson`, `maybeObject`, `field` and `list` return `undefined`, `null` or an empty list.
 //   The gate and the verdict readers use them, and treat that value as a missing input.
 
@@ -14,9 +15,10 @@ export interface JsonObject {
   [key: string]: Json;
 }
 
-/** Parses JSON text; throws when it is not JSON. */
-export function parseJson(text: string): Json {
-  const value: Json = JSON.parse(text);
+/** Parses JSON text, or throws an error naming `what` when it is not JSON. */
+export function parseJson(text: string, what: string): Json {
+  const value = maybeJson(text);
+  if (value === undefined) throw new Error(`${what} is not JSON`);
   return value;
 }
 
@@ -46,7 +48,8 @@ export function asString(value: Json | undefined, what: string): string {
 /** Parses JSON text, or returns `undefined` when it is not JSON. */
 export function maybeJson(text: string): Json | undefined {
   try {
-    return parseJson(text);
+    const value: Json = JSON.parse(text);
+    return value;
   } catch (error) {
     // Malformed JSON is a named domain case: every caller treats it as a missing input.
     if (error instanceof SyntaxError) return undefined;

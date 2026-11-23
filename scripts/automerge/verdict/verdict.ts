@@ -11,7 +11,7 @@ import { basename, join } from "node:path";
 
 import { git, mergeBase, tryGit } from "../git.ts";
 import { INSTRUCTION_PATHS } from "../instructions.ts";
-import { field, list, parseJson, type Json } from "../json.ts";
+import { field, list, maybeJson, parseJson, type Json } from "../json.ts";
 import { isMain } from "../main.ts";
 import { PRODUCERS, artifactName } from "../producers.ts";
 import { parseReview, REPORT_FORMAT, type Finding } from "./parse-review.ts";
@@ -245,6 +245,15 @@ interface Tokens {
 }
 
 /**
+ * `value` when it is a single word. Of what opencode relays from the provider, a word is all the
+ * verdict and the job log repeat: anything longer can be the provider's response body, and both
+ * are public.
+ */
+function word(value: Json): string | undefined {
+  return typeof value === "string" && /^[\w-]+$/.test(value) ? value : undefined;
+}
+
+/**
  * The review text and token use from opencode's `--format json` stream. The review is the last
  * text part, and it counts only when the last step stopped normally: a step that ran out of output
  * tokens or errored leaves a review that may be cut off.
@@ -255,22 +264,15 @@ export function readEvents(stream: string): { text: string; tokens: Tokens } | {
   let lastFinish: Json = null;
   for (const line of stream.split("\n")) {
     if (line.trim() === "") continue;
-    let event: Json;
-    try {
-      event = parseJson(line);
-    } catch {
-      // A named case. The parse error quotes the line, which may hold a provider's response body.
-      return { error: "opencode printed a line that is not JSON" };
-    }
+    const event = maybeJson(line);
+    if (event === undefined) return { error: "opencode printed a line that is not JSON" };
     const type = field(event, "type");
     const part = field(event, "part");
     if (type === "error") {
-      // Only the error class and HTTP status: the message and metadata can carry the provider's
-      // response body, and the verdict artifact and job log are public.
       const error = field(event, "error");
       const name = field(error, "name");
       const status = field(field(error, "data"), "statusCode");
-      return { error: `opencode reported ${typeof name === "string" && /^\w+$/.test(name) ? name : "an error"}` +
+      return { error: `opencode reported ${word(name) ?? "an error"}` +
         (typeof status === "number" ? ` (HTTP ${status})` : "") };
     }
     if (type === "text") {
@@ -288,7 +290,7 @@ export function readEvents(stream: string): { text: string; tokens: Tokens } | {
       }
     }
   }
-  if (lastFinish !== "stop") return { error: `the last opencode step ended with ${JSON.stringify(lastFinish)}, not "stop"` };
+  if (lastFinish !== "stop") return { error: `the last opencode step ended with ${word(lastFinish) ?? "an unreadable reason"}, not "stop"` };
   if (text === undefined) return { error: "opencode produced no review text" };
   return { text, tokens };
 }
@@ -321,7 +323,7 @@ export interface Verdict {
 
 function readMeta(file: string): Meta | null {
   if (!existsSync(file)) return null;
-  const value = parseJson(readFileSync(file, "utf8"));
+  const value = parseJson(readFileSync(file, "utf8"), file);
   const head = field(value, "head_sha");
   const base = field(value, "base_sha");
   const round = field(value, "round");
@@ -418,7 +420,7 @@ export function env(name: string): string {
 
 /** The pull request fields the workflow's `pull_request` event payload carries. */
 export function eventPullRequest(): PullRequest & { number: number; headRef: string; draft: boolean } {
-  const pull = field(parseJson(readFileSync(env("GITHUB_EVENT_PATH"), "utf8")), "pull_request");
+  const pull = field(parseJson(readFileSync(env("GITHUB_EVENT_PATH"), "utf8"), "the event payload"), "pull_request");
   const number = field(pull, "number");
   const headSha = field(field(pull, "head"), "sha");
   const headRef = field(field(pull, "head"), "ref");

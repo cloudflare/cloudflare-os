@@ -54,7 +54,9 @@ export async function runProducer(
   try {
     outcome = await produce(shas);
   } catch (error) {
-    console.error(error);
+    // The stack, not the error: printed whole it shows its causes and properties, and those of a
+    // failed request can hold what the server sent. The job log is public.
+    console.error(error instanceof Error ? error.stack : String(error));
     outcome = errored(error instanceof Error ? error.message : String(error));
   }
   const artifact = {

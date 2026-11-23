@@ -628,6 +628,33 @@ function isNotFound(error: Error): boolean {
   return "status" in error && error.status === 404;
 }
 
+/** A failure in the gate's own words: the only kind that leaves it or reaches the check run. */
+class GateFailure extends Error {}
+
+/**
+ * What the gate was `doing` when `error` was thrown, with the HTTP status if the error has one and
+ * its class if not. The error itself is dropped rather than kept as a cause: the check run and this
+ * run's log are public, actions/github-script prints a rejection whole, and a failed request's
+ * error holds the response body (as its message), the response headers and the URL that answered,
+ * which for an artifact download is a signed one. A failure already in the gate's words is kept, so
+ * the innermost `doing` is the one reported.
+ */
+function gateFailure(doing: string, error: Error | undefined): GateFailure {
+  if (error instanceof GateFailure) return error;
+  const status = error !== undefined && "status" in error && typeof error.status === "number" ? `HTTP ${error.status}` : undefined;
+  const kind = error !== undefined && /^\w+$/.test(error.name) ? error.name : "an error";
+  return new GateFailure(`${doing}: ${status ?? kind}`);
+}
+
+/** Runs `work`; its failure, if any, is a {@link gateFailure} that names `doing`. */
+async function during<T>(doing: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    throw gateFailure(doing, error instanceof Error ? error : undefined);
+  }
+}
+
 async function readFile(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
   try {
     const { data } = await github.rest.repos.getContent({ ...repo, path, ref });
@@ -996,13 +1023,15 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
   const error = bindingError(run, expected);
   if (error) return { absent: error };
   const artifact = artifactName(name);
-  const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifact, per_page: PER_PAGE });
-  const picked = pickArtifact(data.artifacts, artifact, run);
-  if (!picked) return { absent: "the run's latest attempt uploaded no usable artifact" };
-  const zip = await github.rest.actions.downloadArtifact({ ...repo, artifact_id: picked.id, archive_format: "zip" });
-  const file = readArtifactFile(new Uint8Array(zip.data), `${artifact}.json`);
-  if ("absent" in file) return file;
-  return parseProducerArtifact(file.text, { name, headSha: pull.head.sha, baseSha: pull.base.sha });
+  return during(`reading #${pull.number}'s ${artifact} artifact`, async () => {
+    const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifact, per_page: PER_PAGE });
+    const picked = pickArtifact(data.artifacts, artifact, run);
+    if (!picked) return { absent: "the run's latest attempt uploaded no usable artifact" };
+    const zip = await github.rest.actions.downloadArtifact({ ...repo, artifact_id: picked.id, archive_format: "zip" });
+    const file = readArtifactFile(new Uint8Array(zip.data), `${artifact}.json`);
+    if ("absent" in file) return file;
+    return parseProducerArtifact(file.text, { name, headSha: pull.head.sha, baseSha: pull.base.sha });
+  });
 }
 
 /**
@@ -1188,12 +1217,12 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
   );
   const queued = maybeObject(maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
   if (queued) return;
-  await github.graphql(
+  await during(`enqueueing #${decision.number}`, () => github.graphql(
     `mutation($id: ID!, $head: GitObjectID!) {
       enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { id } }
     }`,
     { id: inputs.pull.node_id, head: decision.head_sha },
-  );
+  ));
 }
 
 /**
@@ -1209,7 +1238,7 @@ export async function runRiskReview({ github, context, core, app, now = new Date
   app: RiskReviewApp;
   now?: Date;
 }): Promise<void> {
-  const target = await resolveTarget(github, context);
+  const target = await during("finding what this event is about", () => resolveTarget(github, context));
   if (!target) {
     core.notice("No open pull request into the default branch, or queued merge group, matches this event; nothing to decide.");
     return;
@@ -1217,23 +1246,24 @@ export async function runRiskReview({ github, context, core, app, now = new Date
   const { repo } = context;
   // Created before anything is read, so a later run's check run is always newer than this one's and
   // this run can tell it has been overtaken.
-  const { data: created } = await github.rest.checks.create({
+  const { data: created } = await during(`creating the check run on ${target.sha}`, () => github.rest.checks.create({
     ...repo,
     name: CHECK_NAME,
     head_sha: target.sha,
     status: "in_progress",
     details_url: `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`,
-  });
+  }));
   const complete = (conclusion: "success" | "failure" | "cancelled", output: { title: string; summary: string }) =>
-    github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
+    during("completing the check run", () =>
+      github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output }));
   let published: {
     summary: string;
     enforce?: { policy: Policy; pulls: { inputs: PullInputs; decision: PullDecision }[] };
   } | undefined;
   try {
-    const policy = await readPolicy(github, repo, target.policySha);
+    const policy = await during(`reading the policy at ${target.policySha}`, () => readPolicy(github, repo, target.policySha));
     const pulls = await Promise.all(target.pulls.map(async ({ pull, base }) => {
-      const inputs = await readPullInputs(github, context, pull, base);
+      const inputs = await during(`reading pull request #${pull.number}`, () => readPullInputs(github, context, pull, base));
       return { inputs, decision: decide(inputs, policy, now) };
     }));
     const decisions = pulls.map(({ decision }) => decision);
@@ -1248,14 +1278,14 @@ export async function runRiskReview({ github, context, core, app, now = new Date
       pulls: decisions,
     };
 
-    const { data: latest } = await github.rest.checks.listForRef({
+    const { data: latest } = await during("listing this commit's check runs", () => github.rest.checks.listForRef({
       ...repo,
       ref: target.sha,
       check_name: CHECK_NAME,
       app_id: app.id,
       filter: "all",
       per_page: PER_PAGE,
-    });
+    }));
     if (latest.check_runs.some(({ id }) => id > created.id)) {
       await complete("cancelled", { title: "Superseded", summary: "A later run decides this commit." });
       core.notice("A later run has taken over this commit's check run; leaving it to that run.");
@@ -1266,9 +1296,9 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     published = { summary: output.summary, ...(record.mode === "enforce" && !target.mergeGroup && { enforce: { policy, pulls } }) };
   } catch (error) {
     // A check run left in progress would hold the commit until some later event; fail it instead.
-    const message = error instanceof Error ? error.message : String(error);
-    await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${message}` });
-    throw error;
+    const failure = gateFailure("deciding", error instanceof Error ? error : undefined);
+    await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${failure.message}` });
+    throw failure;
   }
   // Everything below runs after the check is published, so a failure here (GitHub refusing the
   // enqueue while required checks run, or the step summary not writing) fails this run but never
@@ -1276,7 +1306,10 @@ export async function runRiskReview({ github, context, core, app, now = new Date
   if (!published) return;
   if (published.enforce) {
     const { policy, pulls } = published.enforce;
-    for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
+    for (const { inputs, decision } of pulls) {
+      await during(`acting on the decision for #${decision.number}`, () => execute(github, context, { inputs, decision, policy, app }));
+    }
   }
-  await core.summary.addRaw(published.summary).write();
+  const { summary } = published;
+  await during("writing the step summary", () => core.summary.addRaw(summary).write());
 }

@@ -18,7 +18,7 @@ const WORKSPACE = new Set(["@gadgets/bundled-blueprints", "@gadgets/workshop-sha
 // the fields the proof reads. "red" weakened the two `toBeNull()` assertions of "rejects only
 // invalid envelopes" to `toBeDefined()`; "green" added a test of a string envelope.
 const report = (name: string): JsonObject =>
-  asObject(parseJson(readFileSync(new URL(`./testdata/tests/error-reporting-${name}.json`, import.meta.url), "utf8")), name);
+  asObject(parseJson(readFileSync(new URL(`./testdata/tests/error-reporting-${name}.json`, import.meta.url), "utf8"), name), name);
 
 const file = (path: string): FileDiff => ({ path, status: "modified", binary: false, modeChanged: false, hunks: [] });
 
