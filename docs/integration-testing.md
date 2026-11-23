@@ -98,8 +98,10 @@ Run just these cases with `pnpm --filter @gadgets/integration-tests test:run __t
 deployment with three admins, and drives both through the public RPC API and scripted agent turns
 whose code uses the connection. It covers who can connect the gatekeeper, how each read is
 recorded, what an agent is refused, who the observer check lets open a workspace that has read
-through it, and what removing the account or demoting its admin does. Nothing of the gatekeeper or
-of the Admin API is faked.
+through it, and what removing the account or demoting its admin does.
+`__tests__/admin-gatekeeper-actions.test.ts` covers its two action kinds: a write and a content
+request each wait for a person, and run once approved. Nothing of the gatekeeper or of the Admin
+API is faked.
 
 `__tests__/admin-gatekeeper-harness.ts` holds what the suite uses. An account is connected as the
 Gatekeepers page connects one: `connectAccount()`, the gatekeeper's connect link, then
@@ -108,7 +110,7 @@ the message that starts the turn, not by the order requests arrive in.
 
 Both test entrypoints build `@gadgets/gatekeeper-admin#build:integration-worker`, which generates
 the gatekeeper's schema first, and `src/worker-inputs.ts` tracks the gatekeeper's source and config
-for watch reruns. Run it alone with
+for watch reruns. Run one alone with
 `pnpm --filter @gadgets/integration-tests test:run __tests__/admin-gatekeeper.test.ts`.
 
 ### Storage isolation is by convention, because the alternative is worse

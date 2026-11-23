@@ -171,12 +171,11 @@ it("refuses the methods an agent is not given, and changes nothing", async () =>
   const turn = await agentTurn(owner, triage.ws, `
     await attempt("setSiteName", () => env.ADMIN.setSiteName("Renamed by an agent"));
     await attempt("setSignupsEnabled", () => env.ADMIN.setSignupsEnabled(${!signupsEnabled}));
-    await attempt("writeWorkspace", () => env.ADMIN.writeWorkspace(
-        ${JSON.stringify(triage.id)}, "Restarting", "restartWorkspace", {}));
+    await attempt("approveContentAccess", () => env.ADMIN.approveContentAccess("request-1"));
     await attempt("getUpdateStatus", () => env.ADMIN.getUpdateStatus());`, { connection });
   const results = await turn.results();
   expect(Object.keys(results)).toEqual(
-      ["setSiteName", "setSignupsEnabled", "writeWorkspace", "getUpdateStatus"]);
+      ["setSiteName", "setSignupsEnabled", "approveContentAccess", "getUpdateStatus"]);
   for (const [name, attempt] of Object.entries(results)) {
     expect(attempt, name).toEqual(
         { error: `The RPC receiver does not implement the method "${name}".` });

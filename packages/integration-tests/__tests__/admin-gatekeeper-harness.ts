@@ -5,9 +5,10 @@
 import { fileURLToPath, URL } from "node:url";
 import type { RpcStub } from "capnweb";
 import {
-  getOpenWorkspaceErrorCode, type AdminApi, type AdminAuditRecord, type AiChatAuthorInfo,
-  type AiModelConfig, type AuthenticatedApi, type ChatMessageOptions, type GatekeeperClient,
-  type Overseer, type WorkpieceId,
+  getAdminAccessErrorCode, getAdminGrantErrorCode, getOpenWorkspaceErrorCode,
+  type ActionLogEntry, type AdminApi, type AdminAuditRecord, type AdminContentRequest,
+  type AdminWriteRecord, type AiChatAuthorInfo, type AiModelConfig, type AuthenticatedApi,
+  type ChatMessageOptions, type GatekeeperClient, type Overseer, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { loadAllChatHistory } from "../src/agent-session.js";
@@ -49,9 +50,15 @@ export function adminGatekeeper(): GatekeeperSpec {
   };
 }
 
-/** A Workshop patch whose deployment has `admins` as its admins. */
+/**
+ * A Workshop patch whose deployment has `admins` as its admins, lets them read content where a
+ * grant is live, and takes writes to workspaces.
+ */
 export const withAdmins = (admins: string[] = [OWNER, GRACE, HEIDI]) => (config: WorkerConfig) => {
-  config.vars = { ...config.vars, ADMINS: admins };
+  config.vars = {
+    ...config.vars, ADMINS: admins, ADMIN_WORKSPACE_ACCESS_MAX: "content",
+    ADMIN_WORKSPACE_WRITES: "on",
+  };
 };
 
 /** The Workshop and the admin gatekeeper, with gadget execution: every suite runs agent code. */
@@ -418,4 +425,82 @@ export async function observerStep(suite: Suite, user: SuiteUser, workspaceId: s
 /** The profile ids of everyone the workspace is shared with. */
 export async function collaboratorIds(ws: RpcStub<Overseer>): Promise<string[]> {
   return (await ws.listCollaborators()).map(collaborator => collaborator.profile.id);
+}
+
+/** The tag of each of the gatekeeper's action kinds. */
+export const TAGS = {
+  workspaceWriteRequest: "workspace-write-request",
+  contentAccessRequest: "content-access-request",
+} as const;
+
+/** An action of the workspace's log. */
+export type ActionEntry = ActionLogEntry & { type: "action" };
+
+/** The workspace's actions of the admin gatekeeper, oldest first. */
+export async function adminActions(ws: RpcStub<Overseer>, filter?: "pending")
+    : Promise<ActionEntry[]> {
+  const { entries } = await ws.listActions(filter ? { filter } : { filter: "action" });
+  return entries.filter((entry): entry is ActionEntry =>
+    entry.type === "action" &&
+        Object.values(TAGS).includes(entry.description.actionKind?.tag as never))
+      .toSorted((a, b) => a.id - b.id);
+}
+
+/** Waits until the workspace has `count` pending actions of the admin gatekeeper. */
+export function pendingActions(ws: RpcStub<Overseer>, count: number): Promise<ActionEntry[]> {
+  return waitFor(`${count} pending admin action(s)`, async () => {
+    const pending = await adminActions(ws, "pending");
+    return pending.length === count ? pending : null;
+  });
+}
+
+/**
+ * Time for the workspace to have applied an action it would apply unasked: the drain runs after
+ * the submit returns. A case that asserts an action was NOT applied waits this long first.
+ */
+export async function settle(ws: RpcStub<Overseer>): Promise<void> {
+  await ws.listActions();
+  await new Promise(resolve => setTimeout(resolve, 400));
+}
+
+/**
+ * `api`'s admin's approval of the content access request `requestId`: the request as the approval
+ * left it, or the code the approval is refused with.
+ */
+export async function approveContent(api: RpcStub<AdminApi>, requestId: string)
+    : Promise<AdminContentRequest | string> {
+  try {
+    return await api.approveContentAccess(requestId);
+  } catch (error) {
+    const code = getAdminGrantErrorCode(error) ?? getAdminAccessErrorCode(error);
+    if (code === undefined) throw error;
+    return code;
+  }
+}
+
+/** Waits until the admins' directory lists the workspace: content is requested only for one. */
+export async function listed(admin: RpcStub<AdminApi>, owner: string, workspaceId: string)
+    : Promise<void> {
+  await waitFor("the workspace to be listed", async () =>
+    (await admin.listWorkspaces({ owner })).workspaces
+        .some(workspace => workspace.id === workspaceId) || null);
+}
+
+/** The content access requests filed for `workspaceId` through the admin gatekeeper, oldest first. */
+export async function requestsFiled(admin: RpcStub<AdminApi>, workspaceId: string)
+    : Promise<AdminContentRequest[]> {
+  return (await admin.listContentAccessRequests())
+      .filter(request => request.workspaceId === workspaceId && request.via === "gatekeeper")
+      .toSorted((a, b) => a.requestedAt.getTime() - b.requestedAt.getTime());
+}
+
+/**
+ * The writes made to `workspaceId` through the admin gatekeeper, oldest first, as the audit log
+ * records them.
+ */
+export async function writesMade(admin: RpcStub<AdminApi>, workspaceId: string)
+    : Promise<AdminWriteRecord[]> {
+  const records = await auditRecords(admin, { kind: "write", workspace: workspaceId });
+  return records.flatMap(record =>
+    record.kind === "write" && record.via === "gatekeeper" ? [record] : []).toReversed();
 }
