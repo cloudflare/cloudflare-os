@@ -39,8 +39,8 @@ export type ProductAnalyticsGadgetInput =
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      /** Whether the gadget was created from empty chat, via blueprint, or by external message. */
-      source: "blank" | "blueprint" | "external_message";
+      /** Whether the gadget was created from empty chat or via blueprint. */
+      source: "blank" | "blueprint";
       blueprint_id?: string;
     }
   | {

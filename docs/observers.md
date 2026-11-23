@@ -159,6 +159,15 @@ The compensating controls are:
   returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
 
+An admin write (`AdminApi.writeWorkspace()`, run by
+`OverseerDurableObject.applyAdminWrite()`) also runs without the admin being verified as an
+observer or registered with the workspace's gatekeepers. It does what its operation does for a
+member, and the workspace's members see only that effect, with nothing naming an admin. No write
+gives the admin access to anything in the workspace. Its compensating controls are its own:
+
+- `ADMIN_WORKSPACE_WRITES`, off by default and out of an admin session's reach;
+- the record written before the effect, in the deployment-wide audit log.
+
 [admin-access.md](admin-access.md) is the design record.
 
 ---
@@ -169,7 +178,7 @@ The compensating controls are:
 |---|---|
 | Gatekeeper RPC API (the committed surface) | `packages/workshop-shared/src/gatekeeper.ts` |
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
-| Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
+| Authorization gate shared by `open()` and resumed agent turns | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Access resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveAccess`, `computeEffectiveAccess`) |
@@ -318,10 +327,10 @@ user.
 
 Role resolution plus verification is one shared gate, `OverseerImpl.authorizeCollaborator`, and
 every non-owner entry point that can surface workspace data runs it — `open()` interactively, and
-`receiveExternalMessage()` non-interactively (no configuration channel, so an unverified caller is
-told to open the workspace, which is where verification happens). An agent reply on the external
-path can surface anything the workspace already read, so it must not admit a collaborator with
-less verification than `open()` would demand.
+the resume of a non-owner's agent turn (`#resumeAgent`) non-interactively: it passes `requireBuild`
+and no configuration channel, so an unconfigured binding denies the initiator and ends the turn
+with an error rather than prompting. A resumed turn acts on everything the workspace already read,
+so it must not run with less verification than `open()` would demand.
 
 Add a private helper on `OverseerImpl`, roughly:
 
@@ -490,41 +499,24 @@ gadget-minted children alike:
   `getGadget()`) constructing the counted interface there are only microtask continuations, in
   which no incoming event can be delivered, so nothing can observe the count dip to zero across
   the handoff.
-- **`receiveExternalMessage`** holds a `build` lease for a non-owner caller from the moment
-  `authorizeCollaborator` admits them until the call completes, since it produces a reply from
-  workspace data without ever constructing a counted interface. The lease deliberately starts
-  only after authorization (verification itself is covered by `authorizeCollaborator`'s internal
-  lease): a caller who is turned away must never have counted, or a stranger racing an
-  `addGatekeeper()` would cause a needless workspace reset.
 - **Resumed person-initiated turns** re-run `authorizeCollaborator` with `requireBuild`
   for the original non-owner initiator before inference, and hold a `build` lease through the
   resumed turn. This applies after a DO reset and after a decision pause. Denial ends the turn
   with an error; a later approver cannot lend it their authority.
-- **Known gap — a freshly started external-message turn** outlives that RPC's lease because it
-  is fire-and-forget. Before its first reset or decision pause, a widening can therefore find
-  no session to sever, and its reply can egress to the persisted external response target under
-  stale verification. The resumed path above is covered, but the initial run still needs its
-  own per-turn `build` lease before `receiveExternalMessage` gets real callers. No extra durable
-  marker is needed for that resume check: the existing `ActiveAgentRecord` retains the original
-  initiator. Owner and UI-collaborator turns are not affected by this external-egress gap: the
-  owner is never an observer, and a UI collaborator reads replies through re-verified opens.
-
-  The same mechanism has a spawner variant: a `use` collaborator holding a bound spawner's
-  loopback can start a spawn during the window between a connection widening's restart being
-  scheduled and the reset landing (the widening blocks the newly reached connection, not the
-  vendorless spawner, which nobody is verified against). The spawn persists an
-  `ActiveAgentRecord` that the reset's storage sync commits. Its initiator is a gadget, so the
+- **Known gap — a spawn started while a restart is pending.** A `use` collaborator holding a
+  bound spawner's loopback can start a spawn during the window between a connection widening's
+  restart being scheduled and the reset landing (the widening blocks the newly reached
+  connection, not the vendorless spawner, which nobody is verified against). The spawn persists
+  an `ActiveAgentRecord` that the reset's storage sync commits. Its initiator is a gadget, so the
   person-initiated resume check above does not apply: it can complete with its creator's
   authority against the pre-widening scope. (A widening that exposes a *gadget* through a
-  spawner does block that spawner, and its queue refuses to spawn while blocked, so this variant
-  is limited to newly reached connections.)
-  Bounded, unlike the external-message case:
-  the resumed turn has no external egress, its output lands in workspace state, and every
-  `use`-role reader of that state re-verifies at their next open against the now-widened scope —
-  so the only unverified consumption is inside the restart's own delivery window, which the
-  design already tolerates for sessions the reset is about to sever. Closing this variant still
-  needs lifecycle authorization for gadget-authored turns; re-checking person-initiated resumes
-  alone does not cover it.
+  spawner does block that spawner, and its queue refuses to spawn while blocked, so this gap is
+  limited to newly reached connections.) It is bounded: the resumed turn has no external egress,
+  its output lands in workspace state, and every `use`-role reader of that state re-verifies at
+  their next open against the now-widened scope — so the only unverified consumption is inside
+  the restart's own delivery window, which the design already tolerates for sessions the reset
+  is about to sever. Closing this gap still needs lifecycle authorization for gadget-authored
+  turns; re-checking person-initiated resumes alone does not cover it.
 
 Five events trigger it:
 

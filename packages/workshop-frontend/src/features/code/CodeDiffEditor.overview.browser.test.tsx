@@ -1,8 +1,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { userEvent } from 'vitest/browser'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { page, userEvent } from 'vitest/browser'
 import { EditorView } from '@codemirror/view'
 import { openSearchPanel } from '@codemirror/search'
 import CodeDiffEditor from './CodeDiffEditor'
@@ -12,6 +12,14 @@ import '../../styles.css'
 // The overview strip needs real layout: its marks are placed from CodeMirror's height map,
 // so these tests check that pressing each mark scrolls its change into view, with deletion
 // zones (stacked) and blank zones (split) taking their on-screen space.
+
+// Fit the split layout's 1400px host in the window, as the app always does. In the default
+// 414px viewport, a click on the strip scrolls the page sideways, and CodeMirror doesn't measure
+// an editor that is outside the window. The next test's original side could then keep
+// estimated heights, too short, and scroll sync would clamp the chat side's jump to them.
+beforeAll(async () => {
+  await page.viewport(1600, 900)
+})
 
 let root: Root | undefined
 let host: HTMLDivElement | undefined
@@ -76,7 +84,7 @@ const changedLine = (text: string) =>
 
 describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout => {
   const deletionZone = layout === 'stacked'
-    ? '.gadgets-deleted-code-zone'
+    ? '.gadgets-deleted-code-row'
     : '.gadgets-diff-blank-zone'
 
   it('marks each change and scrolls to it when pressed', async () => {

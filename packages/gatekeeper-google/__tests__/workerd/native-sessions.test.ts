@@ -2896,7 +2896,8 @@ describe("Drive comment actions", () => {
         {
           url: FOLDER_URL,
           title: "folder-root",
-          snippet: "Read-only: list and search direct children, navigate child folders, read " +
+          snippet: "Read-only: list and search direct children, navigate child folders, follow shortcuts " +
+            "among them to files and folders elsewhere in Drive for reading, read " +
             "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
             "file's bytes with readFile(), and read comments on direct children in Drive folder " +
             "\"folder-root\"",
@@ -2906,7 +2907,8 @@ describe("Drive comment actions", () => {
         {
           url: FOLDER_URL,
           title: "folder-root (read and write)",
-          snippet: "Read and write: list and search direct children, navigate child folders, read " +
+          snippet: "Read and write: list and search direct children, navigate child folders, follow shortcuts " +
+            "among them to files and folders elsewhere in Drive for reading, read " +
             "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
             "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
             "direct children, read and queue comments on direct children, change who they and the " +

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
   ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
@@ -91,6 +91,9 @@ async function rejection(call: Promise<unknown>): Promise<unknown> {
 }
 
 const workspaceId = () => env.TEST_OVERSEER.newUniqueId().toString();
+
+/** `calls` as "target.method", in order. */
+const named = (calls: Call[]) => calls.map(call => `${call.target}.${call.method}`);
 
 describe("AdminApiImpl.inspectWorkspace", () => {
   it("rejects a bad reason or lifetime before touching anything", async () => {
@@ -529,5 +532,119 @@ describe("AdminApiImpl audit log", () => {
     for (let days of [0, 367, 2.5]) {
       expect(await rejection(api.getAdminAuditStats({ days }))).toBeInstanceOf(TypeError);
     }
+  });
+});
+
+describe("AdminApiImpl.writeWorkspace", () => {
+  const ON = { ADMIN_WORKSPACE_WRITES: "on" };
+
+  it.each([
+    ["unset", {}],
+    ["\"off\"", { ADMIN_WORKSPACE_WRITES: "off" }],
+    ["\"true\"", { ADMIN_WORKSPACE_WRITES: "true" }],
+  ])("refuses before touching anything while ADMIN_WORKSPACE_WRITES is %s",
+      async (_label, vars) => {
+    // A value that is neither "on" nor "off" is reported once, as an error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { mint, calls } = deployment({ vars });
+    const error = await rejection(
+        mint().writeWorkspace(workspaceId(), "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.writesOff);
+    expect(calls).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("refuses a caller no longer an admin before touching anything", async () => {
+    const { mint, calls } = deployment({ vars: ON });
+    const error = await rejection(
+        mint("former@example.test").writeWorkspace(workspaceId(), "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a malformed id as not found, before any workspace is reached", async () => {
+    const { mint, calls } = deployment({ vars: ON });
+    const error = await rejection(
+        mint().writeWorkspace("not-an-id", "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect(calls).toEqual([{ target: "overseers", method: "idFromString", args: ["not-an-id"] }]);
+  });
+
+  it("never runs with an action that is not one of ADMIN_WRITE_ACTIONS", () => {
+    // The validator refuses it before the method's body runs: synchronously, on a direct call.
+    const { mint, calls } = deployment({ vars: ON });
+    const api = mint();
+    // Deleting a chat and rejecting pending actions are not writes an admin can make.
+    for (let action of ["bogus", "deleteChat", "rejectPendingActions"]) {
+      expect(() => api.writeWorkspace(workspaceId(), action as any, { chatId: 3 }, REASON))
+          .toThrow(TypeError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("hands the workspace the write with this capability's admin, session and `via`",
+      async () => {
+    const { mint, calls, callsTo } = deployment({ vars: ON });
+    const id = workspaceId();
+    // However the caller wrote the id, the workspace is the one it names.
+    await mint(ADMIN, "cli").writeWorkspace(id.toUpperCase(), "stopAgent", { chatId: 3 }, REASON);
+
+    expect(named(calls)).toEqual(
+        ["overseers.idFromString", "overseers.get", "overseer.applyAdminWrite"]);
+    expect(callsTo("overseers", "get")[0].args).toEqual([id]);
+    expect(callsTo("overseer", "applyAdminWrite")[0].args).toStrictEqual([{
+      action: "stopAgent", args: { chatId: 3 }, reason: REASON,
+      admin: ADMIN, sessionId: expect.any(String), via: "cli",
+    }]);
+
+    // Another capability of the same admin is another session, with a `via` of its own.
+    const [first] = callsTo("overseer", "applyAdminWrite")[0].args as [{ sessionId: string }];
+    const { mint: mintAgain, callsTo: callsAgain } = deployment({ vars: ON });
+    await mintAgain(ADMIN, "api").writeWorkspace(id, "restartWorkspace", {}, REASON);
+    const [later] = callsAgain("overseer", "applyAdminWrite")[0].args as
+        [{ sessionId: string; via: AdminVia }];
+    expect(later.via).toBe("api");
+    expect(later.sessionId).not.toBe(first.sessionId);
+  });
+
+  it.each<[string, () => unknown, boolean]>([
+    ["drops a workspace found missing from the directory",
+      () => createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound), true],
+    ["leaves the workspace listed after any other failure", () => new Error("No such chat."),
+      false],
+  ])("rethrows the workspace's refusal, and %s", async (_label, thrown, dropped) => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = thrown();
+    const { mint, callsTo } = deployment({
+      vars: ON, handlers: { overseer: { applyAdminWrite: () => { throw error; } } },
+    });
+    const id = workspaceId();
+    expect(await rejection(mint().writeWorkspace(id, "restartWorkspace", {}, REASON)))
+        .toBe(error);
+    expect(callsTo("directory", "removeWorkspace").map(call => call.args))
+        .toEqual(dropped ? [[id]] : []);
+    expect(warned.mock.calls.map(([entry]) => (entry as { event?: string }).event))
+        .toEqual(["admin.write.failed"]);
+    vi.restoreAllMocks();
+  });
+
+  it("rethrows a missing workspace's refusal though the directory cannot be healed",
+      async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mint } = deployment({
+      vars: ON,
+      handlers: {
+        overseer: { applyAdminWrite: () => {
+          throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+        } },
+        directory: { removeWorkspace: () => { throw new Error("directory unavailable"); } },
+      },
+    });
+    const error = await rejection(
+        mint().writeWorkspace(workspaceId(), "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect(warned.mock.calls.map(([entry]) => (entry as { event?: string }).event))
+        .toEqual(["admin.directory.heal.failed", "admin.write.failed"]);
+    vi.restoreAllMocks();
   });
 });

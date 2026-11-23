@@ -5,9 +5,11 @@ import {
   requireDriveBindingScope,
   type CommentPageReader,
 } from "../src/drive-session";
-import { readFolderRoot, type FolderLocation } from "../src/drive-folder-scope";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE,
+  readFolderLocation, readFolderRoot, type FolderLocation,
+} from "../src/drive-folder-scope";
+import {
+  DriveApiRequestError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, type DriveCorpus,
   type DriveCommentList, type DriveCommentRecord, type DriveFile, type DriveListFilesOptions,
   type DriveScopeNode,
 } from "../src/drive-api";
@@ -55,10 +57,11 @@ function core(overrides: {
   let canComment = vi.fn(overrides.canComment ?? (async () => true));
   let canShare = vi.fn(overrides.canShare ?? (async () => true));
   let listComments = vi.fn(overrides.listComments ?? (async () => ({ comments: [] })));
+  let findShortcut = vi.fn(async () => undefined);
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
-    api: { listFiles, getFile, getScopeNodes, canComment, canShare, listComments },
+    api: { listFiles, getFile, getScopeNodes, findShortcut, canComment, canShare, listComments },
     scope: overrides.scope ?? { kind: "account" },
     access: overrides.access ?? "read",
     authorize: async (description: ObservationDescription) => {
@@ -95,8 +98,28 @@ const MY_ROOT = "my-root";
  */
 function tree(nodes: DriveFile[], abilities: MoveAbilities = {}) {
   let byId = new Map(nodes.map(node => [node.id, node]));
+  let scopeNode = (found: DriveFile): DriveScopeNode => ({
+    id: found.id,
+    ...(found.mimeType ? { mimeType: found.mimeType } : {}),
+    ...(found.parents ? { parents: found.parents } : {}),
+    ...(found.driveId ? { driveId: found.driveId } : {}),
+    ...(found.trashed === undefined ? {} : { trashed: found.trashed }),
+    ...(found.capabilities?.canListChildren === undefined ? {} : {
+      canListChildren: found.capabilities.canListChildren,
+    }),
+    ...(found.shortcutDetails?.targetId ? { shortcutTargetId: found.shortcutDetails.targetId } : {}),
+    ...abilities[found.id],
+  });
   return {
     byId,
+    /** As Drive's query answers it: an untrashed shortcut in the folder, in the corpus asked. */
+    findShortcut: async (folderId: string, targetId: string, corpus: DriveCorpus) => {
+      let found = [...byId.values()].find(node =>
+        node.mimeType === SHORTCUT_MIME_TYPE && node.trashed === false &&
+        node.parents?.includes(folderId) && node.shortcutDetails?.targetId === targetId &&
+        (corpus.kind === "drive" ? node.driveId === corpus.driveId : node.driveId === undefined));
+      return found && scopeNode(found);
+    },
     getFile: async (id: string) => {
       let found = byId.get(id === "root" ? MY_ROOT : id);
       if (!found) throw new DriveApiRequestError(404);
@@ -104,18 +127,7 @@ function tree(nodes: DriveFile[], abilities: MoveAbilities = {}) {
     },
     getScopeNodes: async (ids: readonly string[]) => ids.map((id): DriveScopeNode | undefined => {
       let found = byId.get(id);
-      if (!found) return undefined;
-      return {
-        id: found.id,
-        ...(found.mimeType ? { mimeType: found.mimeType } : {}),
-        ...(found.parents ? { parents: found.parents } : {}),
-        ...(found.driveId ? { driveId: found.driveId } : {}),
-        ...(found.trashed === undefined ? {} : { trashed: found.trashed }),
-        ...(found.capabilities?.canListChildren === undefined ? {} : {
-          canListChildren: found.capabilities.canListChildren,
-        }),
-        ...abilities[id],
-      };
+      return found && scopeNode(found);
     }),
   };
 }
@@ -673,9 +685,11 @@ describe("positioned Drive folder session", () => {
     const events: string[] = [];
     const scopeBatches: string[][] = [];
     const getFile = vi.fn(provider.getFile);
+    const findShortcut = vi.fn(provider.findShortcut);
     const session = new DriveFolderSessionCore({
       api: {
         getFile,
+        findShortcut,
         getScopeNodes: async ids => {
           scopeBatches.push([...ids]);
           const answered = await provider.getScopeNodes(ids);
@@ -704,7 +718,9 @@ describe("positioned Drive folder session", () => {
         events.push("authorize");
       },
     });
-    return { session, provider, queries, authorizations, events, scopeBatches, getFile };
+    return {
+      session, provider, queries, authorizations, events, scopeBatches, getFile, findShortcut,
+    };
   }
 
   it("lists and searches only the positioned folder's direct children", async () => {
@@ -903,6 +919,7 @@ describe("positioned Drive folder session", () => {
       api: {
         getScopeNodes: tree([root]).getScopeNodes,
         getFile: async () => { throw new DriveApiRequestError(403, "insufficientPermissions"); },
+        findShortcut: async () => undefined,
         listFiles: async () => ({ files: [] }),
         canComment: async () => true,
         canShare: async () => true,
@@ -1327,6 +1344,111 @@ describe("positioned Drive folder session", () => {
       [["Open Google Drive sharing", ["drive/folder/orphan", "drive/file/orphan"]]]);
   });
 
+  // A folder holds what its members put in it, a shortcut to a file or folder elsewhere included:
+  // reads follow a live shortcut among the positioned folder's direct children to its target.
+  describe("shortcuts", () => {
+    const shortcut = (id: string, parent: string, targetId: string, overrides: Partial<DriveFile> = {}) =>
+      child(id, parent, {
+        mimeType: SHORTCUT_MIME_TYPE, shortcutDetails: { targetId }, ...overrides,
+      });
+    const toDoc = shortcut("S1", "R", "X");
+    const sharedFolder = folder("F", { parents: ["elsewhere"], driveId: "drive-2" });
+    const sharedDoc = child("FD", "F", { mimeType: docMime, driveId: "drive-2" });
+    const toFolder = shortcut("S2", "R", "F");
+
+    it("reads a file a shortcut in the folder points to, reported as that file", async () => {
+      const { session, authorizations, findShortcut } = positioned([root, foreignDoc, toDoc]);
+
+      await expect(session.getEntry("X")).resolves.toEqual(expect.objectContaining({ id: "X" }));
+      await expect(session.openNativeFile("X", docMime, "Google Doc")).resolves.toBe("X");
+      expect(findShortcut).toHaveBeenCalledWith("R", "X", { kind: "user" });
+      expect(authorizations).toHaveLength(2);
+      expectReported(authorizations[0], ["drive/folder/R", "drive/file/X"]);
+      expectReported(authorizations[1], ["drive/folder/R", "drive/file/X"]);
+    });
+
+    it("follows only a live shortcut that is a direct child, to a live target", async () => {
+      const trashedShortcut = positioned(
+        [root, foreignDoc, shortcut("S1", "R", "X", { trashed: true })]);
+      await expect(trashedShortcut.session.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
+
+      const nestedShortcut = positioned([root, nested, foreignDoc, shortcut("S1", "A", "X")]);
+      await expect(nestedShortcut.session.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
+
+      const trashedTarget = positioned([root, { ...foreignDoc, trashed: true }, toDoc]);
+      await expect(trashedTarget.session.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
+    });
+
+    it("looks a shortcut up whether or not the account can see the ID, failing alike", async () => {
+      const { session, findShortcut } = positioned([root, foreignDoc]);
+      findShortcut.mockRejectedValue(new Error("teamDriveMembershipRequired"));
+
+      await expect(session.getEntry("X")).rejects.toThrow("teamDriveMembershipRequired");
+      await expect(session.getEntry("unseen")).rejects.toThrow("teamDriveMembershipRequired");
+      expect(findShortcut.mock.calls.map(([, targetId]) => targetId)).toEqual(["X", "unseen"]);
+    });
+
+    it("proves the shortcut again after a read, refusing one removed meanwhile", async () => {
+      const { session, provider, authorizations } = positioned([root, foreignDoc, toDoc]);
+      const read = session.nativeRead("X", docMime);
+
+      await expect(read(async () => {
+        provider.byId.delete("S1");
+        return "content";
+      }, () => ({ title: "Read file", description: "Read." }))).rejects.toThrow(/outside this Drive binding/);
+      expect(authorizations).toEqual([]);
+    });
+
+    it("opens a folder through a shortcut and lists it in its own drive", async () => {
+      const nodes = [root, sharedFolder, sharedDoc, toFolder];
+      const { session, authorizations } = positioned(nodes);
+
+      const location = await session.openFolder("F");
+      expect(location).toEqual({ folderIds: ["R", "F"], shortcuts: { F: "S2" } });
+      expectReported(authorizations[0], ["drive/folder/R", "drive/folder/F"]);
+
+      const inside = positioned(nodes, location, undefined, { access: "write" });
+      await expect((await inside.session.list()).next()).resolves.toEqual([
+        expect.objectContaining({ id: "FD" }),
+      ]);
+      expect(inside.queries).toEqual([expect.objectContaining({
+        directParentIds: ["F"], corpus: { kind: "drive", driveId: "drive-2" },
+      })]);
+      await expect(inside.session.getScope()).resolves.toEqual(expect.objectContaining({
+        folderId: "F", rootFolderId: "R", parentFolderId: "R", access: "read",
+      }));
+      await expect(inside.session.openNativeFile("FD", docMime, "Google Doc")).resolves.toBe("FD");
+
+      inside.provider.byId.delete("S2");
+      await expect(inside.session.getScope()).rejects.toThrow(/outside this Drive binding/);
+    });
+
+    it("proves a shortcut edge by its shortcut, which a write's plain path cannot", async () => {
+      const provider = tree([root, sharedFolder, toFolder, shortcut("S3", "R", "other")]);
+
+      await expect(readFolderLocation(
+        { folderIds: ["R", "F"], shortcuts: { F: "S2" } }, provider.getScopeNodes,
+      )).resolves.toEqual([expect.objectContaining({ id: "R" }), expect.objectContaining({ id: "F" })]);
+      await expect(readFolderLocation({ folderIds: ["R", "F"] }, provider.getScopeNodes))
+        .rejects.toThrow(/outside this Drive binding/);
+      await expect(readFolderLocation(
+        { folderIds: ["R", "F"], shortcuts: { F: "S3" } }, provider.getScopeNodes,
+      )).rejects.toThrow(/outside this Drive binding/);
+      await expect(readFolderLocation(
+        { folderIds: ["R"], shortcuts: { R: "S2" } }, provider.getScopeNodes,
+      )).rejects.toThrow(/outside this Drive binding/);
+    });
+
+    it("leaves comment, sharing and move targets to direct children", async () => {
+      const { session } = positioned(
+        [root, nested, foreignDoc, toDoc], undefined, undefined, { access: "write" });
+
+      await expect(session.commentTarget("X")).rejects.toThrow(/outside this Drive binding/);
+      await expect(session.sharingTarget("X")).rejects.toThrow(/outside this Drive binding/);
+      await expect(session.moveTarget("X", "A")).rejects.toThrow(/outside this Drive binding/);
+    });
+  });
+
   describe("moves", () => {
     const above = folder("above");
     const inner = folder("B", { parents: ["A"] });
@@ -1440,11 +1562,11 @@ describe("positioned Drive folder session", () => {
       ["a child folder in the trash", ["R", "A"], "D1", "BT", []],
       ["an ID the account cannot see", ["R", "A"], "D1", "gone", [[
         "Check Google Drive folder",
-        "Check whether a requested file is a direct child of this Drive folder.", [],
+        "Check whether a requested file is in this Drive folder, directly or through a shortcut.", [],
       ]]],
       ["the alias root, which Drive answers under another ID", ["R", "A"], "D1", "root", [[
         "Check Google Drive folder",
-        "Check whether a requested file is a direct child of this Drive folder.", [],
+        "Check whether a requested file is in this Drive folder, directly or through a shortcut.", [],
       ]]],
       ["a child that is a Doc", ["R", "A"], "D1", "D3", [[
         "Check Google Drive folder", "Check whether a requested folder can be opened here.",

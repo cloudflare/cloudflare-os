@@ -2,6 +2,7 @@ import {
   ADMIN_SETTING_METHODS,
   ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
+  ADMIN_WRITE_ACTIONS,
   type AdminAuditKind,
   type AdminAuditRecord,
 } from '@gadgets/workshop-shared/api'
@@ -10,12 +11,12 @@ import {
 export type AuditMethod = AdminAuditRecord['method']
 
 /** The kinds of record, as the filter lists them. */
-export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'setting']
+export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'setting']
 
 /**
  * The user `record` targets, as the owner filter matches them: the owner of the workspace a call was
- * made into, or the user whose account it was made into. Undefined for a workspace whose owner is
- * not known and for a setting change, which reaches every user.
+ * made into or a write was made to, or the user whose account a call was made into. Undefined for a
+ * workspace whose owner is not known and for a setting change, which reaches every user.
  */
 export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
   if (record.kind === 'setting') return undefined
@@ -29,14 +30,14 @@ export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
 export type AuditFilter = {
   /** Only this admin's records, by canonical user id. */
   admin?: string
-  /** Only records of calls to this method. */
+  /** Only records of calls to this method, or of writes of this action. */
   method?: AuditMethod
   /** Only records of this kind. */
   kind?: AdminAuditKind
-  /** Only records of access to this workspace, by id. */
+  /** Only records of access to, or a write to, this workspace, by id. */
   workspace?: string
-  /** Only records of access to this user's data: the workspaces they own and their account, by
-   * canonical user id. */
+  /** Only records about this user's data: access to, or a write to, the workspaces they own, and
+   * access to their account, by canonical user id. */
   owner?: string
 }
 
@@ -47,6 +48,7 @@ export type AuditFilter = {
  */
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
   { label: 'Inspection calls', methods: [...new Set([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS])] },
+  { label: 'Workspace writes', methods: ADMIN_WRITE_ACTIONS },
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS },
 ]
 

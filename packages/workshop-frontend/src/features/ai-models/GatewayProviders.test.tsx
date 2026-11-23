@@ -13,13 +13,12 @@ import { GatewayProviders } from './GatewayProviders'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-// One provider in each state: listed by the environment, turned on by an admin, and off, the last
-// of them also short of the token its requests need.
+// One provider in each state: environment-listed, admin-enabled, and off.
 const PROVIDERS: AdminGatewayProvider[] = [
-  { provider: 'cloudflare', enabledBy: 'environment', needsApiToken: false },
-  { provider: 'anthropic', enabledBy: 'admin', needsApiToken: false },
-  { provider: 'openai', needsApiToken: false },
-  { provider: 'google', needsApiToken: true },
+  { provider: 'cloudflare', enabledBy: 'environment' },
+  { provider: 'anthropic', enabledBy: 'admin' },
+  { provider: 'openai' },
+  { provider: 'google' },
 ]
 
 const INTRO =
@@ -29,8 +28,6 @@ const INTRO =
   'whether a provider answers. The model pickers list the providers in this order, and a new ' +
   'user or chat gets the first enabled model.'
 const LOCKED_NOTE = 'Set by CF_AI_GATEWAY_PROVIDERS'
-const TOKEN_WARNING =
-  'Needs CF_AI_GATEWAY_API_TOKEN: requests to this provider fail until the deployment sets it.'
 const AUTH_HINT =
   'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN may not ' +
   'be allowed to run models.'
@@ -226,31 +223,6 @@ describe('GatewayProviders', () => {
 
       expect(providerSwitch('OpenAI').disabled).toBe(false)
       expect(providerSwitch('Cloudflare Workers AI').disabled).toBe(true)
-    })
-  })
-
-  describe('the token warning', () => {
-    it('is in the row of a provider that needs the token, and describes its switch', async () => {
-      await render()
-
-      expect(row('Google').textContent).toContain(TOKEN_WARNING)
-      expect(describedBy(providerSwitch('Google'))).toBe(TOKEN_WARNING)
-    })
-
-    it('is in no other row', async () => {
-      await render()
-
-      for (const label of ['Cloudflare Workers AI', 'Anthropic', 'OpenAI']) {
-        expect(row(label).textContent).not.toContain('CF_AI_GATEWAY_API_TOKEN')
-      }
-    })
-
-    it('describes a locked switch along with the reason it is locked', async () => {
-      await render({
-        providers: [{ provider: 'anthropic', enabledBy: 'environment', needsApiToken: true }],
-      })
-
-      expect(describedBy(providerSwitch('Anthropic'))).toBe(`${LOCKED_NOTE} ${TOKEN_WARNING}`)
     })
   })
 

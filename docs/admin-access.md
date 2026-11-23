@@ -3,9 +3,10 @@
 A deployment's admins (the canonical user ids its backend Worker's `ADMINS` variable lists) need to
 operate, debug and investigate the instance: find a user or a workspace, look inside a workspace
 that misbehaves or at what a user's account holds, and know afterwards who looked at what and who
-changed which setting. This document is the design record for that surface. The API itself is
-documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
-`packages/workshop-shared/src/api.ts`; the pieces are:
+changed which setting. Where the deployment's environment allows it, they can also change a
+workspace (see [Writes](#writes)). This
+document is the design record for that surface. The API itself is documented on `AdminApi`,
+`AdminWorkspaceView` and `AdminUserView` in `packages/workshop-shared/src/api.ts`; the pieces are:
 
 | Concern | Location |
 | --- | --- |
@@ -21,13 +22,18 @@ documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
 | User inspection: `openAdminUserView` and the view it mints (`AdminUserViewImpl`) | `packages/workshop-backend/src/admin-user-view.ts` |
 | Reads that never pull (`readLocalCommitTree`, `readLocalFileAtCommitIfExists`, `localPathEntryAtCommit`, `changedLocalFilePathsBetween`, `readCommitLog` with `stopAtMissing`) | `packages/workshop-backend/src/git-cache.ts` |
 | The admin panel's Audit tab | `packages/workshop-frontend/src/features/admin-audit/` |
+| The writes switch (`adminWorkspaceWritesEnabled`) | `packages/workshop-backend/src/admin-access.ts` |
+| What a write is computed from alone: the arguments each action takes (`adminWriteArgs`) | `packages/workshop-backend/src/admin-writes.ts` |
+| Calling a write (`AdminApiImpl.writeWorkspace`) | `packages/workshop-backend/src/admin-settings.ts` |
+| Running a write (`applyAdminWrite`, `runAdminWrite`) | `packages/workshop-backend/src/overseer.ts` |
 
 ## Entry points
 
 Everything goes through `AuthenticatedApi.getAdminApi()`, which returns null unless the
 caller is an admin. The admin check runs once, when the capability is minted, for every `AdminApi`
 method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
-a user's account (see [User inspection](#user-inspection)) alike.
+a user's account (see [User inspection](#user-inspection)) alike, and `writeWorkspace()`, which
+checks on every call (see [Writes](#writes)).
 
 - **Settings**: the setters (signups, user search, view-only gadget sharing, site name and logo,
   instructions, resource and gatekeeper availability, models, update checks, ...), plus
@@ -39,6 +45,8 @@ a user's account (see [User inspection](#user-inspection)) alike.
   `AdminUserView` of the metadata of the user's account, on the same terms: the same reason and
   lifetime, under the deployment's one level.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
+- **Writes**, while the deployment's `ADMIN_WORKSPACE_WRITES` is `on`:
+  `writeWorkspace(workspaceId, action, args, reason)`.
 
 Each record's `via` (`AdminVia`) comes from the session's User-Agent: `"cli"` when the `/api`
 upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client, the Workshop's
@@ -76,7 +84,7 @@ objects themselves:
 - **The Overseer** reports its workspace's title, owner and creation time:
   - on every `open()`, a no-op once the directory has acknowledged the title's revision;
   - when the title changes, whoever changes it (a rename, an agent-chosen title, initialisation
-    from a blueprint or an external message): the `title` singleton is the one chokepoint, and its
+    from a blueprint): the `title` singleton is the one chokepoint, and its
     subscriber bumps the revision inside the write's transaction and defers the sync;
   - with `lastActive` when the workspace is active, at most hourly, alongside its
     last-active report to the owner's user DO.
@@ -85,8 +93,8 @@ objects themselves:
   initialised before it recorded its creation time reads it once from its owner's record of it
   (`GadgetRecord.created`) and stores it.
 - **The revision is time-based.** `#initializeNewWorkspace()` sets it to at least the current time.
-  An external message names its workspace by key, so a deleted workspace can be initialised again
-  under the same id; its new life then outranks whatever its earlier one left in the directory.
+  A workspace initialised again under the same id then outranks whatever its earlier life left in
+  the directory.
 
 ### Deletion
 
@@ -378,6 +386,87 @@ A connected account whose gatekeeper is no longer bound is left out, of the list
 `describe()`'s count, as the user's own listing leaves it out. A restart of the account's Durable
 Object ends the view; inspect again.
 
+## Writes
+
+An admin can also change a workspace, in two ways: stop an agent, or restart the workspace.
+Neither gives the admin access to anything in the workspace. Writes are off unless the
+deployment's `ADMIN_WORKSPACE_WRITES` is `on` (see
+[The environment's bounds](#the-environments-bounds)). A write runs when an admin calls for it, with
+no second admin and no second factor. What bounds it is the switch and the record the workspace
+appends before anything changes. That record, in the deployment-wide audit log, is the write's only
+trace: the workspace keeps none.
+
+### Calling a write
+
+`AdminApi.writeWorkspace(workspaceId, action, args, reason)` is open to any admin session, the
+CLI's and an agent's included
+(`cf-os api get-admin-api write-workspace <workspaceId> <action> <args> <reason>`).
+`AdminApiImpl` checks that the caller is still an admin (`notAdmin`), that writes are on
+(`writesOff`) and the workspace id's form (`workspaceNotFound` for a malformed one), and then calls
+`OverseerDurableObject.applyAdminWrite(call)`, which nothing else calls. The call carries the
+action, its arguments and the reason, and the admin, `sessionId` and `via` of the capability. A
+refusal from the workspace is the caller's error; `workspaceNotFound` also drops the workspace
+from the directory, as a refused inspection does.
+
+**The reason stays in the admins' log**, as an inspection's does. It is read by admins in the
+Audit tab, never by the workspace's members.
+
+### Run
+
+`applyAdminWrite()`:
+
+- **is reachable only over the Workshop's Durable Object binding**, never through a capability a
+  user holds;
+- **refuses a workspace never initialised or since deleted** (`workspaceNotFound`) before anything
+  else, writing nothing, as `openForAdmin()` does;
+- rejects with a `TypeError` a reason that is blank or longer than
+  `MAX_ADMIN_ACCESS_REASON_LENGTH` (500) characters, a `via` that is not `"api"` or `"cli"`, and
+  arguments that are not the action's (`adminWriteArgs()`: each action takes only its own,
+  `AdminWriteArgs` lists them, and only what the action takes is kept);
+- **re-checks the admin and the switch** through the workspace's own environment (`impl.env`): the
+  caller must still be an admin (`notAdmin`) and writes still on (`writesOff`), whatever the Worker
+  that called believed;
+- **appends the write record before anything changes.** A write whose record cannot be written
+  does not happen. Nor does one whose workspace is deleted while the record is appended: the
+  record is kept, and nothing follows it;
+- **then runs the operation** (`runAdminWrite()`). If it throws, the error is rethrown to the
+  caller, and the record stays.
+
+As for an inspection, by explicit policy the admin is not checked by `authorizeCollaborator()` or
+observer verification, and joins no session, presence or outputs fan-out. Unlike an inspection,
+which starts nothing, a write does what its operation does for a member.
+
+Each action runs an `OverseerImpl` operation of its own, the one a member's session runs for it
+or close to it:
+
+| Action | Arguments | Operation |
+| --- | --- | --- |
+| `stopAgent` | `chatId` | `takeSteers(chatId)`, then `cancelAgent(chatId)`: a member's stop, keeping the chat's queued messages |
+| `restartWorkspace` | none | Ends every session on the workspace, as a revoked collaborator does |
+
+**`stopAgent` keeps the messages queued for the turn.** A member's stop drops the messages sent
+while the agent worked that it had not read yet, and the client that stops puts them back in its
+draft. An admin's stop has no such client, so those messages go into the chat as their senders'
+own, as when a turn fails, and the agent reads them when it next runs. The chat and the agent are
+told the turn was stopped as for any stop (code `stopped`), with nothing naming an admin.
+
+### Who sees a write in the workspace
+
+**Nobody in the workspace is told that an admin acted.** A write enters nothing in the workspace's
+action log or its activity, and raises no event or notice for its sessions. Its members see only
+what the operation did: a turn stopped as any stop is, or their sessions ended and reconnected as
+after any restart. The record in the deployment-wide audit log, with the admin and the reason, is
+read by admins in the Audit tab.
+
+### When a write fails
+
+The record says that a write was made, not what came of it. A write that fails once recorded, such
+as a `stopAgent` of a chat that does not exist, shows as the caller's error and as an
+`admin.write.failed` log line for operators. A write whose workspace is deleted while its record is
+appended keeps its record and runs nothing (see [Run](#run)). A write cut short (the object lost
+midway) leaves its record and may have changed the workspace in part: a restart aborts the
+workspace about 100 ms after it answers, and an operation can throw partway.
+
 ## Access levels and their bounds
 
 ### The levels
@@ -427,12 +516,14 @@ it as `chosen: "off"`.
 
 Two backend variables bound what admins may choose. They are environment variables for the reason
 authentication config is (`auth/config.ts`): a compromised admin session must not be able to widen
-them.
+them. A third, `ADMIN_WORKSPACE_WRITES`, is a switch with no admin setting under it, and an
+environment variable for the same reason.
 
 | Variable | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `ADMIN_WORKSPACE_ACCESS_MAX` | `off`, `metadata` (any case, trimmed) | `metadata` (unset or blank) | The highest level admins may choose. `metadata` is also the default and the highest level there is, so the variable is the operator's off switch: `off` turns inspection off whatever admins choose. Any other value is `off`, logged as an error: it bounds a security setting, so `none`, `false` or a typo of `off` must fail closed, never grant the default. |
 | `ADMIN_AUDIT_RETENTION_MIN_DAYS` | a positive whole number of days, at most 3650 (`MAX_ADMIN_AUDIT_RETENTION_DAYS`); a larger value counts as 3650 | 90 (unset, blank or invalid; an invalid value is logged) | The fewest days the audit log keeps a record, whatever admins choose. |
+| `ADMIN_WORKSPACE_WRITES` | `on`, `off` (any case, trimmed) | `off` (unset or blank) | Whether admins may make [writes](#writes) to workspaces. Any other value is off, logged as an error, so `true`, `1` or a typo of `on` never enables them. |
 
 The admins' choice is kept in `AdminConfig` as they set it, and `adminAccessPolicy()` holds it within
 the bounds wherever it is enforced: `inspectWorkspace()`, `inspectUser()`, every view call, the
@@ -441,19 +532,31 @@ settings audit and the audit log's own floor. `getSettings()` reports `chosen`, 
 bounds, naming the variable; a choice stored before a bound tightened is kept but not enforced.
 `setAdminWorkspaceAccess()` refuses a value that is not a level, storing and recording nothing.
 
+`ADMIN_WORKSPACE_WRITES` has no choice under it, and no setter changes it.
+`adminWorkspaceWritesEnabled()` is the only code that reads the variable: `AdminApiImpl` asks it
+before a write reaches the workspace, and the workspace asks it again before the write runs. Each
+asks its own environment, and each checks that the caller is still in `ADMINS` the same way, so a
+session whose Worker started with an older config is held to the current one. The access level
+does not bound writes: where it is `off`, no inspection can show what a chat id names, and a write
+still runs.
+
 ### Setting the bounds
 
-Both are variables of the backend Worker (`workshop-backend`):
+All three are variables of the backend Worker (`workshop-backend`):
 
 - **Locally** (`pnpm run-local`, `pnpm dev-server`): set them in the shell or in the root
-  `.dev.vars`; `scripts/run-dev-server.ts` passes both through to the backend, for example
-  `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server`.
+  `.dev.vars`; `scripts/run-dev-server.ts` passes all three through to the backend, for example
+  `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` or `ADMIN_WORKSPACE_WRITES=on pnpm dev-server`.
 - **Your own `wrangler deploy` or workerd config**: the backend Worker's `vars`.
 - **Deploy tools that write the backend's variables themselves** (the online deploy flow and the
   deployment starter's `cf-os deploy`, both linked from the [README](../README.md#get-started)):
   they replace the Worker's variables on every deploy, so a value set in the Cloudflare dashboard
-  lasts only until the next deploy, and until such a tool carries these two variables its
-  deployments run with the defaults. Any redeploy that writes its own variables must carry both.
+  lasts only until the next deploy, and until such a tool carries these variables its
+  deployments run with the defaults. Any redeploy that writes its own variables must carry all
+  three.
+- **Pull request previews** (`scripts/preview/staging-config.ts`): `ADMIN_WORKSPACE_WRITES` is `on`
+  in each preview, so that writes can be tried there, and off in the shared baseline the previews
+  branch from. The other two keep their defaults.
 
 ### When a variable is dropped
 
@@ -461,6 +564,7 @@ Both are variables of the backend Worker (`workshop-backend`):
   turns inspection back on, at the level the admins chose: `metadata`, unless they chose Off.
 - The floor falls back to 90 days, and with it the retention actually kept wherever the admins
   chose less, which prunes the older records.
+- Writes go off.
 
 So set what you want in the admin panel too: the admins' choices persist in the deployment's
 settings across deploys, while a variable only bounds what an admin session can choose.
@@ -473,7 +577,7 @@ settings across deploys, while a variable only bounds what an admin session can 
 
 ## The audit
 
-### Three kinds of record
+### Four kinds of record
 
 - **`AdminAccessRecord`** (`kind: "workspace"`): one admin call into a workspace, the open or a view
   method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `workspaceId`,
@@ -493,27 +597,35 @@ settings across deploys, while a variable only bounds what an admin session can 
 - **`AdminSettingRecord`** (`kind: "setting"`): one `AdminApi` setter's change. It holds `at`,
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.
+- **`AdminWriteRecord`** (`kind: "write"`): one admin write to a workspace, appended by the
+  workspace before it changes anything. It holds `at`, `admin`, `sessionId`, `via`, `workspaceId`,
+  the workspace's owner and title as the workspace gives them (kept as an `AdminAccessRecord` keeps
+  them), `method` (the action, named as on the other records so that one filter covers every
+  kind), the write's `args` by name and its `reason`. It says what was asked for, not what came of
+  it (see [When a write fails](#when-a-write-fails)).
 
-`listAdminAudit()` filters by kind, admin, method, workspace, the user a call's target belongs to
-(`owner`) and time; `getAdminAuditStats()` by kind. The method and that user stay in a record's
-JSON, each read through an index on its `json_extract()`. The owner filter covers a workspace's
-owner and an inspected user through one index, on the record's `userId` or else its
+`listAdminAudit()` filters by kind, admin, method, workspace, the user a call's or a write's target
+belongs to (`owner`) and time; `getAdminAuditStats()` by kind. The method and that user stay in a
+record's JSON, each read through an index on its `json_extract()`. The owner filter covers a
+workspace's owner and an inspected user through one index, on the record's `userId` or else its
 `workspaceOwner` (`admin_audit_target`), so it lists the calls into a user's account together with
-the calls into the workspaces they own. The two views share three method names (`describe`,
-`listBlueprints` and `getDiagnostics`), whose records `kind` tells apart. A method no record type
-names is refused (capnweb-validate checks it against the method union); one that no logged record
-has gives an empty page.
+the calls into, and the writes to, the workspaces they own. The two views share three method names
+(`describe`, `listBlueprints` and `getDiagnostics`), whose records `kind` tells apart. A write
+action shares its name with no other record's method, so a method filter by one lists every write
+of it and nothing else. A method no record type names is refused
+(capnweb-validate checks it against the method union); one that no logged record has gives an
+empty page.
 
 The store's table admits exactly these kinds, by a CHECK on its `kind` column, and its `exposed`
-column holds `'metadata'` for every access record, of either kind. SQLite cannot alter a CHECK, so
+column holds `'metadata'` for every access record, of either kind, and nothing for a setting or a
+write record. SQLite cannot alter a CHECK, so
 a table whose stored definition differs from the current one is rebuilt once, when the log's
 Durable Object next starts: its rows are copied into a table of the current definition, each
-keeping its `seq`. AUTOINCREMENT's high-water mark is not carried, so a `seq` above the highest row
-copied (one whose row has since been deleted) can be handed out again, which only a list cursor
-held across the rebuild could notice. A rebuild that fails, as it does on a table of a later
-definition holding rows of a kind this CHECK refuses, rolls back whole: it leaves the stored table
-with its rows, is logged (`admin.audit.table.rebuild.failed`), and the log goes on appending the
-kinds that table admits.
+keeping its `seq`, and the table goes on numbering from the highest `seq` it ever issued, a pruned
+record's included, so a list cursor held across the rebuild stays valid. A rebuild that fails, as
+it does on a table of a later definition holding rows of a kind this CHECK refuses, rolls back
+whole: it leaves the stored table with its rows, is logged (`admin.audit.table.rebuild.failed`),
+and the log goes on appending the kinds that table admits.
 
 ### What the metadata level withholds
 
@@ -560,6 +672,10 @@ inspected account. If the write fails, the call fails and returns nothing.
 A setting record is written to the deployment-wide log before the change is stored: a change whose
 record cannot be written is refused.
 
+A write record is written by the workspace before it changes anything, so a write whose record
+cannot be written does not happen. The workspace keeps no note of the write (see
+[Who sees a write in the workspace](#who-sees-a-write-in-the-workspace)).
+
 ### Which refusals are recorded
 
 | Refusal | Recorded | Why |
@@ -573,6 +689,9 @@ record cannot be written is refused.
 | A dead capability (no longer an admin), an expired view, a deleted workspace, a malformed or unknown workspace id, including a call that expiry, a demotion or a deletion overtakes while it reads | No | Nothing was reachable, or nothing the call read left the server, and recording a gone workspace would write into storage that must stay empty. |
 | An `inspectUser()` open of an empty id, or, while the level is not `"off"`, of an id that names no account (`userNotFound`) | No | Nothing was reachable: no account is created, and there is none to record a call into. |
 | A call whose arguments are rejected before it starts: a mistyped argument, `listActions()`'s invalid `beforeId`, `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH` | No | Validation refuses the call before the view's own checks run, as it refuses a mistyped argument: nothing was read, and the call asked for nothing a record could name (a depth of 0, a `beforeId` of -1). Only an argument rejected before the call starts goes unrecorded; a malformed commit id is checked inside the read, and is the failed read above. |
+| A write refused `notAdmin`, `writesOff` or `workspaceNotFound` before its record is appended, or whose reason, `via` or arguments are rejected | No | `AdminApiImpl` or the workspace refuses it before its record is appended: nothing changed. |
+| A write whose workspace is deleted while its record is appended (`workspaceNotFound`) | Already recorded | The record stands for the attempt, and the workspace runs nothing. |
+| A write that fails once recorded (its operation throws) | Already recorded | The record precedes the write; the failure is the caller's error. |
 
 ### Setting records
 
@@ -611,7 +730,8 @@ Arguments, workspace titles and setting keys are cut to `MAX_ADMIN_AUDIT_ARG_LEN
 characters by `cutAdminAuditText()`, the last character replaced with `…` and never splitting a
 surrogate pair: a record marks its cuts, never passing a fragment off as the whole. Reasons are
 capped at `MAX_ADMIN_ACCESS_REASON_LENGTH` (500), values at 10,000 with excerpts, and a setter's diff
-has a bounded number of changes, so every record, and every page of them, is bounded.
+has a bounded number of changes, so every record, and every page of them, is bounded. A write
+record's arguments are cut as arguments are, and its reason is capped as an inspection's is.
 
 The deployment-wide store keeps each field once (kind, time, admin, and an access record's
 workspace id and title in columns, the rest as JSON) and cuts the title itself, whatever its caller
@@ -621,7 +741,7 @@ limit of its own: kept whole, an over-long title would overflow the row (the pla
 listing past the RPC size limit.
 
 The store's table also has an `exposed` column with an index (`admin_audit_exposed`): `append()`
-writes `metadata` there for every access record and nothing for a setting record. The column is not
+writes `metadata` there for every access record and nothing for a setting or a write record. The column is not
 part of a record the API returns, and no query filters by it.
 
 ### Retention and pruning
@@ -631,6 +751,7 @@ never below the floor). It deletes up to 1000 expired rows at the start of each 
 committed retention, and never lists or counts one, and it holds the floor itself whatever retention
 a caller passes. A view call's record passes none, since a view reads the KV mirror, whose retention
 may be one an admin has since raised; the next listing, statistics read or settings change prunes.
+The write record a workspace appends passes none either.
 
 ### Statistics
 
@@ -640,11 +761,15 @@ records. An admin outside the top ten is not ranked there, but `listAdminAudit({
 every record of theirs, as `listAdminAudit({ workspace })` lists every call into a workspace. A
 window reaching past the retention counts nothing there.
 
-The Audit tab shows the week's total, its count per day and its most active admins, each record's
-kind (Workspace access, User access, Setting change), and each call's target user (a workspace's
-owner, or the user whose account was inspected) in a column of its own. It filters its log by
-admin, action, kind, workspace and target user. Its access setting offers Off and Metadata, and
-says what Metadata withholds of a workspace and of a user's account.
+The statistics also count the writes in the window (`writes`: its write records). Only write
+records are writes, so `writes` is 0 for the other kinds.
+
+The Audit tab shows the week's total, its count per day, its most active admins and its writes,
+each record's kind (Workspace access, User access, Workspace write, Setting change), and each
+call's or write's target user (a workspace's owner, or the user whose account was inspected) in a
+column of its own. It filters its log by admin, action, kind, workspace and target user. A write
+record, opened, shows its workspace, reason, arguments and `via`. Its access setting offers Off
+and Metadata, and says what Metadata withholds of a workspace and of a user's account.
 
 ## Error codes
 
@@ -658,6 +783,7 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_USER_NOT_FOUND` | An empty user id, or one naming no account; a user view's call once its account is gone. |
 | `ADMIN_WORKSPACE_ACCESS_OFF` | The level is `"off"`: by the setting, by the cap, or because either holds a value that is not a level. |
 | `ADMIN_VIEW_EXPIRED` | The view's lifetime has run out. |
+| `ADMIN_WORKSPACE_WRITES_OFF` | `ADMIN_WORKSPACE_WRITES` is not `on`: a write, refused by `AdminApiImpl` or by its workspace. |
 
 ## Tests
 
@@ -677,7 +803,8 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   of access to users' accounts are listed by kind and by a method name both views share, keep a
   long user id as a long owner is kept, and are counted. The table's rebuild: a table that knows
   no user records, one that indexes the workspace owner alone, a current one left alone, and a
-  later one kept, logged and still appended to.
+  later one kept, logged and still appended to; across it, the numbering goes on from the highest
+  sequence number issued, whatever was pruned.
 - `admin-api-impl.test.ts`: `AdminApiImpl`'s inspection path, opens refused while access is off (by
   the setting or by a cap), the setter's validator refusing a value that is not a level with a
   `TypeError`, listings and forwarding. For `inspectUser()`: the order of its checks, an empty
@@ -742,6 +869,21 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   directory and both feeds. The last includes a deletion that parks a sync on a real call to another
   Durable Object and checks that the deletion still completes.
 
+Writes add these, in the same directory:
+
+- `admin-access.test.ts` also covers the writes switch: off while unset, blank or `off`, on for
+  `on` alone, and off for anything else, reported once and never with the value.
+- `admin-writes.test.ts`: the arguments each action takes and refuses.
+- `admin-write-apply.test.ts`: `applyAdminWrite()` on a real workspace. The refusals that write
+  nothing, each action running its one operation, a stop that keeps the queued messages and reads
+  as any stop, the record before the effect, a workspace deleted while its write runs, and an
+  action log that gains no entry and tells its sessions of none.
+- `admin-api-impl.test.ts` also covers `AdminApiImpl.writeWorkspace()`: the checks before anything
+  is touched, what the workspace is handed, and a missing workspace dropped from the directory.
+- `admin-audit.test.ts` also covers write records in the log's listing, filters and statistics,
+  and the rebuild of a table that knows no write records, which keeps every row, kind and
+  sequence number.
+
 Integration suites, in `packages/integration-tests/__tests__/`:
 
 - `workshop-admin-inspection.test.ts`: every admin method this surface adds refused to a non-admin;
@@ -767,10 +909,21 @@ Integration suites, in `packages/integration-tests/__tests__/`:
 - `workshop-admin-bounds.test.ts`: the bounds' defaults, and a redeploy that tightens them (an
   invalid cap failing closed) and demotes an admin. The redeploy ends every session, the demoted
   admin's view among them, so the per-call re-check that stops a live view once its admin is demoted
-  is covered by `admin-workspace-view.test.ts`.
+  is covered by `admin-workspace-view.test.ts`. It also covers writes refused, recording nothing,
+  while `ADMIN_WORKSPACE_WRITES` is unset and after a redeploy that sets it to `true`.
+- `workshop-admin-writes.test.ts`: writes end to end. A write refused to a non-admin, whose
+  capabilities run none; a write recorded once, before the effect, with nothing entered in the
+  workspace's action log; a stopped turn that reads as any stop; a failed write's record kept;
+  nothing changing when the record cannot be written; every action as its operation,
+  and anything else refused; a workspace that is gone; and every write refused once a redeploy
+  leaves `ADMIN_WORKSPACE_WRITES` unset.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
 faults the deployment-wide log with a trigger on `admin_audit`, shows that an inspected deleted
 id stays unwritten by listing its `sqlite_master`, and shows that a call into an account wrote
 nothing by reading the account's `total_changes()` before and after it.
+
+Frontend suites, in `packages/workshop-frontend/src/`:
+
+- The suites beside the Audit tab cover the write kind, its filter and a write record's details.

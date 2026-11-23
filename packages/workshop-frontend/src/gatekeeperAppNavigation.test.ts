@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_GATEKEEPER_APP_PATH_LENGTH,
   MAX_GATEKEEPER_APP_PROMPT_LENGTH,
   normalizeGatekeeperAppPrompt,
+  parseGatekeeperAppPath,
   parseGatekeeperAppWorkspaceTarget,
 } from "./gatekeeperAppNavigation";
 
@@ -44,5 +46,37 @@ describe("normalizeGatekeeperAppPrompt", () => {
     expect(() =>
       normalizeGatekeeperAppPrompt("x".repeat(MAX_GATEKEEPER_APP_PROMPT_LENGTH + 1)),
     ).toThrow("too long");
+  });
+});
+
+describe("parseGatekeeperAppPath", () => {
+  it.each([
+    "/",
+    "/collections/c1",
+    "/collections/c1/files/guides/a b#?%.md",
+    `/${"x".repeat(MAX_GATEKEEPER_APP_PATH_LENGTH - 1)}`,
+  ])("accepts %s", (path) => {
+    expect(parseGatekeeperAppPath(path)).toBe(path);
+  });
+
+  it.each([
+    "",
+    "collections",
+    "//",
+    "/a//b",
+    "/a/",
+    "/a/./b",
+    "/a/../b",
+    "/a\u0000b",
+    "/a\u007fb",
+    42,
+    undefined,
+  ])("rejects %j", (path) => {
+    expect(() => parseGatekeeperAppPath(path)).toThrow("Invalid gatekeeper app path");
+  });
+
+  it("rejects a path over the length limit", () => {
+    expect(() => parseGatekeeperAppPath(`/${"x".repeat(MAX_GATEKEEPER_APP_PATH_LENGTH)}`))
+      .toThrow("too long");
   });
 });
