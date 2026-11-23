@@ -619,7 +619,7 @@ describe("a submission an earlier activation never saw answered", () => {
     expect(journal.get(id)?.state).toBe("pending");
 
     // One the Workshop does not hold is rolled back, and one it gives no answer on stays
-    // unconfirmed for the next activation to settle.
+    // unconfirmed for the next session to settle.
     const refused = await set.session(failing(async () => false), A);
     await expect(refused.submit("note", { text: "refused" })).rejects.toThrow("Reply lost.");
     const silent = await set.session(failing(async () => { throw new Error("Down."); }), A);
@@ -627,6 +627,26 @@ describe("a submission an earlier activation never saw answered", () => {
     expect(names(held.pending())).toEqual(["held"]);
     expect(journal.listUnconfirmed().map(other => journal.get(other)?.action.payload))
       .toEqual([{ text: "unanswered" }]);
+    const next = await set.session(acceptingQueue(() => true).queue, A);
+    expect(names(next.pending())).toEqual(["held", "unanswered"]);
+  });
+
+  it("counts a submission whose call failed as made once an apply names it", async () => {
+    const { journal, set } = activation(fakeKv());
+    const answer = Promise.withResolvers<boolean>();
+    const asked = Promise.withResolvers<number>();
+    const session = await set.session({
+      submitAction: async () => { throw new Error("Reply lost."); },
+      holdsAction: (id => { asked.resolve(id); return answer.promise; }) as
+        ActionSessionQueue["holdsAction"],
+    }, A);
+    const submitted = session.submit("note", { text: "applied meanwhile" });
+    const id = await asked.promise;
+    expect((await set.applyList(A, [id])).applied).toEqual([id]);
+    // The Workshop no longer holds it pending, so it answers no.
+    answer.resolve(false);
+    expect(await submitted).toBe(id);
+    expect(journal.wasApplied(id)).toBe(true);
   });
 
   it("lets no session read or submit until the answer is in, and asks once for all of them",

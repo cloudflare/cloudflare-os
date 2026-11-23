@@ -119,10 +119,11 @@ function stage<A>(
         // A session's submission may have been recorded with only its reply lost, and one the
         // Workshop holds is never dropped (see `ApprovalQueue.submitAction()`, rule 4). With no
         // answer either, the record stays unconfirmed, as a crash would leave it.
-        const held = holds ? await holds(id).catch(() => { throw error; }) : false;
-        if (!held) {
-          journal.rollbackSubmission(id);
-          throw error;
+        const held = holds ? await holds(id).catch(() => undefined) : false;
+        // Read again: an apply naming the record meanwhile confirmed it, whatever the answer.
+        if (journal.get(id)?.state === "staged") {
+          if (held === false) journal.rollbackSubmission(id);
+          if (!held) throw error;
         }
       }
     } finally {
@@ -1228,8 +1229,16 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           const handle: ActionSession<M> = {
             view,
             submit: (kind, payload, submitOptions) =>
-              submitThrough(queue, kind, payload, submitOptions, view,
-                async id => await queue.holdsAction(id)),
+              submitThrough(queue, kind, payload, submitOptions, view, async id => {
+                try {
+                  return await queue.holdsAction(id);
+                } catch (error) {
+                  // Left unconfirmed, for the next session to settle.
+                  recovered = false;
+                  recovery = undefined;
+                  throw error;
+                }
+              }),
             pending: () => journal.listPendingIn(view),
             undecided: () => journal.listUndecidedIn(view),
           };
