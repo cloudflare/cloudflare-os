@@ -467,40 +467,6 @@ importers:
         specifier: 'catalog:'
         version: 4.162.0(@cloudflare/workers-types@5.20261115.1)(@types/node@26.1.0)
 
-  packages/gatekeeper-email:
-    dependencies:
-      '@gadgets/configurator-ui':
-        specifier: workspace:*
-        version: link:../configurator-ui
-      '@gadgets/gatekeeper-kit':
-        specifier: workspace:*
-        version: link:../gatekeeper-kit
-      '@gadgets/observability':
-        specifier: workspace:*
-        version: link:../observability
-      '@gadgets/workshop-shared':
-        specifier: workspace:*
-        version: link:../workshop-shared
-      capnweb:
-        specifier: 'catalog:'
-        version: 0.13.1
-      capnweb-validate:
-        specifier: 'catalog:'
-        version: 0.3.2(capnweb@0.13.1)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
-      postal-mime:
-        specifier: ^4.2.0
-        version: 4.2.0
-    devDependencies:
-      '@gadgets/scripts':
-        specifier: workspace:*
-        version: link:../../scripts
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
-      wrangler:
-        specifier: 'catalog:'
-        version: 4.162.0(@cloudflare/workers-types@5.20261115.1)(@types/node@26.1.0)
-
   packages/gatekeeper-github:
     dependencies:
       '@gadgets/configurator-ui':
@@ -5743,10 +5709,12 @@ packages:
   yuku-core@0.19.0:
     resolution: {integrity: sha512-kYK9e1XdfirNhkipzW0wmMcSWcVF/CWnuugodfVYRCUwvoBefweL9HzB96OiKEhsx78V5WbUxbJqlizMX869Qg==}
     engines: {node: '>=14.18.0'}
+    deprecated: 'Yuku is now one package with one core. Use "yuku" instead: https://yuku.fyi/javascript/. Existing installs keep working but get no more fixes.'
 
   yuku-parser@0.19.0:
     resolution: {integrity: sha512-XrBh9ZiQK5mJVRxZBAvD6LwRyAYrK3MFtH3+onyuxFL5hFD44EC3QOmIC1FjTj6H2MMwq46/NAI+NZxLZPZgxg==}
     engines: {node: '>=14.18.0'}
+    deprecated: 'Yuku is now one package with one core. Use "yuku" instead: https://yuku.fyi/javascript/. Existing installs keep working but get no more fixes.'
 
   zod@4.6.6:
     resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}

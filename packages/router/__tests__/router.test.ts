@@ -175,28 +175,6 @@ describe('router version header', () => {
   });
 });
 
-describe('router email', () => {
-  it('forwards to GATEKEEPER_EMAIL when bound', async () => {
-    const received: unknown[] = [];
-    const env = makeEnv({
-      GATEKEEPER_EMAIL: { email: async (m: unknown) => { received.push(m); } },
-    });
-    const message = {} as ForwardableEmailMessage;
-    await router.email!(message, env, {} as ExecutionContext);
-    expect(received).toEqual([message]);
-  });
-
-  it('rejects mail when no email gatekeeper is installed', async () => {
-    const rejections: string[] = [];
-    const env = makeEnv();
-    const message = {
-      setReject: (reason: string) => { rejections.push(reason); },
-    } as unknown as ForwardableEmailMessage;
-    await router.email!(message, env, {} as ExecutionContext);
-    expect(rejections).toHaveLength(1);
-  });
-});
-
 // The deploy service renders customer instances from this config (via the release manifest), so
 // the asset-routing contract must hold: worker-first prefixes cover every dynamic route, or asset
 // 404 handling would swallow API and gatekeeper traffic.
