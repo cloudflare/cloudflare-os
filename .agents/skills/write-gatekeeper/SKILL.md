@@ -214,7 +214,7 @@ If a provider truly cannot use the kit's journal, the gatekeeper must keep the s
 
 #### Action kinds and auto-approval
 
-Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. Nothing auto-applies until the user enables a rule for the kind; the verdict says whether honoring it is safe for *this* action.
+Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. A chat in Auto mode, the default, accepts its changes at the end of a turn when every pending action's verdict is `true`, with no further opt-in, and one `false` leaves the whole chat for the user; the verdict says whether applying *this* action unseen is safe.
 
 **The default is `true`.** Use `false` only when the action:
 
@@ -229,15 +229,12 @@ Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) w
 Exceptions, kept `true` by decision although a rule covers them; add one only with the maintainers' agreement:
 
 - Gmail's trash, spam, draft delete and label delete (rule 1): routine mailbox upkeep, and trash and spam are undone in Gmail.
-- GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
 - X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
 - Google Drive's comments and replies that mention an address after `@` or `+` (rule 2): Google emails the mentioned person the text, even one who cannot open the file; the comment itself goes on the bound file, and the gatekeeper looks for no mention, so the one "Drive comments" kind covers them (see `packages/gatekeeper-google/README.md`).
 
 Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
 
 Where the verdict depends on the payload, compute it instead of a blanket `false`: per payload in a hand-built `ActionDescription` (`autoApprovalOf` in `packages/gatekeeper-github/src/github.ts`), or in the kit as sibling definitions, one `true` and one `false`, that the session picks between at submit (`editSheetValues` and `updateSpreadsheet` in `packages/gatekeeper-google/src/sheets-actions.ts`). The existing definition keeps its name, since stored records resolve by it. When the facts behind a `true` can change before apply (an event gaining attendees), re-check at apply time.
-
-A newly `true` action gets a new tag, never one that already has a `true` action: users' stored rules would silently start covering it.
 
 It's critically important that you add `ApprovalQueue` to all API operations that interact with the outside world, otherwise the gatekeeper security model is broken.
 
