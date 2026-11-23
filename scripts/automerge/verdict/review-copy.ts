@@ -5,25 +5,12 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-/**
- * File names an agent reads as instructions, matched at any depth and in any case. opencode 1.18.33
- * attaches the nearest AGENTS.md, CLAUDE.md or CONTEXT.md to every file its read tool returns, even
- * with project config disabled (measured 2026-11-02), so a nested one is as live as the root one.
- */
-const INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "context.md", "review.md", "contributing.md",
-  "opencode.json", "opencode.jsonc"]);
-/** Directories an agent loads skills, agents, tools, plugins or config from, matched at any depth. */
-const INSTRUCTION_DIRS = new Set([".agents", ".opencode", ".claude"]);
+import { git } from "../git.ts";
+import { isInstructionPath } from "../instructions.ts";
+
 const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
 // The largest single read: the whole tree's blobs, which is about 40 MiB at main today.
 const MAX_TREE_BYTES = 1024 * 1024 * 1024;
-
-/** Whether the review copy takes this repository path from the base commit rather than the head. */
-export function isInstructionPath(path: string): boolean {
-  const segments = path.toLowerCase().split("/");
-  return INSTRUCTION_FILES.has(segments[segments.length - 1]) ||
-    segments.slice(0, -1).some(segment => INSTRUCTION_DIRS.has(segment));
-}
 
 interface TreeEntry {
   mode: string;
@@ -32,9 +19,7 @@ interface TreeEntry {
 }
 
 function listTree(repo: string, commit: string): TreeEntry[] {
-  const output = execFileSync("git", ["-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit],
-    { encoding: "utf8", maxBuffer: MAX_TREE_BYTES });
-  return output.split("\0").filter(record => record !== "").map(record => {
+  return git(["ls-tree", "-r", "-z", "--full-tree", commit], repo).split("\0").filter(record => record !== "").map(record => {
     const tab = record.indexOf("\t");
     const [mode, , object] = record.slice(0, tab).split(" ");
     return { mode, object, path: record.slice(tab + 1) };
@@ -147,8 +132,7 @@ export function replaceInstructionFiles(worktree: string, headSha: string, baseS
   const tracked = new Set(head);
   const untracked = base.map(entry => entry.path).filter(path => !tracked.has(path));
   if (untracked.length > 0) {
-    const exclude = resolve(worktree, execFileSync("git", ["-C", worktree, "rev-parse", "--git-path", "info/exclude"],
-      { encoding: "utf8" }).trim());
+    const exclude = resolve(worktree, git(["rev-parse", "--git-path", "info/exclude"], worktree).trim());
     mkdirSync(dirname(exclude), { recursive: true });
     // Anchored, with gitignore's special characters escaped, so each line matches only its path.
     appendFileSync(exclude, `\n${untracked.map(path => `/${path.replaceAll(/[\\*?[]/g, "\\$&").replace(/ +$/, spaces =>

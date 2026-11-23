@@ -2,7 +2,7 @@
 
 import { crc32, deflateRawSync } from "node:zlib";
 
-import type { Json } from "../risk-review-policy.ts";
+import type { Json } from "../automerge/json.ts";
 
 /** The head and base commits the artifact builders bind to. */
 export const HEAD = "a".repeat(40);
@@ -75,7 +75,7 @@ export function verdictJson(overrides: Record<string, Json | undefined> = {}): s
   });
 }
 
-/** A well-formed proof or evidence artifact. */
-export function proofJson(name: string, kind: "proof" | "evidence", holds: boolean, overrides: Record<string, Json | undefined> = {}): string {
-  return JSON.stringify({ schema: 1, kind, name, head_sha: HEAD, base_sha: BASE, status: "ok", holds, details: {}, ...overrides });
+/** A well-formed proof artifact. */
+export function proofJson(name: string, holds: boolean, overrides: Record<string, Json | undefined> = {}): string {
+  return JSON.stringify({ schema: 1, kind: "proof", name, head_sha: HEAD, base_sha: BASE, status: "ok", holds, details: {}, ...overrides });
 }

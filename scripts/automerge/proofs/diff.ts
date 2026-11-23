@@ -1,10 +1,13 @@
-// Parses the output of `git diff -U0` (the exact command is `DIFF_ARGS`). With no context lines,
-// each hunk is one contiguous run of changed lines, and git's default hunk header names the last
-// line above it that starts at column 0. For YAML that is the top-level key the hunk sits under,
-// which is how the lockfile and workspace rules tell `packages:` from `importers:`.
+// Reads a pull request's diff: `git diff -U0` (the exact command is `DIFF_ARGS`) and its parser.
+// With no context lines, each hunk is one contiguous run of changed lines, and git's default hunk
+// header names the last line above it that starts at column 0. For YAML that is the top-level key
+// the hunk sits under, which is how the lockfile and workspace rules tell `packages:` from
+// `importers:`.
+
+import { git } from "../git.ts";
 
 /** Arguments for `git diff` that produce the text `parseDiff` reads. Add `<base>...<head>`. */
-export const DIFF_ARGS = [
+const DIFF_ARGS = [
   "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
   "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
 ];
@@ -74,4 +77,9 @@ export function parseDiff(text: string): FileDiff[] {
     }
   }
   return files;
+}
+
+/** The pull request's own change: `base...head`, the diff from their merge base. */
+export function pullRequestDiff(base: string, head: string, cwd?: string): FileDiff[] {
+  return parseDiff(git([...DIFF_ARGS, `${base}...${head}`], cwd));
 }

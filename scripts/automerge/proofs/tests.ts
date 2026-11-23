@@ -31,11 +31,12 @@
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "./artifact.ts";
-import type { FileDiff } from "./diff.ts";
-import { fileAt, git, mergeBase, pullRequestDiff } from "./git.ts";
-import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "./json.ts";
+import { pullRequestDiff, type FileDiff } from "./diff.ts";
+import { fileAt, git, mergeBase } from "../git.ts";
+import { isMain } from "../main.ts";
+import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
 
 /** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
 const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
@@ -529,7 +530,7 @@ export function editedSupportFiles(baseTests: string[]): string[] {
 }
 
 async function main(): Promise<void> {
-  await runProducer("proof", "proof-tests", async ({ head, base }) => {
+  await runProducer("proof-tests", async ({ head, base }) => {
     const minutes = budgetMinutes(process.env.AUTOMERGE_MUTATION_BUDGET_MINUTES);
     const deadline = Date.now() + minutes * 60_000;
     const from = mergeBase(base, head);
@@ -567,4 +568,4 @@ async function main(): Promise<void> {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isMain(import.meta.url)) await main();

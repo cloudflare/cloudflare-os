@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { assertNames } from "../assert-names.ts";
+import { asArray, asObject, asString, parseJson } from "../json.ts";
+import { DEPENDABOT_LOGIN } from "../producers.ts";
 import {
-  advisoriesFromOsv, DEPENDABOT_LOGIN, evaluateDeps, lockfileNames, readLockfile, workspaceReasons,
+  advisoriesFromOsv, evaluateDeps, lockfileNames, readLockfile, workspaceReasons,
   type DepsInput, type PackageVersion,
 } from "./deps.ts";
 import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
-import { asArray, asNumber, asObject, asString, parseJson } from "./json.ts";
 
 // Each fixture is a real Dependabot pull request merged into main: the `git diff -U0` of its
 // squash commit against its parent, the package.json files it touched at both commits, which of
@@ -27,6 +29,8 @@ function fixture(name: string): DepsInput {
   });
   const names = new Set(asArray(data.base_lock_names, "base_lock_names").map((n) => asString(n, "name")));
   const published = asObject(data.published, "published");
+  const minimumReleaseAgeMinutes = data.minimum_release_age_minutes;
+  assert.ok(typeof minimumReleaseAgeMinutes === "number");
   return {
     author: DEPENDABOT_LOGIN,
     headRef: "dependabot/npm_and_yarn/recorded",
@@ -40,7 +44,7 @@ function fixture(name: string): DepsInput {
       };
     }),
     baseLockHasName: (packageName) => names.has(packageName),
-    minimumReleaseAgeMinutes: asNumber(data.minimum_release_age_minutes, "minimum age"),
+    minimumReleaseAgeMinutes,
     published: Object.fromEntries(Object.entries(published).map(([k, v]) => [k, asString(v, k)])),
     advisories: advisoriesFromOsv(entries, data.osv_response),
     lockfiles: {
@@ -54,12 +58,6 @@ function fixture(name: string): DepsInput {
 function reasons(input: DepsInput): string[] {
   const outcome = evaluateDeps(input);
   return outcome.holds ? [] : asArray(outcome.details.reasons, "reasons").map((r) => asString(r, "reason"));
-}
-
-/** Checks that `found` has one entry per subject, in order, each naming the package, file or lockfile entry at fault. */
-function assertNames(found: string[], subjects: string[]): void {
-  assert.equal(found.length, subjects.length, found.join("\n"));
-  subjects.forEach((subject, i) => assert.ok(found[i].includes(subject), found[i]));
 }
 
 /** The advisory ids a failing outcome records for `key`, or undefined when it records none. */
@@ -189,7 +187,7 @@ describe("lockfile rule: a version at both sides keeps what it resolves to", () 
       lockfiles: { base: readLockfile(withPackage(recorded("pr622.base.lock.yaml"), kept)), head: readLockfile(head) },
     };
     assert.equal(tampered.lockfiles.head.problems.length, 1);
-    assertNames(reasons(tampered), ["head pnpm-lock.yaml", "terser@5.49.2"]);
+    assertNames(reasons(tampered), ["pnpm-lock.yaml", "terser@5.49.2"]);
   });
 
   it("fails a column-0 line that is not a section, and a resolution not on one line", () => {

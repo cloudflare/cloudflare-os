@@ -15,9 +15,9 @@
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA
 
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
 import { decide, errored, runProducer, type Outcome } from "./artifact.ts";
-import { isObject, parseJson } from "./json.ts";
+import { isObject, parseJson } from "../json.ts";
+import { isMain } from "../main.ts";
 
 /** One response, as much of it as the checks read. */
 export interface Answer {
@@ -117,7 +117,7 @@ async function local(): Promise<Outcome> {
 
 async function main(): Promise<void> {
   if (process.argv[2] !== "local") throw new Error("usage: smoke.ts local");
-  await runProducer("evidence", "preview-smoke", local);
+  await runProducer("preview-smoke", local);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isMain(import.meta.url)) await main();

@@ -3,9 +3,9 @@
 // are written structurally because this repository does not depend on the Octokit types.
 //
 // The gate posts the one `risk-review` check run on each pull request head and merge group, as the
-// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts, rung 1
-// proofs, the preview smoke) run on `pull_request`, write one artifact each, and post nothing; the
-// gate reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs
+// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts and rung
+// 1 proofs) run on `pull_request`, write one artifact each, and post nothing; the gate reads those
+// artifacts only from runs bound to the head (risk-review-contract.ts). It runs
 // only from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
 // through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
 // its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
@@ -37,32 +37,29 @@
 
 import { basename } from "node:path/posix";
 
+import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
 import {
   addedDependencies,
   changedInstallSettings,
   isCatalogVersionBump,
   isSkillPath,
-  asObject,
   classifyChangeset,
   durableObjectRisks,
   needsContents,
   parseEscapeSnapshot,
-  parseJson,
   parseMaintainers,
   type Band,
   type ChangedFile,
   type ContentFacts,
   type ContentsKind,
   type EscapeSnapshot,
-  type Json,
 } from "./risk-review-policy.ts";
+import { DEPENDABOT_LOGIN, PRODUCERS, artifactName, isProducerName, type ProducerName } from "./automerge/producers.ts";
+import type { Severity } from "./automerge/verdict/parse-review.ts";
 import {
-  PRODUCERS,
   VERDICT_NAMES,
-  artifactName,
   bindingError,
   identityError,
-  isProducerName,
   modelProvider,
   newestRun,
   parseProducerArtifact,
@@ -72,7 +69,6 @@ import {
   type BindingExpectation,
   type ProducerArtifact,
   type ProducerInput,
-  type ProducerName,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
 
@@ -92,9 +88,6 @@ export const MAX_DECISION_CHARS = 60_000;
 const MAX_SUMMARY_CHARS = 65_535;
 
 const PER_PAGE = 100;
-
-/** Bots that open pull requests on a schedule rather than at someone's direction. */
-const DEPENDABOT = "dependabot[bot]";
 
 /** Rung 1 proofs of a maintainer's pull request. Dependabot's is `proof-deps` with the preview smoke. */
 const MAINTAINER_PROOFS = ["proof-equivalence", "proof-tests"] as const satisfies readonly ProducerName[];
@@ -128,7 +121,7 @@ function shadowBecause(problem: string): { config: Config; problem: string } {
  */
 export function parseConfig(text: string | undefined): { config: Config; problem?: string } {
   if (text === undefined) return shadowBecause("the file is missing");
-  const root = asObject(parseJson(text));
+  const root = maybeObject(maybeJson(text));
   if (!root) return shadowBecause("the file is not a JSON object");
   const { mode, app_approvals_count, threshold } = root;
   if (mode !== "shadow" && mode !== "enforce") return shadowBecause("mode is not shadow or enforce");
@@ -136,7 +129,7 @@ export function parseConfig(text: string | undefined): { config: Config; problem
   if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10) {
     return shadowBecause("threshold is not an integer from 0 to 10");
   }
-  const { proven, scored } = asObject(root.rungs) ?? {};
+  const { proven, scored } = maybeObject(root.rungs) ?? {};
   if (typeof proven !== "boolean" || typeof scored !== "boolean") return shadowBecause("rungs.proven or rungs.scored is not a boolean");
   return { config: { mode, appApprovalsCount: app_approvals_count, threshold, rungs: { proven, scored } } };
 }
@@ -192,7 +185,7 @@ export interface PullCommit {
 function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
   if (commits === undefined) return "its commits could not all be listed";
   const other = commits.find(({ author, committer, commit }) =>
-    author?.login !== DEPENDABOT || committer?.login !== "web-flow" || commit.verification?.verified !== true);
+    author?.login !== DEPENDABOT_LOGIN || committer?.login !== "web-flow" || commit.verification?.verified !== true);
   return other && `commit ${other.sha.slice(0, 7)} is not a verified Dependabot commit`;
 }
 
@@ -232,7 +225,7 @@ export interface PullInputs {
 export type InputSummary =
   | { absent: string }
   | { status: string; holds: boolean }
-  | { status: string; merge_confidence: number | null; findings: Record<"P0" | "P1" | "P2" | "P3", number>; needs_person: string[] };
+  | { status: string; merge_confidence: number | null; findings: Record<Severity, number>; needs_person: string[] };
 
 /** The decision for one pull request, as the check run records it. */
 export interface PullDecision {
@@ -382,7 +375,7 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const { pull } = inputs;
   const author = pull.user ?? undefined;
   const authorLogin = author?.login ?? "";
-  const dependabotAuthor = authorLogin === DEPENDABOT && author?.type === "Bot";
+  const dependabotAuthor = authorLogin === DEPENDABOT_LOGIN && author?.type === "Bot";
   const commitProblem = dependabotAuthor ? dependabotCommitsError(inputs.commits) : undefined;
   const classification = classifyChangeset({
     files: inputs.files,
@@ -450,7 +443,7 @@ function gateRule(inputs: PullInputs, { approvers, blockers, autoApproves }: {
   if (blockers.length > 0) {
     return { passes: false, reason: `changes requested by ${blockers.map((login) => `@${login}`).join(", ")}` };
   }
-  if (pull.user?.type === "Bot" && pull.user.login !== DEPENDABOT) {
+  if (pull.user?.type === "Bot" && pull.user.login !== DEPENDABOT_LOGIN) {
     const directors = (pull.assignees ?? []).filter((user) => user.type === "User").map((user) => user.login.toLowerCase());
     if (directors.length === 0) {
       return { passes: false, reason: "an agent opened this; assign the person who directed it, who must approve" };
@@ -849,7 +842,7 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
     }`,
     { owner: repo.owner, repo: repo.repo, number },
   );
-  const decision = asObject(asObject(asObject(response)?.repository)?.pullRequest)?.reviewDecision;
+  const decision = maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest)?.reviewDecision;
   return typeof decision === "string" ? decision : null;
 }
 
@@ -890,15 +883,15 @@ async function readBaseHistory(github: GitHubClient, repo: RepoRef, number: numb
     }`,
     { owner: repo.owner, repo: repo.repo, number },
   );
-  const pull = asObject(asObject(asObject(response)?.repository)?.pullRequest);
-  const items = asObject(pull?.timelineItems);
+  const pull = maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest);
+  const items = maybeObject(pull?.timelineItems);
   const nodes = items?.nodes;
   const { createdAt, baseRefName } = pull ?? {};
   if (typeof createdAt !== "string" || typeof baseRefName !== "string" || !Array.isArray(nodes)) return undefined;
-  if (asObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
+  if (maybeObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
   const changes: BaseHistory["changes"] = [];
   for (const value of nodes) {
-    const { createdAt: at, previousRefName: from, currentRefName: to } = asObject(value) ?? {};
+    const { createdAt: at, previousRefName: from, currentRefName: to } = maybeObject(value) ?? {};
     if (typeof at !== "string" || typeof from !== "string" || typeof to !== "string") return undefined;
     changes.push({ at: Date.parse(at), from, to });
   }
@@ -1039,7 +1032,7 @@ async function readPullInputs(github: GitHubClient, context: ActionsContext, pul
     readLastPush(github, repo, pull.head.sha),
     readReviewDecision(github, repo, pull.number),
     readProducers(github, repo, pull, context.payload.repository?.default_branch ?? "main"),
-    pull.user?.login === DEPENDABOT ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
+    pull.user?.login === DEPENDABOT_LOGIN ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
   ]);
   for (const [name, input] of Object.entries(producers)) {
     // Only a holding proof can count, so only it needs checking.
@@ -1087,14 +1080,14 @@ async function openPullIntoDefault(github: GitHubClient, context: ActionsContext
  */
 export function mergeGroupPulls(entries: Json, headSha: string):
   { pulls: { number: number; base: string }[]; baseSha: string } | undefined {
-  const nodes = asObject(asObject(asObject(asObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
+  const nodes = maybeObject(maybeObject(maybeObject(maybeObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
   if (!Array.isArray(nodes)) return undefined;
   const byHead = new Map<string, { base: string; number: number }>();
   for (const node of nodes) {
-    const entry = asObject(node);
-    const head = asObject(entry?.headCommit)?.oid;
-    const base = asObject(entry?.baseCommit)?.oid;
-    const number = asObject(entry?.pullRequest)?.number;
+    const entry = maybeObject(node);
+    const head = maybeObject(entry?.headCommit)?.oid;
+    const base = maybeObject(entry?.baseCommit)?.oid;
+    const number = maybeObject(entry?.pullRequest)?.number;
     if (typeof head === "string" && typeof base === "string" && typeof number === "number") {
       byHead.set(head, { base, number });
     }
@@ -1201,7 +1194,7 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
     }`,
     { owner: repo.owner, repo: repo.repo, number: decision.number },
   );
-  const queued = asObject(asObject(asObject(asObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
+  const queued = maybeObject(maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
   if (queued) return;
   await github.graphql(
     `mutation($id: ID!, $head: GitObjectID!) {

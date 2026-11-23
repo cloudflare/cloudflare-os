@@ -1,54 +1,17 @@
 // The contract between producer workflows and the risk-review gate. A producer (a reviewer's
-// verdict, a rung 1 proof, the preview smoke) runs on `pull_request`, writes one JSON artifact,
-// and holds no `checks: write`; the gate accepts the artifact only from a run that is bound to the
-// pull request's head, and only when its JSON has the shape below. Anything else counts as absent,
-// which sends the pull request to a person.
+// verdict or a rung 1 proof, named in automerge/producers.ts) runs on `pull_request`, writes one
+// JSON artifact, and holds no `checks: write`; the gate accepts the artifact only from a run that
+// is bound to the pull request's head, and only when its JSON has the shape below. Anything else
+// counts as absent, which sends the pull request to a person.
 
 import { inflateRawSync } from "node:zlib";
 
-import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
-
-type ProducerKind = "verdict" | "proof" | "evidence";
-
-/** Where the gate looks for a producer's runs. */
-export interface Producer {
-  kind: ProducerKind;
-  /** The workflow file whose runs may publish it. */
-  workflow: string;
-}
-
-/** Our Opus runner. Bonk's verdict comes from its own workflow, `bonk-pr.yml`. */
-const VERDICTS = ".github/workflows/review-verdict.yml";
-/** Proofs that run no pull request code, so nothing in the head can write their artifacts. */
-const PROOFS = ".github/workflows/automerge-proofs.yml";
-/** Producers that build or run the head; their artifacts rest on a maintainer author. */
-const HEAD_RUNS = ".github/workflows/automerge-evidence.yml";
-
-/** Every producer the gate reads, by name. Its artifact is {@link artifactName}. */
-export const PRODUCERS = {
-  bonk: { kind: "verdict", workflow: ".github/workflows/bonk-pr.yml" },
-  opus: { kind: "verdict", workflow: VERDICTS },
-  "proof-deps": { kind: "proof", workflow: PROOFS },
-  "proof-equivalence": { kind: "proof", workflow: HEAD_RUNS },
-  "proof-tests": { kind: "proof", workflow: HEAD_RUNS },
-  "preview-smoke": { kind: "evidence", workflow: HEAD_RUNS },
-} as const satisfies Record<string, Producer>;
-
-/** A producer's name. */
-export type ProducerName = keyof typeof PRODUCERS;
-
-/** Narrows a string to a producer's name. */
-export function isProducerName(name: string): name is ProducerName {
-  return Object.hasOwn(PRODUCERS, name);
-}
+import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
+import { PRODUCERS, SHA, type Producer, type ProducerName } from "./automerge/producers.ts";
+import { SEVERITIES, type Finding } from "./automerge/verdict/parse-review.ts";
 
 /** The two reviewers whose verdicts rung 2 needs. */
 export const VERDICT_NAMES = ["bonk", "opus"] as const satisfies readonly ProducerName[];
-
-/** The artifact a producer uploads, which holds one file of the same name plus `.json`. */
-export function artifactName(name: ProducerName): string {
-  return PRODUCERS[name].kind === "verdict" ? `automerge-verdict-${name}` : `automerge-${name}`;
-}
 
 /** A verdict's `model`: the gateway both reviewers reach their model through, a provider, a model. */
 const MODEL_ID = /^cloudflare-ai-gateway\/([a-z0-9-]+)\/[^\s/]+$/i;
@@ -60,14 +23,6 @@ const MODEL_ID = /^cloudflare-ai-gateway\/([a-z0-9-]+)\/[^\s/]+$/i;
  */
 export function modelProvider(model: string): string | undefined {
   return MODEL_ID.exec(model)?.[1]?.toLowerCase();
-}
-
-/** A finding in a verdict. */
-interface Finding {
-  severity: "P0" | "P1" | "P2" | "P3";
-  title: string;
-  path: string | null;
-  line: number | null;
 }
 
 interface ArtifactBase {
@@ -91,14 +46,12 @@ export type ProducerArtifact =
     /** The model id the review ran with; empty only when no model ran. */
     model: string;
   })
-  | (ArtifactBase & { kind: "proof" | "evidence"; holds: boolean });
+  | (ArtifactBase & { kind: "proof"; holds: boolean });
 
 /** The result of reading one producer's input: an artifact, or why it counts as absent. */
 export type ProducerInput = { artifact: ProducerArtifact } | { absent: string };
 
-const SHA = /^[0-9a-f]{40}$/;
 const STATUSES = ["ok", "error", "not_applicable"] as const;
-const SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
 
 function oneOf<T extends string>(value: Json | undefined, allowed: readonly T[]): T | undefined {
   return allowed.find((option) => option === value);
@@ -115,7 +68,7 @@ function isInteger(value: Json | undefined, min: number, max: number): value is 
 }
 
 function parseFinding(value: Json): Finding | undefined {
-  const finding = asObject(value);
+  const finding = maybeObject(value);
   const severity = oneOf(finding?.severity, SEVERITIES);
   const { title, path, line } = finding ?? {};
   if (!severity || typeof title !== "string") return undefined;
@@ -134,7 +87,7 @@ export function parseProducerArtifact(
   text: string,
   expected: { name: ProducerName; headSha: string; baseSha: string },
 ): ProducerInput {
-  const root = asObject(parseJson(text));
+  const root = maybeObject(maybeJson(text));
   if (!root) return { absent: "not a JSON object" };
   const { kind } = PRODUCERS[expected.name];
   if (root.schema !== 1) return { absent: "unknown schema" };
@@ -147,7 +100,7 @@ export function parseProducerArtifact(
   if (base_sha !== expected.baseSha) return { absent: "made against another base commit" };
   const status = oneOf(root.status, STATUSES);
   if (!status) return { absent: "malformed status" };
-  const details = asObject(root.details ?? {});
+  const details = maybeObject(root.details ?? {});
   if (!details) return { absent: "malformed details" };
   const base = { name: expected.name, head_sha, base_sha, status, details };
 

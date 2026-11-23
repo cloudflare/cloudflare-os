@@ -22,19 +22,21 @@
 //     advisory on the old version is a security fix, and those go to a person.
 //
 // The preview smoke is its own artifact (`preview-smoke`, from the `preview-smoke` job in
-// automerge-evidence.yml, which builds and runs the workers locally); the gate needs both.
+// automerge-head-proofs.yml, which builds and runs the workers locally); the gate needs both.
 //
 //   node scripts/automerge/proofs/deps.ts
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA, AUTOMERGE_PR_AUTHOR, AUTOMERGE_HEAD_REF
 
-import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+
+import { fileAt, mergeBase } from "../git.ts";
+import { asArray, asObject, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
+import { isMain } from "../main.ts";
+import { DEPENDABOT_LOGIN } from "../producers.ts";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
-import type { FileDiff, Hunk } from "./diff.ts";
-import { fileAt, mergeBase, pullRequestDiff } from "./git.ts";
-import { asArray, asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
+import { pullRequestDiff, type FileDiff, type Hunk } from "./diff.ts";
 import { isMinorOrPatch, parseVersion, rangeVersion } from "./semver.ts";
 
-export const DEPENDABOT_LOGIN = "dependabot[bot]";
 const NPM_BRANCH_PREFIX = "dependabot/npm_and_yarn/";
 const KERNEL = "packages/workshop-backend/";
 const DEPENDENCY_MAPS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
@@ -403,7 +405,7 @@ function manifestReasons(path: string, base: string | undefined, head: string | 
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   for (const key of keys) {
     if (!DEPENDENCY_MAPS.includes(key)) {
-      if (!jsonEqual(before[key], after[key])) reasons.push(`${path}: changes "${key}"`);
+      if (!isDeepStrictEqual(before[key], after[key])) reasons.push(`${path}: changes "${key}"`);
       continue;
     }
     const from = before[key] ?? {};
@@ -557,7 +559,7 @@ export function advisoriesFromOsv(entries: PackageVersion[], body: Json): Record
 }
 
 async function main(): Promise<void> {
-  await runProducer("proof", "proof-deps", async ({ head, base }) => {
+  await runProducer("proof-deps", async ({ head, base }) => {
     const from = mergeBase(base, head);
     const files = pullRequestDiff(base, head);
     const lockFile = files.find((file) => file.path === "pnpm-lock.yaml");
@@ -586,4 +588,4 @@ async function main(): Promise<void> {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isMain(import.meta.url)) await main();

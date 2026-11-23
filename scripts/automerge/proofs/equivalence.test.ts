@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { evaluateEquivalence } from "./equivalence.ts";
-import { asArray, asObject, parseJson, type JsonObject } from "./json.ts";
+import { asArray, asObject, parseJson, type JsonObject } from "../json.ts";
 
 // Release manifests from scripts/release/build-release.ts (2026-11-02), cut down to the router and
 // gatekeeper-google: "a" and "b" are two builds of 91f4e7073, "c" is a build of c12807488, the

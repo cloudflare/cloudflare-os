@@ -41,10 +41,11 @@ It runs only from `main`'s definition, through `workflow_run` (when a producer w
 the review relay finishes) and `issue_comment`, and never checks out or runs pull request code.
 [`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
 group events to it; the gate decides a merge group only when the merge queue lists its commit.
-Producer workflows (reviewer verdicts, rung 1 proofs, the preview smoke) upload JSON artifacts and
+Producer workflows (reviewer verdicts and rung 1 proofs) upload JSON artifacts and
 post nothing. The two verdicts are Bonk's (`bonk-pr.yml`, run "Bonk PR Review", artifact
 `automerge-verdict-bonk`) and our Opus runner's (`review-verdict.yml`, `automerge-verdict-opus`);
-the proofs and the smoke come from `automerge-proofs.yml` and `automerge-evidence.yml`. The gate
+the proofs come from `automerge-proofs.yml`, which runs no pull request code, and
+`automerge-head-proofs.yml`, which builds and runs it and holds no secret. The gate
 accepts an artifact only from a successful `pull_request` run of the expected workflow file on the
 pull request's head commit and branch, in this repository, created after the pull request's base
 last changed (and none counts until a push follows that change, since GitHub rebuilds the merge ref
@@ -52,14 +53,32 @@ in the background); and no run counts once another pull request from the same br
 closed, has had another base at any point (read from its base-change history), since its runs use
 that base's copy of the workflows. The run whose latest attempt started last wins even when it
 failed. Dependabot pull requests get no deployed preview: their smoke runs in workerd, without
-secrets, in Automerge evidence. A rung 1 proof also counts only for the commit the pull request
+secrets, in Automerge head proofs. A rung 1 proof also counts only for the commit the pull request
 would land on (its base, or the queue's commit under it in a merge group): `proof-deps` only while
 the files it read at its base (`pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable
 blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
-head that contains it. Edits under `.agents/skills/` are scored like code; a symlink there, and
-every other instruction file (`REVIEW.md`, any `AGENTS.md`, the rest of `.agents/`), always needs a
-person. A file with a recent escaped defect raises the risk level one step; that raise ignores
-lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+head that contains it. A file with a recent escaped defect raises the risk level one step; that
+raise ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+
+These paths always need a person:
+
+- everything under `.github/`;
+- gate and judge code: `scripts/risk-review*`, `scripts/automerge/`, `scripts/contribution-policy*`;
+- every file an AI reviewer reads as instructions: any `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`,
+  `REVIEW.md`, `CONTRIBUTING.md`, `opencode.json` or `opencode.jsonc`, and any file under a
+  `.agents/`, `.opencode/` or `.claude/` directory, at any depth and in any letter case;
+- auth config: `packages/workshop-backend/src/auth/`;
+- supply-chain policy: any `.npmrc`, `.pnpmfile.cjs` or `.pnpmfile.mjs`, and `pnpm-workspace.yaml`
+  beyond a catalog version bump;
+- the release pipeline: `scripts/release/`;
+- any Wrangler config other than the generated `wrangler.jsonc`: `wrangler.json`, `wrangler.toml`,
+  `.wrangler/`.
+
+The one exception is `.agents/skills/` at the repository root. Edits there are scored like code,
+because both reviewers read the base commit's copy of every instruction path
+([`scripts/automerge/instructions.ts`](../../scripts/automerge/instructions.ts) holds the one list
+both use), so a skill edit cannot steer its own review. A symlink there still needs a person, and
+so does an instruction file or directory of its own inside a skill.
 
 A change that may drop Durable Object data always needs a person. The gate reads it from the
 parsed `wrangler.jsonc`, the file Wrangler and the release manifest deploy from, and treats its

@@ -8,7 +8,7 @@ name: Automerge proofs
 # The job checks out the pull request's BASE and runs the base's scripts; the head commit arrives as
 # objects only. A job that ran head code could upload an artifact under any name in its run, so the
 # proof that judges untrusted dependencies stays in a run where no head code executes. The proofs
-# that must build or test head code live in automerge-evidence.yml instead.
+# that must build or test head code live in automerge-head-proofs.yml instead.
 
 on:
   pull_request:

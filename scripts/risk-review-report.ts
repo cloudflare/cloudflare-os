@@ -10,10 +10,11 @@
 //
 // GITHUB_REPOSITORY defaults to cloudflare/cloudflare-os. The table goes to stdout as Markdown.
 
-import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
+import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
+import { isMain } from "./automerge/main.ts";
+import { SEVERITIES } from "./automerge/verdict/parse-review.ts";
 import { CHECK_NAME } from "./risk-review.ts";
 
 /** A follow-up counts if it merged within this long after the pull request. */
@@ -63,11 +64,11 @@ interface ReportRow {
 }
 
 function verdictCell(value: Json | undefined): VerdictCell | undefined {
-  const input = asObject(value);
-  const findings = asObject(input?.findings);
+  const input = maybeObject(value);
+  const findings = maybeObject(input?.findings);
   const confidence = input?.merge_confidence;
   if (!input || !findings || (confidence !== null && typeof confidence !== "number")) return undefined;
-  const counts = ["P0", "P1", "P2", "P3"].map((severity) => {
+  const counts = SEVERITIES.map((severity) => {
     const count = findings[severity];
     return typeof count === "number" ? count : 0;
   });
@@ -85,12 +86,12 @@ export function readDecision(summary: string, number: number):
   Pick<ReportRow, "band" | "bonk" | "opus" | "would"> | undefined {
   const pulls = recordOf(summary)?.pulls;
   if (!Array.isArray(pulls)) return undefined;
-  const pull = pulls.map(asObject).find((entry) => entry?.number === number);
+  const pull = pulls.map(maybeObject).find((entry) => entry?.number === number);
   const band = pull?.band;
-  const { decision, rung } = asObject(pull?.would) ?? {};
+  const { decision, rung } = maybeObject(pull?.would) ?? {};
   const would = decision === "person" ? "person" : decision === "auto" && typeof rung === "string" ? `merge (${rung})` : undefined;
   if (typeof band !== "string" || would === undefined) return undefined;
-  const inputs = asObject(pull?.inputs);
+  const inputs = maybeObject(pull?.inputs);
   return { band, would, bonk: verdictCell(inputs?.bonk), opus: verdictCell(inputs?.opus) };
 }
 
@@ -148,17 +149,17 @@ function githubGet(token: string, fetchImpl: typeof fetch = fetch): GitHubGet {
       headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
     });
     if (!response.ok) throw new Error(`GET ${path}: HTTP ${response.status}`);
-    const body = parseJson(await response.text());
+    const body = maybeJson(await response.text());
     if (body === undefined) throw new Error(`GET ${path}: not JSON`);
     return body;
   };
 }
 
 function asPull(value: Json): MergedPull | undefined {
-  const pull = asObject(value);
-  const head = asObject(pull?.head)?.sha;
-  const base = asObject(pull?.base)?.ref;
-  const user = asObject(pull?.user)?.login;
+  const pull = maybeObject(value);
+  const head = maybeObject(pull?.head)?.sha;
+  const base = maybeObject(pull?.base)?.ref;
+  const user = maybeObject(pull?.user)?.login;
   const { number, title, body, merged_at, updated_at } = pull ?? {};
   if (
     typeof number !== "number" || typeof title !== "string" || typeof head !== "string" || typeof base !== "string" ||
@@ -196,7 +197,7 @@ async function listPages(get: GitHubGet, path: string): Promise<Json[]> {
 async function listMerged(get: GitHubGet, { repository, since, until }: { repository: string; since: Date; until: Date }):
   Promise<{ merged: MergedPull[]; inWindow: MergedPull[] }> {
   const horizon = until.getTime() + FOLLOW_UP_DAYS * 86_400_000;
-  const defaultBranch = asObject(await get(`/repos/${repository}`))?.default_branch;
+  const defaultBranch = maybeObject(await get(`/repos/${repository}`))?.default_branch;
   if (typeof defaultBranch !== "string") throw new Error(`cannot read ${repository}'s default branch`);
   const merged: MergedPull[] = [];
   for (let page = 1; ; page++) {
@@ -219,7 +220,7 @@ async function listMerged(get: GitHubGet, { repository, since, until }: { reposi
 /** The decision record JSON a `risk-review` check run's summary leads with. */
 function recordOf(summary: string): { [key: string]: Json } | undefined {
   const match = /^```json\n(.*)\n```/s.exec(summary);
-  const record = asObject(match?.[1] === undefined ? undefined : parseJson(match[1]));
+  const record = maybeObject(match?.[1] === undefined ? undefined : maybeJson(match[1]));
   return record?.schema === 1 ? record : undefined;
 }
 
@@ -234,17 +235,17 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
 
   const rows: ReportRow[] = [];
   for (const pull of inWindow) {
-    const runs = asObject(await get(
+    const runs = maybeObject(await get(
       `/repos/${repository}/commits/${pull.head.sha}/check-runs?check_name=${CHECK_NAME}&filter=latest&per_page=100`,
     ))?.check_runs;
-    const run = (Array.isArray(runs) ? runs : []).map(asObject).find((entry) =>
-      asObject(entry?.app)?.slug === app && entry?.status === "completed");
-    const summary = asObject(run?.output)?.summary;
+    const run = (Array.isArray(runs) ? runs : []).map(maybeObject).find((entry) =>
+      maybeObject(entry?.app)?.slug === app && entry?.status === "completed");
+    const summary = maybeObject(run?.output)?.summary;
     const decision = typeof summary === "string" ? readDecision(summary, pull.number) : undefined;
     const reviewsJson = await listPages(get, `/repos/${repository}/pulls/${pull.number}/reviews`);
     const reviews = reviewsJson.flatMap((value) => {
-      const review = asObject(value);
-      const user = asObject(review?.user);
+      const review = maybeObject(value);
+      const user = maybeObject(review?.user);
       const { login, type } = user ?? {};
       const state = review?.state;
       if (typeof state !== "string") return [];
@@ -264,7 +265,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
   return rows;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { app: { type: "string" }, since: { type: "string" }, until: { type: "string" } } });
   const token = process.env.GITHUB_TOKEN;
   if (!token || !values.app || !values.since) {

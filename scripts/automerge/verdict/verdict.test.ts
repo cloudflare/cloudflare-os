@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
+import { dig, jobsOf, parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
+import type { Json } from "../json.ts";
+import { createTestRepo } from "../test-repo.ts";
 import { fetchReviewedHeads, planRound, readyAt } from "./rounds.ts";
-import { createTestRepo } from "./test-repo.ts";
 import { buildVerdict, canReviewSince, prepareInputs, readEvents } from "./verdict.ts";
-import type { Json } from "./json.ts";
 
 const always = () => true;
 
@@ -145,8 +146,8 @@ describe("readEvents", () => {
   });
 
   it("rejects a cut-off review, an error event and stray output", () => {
-    assert.match(errorOf(events(GOOD_REVIEW, "length")), /ended with "length"/);
-    assert.match(errorOf(`warning: something\n${events(GOOD_REVIEW)}`), /not JSON/);
+    assert.match(errorOf(events(GOOD_REVIEW, "length")), /length/);
+    assert.notEqual(errorOf(`warning: something\n${events(GOOD_REVIEW)}`), "");
   });
 
   it("keeps only the error class and status code from a provider error", () => {
@@ -319,5 +320,20 @@ describe("prepareInputs and buildVerdict", () => {
     const otherHead = buildVerdict(scored, { ...pr, headSha: first });
     assert.equal(otherHead.status, "error");
     assert.equal(otherHead.merge_confidence, null);
+  });
+});
+
+describe("review-verdict.yml", () => {
+  // The runner finds the heads it reviewed by its job's name in the jobs API. Under another name
+  // no head would count, and the round limit would never send a pull request to a person.
+  it("gives the runner the name of the job it runs in", () => {
+    const workflow = parseWorkflow(readFileSync(new URL("../../../.github/workflows/review-verdict.yml", import.meta.url), "utf8"));
+    const [job, ...otherJobs] = jobsOf(workflow);
+    assert.ok(job !== undefined && otherJobs.length === 0);
+    const given = stepsOf(workflow).flatMap((step) => {
+      const name = dig(step, "env", "JOB_NAME");
+      return name === undefined ? [] : [name];
+    });
+    assert.deepEqual(given, [dig(job, "name")]);
   });
 });

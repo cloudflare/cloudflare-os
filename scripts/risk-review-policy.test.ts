@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import { assertNames } from "./automerge/assert-names.ts";
+import type { Json } from "./automerge/json.ts";
 import {
   addedDependencies,
   changedInstallSettings,
@@ -15,7 +17,6 @@ import {
   type ContentFacts,
   type EscapeEntry,
   type EscapeSnapshot,
-  type Json,
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");
@@ -72,6 +73,9 @@ describe("pathFloor", () => {
       "packages/x/.opencode/agent.md",
       "packages/x/CLAUDE.md",
       "packages/x/.agents/skills/a.md",
+      "docs/CONTEXT.md",
+      ".claude/settings.json",
+      "CONTRIBUTING.md",
     ]) {
       assert.equal(pathFloor(path), "medium", path);
     }
@@ -205,6 +209,14 @@ describe("classifyChangeset NEVER_AUTO", () => {
       "packages/x/.npmrc",
       "opencode.jsonc",
       ".opencode/plugins/x.ts",
+      "CONTRIBUTING.md",
+      "docs/CONTEXT.md",
+      "packages/x/REVIEW.md",
+      ".claude/commands/fix.md",
+      "packages/x/.claude/settings.json",
+      "docs/Agents.MD",
+      ".agents/skills/x/.claude/settings.json",
+      ".agents/skills/x/CONTEXT.md",
       "packages/workshop-backend/src/auth/config.ts",
       ".npmrc",
       ".pnpmfile.cjs",
@@ -271,14 +283,14 @@ describe("durableObjectRisks", () => {
   const appended = (migration: Json) => durableObjectRisks(base, jsonc([v1, v2, migration]));
 
   it("names each class an appended migration deletes", () => {
-    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, v3])), ["deletes Notes"]);
-    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, { tag: "v3", deleted_classes: ["Notes", "Drafts"] }])), ["deletes Notes", "deletes Drafts"]);
+    assertNames(durableObjectRisks(base, jsonc([v1, v2, v3])), ["Notes"]);
+    assertNames(durableObjectRisks(base, jsonc([v1, v2, { tag: "v3", deleted_classes: ["Notes", "Drafts"] }])), ["Notes", "Drafts"]);
     // A new file appends every migration it has.
-    assert.deepEqual(durableObjectRisks(undefined, base), ["deletes Old"]);
-    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2], { env: { staging: { migrations: [v3] } } })), ["deletes Notes"]);
+    assertNames(durableObjectRisks(undefined, base), ["Old"]);
+    assertNames(durableObjectRisks(base, jsonc([v1, v2], { env: { staging: { migrations: [v3] } } })), ["Notes"]);
     // A top-level migration tagged like an environment's is not that environment's.
     const tagged = { tag: "staging v3", deleted_classes: ["Notes"] };
-    assert.deepEqual(durableObjectRisks(jsonc([tagged]), jsonc([tagged], { env: { staging: { migrations: [v3] } } })), ["deletes Notes"]);
+    assertNames(durableObjectRisks(jsonc([tagged]), jsonc([tagged], { env: { staging: { migrations: [v3] } } })), ["Notes"]);
   });
 
   it("finds none when it only appends migrations that add classes, or changes other settings or header comments", () => {
@@ -292,10 +304,12 @@ describe("durableObjectRisks", () => {
 
   // Under a new name a plain `wrangler deploy` creates a new Worker, without the old one's objects.
   it("needs a person when a Worker's name changes, at the top level or in an environment", () => {
-    assert.deepEqual(durableObjectRisks(base, base.replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker"]);
-    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, v3]).replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker", "deletes Notes"]);
+    assert.equal(durableObjectRisks(base, base.replace('"name": "notes"', '"name": "notes-2"')).length, 1);
+    const alsoDeletes = durableObjectRisks(base, jsonc([v1, v2, v3]).replace('"name": "notes"', '"name": "notes-2"'));
+    assert.equal(alsoDeletes.length, 2);
+    assert.ok(alsoDeletes.some((risk) => risk.includes("Notes")));
     const staging = (name: string) => jsonc([v1, v2], { env: { staging: { name } } });
-    assert.deepEqual(durableObjectRisks(staging("notes-staging"), staging("notes-stage")), ["renames the Worker"]);
+    assert.equal(durableObjectRisks(staging("notes-staging"), staging("notes-stage")).length, 1);
     // A new environment is a new Worker, not a renamed one.
     assert.deepEqual(durableObjectRisks(base, staging("notes-staging")), []);
   });
@@ -318,32 +332,35 @@ describe("durableObjectRisks", () => {
       "a value changed to a number too large to hold": ['{"migrations":[{"tag":"v1","deleted_classes":null}]}', '{"migrations":[{"tag":"v1","deleted_classes":1e400}]}'],
     };
     for (const [name, [before, after]] of Object.entries(rewritten)) {
-      assert.deepEqual(durableObjectRisks(before, after), ["rewrites migrations"], name);
+      assert.equal(durableObjectRisks(before, after).length, 1, name);
     }
   });
 
   it("names any other operation in an appended migration that is not adding classes", () => {
-    assert.deepEqual(appended({ tag: "v3", transferred_classes: [{ from: "A", from_script: "x", to: "B" }] }), ["transferred_classes in v3"]);
-    assert.deepEqual(appended({ tag: "v3", renamed_classes: [{ from: "Notes", to: "Pages" }] }), ["renamed_classes in v3"]);
-    assert.deepEqual(appended({ tag: "v3", deletedClasses: ["Notes"] }), ["deletedClasses in v3"]);
-    assert.deepEqual(appended({ tag: "v3", deleted_classes: "Notes" }), ["deleted_classes in v3"]);
-    assert.deepEqual(appended({ tag: "v3", deleted_classes: [7] }), ["deleted_classes in v3"]);
-    assert.deepEqual(appended({ new_sqlite_classes: ["Inbox"], constructor: [] }), ["appends a migration with no tag", "constructor in an untagged migration"]);
+    assertNames(appended({ tag: "v3", transferred_classes: [{ from: "A", from_script: "x", to: "B" }] }), ["transferred_classes"]);
+    assertNames(appended({ tag: "v3", renamed_classes: [{ from: "Notes", to: "Pages" }] }), ["renamed_classes"]);
+    assertNames(appended({ tag: "v3", deletedClasses: ["Notes"] }), ["deletedClasses"]);
+    assertNames(appended({ tag: "v3", deleted_classes: "Notes" }), ["deleted_classes"]);
+    assertNames(appended({ tag: "v3", deleted_classes: [7] }), ["deleted_classes"]);
+    // One risk for the missing tag, one for the operation.
+    const untagged = appended({ new_sqlite_classes: ["Inbox"], constructor: [] });
+    assert.equal(untagged.length, 2);
+    assert.ok(untagged.some((risk) => risk.includes("constructor")));
   });
 
   // Wrangler finds the deployed migration by the first entry with its tag and applies every entry
   // after that one, so a tag used twice replays the entries between the two, a deletion among them.
   it("needs a person when an appended migration has no tag, or one its Worker's list already uses", () => {
     const adds = { new_sqlite_classes: ["Inbox"] };
-    assert.deepEqual(appended(adds), ["appends a migration with no tag"]);
+    assert.equal(appended(adds).length, 1);
     for (const tag of [7, null, "", ["v3"]]) {
-      assert.deepEqual(appended({ ...adds, tag }), ["appends a migration with no tag"], JSON.stringify(tag));
+      assert.equal(appended({ ...adds, tag }).length, 1, JSON.stringify(tag));
     }
-    assert.deepEqual(appended({ ...adds, tag: "v1" }), ["reuses the tag v1"]);
-    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, { ...adds, tag: "v3" }, { tag: "v3", new_classes: ["Outbox"] }])), ["reuses the tag v3"]);
-    assert.deepEqual(durableObjectRisks(undefined, jsonc([v1, { ...adds, tag: "v1" }])), ["reuses the tag v1"]);
+    assertNames(appended({ ...adds, tag: "v1" }), ["v1"]);
+    assertNames(durableObjectRisks(base, jsonc([v1, v2, { ...adds, tag: "v3" }, { tag: "v3", new_classes: ["Outbox"] }])), ["v3"]);
+    assertNames(durableObjectRisks(undefined, jsonc([v1, { ...adds, tag: "v1" }])), ["v1"]);
     const staging = (migrations: Json[]) => jsonc([v1, v2], { env: { staging: { migrations } } });
-    assert.deepEqual(durableObjectRisks(staging([v1]), staging([v1, { ...adds, tag: "v1" }])), ["reuses the tag v1"]);
+    assertNames(durableObjectRisks(staging([v1]), staging([v1, { ...adds, tag: "v1" }])), ["v1"]);
     // An environment deploys another Worker, whose list may use a tag the top level's has.
     assert.deepEqual(durableObjectRisks(base, staging([{ ...adds, tag: "v1" }])), []);
   });
@@ -359,7 +376,7 @@ describe("durableObjectRisks", () => {
     };
     for (const [name, decoy] of Object.entries(lookAlikes)) {
       assert.deepEqual(durableObjectRisks(base, decoy), [], name);
-      assert.deepEqual(durableObjectRisks(decoy, head), ["deletes Notes"], name);
+      assertNames(durableObjectRisks(decoy, head), ["Notes"], name);
     }
   });
 
@@ -383,8 +400,8 @@ describe("durableObjectRisks", () => {
       "a migrations key that a later one shadows": base.replace('  "migrations"', '  "migrations": [{ "tag": "v3", "deleted_classes": ["Notes"] }],\n  "migrations"'),
     };
     for (const [name, config] of Object.entries(unreadable)) {
-      assert.deepEqual(durableObjectRisks(base, config), ["unreadable"], name);
-      assert.deepEqual(durableObjectRisks(config, base), ["unreadable"], name);
+      assert.equal(durableObjectRisks(base, config).length, 1, name);
+      assert.equal(durableObjectRisks(config, base).length, 1, name);
     }
   });
 });

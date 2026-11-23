@@ -24,13 +24,15 @@ function isJudgePath(path: string): boolean {
   return fromScripts.startsWith("risk-review") || fromScripts.startsWith("automerge/");
 }
 
-/** Every module specifier in `source`: static imports and re-exports, and dynamic `import()`. */
+/**
+ * Every module specifier in `source`: static imports, side-effect imports and re-exports, wherever
+ * they sit on a line, and dynamic `import()`.
+ */
 function specifiers(source: string): { specifier: string | undefined; statement: string }[] {
   const found: { specifier: string | undefined; statement: string }[] = [];
-  for (const match of source.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm)) {
+  for (const match of source.matchAll(/(?<![\w$."'`])(?:import|export)\b\s*(?:[^'";]*?\bfrom\s*)?["']([^"']+)["']/g)) {
     found.push({ specifier: match[1], statement: match[0].trim() });
   }
-  for (const match of source.matchAll(/^\s*import\s*["']([^"']+)["']/gm)) found.push({ specifier: match[1], statement: match[0].trim() });
   for (const match of source.matchAll(/\bimport\s*\(\s*([^)]*)\)/g)) {
     const literal = /^["']([^"']+)["']$/.exec(match[1]?.trim() ?? "");
     found.push({ specifier: literal?.[1], statement: match[0] });
@@ -60,8 +62,10 @@ function importProblem(source: string, from: string): string | undefined {
 describe("judge code imports", () => {
   const files = judgeFiles();
 
-  it("finds the gate's modules", () => {
-    assert.ok(files.some((path) => path.endsWith(join("scripts", "risk-review.ts"))));
+  it("finds the gate, both producer areas and the modules they share", () => {
+    for (const path of ["risk-review.ts", "automerge/json.ts", "automerge/verdict/bonk.ts", "automerge/proofs/deps.ts"]) {
+      assert.ok(files.includes(join(ROOT, "scripts", path)), path);
+    }
   });
 
   for (const path of files) {
@@ -70,7 +74,7 @@ describe("judge code imports", () => {
     });
   }
 
-  it("rejects every way to load code an import statement does not show", () => {
+  it("rejects a package import however it is written, and every way to load code without one", () => {
     const from = join(ROOT, "scripts", "risk-review.ts");
     for (const source of [
       'import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("zod");',
@@ -78,11 +82,26 @@ describe("judge code imports", () => {
       'const path = import.meta.resolve("zod");',
       'process.dlopen(module, "./addon.node");',
       'import { z } from "zod";',
+      'import {\n  z,\n} from "zod";',
+      'import{z}from"zod";',
+      'const first = 1; import { z } from "zod";',
+      'import "zod";',
+      'const first = 1; import "zod";',
+      'export * from "zod";',
+      'export { z } from "zod";',
+      'await import("zod");',
       'const name = "zod";\nawait import(name);',
       'import { x } from "../packages/workshop-backend/src/user.ts";',
+      'import { x } from "./vp/concurrency.ts";',
     ]) {
       assert.ok(importProblem(source, from), source);
     }
-    assert.equal(importProblem('import { readFileSync } from "node:fs";\nimport { x } from "./risk-review-policy.ts";', from), undefined);
+    for (const source of [
+      'import { readFileSync } from "node:fs";\nimport { x } from "./risk-review-policy.ts";',
+      'import "node:fs";\nexport * from "./automerge/json.ts";\nawait import("./risk-review-fixtures/artifacts.ts");',
+      'export const from = "zod";\nconst reimport = { import: "zod" };',
+    ]) {
+      assert.equal(importProblem(source, from), undefined, source);
+    }
   });
 });

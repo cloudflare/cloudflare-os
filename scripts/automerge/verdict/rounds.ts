@@ -1,6 +1,6 @@
 // Review rounds, counted per reviewer by the distinct head commits it has already reviewed on a
 // pull request. A re-run on the same head is the same round.
-import { field, list, parseJson, type Json } from "./json.ts";
+import { field, list, parseJson, type Json } from "../json.ts";
 
 /** The first round that reviews only the changes since the previous reviewed head. */
 const DIFF_ONLY_ROUND = 3;

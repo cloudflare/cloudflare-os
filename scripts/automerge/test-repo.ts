@@ -1,8 +1,9 @@
 // A throwaway git repository under the OS temp directory, for tests that need real commits.
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+import { git as runGit } from "./git.ts";
 
 interface TestRepo {
   dir: string;
@@ -14,8 +15,8 @@ interface TestRepo {
 }
 
 export function createTestRepo(): TestRepo {
-  const dir = mkdtempSync(join(tmpdir(), "verdict-repo-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+  const dir = mkdtempSync(join(tmpdir(), "automerge-repo-"));
+  const git = (...args: string[]) => runGit(args, dir).trim();
   git("init", "-q", "-b", "main");
   return {
     dir,

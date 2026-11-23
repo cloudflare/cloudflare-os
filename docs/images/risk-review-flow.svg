@@ -33,7 +33,7 @@
     <text x="256" y="253">The dependency proof; runs no PR code</text>
 
     <rect x="240" y="302" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
-    <text x="256" y="326" font-size="14" font-weight="600" fill="#78350F">Automerge evidence</text>
+    <text x="256" y="326" font-size="14" font-weight="600" fill="#78350F">Automerge head proofs</text>
     <text x="256" y="346">Builds and tests the PR, holds no secret</text>
 
     <rect x="240" y="396" width="310" height="58" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
