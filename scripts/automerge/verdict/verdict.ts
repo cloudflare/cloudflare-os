@@ -22,7 +22,7 @@ import { fetchReviewedHeads, githubJson, planRound, ROUND_LIMIT, roundLimitReaso
 const PROVIDER = "cloudflare-ai-gateway";
 const MODEL_NAME = "anthropic/claude-opus-5.5";
 /** The model id this reviewer runs with, which its verdict carries. */
-export const MODEL = `${PROVIDER}/${MODEL_NAME}`;
+const MODEL = `${PROVIDER}/${MODEL_NAME}`;
 
 const WORKFLOW = PRODUCERS.opus.workflow;
 const VARIANT = "xhigh";

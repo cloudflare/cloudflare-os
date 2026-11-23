@@ -24,7 +24,7 @@ describe("buildBonkVerdict", () => {
       const verdict = buildBonkVerdict(inputs({ report }));
       assert.equal(verdict.status, "error", String(report));
       assert.equal(verdict.merge_confidence, null);
-      assert.notEqual(verdict.details.reason, null);
+      assert.ok(verdict.details.reason, "the verdict says why");
     }
   });
 
