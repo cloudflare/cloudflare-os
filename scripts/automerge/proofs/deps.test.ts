@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { assertNames } from "../assert-names.ts";
-import { asArray, asNumber, asObject, asString, parseJson } from "../json.ts";
+import { asArray, asObject, asString, parseJson } from "../json.ts";
+import { DEPENDABOT_LOGIN } from "../producers.ts";
 import {
-  advisoriesFromOsv, DEPENDABOT_LOGIN, evaluateDeps, lockfileNames, readLockfile, workspaceReasons,
+  advisoriesFromOsv, evaluateDeps, lockfileNames, readLockfile, workspaceReasons,
   type DepsInput, type PackageVersion,
 } from "./deps.ts";
 import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
@@ -28,6 +29,8 @@ function fixture(name: string): DepsInput {
   });
   const names = new Set(asArray(data.base_lock_names, "base_lock_names").map((n) => asString(n, "name")));
   const published = asObject(data.published, "published");
+  const minimumReleaseAgeMinutes = data.minimum_release_age_minutes;
+  assert.ok(typeof minimumReleaseAgeMinutes === "number");
   return {
     author: DEPENDABOT_LOGIN,
     headRef: "dependabot/npm_and_yarn/recorded",
@@ -41,7 +44,7 @@ function fixture(name: string): DepsInput {
       };
     }),
     baseLockHasName: (packageName) => names.has(packageName),
-    minimumReleaseAgeMinutes: asNumber(data.minimum_release_age_minutes, "minimum age"),
+    minimumReleaseAgeMinutes,
     published: Object.fromEntries(Object.entries(published).map(([k, v]) => [k, asString(v, k)])),
     advisories: advisoriesFromOsv(entries, data.osv_response),
     lockfiles: {

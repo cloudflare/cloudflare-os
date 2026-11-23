@@ -15,9 +15,9 @@
 //   env: AUTOMERGE_HEAD_SHA, AUTOMERGE_BASE_SHA
 
 import { readFileSync } from "node:fs";
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 import { decide, runProducer, type Outcome } from "./artifact.ts";
-import { asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "../json.ts";
+import { asObject, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
 import { isMain } from "../main.ts";
 
 /** Manifest fields that name the build rather than what it contains. */
@@ -37,15 +37,15 @@ function manifestDifferences(base: JsonObject, head: JsonObject): string[] {
         const before = a[name];
         const after = b[name];
         if (!isObject(before) || !isObject(after)) {
-          if (!jsonEqual(before, after)) differences.push(`workers.${name}`);
+          if (!isDeepStrictEqual(before, after)) differences.push(`workers.${name}`);
           continue;
         }
         const fields = new Set([...Object.keys(before), ...Object.keys(after)]);
         for (const field of [...fields].toSorted()) {
-          if (!jsonEqual(before[field], after[field])) differences.push(`workers.${name}.${field}`);
+          if (!isDeepStrictEqual(before[field], after[field])) differences.push(`workers.${name}.${field}`);
         }
       }
-    } else if (!jsonEqual(a, b)) {
+    } else if (!isDeepStrictEqual(a, b)) {
       differences.push(key);
     }
   }

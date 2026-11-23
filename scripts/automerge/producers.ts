@@ -5,6 +5,9 @@
 /** A full commit SHA. */
 export const SHA = /^[0-9a-f]{40}$/;
 
+/** The login of the one bot whose pull requests a proof can take. */
+export const DEPENDABOT_LOGIN = "dependabot[bot]";
+
 /** Where the gate looks for a producer's runs. */
 export interface Producer {
   /** A reviewer's verdict, or a proof that holds or does not. */

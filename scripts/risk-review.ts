@@ -54,7 +54,7 @@ import {
   type ContentsKind,
   type EscapeSnapshot,
 } from "./risk-review-policy.ts";
-import { PRODUCERS, artifactName, isProducerName, type ProducerName } from "./automerge/producers.ts";
+import { DEPENDABOT_LOGIN, PRODUCERS, artifactName, isProducerName, type ProducerName } from "./automerge/producers.ts";
 import type { Severity } from "./automerge/verdict/parse-review.ts";
 import {
   VERDICT_NAMES,
@@ -88,9 +88,6 @@ export const MAX_DECISION_CHARS = 60_000;
 const MAX_SUMMARY_CHARS = 65_535;
 
 const PER_PAGE = 100;
-
-/** Bots that open pull requests on a schedule rather than at someone's direction. */
-const DEPENDABOT = "dependabot[bot]";
 
 /** Rung 1 proofs of a maintainer's pull request. Dependabot's is `proof-deps` with the preview smoke. */
 const MAINTAINER_PROOFS = ["proof-equivalence", "proof-tests"] as const satisfies readonly ProducerName[];
@@ -188,7 +185,7 @@ export interface PullCommit {
 function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
   if (commits === undefined) return "its commits could not all be listed";
   const other = commits.find(({ author, committer, commit }) =>
-    author?.login !== DEPENDABOT || committer?.login !== "web-flow" || commit.verification?.verified !== true);
+    author?.login !== DEPENDABOT_LOGIN || committer?.login !== "web-flow" || commit.verification?.verified !== true);
   return other && `commit ${other.sha.slice(0, 7)} is not a verified Dependabot commit`;
 }
 
@@ -378,7 +375,7 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const { pull } = inputs;
   const author = pull.user ?? undefined;
   const authorLogin = author?.login ?? "";
-  const dependabotAuthor = authorLogin === DEPENDABOT && author?.type === "Bot";
+  const dependabotAuthor = authorLogin === DEPENDABOT_LOGIN && author?.type === "Bot";
   const commitProblem = dependabotAuthor ? dependabotCommitsError(inputs.commits) : undefined;
   const classification = classifyChangeset({
     files: inputs.files,
@@ -446,7 +443,7 @@ function gateRule(inputs: PullInputs, { approvers, blockers, autoApproves }: {
   if (blockers.length > 0) {
     return { passes: false, reason: `changes requested by ${blockers.map((login) => `@${login}`).join(", ")}` };
   }
-  if (pull.user?.type === "Bot" && pull.user.login !== DEPENDABOT) {
+  if (pull.user?.type === "Bot" && pull.user.login !== DEPENDABOT_LOGIN) {
     const directors = (pull.assignees ?? []).filter((user) => user.type === "User").map((user) => user.login.toLowerCase());
     if (directors.length === 0) {
       return { passes: false, reason: "an agent opened this; assign the person who directed it, who must approve" };
@@ -1035,7 +1032,7 @@ async function readPullInputs(github: GitHubClient, context: ActionsContext, pul
     readLastPush(github, repo, pull.head.sha),
     readReviewDecision(github, repo, pull.number),
     readProducers(github, repo, pull, context.payload.repository?.default_branch ?? "main"),
-    pull.user?.login === DEPENDABOT ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
+    pull.user?.login === DEPENDABOT_LOGIN ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
   ]);
   for (const [name, input] of Object.entries(producers)) {
     // Only a holding proof can count, so only it needs checking.

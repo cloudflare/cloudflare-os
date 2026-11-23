@@ -43,12 +43,6 @@ export function asString(value: Json | undefined, what: string): string {
   return value;
 }
 
-/** `value` as a number, or an error naming `what`. */
-export function asNumber(value: Json | undefined, what: string): number {
-  if (typeof value !== "number") throw new Error(`${what} is not a number`);
-  return value;
-}
-
 /** Parses JSON text, or returns `undefined` when it is not JSON. */
 export function maybeJson(text: string): Json | undefined {
   try {
@@ -73,18 +67,4 @@ export function field(value: Json, key: string): Json {
 /** `value` as an array, or an empty one when it is not an array. */
 export function list(value: Json): Json[] {
   return Array.isArray(value) ? value : [];
-}
-
-/** Deep equality of two JSON values; object key order does not matter. */
-export function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a)) {
-    return Array.isArray(b) && a.length === b.length && a.every((item, i) => jsonEqual(item, b[i]));
-  }
-  if (isObject(a) && isObject(b)) {
-    const keys = Object.keys(a);
-    return keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]));
-  }
-  return false;
 }
