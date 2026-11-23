@@ -14,6 +14,7 @@ import type { UnifiActionPayloads } from "./actions";
 import { UnifiError } from "./errors";
 import { isValidId } from "./resources";
 import type { PendingAction } from "./simulation";
+import { APP, type UnifiRequirement } from "./subresources";
 
 /** What a binding's session objects share. */
 export type SessionShared = {
@@ -25,8 +26,8 @@ export type SessionShared = {
   readonly consoleName: () => Promise<string>;
   /** Wall-clock time, replaceable in tests. */
   readonly now: () => number;
-  /** What every read reports: the bound console's application (`appSubresourceId`). */
-  readonly subresource: string;
+  /** The subresource ID of a requirement on the bound console's application (`requirementId`). */
+  readonly subresource: (requirement: UnifiRequirement) => string;
 };
 
 /** One session object's own stubs and helpers. */
@@ -49,11 +50,14 @@ export class SessionContext implements Disposable {
   }
 
   /**
-   * Authorizes a read before its data is returned. Every read reaches this, and reports the bound
-   * console's application, whatever it found: an empty listing still shows what the application holds.
+   * Authorizes a read before its data is returned. Every read reaches this.
+   * @param requires What the read disclosed (see subresources.ts): the console's application unless
+   * it read a Protect device, a WiFi password or voucher codes. A listing of Protect devices that
+   * found none still shows what the application holds, so it requires the application.
    */
-  async observe(title: string, description: string): Promise<void> {
-    await this.#queue.authorizeObservation({ title, description, subresources: [this.shared.subresource] });
+  async observe(title: string, description: string, requires: readonly UnifiRequirement[] = [APP]): Promise<void> {
+    const subresources = (requires.length ? requires : [APP]).map(this.shared.subresource);
+    await this.#queue.authorizeObservation({ title, description, subresources });
   }
 
   /** Submits an action for approval. */

@@ -4,7 +4,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  account, appSubresource, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES,
+  account, appSubresource, binding, connectCloud, connectDirect, CONSOLE_URL, describeSubresource, hooks, installFake,
+  LOCAL_KEY, RESOURCES,
 } from "./helpers.js";
 import { FakeConsole, HOME, homeConsole, type FakeUnifi } from "../fake-unifi.js";
 import { UNIFI_RESOURCES } from "../../src/resources.js";
@@ -18,8 +19,8 @@ const OFFICE_HOST = "AABBCCDDEEFF0000000006797F060000000006C719490000000062ABD4E
 const ALLOWED = { ok: { allowedObserverIds: ["observer-1"] } };
 const DENIED = { ok: { allowedObserverIds: [] } };
 
-/** `verifyObserverAccess` for `observer`, about what every read of `b` reports unless told otherwise. */
-async function verify(b: ReturnType<typeof binding>, observer: string, subresources = [appSubresource(b.props.resource)]) {
+/** `verifyObserverAccess` for `observer`, about what `b`'s `describe()` reports unless told otherwise. */
+async function verify(b: ReturnType<typeof binding>, observer: string, subresources = [describeSubresource(b.props.resource)]) {
   return await hooks().verifyObserver(b.name, b.props, observer, subresources);
 }
 
@@ -168,13 +169,63 @@ describe("checking collaborators", () => {
     expect(await verify(site, sam)).toEqual(DENIED);
   });
 
-  it("admits a cloud collaborator to a console the owner connected directly, matching it by MAC", async () => {
+  it("admits a cloud administrator to the application on a console the owner connected directly, but to no one camera", async () => {
+    // Site Manager matches the console by MAC and says the role grants Protect, but not which
+    // cameras it covers, and the Cloud Connector won't let a console's administrator ask it.
     const { unifi } = installFake();
     addAdmin(unifi, ALEX_KEY, { "protect.management": ["viewer"] });
     const owner = await connectDirect();
     const alex = await connectCloud(ALEX_KEY);
-    const camera = binding(owner, { kind: "camera", consoleId: await directConsoleId(owner), cameraId: HOME.doorbellId });
-    expect(await verify(camera, alex)).toEqual(ALLOWED);
+    const consoleId = await directConsoleId(owner);
+    expect(await verify(binding(owner, { kind: "protect", consoleId }), alex)).toEqual(ALLOWED);
+    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), alex)).toEqual(DENIED);
+  });
+
+  it("admits a collaborator who owns the console, through the cloud, to each camera their key can open", async () => {
+    const { unifi, console } = installFake();
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
+    const owner = await connectCloud();
+    const alex = await connectCloud(ALEX_KEY);
+    const before = unifi.calls.length;
+    expect(await verify(binding(owner, RESOURCES.camera(HOME.doorbellId)), alex)).toEqual(ALLOWED);
+    const probe = unifi.calls.slice(before).find(call => call.headers["x-api-key"] === ALEX_KEY && call.url.includes("/cameras/"));
+    expect(probe?.url).toBe(`https://api.ui.com/v1/connector/consoles/${HOME.hostId}/proxy/protect/integration/v1/cameras/${HOME.doorbellId}`);
+  });
+
+  it("refuses a direct collaborator a camera their own role can't see, and any listing that showed it", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/cameras/${HOME.doorbellId}`]]]);
+    const protect = binding(owner, { kind: "protect", consoleId });
+    const camera = (id: string) => `${appSubresource(protect.props.resource)}/camera/${id}`;
+    expect(await verify(protect, sam, [camera(HOME.ptzId)])).toEqual(ALLOWED);
+    expect(await verify(protect, sam, [camera(HOME.doorbellId)])).toEqual(DENIED);
+    expect(await verify(protect, sam, [camera(HOME.doorbellId), camera(HOME.ptzId)])).toEqual(DENIED);
+    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), sam)).toEqual(DENIED);
+  });
+
+  it("checks a WiFi password and voucher codes against what the collaborator's own key can read", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/sites/${HOME.siteId}/wifi/broadcasts/${HOME.guestWifiId}`]]]);
+    const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
+    const app = appSubresource(site.props.resource);
+    expect(await verify(site, sam, [app])).toEqual(ALLOWED);
+    expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`])).toEqual(DENIED);
+    expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/wifi/${HOME.homeWifiId}`])).toEqual(ALLOWED);
+    expect(await verify(site, sam, [`${app}/vouchers/${HOME.siteId}`])).toEqual(ALLOWED);
+  });
+
+  it("admits a cloud administrator to a site, but not to its passwords or voucher codes", async () => {
+    const { unifi } = installFake();
+    addAdmin(unifi, ALEX_KEY, { "network.management": ["admin"] });
+    const owner = await connectCloud();
+    const alex = await connectCloud(ALEX_KEY);
+    const site = binding(owner, RESOURCES.site);
+    const app = appSubresource(RESOURCES.site);
+    expect(await verify(site, alex, [app])).toEqual(ALLOWED);
+    expect(await verify(site, alex, [`${app}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`])).toEqual(DENIED);
+    expect(await verify(site, alex, [`${app}/vouchers/${HOME.siteId}`])).toEqual(DENIED);
   });
 
   it("admits a direct collaborator at the owner's console URL, proving access with their own key", async () => {
@@ -184,7 +235,7 @@ describe("checking collaborators", () => {
     const before = unifi.calls.length;
     expect(await verify(camera, sam)).toEqual(ALLOWED);
     const probe = unifi.calls.slice(before).find(call => call.headers["x-api-key"] === SAM_KEY);
-    expect(probe?.url).toBe(`${CONSOLE_URL}/proxy/protect/integration/v1/meta/info`);
+    expect(probe?.url).toBe(`${CONSOLE_URL}/proxy/protect/integration/v1/cameras/${HOME.doorbellId}`);
   });
 
   it("refuses a direct collaborator whose server only claims to be the console", async () => {
@@ -243,9 +294,14 @@ describe("checking collaborators", () => {
     const owner = await connectCloud();
     const alex = await connectCloud(ALEX_KEY);
     const site = binding(owner, RESOURCES.site);
-    const protect = appSubresource(RESOURCES.protect);
-    expect(await verify(site, alex, [appSubresource(RESOURCES.site), protect])).toHaveProperty("error");
+    const app = appSubresource(RESOURCES.site);
+    expect(await verify(site, alex, [app, appSubresource(RESOURCES.protect)])).toHaveProperty("error");
     expect(await verify(site, alex, [`console/${encodeURIComponent(OFFICE_HOST)}/app/network`])).toHaveProperty("error");
+    expect(await verify(site, alex, [`${app}/site/another-site/wifi/${HOME.guestWifiId}`])).toHaveProperty("error");
+    expect(await verify(site, alex, [`${app}/camera/${HOME.doorbellId}`])).toHaveProperty("error");
+    const doorbell = binding(owner, RESOURCES.camera(HOME.doorbellId));
+    expect(await verify(doorbell, alex, [describeSubresource(RESOURCES.camera(HOME.ptzId))])).toHaveProperty("error");
+    expect(await verify(doorbell, alex, [appSubresource(RESOURCES.protect)])).toHaveProperty("error");
   });
 
   it("can't check anyone once the owner's connection no longer reaches the console", async () => {

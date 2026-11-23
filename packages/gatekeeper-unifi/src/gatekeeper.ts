@@ -2,12 +2,8 @@
  * The per-binding gatekeeper: a Durable Object facet of the workspace's overseer, one class for
  * every resource kind. It starts sessions over the bound resource, keeps the binding's action
  * journal, applies and rejects actions once the user decides, and checks collaborators against
- * what its reads report (observer strategy B).
- *
- * Every read reports the bound console's application as `console/<consoleId>/app/<network|protect>`
- * ({@link appSubresourceId}). The application is the atomic unit: Site Manager says what a role
- * grants per console application, and nothing finer, so a Protect viewer limited to some cameras is
- * admitted to every camera's binding.
+ * what its reads report (observer strategies B and C): the console application, or the Protect
+ * devices, WiFi password or voucher codes a read disclosed (see subresources.ts).
  */
 
 import { DurableObject, RpcStub } from "cloudflare:workers";
@@ -17,15 +13,16 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
-import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { UNIFI_ACTIONS, ACTION_KINDS_BY_RESOURCE, type UnifiAction } from "./actions";
 import { UnifiApi } from "./api";
+import { UnifiError } from "./errors";
 import type { UnifiAccount } from "./account";
 import type { UnifiEnv } from "./env";
 import { NetworkDeviceSession, NetworkSiteSession, HotspotSession, WifiNetworkSession } from "./network-session";
 import { CameraSession, LightSession, ProtectSession, SensorSession } from "./protect-session";
 import { resourceApp, type UnifiResource, type UnifiResourceKind } from "./resources";
 import { SessionContext, type SessionShared } from "./session-context";
+import { parseRequirement, requirementId, type UnifiRequirement } from "./subresources";
 import type { UnifiVerifierApi } from "./verifier";
 import NETWORK_TYPES from "./network-types.txt";
 import PROTECT_TYPES from "./protect-types.txt";
@@ -50,24 +47,19 @@ const PRESENTATION: Record<UnifiResourceKind, { tsType: string; binding: string;
   light: { tsType: "UnifiLight", binding: "UNIFI_LIGHT", fallbackTitle: "UniFi floodlight", snippet: "One floodlight: its state and settings." },
 };
 
-/**
- * What every read of a binding reports: the console application it reads from. The console ID is
- * the one in the binding's resource URL -- a Site Manager host ID, or, for a direct connection, the
- * ID it was given when it connected, which a reconnect keeps -- so the ID never changes for a binding.
- */
-export function appSubresourceId(resource: UnifiResource): string {
-  return formatSubresourceId({
-    fragments: [{ name: "console", id: resource.consoleId }, { name: "app", id: resourceApp(resource.kind) }],
-  });
-}
 
 /** One binding to a UniFi resource. */
 @validateRpc()
 export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProps> implements Gatekeeper<UnifiSession> {
   readonly #api = new UnifiApi(request => this.#account().request(request), this.ctx.props.resource.consoleId);
   readonly #journal = new ActionJournal<UnifiAction>(this.ctx.storage.kv, { namespace: "unifi" });
-  readonly #actions = UNIFI_ACTIONS.bind(this.#journal, { api: this.#api });
-  readonly #subresource = appSubresourceId(this.ctx.props.resource);
+  readonly #actions = UNIFI_ACTIONS.bind(this.#journal, {
+    api: this.#api,
+    updateWifi: async (siteId, wifiNetworkId, changes) => {
+      const failure = await this.#account().updateWifi(this.ctx.props.resource.consoleId, siteId, wifiNetworkId, changes);
+      if (failure) throw new UnifiError(failure);
+    },
+  });
 
   #account(): DurableObjectStub<UnifiAccount> {
     return this.ctx.exports.UnifiAccount.get(this.ctx.exports.UnifiAccount.idFromString(this.ctx.props.accountId));
@@ -102,7 +94,7 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
       pending: () => this.#journal.listPending(),
       consoleName: () => this.#consoleName(),
       now: () => Date.now(),
-      subresource: this.#subresource,
+      subresource: requirement => requirementId(this.ctx.props.resource, requirement),
     };
     const ctx = new SessionContext(shared, approvalQueue.dup());
     const resource = this.ctx.props.resource;
@@ -132,8 +124,9 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
   }
 
   /**
-   * Admits the observers whose own UniFi connection can see the bound console's application. Any ID
-   * but the one this binding reports fails the whole call, which denies everyone in it.
+   * Admits the observers whose own UniFi connection can read everything `subresources` names (see
+   * `UnifiAccount.canObserve`). Any ID this binding doesn't report fails the whole call, which
+   * denies everyone in it.
    * @throws when the binding's own connection no longer reaches its console, since there is then
    * nothing to match a collaborator's console against.
    */
@@ -141,22 +134,17 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    if (subresources.some(id => id !== this.#subresource)) {
-      throw new Error("That isn't a subresource this UniFi binding reports.");
-    }
     const { resource } = this.ctx.props;
+    const requirements = new Map<string, UnifiRequirement>(subresources.map(id => [id, parseRequirement(resource, id)]));
     const target = await this.#account().observeTarget(resource.consoleId, resourceApp(resource.kind));
     if (!target) throw new Error("This binding's UniFi connection can no longer see its console, so collaborators can't be checked against it.");
     const verify = observerAccessVerifier<Fetcher<UnifiVerifierApi>>({
-      hasCollectionAccess: async (verifier, ids) => {
-        const allowed = await verifier.canObserve(target);
-        return ids.map(() => allowed);
-      },
+      hasCollectionAccess: (verifier, ids) => verifier.canObserve(target, ids.map(id => requirements.get(id)!)),
     });
     return await verify(observers, subresources);
   }
 
-  /** Every read has reported its subresource since this gatekeeper was added: no history to export. */
+  /** Every read has reported its subresources since this gatekeeper was added: no history to export. */
   async getHistoricalSubresources(): Promise<string[]> {
     return [];
   }

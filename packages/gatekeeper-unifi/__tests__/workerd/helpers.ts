@@ -106,6 +106,17 @@ export function appSubresource(resource: UnifiResource): string {
   return `console/${encodeURIComponent(resource.consoleId)}/app/${resourceApp(resource.kind)}`;
 }
 
+/** What a binding's `describe()` reports: its Protect device, or else the application. */
+export function describeSubresource(resource: UnifiResource): string {
+  const app = appSubresource(resource);
+  switch (resource.kind) {
+    case "camera": return `${app}/camera/${resource.cameraId}`;
+    case "sensor": return `${app}/sensor/${resource.sensorId}`;
+    case "light": return `${app}/light/${resource.lightId}`;
+    default: return app;
+  }
+}
+
 let facetCounter = 0;
 
 /** A fresh binding: its own facet, session, and approval queue. */

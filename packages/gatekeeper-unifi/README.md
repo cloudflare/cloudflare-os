@@ -79,37 +79,56 @@ Every read is recorded as an observation. Every change waits for approval:
 | Restart a device | Yes | Waits for the decision |
 | Restart the gateway (the network goes down) | Never | Waits for the decision |
 | Power-cycle a PoE port | Yes | Waits for the decision |
-| Let a guest use the WiFi, or revoke it | Yes | Continues; reads show the change |
+| Let a guest use the WiFi, or revoke it | Never | Continues; reads show the change |
 | Change a WiFi network's name, password, visibility, or whether it's on | Never | Continues; reads show the change |
-| Create guest vouchers | Yes | Waits for the decision, since codes exist only once created |
-| Delete a voucher | Yes | Continues; reads show the change |
+| Create guest vouchers | Never | Waits for the decision, since codes exist only once created |
+| Delete a voucher | Never | Continues; reads show the change |
 | Rename a camera, switch its status light, or show a doorbell message | Yes | Continues; reads show the change |
 | Set a camera's microphone volume | Never | Continues; reads show the change |
 | Move a PTZ camera to a preset, or start or stop a patrol | Yes | Waits for the decision |
 | Force a floodlight on, or change its mode or brightness | Yes | Continues; reads show the change |
 
+Changes to WiFi and guest access are never auto-approvable because they change who can use the
+network. An approval never shows a WiFi password or voucher code that still works, since action
+history is visible to every collaborator: a new password is described as changing, and a voucher
+by its note and ID.
+
 Nothing is reverted automatically. A change UniFi refuses, or whose target is gone, fails
-without a retry. A restart, power-cycle, or voucher batch interrupted after it was sent is
-reported as having an unknown outcome and is never sent again.
+without a retry. A restart, power-cycle, guest grant, or voucher batch interrupted after it was
+sent is reported as having an unknown outcome and is never sent again. WiFi changes are written
+one at a time per network, from a fresh read, so changes approved through two bindings at once
+both take effect. UniFi's error messages aren't passed on, since a console or a proxy in front of
+it can echo what a request carried; errors are described by their status.
 
 ## Observers
 
-Strategy B (`docs/observers.md`): every read reports the bound console's application as
-`console/<consoleId>/app/<network|protect>`, and the Workshop shows what a binding read only to a
-collaborator whose own UniFi connection can see that application.
+Strategies B and C (`docs/observers.md`): every read reports what it disclosed, and the Workshop
+shows it only to a collaborator whose own UniFi connection can read all of it.
 
-- A collaborator's cloud connection passes if Site Manager lists the console, matched by host ID
-  or by MAC address, and says their role there grants the application.
+- General data reports the console's application, `console/<consoleId>/app/<network|protect>`.
+- A read of Protect devices reports each one it showed, `…/app/protect/camera/<id>` (or `sensor`,
+  `light`), since a Protect role can limit a viewer to some of them. A listing that found none
+  reports the application.
+- A WiFi password reports `…/app/network/site/<siteId>/wifi/<wifiNetworkId>`, and voucher codes
+  `…/app/network/vouchers/<siteId>`, since not every role that can see a site may read them.
+
+Checks:
+
 - A collaborator's direct connection passes only for a binding its owner also connected directly,
-  at the same console URL, and only if the collaborator's own key can call the application there.
-  What a direct connection knows about its console came from whatever answered at the URL its
-  owner typed, so it can't vouch for a console reached any other way: a server the collaborator
-  runs could claim any MAC address.
+  at the same console URL. What a direct connection knows about its console came from whatever
+  answered at the URL its owner typed, so it can't vouch for a console reached any other way: a
+  server the collaborator runs could claim any MAC address. It then calls, with its own key, the
+  endpoint each requirement's read calls (the application's info, the camera, the WiFi network's
+  settings, the voucher list), so whatever its role is refused there is refused here.
+- A collaborator's cloud connection needs Site Manager to list the console, matched by host ID or
+  by MAC address, with a role that grants the application. That alone passes the application.
+  Anything narrower is checked as for a direct connection, through the Cloud Connector, which
+  reaches only consoles the collaborator owns. A collaborator who only administers the console
+  passes nothing narrower, since Site Manager doesn't say which cameras a role covers or whether
+  it may read passwords.
 
-Neither check can see a Protect role limited to some cameras, so a collaborator with any Protect
-access is admitted to every camera's binding. A check that can't be made (the console doesn't
-answer, or the binding owner's own connection no longer reaches it) refuses everyone rather than
-guessing.
+A check that can't be made (the console doesn't answer, or the binding owner's own connection no
+longer reaches it) refuses everyone rather than guessing.
 
 ## Requests
 

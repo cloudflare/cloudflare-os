@@ -74,35 +74,29 @@ export function provablyNoEffect(error: unknown): boolean {
   return error instanceof UnifiError && (error.kind === "notFound" || error.kind === "badRequest");
 }
 
-/** The longest provider message quoted back. */
-const MAX_PROVIDER_MESSAGE = 300;
-
 /**
- * Classifies an HTTP error response.
+ * Classifies an HTTP error response by its status alone. The provider's own message is never
+ * quoted: a console, or a proxy in front of it, can echo request headers or the settings a request
+ * carried, and failures reach logs, agents and gadgets.
  * @param status The response status, not 2xx or 3xx.
- * @param providerMessage The provider's own message, if its body carried one.
- * @param retryAfterMs A parsed `Retry-After`, if any.
+ * @param retryAfterMs How long the provider asked to wait, if it said.
  * @returns The failure.
  */
-export function classifyHttpFailure(
-  status: number, providerMessage: string | undefined, retryAfterMs: number | undefined,
-): UnifiFailure {
-  const detail = providerMessage ? truncate(providerMessage) : undefined;
+export function classifyHttpFailure(status: number, retryAfterMs: number | undefined): UnifiFailure {
   switch (status) {
     case 401:
       return { kind: "auth", status, message: "UniFi didn't accept the API key." };
     case 403:
       return {
         kind: "forbidden", status,
-        message: "The UniFi API key can't access this console or application" +
-          (detail ? `: ${detail}` : "."),
+        message: "The UniFi API key can't access this console or application.",
       };
     case 404:
-      return { kind: "notFound", status, message: detail ? `Not found: ${detail}` : "Not found." };
+      return { kind: "notFound", status, message: "Not found." };
     case 400: case 409: case 422:
       return {
         kind: "badRequest", status,
-        message: detail ? `UniFi rejected the request: ${detail}` : "UniFi rejected the request.",
+        message: "UniFi rejected the request: the device may not support it, or a value is out of range.",
       };
     case 408: case 502: case 503: case 504:
       return {
@@ -110,7 +104,7 @@ export function classifyHttpFailure(
         message: "The UniFi console didn't respond; it may be offline or unreachable.",
       };
     case 429: {
-      const wait = retryAfterMs ?? parseRetryAfterMessage(providerMessage);
+      const wait = retryAfterMs;
       return {
         kind: "rateLimited", status,
         message: "The UniFi console is getting too many requests" +
@@ -121,10 +115,7 @@ export function classifyHttpFailure(
     default:
       return status >= 500
         ? { kind: "server", status, message: `UniFi reported an internal error (status ${status}).` }
-        : {
-          kind: "badRequest", status,
-          message: `UniFi refused the request (status ${status})` + (detail ? `: ${detail}` : "."),
-        };
+        : { kind: "badRequest", status, message: `UniFi refused the request (status ${status}).` };
   }
 }
 
@@ -165,7 +156,3 @@ export function parseRetryAfterHeader(value: string | null): number | undefined 
   return Math.ceil(Number(value.trim()) * 1000);
 }
 
-function truncate(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length <= MAX_PROVIDER_MESSAGE ? oneLine : `${oneLine.slice(0, MAX_PROVIDER_MESSAGE - 1)}…`;
-}

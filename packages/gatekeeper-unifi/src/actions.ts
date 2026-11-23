@@ -9,11 +9,15 @@
  *   settings, deleting a voucher) continue with simulation; see simulation.ts.
  * - Changes reads can't show -- a restart, a power-cycle, a PTZ move, the codes of new vouchers --
  *   make the agent await the decision, so it doesn't act on a world where they didn't happen.
- * - Restarting the gateway, changing a WiFi network, and changing a camera's microphone volume can
- *   never be auto-approved: the first takes the whole network down, the second can lock everyone
- *   out, and the third changes what a camera records.
- * - Requests that aren't safe to send twice (restarts, power-cycles, voucher creation) are claimed
- *   before they're sent, so a crash mid-request is reported as an unknown outcome, never replayed.
+ * - Restarting the gateway, changing a WiFi network, granting or ending guest access, creating or
+ *   deleting vouchers, and changing a camera's microphone volume can never be auto-approved. The
+ *   WiFi and guest changes change who can use the network; the gateway restart takes it down, and
+ *   the microphone volume changes what a camera records.
+ * - Requests that aren't safe to send twice (restarts, power-cycles, guest grants, voucher creation)
+ *   are claimed before they're sent, so a crash mid-request is reported as an unknown outcome,
+ *   never replayed.
+ * - A credential that still works -- a WiFi password, a voucher code -- never goes into a
+ *   description: descriptions are kept in the action history every collaborator sees.
  *
  * Nothing implements revert: no Workshop flow invokes it.
  */
@@ -32,7 +36,11 @@ import type { UnifiGuestLimits, UnifiWifiNetworkChanges } from "./network-types"
 import type { UnifiDoorbellMessage, UnifiLightMode } from "./protect-types";
 
 /** What an approved action is carried out against: the bound console. */
-export type UnifiActionHost = { api: UnifiApi };
+export type UnifiActionHost = {
+  api: UnifiApi;
+  /** Writes a WiFi change through the account, which serializes them per network. */
+  updateWifi: (siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges) => Promise<void>;
+};
 
 /** Voucher options, normalized at submission. */
 export type VoucherRequest = {
@@ -61,7 +69,7 @@ export type UnifiActionPayloads = {
     placeholderIds: string[];
     submittedAt: number;
   };
-  deleteVoucher: { siteId: string; voucherId: string; note: string; code: string | null };
+  deleteVoucher: { siteId: string; voucherId: string; note: string };
   cameraSettings: {
     cameraId: string; cameraName: string;
     change:
@@ -137,10 +145,21 @@ function quoted(name: string): string {
   return `“${plainInline(name, 80)}”`;
 }
 
-function present(title: string, intro: string, fields: (builder: ReturnType<typeof buildDescription>) => void): ActionPresentation {
+/**
+ * @param options.redacted Whether a value the action sends is left out, so the description isn't
+ * the complete account of what it does.
+ */
+function present(
+  title: string, intro: string, fields: (builder: ReturnType<typeof buildDescription>) => void,
+  options: { redacted?: boolean } = {},
+): ActionPresentation {
   const builder = buildDescription(intro);
   fields(builder);
-  return { title: sanitizeTitle(title), ...builder.finish(), implementsRevert: false };
+  const { descriptionIsComplete, ...finished } = builder.finish();
+  return {
+    title: sanitizeTitle(title), ...finished, implementsRevert: false,
+    ...(descriptionIsComplete && !options.redacted && { descriptionIsComplete }),
+  };
 }
 
 function describeLimits(builder: ReturnType<typeof buildDescription>, limits: {
@@ -252,8 +271,11 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
   },
   guestAccess: {
     kind: KINDS.guestAccess,
-    autoApprovable: true,
+    // Rule 7: changes who can use the guest network.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
+    // A grant replaces any active one and resets its traffic counters, so it isn't sent twice.
+    claimBeforeApply: true,
     describe: p => p.change.authorize
       ? present(`Let guest ${quoted(p.clientName)} use the WiFi`,
         "Authorizes this guest on the site's guest network, replacing any access it already has.",
@@ -267,10 +289,12 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
       : present(`End guest ${quoted(p.clientName)}'s WiFi access`,
         "Ends this guest's authorization, disconnecting it from the guest network.",
         b => b.inline("Guest", p.clientName)),
-    apply: (p, { api }) => carryOut(async () => {
-      if (p.change.authorize) await api.authorizeGuest(p.siteId, p.clientId, guestLimitsBody(p.change.limits));
-      else await api.revokeGuest(p.siteId, p.clientId);
-    }, { idempotent: true }),
+    apply: (p, { api }) => {
+      const change = p.change;
+      return change.authorize
+        ? carryOut(() => api.authorizeGuest(p.siteId, p.clientId, guestLimitsBody(change.limits)), { idempotent: false })
+        : carryOut(() => api.revokeGuest(p.siteId, p.clientId), { idempotent: true });
+    },
   },
   updateWifi: {
     kind: KINDS.updateWifi,
@@ -278,22 +302,20 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: p => present(`Change WiFi network ${quoted(p.networkName)}`,
-      "Changes this WiFi network's settings. Devices may disconnect while it changes.",
+      "Changes this WiFi network's settings. Devices may disconnect while it changes." +
+        (p.changes.passphrase !== undefined ? " **Sets a new password**, which isn't shown here." : ""),
       b => {
         b.inline("Network", p.networkName);
         if (p.changes.name !== undefined) b.inline("New name", p.changes.name);
         if (p.changes.enabled !== undefined) b.inline("Broadcast", p.changes.enabled ? "On" : "Off");
         if (p.changes.hidden !== undefined) b.inline("Hidden", p.changes.hidden ? "Yes" : "No");
-        if (p.changes.passphrase !== undefined) b.inline("New password", p.changes.passphrase);
-      }),
-    apply: (p, { api }) => carryOut(async () => {
-      const raw = await api.getWifiRaw(p.siteId, p.wifiNetworkId);
-      await api.putWifi(p.siteId, p.wifiNetworkId, wifiPutBody(raw, p.changes));
-    }, { idempotent: true }),
+      }, { redacted: p.changes.passphrase !== undefined }),
+    apply: (p, { updateWifi }) => carryOut(() => updateWifi(p.siteId, p.wifiNetworkId, p.changes), { idempotent: true }),
   },
   createVouchers: {
     kind: KINDS.createVouchers,
-    autoApprovable: true,
+    // Rule 7: issues credentials that let new guests join the network.
+    autoApprovable: false,
     delivery: "await-decision",
     claimBeforeApply: true,
     describe: p => present(
@@ -311,13 +333,14 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
   },
   deleteVoucher: {
     kind: KINDS.deleteVoucher,
-    autoApprovable: true,
+    // Rule 7: ends the access its guests have.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
-    describe: p => present(`Delete guest WiFi voucher ${quoted(p.note || p.code || p.voucherId)}`,
+    describe: p => present(p.note ? `Delete guest WiFi voucher ${quoted(p.note)}` : "Delete a guest WiFi voucher",
       "Deletes this voucher so it can no longer be used.",
       b => {
         if (p.note) b.inline("Note", p.note);
-        if (p.code) b.inline("Code", p.code);
+        b.inline("Voucher ID", p.voucherId);
       }),
     apply: (p, { api }) => carryOut(async () => {
       try {

@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { appSubresource, binding, connectCloud, hooks, installFake, RESOURCES } from "./helpers.js";
+import { binding, connectCloud, hooks, installFake, RESOURCES } from "./helpers.js";
 import { HOME, SNAPSHOT_BYTES } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
@@ -19,18 +19,20 @@ function lastSubmitted(queue: { submitted: { actionId: number; description: Acti
 }
 
 describe("every read is authorized before it returns", () => {
-  const reads: [string, Step][] = [
-    ["describe", { call: "describe" }],
-    ["listCameras", { call: "listCameras" }],
-    ["listSensors", { call: "listSensors" }],
-    ["listLights", { call: "listLights" }],
-    ["camera.describe", { via: [["getCamera", HOME.doorbellId]], call: "describe" }],
-    ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" }],
-    ["sensor.describe", { via: [["getSensor", HOME.sensorId]], call: "describe" }],
-    ["light.describe", { via: [["getLight", HOME.lightId]], call: "describe" }],
+  const PROTECT = `console/${encodeURIComponent(HOME.hostId)}/app/protect`;
+  // What each read reports: every Protect device it disclosed, or else the application.
+  const reads: [string, Step, string[]][] = [
+    ["describe", { call: "describe" }, [PROTECT]],
+    ["listCameras", { call: "listCameras" }, [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
+    ["listSensors", { call: "listSensors" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
+    ["listLights", { call: "listLights" }, [`${PROTECT}/light/${HOME.lightId}`]],
+    ["camera.describe", { via: [["getCamera", HOME.doorbellId]], call: "describe" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
+    ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
+    ["sensor.describe", { via: [["getSensor", HOME.sensorId]], call: "describe" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
+    ["light.describe", { via: [["getLight", HOME.lightId]], call: "describe" }, [`${PROTECT}/light/${HOME.lightId}`]],
   ];
 
-  it.each(reads)("%s records exactly one observation, of the console's Protect application", async (_name, step) => {
+  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources) => {
     installFake();
     const protect = binding(await connectCloud(), RESOURCES.protect);
     const [result] = await hooks().run(protect.name, protect.props, [step]);
@@ -38,7 +40,7 @@ describe("every read is authorized before it returns", () => {
     const { observations, submitted } = await protect.queue();
     expect(observations).toHaveLength(1);
     expect(observations[0]!.title).toMatch(/UniFi/);
-    expect(observations[0]!.subresources).toEqual([`console/${encodeURIComponent(HOME.hostId)}/app/protect`]);
+    expect(observations[0]!.subresources).toEqual(subresources);
     expect(submitted).toEqual([]);
   });
 });
@@ -87,7 +89,7 @@ describe("a camera", () => {
     expect(console.calls.at(-1)).toMatchObject({ path: `/v1/cameras/${HOME.doorbellId}/snapshot`, query: { highQuality: "true", channel: "package" } });
     expect((await doorbell.queue()).observations).toEqual([{
       title: "Capture a UniFi camera snapshot", description: "Captured a still image from the package camera of UniFi camera Front Door.",
-      subresources: [appSubresource(RESOURCES.camera(HOME.doorbellId))],
+      subresources: [`console/${encodeURIComponent(HOME.hostId)}/app/protect/camera/${HOME.doorbellId}`],
     }]);
   });
 
@@ -203,7 +205,7 @@ describe("a camera", () => {
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
     await doorbell.call("goToPreset", 2);
     const { actionId } = lastSubmitted(await doorbell.queue());
-    const refusal = { error: "UniFi rejected the request: Camera does not support PTZ" };
+    const refusal = { error: "UniFi rejected the request: the device may not support it, or a value is out of range." };
     expect(await doorbell.applyOutcome(actionId)).toEqual(refusal);
     expect(await doorbell.applyOutcome(actionId)).toEqual(refusal);
     expect(console.writes()).toHaveLength(1);

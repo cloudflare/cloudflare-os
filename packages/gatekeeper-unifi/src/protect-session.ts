@@ -44,7 +44,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   async listCameras(): Promise<UnifiCameraInfo[]> {
     const pending = this.#ctx.shared.pending();
     const cameras = (await this.#ctx.shared.api.listCameras()).map(camera => simulateCamera(camera, pending));
-    await this.#ctx.observe("List UniFi cameras", `Listed ${count(cameras.length, "camera")} in UniFi Protect.`);
+    await this.#ctx.observe("List UniFi cameras", `Listed ${count(cameras.length, "camera")} in UniFi Protect.`,
+      cameras.map(camera => ({ kind: "camera", id: camera.id })));
     return cameras;
   }
 
@@ -54,7 +55,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
 
   async listSensors(): Promise<UnifiSensorInfo[]> {
     const sensors = await this.#ctx.shared.api.listSensors();
-    await this.#ctx.observe("List UniFi sensors", `Listed ${count(sensors.length, "sensor")} and their readings in UniFi Protect.`);
+    await this.#ctx.observe("List UniFi sensors", `Listed ${count(sensors.length, "sensor")} and their readings in UniFi Protect.`,
+      sensors.map(sensor => ({ kind: "sensor", id: sensor.id })));
     return sensors;
   }
 
@@ -65,7 +67,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   async listLights(): Promise<UnifiLightInfo[]> {
     const pending = this.#ctx.shared.pending();
     const lights = (await this.#ctx.shared.api.listLights()).map(light => simulateLight(light, pending));
-    await this.#ctx.observe("List UniFi floodlights", `Listed ${count(lights.length, "floodlight")} in UniFi Protect.`);
+    await this.#ctx.observe("List UniFi floodlights", `Listed ${count(lights.length, "floodlight")} in UniFi Protect.`,
+      lights.map(light => ({ kind: "light", id: light.id })));
     return lights;
   }
 
@@ -92,7 +95,8 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
 
   async describe(): Promise<UnifiCameraInfo> {
     const camera = await this.#camera();
-    await this.#ctx.observe("Read a UniFi camera", `Read the details and settings of UniFi camera ${md(camera.name)}.`);
+    await this.#ctx.observe("Read a UniFi camera", `Read the details and settings of UniFi camera ${md(camera.name)}.`,
+      [{ kind: "camera", id: this.#cameraId }]);
     return camera;
   }
 
@@ -105,7 +109,8 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
     });
     const capturedAt = new Date(this.#ctx.shared.now());
     await this.#ctx.observe("Capture a UniFi camera snapshot",
-      `Captured a still image from ${packageCamera ? "the package camera of " : ""}UniFi camera ${md(camera.name)}.`);
+      `Captured a still image from ${packageCamera ? "the package camera of " : ""}UniFi camera ${md(camera.name)}.`,
+      [{ kind: "camera", id: this.#cameraId }]);
     return { mimeType: "image/jpeg", content: bytes, capturedAt };
   }
 
@@ -190,7 +195,8 @@ export class SensorSession extends RpcTarget implements UnifiSensor {
 
   async describe(): Promise<UnifiSensorInfo> {
     const sensor = await this.#ctx.shared.api.getSensor(this.#sensorId);
-    await this.#ctx.observe("Read a UniFi sensor", `Read the readings of UniFi sensor ${md(sensor.name)}.`);
+    await this.#ctx.observe("Read a UniFi sensor", `Read the readings of UniFi sensor ${md(sensor.name)}.`,
+      [{ kind: "sensor", id: this.#sensorId }]);
     return sensor;
   }
 }
@@ -213,7 +219,8 @@ export class LightSession extends RpcTarget implements UnifiLight {
 
   async describe(): Promise<UnifiLightInfo> {
     const light = await this.#light();
-    await this.#ctx.observe("Read a UniFi floodlight", `Read the state of UniFi floodlight ${md(light.name)}.`);
+    await this.#ctx.observe("Read a UniFi floodlight", `Read the state of UniFi floodlight ${md(light.name)}.`,
+      [{ kind: "light", id: this.#lightId }]);
     return light;
   }
 

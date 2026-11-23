@@ -248,6 +248,8 @@ export class FakeConsole {
   /** Uppercase hex, as Site Manager writes it. */
   mac: string;
   offline = false;
+  /** Paths that answer 503, as an overloaded console's would. */
+  readonly unavailable = new Set<string>();
   /** Whether list endpoints honor `filter`; a console that ignored it must not leak data. */
   honorsFilters = true;
   network: { version: string; sites: FakeSite[] } | null = null;
@@ -269,6 +271,7 @@ export class FakeConsole {
   /** Handles a request to one of the console's integration APIs. */
   handle(app: "network" | "protect", method: string, path: string, query: Record<string, string>, body: unknown): Response {
     this.calls.push({ app, method, path, query, ...(body !== undefined && { body }) });
+    if (this.unavailable.has(path)) return json(503, { message: "Service Unavailable" });
     return app === "network" ? this.#network(method, path, query, body) : this.#protect(method, path, body);
   }
 
@@ -558,6 +561,8 @@ type DirectConsole = {
   access?: { clientId: string; clientSecret: string };
   /** Simulates an untrusted self-signed certificate. */
   untrustedCertificate?: boolean;
+  /** Paths each key is refused with 403, as a role limited to some cameras or settings would be. */
+  refused?: Map<string, string[]>;
 };
 
 /** Everything the gatekeeper can reach. */
@@ -631,6 +636,7 @@ export class FakeUnifi {
     const m = /^\/proxy\/(network|protect)\/integration(\/.*)$/.exec(url.pathname);
     if (!m) return new Response("<html>Not Found</html>", { status: 404, headers: { "Content-Type": "text/html" } });
     if (!direct.keys.has(key)) return json(401, { message: "Unauthorized" });
+    if (direct.refused?.get(key)?.some(path => m[2] === path)) return json(403, { message: "Forbidden" });
     if (direct.console.offline) throw new TypeError("Network connection lost.");
     return direct.console.handle(m[1] as "network" | "protect", request.method, m[2]!, query, body);
   };

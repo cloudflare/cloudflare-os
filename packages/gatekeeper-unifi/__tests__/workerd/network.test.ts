@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
-import { account, appSubresource, binding, connectCloud, connectDirect, hooks, installFake, RESOURCES } from "./helpers.js";
+import { account, binding, connectCloud, connectDirect, hooks, installFake, RESOURCES } from "./helpers.js";
 import { HOME } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
@@ -21,24 +21,26 @@ function lastSubmitted(queue: { submitted: { actionId: number; description: Acti
 }
 
 describe("every read is authorized before it returns", () => {
-  const reads: [string, Step][] = [
-    ["describe", { call: "describe" }],
-    ["listDevices", { call: "listDevices" }],
-    ["listClients", { call: "listClients" }],
-    ["getClient", { call: "getClient", args: [HOME.phoneId] }],
-    ["listNetworks", { call: "listNetworks" }],
-    ["listWifiNetworks", { call: "listWifiNetworks" }],
-    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }],
-    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" }],
-    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }],
-    ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }],
-    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" }],
-    ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }],
-    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }],
-    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }],
+  const NETWORK = `console/${encodeURIComponent(HOME.hostId)}/app/network`;
+  // What each read reports: the application, unless it disclosed a password or voucher codes.
+  const reads: [string, Step, string][] = [
+    ["describe", { call: "describe" }, NETWORK],
+    ["listDevices", { call: "listDevices" }, NETWORK],
+    ["listClients", { call: "listClients" }, NETWORK],
+    ["getClient", { call: "getClient", args: [HOME.phoneId] }, NETWORK],
+    ["listNetworks", { call: "listNetworks" }, NETWORK],
+    ["listWifiNetworks", { call: "listWifiNetworks" }, NETWORK],
+    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }, NETWORK],
+    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" }, NETWORK],
+    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, NETWORK],
+    ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }, NETWORK],
+    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" },
+      `${NETWORK}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`],
+    ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, NETWORK],
+    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, NETWORK],
+    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, `${NETWORK}/vouchers/${HOME.siteId}`],
   ];
-
-  it.each(reads)("%s records exactly one observation, of the console's Network application", async (_name, step) => {
+  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresource) => {
     installFake();
     const accountId = await connectCloud();
     const site = binding(accountId, RESOURCES.site);
@@ -47,7 +49,7 @@ describe("every read is authorized before it returns", () => {
     const { observations, submitted } = await site.queue();
     expect(observations).toHaveLength(1);
     expect(observations[0]!.title).toMatch(/UniFi/);
-    expect(observations[0]!.subresources).toEqual([`console/${encodeURIComponent(HOME.hostId)}/app/network`]);
+    expect(observations[0]!.subresources).toEqual([subresource]);
     expect(submitted).toEqual([]);
   });
 
@@ -60,7 +62,7 @@ describe("every read is authorized before it returns", () => {
     expect((await site.queue()).observations).toEqual([{
       title: "Read a UniFi WiFi password",
       description: "Read the password of WiFi network \\[Guest\\]\\(https://evil\\.example\\) \\# Free.",
-      subresources: [appSubresource(RESOURCES.site)],
+      subresources: [`console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`],
     }]);
   });
 });
@@ -186,8 +188,11 @@ describe("a WiFi network", () => {
     expect(await guest.call("getPassphrase")).toBe("welcome-guests");
     await guest.call("update", { passphrase: "brand-new-pass", name: "Visitors" });
     const { actionId, description } = lastSubmitted(await guest.queue());
-    expect(description).toMatchObject({ title: "Change WiFi network “Guest”", descriptionIsComplete: true, autoApprovable: false });
-    expect(JSON.stringify(description.fields)).toContain("brand-new-pass");
+    expect(description).toMatchObject({ title: "Change WiFi network “Guest”", autoApprovable: false });
+    // Action history reaches every collaborator, so a password that will work isn't written into it.
+    expect(description.description).toMatch(/Sets a new password/);
+    expect(JSON.stringify(description)).not.toContain("brand-new-pass");
+    expect(description.descriptionIsComplete).toBeUndefined();
 
     // Reads show the change; the console doesn't have it yet.
     expect(await guest.call("getPassphrase")).toBe("brand-new-pass");
@@ -199,6 +204,22 @@ describe("a WiFi network", () => {
     expect(put.method).toBe("PUT");
     expect(put.body).toMatchObject({ name: "Visitors", securityConfiguration: { type: "WPA2_PERSONAL", passphrase: "brand-new-pass" } });
     expect(await guest.call("getPassphrase")).toBe("brand-new-pass");
+  });
+
+  it("writes changes approved through two bindings at once one after the other, keeping both", async () => {
+    const { console } = installFake();
+    const accountId = await connectCloud();
+    const guest = binding(accountId, RESOURCES.wifi(HOME.guestWifiId));
+    const site = binding(accountId, RESOURCES.site);
+    await guest.call("update", { passphrase: "brand-new-pass" });
+    const { actionId: passwordChange } = lastSubmitted(await guest.queue());
+    await site.callVia([["getWifiNetwork", HOME.guestWifiId]], "update", { hidden: true });
+    const { actionId: hide } = lastSubmitted(await site.queue());
+    await Promise.all([guest.apply(passwordChange), site.apply(hide)]);
+    const puts = console.writes().filter(call => call.method === "PUT");
+    expect(puts).toHaveLength(2);
+    // The second write read the settings the first one wrote, rather than restoring the old password.
+    expect(puts[1]!.body).toMatchObject({ hideName: true, securityConfiguration: { passphrase: "brand-new-pass" } });
   });
 
   it("forgets a rejected change", async () => {
@@ -238,7 +259,7 @@ describe("the guest hotspot", () => {
     await hotspot.call("authorizeGuest", HOME.guestId, { durationMinutes: 120, dataLimitMB: 500 });
     const { actionId, description } = lastSubmitted(await hotspot.queue());
     expect(description).toMatchObject({
-      title: "Let guest “Visitor Pixel” use the WiFi", autoApprovable: true, actionKind: { tag: "unifi.guestAccess" },
+      title: "Let guest “Visitor Pixel” use the WiFi", autoApprovable: false, actionKind: { tag: "unifi.guestAccess" },
     });
     expect(description.awaitDecision).toBeUndefined();
     expect(await hotspot.call("getGuest", HOME.guestId)).toMatchObject({ guest: { authorized: true, dataLimitMB: 500 } });
@@ -247,12 +268,24 @@ describe("the guest hotspot", () => {
     expect(await hotspot.call("getGuest", HOME.guestId)).toMatchObject({ guest: { authorized: true, method: "api" } });
   });
 
+  it("never sends a guest grant again after an interrupted one, since a second would reset its allowance", async () => {
+    const { console } = installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    await hotspot.call("authorizeGuest", HOME.guestId, { durationMinutes: 120 });
+    const { actionId } = lastSubmitted(await hotspot.queue());
+    console.offline = true;
+    expect(await hotspot.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    console.offline = false;
+    expect(await hotspot.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toEqual([]);
+  });
+
   it("creates vouchers once approved, listing them without codes until then", async () => {
     const { console } = installFake();
     const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
     await hotspot.call("createVouchers", { note: "Party", durationMinutes: 240, count: 2 });
     const { actionId, description } = lastSubmitted(await hotspot.queue());
-    expect(description).toMatchObject({ title: "Create 2 guest WiFi vouchers", awaitDecision: true, autoApprovable: true });
+    expect(description).toMatchObject({ title: "Create 2 guest WiFi vouchers", awaitDecision: true, autoApprovable: false });
     const pending = await hotspot.call<{ id: string; code: string | null; guestLimit: number | null }[]>("listVouchers");
     expect(pending.slice(0, 2).map(v => [v.code, v.guestLimit])).toEqual([[null, 1], [null, 1]]);
     expect(await hotspot.failure("deleteVoucher", pending[0]!.id)).toMatch(/hasn't been created yet/);
@@ -270,17 +303,18 @@ describe("the guest hotspot", () => {
     expect(await hotspot.call("listVouchers")).toEqual([]);
     const { actionId, description } = lastSubmitted(await hotspot.queue());
     expect(description.title).toBe("Delete guest WiFi voucher “Book club”");
+    // The code still works until the deletion is approved, so it isn't written into history.
+    expect(JSON.stringify(description)).not.toContain("1234567890");
     console.network!.sites[0]!.vouchers = [];
     await hotspot.apply(actionId);
     expect(await hotspot.failure("deleteVoucher", "5f0ee1aa-0000-4000-8000-ffffffffffff")).toMatch(/no voucher with that ID/);
   });
 
-  it("offers to auto-approve only what a hotspot can ask for", async () => {
+  it("offers to auto-approve nothing a hotspot can ask for, since all of it changes who can join", async () => {
     installFake();
     const accountId = await connectCloud();
     const hotspot = binding(accountId, RESOURCES.hotspot);
-    const kinds = (await hooks().autoApprovable(hotspot.name, hotspot.props)) as { ok: { tag: string }[] };
-    expect(kinds.ok.map(k => k.tag).toSorted()).toEqual(["unifi.createVouchers", "unifi.deleteVoucher", "unifi.guestAccess"]);
+    expect(await hooks().autoApprovable(hotspot.name, hotspot.props)).toEqual({ ok: [] });
   });
 });
 

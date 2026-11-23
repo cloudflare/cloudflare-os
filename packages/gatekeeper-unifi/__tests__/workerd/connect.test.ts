@@ -212,7 +212,13 @@ describe("reconnecting", () => {
     const refused = await postForm(path, { mode: "direct", consoleUrl: "https://evil.example", localApiKey: "new-local-key-0123456789abcdef" });
     expect(refused.status).toBe(400);
     expect(await refused.text()).toContain("reaches a different console");
-    expect(unifi.calls.some(c => c.url.startsWith("https://evil.example"))).toBe(false);
+    expect(unifi.calls.some(c => new URL(c.url).host === "evil.example")).toBe(false);
+
+    // A console that won't say who it is isn't taken for the original.
+    replaced.unavailable.add("/v1/nvrs").add("/v1/sites");
+    const unidentified = await postForm(path, { mode: "direct", localApiKey: "new-local-key-0123456789abcdef" });
+    expect(unidentified.status).toBe(400);
+    expect(await unidentified.text()).toContain("confirm that the address still reaches the same console");
 
     unifi.addDirectConsole(CONSOLE_URL, homeConsole(), "new-local-key-0123456789abcdef");
     expect((await postForm(path, { mode: "direct", localApiKey: "new-local-key-0123456789abcdef" })).status).toBe(200);

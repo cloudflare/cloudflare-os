@@ -89,7 +89,7 @@ describe("vouchers", () => {
   });
 
   it("hides a voucher pending deletion", () => {
-    const remove: UnifiAction = { kind: "deleteVoucher", payload: { siteId: HOME.siteId, voucherId: HOME.voucherId, note: "Book club", code: "1234567890" } };
+    const remove: UnifiAction = { kind: "deleteVoucher", payload: { siteId: HOME.siteId, voucherId: HOME.voucherId, note: "Book club" } };
     expect(simulateVouchers(vouchers, HOME.siteId, pending(remove))).toEqual([]);
   });
 });
@@ -132,6 +132,18 @@ describe("floodlights", () => {
   it("shows a light forced on, and released again", () => {
     expect(simulateLight(light, pending(lightAction({ forcedOn: true })))).toMatchObject({ forcedOn: true, isOn: true });
     expect(simulateLight(light, pending(lightAction({ forcedOn: true }), lightAction({ forcedOn: false })))).toMatchObject({ forcedOn: false, isOn: false });
+  });
+
+  it("shows a light turning on or off when its new mode decides that", () => {
+    const off = { ...light, forcedOn: false, isOn: false, isDark: false };
+    expect(simulateLight(off, pending(lightAction({ mode: "always", activeWhen: "always" })))).toMatchObject({ isOn: true });
+    expect(simulateLight(off, pending(lightAction({ mode: "always", activeWhen: "dark" })))).toMatchObject({ isOn: false });
+    expect(simulateLight({ ...off, isDark: true }, pending(lightAction({ mode: "always", activeWhen: "dark" })))).toMatchObject({ isOn: true });
+    const on = { ...off, isOn: true, mode: "always" as const, activeWhen: "always" as const };
+    expect(simulateLight(on, pending(lightAction({ mode: "off", activeWhen: "always" })))).toMatchObject({ isOn: false });
+    expect(simulateLight(on, pending(lightAction({ mode: "motion", activeWhen: "always" })))).toMatchObject({ isOn: true });
+    // Forced on overrides any mode.
+    expect(simulateLight({ ...on, forcedOn: true }, pending(lightAction({ mode: "off", activeWhen: "always" })))).toMatchObject({ isOn: true });
   });
 
   it("shows mode and brightness changes", () => {

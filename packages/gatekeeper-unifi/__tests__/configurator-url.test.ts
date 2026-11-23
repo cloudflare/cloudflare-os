@@ -72,7 +72,7 @@ describe.each(CASES)("the %s picker", (_name, picker, values, resource) => {
     const placeholders = buildResourceUrl({
       ...resource, consoleId: "-",
       ...("siteId" in resource && { siteId: "x" }), ...("deviceId" in resource && { deviceId: "x" }),
-    } as UnifiResource).replace("/consoles/-", "/consoles/-");
+    } as UnifiResource);
     const seeded = await prefill(picker, placeholders, resource.kind);
     for (const [key, value] of Object.entries(seeded)) {
       if (key !== "clients") expect(value, key).toBeNull();

@@ -19,6 +19,9 @@ import {
   commitStagedCredentials, discardStagedCredentials, stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
+import { wifiPutBody } from "./actions";
+import { UnifiApi } from "./api";
 import type { ConnectInput, ConnectPageMode } from "./connect-form";
 import {
   cloudConsoleSummary, listSiteManagerConsoles, probeDirectConsole, sameConsole,
@@ -31,6 +34,8 @@ import {
 } from "./egress";
 import { logger, VENDOR_ID, type UnifiEnv } from "./env";
 import { sendUnifiRequest, type UnifiApp, type UnifiCredentials, type UnifiRequest, type UnifiResponse } from "./transport";
+import type { UnifiWifiNetworkChanges } from "./network-types";
+import { probeFor, type UnifiRequirement } from "./subresources";
 
 /** Who a connection belongs to, recorded when it connects. */
 export type UnifiIdentity =
@@ -79,6 +84,8 @@ const GET_TTL_MS = 5_000;
 export class UnifiAccount extends DurableObject<UnifiEnv> {
   readonly #buckets = new Map<string, TokenBucket>();
   readonly #cache = new ResponseCache<UnifiResponse>();
+  /** One queue per WiFi network a change is being written to; see `updateWifi`. */
+  readonly #wifiWrites = new Map<string, SerialTaskQueue>();
 
   // -------------------------------------------------------------------------
   // Connect and reconnect
@@ -237,36 +244,58 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   }
 
   /**
-   * Whether this connection's account can see an application on a console, for observer
-   * verification. A cloud connection asks Site Manager, which can't be forged: it matches the
-   * console by host ID or MAC address and says what the account's role there grants. A direct
-   * connection knows only what answered at the URL its owner chose, so it vouches for a binding read
-   * through that same URL alone, by calling the application there with its own key.
-   * @returns false for no access; throws for a failure that proves nothing either way.
+   * Whether this connection's account can read each requirement within an application on a
+   * console, for observer verification.
+   *
+   * Where this connection can call the console, it calls the endpoint each requirement's read calls
+   * (`probeFor`) with its own key, so a role limited to some cameras, or one that can't read WiFi
+   * passwords, is refused here as it would be there. A direct connection knows only what answered
+   * at the URL its owner chose, so it vouches for a binding read through that same URL alone. A
+   * cloud connection finds the console in Site Manager, which can't be forged, by host ID or MAC
+   * address; the Cloud Connector reaches only consoles the account owns. On a console it only
+   * administers, Site Manager's role says whether it may use the application at all, and nothing
+   * finer, so it passes the application and nothing narrower.
+   * @returns One answer per requirement, false for no access; throws for a failure that proves
+   * nothing either way.
    */
-  async canObserve(target: ObserveTarget): Promise<boolean> {
+  async canObserve(target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
+    const none = requirements.map(() => false);
     const connection = this.#connection();
-    if (!connection) return false;
+    if (!connection) return none;
     const { credentials, identity } = connection;
+    /** The console to call with this connection's key, or null when it can't be called. */
+    let consoleId: string | null;
     if (identity.mode === "direct") {
-      if (credentials.mode !== "direct" || target.baseUrl !== credentials.baseUrl) return false;
-      const probe = await this.#send({
-        target: { kind: "app", app: target.app, consoleId: identity.consoleId }, method: "GET",
-        path: target.app === "network" ? "/v1/info" : "/v1/meta/info",
-      }, GET_TTL_MS);
-      if (probe.ok) return true;
-      if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
-      throw new Error(probe.failure.message);
+      if (credentials.mode !== "direct" || target.baseUrl !== credentials.baseUrl) return none;
+      consoleId = identity.consoleId;
+    } else {
+      let consoles: ConsoleSummary[];
+      try {
+        consoles = await this.listConsoles();
+      } catch (error) {
+        if (error instanceof UnifiError && (error.kind === "auth" || error.kind === "forbidden")) return none;
+        throw error;
+      }
+      const match = consoles.find(c => c.id === target.consoleId) ?? consoles.find(c => sameConsole(c.macs, target.macs));
+      if (!match?.permissions[target.app]) return none;
+      consoleId = match.reachable ? match.id : null;
     }
-    let consoles: ConsoleSummary[];
-    try {
-      consoles = await this.listConsoles();
-    } catch (error) {
-      if (error instanceof UnifiError && (error.kind === "auth" || error.kind === "forbidden")) return false;
-      throw error;
+    const answers: boolean[] = [];
+    // A few at a time: each is a request on this connection's own budget for the console.
+    for (let start = 0; start < requirements.length; start += 6) {
+      answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
+        // Site Manager's role grants the application itself.
+        if (identity.mode === "cloud" && requirement.kind === "app") return true;
+        if (consoleId === null) return false;
+        const probe = await this.#send({
+          target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(target.app, requirement),
+        }, GET_TTL_MS);
+        if (probe.ok) return true;
+        if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
+        throw new Error(probe.failure.message);
+      })));
     }
-    const match = consoles.find(c => c.id === target.consoleId) ?? consoles.find(c => sameConsole(c.macs, target.macs));
-    return match?.permissions[target.app] === true;
+    return answers;
   }
 
   /** Where a console's web UI lives: under unifi.ui.com for a cloud connection, else its own URL. */
@@ -287,7 +316,34 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     return this.#send(request, GET_TTL_MS);
   }
 
-  async #send(request: UnifiRequest, ttlMs: number): Promise<UnifiResponse> {
+  /**
+   * Changes a WiFi network's settings. UniFi takes only the whole settings object, so this reads it
+   * fresh, merges the change and writes it back, one change per network at a time. Every binding
+   * to the console applies WiFi changes here, so a change approved through one can't write back
+   * settings, such as a password, that another has just replaced.
+   * @returns The failure, or null once the change is written.
+   */
+  async updateWifi(
+    consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
+  ): Promise<UnifiFailure | null> {
+    const lane = JSON.stringify([consoleId, siteId, wifiNetworkId]);
+    let queue = this.#wifiWrites.get(lane);
+    if (!queue) this.#wifiWrites.set(lane, queue = new SerialTaskQueue());
+    return await queue.run(async () => {
+      const api = new UnifiApi(request => this.#send(request, null), consoleId);
+      try {
+        const raw = await api.getWifiRaw(siteId, wifiNetworkId);
+        await api.putWifi(siteId, wifiNetworkId, wifiPutBody(raw, changes));
+        return null;
+      } catch (error) {
+        if (error instanceof UnifiError) return error.toFailure();
+        throw error;
+      }
+    });
+  }
+
+  /** Sends a request; a GET may be answered from the cache unless `ttlMs` is null. */
+  async #send(request: UnifiRequest, ttlMs: number | null): Promise<UnifiResponse> {
     const connection = this.#connection();
     if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
     const { credentials, identity } = connection;
@@ -304,6 +360,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         this.#cache.invalidate(group);
       }
     }
+    if (ttlMs === null) return await this.#dispatch(credentials, request, group);
     const key = JSON.stringify([group, request.target, request.path, request.query ?? {}, request.accept ?? "json"]);
     // Images aren't kept: they're large, and a snapshot is asked for to see the camera now.
     // Concurrent requests for one still share a single load.
@@ -402,10 +459,14 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const facts = await probeDirectConsole(request => sendUnifiRequest(credentials, request));
     if (existing?.identity.mode === "direct") {
       const before = existing.identity;
-      if (before.macs.length > 0 && facts.macs.length > 0 && !sameConsole(before.macs, facts.macs)) {
-        throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
+      // A console that identified itself when it connected must do so again: bindings keep its ID,
+      // so an answer without MAC addresses would hand them to whatever now answers at the URL.
+      if (before.macs.length > 0 && !sameConsole(before.macs, facts.macs)) {
+        throw new ConnectRefusal(facts.macs.length === 0
+          ? "Couldn't confirm that the address still reaches the same console. Try again in a moment."
+          : "That address now reaches a different console. Reconnect to the original console.");
       }
-      return { credentials, identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs.length ? facts.macs : before.macs } };
+      return { credentials, identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs } };
     }
     return {
       credentials,

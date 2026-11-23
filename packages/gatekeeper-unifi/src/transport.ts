@@ -19,7 +19,7 @@
 
 import { readBytesCapped, readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import {
-  classifyFetchException, classifyHttpFailure, parseRetryAfterHeader, type UnifiFailure,
+  classifyFetchException, classifyHttpFailure, parseRetryAfterHeader, parseRetryAfterMessage, type UnifiFailure,
 } from "./errors";
 
 /** Site Manager's API, which also hosts the Cloud Connector. */
@@ -156,12 +156,13 @@ export async function sendUnifiRequest(
   }
 
   if (!response.ok) {
-    const text = await readTextCapped(response, MAX_ERROR_BODY_BYTES).catch(() => "");
-    return {
-      ok: false,
-      failure: classifyHttpFailure(
-        response.status, providerMessage(text), parseRetryAfterHeader(response.headers.get("Retry-After"))),
-    };
+    // Only a retry delay is read out of the body; its text is never quoted (see classifyHttpFailure).
+    const retryAfterMs = parseRetryAfterHeader(response.headers.get("Retry-After"))
+      ?? (response.status === 429
+        ? parseRetryAfterMessage(providerMessage(await readTextCapped(response, MAX_ERROR_BODY_BYTES).catch(() => "")))
+        : undefined);
+    await response.body?.cancel().catch(() => undefined);
+    return { ok: false, failure: classifyHttpFailure(response.status, retryAfterMs) };
   }
 
   try {
@@ -190,9 +191,10 @@ export async function sendUnifiRequest(
 
 /**
  * The provider's own message from an error body: the Network API's `{message}`, the Cloud
- * Connector's and Site Manager's `{message}`, or Protect's `{error}`.
+ * Connector's and Site Manager's `{message}`, or Protect's `{error}`. Read only for the retry delay
+ * Site Manager puts in a 429's message; never quoted.
  */
-export function providerMessage(text: string): string | undefined {
+function providerMessage(text: string): string | undefined {
   try {
     const body: unknown = JSON.parse(text);
     if (body && typeof body === "object") {

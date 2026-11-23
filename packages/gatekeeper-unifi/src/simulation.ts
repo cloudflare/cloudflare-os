@@ -177,6 +177,17 @@ export function simulateCamera(camera: UnifiCameraInfo, pending: readonly Pendin
   return result;
 }
 
+/**
+ * Whether a light's settings alone decide that it is on -- forced on, off, or always on (when it
+ * is dark, if that's when its mode applies) -- or null when motion decides.
+ */
+function settledOn(light: UnifiLightInfo): boolean | null {
+  if (light.forcedOn) return true;
+  if (light.mode === "off") return false;
+  if (light.mode === "always") return light.activeWhen === "always" || light.isDark;
+  return null;
+}
+
 /** A floodlight, with pending settings changes applied. */
 export function simulateLight(light: UnifiLightInfo, pending: readonly PendingAction[]): UnifiLightInfo {
   let result = light;
@@ -184,11 +195,13 @@ export function simulateLight(light: UnifiLightInfo, pending: readonly PendingAc
     if (action.kind !== "lightSettings" || action.payload.lightId !== light.id) continue;
     const change = action.payload.change;
     if ("forcedOn" in change) {
-      // Released, it follows its mode, which the reading taken before the release can't predict
-      // beyond "on if its mode is always".
-      result = { ...result, forcedOn: change.forcedOn, isOn: change.forcedOn || (result.mode === "always" && result.isOn) };
+      // Released into motion mode, it stays off until something moves.
+      const next = { ...result, forcedOn: change.forcedOn };
+      result = { ...next, isOn: settledOn(next) ?? false };
     } else if ("mode" in change) {
-      result = { ...result, mode: change.mode, activeWhen: change.activeWhen };
+      // Into motion mode, whether it is on depends on motion, so the reading stands.
+      const next = { ...result, mode: change.mode, activeWhen: change.activeWhen };
+      result = { ...next, isOn: settledOn(next) ?? result.isOn };
     } else {
       result = { ...result, brightness: change.brightness };
     }

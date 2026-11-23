@@ -231,7 +231,8 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
     const raw = await api.getWifiRaw(this.#siteId, this.#wifiNetworkId);
     const network = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, pending());
     const passphrase = simulatePassphrase(wifiPassphrase(raw), this.#siteId, this.#wifiNetworkId, pending());
-    await this.#ctx.observe("Read a UniFi WiFi password", `Read the password of WiFi network ${md(network.name)}.`);
+    await this.#ctx.observe("Read a UniFi WiFi password", `Read the password of WiFi network ${md(network.name)}.`,
+      [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }]);
     return passphrase;
   }
 
@@ -319,7 +320,8 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     const vouchers = simulateVouchers(
       await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi hotspot vouchers",
-      `Listed ${count(vouchers.length, "voucher")} for the guest hotspot of UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(vouchers.length, "voucher")} for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "vouchers", siteId: this.#siteId }]);
     return vouchers;
   }
 
@@ -341,7 +343,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     const voucher = vouchers.find(v => v.id === voucherId);
     if (!voucher) throw new UnifiError({ kind: "notFound", message: "There's no voucher with that ID." });
     await this.#ctx.submit("deleteVoucher",
-      { siteId: this.#siteId, voucherId, note: voucher.note, code: voucher.code });
+      { siteId: this.#siteId, voucherId, note: voucher.note });
   }
 
   /** The client, simulated, if it's a guest; the same error whether it isn't one or doesn't exist. */

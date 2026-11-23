@@ -150,12 +150,15 @@ describe("failures", () => {
     expect(huge).toMatchObject({ ok: false, failure: { kind: "protocol" } });
   });
 
-  it("quotes the provider's message for a bad request, but not an HTML error page", () => {
-    expect(classifyHttpFailure(400, "timeLimitMinutes must be at least 1", undefined))
-      .toEqual({ kind: "badRequest", status: 400, message: "UniFi rejected the request: timeLimitMinutes must be at least 1" });
-    expect(classifyHttpFailure(404, undefined, undefined)).toEqual({ kind: "notFound", status: 404, message: "Not found." });
-    expect(classifyHttpFailure(500, undefined, undefined)).toMatchObject({ kind: "server" });
-    expect(classifyHttpFailure(418, undefined, undefined)).toMatchObject({ kind: "badRequest" });
+  it("describes a failure by its status, never quoting what the provider sent back", async () => {
+    // A console or proxy can echo a request's headers or settings into its error body.
+    const echo = await sendUnifiRequest(DIRECT, sites, async (_url, init) =>
+      Response.json({ message: `bad header ${new Headers(init?.headers).get("X-API-KEY")}` }, { status: 400 }));
+    expect(echo).toMatchObject({ ok: false, failure: { kind: "badRequest", status: 400 } });
+    expect(JSON.stringify(echo)).not.toContain(DIRECT.apiKey);
+    expect(classifyHttpFailure(404, undefined)).toEqual({ kind: "notFound", status: 404, message: "Not found." });
+    expect(classifyHttpFailure(500, undefined)).toMatchObject({ kind: "server" });
+    expect(classifyHttpFailure(418, undefined)).toMatchObject({ kind: "badRequest", message: "UniFi refused the request (status 418)." });
   });
 
   it("parses retry times from headers and Site Manager's message", () => {
