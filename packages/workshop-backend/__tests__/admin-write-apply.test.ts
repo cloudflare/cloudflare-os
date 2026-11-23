@@ -239,7 +239,7 @@ describe("refusals that write and record nothing", () => {
 
   it.each([
     ["a blank reason", {}, { reason: "   " }],
-    ["a via that is neither api nor cli", {}, { via: "browser" }],
+    ["a via that is no AdminVia", {}, { via: "browser" }],
     ["arguments the action does not take", { gadgetId: 3 }, {}],
     ["a missing argument", { chatId: undefined }, {}],
   ])("rejects a call with %s", (_name, args, overrides) => withWorkspace(async ws => {
@@ -426,6 +426,11 @@ describe("the record of a write", () => {
       method: "stopAgent", args: { chatId: CHAT_ID }, reason: REASON,
     }]);
     expect(records[0].at.getTime()).toBeGreaterThanOrEqual(before);
+  }));
+
+  it("says a write the admin gatekeeper made came through it", () => withWorkspace(async ws => {
+    await ws.instance.applyAdminWrite(callOf("stopAgent", { chatId: CHAT_ID }, { via: "gatekeeper" }));
+    expect(await deploymentRecords(ws)).toMatchObject([{ kind: "write", admin: ADMIN, via: "gatekeeper" }]);
   }));
 
   it("cuts a long title before the record leaves the workspace", () => withWorkspace(async ws => {

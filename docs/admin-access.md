@@ -815,7 +815,7 @@ Audit tab, never by the workspace's members.
 - **refuses a workspace never initialised or since deleted** (`workspaceNotFound`) before anything
   else, writing nothing, as `openForAdmin()` does;
 - rejects with a `TypeError` a reason that is blank or longer than
-  `MAX_ADMIN_ACCESS_REASON_LENGTH` (500) characters, a `via` that is not `"api"` or `"cli"`, and
+  `MAX_ADMIN_ACCESS_REASON_LENGTH` (500) characters, a `via` that is not an `AdminVia`, and
   arguments that are not the action's (`adminWriteArgs()`: each action takes only its own,
   `AdminWriteArgs` lists them, and only what the action takes is kept);
 - **re-checks the admin and the switch** through the workspace's own environment (`impl.env`): the
