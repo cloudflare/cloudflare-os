@@ -4,8 +4,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  account, appSubresource, binding, connectCloud, connectDirect, CONSOLE_URL, describeSubresource, hooks, installFake,
-  LOCAL_KEY, RESOURCES,
+  account, appSubresource, binding, connectCloud, connectDirect, CONSOLE_URL, describeSubresource, holdRequestsWith, hooks,
+  installFake, LOCAL_KEY, RESOURCES, reconnectCloud,
 } from "./helpers.js";
 import { FakeConsole, HOME, homeConsole, type FakeUnifi } from "../fake-unifi.js";
 import { UNIFI_RESOURCES } from "../../src/resources.js";
@@ -140,6 +140,7 @@ function addAdmin(unifi: FakeUnifi, key: string, permissions: Record<string, str
 describe("checking collaborators", () => {
   const ALEX_KEY = "alex-key-0123456789abcdefABCDEF";
   const SAM_KEY = "sam-key-0123456789abcdefABCDEF";
+  const ALEX_NEW_KEY = "alex-new-key-0123456789abcdefAB";
 
   /** The home console reached directly by its owner, and by Sam with a key of Sam's own. */
   async function ownerAndSamDirect(unifi: FakeUnifi) {
@@ -201,6 +202,17 @@ describe("checking collaborators", () => {
     expect(await verify(protect, sam, [camera(HOME.doorbellId)])).toEqual(DENIED);
     expect(await verify(protect, sam, [camera(HOME.doorbellId), camera(HOME.ptzId)])).toEqual(DENIED);
     expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), sam)).toEqual(DENIED);
+  });
+
+  it("checks a camera's images apart from its details, which can be allowed separately", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/cameras/${HOME.doorbellId}/snapshot`]]]);
+    const doorbell = binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId });
+    const at = (kind: string) => `${appSubresource(doorbell.props.resource)}/${kind}/${HOME.doorbellId}`;
+    expect(await verify(doorbell, sam, [at("camera")])).toEqual(ALLOWED);
+    expect(await verify(doorbell, sam, [at("camera"), at("snapshot")])).toEqual(DENIED);
+    expect(await verify(doorbell, sam, [at("packageSnapshot")])).toEqual(DENIED);
   });
 
   it("checks a WiFi password and voucher codes against what the collaborator's own key can read", async () => {
@@ -302,6 +314,21 @@ describe("checking collaborators", () => {
     const doorbell = binding(owner, RESOURCES.camera(HOME.doorbellId));
     expect(await verify(doorbell, alex, [describeSubresource(RESOURCES.camera(HOME.ptzId))])).toHaveProperty("error");
     expect(await verify(doorbell, alex, [appSubresource(RESOURCES.protect)])).toHaveProperty("error");
+  });
+
+  it("answers for no one when the collaborator reconnects with another key during the check", async () => {
+    // Each probe's answer has to come from the same key, or two keys that each see part of what
+    // was read would together pass for one that sees all of it.
+    const { unifi, console } = installFake();
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
+    const owner = await connectCloud();
+    const alex = await connectCloud(ALEX_KEY);
+    const release = holdRequestsWith(unifi, ALEX_KEY);
+    const checking = verify(binding(owner, RESOURCES.camera(HOME.doorbellId)), alex);
+    unifi.addCloudKey(ALEX_NEW_KEY, { ...unifi.cloud.get(ALEX_KEY)! });
+    await reconnectCloud(alex, ALEX_NEW_KEY);
+    release();
+    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected during the check/) });
   });
 
   it("can't check anyone once the owner's connection no longer reaches the console", async () => {

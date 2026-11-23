@@ -271,7 +271,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     } else {
       let consoles: ConsoleSummary[];
       try {
-        consoles = await this.listConsoles();
+        consoles = (await listSiteManagerConsoles(request => this.#send(request, CONSOLES_TTL_MS, connection)))
+          .map(cloudConsoleSummary);
       } catch (error) {
         if (error instanceof UnifiError && (error.kind === "auth" || error.kind === "forbidden")) return none;
         throw error;
@@ -286,7 +287,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
         if (consoleId === null) return false;
         const { listsSite, ...request } = probeFor(target.app, requirement);
-        const probe = await this.#send({ target: { kind: "app", app: target.app, consoleId }, method: "GET", ...request }, GET_TTL_MS);
+        const probe = await this.#send(
+          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...request }, GET_TTL_MS, connection);
         if (probe.ok) {
           return listsSite === undefined ||
             parseNetworkPage(jsonOf(probe), "site list").data.some(site => asObject(site, "site").id === listsSite);
@@ -294,6 +296,10 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
+    }
+    // Every answer came from one key. One a reconnect replaced meanwhile answers for no one now.
+    if (!sameCredentials(credentials, this.#connection()?.credentials)) {
+      throw new Error("This UniFi connection was reconnected during the check. Try again.");
     }
     return answers;
   }
@@ -342,9 +348,11 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     });
   }
 
-  /** Sends a request; a GET may be answered from the cache unless `ttlMs` is null. */
-  async #send(request: UnifiRequest, ttlMs: number | null): Promise<UnifiResponse> {
-    const connection = this.#connection();
+  /**
+   * Sends a request; a GET may be answered from the cache unless `ttlMs` is null.
+   * @param connection The credentials to send with, if not the ones stored now.
+   */
+  async #send(request: UnifiRequest, ttlMs: number | null, connection = this.#connection()): Promise<UnifiResponse> {
     if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
     const { credentials, identity } = connection;
     if (request.target.kind === "app" && identity.mode === "direct" && request.target.consoleId !== identity.consoleId) {
@@ -386,7 +394,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     if (request.method !== "GET" && (refusal.kind === "auth" || refusal.kind === "forbidden")) {
       return failure({ ...refusal, kind: "forbidden", message: changeRefusedMessage(credentials.mode) });
     }
-    if (refusal.kind === "auth") {
+    // A refusal of a key a reconnect has since replaced says nothing about the key in use now.
+    if (refusal.kind === "auth" && sameCredentials(credentials, this.#connection()?.credentials)) {
       logger.warn("UniFi rejected the API key", { event: "credentials.rejected", mode: credentials.mode });
       await notifyCredentialsExpiredOnce(
         this.ctx.storage.kv, this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(CALLBACK_KEY), VENDOR_ID);
@@ -441,10 +450,14 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         consoleIds: consoles.map(c => c.id),
       };
       if (existing?.identity.mode === "cloud") {
+        // Only the account's email identifies it: Site Manager also lists consoles an account
+        // merely administers, so a console in common could be anyone's.
         const before = existing.identity;
-        const sameEmail = before.email === null || email === null || before.email === email;
-        const overlap = identity.consoleIds.some(id => before.consoleIds.includes(id));
-        if (!sameEmail || !overlap) {
+        if (before.email === null || email === null) {
+          throw new ConnectRefusal("UniFi didn't say which account that key belongs to, so it can't replace this " +
+            "connection's key. Remove the connection and connect again.");
+        }
+        if (before.email !== email) {
           throw new ConnectRefusal("That key belongs to a different UniFi account. Reconnect with a key from the same account.");
         }
       }
@@ -485,6 +498,11 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
 
 /** A refusal whose message is written for the person connecting. */
 class ConnectRefusal extends Error {}
+
+/** Whether `b` is the same key as `a`: what a request was sent with is still what's stored. */
+function sameCredentials(a: UnifiCredentials, b: UnifiCredentials | undefined): boolean {
+  return b !== undefined && JSON.stringify(a) === JSON.stringify(b);
+}
 
 /** What to tell someone whose submission failed. Never quotes the key. */
 export function connectErrorMessage(error: unknown, input: ConnectInput): string {

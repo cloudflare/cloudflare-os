@@ -5,10 +5,12 @@
 import { env, runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  account, CLOUD_KEY, CONSOLE_URL, connectCloud, connectDirect, hooks, installFake, LOCAL_KEY, postForm,
-  request, startConnect, unwrap,
+  account, CLOUD_KEY, CONSOLE_URL, connectCloud, connectDirect, holdRequestsWith, hooks, installFake, LOCAL_KEY, postForm,
+  reconnectCloud, request, startConnect, unwrap,
 } from "./helpers.js";
 import { HOME, homeConsole } from "../fake-unifi.js";
+
+const NEW_KEY = "replacement-key-0123456789abcdefAB";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -196,6 +198,21 @@ describe("reconnecting", () => {
     expect((await hooks().callbackLog(accountId)).stages).toEqual([]);
   });
 
+  it("won't take a key whose account UniFi doesn't name, even one sharing a console", async () => {
+    // Site Manager lists consoles an account only administers, so a console in common proves nothing.
+    const { unifi, console } = installFake();
+    const accountId = await connectCloud();
+    unifi.addCloudKey("unnamed-key-0123456789abcdefABCD", {
+      email: null, fullName: "Someone", owned: [], administered: [{ console, permissions: { "network.management": ["admin"] } }],
+    });
+    const { url } = unwrap(await hooks().user(accountId, "reconnect")) as { url: string };
+    const response = await postForm(new URL(url).pathname.replace("/gatekeeper/unifi", ""),
+      { mode: "cloud", cloudApiKey: "unnamed-key-0123456789abcdefABCD" });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("say which account that key belongs to");
+    expect((await hooks().callbackLog(accountId)).stages).toEqual([]);
+  });
+
   it("keeps a direct connection's URL, and refuses a different console behind it", async () => {
     const { unifi } = installFake();
     const accountId = await connectDirect();
@@ -255,5 +272,19 @@ describe("credential expiry", () => {
     await account(accountId).request({ target, method: "GET", path: "/v1/sites" });
     expect((await hooks().callbackLog(accountId)).expired).toBe(1);
     expect(env).toBeDefined();
+  });
+
+  it("doesn't call a freshly reconnected account expired over the replaced key's late refusal", async () => {
+    const { unifi } = installFake();
+    const accountId = await connectCloud();
+    const release = holdRequestsWith(unifi, CLOUD_KEY);
+    const target = { kind: "app" as const, app: "network" as const, consoleId: HOME.hostId };
+    const late = account(accountId).request({ target, method: "GET", path: "/v1/info" });
+    unifi.addCloudKey(NEW_KEY, { ...unifi.cloud.get(CLOUD_KEY)! });
+    await reconnectCloud(accountId, NEW_KEY);
+    unifi.cloud.delete(CLOUD_KEY);
+    release();
+    expect(await late).toMatchObject({ ok: false, failure: { kind: "auth" } });
+    expect((await hooks().callbackLog(accountId)).expired).toBe(0);
   });
 });

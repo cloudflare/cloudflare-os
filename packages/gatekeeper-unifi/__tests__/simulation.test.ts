@@ -22,7 +22,7 @@ describe("guest access", () => {
   const guest = site.clients[2]!;
   const authorize: UnifiAction = {
     kind: "guestAccess",
-    payload: { siteId: HOME.siteId, clientId: HOME.guestId, clientName: "Visitor Pixel", change: { authorize: true, limits: { durationMinutes: 60, dataLimitMB: 500 } } },
+    payload: { siteId: HOME.siteId, clientId: HOME.guestId, change: { authorize: true, limits: { durationMinutes: 60, dataLimitMB: 500 } } },
   };
 
   it("shows a pending authorization in lists and details", () => {
@@ -55,7 +55,7 @@ describe("guest access", () => {
 describe("WiFi", () => {
   const change: UnifiAction = {
     kind: "updateWifi",
-    payload: { siteId: HOME.siteId, wifiNetworkId: HOME.guestWifiId, networkName: "Guest", changes: { name: "Visitors", hidden: true, passphrase: "new-password-1" } },
+    payload: { siteId: HOME.siteId, wifiNetworkId: HOME.guestWifiId, changes: { name: "Visitors", hidden: true, passphrase: "new-password-1" } },
   };
 
   it("shows pending changes in the list, the details, and the password", () => {
@@ -89,7 +89,7 @@ describe("vouchers", () => {
   });
 
   it("hides a voucher pending deletion", () => {
-    const remove: UnifiAction = { kind: "deleteVoucher", payload: { siteId: HOME.siteId, voucherId: HOME.voucherId, note: "Book club" } };
+    const remove: UnifiAction = { kind: "deleteVoucher", payload: { siteId: HOME.siteId, voucherId: HOME.voucherId } };
     expect(simulateVouchers(vouchers, HOME.siteId, pending(remove))).toEqual([]);
   });
 });
@@ -101,10 +101,10 @@ describe("cameras", () => {
   it("shows pending renames, status light, volume, and doorbell messages", () => {
     const until = NOW + 3_600_000;
     const result = simulateCamera(doorbell, pending(
-      { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, cameraName: "Front Door", change: { name: "Porch" } } },
-      { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", change: { statusLight: false } } },
-      { kind: "cameraMicVolume", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", volume: 40 } },
-      { kind: "doorbellMessage", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", change: { doorbellMessage: { kind: "doNotDisturb" }, until } } },
+      { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, change: { name: "Porch" } } },
+      { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, change: { statusLight: false } } },
+      { kind: "cameraMicVolume", payload: { cameraId: HOME.doorbellId, volume: 40 } },
+      { kind: "doorbellMessage", payload: { cameraId: HOME.doorbellId, change: { doorbellMessage: { kind: "doNotDisturb" }, until } } },
     ));
     expect(result).toMatchObject({
       name: "Porch", statusLight: false, micVolume: 40, doorbellDisplay: { kind: "doNotDisturb", until: new Date(until) },
@@ -112,18 +112,18 @@ describe("cameras", () => {
   });
 
   it("shows a camera as it is while a PTZ command waits for its decision", () => {
-    const start: UnifiAction = { kind: "cameraPtz", payload: { cameraId: HOME.ptzId, cameraName: "Driveway", command: { startPatrol: 2 } } };
+    const start: UnifiAction = { kind: "cameraPtz", payload: { cameraId: HOME.ptzId, command: { startPatrol: 2 } } };
     expect(simulateCamera(ptz, pending(start))).toEqual(ptz);
   });
 
   it("leaves a missing status light missing", () => {
-    const result = simulateCamera(ptz, pending({ kind: "cameraSettings", payload: { cameraId: HOME.ptzId, cameraName: "Driveway", change: { statusLight: true } } }));
+    const result = simulateCamera(ptz, pending({ kind: "cameraSettings", payload: { cameraId: HOME.ptzId, change: { statusLight: true } } }));
     expect(result.statusLight).toBeNull();
   });
 });
 
 function lightAction(change: Extract<UnifiAction, { kind: "lightSettings" }>["payload"]["change"]): UnifiAction {
-  return { kind: "lightSettings", payload: { lightId: HOME.lightId, lightName: "Backyard Floodlight", change } };
+  return { kind: "lightSettings", payload: { lightId: HOME.lightId, change } };
 }
 
 describe("floodlights", () => {

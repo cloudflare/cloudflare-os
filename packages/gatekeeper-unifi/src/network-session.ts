@@ -201,7 +201,7 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
       throw badRequest(`UniFi didn't say what ${device.name} does, so it can't be told apart from the gateway, ` +
         "whose restart takes the network down. Restart it in UniFi instead.");
     }
-    const payload = { siteId: this.#siteId, deviceId: this.#deviceId, deviceName: device.name, model: device.model };
+    const payload = { siteId: this.#siteId, deviceId: this.#deviceId };
     await this.#ctx.submit(gateway ? "restartGateway" : "restartDevice", payload);
   }
 
@@ -213,7 +213,7 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
     if (!port.poe) throw badRequest(`Port ${portIndex} on ${device.name} has no PoE.`);
     if (!port.poe.enabled) throw badRequest(`PoE is turned off on port ${portIndex} of ${device.name}.`);
     await this.#ctx.submit("powerCyclePort",
-      { siteId: this.#siteId, deviceId: this.#deviceId, deviceName: device.name, portIndex });
+      { siteId: this.#siteId, deviceId: this.#deviceId, portIndex });
   }
 }
 
@@ -271,9 +271,8 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
         throw badRequest("Only a WPA2 or WPA3 Personal network has a password to change.");
       }
     }
-    const current = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.submit("updateWifi", {
-      siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId, networkName: current.name,
+      siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId,
       changes: {
         ...(name !== undefined && { name }), ...(enabled !== undefined && { enabled }),
         ...(hidden !== undefined && { hidden }), ...(passphrase !== undefined && { passphrase }),
@@ -324,14 +323,14 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     const checked = validateGuestLimits(limits ?? {});
     const guest = await this.#guest(clientId);
     await this.#ctx.submit("guestAccess", {
-      siteId: this.#siteId, clientId: guest.id, clientName: guest.name, change: { authorize: true, limits: checked },
+      siteId: this.#siteId, clientId: guest.id, change: { authorize: true, limits: checked },
     });
   }
 
   async revokeGuest(clientId: string): Promise<void> {
     const guest = await this.#guest(clientId);
     await this.#ctx.submit("guestAccess", {
-      siteId: this.#siteId, clientId: guest.id, clientName: guest.name, change: { authorize: false },
+      siteId: this.#siteId, clientId: guest.id, change: { authorize: false },
     });
   }
 
@@ -361,8 +360,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     const voucher = vouchers.find(v => v.id === voucherId);
     if (!voucher) throw new UnifiError({ kind: "notFound", message: "There's no voucher with that ID." });
-    await this.#ctx.submit("deleteVoucher",
-      { siteId: this.#siteId, voucherId, note: voucher.note });
+    await this.#ctx.submit("deleteVoucher", { siteId: this.#siteId, voucherId });
   }
 
   /** The client, simulated, if it's a guest; the same error whether it isn't one or doesn't exist. */

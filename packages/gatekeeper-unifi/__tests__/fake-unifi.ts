@@ -542,7 +542,8 @@ export function homeConsole(): FakeConsole {
 // UniFi as a whole
 
 type CloudAccount = {
-  email: string;
+  /** Null for a console version whose host list leaves it out. */
+  email: string | null;
   fullName: string;
   /** Consoles the account owns, which the Cloud Connector proxies to. */
   owned: FakeConsole[];
@@ -646,7 +647,7 @@ export class FakeUnifi {
       id: console.hostId, hardwareId: "e5bf13cd-98a7-5a96-9463-0d65d78cd3a4", type: "console", ipAddress: "203.0.113.10",
       owner, isBlocked: false, registrationTime: "", lastConnectionStateChange: TIMESTAMP, latestBackupTime: "",
       userData: {
-        apps: ["users"], email: account.email, fullName: account.fullName, role: owner ? "owner" : "admin",
+        apps: ["users"], ...(account.email !== null && { email: account.email }), fullName: account.fullName, role: owner ? "owner" : "admin",
         permissions,
         controllers: [...(console.network ? ["network"] : []), ...(console.protect ? ["protect"] : [])],
         consoleGroupMembers: [{ mac: console.mac, role: "PRIMARY" }],

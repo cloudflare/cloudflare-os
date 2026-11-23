@@ -10,8 +10,9 @@
  * `/devices/<siteId>`, `/clients/<siteId>`, `/networks/<siteId>`, `/wifiNetworks/<siteId>` and
  * `/vouchers/<siteId>`; one WiFi network's settings, password included, are
  * `/site/<siteId>/wifi/<wifiNetworkId>`. In Protect, the NVR and its alarm are `/nvr/<id>`, each
- * device `/camera/<id>`, `/sensor/<id>` or `/light/<id>`, and the application alone, for a listing
- * that found nothing, has no suffix.
+ * device `/camera/<id>`, `/sensor/<id>` or `/light/<id>`, a camera's images `/snapshot/<id>` and
+ * `/packageSnapshot/<id>` (its package camera), which can be allowed apart from its details, and the
+ * application alone, for a listing that found nothing, has no suffix.
  *
  * Pure: imported by the Node tests.
  */
@@ -30,6 +31,8 @@ export type UnifiRequirement =
   | { kind: "camera"; id: string }
   | { kind: "sensor"; id: string }
   | { kind: "light"; id: string }
+  | { kind: "snapshot"; id: string }
+  | { kind: "packageSnapshot"; id: string }
   | { kind: "site"; siteId: string }
   | { kind: "devices"; siteId: string }
   | { kind: "clients"; siteId: string }
@@ -40,7 +43,7 @@ export type UnifiRequirement =
 
 /** The parts of a Network site that UniFi serves from separate endpoints. */
 const SITE_DATA = ["site", "devices", "clients", "networks", "wifiNetworks", "vouchers"] as const;
-const PROTECT_DEVICES = ["nvr", "camera", "sensor", "light"] as const;
+const PROTECT_ITEMS = ["nvr", "camera", "sensor", "light", "snapshot", "packageSnapshot"] as const;
 
 /** What a Protect listing that found nothing requires: the application. */
 export const APP: UnifiRequirement = { kind: "app" };
@@ -89,7 +92,7 @@ function decode(id: string): UnifiRequirement | null {
       ? { kind: "wifi", siteId: first.id, wifiNetworkId: second.id } : null;
   }
   const name = first.name;
-  if (isOneOf(name, PROTECT_DEVICES)) return { kind: name, id: first.id };
+  if (isOneOf(name, PROTECT_ITEMS)) return { kind: name, id: first.id };
   if (isOneOf(name, SITE_DATA)) return { kind: name, siteId: first.id };
   return null;
 }
@@ -107,8 +110,10 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
     case "wifi":
       return requirement.kind === "wifi" && inSite && requirement.wifiNetworkId === resource.wifiNetworkId;
     case "hotspot": return inSite && (requirement.kind === "clients" || requirement.kind === "vouchers");
-    case "protect": return requirement.kind === "app" || isOneOf(requirement.kind, PROTECT_DEVICES);
-    case "camera": return requirement.kind === "camera" && requirement.id === resource.cameraId;
+    case "protect": return requirement.kind === "app" || isOneOf(requirement.kind, PROTECT_ITEMS);
+    case "camera":
+      return (requirement.kind === "camera" || requirement.kind === "snapshot" || requirement.kind === "packageSnapshot") &&
+        requirement.id === resource.cameraId;
     case "sensor": return requirement.kind === "sensor" && requirement.id === resource.sensorId;
     case "light": return requirement.kind === "light" && requirement.id === resource.lightId;
   }
@@ -121,7 +126,7 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
  * (`listsSite`).
  */
 export function probeFor(app: UnifiApp, requirement: UnifiRequirement): {
-  path: string; query?: Record<string, string>; listsSite?: string;
+  path: string; query?: Record<string, string>; accept?: "jpeg"; listsSite?: string;
 } {
   const at = encodeURIComponent;
   const first = { limit: "1" };
@@ -131,6 +136,10 @@ export function probeFor(app: UnifiApp, requirement: UnifiRequirement): {
     case "camera": return { path: `/v1/cameras/${at(requirement.id)}` };
     case "sensor": return { path: `/v1/sensors/${at(requirement.id)}` };
     case "light": return { path: `/v1/lights/${at(requirement.id)}` };
+    case "snapshot":
+      return { path: `/v1/cameras/${at(requirement.id)}/snapshot`, query: { highQuality: "false" }, accept: "jpeg" };
+    case "packageSnapshot":
+      return { path: `/v1/cameras/${at(requirement.id)}/snapshot`, query: { highQuality: "false", channel: "package" }, accept: "jpeg" };
     case "site": return { path: "/v1/sites", query: { limit: "200" }, listsSite: requirement.siteId };
     case "devices": return { path: `/v1/sites/${at(requirement.siteId)}/devices`, query: first };
     case "clients": return { path: `/v1/sites/${at(requirement.siteId)}/clients`, query: first };

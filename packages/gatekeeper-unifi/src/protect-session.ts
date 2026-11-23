@@ -111,28 +111,28 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
     const capturedAt = new Date(this.#ctx.shared.now());
     await this.#ctx.observe("Capture a UniFi camera snapshot",
       `Captured a still image from ${packageCamera ? "the package camera of " : ""}UniFi camera ${md(camera.name)}.`,
-      [{ kind: "camera", id: this.#cameraId }]);
+      [{ kind: "camera", id: this.#cameraId }, { kind: packageCamera ? "packageSnapshot" : "snapshot", id: this.#cameraId }]);
     return { mimeType: "image/jpeg", content: bytes, capturedAt };
   }
 
   async setName(name: string): Promise<void> {
     const trimmed = name.trim();
     if (trimmed === "" || trimmed.length > 64) throw badRequest("A camera name must be 1 to 64 characters.");
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: camera.name, change: { name: trimmed } });
+    await this.#camera(); // Refuses a camera that isn't there before queuing a change to it.
+    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, change: { name: trimmed } });
   }
 
   async setStatusLight(on: boolean): Promise<void> {
     const camera = await this.#camera();
     if (camera.statusLight === null) throw badRequest(`${camera.name} has no status light.`);
-    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: camera.name, change: { statusLight: on } });
+    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, change: { statusLight: on } });
   }
 
   async setMicVolume(volume: number): Promise<void> {
     requireInteger(volume, "The microphone volume", 1, 100);
     const camera = await this.#camera();
     if (!camera.hasMicrophone) throw badRequest(`${camera.name} has no microphone.`);
-    await this.#ctx.submit("cameraMicVolume", { cameraId: this.#cameraId, cameraName: camera.name, volume });
+    await this.#ctx.submit("cameraMicVolume", { cameraId: this.#cameraId, volume });
   }
 
   async setDoorbellMessage(message: UnifiDoorbellMessage, options?: { until?: Date }): Promise<void> {
@@ -149,28 +149,28 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
     if (until !== undefined && (Number.isNaN(until.valueOf()) || until.valueOf() <= this.#ctx.shared.now())) {
       throw badRequest("`until` must be in the future.");
     }
-    const camera = await this.#camera();
+    await this.#camera();
     await this.#ctx.submit("doorbellMessage", {
-      cameraId: this.#cameraId, cameraName: camera.name,
+      cameraId: this.#cameraId,
       change: { doorbellMessage: message, until: until === undefined ? null : until.valueOf() },
     });
   }
 
   async goToPreset(slot: number): Promise<void> {
     requireInteger(slot, "The preset slot", -1, 99);
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { goToPreset: slot } });
+    await this.#camera();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, command: { goToPreset: slot } });
   }
 
   async startPatrol(slot: number): Promise<void> {
     requireInteger(slot, "The patrol slot", 0, 4);
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { startPatrol: slot } });
+    await this.#camera();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, command: { startPatrol: slot } });
   }
 
   async stopPatrol(): Promise<void> {
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { stopPatrol: true } });
+    await this.#camera();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, command: { stopPatrol: true } });
   }
 
   async #camera(): Promise<UnifiCameraInfo> {
@@ -226,22 +226,22 @@ export class LightSession extends RpcTarget implements UnifiLight {
   }
 
   async setForcedOn(on: boolean): Promise<void> {
-    const light = await this.#light();
-    await this.#ctx.submit("lightSettings", { lightId: this.#lightId, lightName: light.name, change: { forcedOn: on } });
+    await this.#light(); // Refuses a floodlight that isn't there before queuing a change to it.
+    await this.#ctx.submit("lightSettings", { lightId: this.#lightId, change: { forcedOn: on } });
   }
 
   async setMode(mode: UnifiLightMode, activeWhen?: "always" | "dark"): Promise<void> {
     if (mode !== "always" && mode !== "motion" && mode !== "off") throw badRequest('`mode` is "always", "motion", or "off".');
     const light = await this.#light();
     await this.#ctx.submit("lightSettings", {
-      lightId: this.#lightId, lightName: light.name, change: { mode, activeWhen: activeWhen ?? light.activeWhen },
+      lightId: this.#lightId, change: { mode, activeWhen: activeWhen ?? light.activeWhen },
     });
   }
 
   async setBrightness(level: number): Promise<void> {
     requireInteger(level, "The brightness", 1, 6);
-    const light = await this.#light();
-    await this.#ctx.submit("lightSettings", { lightId: this.#lightId, lightName: light.name, change: { brightness: level } });
+    await this.#light();
+    await this.#ctx.submit("lightSettings", { lightId: this.#lightId, change: { brightness: level } });
   }
 
   async #light(): Promise<UnifiLightInfo> {

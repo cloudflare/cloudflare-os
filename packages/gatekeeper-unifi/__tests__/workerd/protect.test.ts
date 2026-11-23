@@ -27,7 +27,10 @@ describe("every read is authorized before it returns", () => {
     ["listSensors", { call: "listSensors" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
     ["listLights", { call: "listLights" }, [`${PROTECT}/light/${HOME.lightId}`]],
     ["camera.describe", { via: [["getCamera", HOME.doorbellId]], call: "describe" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
-    ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
+    ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" },
+      [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/snapshot/${HOME.doorbellId}`]],
+    ["camera.getSnapshot(packageCamera)", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot", args: [{ packageCamera: true }] },
+      [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/packageSnapshot/${HOME.doorbellId}`]],
     ["sensor.describe", { via: [["getSensor", HOME.sensorId]], call: "describe" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
     ["light.describe", { via: [["getLight", HOME.lightId]], call: "describe" }, [`${PROTECT}/light/${HOME.lightId}`]],
   ];
@@ -89,7 +92,10 @@ describe("a camera", () => {
     expect(console.calls.at(-1)).toMatchObject({ path: `/v1/cameras/${HOME.doorbellId}/snapshot`, query: { highQuality: "true", channel: "package" } });
     expect((await doorbell.queue()).observations).toEqual([{
       title: "Capture a UniFi camera snapshot", description: "Captured a still image from the package camera of UniFi camera Front Door.",
-      subresources: [`console/${encodeURIComponent(HOME.hostId)}/app/protect/camera/${HOME.doorbellId}`],
+      subresources: [
+        `console/${encodeURIComponent(HOME.hostId)}/app/protect/camera/${HOME.doorbellId}`,
+        `console/${encodeURIComponent(HOME.hostId)}/app/protect/packageSnapshot/${HOME.doorbellId}`,
+      ],
     }]);
   });
 
@@ -114,8 +120,10 @@ describe("a camera", () => {
     await doorbell.call("setName", "  Porch  ");
     const { actionId, description } = lastSubmitted(await doorbell.queue());
     expect(description).toMatchObject({
-      title: "Rename camera “Front Door”", autoApprovable: true, actionKind: { tag: "unifi.cameraSettings" },
+      title: "Rename a UniFi camera to “Porch”", autoApprovable: true, actionKind: { tag: "unifi.cameraSettings" },
     });
+    // Action history reaches collaborators unchecked, so the camera's current name isn't in it.
+    expect(JSON.stringify(description)).not.toContain("Front Door");
     expect(await doorbell.call("describe")).toMatchObject({ name: "Porch" });
     expect(console.writes()).toEqual([]);
     await doorbell.apply(actionId);
@@ -134,7 +142,7 @@ describe("a camera", () => {
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
     await doorbell.call("setDoorbellMessage", { kind: "text", text: " Back in 10 minutes " });
     const { actionId, description } = lastSubmitted(await doorbell.queue());
-    expect(description.title).toBe("Change the message on doorbell “Front Door”");
+    expect(description.title).toBe("Change a UniFi doorbell's message");
     // Shown to whoever comes to the door, so it never applies without a decision.
     expect(description).toMatchObject({ autoApprovable: false, actionKind: { tag: "unifi.doorbellMessage" } });
     expect(JSON.stringify(description.fields)).toContain("the doorbell's default timeout");
@@ -171,7 +179,7 @@ describe("a camera", () => {
     expect(await doorbell.failure("setMicVolume", 0)).toMatch(/whole number from 1 to 100/);
     await doorbell.call("setMicVolume", 40);
     const { actionId, description } = lastSubmitted(await doorbell.queue());
-    expect(description).toMatchObject({ title: "Set the microphone volume of “Front Door” to 40", autoApprovable: false });
+    expect(description).toMatchObject({ title: "Set a UniFi camera's microphone volume to 40", autoApprovable: false });
     expect(await doorbell.call("describe")).toMatchObject({ micVolume: 40 });
     await doorbell.apply(actionId);
     expect(console.writes()[0]!.body).toEqual({ micVolume: 40 });
@@ -192,7 +200,7 @@ describe("a camera", () => {
     await driveway.call("stopPatrol");
     const { submitted } = await driveway.queue();
     expect(submitted.map(s => s.description.title)).toEqual([
-      "Turn “Driveway” to its home position", "Start patrol 1 on “Driveway”", "Stop the patrol on “Driveway”",
+      "Turn a UniFi PTZ camera to its home position", "Start patrol 1 on a UniFi PTZ camera", "Stop a UniFi PTZ camera's patrol",
     ]);
     expect(submitted.every(s => s.description.awaitDecision === true && s.description.autoApprovable === true)).toBe(true);
     for (const { actionId } of submitted) await driveway.apply(actionId);
@@ -250,7 +258,7 @@ describe("a floodlight", () => {
     const light = binding(await connectCloud(), RESOURCES.light);
     await light.call("setForcedOn", true);
     const { actionId, description } = lastSubmitted(await light.queue());
-    expect(description).toMatchObject({ title: "Turn on floodlight “Backyard Floodlight”", autoApprovable: true });
+    expect(description).toMatchObject({ title: "Turn on a UniFi floodlight", autoApprovable: true });
     expect(await light.call("describe")).toMatchObject({ forcedOn: true, isOn: true });
     await light.apply(actionId);
     expect(console.writes()[0]!.body).toEqual({ isLightForceEnabled: true });

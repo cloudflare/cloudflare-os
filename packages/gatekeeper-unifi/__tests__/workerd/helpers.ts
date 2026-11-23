@@ -30,6 +30,29 @@ export function installFake(): { unifi: FakeUnifi; console: FakeConsole } {
   return { unifi, console };
 }
 
+/**
+ * Holds every request made with `key` until the returned release is called, so a test can let a
+ * reconnect land while they are in flight.
+ */
+export function holdRequestsWith(unifi: FakeUnifi, key: string): () => void {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const sent = new Request(input, init);
+    if (sent.headers.get("x-api-key") === key) await promise;
+    return unifi.fetch(sent);
+  });
+  return () => resolve();
+}
+
+/** Reconnects a cloud account with another key and commits it, as the Workshop would. */
+export async function reconnectCloud(accountId: string, key: string): Promise<void> {
+  const { url } = unwrap(await hooks().user(accountId, "reconnect")) as { url: string };
+  const response = await postForm(new URL(url).pathname.replace("/gatekeeper/unifi", ""), { mode: "cloud", cloudApiKey: key });
+  if (response.status !== 200) throw new Error(`reconnect failed: ${response.status}`);
+  const [stageId] = (await hooks().callbackLog(accountId)).stages.slice(-1);
+  await account(accountId).commitReconnect(stageId!);
+}
+
 /** The `ctx` a request to the Worker gets: what the connect handler reaches through `exports`. */
 export function workerCtx() {
   return { exports: { UnifiAccount: env.UNIFI_ACCOUNT }, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;

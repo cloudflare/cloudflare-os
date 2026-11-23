@@ -25,8 +25,8 @@ lists the account's consoles with it and proxies requests through the Cloud Conn
 - Site Manager documents its API keys as read-only for now. If UniFi refuses a change made through
   the cloud, the approval reports it and reads keep working; connect the console directly to make
   changes.
-- A reconnect must be the same UniFi account: the same email, and at least one console in
-  common.
+- A reconnect must be the same UniFi account, by the email Site Manager reports. A key whose
+  email Site Manager leaves out can't replace another; connect it as a new connection instead.
 
 ### Directly to a console
 
@@ -38,6 +38,7 @@ sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` with every request.
   addresses. The console is then known as `local-` plus 16 hex digits, which is kept across
   reconnects.
 - The URL can't change on reconnect, and a reconnect must reach the same console, matched by MAC.
+  A console that didn't report a MAC address when it connected can't be reconnected in place.
 - `http://` URLs are accepted for loopback addresses only.
 - **Reachability.** On a Cloudflare-hosted deployment, `global_fetch_strictly_public` means the
   console must be reachable at a public address; private and LAN addresses are refused. Use a
@@ -92,9 +93,10 @@ Every read is recorded as an observation. Every change waits for approval:
 Changes to WiFi and guest access are never auto-approvable because they change who can use the
 network, and a doorbell message isn't because it's shown to whoever comes to the door. A device
 the device list doesn't classify can't be restarted, since it can't be told apart from the
-gateway. An approval never shows a WiFi password or voucher code that still works, since action
-history is visible to every collaborator: a new password is described as changing, and a voucher
-by its note and ID.
+gateway. Action history is visible to every collaborator without a check, so an approval names its target
+by its UniFi ID ("Restart a UniFi device", with the device's ID) and shows nothing else read from
+UniFi: no device, camera, client or network names, and never a WiFi password or voucher code that
+still works. What the agent asked for, such as a new name or a doorbell message, is shown as asked.
 
 Nothing is reverted automatically. A change UniFi refuses, or whose target is gone, fails
 without a retry. A restart, power-cycle, guest grant, or voucher batch interrupted after it was
@@ -116,7 +118,9 @@ All IDs start `console/<consoleId>/app/<network|protect>`. Then:
   `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists; and
   `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, password included.
 - Protect: `/nvr/<id>` for the alarm, and `/camera/<id>`, `/sensor/<id>` or `/light/<id>` for each
-  device a read showed. A listing that found none reports the application alone.
+  device a read showed. A snapshot also reports `/snapshot/<id>` (or `/packageSnapshot/<id>`),
+  since a camera's images can be allowed apart from its details, for example by a Cloudflare
+  Access policy on the snapshot path. A listing that found none reports the application alone.
 
 Checks:
 
@@ -134,8 +138,9 @@ Checks:
 A binding's title names only its kind of resource ("UniFi camera"), never what UniFi calls it,
 since the Workshop shows binding titles to every collaborator unchecked.
 
-A check that can't be made (the console doesn't answer, or the binding owner's own connection no
-longer reaches it) refuses everyone rather than guessing.
+A check that can't be made (the console doesn't answer, the binding owner's own connection no
+longer reaches it, or the collaborator reconnects with another key while it runs) refuses everyone
+rather than guessing.
 
 ## Requests
 

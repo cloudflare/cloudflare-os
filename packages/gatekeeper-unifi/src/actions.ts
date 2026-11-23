@@ -17,8 +17,10 @@
  * - Requests that aren't safe to send twice (restarts, power-cycles, guest grants, voucher creation)
  *   are claimed before they're sent, so a crash mid-request is reported as an unknown outcome,
  *   never replayed.
- * - A credential that still works -- a WiFi password, a voucher code -- never goes into a
- *   description: descriptions are kept in the action history every collaborator sees.
+ * - Descriptions are kept in the action history every collaborator sees, unchecked, so they name
+ *   their target by its UniFi ID, never by what UniFi calls it, and show nothing else read from
+ *   UniFi either: a credential that still works least of all. What the agent asked for (a new
+ *   name, a message, a volume) is shown as asked.
  *
  * Nothing implements revert: no Workshop flow invokes it.
  */
@@ -56,30 +58,30 @@ export type VoucherRequest = {
 
 /** The payload each kind of action stores. Names are captured when it is submitted, for display. */
 export type UnifiActionPayloads = {
-  restartDevice: { siteId: string; deviceId: string; deviceName: string; model: string };
-  restartGateway: { siteId: string; deviceId: string; deviceName: string; model: string };
-  powerCyclePort: { siteId: string; deviceId: string; deviceName: string; portIndex: number };
+  restartDevice: { siteId: string; deviceId: string };
+  restartGateway: { siteId: string; deviceId: string };
+  powerCyclePort: { siteId: string; deviceId: string; portIndex: number };
   guestAccess: {
-    siteId: string; clientId: string; clientName: string;
+    siteId: string; clientId: string;
     change: { authorize: true; limits: UnifiGuestLimits } | { authorize: false };
   };
-  updateWifi: { siteId: string; wifiNetworkId: string; networkName: string; changes: UnifiWifiNetworkChanges };
+  updateWifi: { siteId: string; wifiNetworkId: string; changes: UnifiWifiNetworkChanges };
   createVouchers: {
     siteId: string; request: VoucherRequest;
     /** Placeholder IDs the pending vouchers are listed under until the console creates them. */
     placeholderIds: string[];
     submittedAt: number;
   };
-  deleteVoucher: { siteId: string; voucherId: string; note: string };
-  cameraSettings: { cameraId: string; cameraName: string; change: { name: string } | { statusLight: boolean } };
-  doorbellMessage: { cameraId: string; cameraName: string; change: DoorbellChange };
-  cameraMicVolume: { cameraId: string; cameraName: string; volume: number };
+  deleteVoucher: { siteId: string; voucherId: string };
+  cameraSettings: { cameraId: string; change: { name: string } | { statusLight: boolean } };
+  doorbellMessage: { cameraId: string; change: DoorbellChange };
+  cameraMicVolume: { cameraId: string; volume: number };
   cameraPtz: {
-    cameraId: string; cameraName: string;
+    cameraId: string;
     command: { goToPreset: number } | { startPatrol: number } | { stopPatrol: true };
   };
   lightSettings: {
-    lightId: string; lightName: string;
+    lightId: string;
     change: { forcedOn: boolean } | { mode: UnifiLightMode; activeWhen: "always" | "dark" } | { brightness: number };
   };
 };
@@ -241,9 +243,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     autoApprovable: true,
     delivery: "await-decision",
     claimBeforeApply: true,
-    describe: p => present(`Restart ${quoted(p.deviceName)}`,
+    describe: p => present("Restart a UniFi device",
       "Restarts this UniFi device. It is offline for a minute or two while it restarts.",
-      b => b.inline("Device", p.deviceName).inline("Model", p.model)),
+      b => b.inline("Device ID", p.deviceId)),
     apply: (p, { api }) => carryOut(() => api.restartDevice(p.siteId, p.deviceId), { idempotent: false }),
   },
   restartGateway: {
@@ -252,10 +254,10 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     autoApprovable: false,
     delivery: "await-decision",
     claimBeforeApply: true,
-    describe: p => present(`Restart the gateway ${quoted(p.deviceName)}`,
+    describe: p => present("Restart the UniFi gateway",
       "Restarts the site's gateway. **The whole network and its internet connection go down** for " +
       "several minutes while it restarts.",
-      b => b.inline("Gateway", p.deviceName).inline("Model", p.model)),
+      b => b.inline("Gateway ID", p.deviceId)),
     apply: (p, { api }) => carryOut(() => api.restartDevice(p.siteId, p.deviceId), { idempotent: false }),
   },
   powerCyclePort: {
@@ -263,9 +265,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     autoApprovable: true,
     delivery: "await-decision",
     claimBeforeApply: true,
-    describe: p => present(`Power-cycle port ${p.portIndex} on ${quoted(p.deviceName)}`,
+    describe: p => present(`Power-cycle port ${p.portIndex} on a UniFi device`,
       "Turns PoE power on this port off and back on, restarting whatever it powers.",
-      b => b.inline("Device", p.deviceName).inline("Port", String(p.portIndex))),
+      b => b.inline("Device ID", p.deviceId).inline("Port", String(p.portIndex))),
     apply: (p, { api }) =>
       carryOut(() => api.powerCyclePort(p.siteId, p.deviceId, p.portIndex), { idempotent: false }),
   },
@@ -277,18 +279,18 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // A grant replaces any active one and resets its traffic counters, so it isn't sent twice.
     claimBeforeApply: true,
     describe: p => p.change.authorize
-      ? present(`Let guest ${quoted(p.clientName)} use the WiFi`,
+      ? present("Let a guest use the WiFi",
         "Authorizes this guest on the site's guest network, replacing any access it already has.",
         b => {
           const limits = (p.change as { limits: UnifiGuestLimits }).limits;
-          b.inline("Guest", p.clientName);
+          b.inline("Guest client ID", p.clientId);
           b.inline("Duration", limits.durationMinutes !== undefined
             ? `${limits.durationMinutes} minutes` : "the site's default");
           describeLimits(b, limits);
         })
-      : present(`End guest ${quoted(p.clientName)}'s WiFi access`,
+      : present("End a guest's WiFi access",
         "Ends this guest's authorization, disconnecting it from the guest network.",
-        b => b.inline("Guest", p.clientName)),
+        b => b.inline("Guest client ID", p.clientId)),
     apply: (p, { api }) => {
       const change = p.change;
       return change.authorize
@@ -301,11 +303,11 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // Rule 7: a new password, or hiding the network, changes who can join it.
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    describe: p => present(`Change WiFi network ${quoted(p.networkName)}`,
+    describe: p => present("Change a UniFi WiFi network",
       "Changes this WiFi network's settings. Devices may disconnect while it changes." +
         (p.changes.passphrase !== undefined ? " **Sets a new password**, which isn't shown here." : ""),
       b => {
-        b.inline("Network", p.networkName);
+        b.inline("WiFi network ID", p.wifiNetworkId);
         if (p.changes.name !== undefined) b.inline("New name", p.changes.name);
         if (p.changes.enabled !== undefined) b.inline("Broadcast", p.changes.enabled ? "On" : "Off");
         if (p.changes.hidden !== undefined) b.inline("Hidden", p.changes.hidden ? "Yes" : "No");
@@ -336,12 +338,8 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // Rule 7: ends the access its guests have.
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    describe: p => present(p.note ? `Delete guest WiFi voucher ${quoted(p.note)}` : "Delete a guest WiFi voucher",
-      "Deletes this voucher so it can no longer be used.",
-      b => {
-        if (p.note) b.inline("Note", p.note);
-        b.inline("Voucher ID", p.voucherId);
-      }),
+    describe: p => present("Delete a guest WiFi voucher", "Deletes this voucher so it can no longer be used.",
+      b => b.inline("Voucher ID", p.voucherId)),
     apply: (p, { api }) => carryOut(async () => {
       try {
         await api.deleteVoucher(p.siteId, p.voucherId);
@@ -359,11 +357,11 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     describe: p => {
       const change = p.change;
       if ("name" in change) {
-        return present(`Rename camera ${quoted(p.cameraName)}`, "Renames this camera.",
-          b => b.inline("Camera", p.cameraName).inline("New name", change.name));
+        return present(`Rename a UniFi camera to ${quoted(change.name)}`, "Renames this camera.",
+          b => b.inline("Camera ID", p.cameraId).inline("New name", change.name));
       }
-      return present(`Turn ${change.statusLight ? "on" : "off"} the status light on ${quoted(p.cameraName)}`,
-        "Turns this camera's status light on or off.", b => b.inline("Camera", p.cameraName));
+      return present(`Turn ${change.statusLight ? "on" : "off"} a UniFi camera's status light`,
+        "Turns this camera's status light on or off.", b => b.inline("Camera ID", p.cameraId));
     },
     apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, cameraPatch(p.change)), { idempotent: true }),
   },
@@ -374,10 +372,10 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     delivery: "continue-with-simulation",
     describe: p => {
       const { doorbellMessage: message, until } = p.change;
-      return present(`Change the message on doorbell ${quoted(p.cameraName)}`,
+      return present("Change a UniFi doorbell's message",
         "Shows a message on this doorbell's screen, to whoever comes to the door.",
         b => {
-          b.inline("Doorbell", p.cameraName);
+          b.inline("Doorbell ID", p.cameraId);
           b.inline("Message", message.kind === "text" ? message.text
             : message.kind === "doNotDisturb" ? "Do not disturb" : "Leave package at door");
           b.inline("Until", until === null ? "the doorbell's default timeout" : new Date(until).toISOString());
@@ -390,9 +388,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // No opt-out rule covers this; kept from the original design: it changes what a camera records.
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    describe: p => present(`Set the microphone volume of ${quoted(p.cameraName)} to ${p.volume}`,
+    describe: p => present(`Set a UniFi camera's microphone volume to ${p.volume}`,
       "Changes how loud this camera records sound.",
-      b => b.inline("Camera", p.cameraName).inline("Volume", `${p.volume} of 100`)),
+      b => b.inline("Camera ID", p.cameraId).inline("Volume", `${p.volume} of 100`)),
     apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, { micVolume: p.volume }), { idempotent: true }),
   },
   cameraPtz: {
@@ -402,15 +400,15 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     describe: p => {
       const command = p.command;
       if ("goToPreset" in command) {
-        return present(`Turn ${quoted(p.cameraName)} to ${command.goToPreset === -1 ? "its home position" : `preset ${command.goToPreset}`}`,
-          "Moves this PTZ camera to a saved position.", b => b.inline("Camera", p.cameraName));
+        return present(`Turn a UniFi PTZ camera to ${command.goToPreset === -1 ? "its home position" : `preset ${command.goToPreset}`}`,
+          "Moves this PTZ camera to a saved position.", b => b.inline("Camera ID", p.cameraId));
       }
       if ("startPatrol" in command) {
-        return present(`Start patrol ${command.startPatrol} on ${quoted(p.cameraName)}`,
-          "Starts one of this PTZ camera's saved patrols.", b => b.inline("Camera", p.cameraName));
+        return present(`Start patrol ${command.startPatrol} on a UniFi PTZ camera`,
+          "Starts one of this PTZ camera's saved patrols.", b => b.inline("Camera ID", p.cameraId));
       }
-      return present(`Stop the patrol on ${quoted(p.cameraName)}`, "Stops this PTZ camera's patrol.",
-        b => b.inline("Camera", p.cameraName));
+      return present("Stop a UniFi PTZ camera's patrol", "Stops this PTZ camera's patrol.",
+        b => b.inline("Camera ID", p.cameraId));
     },
     apply: (p, { api }) => carryOut(async () => {
       const command = p.command;
@@ -426,22 +424,21 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     describe: p => {
       const change = p.change;
       if ("forcedOn" in change) {
-        return present(change.forcedOn ? `Turn on floodlight ${quoted(p.lightName)}`
-          : `Return floodlight ${quoted(p.lightName)} to its schedule`,
+        return present(change.forcedOn ? "Turn on a UniFi floodlight" : "Return a UniFi floodlight to its schedule",
           change.forcedOn ? "Forces this floodlight on until it is released."
             : "Stops forcing this floodlight on; it follows its mode again.",
-          b => b.inline("Floodlight", p.lightName));
+          b => b.inline("Floodlight ID", p.lightId));
       }
       if ("mode" in change) {
-        return present(`Change when floodlight ${quoted(p.lightName)} turns on`,
+        return present("Change when a UniFi floodlight turns on",
           "Changes when this floodlight turns on by itself.",
-          b => b.inline("Floodlight", p.lightName)
+          b => b.inline("Floodlight ID", p.lightId)
             .inline("Turns on", change.mode === "always" ? "Always" : change.mode === "motion" ? "On motion" : "Never")
             .inline("When", change.activeWhen === "dark" ? "Only after dark" : "Any time of day"));
       }
-      return present(`Set floodlight ${quoted(p.lightName)} brightness to ${change.brightness}`,
+      return present(`Set a UniFi floodlight's brightness to ${change.brightness}`,
         "Changes this floodlight's brightness.",
-        b => b.inline("Floodlight", p.lightName).inline("Brightness", `${change.brightness} of 6`));
+        b => b.inline("Floodlight ID", p.lightId).inline("Brightness", `${change.brightness} of 6`));
     },
     apply: (p, { api }) => carryOut(() => api.patchLight(p.lightId, lightPatch(p.change)), { idempotent: true }),
   },
