@@ -151,7 +151,7 @@ it.concurrent("a pasted link becomes a binding for that chat only", async () => 
   }];
 
   const firstMessage = "Read [0] for me.";
-  const chatId = await ws.newChat(firstMessage, SCRIPTED_MODEL_ID, pasting(firstMessage));
+  const chatId = await ws.newChat(firstMessage, SCRIPTED_MODEL_ID, {capsules: pasting(firstMessage)});
   await settle(ws, model, chatId, 2);
   expect(JSON.stringify(model.requests[0])).toContain("env.TEST_THING");
   expect(codeOutputs(await history(ws, chatId))).toEqual([expect.stringContaining("42")]);
@@ -160,7 +160,7 @@ it.concurrent("a pasted link becomes a binding for that chat only", async () => 
   ]);
 
   const againMessage = "And [0] once more.";
-  await ws.sendChatMessage(chatId, againMessage, SCRIPTED_MODEL_ID, pasting(againMessage));
+  await ws.sendChatMessage(chatId, againMessage, SCRIPTED_MODEL_ID, {capsules: pasting(againMessage)});
   await settle(ws, model, chatId, 3);
   const capsules = (await history(ws, chatId)).flatMap(message =>
     message.type === "message" && message.author.type === "user" ? [message.capsules] : []);
@@ -202,7 +202,7 @@ it.concurrent("an attachment reaches the model in its turn and stays in later tu
   const upload = {oid: await ws.uploadBlob(new TextEncoder().encode(notes)),
     mimeType: "text/plain", name: "agenda.txt"};
 
-  const chatId = await ws.newChat("Read the agenda.", SCRIPTED_MODEL_ID, undefined, [upload]);
+  const chatId = await ws.newChat("Read the agenda.", SCRIPTED_MODEL_ID, {attachments: [upload]});
   await settle(ws, model, chatId, 1);
   const withAttachment = expect.stringMatching(/Read the agenda\.[^]*agenda\.txt[^]*Agenda: ship/);
   expect(userTexts(model.requests[0])).toEqual([withAttachment]);

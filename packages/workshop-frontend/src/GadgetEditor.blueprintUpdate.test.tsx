@@ -267,7 +267,11 @@ const previousMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia')
 async function openEditor(screen: 'phone' | 'desktop') {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
-    value: (query: string) => ({ matches: screen === 'phone' && query === '(width < 48rem)' }),
+    value: (query: string) => ({
+      matches: screen === 'phone' && query === '(width < 48rem)',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }),
   })
   await act(async () => { root.render(<GadgetEditor />) })
 }
