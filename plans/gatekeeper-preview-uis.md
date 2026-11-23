@@ -757,19 +757,23 @@ differs is which file, which section 1a answers:
   gets its "File" fields. `id` is the file's kind, the folders between the connected one and the
   file, and the file: `docs:<folder>/<folder>/<file>`. A folder session opens only its direct
   children, so the way in is part of the name; nothing but the gatekeeper reads it.
-- **`getPreviewUi(previewOf)`** returns the files of that kind's preview, from one list the three
-  gatekeepers share (`previews/files.ts`). It asks Google nothing. A Drive connection reports no
-  `hasPreview`: it has no preview of itself.
+- **`getGadgetUi()`** is asked before any file is named, so it returns the previews of all three
+  kinds, from one list the gatekeepers share (`previews/files.ts`), each client under its kind's
+  name beside an entry (`previews/drive/client.js`). UI code cannot `import()`, so the entry
+  imports all three and starts the one whose kind the file's session gives (`getPreviewKind()`,
+  which like `openPreview()` is not in the agent's types). A preview therefore builds nothing
+  into the frame until its `main()` is called. It asks Google nothing. A Drive connection reports
+  no `hasGadgetUi`: it has no preview of itself.
 - **`openPreview(previewOf)`** on the Drive session walks the folders and opens the file with
   `openGoogleDoc()` and its siblings, so the file's place in the binding's scope is proven as it
   is for an agent. The session convention is in the write-gatekeeper skill. It is not in the
   agent's types.
-- **The Workshop** tells previews apart by connection and item. It asks for the item's code,
-  opens the connection's session, calls `openPreview()` on it and hands the frame only the
+- **The Workshop** tells previews apart by connection and item. It asks for the connection's
+  code, opens the connection's session, calls `openPreview()` on it and hands the frame only the
   result, letting the Drive session go: the frame holds one file, not the binding. The card and
   the refresh take only actions that name the same item, which matches Drive ordering approvals
   by file. An item's preview opens when a change to it is queued, never on a read: a preview's
-  reads are recorded against the workspace, and an agent skims many files.
+  reads are recorded against the connection, and an agent skims many files.
 - **The Doc a Drive binding opens** gains the four preview reads on its edit session.
 - Not built: a read-only binding (its sessions have none of the reads), comments, shares and
   moves naming their file, and an icon for each file: the pane's icon is that of the

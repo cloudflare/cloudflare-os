@@ -16,8 +16,8 @@ import {
   outline, outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale,
   status, touch, ITSELF,
 } from './ui/chrome.js';
-import { drawer, faceMeasures, headingLevel, newList, showPicture } from './draw.js';
-import { paginate } from './pages.js';
+import { drawer, drawStyles, faceMeasures, headingLevel, newList, showPicture } from './draw.js';
+import { pageStyles, paginate } from './pages.js';
 import { BOLD, ITALIC, STRIKE, blockKey, diff, pairEdits, parseBlocks, tablesOf, wordsOf } from './text.js';
 
 // The session main() is handed, which every read below goes through.
@@ -98,10 +98,9 @@ styleSheet.textContent = `
   .entry:focus-visible { outline-offset: -2px; }
   .entry > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 `;
-document.head.append(styleSheet);
 
 /** What the sheets are set in, inside the room `page` keeps for them. */
-const sheets = page.appendChild(make('div'));
+const sheets = make('div');
 sheets.id = 'sheets';
 
 const rail = make('div');
@@ -402,7 +401,7 @@ function compose() {
 // ---------------------------------------------------------------------------------------------
 // The page navigator: steps from sheet to sheet, where the tab is drawn on more than one
 
-const pager = partNavigator('page');
+let pager;
 
 /**
  * Finds the page being read: the one at the head of the view, where stepping to a page puts it,
@@ -434,7 +433,6 @@ function fit() {
   document.documentElement.style.setProperty('--width', `${sheetWidth}px`);
   markPage();
 }
-new ResizeObserver(fit).observe(page);
 
 /** The outline of a page still to come. */
 function showSkeleton() {
@@ -509,7 +507,6 @@ const views = segmented('Which copy of the document to show', [
   ['before', 'As saved', 'The document as Google has it, on its pages'],
 ], name => showView(name));
 views.hidden = true;
-addControl(views);
 
 function showView(name) {
   if (view === name || !tab) return;
@@ -689,12 +686,6 @@ function markHeading() {
   reading = current;
 }
 
-addEventListener('scroll', () => requestAnimationFrame(() => {
-  markHeading();
-  markPage();
-}), { passive: true });
-outline.addEventListener('outlinechange', markHeading);
-
 // Where a link leads. One to a tab of this document, or to a heading in one, is followed here.
 // One to the web opens in a new browser tab, which in this frame only a link element with an
 // address does, unless it is in a pending change: that text is not yet approved, and its
@@ -745,11 +736,11 @@ function describeLinks() {
   }
 }
 
-page.addEventListener('keydown', event => {
+function pressLink(event) {
   if (event.key === 'Enter' && event.target.matches?.('.link.go:not([href])')) event.target.click();
-});
+}
 
-page.addEventListener('click', async event => {
+async function followLink(event) {
   const link = event.target.closest?.('.link');
   if (!link) return;
   const { tab: to, heading } = destination(link);
@@ -761,7 +752,7 @@ page.addEventListener('click', async event => {
   if (!target) return;
   target.scrollIntoView({ block: 'start', behavior: motion() });
   flash(target);
-});
+}
 
 // ---------------------------------------------------------------------------------------------
 // Loading and refreshing
@@ -878,6 +869,20 @@ async function load() {
 export default {
   main(session) {
     gadget = session;
+    // Built here, not on import: a Drive connection's frame holds the previews of all three
+    // kinds of file and starts one.
+    document.head.append(...drawStyles, pageStyles, styleSheet);
+    page.append(sheets);
+    pager = partNavigator('page');
+    new ResizeObserver(fit).observe(page);
+    addControl(views);
+    addEventListener('scroll', () => requestAnimationFrame(() => {
+      markHeading();
+      markPage();
+    }), { passive: true });
+    outline.addEventListener('outlinechange', markHeading);
+    page.addEventListener('keydown', pressLink);
+    page.addEventListener('click', followLink);
     loadOnRefresh(load);
   },
 };

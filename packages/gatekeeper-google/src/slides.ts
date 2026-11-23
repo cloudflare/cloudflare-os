@@ -166,7 +166,7 @@ export class GoogleSlidesGatekeeperImpl
   }
 
   /** The files of the presentation preview: gadget-format client code that reads through a session. */
-  async getPreviewUi(): Promise<UiFile[]> {
+  async getGadgetUi(): Promise<UiFile[]> {
     return PREVIEW_FILES.slides;
   }
 
@@ -677,6 +677,11 @@ export class GooglePresentationSessionImpl extends RpcTarget
   async getRenderingTypes(): Promise<string> {
     // The same text for every presentation, saying nothing of this one, so no read of it is reported.
     return stripTypeModulePrefix(SLIDES_RENDERING_TYPES_CODE, SLIDES_RENDERING_TYPES_MODULE_PREFIX);
+  }
+
+  /** Which of a Drive connection's previews draws this session. Not in the agent's types. */
+  async getPreviewKind(): Promise<"slides"> {
+    return "slides";
   }
 
   async readSlideDrawings(ids: string[]): Promise<SlideDrawings> {

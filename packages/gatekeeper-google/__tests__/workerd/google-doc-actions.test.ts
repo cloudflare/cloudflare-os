@@ -3926,7 +3926,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     };
   }
 
-  it("names the Doc an edit changes, serves that Doc's preview, and the reads it draws from", async () => {
+  it("names the Doc an edit changes, serves the preview that draws it, and the reads it draws from", async () => {
     let docs = draft();
     docs.setImages(MAIN_TAB, [{ id: "photo" }]);
     let facet = "drive-preview";
@@ -3936,13 +3936,16 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(previewOf).toEqual({
       id: "docs:doc-1", title: "Test document", url: "https://docs.google.com/document/d/doc-1/edit",
     });
-    // The Doc's own preview, and none of the connection: it reaches many files.
-    expect(await hooks().describe(facet)).not.toHaveProperty("hasPreview");
-    let files = await hooks().previewUi(facet, previewOf!.id);
-    expect(files.map(({ path }) => path)).toEqual(PREVIEW_PATHS);
-    expect(files[0].code).toContain("gadget.getPendingChanges(");
-    await expect(hooks().previewUi(facet)).rejects.toThrow("none of itself");
-    await expect(hooks().previewUi(facet, "docs:../doc-1")).rejects.toThrow("no preview by that name");
+    // No preview of the connection, which reaches many files: one of whichever file it is handed,
+    // the three kinds' previews behind an entry that starts the one the file's session names.
+    expect(await hooks().describe(facet)).not.toHaveProperty("hasGadgetUi");
+    let files = await hooks().previewUi(facet);
+    expect(files.map(({ path }) => path)).toEqual([
+      "client.js", "docs.js", ...PREVIEW_PATHS.slice(1, -1), "sheets.js", "slides.js", "slide.js", "shapes.js",
+      "ui/chrome.js",
+    ]);
+    expect(files[0].code).toContain("session.getPreviewKind()");
+    expect((await hooks().callDoc(facet, "getPreviewKind" as keyof GoogleDocSession, [])).value).toBe("docs");
 
     expect(await hooks().readPendingChanges(facet, MAIN_TAB)).toMatchObject({
       savedMarkdown: "\\[Image\\]\n",
@@ -4170,6 +4173,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     let reads = new Set([
       "constructor", "getMetadata", "listTabs", "getContent",
       "getPendingChanges", "listImages", "readImage", "readFont", "readDrawing", "getRenderingTypes",
+      "getPreviewKind",
     ]);
     let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
       .filter(name => !reads.has(name));

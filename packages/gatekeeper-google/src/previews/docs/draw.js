@@ -35,7 +35,6 @@ styleSheet.textContent = `
   .grid { border-collapse: collapse; table-layout: fixed; margin: 0; }
   .grid td { box-sizing: border-box; vertical-align: top; }
 `;
-document.head.append(styleSheet);
 
 const pt = length => `${Math.round(length * 1000) / 1000}pt`;
 
@@ -67,7 +66,9 @@ export const faceMeasures = { ascentOverride: `${ASCENT * 100}%`, descentOverrid
 // against its size: whatever fixed-width font stands in for it is spaced to that.
 const FIXED_WIDTHS = { Consolas: 1126 / 2048 };
 
-const lookSheet = document.head.appendChild(document.createElement('style'));
+const lookSheet = document.createElement('style');
+/** This module's styles, which the preview that draws with it puts in its frame, in this order. */
+export const drawStyles = [styleSheet, lookSheet];
 // Each look drawn so far, by what it holds.
 const classes = new Map();
 

@@ -197,7 +197,7 @@ export class GoogleSheetsGatekeeperImpl
     return getGoogleSheetsTypesCode();
   }
 
-  async getPreviewUi(): Promise<UiFile[]> {
+  async getGadgetUi(): Promise<UiFile[]> {
     return PREVIEW_FILES.sheets;
   }
 
@@ -634,6 +634,11 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
   async getRenderingTypes(): Promise<string> {
     // The same text for every spreadsheet, saying nothing of this one, so no read of it is reported.
     return stripTypeModulePrefix(SHEETS_RENDERING_TYPES_CODE, SHEETS_RENDERING_TYPES_MODULE_PREFIX);
+  }
+
+  /** Which of a Drive connection's previews draws this session. Not in the agent's types. */
+  async getPreviewKind(): Promise<"sheets"> {
+    return "sheets";
   }
 
   async readDrawing(range: string): Promise<SpreadsheetDrawing> {

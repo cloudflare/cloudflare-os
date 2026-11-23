@@ -57,7 +57,8 @@ styleSheet.textContent = `
   /* A cell's edges lie over it: Slides gives them no room of their own. */
   .edges { position: absolute; inset: 0; pointer-events: none; }
 `;
-document.head.append(styleSheet);
+/** This module's styles, which the preview that draws with it puts in its frame. */
+export { styleSheet as slideStyles };
 
 const svg = (tag, attributes = {}) => {
   const node = document.createElementNS(SVG, tag);

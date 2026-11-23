@@ -49,7 +49,7 @@ import {
 import {
   DriveFileEditors, editorOfMimeType, editorOfTag, parseDrivePreviewId, type DriveEditorName,
 } from "./drive-editors";
-import { PREVIEW_FILES } from "./previews/files";
+import { DRIVE_PREVIEW_FILES } from "./previews/files";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
@@ -2515,13 +2515,12 @@ export class GoogleDriveGatekeeperImpl
   }
 
   /**
-   * The preview of the file an edit's `previewOf` names: the one its kind of file has when
-   * connected on its own, which draws what `openPreview()` opens. A Drive connection has none of
-   * its own.
+   * The preview of a file an edit's `previewOf` names, which draws what `openPreview()` opens:
+   * the one each kind of file has when connected on its own, all three behind one entry, since
+   * this is asked before any file is named. A Drive connection has no preview of itself.
    */
-  async getPreviewUi(previewOf?: string): Promise<UiFile[]> {
-    if (previewOf === undefined) throw new Error("A Google Drive connection has a preview of each file it edits, and none of itself.");
-    return PREVIEW_FILES[parseDrivePreviewId(previewOf).editor];
+  async getGadgetUi(): Promise<UiFile[]> {
+    return DRIVE_PREVIEW_FILES;
   }
 
   /**

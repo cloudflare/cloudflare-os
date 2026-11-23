@@ -397,10 +397,10 @@ export class TestHooks extends DurableObject<Env> {
       : this.#gatekeeper(facetName).describe();
   }
 
-  previewUi(facetName: string, previewOf?: string): Promise<UiFile[]> {
+  previewUi(facetName: string): Promise<UiFile[]> {
     return throughDrive(facetName)
-      ? this.#drive(facetName, DRIVE_DOC).getPreviewUi(previewOf)
-      : this.#gatekeeper(facetName).getPreviewUi();
+      ? this.#drive(facetName, DRIVE_DOC).getGadgetUi()
+      : this.#gatekeeper(facetName).getGadgetUi();
   }
 
   async #withReadSession<Session, T>(

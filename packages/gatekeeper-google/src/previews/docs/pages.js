@@ -27,7 +27,8 @@ styleSheet.textContent = `
     font: 8pt/1 Arial, sans-serif; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
   .pagebreak::before, .pagebreak::after { content: ''; flex: 1; border-top: 1px dashed #c4c7c5; }
 `;
-document.head.append(styleSheet);
+/** This module's styles, which the preview that draws with it puts in its frame. */
+export { styleSheet as pageStyles };
 
 /** CSS pixels to a point, which the drawing is measured in. */
 const PX = 4 / 3;

@@ -4,6 +4,7 @@ import DOCS_CLIENT from "./docs/client.txt";
 import DOCS_DRAW from "./docs/draw.txt";
 import DOCS_PAGES from "./docs/pages.txt";
 import DOCS_TEXT from "./docs/text.txt";
+import DRIVE_CLIENT from "./drive/client.txt";
 import CHROME from "./shared/chrome.txt";
 import SHEETS_CLIENT from "./sheets/client.txt";
 import SLIDES_CLIENT from "./slides/client.txt";
@@ -29,3 +30,16 @@ export const PREVIEW_FILES: Record<DriveEditorName, UiFile[]> = {
     ...SHARED,
   ],
 };
+
+/**
+ * A Drive connection's preview, of whichever file its session is of: an entry that starts that
+ * file's kind of preview, and the three beside it, each client under its kind's name. The modules
+ * they import keep their paths, which no two kinds share.
+ */
+export const DRIVE_PREVIEW_FILES: UiFile[] = [
+  { path: "client.js", code: DRIVE_CLIENT },
+  ...Object.entries(PREVIEW_FILES).flatMap(([editor, files]) => files
+    .filter(file => !SHARED.includes(file))
+    .map(file => file.path === "client.js" ? { ...file, path: `${editor}.js` } : file)),
+  ...SHARED,
+];

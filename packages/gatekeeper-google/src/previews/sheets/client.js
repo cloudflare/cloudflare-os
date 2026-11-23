@@ -204,9 +204,8 @@ styleSheet.textContent = `
     letter-spacing: .08em; text-transform: uppercase; }
   #outline h3:first-child { margin-top: 2px; }
 `;
-document.head.append(styleSheet);
 // One rule for each format of the window drawn, which its cells are classed by.
-const lookSheet = document.head.appendChild(document.createElement('style'));
+const lookSheet = document.createElement('style');
 
 const strip = Object.assign(make('div'), { id: 'strip' });
 const stripTitle = strip.appendChild(make('b'));
@@ -1098,7 +1097,6 @@ async function follow(retry) {
 }
 
 scroller.addEventListener('scroll', () => requestAnimationFrame(follow), { passive: true });
-addEventListener('resize', () => requestAnimationFrame(follow));
 
 // What was kept of the sheet last shown, which the next one starts without.
 function forget() {
@@ -1217,6 +1215,10 @@ async function load() {
 export default {
   main(session) {
     gadget = session;
+    // Built here, not on import: a Drive connection's frame holds the previews of all three
+    // kinds of file and starts one.
+    document.head.append(styleSheet, lookSheet);
+    addEventListener('resize', () => requestAnimationFrame(follow));
     loadOnRefresh(load);
   },
 };

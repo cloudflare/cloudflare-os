@@ -290,8 +290,9 @@ gatekeeper):
 
 - Set `previewOf: { id, title, url? }` on the action's description. `id` is the gatekeeper's own
   name for the item, enough to find it again and nothing anyone else reads; parse it strictly.
-- `getPreviewUi(id)` returns the code that draws the item and asks the provider nothing. Do not
-  report `hasPreview` unless the resource as a whole also has a preview.
+- `getGadgetUi()` returns the code that draws whichever item's session it is handed, and asks the
+  provider nothing: it is asked before any item is named. Do not report `hasGadgetUi` unless that
+  code draws the resource as a whole too.
 - The session implements `openPreview(id)`, returning the session that code reads through,
   independent of the session it was opened from. It checks access as any open does. The Workshop
   calls it and gives the frame the result alone.

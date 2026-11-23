@@ -14,7 +14,7 @@ import {
   partNavigator, press, segmented, setOutline, setStops, showError, showLoading, showPage, showStale, status,
   SYSTEM_FONT,
 } from './ui/chrome.js';
-import { boxOf, drawSlide, LINE_HEIGHT } from './slide.js';
+import { boxOf, drawSlide, slideStyles, LINE_HEIGHT } from './slide.js';
 
 // The session main() is handed, which every read below goes through.
 let gadget;
@@ -160,7 +160,6 @@ styleSheet.textContent = `
   .film.listed .tag { box-shadow: none; }
   .film.listed .mini > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
-document.head.append(styleSheet);
 
 const pause = time => new Promise(resolve => setTimeout(resolve, time));
 
@@ -644,7 +643,7 @@ function renderFilmstrip() {
   markSlide();
 }
 
-const pager = partNavigator('slide');
+let pager;
 
 /** Marks the slide the view is on, in the slide navigator and in the filmstrip, where it keeps it. */
 function markSlide() {
@@ -664,11 +663,6 @@ function markSlide() {
   else if (on !== current) films[on]?.scrollIntoView({ block: 'nearest' });
   current = on;
 }
-
-addEventListener('scroll', () => requestAnimationFrame(markSlide), { passive: true });
-outline.addEventListener('outlinechange', markSlide);
-// The slides are drawn after they are laid out, which moves those under them.
-new ResizeObserver(() => markSlide()).observe(page);
 
 // ---------------------------------------------------------------------------------------------
 // Loading and refreshing
@@ -886,6 +880,14 @@ async function load() {
 export default {
   main(session) {
     gadget = session;
+    // Built here, not on import: a Drive connection's frame holds the previews of all three
+    // kinds of file and starts one.
+    document.head.append(slideStyles, styleSheet);
+    pager = partNavigator('slide');
+    addEventListener('scroll', () => requestAnimationFrame(markSlide), { passive: true });
+    outline.addEventListener('outlinechange', markSlide);
+    // The slides are drawn after they are laid out, which moves those under them.
+    new ResizeObserver(() => markSlide()).observe(page);
     loadOnRefresh(load);
   },
 };

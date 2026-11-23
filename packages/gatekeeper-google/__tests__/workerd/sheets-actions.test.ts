@@ -3233,6 +3233,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
       readFont: ["Oxygen", 400, false],
       // Declarations, the same for every spreadsheet: answered whatever has become of this one.
       getRenderingTypes: [],
+      getPreviewKind: [],
     };
     // Every method only that session has is called here, so a new one cannot be left out.
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
@@ -3240,7 +3241,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     for (let method of writes) {
       // A read is refused as any read of the file is.
       let refusal = method === "updateSpreadsheet" ? OUT_OF_SCOPE
-        : method === "getRenderingTypes" ? undefined
+        : method === "getRenderingTypes" || method === "getPreviewKind" ? undefined
         : method === "readFont" ? expect.stringContaining('no drawing read names a font "Oxygen"')
         : "The requested file is outside this Drive binding.";
       sheetsRequests.requests.length = 0;

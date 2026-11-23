@@ -39,20 +39,19 @@ export const ConnectionPreviewPane = (
   const [source, setSource] = useState<{ gadget: GadgetUiSource } | null>(null)
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
-    setSource({
-      getUiBundle: () => client.getPreviewUi(item),
+    setSource({ gadget: item === undefined ? client : {
+      getUiBundle: () => client.getUiBundle(),
       connectToGadget: async () => {
-        if (item === undefined) return client.openSession()
         // The frame is given the item's session alone, which outlives the one it was opened from.
         // A session's type is its gatekeeper's own: this much of it is the convention.
-        const session = client.openSession() as unknown as RpcStub<ItemPreviews>
+        const session = client.connectToGadget() as unknown as RpcStub<ItemPreviews>
         try {
           return await session.openPreview(item)
         } finally {
           session[Symbol.dispose]()
         }
       },
-    })
+    } })
     return () => {
       setSource(null)
       client[Symbol.dispose]()

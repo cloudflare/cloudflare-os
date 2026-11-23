@@ -14,6 +14,7 @@ import type { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/works
 import type { ConnectionPreview } from './connectionPreview'
 import { ConnectionPreviewPane } from './ConnectionPreviewPane'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
+import { DRIVE_PREVIEW_BUNDLE } from './drivePreviewBundle'
 import '../../styles.css'
 
 const DOC_ID = 7
@@ -99,6 +100,11 @@ class DocSession extends RpcTarget {
   replaceText() {
     this.doc.calls.push('replaceText')
   }
+
+  // What a file's session tells a connection of several kinds of file, to pick its preview.
+  getPreviewKind() {
+    return 'docs'
+  }
 }
 
 /** The session of a connection that reaches several documents, which opens one for its preview. */
@@ -122,13 +128,12 @@ class DocConnection extends RpcTarget {
     super()
   }
 
-  openSession() {
+  connectToGadget() {
     return this.doc.folder ? new FolderSession(this.doc) : new DocSession(this.doc)
   }
 
-  getPreviewUi(item?: string) {
-    if (item !== undefined) this.doc.calls.push(`getPreviewUi ${item}`)
-    return DOCS_PREVIEW_BUNDLE
+  getUiBundle() {
+    return this.doc.folder ? DRIVE_PREVIEW_BUNDLE : DOCS_PREVIEW_BUNDLE
   }
 }
 
@@ -321,7 +326,7 @@ it('draws one item of a connection from a session of that item, with only its ch
 
   // The frame is handed the item's session, and the one it was opened from is let go.
   await expect.poll(() => doc.calls).toContain('getPendingChanges')
-  expect(doc.calls).toEqual(expect.arrayContaining(['getPreviewUi file', 'openPreview file', 'dispose folder']))
+  expect(doc.calls).toEqual(expect.arrayContaining(['openPreview file', 'dispose folder']))
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
   await expect.element(page.getByText('Change 2')).toBeVisible()
 
