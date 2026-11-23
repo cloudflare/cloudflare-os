@@ -2413,8 +2413,9 @@ async function runAgentPass(
   const replayFileImages = new Set<AiToolCall>();
   let fileImageCount = 0, fileImageBytes = 0;
   let stepImageCount = 0, stepImageBytes = 0;
-  for (const msg of chatMessages.toReversed()) {
-    if (msg.type !== "message") continue;
+  for (let index = chatMessages.length - 1; index >= 0; --index) {
+    const msg = chatMessages[index];
+    if (msg.type !== "message" || sawRevertedContent(index)) continue;
     for (const call of (msg.toolCalls ?? []).toReversed()) {
       if (call.toolName !== "readFile" || !call.image || call.error) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;

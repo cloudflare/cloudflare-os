@@ -102,6 +102,22 @@ describe("images read from a worktree", () => {
     expect(open.mock.calls.filter(([oid]) => oid === impl.gitCache.writeBlob(PNG).oid)).toHaveLength(4);
   }));
 
+  it("does not let reverted reads displace valid image history", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await turn(impl, chatId, [[read(), read(), read(), read()]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "One more"}]);
+    await turn(impl, chatId, [[read()]]);
+    const lastRead = [...impl.storage.chats.list()].findLast(message =>
+      message.type === "message" && message.toolCalls?.some(call => call.toolName === "readFile"));
+    if (!lastRead) throw new Error("Expected image read");
+    impl.addChatMessages(chatId, USER, [{type: "revert", revertFrom: lastRead.sequence},
+      {type: "message", message: "Continue"}]);
+    const {requests} = await turn(impl, chatId, []);
+    const shown = results(requests[0]);
+    expect(shown.slice(0, 4).every(result => result.content.some(part => part.type === "image"))).toBe(true);
+    expect(shown.at(-1)?.content.every(part => part.type === "text")).toBe(true);
+  }));
+
   it.each(["oversize", "dimensions", "truncated"])("rejects %s images without sending binary text", kind => inKernel(crypto.randomUUID(), async impl => {
     const bytes = kind === "oversize" ? new Uint8Array(4 * 1024 * 1024 + 1) : PNG.slice();
     bytes.set(PNG.slice(0, Math.min(bytes.length, PNG.length)));
