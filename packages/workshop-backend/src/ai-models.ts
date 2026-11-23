@@ -35,7 +35,7 @@ import {
 import { traceChat } from "./agent-tracing.js";
 import {
   AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, getAiGatewayConfig, getGatewayModels,
-  type AiGatewayLogRoute,
+  isGuardrailsPromptBlock, type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -118,11 +118,15 @@ export type ModelHandle = {
   /**
    * Status and AI Gateway log id of the most recent HTTP response observed by `stream`, and for
    * the Auto Router model the gateway model that answered. Reset at the start of every request
-   * and set from pi's onResponse callback (which fires only once a response arrives -- an
-   * SDK-level failure leaves this undefined), so consumers must read it right after the request
-   * they care about completes. Turns run requests sequentially, so this is safe.
+   * and set from pi's onResponse callback, which fires only once a response arrives: a request
+   * the SDK failed leaves this undefined, unless AI Gateway Guardrails blocked its prompt, which
+   * the handle records itself as `promptBlocked` (see isGuardrailsPromptBlock). Consumers must
+   * read it right after the request they care about completes. Turns run requests sequentially,
+   * so this is safe.
    */
-  lastResponse?: { status: number; aiGatewayLogId?: string; routedModel?: string };
+  lastResponse?: {
+    status: number; aiGatewayLogId?: string; routedModel?: string; promptBlocked?: true;
+  };
 
   /**
    * The most recent request `stream` sent with prompt caching on, once its response ends, if the
@@ -582,6 +586,19 @@ function makeHandle(args: HandleArgs): ModelHandle {
           stripped.delete("x-goog-api-key");
           const nextInit = { ...init, headers: stripped };
           return baseFetch ? baseFetch(input, nextInit) : globalThis.fetch(input, nextInit);
+        };
+      }
+      if (args.aiGatewayLogRoute !== undefined) {
+        // Only behind a gateway: a provider reached directly may use the same code for
+        // something else (see isGuardrailsPromptBlock).
+        const send = fetch;
+        fetch = async (input, init) => {
+          const response = await (send ? send(input, init) : globalThis.fetch(input, init));
+          if (await isGuardrailsPromptBlock(response)) {
+            received = { status: response.status, promptBlocked: true };
+            handle.lastResponse = received;
+          }
+          return response;
         };
       }
       const transcript = normalizeContext(

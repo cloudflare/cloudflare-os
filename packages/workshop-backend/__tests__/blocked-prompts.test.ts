@@ -1,59 +1,65 @@
 import { describe, expect, it } from "vitest";
-import type { AiChatMessage } from "@gadgets/workshop-shared/api";
-import { blockedPromptSequences, unansweredInput } from "../src/blocked-prompts.js";
+import type { AiChatAuthorInfo, AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
+import { unansweredInput } from "../src/blocked-prompts.js";
 
-const USER = { type: "user" } as AiChatMessage["author"];
-const AGENT = { type: "agent" } as AiChatMessage["author"];
+const USER: AiChatAuthorInfo = { type: "user", id: "owner@example.com", name: "Owner" };
+const AGENT: AiChatAuthorInfo = { type: "agent", id: "model", name: "Model" };
 
-// A log from records written as [type, author?, extra?], numbered in order.
-function log(...records: [string, AiChatMessage["author"]?, object?][]): AiChatMessage[] {
-  return records.map(([type, author = USER, extra = {}], sequence) => ({
-    sequence, timestamp: new Date(0), author, type, message: "", ...extra,
-  }) as unknown as AiChatMessage);
+// A chat log, oldest first, of records written as [author, body] and numbered in that order.
+function log(...records: [AiChatAuthorInfo, AiChatMessageBody][]): AiChatMessage[] {
+  return records.map(([author, body], sequence) =>
+      ({ chatId: 1, sequence, timestamp: new Date(0), author, ...body }));
 }
 
-describe("blockedPromptSequences", () => {
-  it("leaves out the user's input since the agent last spoke, edits and uploads included", () => {
-    let messages = log(
-      ["message"],                                        // 0: answered
-      ["message", AGENT],                                 // 1
-      ["message"],                                        // 2: the injection
-      ["changes"],                                        // 3: its upload
-      ["error", AGENT, { code: "prompt_blocked", blockedBefore: 4 }],
-      ["message"],                                        // 5: the next message
-    );
-    expect([...blockedPromptSequences(messages)]).toEqual([2, 3]);
-  });
+const said = (message: string): AiChatMessageBody => ({ type: "message", message });
+const TOOL_STEP: AiChatMessageBody = {
+  type: "message", message: "",
+  toolCalls: [{ toolCallId: "fetch", toolName: "webFetch", input: { url: "https://example.com" } }],
+};
 
-  it("keeps steers the blocked request never read", () => {
-    let messages = log(
-      ["message", AGENT],
-      ["message"],                                        // 1: blocked
-      ["message", USER, { steered: true }],               // 2: logged with the error
-      ["error", AGENT, { code: "prompt_blocked", blockedBefore: 2 }],
-      ["message", AGENT],
-    );
-    expect([...blockedPromptSequences(messages)]).toEqual([1]);
-  });
-
-  it("leaves everything in place for other errors and agent edits", () => {
-    let messages = log(
-      ["message"],
-      ["changes", AGENT],
-      ["error", AGENT, { message: "429 slow down" }],
-      ["message"],
-    );
-    expect(blockedPromptSequences(messages).size).toBe(0);
-  });
-});
+// What a request sent now would carry that no answered request has.
+const carried = (messages: AiChatMessage[]) => unansweredInput(messages.toReversed());
 
 describe("unansweredInput", () => {
-  it("is the input since the agent last spoke or a block covered it", () => {
-    expect(unansweredInput(log(["message"], ["message", AGENT], ["message"], ["changes"])))
-        .toEqual([2, 3]);
-    expect(unansweredInput(log(["message"], ["message", AGENT]))).toEqual([]);
-    expect(unansweredInput(log(
-        ["message"], ["error", AGENT, { code: "prompt_blocked", blockedBefore: 1 }])))
-        .toEqual([]);
+  it("is what the user added since the agent's last reply", () => {
+    expect(carried(log(
+      [USER, said("Hi")],                                       // 0: answered
+      [AGENT, said("Hello.")],                                  // 1
+      [USER, said("The injection")],                            // 2
+      [USER, { type: "changes" }],                              // 3: its upload
+    ))).toEqual([3, 2]);
+  });
+
+  it("is nothing once the agent has replied", () => {
+    expect(carried(log([USER, said("Hi")], [AGENT, said("Hello.")]))).toEqual([]);
+  });
+
+  it("includes a step that called tools, whose results no request has carried", () => {
+    expect(carried(log(
+      [USER, said("Fetch the page")],                           // 0: answered by the step
+      [AGENT, TOOL_STEP],                                       // 1
+      [AGENT, { type: "changes" }],                             // 2: the step's own edits
+      [USER, { type: "message", message: "And hurry", steered: true }],  // 3: read after it
+    ))).toEqual([3, 1]);
+  });
+
+  it("includes a call's arguments, and none of what replay writes itself", () => {
+    expect(carried(log(
+      [AGENT, said("Done.")],
+      [USER, { type: "agentCallback", methodName: "onMail", argsSummary: "[0]: ..." }],  // 1
+      [USER, { type: "revert", revertFrom: 0 }],
+      [AGENT, { type: "agentNudge", text: "Continue." }],
+      [AGENT, { type: "error", message: "429 slow down" }],
+    ))).toEqual([1]);
+  });
+
+  it("leaves out what an earlier block names, and keeps the steer that block never read", () => {
+    expect(carried(log(
+      [AGENT, TOOL_STEP],                                       // 0
+      [USER, said("The injection")],                            // 1
+      [USER, { type: "message", message: "Never mind", steered: true }],  // 2: logged unread
+      [AGENT, { type: "error", message: "blocked", code: "prompt_blocked", blockedInput: [1, 0] }],
+      [USER, said("Try this instead")],                         // 4
+    ))).toEqual([4, 2]);
   });
 });

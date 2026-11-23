@@ -32,10 +32,9 @@ import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import {
-  AgentTurnError, PromptBlockedError, completeText, httpStatusFromError, isBlockedPromptError,
-  zeroUsage,
+  AgentTurnError, PromptBlockedError, completeText, httpStatusFromError, zeroUsage,
 } from "./ai-invoke";
-import { blockedPromptSequences, unansweredInput } from "./blocked-prompts";
+import { unansweredInput } from "./blocked-prompts";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
 import { assertNoNul } from "./git-cache";
@@ -2336,17 +2335,20 @@ async function runAgentPass(
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
 
-  // Input AI Gateway Guardrails blocked before it reached the model (see blocked-prompts.ts).
-  // Replaying it would get every later request blocked too, so its messages are dropped and its
-  // edits and uploads still apply to the files but aren't shown to the model as observations.
-  let blockedPrompts = blockedPromptSequences(chatMessages);
+  // What a request that AI Gateway Guardrails blocked had newly carried (see
+  // AiChatMessageBody.blockedInput). A request that shows it to the model again is blocked
+  // again, so replay withholds it: a user's message, edits or call is left out, and an agent step
+  // keeps its calls but not their results. What those records did still replays, so files,
+  // bindings and change numbers stay as the log has them.
+  let blockedInput = new Set(chatMessages.flatMap(
+      msg => msg.type === "error" ? msg.blockedInput ?? [] : []));
 
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
+    let withheld = blockedInput.has(msg.sequence);
     switch (msg.type) {
       case "message": {
-        if (blockedPrompts.has(msg.sequence)) break;
         let content = msg.message;
 
         if (msg.capsules) {
@@ -2378,6 +2380,8 @@ async function runAgentPass(
           parts.push(content.slice(pos));
           content = parts.join("");
         }
+        // A withheld message keeps its pasted resources bound, above, and loads no attachments.
+        if (withheld && msg.author.type !== "agent") break;
 
         // The step's persisted model-facing snapshot, if it has one (agent steps persisted since
         // snapshots existed). Fetched before the empty-message check below: a step whose only
@@ -2570,7 +2574,7 @@ async function runAgentPass(
                     toolOutput = {text: readFileWindow(
                         {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
-                    markFileRead(workpieceId, toolCall.input.filename, oid);
+                    if (!withheld) markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
                         hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
@@ -2612,7 +2616,7 @@ async function runAgentPass(
 
                     toolOutput = {text: readFileWindow(source, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
-                    markFileRead(workpieceId, toolCall.input.filename);
+                    if (!withheld) markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
                 }
@@ -2773,6 +2777,13 @@ async function runAgentPass(
                 toolName: toolCall.toolName, toolCallId: toolCall.toolCallId, error: err,
               });
             }
+            if (withheld) {
+              toolOutput = {
+                text: "This result was left out because a safety filter blocked a request " +
+                    "that carried it. The call was made, and what it changed is in place.",
+                isError: true,
+              };
+            }
 
             modelMessages.push({
               role: "toolResult",
@@ -2854,12 +2865,18 @@ async function runAgentPass(
           // are still surfaced as observations below. A conversion boundary's change is not user
           // activity -- it re-records content from before the boundary, which the model already
           // saw (or wrote) -- so it applies without an observation.
-          let isUserActivity = msg.author.type === "user" && !msg.conversionBoundary &&
-              !blockedPrompts.has(msg.sequence);
+          let isUserActivity = msg.author.type === "user" && !msg.conversionBoundary;
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
             diff = applyReplayedChange(msg.change, isUserActivity);
+            if (withheld) {
+              // The model is not shown this diff (see the end of the loop), so it no longer
+              // knows the files it changed, as when a diff is too large to show.
+              for (let [id, files] of Object.entries(msg.change)) {
+                for (let [filename] of files) filesRead.get(Number(id))?.delete(filename);
+              }
+            }
           }
           if (isUserActivity) {
             // Surface everything the user did in this batch as one synthetic observation:
@@ -3076,6 +3093,10 @@ async function runAgentPass(
         msg satisfies never;
         break;
     }
+
+    // A withheld record of another kind has replayed what it did, above. Only what it added for
+    // the model to read is dropped.
+    if (withheld && msg.type !== "message") modelMessages.length = modelMessageStart;
 
     while (modelMessageSources.length < modelMessages.length) {
       modelMessageSources.push({
@@ -4284,9 +4305,6 @@ async function runAgentPass(
   // loop reports them as a final assistant message with stopReason "error"/"aborted".) Nothing
   // from a failed turn is persisted.
   let turnFailure: AssistantMessage | undefined;
-  // Whether this pass persisted a step. After one, a failed request's new input is the step's
-  // tool results rather than the user's, which a "prompt_blocked" error can't leave out.
-  let committedStep = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4510,7 +4528,6 @@ async function runAgentPass(
           pendingWorktreeCommits = [];
           let blueprintMerges = pendingBlueprintMerges;
           pendingBlueprintMerges = [];
-          committedStep = true;
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
                worktreeCommits, blueprintMerges, reRoots},
@@ -4713,13 +4730,16 @@ async function runAgentPass(
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let status = httpStatusFromError(message, handle.lastResponse);
-    // Guardrails blocking the user's new input: the overseer ends the turn with
-    // "prompt_blocked", and replay leaves that input out. Only for a request that went through
-    // an AI Gateway and carried input replay can drop: the pass's first request, with user input
-    // the agent hasn't answered.
-    if (handle.aiGatewayLogRoute !== undefined && isBlockedPromptError(message) &&
-        !committedStep && unansweredInput(chatMessages).length > 0) {
-      throw new PromptBlockedError(message, status);
+    if (handle.lastResponse?.promptBlocked) {
+      // Guardrails blocks the request again for as long as it carries the same input, so the
+      // turn ends with that input named, for replay to withhold. The log is read again for the
+      // steps and steers this pass added to it. Changes a user made meanwhile (a gadget, a
+      // binding) are not counted: this pass never loaded them, so the request did not carry them.
+      let loaded = chatMessages.at(-1)?.sequence ?? -1;
+      let carried = unansweredInput(hooks.loadChatHistory(chatId).chatMessages
+          .filter(entry => entry.type !== "changes" || entry.sequence <= loaded)
+          .toReversed());
+      if (carried.length > 0) throw new PromptBlockedError(message, status, carried);
     }
     let error = new AgentTurnError(message, status);
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};

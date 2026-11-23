@@ -45,21 +45,20 @@ export function httpStatusFromError(errorMessage: string, response: ModelHandle[
 }
 
 /**
- * Whether a failed request's error text is AI Gateway's own error envelope (`"success": false`)
- * carrying Guardrails' prompt-block code, 2016. Only meaningful for a request that went through
- * an AI Gateway: a provider reached directly may use 2016 for something else.
+ * A model request whose prompt AI Gateway Guardrails blocked (e.g. as a prompt injection). Every
+ * request that carries the same input is blocked the same way, so the overseer ends the turn
+ * with a "prompt_blocked" error that names the input, and replay withholds it from the model
+ * (see AiChatMessageBody.blockedInput).
  */
-export function isBlockedPromptError(errorMessage: string): boolean {
-  return /"success"\s*:\s*false/.test(errorMessage) && /"code"\s*:\s*2016\b/.test(errorMessage);
-}
+export class PromptBlockedError extends AgentTurnError {
+  /** The records the request carried that no answered request had (see unansweredInput). */
+  readonly blockedInput: number[];
 
-/**
- * A turn's first model request, sent through an AI Gateway, that Guardrails blocked (e.g. as a
- * prompt injection) while it carried new user input. That input never reached the model, and
- * every request that still carries it is blocked the same way, so the overseer ends the turn with
- * a "prompt_blocked" error and replay leaves the input out (see blocked-prompts.ts).
- */
-export class PromptBlockedError extends AgentTurnError {}
+  constructor(message: string, statusCode: number | undefined, blockedInput: number[]) {
+    super(message, statusCode);
+    this.blockedInput = blockedInput;
+  }
+}
 
 /**
  * Run a single non-streaming-style completion against a ModelHandle and return the response

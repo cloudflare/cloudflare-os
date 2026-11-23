@@ -8411,7 +8411,7 @@ class OverseerImpl implements AgentHooks {
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
     // Why the turn ended early, posted in the `finally`.
-    let failure: {message: string, code?: string} | undefined;
+    let failure: {message: string, code?: string, blockedInput?: number[]} | undefined;
     // The turn's last model request, kept warm while the chat is viewed (see ChatCacheWarmer).
     let lastRequest: CachedRequest | undefined;
     let startedAt = Date.now();
@@ -8538,11 +8538,12 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      // Only the turn's own request reports a block (see PromptBlockedError), never `/compact`'s
-      // summary request, which adds no input for replay to leave out.
+      // A prompt that Guardrails blocked is blocked again whenever its input is sent again, so
+      // the error names that input, which replay then withholds from the model.
       failure = err instanceof PromptBlockedError
-        ? {message: "Your message was blocked by a safety filter and left out of the " +
-                    "conversation. Send a new message to continue.", code: "prompt_blocked"}
+        ? {message: "A safety filter blocked this request. The new content it carried is left " +
+                    "out of the conversation. Send a new message to continue.",
+           code: "prompt_blocked", blockedInput: err.blockedInput}
         : {message: errorMessage};
     } finally {
       if (owns()) {
@@ -8563,7 +8564,8 @@ class OverseerImpl implements AgentHooks {
           // Posted past the turn's last await, so a steer sent as the turn winds down still lands
           // before the error, which must stay last for Retry to show.
           if (failure) {
-            this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
+            this.postAgentErrorMessage(
+                chatId, aiModel.profile, failure.message, failure.code, failure.blockedInput);
           }
 
           // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
@@ -9897,17 +9899,13 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string) {
+  postAgentErrorMessage(chatId: number, author: AiChatAuthorInfo, message: string, code?: string,
+                        blockedInput?: number[]) {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
       // Chat thread deleted?
       return;
     }
-
-    // A blocked prompt covers the input logged so far, not the steers logged next: the blocked
-    // request never read them, so replay keeps them (see blocked-prompts.ts).
-    let blockedBefore = code === "prompt_blocked"
-        ? this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0 : undefined;
 
     // An error ends the turn early. Log the steers it never read first, so the error stays the
     // chat's last message, and a Retry reads them.
@@ -9922,7 +9920,7 @@ class OverseerImpl implements AgentHooks {
       type: "error",
       message,
       ...(code ? { code } : {}),
-      ...(blockedBefore !== undefined ? { blockedBefore } : {}),
+      ...(blockedInput ? { blockedInput } : {}),
     });
   }
 

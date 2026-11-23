@@ -6,7 +6,6 @@ import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/cod
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
-import {blockedPromptSequences} from "./blocked-prompts";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -343,12 +342,10 @@ export function buildCompactionState(
   let compacted = messages.filter(message => message.sequence < compactedTo);
   let chatBindings = new Map([...initialBindings, ...previous?.chatBindings ?? []]);
   let nextChangeId = previous?.nextChangeId ?? 0;
-  // Replay leaves blocked input out, so its pasted resources never entered the agent's env.
-  let blocked = blockedPromptSequences(messages);
 
   for (let message of compacted) {
     if (message.type === "message") {
-      for (let capsule of blocked.has(message.sequence) ? [] : message.capsules ?? []) {
+      for (let capsule of message.capsules ?? []) {
         if (capsule.bindingName !== undefined && !chatBindings.has(capsule.bindingName)) {
           chatBindings.set(capsule.bindingName, {type: "workpiece", id: capsule.gatekeeperId});
         }

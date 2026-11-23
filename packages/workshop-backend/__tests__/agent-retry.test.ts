@@ -1,8 +1,9 @@
 // How runAgent ends a turn. It retries a model request that failed transiently, running the pass
 // again even when the failed request already streamed output, and tells clients to discard that
-// output first. And it leaves the turn's last request to keep cached only when the chat's next
-// request will start with it. Drives the real runAgent against a real OverseerImpl, with pi's faux
-// provider standing in for the model.
+// output first. It leaves the turn's last request to keep cached only when the chat's next
+// request will start with it. And it ends a turn whose request AI Gateway Guardrails blocked
+// with the input that request carried. Drives the real runAgent against a real OverseerImpl,
+// with pi's faux provider standing in for the model.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -17,6 +18,7 @@ import type {
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GadgetRecord } from "../src/storage-schema/overseer-storage.js";
 import { runAgent, type AgentHooks } from "../src/agent";
+import { PromptBlockedError } from "../src/ai-invoke.js";
 import type { CachedRequest, ModelHandle } from "../src/ai-models.js";
 
 declare module "cloudflare:workers" {
@@ -165,5 +167,50 @@ describe("the request a turn leaves to keep cached", () => {
         impl, [fauxAssistantMessage(fauxToolCall(tool, {}))], 112_000);
     expect(requests).toHaveLength(1);
     expect(kept).toBe(fits ? requests[0] : undefined);
+  }));
+});
+
+describe("a request whose prompt AI Gateway Guardrails blocked", () => {
+  // Runs one turn whose request the gateway blocks, after `meanwhile` has run, and returns what
+  // the turn threw.
+  async function runBlockedTurn(impl: OverseerInternals, meanwhile = () => {}): Promise<unknown> {
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    faux.setResponses([fauxAssistantMessage(fauxText(""),
+        { stopReason: "error", errorMessage: "424 Prompt blocked due to security configurations" })]);
+    let handle: ModelHandle = {
+      model: faux.getModel(),
+      stream: (model, context, options) => {
+        meanwhile();
+        handle.lastResponse = { status: 424, promptBlocked: true };
+        return faux.stream(model, context, options);
+      },
+    };
+    return runAgent(impl, handle, CHAT_ID, { type: "agent", id: "faux-model", name: "Faux" },
+        new AbortController().signal, OWNER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "" }).catch(error => error);
+  }
+
+  it("names the input the request carried, but not a change the user made meanwhile",
+      () => withImpl(async impl => {
+    seedChat(impl);
+    let [prompt] = [...impl.storage.chats.list()].filter(msg => msg.chatId === CHAT_ID);
+
+    // The request was built before the user's change, so it did not carry it.
+    let error = await runBlockedTurn(
+        impl, () => impl.addChatMessages(CHAT_ID, OWNER, [{ type: "changes" }]));
+    expect(error).toBeInstanceOf(PromptBlockedError);
+    expect(error).toMatchObject({ blockedInput: [prompt.sequence] });
+  }));
+
+  it("fails like any other request when it carried nothing replay can withhold",
+      () => withImpl(async impl => {
+    seedChat(impl);
+    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
+    impl.addChatMessages(CHAT_ID, { type: "agent", id: "faux-model", name: "Faux" },
+        [{ type: "agentNudge", text: "Continue." }]);
+
+    let error = await runBlockedTurn(impl);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PromptBlockedError);
   }));
 });
