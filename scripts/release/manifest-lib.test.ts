@@ -333,6 +333,17 @@ test("releaseShortName rejects names that don't fold to a legal slug", () => {
   assert.equal(releaseShortName(`gatekeeper-${"a".repeat(20)}`), "a".repeat(20));
 });
 
+// A deployment admin's connect flow hands their Admin API to whatever Worker is bound as
+// GATEKEEPER_ADMIN, so only the admin gatekeeper's own package may fold to that slug.
+test("releaseShortName reserves the admin gatekeeper's slug for its package", () => {
+  assert.equal(releaseShortName("gatekeeper-admin"), "admin");
+  for (const pkgName of ["gatekeeper-ad-min", "gatekeeper-ad.min"]) {
+    assert.throws(() => releaseShortName(pkgName),
+        /folds to "admin", which is reserved for gatekeeper-admin/,
+        `expected ${pkgName} to be rejected`);
+  }
+});
+
 test("every gatekeeper shortName is unique", () => {
   const owners = new Map<string, string>();
   for (const [name, entry] of Object.entries(buildTestManifest().workers)) {

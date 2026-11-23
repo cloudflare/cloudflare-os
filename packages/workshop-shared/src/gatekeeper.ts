@@ -692,7 +692,36 @@ export type GatekeeperConnectOptions = {
   resourceTypeIds?: string[];
   /** Legacy Workshop callers send exact current patterns. Do not combine with resourceTypeIds. */
   resourceUrlPatterns?: string[];
+  /**
+   * The connecting user's Admin API. The Workshop sets it for one vendor only, the admin
+   * gatekeeper (whatever is bound as GATEKEEPER_ADMIN), and only when the user is a deployment
+   * admin.
+   */
+  adminApi?: Fetcher<AdminApiGrant>;
 };
+
+/**
+ * One deployment admin's Admin API, as the Workshop hands it to the admin gatekeeper when that
+ * admin connects it (GatekeeperConnectOptions.adminApi). The stub is persistent and bound to the
+ * user who connected: the gatekeeper stores it in their account and holds it until the account is
+ * removed. It carries no standing authority: each method reads who the deployment's admins are
+ * when it is called.
+ *
+ * `Api` is the Admin API (AdminApi in api.ts). It is a parameter because api.ts imports this
+ * file, which every gatekeeper compiles, and not the reverse.
+ */
+export interface AdminApiGrant<Api extends RpcTarget = RpcTarget> extends WorkerEntrypoint {
+  /** Whether the user the grant is bound to is a deployment admin now. */
+  isAdmin(): Promise<boolean>;
+
+  /**
+   * Opens the Admin API as that user, with every audit record it makes labelled "gatekeeper" (see
+   * AdminVia in api.ts). Refused with ADMIN_ACCESS_ERROR_CODES.notAdmin when they are not a
+   * deployment admin now. The capability returned checks what a session's own does (see
+   * AdminApi), so a caller that must notice a demotion opens it again rather than keep it.
+   */
+  open(): Promise<Api>;
+}
 
 /**
  * What the browser tab that finished a connect flow must deliver to the Workshop, as returned by
@@ -768,15 +797,16 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * connectable (default true) and creatable (default false) flags control which flows offer it.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
-   * query, which the gatekeeper can consider in deciding what resources are available. If it
-   * returns an empty list, then the gatekeeper will be totally hidden from the user.
+   * query, and `options.isAdmin` whether that user is a deployment admin, which the gatekeeper can
+   * consider in deciding what resources are available. If it returns an empty list, then the
+   * gatekeeper will be totally hidden from the user.
    *
    * TODO: Providing the user ID here is a temporary hack to enable a hidden internal gatekeeper.
    *   Later on we should come up with a better way to manage which users see which gatekeepers.
    *
    * TODO: How does the Gadget Workshop know when the supported URLs have changed, without polling?
    */
-  getSupportedResources(options?: {userId?: string}): Promise<SupportedResource[]>;
+  getSupportedResources(options?: {userId?: string, isAdmin?: boolean}): Promise<SupportedResource[]>;
 
   /**
    * Returns TypeScript source code defining all types covering APIs defined by this Gatekeeper.

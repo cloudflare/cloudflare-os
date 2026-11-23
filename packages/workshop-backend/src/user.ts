@@ -1,11 +1,11 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
-import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
+import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminApi, type AdminUserView } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, AdminApiGrant, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint, type RpcTarget } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type { Singleton } from "@gadgets/typed-storage";
 import {
@@ -20,11 +20,12 @@ import { createWorkshopLogger } from "./observability";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
-import type { AdminSettings } from "./admin-settings.js";
+import { AdminApiImpl, type AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import { isDeploymentAdmin, supportedResourcesHint } from "./auth/config.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
   authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
@@ -202,6 +203,14 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
  */
 export const CLOUDFLARE_VENDOR_ID = "cloudflare";
 
+/**
+ * Vendor id of the admin gatekeeper (the suffix of GATEKEEPER_ADMIN, lowercased): the one vendor
+ * a deployment admin's connect flow hands their Admin API to (see AdminApiGrantImpl). The binding
+ * is trusted as the backend's own configuration is, and the release build refuses any other
+ * package whose install slug folds to this id.
+ */
+export const ADMIN_GATEKEEPER_VENDOR_ID = "admin";
+
 const withholdSecret = (secret: string) => secret === "" ? "" : null;
 
 /** Withholds the non-empty secrets of `config`, for returning it to a client. */
@@ -287,12 +296,12 @@ function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
 }
 
 async function checkGatekeeperVendorFilter(
-    vendor: Service<GatekeeperVendor> | Service<GatekeeperUser>,
+    getSupportedResources: () => Promise<SupportedResource[]>,
     vendorId: string,
     filter: GatekeeperVendorFilter): Promise<boolean> {
   try {
     if (filter.resourceUrl) {
-      let resources = await vendor.getSupportedResources();
+      let resources = await getSupportedResources();
       let matched = false;
       for (let resource of resources) {
         if (typeof resource.urlPattern !== "string") {
@@ -2083,9 +2092,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async listGatekeeperVendors(filter: GatekeeperVendorFilter = {})
       : Promise<GatekeeperVendorInfo[]> {
-    let options = {
-      userId: this.storage.profile.get().id
-    };
+    let options = supportedResourcesHint(this.env, this.storage.profile.get().id);
 
     // Admin-disabled resources/gatekeepers are filtered out here, which also covers the agent (the
     // Overseer's connectable-vendor/resource list is sourced from this method).
@@ -2099,7 +2106,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         continue;  // Whole gatekeeper disabled by admin.
       }
       promises.push((async () => {
-        if (filter && !(await checkGatekeeperVendorFilter(vendor, id, filter))) {
+        if (filter && !(await checkGatekeeperVendorFilter(
+            () => vendor.getSupportedResources(options), id, filter))) {
           return null;
         }
 
@@ -2149,11 +2157,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     let callback = this.ctx.exports.GatekeeperConnectCallbackImpl({props});
 
+    let hint = supportedResourcesHint(this.env, this.storage.profile.get().id);
     let usesIds = resourceTypeIds !== undefined &&
-      (await vendor.getSupportedResources({ userId: this.storage.profile.get().id }))
-        .some(resource => resource.id !== undefined);
-    let {url} = await vendor.connectAccount(callback, usesIds
-        ? {resourceTypeIds} : {resourceUrlPatterns: resourceTypeIds});
+      (await vendor.getSupportedResources(hint)).some(resource => resource.id !== undefined);
+    let {url} = await vendor.connectAccount(callback, {
+      ...(usesIds ? {resourceTypeIds} : {resourceUrlPatterns: resourceTypeIds}),
+      // The one vendor-specific step of a connect flow: the admin gatekeeper's account holds its
+      // admin's Admin API, as another vendor's holds a token.
+      ...(vendorId === ADMIN_GATEKEEPER_VENDOR_ID && hint.isAdmin && {
+        adminApi: this.ctx.exports.AdminApiGrantImpl({ props: { userId: hint.userId } }),
+      }),
+    });
     let nonce = await this.openConnectFlow(accountId);
     logger.info("account connect started", {
       event: "account.connect.started", vendorId, accountId,
@@ -2487,7 +2501,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let config = await readAdminConfig(this.env);
     let disabledGatekeeperSet = new Set(config.disabledGatekeepers);
 
-    const subscriberUserId = this.storage.profile.get().id;
+    const subscriberHint = supportedResourcesHint(this.env, this.storage.profile.get().id);
     async function notifyAdd(record: ConnectedAccountRecord) {
       // Ambient (auto-provisioned) accounts only appear in the Connectors list when their vendor is
       // "optional" — i.e. the user opted in and can manage/remove it. "enabled" (forced) accounts have
@@ -2504,7 +2518,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         return;  // Whole gatekeeper disabled by admin.
       }
       if (filter && !(await checkGatekeeperVendorFilter(
-          record.account, record.vendorId, filter))) {
+          () => record.account.getSupportedResources(), record.vendorId, filter))) {
         return;
       }
 
@@ -2542,7 +2556,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         supportedResources =
             filterEnabledResources(config, record.vendorId, supportedResources,
               config.disabledResources[record.vendorId]?.length
-                ? await vendor.getSupportedResources({ userId: subscriberUserId })
+                ? await vendor.getSupportedResources(subscriberHint)
                 : supportedResources);
       } catch (err) {
         supportedResources = [];
@@ -3047,7 +3061,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
     let advertised = findResourceType(
-        await vendor.getSupportedResources({ userId: this.storage.profile.get().id }),
+        await vendor.getSupportedResources(
+            supportedResourcesHint(this.env, this.storage.profile.get().id)),
         resourceTypeId, legacyUrlPattern);
     if (!advertised?.creatable) {
       throw new Error(`This vendor does not advertise creation of "${resourceTypeId ?? legacyUrlPattern}". ` +
@@ -3087,7 +3102,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // Only legacy restrictions need the vendor catalog to distinguish a removed pattern from a
     // type narrowed out of this account's list. ID-only policy checks need no additional RPC.
     let advertised = config.disabledResources[normalized]?.length
-      ? await this.vendors.get(normalized)!.getSupportedResources({ userId: this.storage.profile.get().id })
+      ? await this.vendors.get(normalized)!.getSupportedResources(
+            supportedResourcesHint(this.env, this.storage.profile.get().id))
       : [resource];
     if (isResourceDisabled(config, normalized, resource, advertised)) {
       throw new Error(
@@ -3196,6 +3212,34 @@ export class GatekeeperConnectCallbackImpl
   async credentialsRestored(expiresAt?: Date): Promise<void> {
     let userStub = this.#getUserStub();
     await userStub.markCredentialsRestored(this.ctx.props.accountId, expiresAt);
+  }
+}
+
+type AdminApiGrantProps = {
+  /** The user the grant was minted for, by canonical user id. */
+  userId: string;
+};
+
+/**
+ * A deployment admin's Admin API as the admin gatekeeper's account stores it (AdminApiGrant),
+ * minted by UserDurableObject.connectAccount(). Its props name the user and nothing else, so
+ * holding the stub grants only what that user is entitled to when it is used.
+ */
+@validateRpc()
+export class AdminApiGrantImpl
+    extends WorkerEntrypoint<Cloudflare.Env, AdminApiGrantProps>
+    implements AdminApiGrant<AdminApi & RpcTarget> {
+  async isAdmin(): Promise<boolean> {
+    return isDeploymentAdmin(this.env, this.ctx.props.userId);
+  }
+
+  /** Skips validation of the result, an RpcTarget the generated validator would wrap in a Proxy. */
+  @skipRpcValidation()
+  async open(): Promise<AdminApi & RpcTarget> {
+    if (!isDeploymentAdmin(this.env, this.ctx.props.userId)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    return new AdminApiImpl(this.ctx, this.env, this.ctx.props.userId, "gatekeeper");
   }
 }
 
