@@ -18,9 +18,9 @@ const camera: UnifiResource = { kind: "camera", consoleId: CONSOLE, cameraId: CA
 const NETWORK = `console/${encodeURIComponent(CONSOLE)}/app/network`;
 const PROTECT = `console/${encodeURIComponent(CONSOLE)}/app/protect`;
 
-/** A site list as the Network API returns it. */
-const sites = (ids: string[]) =>
-  ({ offset: 0, limit: 200, count: ids.length, totalCount: ids.length, data: ids.map(id => ({ id, name: "S", internalReference: "s" })) });
+/** A page of the voucher list as the Network API returns it. */
+const voucherPage = (vouchers: object[]) =>
+  ({ offset: 0, limit: 1, count: vouchers.length, totalCount: vouchers.length, data: vouchers.map(v => ({ id: SITE, ...v })) });
 const nvr = (id: string) => rawNvr(id, "NVR", "70A7419783ED");
 
 describe("subresource IDs", () => {
@@ -33,6 +33,7 @@ describe("subresource IDs", () => {
     [device, { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }, `${NETWORK}/site/${SITE}/deviceStatistics/d`],
     [hotspot, { kind: "client", siteId: SITE, clientId: "c" }, `${NETWORK}/site/${SITE}/client/c`],
     [hotspot, { kind: "vouchers", siteId: SITE }, `${NETWORK}/vouchers/${SITE}`],
+    [hotspot, { kind: "voucherCodes", siteId: SITE }, `${NETWORK}/voucherCodes/${SITE}`],
     [protect, { kind: "list", id: "cameras" }, `${PROTECT}/list/cameras`],
     [protect, { kind: "app" }, PROTECT],
     [site, { kind: "app" }, NETWORK],
@@ -73,15 +74,18 @@ describe("subresource IDs", () => {
       .toEqual({ path: `/v1/sites/${SITE}/devices/d/statistics/latest` });
     expect(probeFor({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, "network"))
       .toEqual({ path: `/v1/sites/${SITE}/wifi/broadcasts/${WIFI}` });
-    expect(probeFor({ kind: "site", siteId: SITE }, "network")).toEqual({ path: "/v1/sites", query: { limit: "200" } });
     expect(probeFor({ kind: "list", id: "cameras" }, "protect")).toEqual({ path: "/v1/cameras" });
     expect(probeFor({ kind: "app" }, "protect")).toEqual({ path: "/v1/meta/info" });
   });
 
   it("passes a probe only when its answer shows what the requirement needs", () => {
-    // The site list shows a key only its own sites.
-    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([SITE]), "network")).toBe(true);
-    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([OTHER_SITE]), "network")).toBe(false);
+    // A voucher list must be one, and for codes, carry them.
+    const codes = { kind: "voucherCodes", siteId: SITE } as const;
+    expect(probeConfirms(codes, voucherPage([{ code: "1234567890" }]), "network")).toBe(true);
+    expect(probeConfirms(codes, voucherPage([{}]), "network")).toBe(false);
+    expect(probeConfirms(codes, voucherPage([]), "network")).toBe(false);
+    expect(probeConfirms({ kind: "vouchers", siteId: SITE }, voucherPage([]), "network")).toBe(true);
+    expect(() => probeConfirms({ kind: "vouchers", siteId: SITE }, undefined, "network")).toThrow();
     // The NVR must be the one the binding read, not a replacement's at the same URL.
     expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(NVR), "protect")).toBe(true);
     expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(CAMERA), "protect")).toBe(false);

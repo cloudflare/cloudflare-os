@@ -272,6 +272,12 @@ describe("checking collaborators", () => {
     // A device's details and its statistics are routes of their own, allowed apart from the list.
     expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/device/${HOME.apId}`])).toEqual(ALLOWED);
     expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/deviceStatistics/${HOME.apId}`])).toEqual(DENIED);
+    // A site past the first page of their site list still counts.
+    const crowd = Array.from({ length: 250 }, (_, i) => ({
+      ...homeConsole().network!.sites[0]!, site: { id: `88f7af54-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `Site ${i}`, internalReference: `s${i}` },
+    }));
+    unifi.direct.get(CONSOLE_URL)!.console.network!.sites.unshift(...crowd);
+    expect(await verify(site, sam)).toEqual(ALLOWED);
     // A site the collaborator's key doesn't list is one their role doesn't cover.
     const elsewhere = binding(owner, { kind: "site", consoleId, siteId: "5f0ee1aa-0000-4000-8000-ffffffffffff" });
     expect(await verify(elsewhere, sam)).toEqual(DENIED);

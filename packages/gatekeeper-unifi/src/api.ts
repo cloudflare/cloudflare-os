@@ -248,10 +248,19 @@ export class UnifiApi {
   }
 
   /** Creates hotspot vouchers, returning those UniFi created. */
+  /**
+   * Creates vouchers.
+   * @throws UnifiError (protocol) when the receipt doesn't list as many distinct vouchers as were
+   * asked for: the console may have issued them, so this can't be called a batch of none.
+   */
   async createVouchers(siteId: string, body: VoucherBody): Promise<UnifiVoucher[]> {
     const created = asObject(await this.#json("network", "POST",
       `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`, body), "voucher creation");
-    return Array.isArray(created.vouchers) ? created.vouchers.map(parseVoucher) : [];
+    const vouchers = Array.isArray(created.vouchers) ? created.vouchers.map(parseVoucher) : [];
+    if (new Set(vouchers.map(voucher => voucher.id)).size !== body.count) {
+      throw new UnifiError({ kind: "protocol", message: "UniFi's reply didn't list the vouchers it created." });
+    }
+    return vouchers;
   }
 
   /** Deletes a hotspot voucher. */

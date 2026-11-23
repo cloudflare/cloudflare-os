@@ -283,10 +283,11 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
         throw badRequest("Only a WPA2 or WPA3 Personal network has a password to change.");
       }
     }
-    // Named as UniFi has it now: a rename queued earlier applies on its own, and may not happen.
+    // Named as UniFi has it now: a rename queued earlier applies on its own, and may not happen. Staged
+    // under the ID as UniFi spells it, which simulation matches, however the caller spelled it.
     const current = parseWifiInfo(raw);
     await this.#ctx.submit("updateWifi", {
-      siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId, networkName: current.name,
+      siteId: this.#siteId, wifiNetworkId: current.id, networkName: current.name,
       changes: {
         ...(name !== undefined && { name }), ...(enabled !== undefined && { enabled }),
         ...(hidden !== undefined && { hidden }), ...(passphrase !== undefined && { passphrase }),
@@ -353,8 +354,14 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi hotspot vouchers",
       `Listed ${count(vouchers.length, "voucher")} for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
-      [{ kind: "vouchers", siteId: this.#siteId }], { restricted: vouchers.some(voucher => voucher.code !== null) });
+      this.#voucherRequirements(vouchers), { restricted: vouchers.some(voucher => voucher.code !== null) });
     return vouchers;
+  }
+
+  /** What a read of vouchers requires: the list, and the right to read codes if it returned any. */
+  #voucherRequirements(vouchers: readonly UnifiVoucher[]): [UnifiRequirement, ...UnifiRequirement[]] {
+    const list: UnifiRequirement = { kind: "vouchers", siteId: this.#siteId };
+    return vouchers.some(voucher => voucher.code !== null) ? [list, { kind: "voucherCodes", siteId: this.#siteId }] : [list];
   }
 
   async createVouchers(options: UnifiVoucherOptions): Promise<string> {
@@ -390,7 +397,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     }
     await this.#ctx.observe("Read a batch of UniFi hotspot vouchers",
       `Read ${count(vouchers.length, "voucher")} created together for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
-      [{ kind: "vouchers", siteId: this.#siteId }], { restricted: vouchers.some(voucher => voucher.code !== null) });
+      this.#voucherRequirements(vouchers), { restricted: vouchers.some(voucher => voucher.code !== null) });
     return vouchers;
   }
 

@@ -116,7 +116,9 @@ All IDs start `console/<consoleId>/app/<network|protect>`, which alone names the
 information, such as the version a site's or Protect's `describe()` returns. Then:
 
 - Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
-  `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists;
+  `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists, with
+  `/voucherCodes/<siteId>` for working voucher codes, passed only if the vouchers the collaborator's
+  key reads carry theirs;
   `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, and
   `/site/<siteId>/wifiPassword/<wifiNetworkId>` for its password, which a collaborator passes only
   if the settings their key reads include it; and
@@ -136,7 +138,7 @@ Checks:
   answered at the URL its owner typed, so it can't vouch for a console reached any other way: a
   server the collaborator runs could claim any MAC address. It then calls, with its own key, the
   endpoint each requirement names, and for a site's details also needs the site in its own site
-  list.
+  list, read to the end.
 - A collaborator's cloud connection needs Site Manager to list the console, matched by host ID or
   by MAC address, and is then checked the same way through the Cloud Connector, which reaches only
   consoles the collaborator owns. A collaborator who only administers the console passes nothing,

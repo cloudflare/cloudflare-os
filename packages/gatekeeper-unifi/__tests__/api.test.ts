@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_LIST_ITEMS, UnifiApi } from "../src/api";
 import { cameraPatch, guestLimitsBody, wifiPutBody } from "../src/actions";
 import { sendUnifiRequest, type UnifiCredentials } from "../src/transport";
-import { FakeUnifi, HOME, homeConsole, rawClient, SNAPSHOT_BYTES } from "./fake-unifi";
+import { FakeUnifi, HOME, homeConsole, rawClient, rawVoucher, SNAPSHOT_BYTES } from "./fake-unifi";
 
 const CLOUD: UnifiCredentials = { mode: "cloud", apiKey: "cloud-key-0123456789abcdef" };
 
@@ -124,5 +124,25 @@ describe("request bodies", () => {
       .toEqual({ lcdMessage: { type: "DO_NOT_DISTURB" } });
     expect(cameraPatch({ doorbellMessage: { kind: "text", text: "Back soon" }, until: 1_900_000_000_000 }))
       .toEqual({ lcdMessage: { type: "CUSTOM_MESSAGE", text: "Back soon", resetAt: 1_900_000_000_000 } });
+  });
+});
+
+/** An API whose console answers every request with `json`. */
+const receipt = (json: unknown) => new UnifiApi(async () => ({ ok: true, status: 201, json }), HOME.hostId);
+
+describe("creating vouchers", () => {
+  const body = { count: 2, name: "Party", timeLimitMinutes: 240 };
+
+  it("returns the vouchers the console issued", async () => {
+    const { api } = setup();
+    expect((await api.createVouchers(HOME.siteId, body)).map(v => v.note)).toEqual(["Party", "Party"]);
+  });
+
+  it("refuses a receipt that doesn't list every voucher, which may still have been issued", async () => {
+    await expect(receipt({}).createVouchers(HOME.siteId, body)).rejects.toMatchObject({ kind: "protocol" });
+    // Two entries, but the same voucher: one was issued, not two.
+    const voucher = rawVoucher(HOME.voucherId, "Party", "1234567890", "2026-10-01T12:00:00Z");
+    await expect(receipt({ vouchers: [voucher, voucher] }).createVouchers(HOME.siteId, body)).rejects.toMatchObject({ kind: "protocol" });
+    expect(await receipt({ vouchers: [voucher] }).createVouchers(HOME.siteId, { ...body, count: 1 })).toHaveLength(1);
   });
 });

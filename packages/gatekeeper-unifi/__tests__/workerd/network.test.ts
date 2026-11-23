@@ -58,7 +58,7 @@ describe("every read is authorized before it returns", () => {
       [guestWifi, item("wifiPassword", HOME.guestWifiId)], true],
     ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, [ofSite("clients")]],
     ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [item("client", HOME.guestId)]],
-    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers")], true],
+    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers"), ofSite("voucherCodes")], true],
   ];
   it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources, restricted) => {
     installFake();
@@ -281,6 +281,8 @@ describe("a WiFi network", () => {
     const theirs = await guestWifiOf(await connectDirect({ localApiKey: SECOND_KEY }), (id: string) => id.toUpperCase());
     await mine.call("update", { passphrase: "brand-new-pass" });
     await theirs.call("update", { hidden: true });
+    // Staged under the ID as UniFi spells it, so their own reads show it before approval.
+    expect(await theirs.call("describe")).toMatchObject({ hidden: true });
     // Hold my write until their read has gone out, or a moment has passed: without the shared lane
     // they'd read the old settings and write them back over mine.
     const { promise: theyRead, resolve: sawTheirRead } = Promise.withResolvers<void>();

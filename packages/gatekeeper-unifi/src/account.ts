@@ -278,6 +278,20 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     return answers;
   }
 
+  /**
+   * Whether a connection's own site list includes a site, read as far as it takes: the list shows a
+   * key only the sites its role covers, and a console can have more than one page of them.
+   */
+  async #listsSite(consoleId: string, siteId: string, connection: StoredConnection): Promise<boolean> {
+    try {
+      await new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId).getSite(siteId);
+      return true;
+    } catch (error) {
+      if (error instanceof UnifiError && ["notFound", "auth", "forbidden", "redirect"].includes(error.kind)) return false;
+      throw error;
+    }
+  }
+
   /** `canObserve`'s answers, every request sent with `connection`'s credentials. */
   async #observe(connection: StoredConnection, target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
     const none = requirements.map(() => false);
@@ -305,6 +319,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
         if (consoleId === null) return false;
+        if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
         const probe = await this.#send(
           { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
         if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined, target.app);
