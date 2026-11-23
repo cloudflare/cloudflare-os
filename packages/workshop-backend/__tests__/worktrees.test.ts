@@ -3,7 +3,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
+  AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
   ChatCodeBase, ChatGadgetPin, Overseer, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent, type FileChange }
@@ -924,6 +924,26 @@ describe("client delivery of worktree content", () => {
     expect((await client.getChatHistory(1, 5, 2)).nextBeforeSequence).toBeUndefined();
     expect((await client.getChatHistory(1, 0, 2)).messages).toEqual([]);
     expect((await client.getChatHistory(999, undefined, 2)).messages).toEqual([]);
+  }));
+
+  it("bounded history never inlines image bytes, which stay fetchable on demand",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    let id = crypto.randomUUID(), bytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
+    impl.storage.chatAttachmentContent.put({fileId: id, data: bytes, state: {type: "committed", chatId: 1}});
+    impl.storage.chats.put({chatId: 1, sequence: 0, type: "message", message: "look",
+      author: USER, timestamp: new Date(0),
+      attachments: [{id, mimeType: "image/png", size: bytes.byteLength}]});
+
+    let attachmentsOf = (page: AiChatHistoryPage) => {
+      let message = page.messages[0];
+      return message.type === "message" ? message.attachments : undefined;
+    };
+    expect(attachmentsOf(await client.getChatHistory(1, undefined, 10))).toEqual(
+        [{id, mimeType: "image/png", size: bytes.byteLength}]);
+    expect(new Uint8Array(await client.getChatAttachmentContent(1, id))).toEqual(bytes);
+    // Unbounded (checkpoint) pages still inline images.
+    expect(attachmentsOf(await client.getChatHistory(1))?.[0].content).toEqual(bytes);
   }));
 
   it("rejects invalid bounded history sizes", () => withClient(async (_impl, client) => {

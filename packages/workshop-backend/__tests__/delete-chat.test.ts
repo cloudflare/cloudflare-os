@@ -64,18 +64,22 @@ describe("deleteChat", () => {
     put(other, { type: "connectionRequest", requestId: "o", vendorId: "v", vendorName: "V",
       reason: "Needed", state: "pending" });
 
-    // How many messages each listing of the chats collection buffers.
+    // How many keys each listing of the chats collection buffers; no listing buffers whole
+    // messages.
     let listed: number[] = [];
-    let list = impl.storage.chats.list.bind(impl.storage.chats);
-    let spy = vi.spyOn(impl.storage.chats, "list").mockImplementation(function* (options?: object) {
+    let listKeys = impl.storage.chats.listKeys.bind(impl.storage.chats);
+    let keysSpy = vi.spyOn(impl.storage.chats, "listKeys").mockImplementation(function* (options?: object) {
       let count = 0;
-      for (let msg of list(options)) { count++; yield msg; }
+      for (let key of listKeys(options)) { count++; yield key; }
       listed.push(count);
     });
+    let listSpy = vi.spyOn(impl.storage.chats, "list");
     try {
       await client.deleteChat(chatId);
+      expect(listSpy).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      keysSpy.mockRestore();
+      listSpy.mockRestore();
     }
 
     expect(Math.max(...listed)).toBeLessThanOrEqual(CHAT_DELETE_PAGE_SIZE);

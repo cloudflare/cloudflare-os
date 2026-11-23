@@ -144,6 +144,14 @@ export interface Subscriber<T> {
 export interface Collection<T extends object, PrimaryKey = string> {
   get(key: PrimaryKey): T | undefined;
   list(options?: ListOptions<PrimaryKey>): Iterable<T>;
+
+  /**
+   * List the primary keys `list()` would visit, in the same order, without reading the records.
+   * Each key is in its stored string form (see `keyString()`), which `get()` and `delete()`
+   * accept. Lets a caller buffer a page of keys cheaply when its loop body would invalidate an
+   * open cursor (e.g. deleting records that non-unique indexes cover).
+   */
+  listKeys(options?: ListOptions<PrimaryKey>): Iterable<string>;
   delete(key: PrimaryKey): boolean;
 
   /**
@@ -459,6 +467,9 @@ function createCollection<
     },
     list(options: ListOptions<Key>): Iterable<T> {
       return mainKv.list(options);
+    },
+    listKeys(options: ListOptions<Key>): Iterable<string> {
+      return mainKv.listKeys(options);
     },
     delete(key: Key): boolean {
       if (subscribers.size == 0) {
