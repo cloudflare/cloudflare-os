@@ -106,7 +106,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
-      private via: AdminVia,
+      private via: Exclude<AdminVia, "gatekeeper">,
       private accessSession?: { jwt: string; expiresAt: number }) {
     super();
 
@@ -777,7 +777,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       private abortSession: (reason: Error) => void,
       private accessSession: { payload: JWTPayload; jwt: string } | undefined,
       private cliAdminsOnly: boolean,
-      private via: AdminVia) {
+      private via: Exclude<AdminVia, "gatekeeper">) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
