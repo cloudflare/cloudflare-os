@@ -31,7 +31,11 @@ styleSheet.textContent = `
   .fresh { animation: arrive .35s ease-out, glow 1.4s ease-out; }
   .flash { animation: glow 1.4s ease-out; }
   @keyframes arrive { from { opacity: 0; transform: translateY(4px); } }
-  @keyframes glow { 0%, 35% { filter: brightness(.9) saturate(2.2); } }
+  /* A ring round it, in the color of what it does where it says one: what it rings keeps its own colors. */
+  @keyframes glow {
+    from, 35% { outline: 2px solid var(--glow, var(--link)); outline-offset: 3px; }
+    to { outline: 2px solid transparent; outline-offset: 3px; }
+  }
   .ghost, .wait { background: linear-gradient(90deg, var(--chip) 25%, var(--shine) 50%, var(--chip) 75%) 0 0 / 200% 100%;
     animation: shimmer 1.4s linear infinite; }
   .ghost { height: 12px; margin: 14px 0 !important; min-height: 0 !important; border-radius: 6px; }

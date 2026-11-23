@@ -50,6 +50,10 @@ styleSheet.textContent = `
 
   /* A changed paragraph carries a bar in the page's margin, and what changed in it is tinted.
      The document's own colors stay, except where every change is read in place. */
+  :is(.added, .changed) { --glow: var(--mark-ink); }
+  .removed { --glow: var(--gone-ink); }
+  /* A mark has no box to ring: it glows itself. */
+  .omit { outline: none !important; }
   :is(.added, .removed, .changed)::before { content: ''; position: absolute; width: 2.5pt;
     left: calc(-1 * var(--in, 0pt) - 13pt); top: calc(var(--above, 0pt) + 1pt);
     bottom: calc(var(--below, 0pt) + 1pt); border-radius: 2pt; background: var(--mark-ink);
