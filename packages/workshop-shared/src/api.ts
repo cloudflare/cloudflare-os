@@ -654,7 +654,8 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
 
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
- * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls.
+ * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
+ * AdminApi.writeWorkspace().
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -662,6 +663,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   accessOff: "ADMIN_WORKSPACE_ACCESS_OFF",
   viewExpired: "ADMIN_VIEW_EXPIRED",
   notAdmin: "ADMIN_NOT_ADMIN",
+  writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -675,7 +677,10 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Admin access to workspaces and users is turned off on this deployment.",
   [ADMIN_ACCESS_ERROR_CODES.viewExpired]: "This admin view has expired. Inspect again.",
   [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
-      "Only a deployment admin can inspect a workspace or a user.",
+      "Only a deployment admin can inspect a workspace or a user, or change a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.writesOff]:
+      "Admin writes to workspaces are turned off on this deployment. Only its " +
+      "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -924,9 +929,8 @@ export interface AuthenticatedApi extends RpcTarget {
   getPreferredModel(): Promise<string | null>;
 
   /**
-   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
-   * accepted, including one hidden from pickers, but a new external conversation uses the
-   * preference only while it is offered, and otherwise the first offered model.
+   * Set the user's preferred model: any model ID that resolves, including one hidden from
+   * pickers, or null to clear the saved preference.
    */
   setPreferredModel(id: string | null): Promise<void>;
 
@@ -1894,10 +1898,11 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
 
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
- * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord and
- * inspectUser() as an AdminUserAccessRecord. The rest change no setting and are not recorded: the
- * reads (getSettings, isBlueprintFeatured, getUpdateStatus, listUsers, listWorkspaces,
- * listAdminAudit, getAdminAuditStats), the gateway tests, and checkForUpdates.
+ * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord,
+ * inspectUser() as an AdminUserAccessRecord, and writeWorkspace() as an AdminWriteRecord. The rest
+ * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
+ * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
+ * tests, and checkForUpdates.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2077,10 +2082,12 @@ export type AdminSettingRecord = {
 
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
-export type AdminAuditRecord = AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord;
+export type AdminAuditRecord =
+    AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord | AdminWriteRecord;
 
 /** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "user" for access to a
- * user's account, "setting" for a change to the deployment's settings. */
+ * user's account, "setting" for a change to the deployment's settings, "write" for an admin's
+ * write to a workspace. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -2089,14 +2096,16 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
-  /** Only records of calls to this method. AdminWorkspaceView and AdminUserView share three method
+  /** Only records of calls to this method or, for write records, of writes of this action (see
+   * AdminWriteRecord.method). AdminWorkspaceView and AdminUserView share three method
    * names, describe, listBlueprints and getDiagnostics: `kind` tells their records apart. */
   method?: AdminAuditRecord["method"];
-  /** Only records of access to this workspace. At most 1000 characters. */
+  /** Only records of access to, or a write to, this workspace. At most 1000 characters. */
   workspace?: string;
-  /** Only records of access to this user's data: to workspaces they own
-   * (AdminAccessRecord.workspaceOwner) and to their account (AdminUserAccessRecord.userId), by
-   * canonical user id, whole or as the records keep it. At most 1000 characters. */
+  /** Only records about this user's data: access to, or a write to, workspaces they own
+   * (AdminAccessRecord.workspaceOwner) and access to their account
+   * (AdminUserAccessRecord.userId), by canonical user id, whole or as the records keep it. At most
+   * 1000 characters. */
   owner?: string;
   /** Only records made at or after this time. */
   since?: Date;
@@ -2129,8 +2138,9 @@ export type AdminAuditStatsQuery = {
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (every kind when none is given). A record older than the
- * retention is gone, so a window reaching past it counts nothing there.
+ * covers the records of the queried kind (every kind when none is given). Only AdminWriteRecords
+ * can be writes, so that count is zero for any other kind. A record older than the retention is
+ * gone, so a window reaching past it counts nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2142,19 +2152,61 @@ export type AdminAuditStats = {
   byDay: { day: string; count: number }[];
   /** The admins with the most records in the window, most first (ties by id), at most 10. */
   topAdmins: { admin: string; count: number }[];
+  /** The writes to workspaces in the window: its AdminWriteRecords. */
+  writes: number;
+};
+
+/** What a deployment admin may do to a workspace: see AdminApi.writeWorkspace(), which says what
+ * each action does. */
+export const ADMIN_WRITE_ACTIONS = [
+  "stopAgent", "restartWorkspace",
+] as const;
+
+/** One of ADMIN_WRITE_ACTIONS. */
+export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
+
+/**
+ * The arguments of an admin write. Each action takes only its own, and a write naming any other,
+ * or missing a required one, is rejected:
+ *   - stopAgent: `chatId`;
+ *   - restartWorkspace: none.
+ */
+export type AdminWriteArgs = {
+  /** The chat, by AiChatMetadata.id. */
+  chatId?: number;
+};
+
+/**
+ * One admin write to a workspace (AdminApi.writeWorkspace()), in the deployment-wide audit log.
+ * The workspace appends it before it changes anything, so that a write whose record cannot be
+ * written does not happen; its owner and title are the workspace's own then, kept as an
+ * AdminAccessRecord keeps them, and `reason` is the one the admin gave for the write. The record
+ * says the write was made, not what came of it: a write that then fails keeps its record, and
+ * shows as its caller's error. It is the write's only record: the workspace keeps none, and its
+ * members see only what the write did (a stopped turn, ended sessions), as a member's would look.
+ */
+export type AdminWriteRecord = Pick<AdminAccessRecord,
+    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
+    "args" | "reason"> & {
+  /** Distinguishes this from the other kinds of AdminAuditRecord. */
+  kind: "write";
+  /** The action. Named `method` as on the other records, so that AdminAuditQuery.method filters
+   * every kind. */
+  method: AdminWriteAction;
 };
 
 /**
  * Capability for managing and investigating the deployment, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
- * capability is minted, so these methods don't re-check, with one exception: inspectWorkspace()
- * and inspectUser() re-check, and so does every call on the view either mints (AdminWorkspaceView,
- * AdminUserView), since a view is the one thing an admin holds that reads users' data. Covers
- * branding, agent instructions, which gatekeeper connectors/resources are offered, the models an
- * AI Gateway deployment provides, the user and workspace directory, and admin access to
- * workspaces and to users' accounts — NOT authentication config (that's env-var driven). Each
- * setter throws on invalid input, and records the change it makes in the deployment's audit log
- * before making it (see AdminSettingRecord).
+ * capability is minted, so these methods don't re-check, with two exceptions. inspectWorkspace()
+ * and inspectUser() re-check, and so does every call on the view either mints
+ * (AdminWorkspaceView, AdminUserView), since a view is what an admin holds that reads users'
+ * data. writeWorkspace() re-checks too, since it changes a user's workspace. Covers branding,
+ * agent instructions, which gatekeeper connectors/resources are offered, the models an AI Gateway
+ * deployment provides, the user and workspace directory, admin access to workspaces and to users'
+ * accounts, and admin writes to workspaces — NOT authentication config (that's env-var driven). Each setter throws on invalid
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -2552,9 +2604,9 @@ export interface AdminApi {
 
   /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
-   * holds access to workspaces and to users' accounts, and changes to settings. Rejects a `limit`
-   * that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a
-   * malformed `cursor`.
+   * holds access to workspaces and to users' accounts, changes to settings and writes to
+   * workspaces. Rejects a `limit` that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a
+   * filter over 1000 characters, and a malformed `cursor`.
    */
   listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
 
@@ -2582,6 +2634,29 @@ export interface AdminApi {
    * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
    */
   setAdminAuditRetentionDays(days: number): Promise<void>;
+
+  /**
+   * Change a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. Off unless the
+   * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". A reason is required, as for
+   * inspectWorkspace(), and is kept in the admins' log only.
+   *
+   * The workspace records the write (an AdminWriteRecord) in the deployment-wide log and only then
+   * runs it, so a write whose record cannot be written does not happen. That record is the write's
+   * only trace: the workspace keeps none, and its members are not told an admin acted. Each action
+   * does what a member's operation does:
+   *   - "stopAgent": stops the chat's turn as Overseer.stopAgent(chatId) does, and the chat and
+   *     its agent are told so as for any stop, except that the chat's queued steers are kept: no
+   *     client stops the turn to put them in its draft, so they go into the chat as their senders'
+   *     messages (see `steered` of AiChatMessageBody).
+   *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *
+   * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless
+   * ADMIN_WORKSPACE_WRITES is "on", and `workspaceNotFound` for an id that names no workspace.
+   * Rejects arguments the action does not take. A write that fails once recorded, such as a
+   * stopAgent of a chat that does not exist, keeps its record.
+   */
+  writeWorkspace(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                 reason: string): Promise<void>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
@@ -2659,8 +2734,6 @@ export type AdminWorkspaceDiagnostics = {
   present: PresenceParticipant[];
   /** When the workspace's alarm next fires. Absent while none is set. */
   nextAlarm?: Date;
-  /** Whether an external message created the workspace before its owner's account recorded it. */
-  ownerRegistrationPending: boolean;
 };
 
 /** One call made on a chat's callable agent that is not in the chat yet, as
@@ -3544,13 +3617,6 @@ export type AdminGatewayProvider = {
    * AdminApi.setGatewayProviderEnabled). Absent while the provider is off.
    */
   enabledBy?: 'environment' | 'admin';
-
-  /**
-   * Whether the provider's requests need CF_AI_GATEWAY_API_TOKEN on a deployment that has none,
-   * so that they fail until it is set. It says nothing of the provider keys the gateway holds,
-   * which the Workshop can't see (see AdminApi.testGatewayProvider).
-   */
-  needsApiToken: boolean;
 };
 
 /**
@@ -3838,21 +3904,6 @@ export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
 export function modelKind(provider: string, model: string): ModelKind {
   return SUGGESTED_MODELS[provider as AiModelProvider]?.[model]?.kind ?? "language";
 }
-
-/**
- * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
- * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
- * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
- * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
- * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
- * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
- *
- * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
- * is absent only because this deployment has no such provider.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
- */
-export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>(["google"]);
 
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed
@@ -5315,7 +5366,8 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * `steered` messages. Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
@@ -5780,7 +5832,8 @@ export type AiChatMessageBody = {
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
    * reads it before its next model request, or, if the turn ended before it could and started no
-   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   * other (it failed, stopped to wait on the user's decision, or was stopped by a deployment
+   * admin's write), when the agent next runs.
    */
   steered?: true;
 } | {
@@ -6051,6 +6104,8 @@ export type AiChatMessageBody = {
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
    * marks a run the user stopped, which is not a failure; "storage_full" marks a turn refused
    * because the workspace reached WORKSPACE_TURN_QUOTA_BYTES, which a retry can't fix).
+   * "resume_exhausted" marks a turn that exhausted its resume attempts before saving a step;
+   * `retryAgent()` tells the agent so.
    */
   code?: string;
 } | {
@@ -6075,13 +6130,18 @@ export type AiChatMessageBody = {
   bindingName?: string;
 } | {
   /**
-   * A model-visible control note for an approved-decision handoff, explicit Retry, or Stop.
-   * It also ends the preceding decision segment for recovery. Not rendered in the chat UI:
-   * the decision cards and turn controls already show these transitions to the user.
+   * A control record for an approved-decision handoff, explicit Retry, or Stop. It ends the
+   * preceding decision segment for recovery. Not rendered in the chat UI: the decision cards and
+   * turn controls already show these transitions to the user.
    * Older logs used this variant to nudge an agent whose callbacks were still unresolved.
    */
   type: "agentNudge";
-  text: string;
+  /**
+   * The note the model reads, as a user message. Absent when the record only marks the segment
+   * boundary, as for Stop and for a Retry with nothing to tell the agent, which then reruns on
+   * the same history.
+   */
+  text?: string;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").

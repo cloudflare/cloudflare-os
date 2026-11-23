@@ -186,9 +186,26 @@ describe("compaction trigger", () => {
     let compact = record(1, user, {
       type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
     });
-    expect(isCompactionTurn([message(0, user, "hi"), compact])).toBe(true);
-    expect(isCompactionTurn([compact, message(2, user, "hi")])).toBe(false);
+    // Newest first.
+    expect(isCompactionTurn([compact, message(0, user, "hi")])).toBe(true);
+    expect(isCompactionTurn([message(2, user, "hi"), compact])).toBe(false);
     expect(isCompactionTurn([message(0, user, "hi")])).toBe(false);
+    expect(isCompactionTurn([])).toBe(false);
+  });
+
+  it("still recognizes /compact behind its error and a Retry's boundary", () => {
+    let compact = record(1, user, {
+      type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
+    });
+    let error = record(2, agent, {type: "error", message: "The summary request failed."});
+    expect(isCompactionTurn([record(3, user, {type: "agentNudge"}), error, compact])).toBe(true);
+    // The user's edits, saved as Retry or a turn starts, ask the model for nothing either.
+    expect(isCompactionTurn([record(3, user, {type: "changes"}), error, compact])).toBe(true);
+    expect(isCompactionTurn([record(2, user, {type: "changes"}), compact])).toBe(true);
+    // A nudge the model reads asks for something else, as does a new prompt after the error.
+    expect(isCompactionTurn([record(3, user, {type: "agentNudge", text: "Go."}), error, compact]))
+        .toBe(false);
+    expect(isCompactionTurn([message(3, user, "hi"), error, compact])).toBe(false);
   });
 
   // Every one of these produces a `user` model message, so retained context can begin at it. A chat
@@ -200,6 +217,8 @@ describe("compaction trigger", () => {
       type: "agentCallback", methodName: "run", argsSummary: "", initiatorModelId: "m",
     }))).toBe(true);
     expect(startsAgentTurn(record(0, agent, {type: "agentNudge", text: "continue"}))).toBe(true);
+    // A textless nudge (Stop, or a plain Retry) produces no model message, so the turn starts earlier.
+    expect(startsAgentTurn(record(0, user, {type: "agentNudge"}))).toBe(false);
     expect(startsAgentTurn(record(0, agent, {
       type: "connectionRequest", requestId: "1:1", vendorId: "v", vendorName: "V",
       reason: "Needed", state: "accepted",

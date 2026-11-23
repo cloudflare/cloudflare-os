@@ -55,8 +55,7 @@ CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
-# Required unless the WORKERS_AI binding carries gateway traffic; always required for the
-# google provider:
+# Required unless the WORKERS_AI binding carries gateway traffic:
 CF_AI_GATEWAY_API_TOKEN=...
 ```
 
@@ -69,8 +68,8 @@ runtime — a deployment whose Gateway is in a different account must set
 `CF_AI_GATEWAY_USE_BINDING=false` to opt out and use the token transport. That is a flag rather
 than an unbinding because `WORKERS_AI` also backs the webFetch tool's document-to-Markdown
 conversion (and is hardcoded for every released backend), so removing it would break that instead
-of just moving gateway traffic. The token stays required for the `google` provider even when the
-binding transport applies. Every provider, Workers AI included, routes through the same Gateway.
+of just moving gateway traffic. Every provider, Workers AI included, routes through the same
+Gateway.
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):

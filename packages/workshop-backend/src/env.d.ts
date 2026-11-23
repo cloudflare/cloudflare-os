@@ -32,6 +32,11 @@ declare global {
       // The fewest days the admin audit log keeps a record, whatever admins choose: a positive
       // whole number. 90 when unset, blank or invalid.
       ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+      // Whether admins may change a workspace through AdminApi.writeWorkspace(): "on"
+      // enables it, and unset, blank, "off" or anything else leaves it off. An environment
+      // variable for the reason the two above are, and a bound of its own, which
+      // ADMIN_WORKSPACE_ACCESS_MAX does not limit.
+      ADMIN_WORKSPACE_WRITES?: string;
 
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
@@ -41,8 +46,8 @@ declare global {
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
-      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
-                                          // applies (still required for google)
+      // Run + Read token; optional when the WORKERS_AI binding carries traffic.
+      CF_AI_GATEWAY_API_TOKEN?: string;
       CF_AI_GATEWAY_USE_BINDING?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.

@@ -25,7 +25,6 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
-import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -80,9 +79,6 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelecti
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
-
-// Re-export service-binding entrypoint for external channel integrations.
-export { ExternalMessageGateway };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
