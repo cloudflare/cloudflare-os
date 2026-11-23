@@ -124,7 +124,7 @@ const sampleOutlines = () => {
  * two `face` groups (outside the body, then inside it), each face's left and right `eye`, and the
  * `drop` paths of the rain.
  */
-export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
+export const startMascotMotion = (frame: HTMLElement, options: { swells?: boolean } = {}): MascotMotion => {
   const parts = <T extends Element>(name: string) => [...frame.querySelectorAll<T>(`[data-part="${name}"]`)]
   const figure = parts<HTMLElement>('figure')[0]
   const lobePaths = parts<SVGPathElement>('lobe')
@@ -145,6 +145,14 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   let minimumRain = 0
   let happyReplay = false
   const spin = { rotation: 0, from: 0, target: 0, elapsed: 1, duration: 0.85 }
+  // How much of the HDR white the sparkle lets go while it spins, from a click or on its way into
+  // writing (see `Mascot`): up to the middle of the spin and back, as the frame's `dynamic-range-limit`. Chrome blends between the two limits;
+  // Safari 26 cannot, so there it is on over the middle of the spin and off for the rest.
+  let glow = 0
+  let writeGlowGate = 0
+  // Not for a mascot whose sparkle is not to swell: it has no HDR white, and the frame's limit is left as it is.
+  const canLimit = options.swells !== false && typeof CSS !== 'undefined' && CSS.supports('dynamic-range-limit', 'standard')
+  const canBlend = canLimit && CSS.supports('dynamic-range-limit', 'dynamic-range-limit-mix(standard 50%, no-limit 50%)')
 
   let reduced = isMotionOff()
   const unsubscribeMotion = subscribeMotionLevel(() => { reduced = isMotionOff() })
@@ -398,6 +406,22 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       : Math.max(0, Math.min(WRITE_TOTAL, writeClock + (mood === 'writing' ? dt : -dt)))
     // How far the sparkle has gone, and how far the body as a whole has gone to its dots.
     const sparkleGone = Math.min(1, writeClock / WRITE_SPARKLE)
+    if (canLimit) {
+      // The glow is a bell over a spin: a click's, or the sparkle's on its way into writing, so that it
+      // is brightest halfway round. The writing one is only on the way in, and nowhere else is a
+      // change of state marked: the gate follows the emotion quickly, rather than cutting, in case it
+      // turns round part of the way.
+      writeGlowGate += ((mood === 'writing' ? 1 : 0) - writeGlowGate) * (1 - Math.exp(-dt * 18))
+      const clickGlow = spin.elapsed >= spin.duration ? 0 : Math.sin(Math.PI * (spin.elapsed / spin.duration)) ** 2
+      const writeGlow = Math.sin(Math.PI * sparkleGone) ** 2 * writeGlowGate
+      const next = reduced ? 0 : Math.max(clickGlow, writeGlow)
+      // Written only as it changes, and put back to what the frame's own style says once it is over.
+      if (next < 0.002 ? glow !== 0 : Math.abs(next - glow) > 0.004) {
+        glow = next < 0.002 ? 0 : next
+        if (glow === 0) frame.style.removeProperty('dynamic-range-limit')
+        else frame.style.setProperty('dynamic-range-limit', canBlend ? `dynamic-range-limit-mix(standard ${((1 - glow) * 100).toFixed(1)}%, no-limit ${(glow * 100).toFixed(1)}%)` : glow > 0.5 ? 'no-limit' : 'standard')
+      }
+    }
     const write = smoothstep((writeClock - WRITE_BLOBS_AT) / (WRITE_TOTAL - WRITE_BLOBS_AT))
     const rotationReady = moodTime >= 0.3 && splitTransition === null && writeClock < 0.01 && mood !== 'writing'
     const shakeAhead = rotationReady || (moodTime >= 0.3 - SHAKE_LEAD && splitTransition === null && writeClock < 0.01 && mood !== 'writing')
@@ -780,6 +804,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       spin.elapsed = 0
     },
     stop: () => {
+      frame.style.removeProperty('dynamic-range-limit')
       visibility.disconnect()
       cancelAnimationFrame(request)
       window.removeEventListener('pointermove', onPointer)
