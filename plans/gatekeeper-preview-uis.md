@@ -54,10 +54,10 @@ client needs to draw the resource faithfully. Nothing else changes for it.
   files a gatekeeper keeps and the files it returns. Several previews of one gatekeeper can share
   modules; each returns the ones it uses.
 - **The preview holds a session and nothing more.** The frame's `gadget` stub is what
-  `GatekeeperClient.openSession()` returns. The preview can therefore do only what a gadget bound
-  to the resource could, every read it makes is authorized and logged as an observation, and any
-  action it submitted would go through the approval queue like any other. No new trust is
-  introduced.
+  `GatekeeperClient.openSession()` returns, or for a preview of one item what that session's
+  `openPreview()` returns. The preview can therefore do only what a gadget bound to the resource
+  could, every read it makes is authorized and logged as an observation, and any action it
+  submitted would go through the approval queue like any other. No new trust is introduced.
 - **Read-only is a property of a preview, not a kernel limit.** The frame holds the full session;
   nothing in the kernel stops a preview from submitting actions. One it submitted would be queued
   as a gadget's is: waiting for a person, unless the user has switched on auto-approval for that
