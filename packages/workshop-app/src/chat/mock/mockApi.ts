@@ -55,6 +55,7 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; public
     },
     // No services and no accounts: a pasted link stays as it was written.
     listGatekeeperVendors: async () => [],
+    listAddableGatekeepers: async () => [],
     // The free requests used up, for a chat that runs out of them; Cloudflare is the one service
     // that can be connected, which it is at once.
     getCloudflareUsage: async () => billing.usage(),
