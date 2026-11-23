@@ -1459,6 +1459,12 @@ importers:
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
+      '@hugeicons/core-free-icons':
+        specifier: ^4.4.0
+        version: 4.4.0
+      '@hugeicons/react':
+        specifier: ^1.1.10
+        version: 1.1.10(react@19.3.1)
       '@lezer/common':
         specifier: 1.5.3
         version: 1.5.3
@@ -2496,6 +2502,14 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
+
+  '@hugeicons/core-free-icons@4.4.0':
+    resolution: {integrity: sha512-7Mz8bmGoY6tZ6l3C2TXwNMLVSr0I8HPwjjFIERAuJFj3rWwLxdF2ZLkDqdrVuEE1dx5b/VXyIsP4WoSU6Q40KQ==}
+
+  '@hugeicons/react@1.1.10':
+    resolution: {integrity: sha512-9tAsd92yMVVGP+E+d8cM+wc0VnXuYZHNbWQi7TOe8k2neawmhiaFmVFbzyruejhOMa197/LbgvSED32ayUo3ZA==}
+    peerDependencies:
+      react: '>=16.0.0'
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -6650,6 +6664,12 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
+
+  '@hugeicons/core-free-icons@4.4.0': {}
+
+  '@hugeicons/react@1.1.10(react@19.3.1)':
+    dependencies:
+      react: 19.3.1
 
   '@img/colour@1.1.0': {}
 
