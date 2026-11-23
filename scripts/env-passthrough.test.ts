@@ -118,7 +118,6 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "TESTS_WITH_TIMEOUT_MAX_SECONDS", "VITE_FRONTEND_ERROR_REPORTING",
     ],
     external: [
-      // The automerge producers (`automerge/proofs/`), run directly by their workflows.
       "AUTOMERGE_HEAD_REF", "AUTOMERGE_MUTATION_BUDGET_MINUTES", "AUTOMERGE_PR_AUTHOR",
       "BONK_MODEL", "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",

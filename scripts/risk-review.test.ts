@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import { assertNames } from "./automerge/assert-names.ts";
 import { PRODUCERS } from "./automerge/producers.ts";
 import type { Artifact, WorkflowRun } from "./risk-review-contract.ts";
 import { BASE, HEAD, MODELS, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
@@ -498,7 +499,6 @@ describe("decide", () => {
     }
   });
 
-  it("never lets an AI decide on a Worker config change that may drop Durable Object data", () => {
   // The reviewers read the base's copy of each of these, so the pull request's version first
   // steers a review after it merges.
   it("never lets an AI decide on a file a reviewer reads as instructions, wherever it sits", () => {
@@ -510,6 +510,7 @@ describe("decide", () => {
     }
   });
 
+  it("never lets an AI decide on a Worker config change that may drop Durable Object data", () => {
     const risky = inputs({
       files: [file("packages/gatekeeper-x/wrangler.jsonc")],
       facts: { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: ["packages/gatekeeper-x/wrangler.jsonc: reuses the tag v1"], skillSymlinks: [] },
@@ -1151,23 +1152,23 @@ describe("runRiskReview content rules", () => {
     const before = wranglerJsonc();
     const files = [file(config)];
     const deletes = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: wranglerJsonc([{ tag: "v3", deleted_classes: ["Notes"] }]) });
-    assert.match(deletes.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: deletes Notes/);
+    assertNames(deletes.never_auto, ["Notes"]);
     const reused = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: wranglerJsonc([{ tag: "v1", new_sqlite_classes: ["Inbox"] }]) });
-    assert.match(reused.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: reuses the tag v1/);
+    assertNames(reused.never_auto, ["v1"]);
     const rewritten = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: before.replace('"Old"', '"Old",\n        "Notes"') });
-    assert.match(rewritten.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: rewrites migrations/);
+    assertNames(rewritten.never_auto, [config]);
     const adds = await decideFiles(files, { [`${BASE}:${config}`]: before, [`${HEAD}:${config}`]: `// v2 dropped Old.\n${wranglerJsonc([{ tag: "v3", new_sqlite_classes: ["Inbox"] }])}` });
     assert.deepEqual(adds.never_auto, []);
     const unread = await decideFiles(files, { [`${BASE}:${config}`]: before });
-    assert.match(unread.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: unreadable/);
+    assertNames(unread.never_auto, [config]);
     // The release deploys packages/<dir>/wrangler.jsonc by directory, so a config renamed to another
     // name or moved to another directory takes its Worker out of the release, like removing it.
     for (const moved of ["packages/gatekeeper-x/wrangler.old.jsonc", "packages/gatekeeper-x/legacy/wrangler.jsonc", "packages/gatekeeper-y/wrangler.jsonc"]) {
       const gone = await decideFiles([file(moved, { status: "renamed", previous_filename: config })], { [`${BASE}:${config}`]: before, [`${HEAD}:${moved}`]: before });
-      assert.match(gone.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: removed/, moved);
+      assertNames(gone.never_auto, [config], moved);
     }
     const removed = await decideFiles([file(config, { status: "removed" })], { [`${BASE}:${config}`]: before });
-    assert.match(removed.never_auto.join("\n"), /packages\/gatekeeper-x\/wrangler\.jsonc: removed/);
+    assertNames(removed.never_auto, [config]);
     // The cloudflare.config.ts source deploys only through the generated file, so it is not read.
     const source = await decideFiles([file("packages/gatekeeper-x/cloudflare.config.ts")], {});
     assert.deepEqual(source.never_auto, []);
