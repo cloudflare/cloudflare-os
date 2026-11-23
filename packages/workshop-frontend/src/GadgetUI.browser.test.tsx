@@ -477,6 +477,23 @@ describe('focus', () => {
     expect(recorder.events).toEqual(['navigate gone', 'reset', 'navigate cell/C1'])
   })
 
+  it('ignores a failure from a callback the frame has since replaced', async () => {
+    await show(focusGadget(), 'cell/B7')
+    const control = await frame(0)
+    const first = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+
+    const second = control.register()
+    await settle()
+    recorder.navigations[0].resolve(false)
+    await first
+    await expect.poll(() => recorder.navigations.length).toBe(2)
+    recorder.navigations[1].resolve(true)
+    await second
+
+    expect(recorder.events).toEqual(['navigate cell/B7', 'navigate cell/B7'])
+  })
+
   it('sends the frame back to a spot it reported after sending it elsewhere', async () => {
     const gadget = focusGadget()
     await show(gadget, undefined)

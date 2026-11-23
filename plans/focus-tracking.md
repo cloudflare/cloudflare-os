@@ -171,8 +171,8 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   It reports only if nothing has superseded it: a `navigate` can still be pending when the user
   moves on, so each call is numbered, and its failure is ignored if the frame has reported a focus
   or been sent a newer `navigate` since, if `navigation` has changed since (even with no frame
-  to send to), or if the frame has been replaced. A replaced
-  frame's session ending rejects its pending call, and that must not clear the anchor its
+  to send to), if the frame has registered a new callback since, or if the frame has been
+  replaced. A replaced frame's session ending rejects its pending call, and that must not clear the anchor its
   successor is about to be sent to.
 - A frame's `navigate` calls never overlap. Each waits for the one before to settle, and a target
   that a newer one replaced while it waited is skipped. Otherwise a slow call (one waiting on the

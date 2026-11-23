@@ -385,9 +385,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   focusRef.current = focus
   // Null between frames, and until the frame's session opens.
   const frameFocusRef = useRef<FrameFocus | null>(null)
-  // Bumped by every report, every navigate call and every frame replacement. A navigate that fails
-  // clears the anchor only if nothing has bumped it since: by then the user has moved on, or the
-  // failure is only the replaced frame's session ending.
+  // Bumped by every report, every navigate call, every callback registration and every frame
+  // replacement. A navigate that fails clears the anchor only if nothing has bumped it since: by
+  // then the user has moved on, or the failure is only a replaced callback's or frame's.
   const focusEpochRef = useRef(0)
 
   const reportFocusProblem = (message: string) => {
@@ -452,6 +452,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     },
     onNavigate: async navigate => {
       if (frameFocusRef.current !== frame || !focusRef.current) return
+      // The replaced callback's pending call no longer decides where the frame ends up.
+      ++focusEpochRef.current
       frame.navigate?.[Symbol.dispose]()
       const retained = navigate.dup()
       frame.navigate = retained
