@@ -636,11 +636,6 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
     return stripTypeModulePrefix(SHEETS_RENDERING_TYPES_CODE, SHEETS_RENDERING_TYPES_MODULE_PREFIX);
   }
 
-  /** Which of a Drive connection's previews draws this session. Not in the agent's types. */
-  async getPreviewKind(): Promise<"sheets"> {
-    return "sheets";
-  }
-
   async readDrawing(range: string): Promise<SpreadsheetDrawing> {
     // A malformed range is refused before anything is fetched.
     let parsed = parseRange(range);

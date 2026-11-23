@@ -47,7 +47,7 @@ import {
   DRIVE_ACTIONS, type DriveAction, type DriveActions, type DriveQueue,
 } from "./drive-actions";
 import {
-  DriveFileEditors, editorOfMimeType, editorOfTag, parseDrivePreviewId, type DriveEditorName,
+  DriveFileEditors, editorOfMimeType, editorOfTag, type DriveEditorName,
 } from "./drive-editors";
 import { DRIVE_PREVIEW_FILES } from "./previews/files";
 import {
@@ -2517,8 +2517,8 @@ export class GoogleDriveGatekeeperImpl
   /**
    * The preview of a file an edit's `previewOf` names: the one each kind of file has when
    * connected on its own, all three behind one entry, since this is asked before any file is
-   * named. The entry opens the file its host sends it to, with `openPreview()`, and starts the
-   * preview of its kind. A Drive connection has no preview of itself.
+   * named. The entry opens the file its host sends it to, by the methods an agent opens one
+   * with, and starts the preview of its kind. A Drive connection has no preview of itself.
    */
   async getGadgetUi(): Promise<UiFile[]> {
     return DRIVE_PREVIEW_FILES;
@@ -2758,11 +2758,6 @@ const THROUGH_SHORTCUT =
 /** The Drive session methods that open a native file. */
 type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
 
-/** The method that opens each editor's files. */
-const PREVIEW_OPENERS: Record<DriveEditorName, NativeOpener> = {
-  docs: "openGoogleDoc", sheets: "openGoogleSheet", slides: "openGoogleSlides",
-};
-
 /**
  * Drive RPC session implementation, exported for workerd contract coverage. One class serves every
  * scope and access level. A native opener answers the session the binding's access hands out, a
@@ -2881,25 +2876,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
         ? new GooglePresentationSessionImpl(
           this.#slidesApi, presentationId, queue, read, editors.slides(target, queue))
         : new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
-  }
-
-  /**
-   * Opens the file an edit's `previewOf` names, for the preview (`getGadgetUi()`), whose host
-   * sends it that name: through each folder between the connected one and the file, as an agent
-   * reaches it, so its place in the binding's scope is proven the same way. Not in the agent's
-   * types: an agent opens a file by the methods above.
-   */
-  async openPreview(previewOf: string) {
-    let { editor, folderIds, fileId } = parseDrivePreviewId(previewOf);
-    let opened: GoogleDriveSessionImpl[] = [];
-    try {
-      let folder: GoogleDriveSessionImpl = this;
-      for (let id of folderIds) opened.push(folder = await folder.openFolder(id));
-      return await folder[PREVIEW_OPENERS[editor]](fileId);
-    } finally {
-      // The file's session holds a queue of its own.
-      for (let session of opened) session[Symbol.dispose]();
-    }
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {

@@ -101,20 +101,11 @@ const NATIVE_KINDS = { docs: "doc", sheets: "sheets", slides: "slides" } as cons
 /**
  * The name an edit gives its file for a preview (`ActionDescription.previewOf`): the file's kind,
  * then the folders between the connected one and the file, then the file. A folder session opens
- * only its direct children, so the way in is part of the name.
+ * only its direct children, so the way in is part of the name. The preview's entry reads it
+ * (`previews/drive/client.js`) and opens the file by those folders.
  */
 export function drivePreviewId(editor: DriveEditorName, target: DriveWriteTargetPayload): string {
   return `${editor}:${[...target.folderIds?.slice(1) ?? [], target.fileId].join("/")}`;
-}
-
-/** What {@link drivePreviewId} named. Throws for any other text. */
-export function parseDrivePreviewId(
-  id: string,
-): { editor: DriveEditorName; folderIds: string[]; fileId: string } {
-  let [, editor, path] = /^(docs|sheets|slides):([\w-]+(?:\/[\w-]+)*)$/.exec(id) ?? [];
-  if (!path) throw new Error("This Google Drive connection has no preview by that name.");
-  let folderIds = path.split("/");
-  return { editor: editor as DriveEditorName, fileId: folderIds.pop()!, folderIds };
 }
 
 /**

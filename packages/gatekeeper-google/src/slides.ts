@@ -679,11 +679,6 @@ export class GooglePresentationSessionImpl extends RpcTarget
     return stripTypeModulePrefix(SLIDES_RENDERING_TYPES_CODE, SLIDES_RENDERING_TYPES_MODULE_PREFIX);
   }
 
-  /** Which of a Drive connection's previews draws this session. Not in the agent's types. */
-  async getPreviewKind(): Promise<"slides"> {
-    return "slides";
-  }
-
   async readSlideDrawings(ids: string[]): Promise<SlideDrawings> {
     if (ids.length === 0 || ids.length > MAX_DRAWINGS_PER_READ) {
       throw new Error(`Request between 1 and ${MAX_DRAWINGS_PER_READ} slides at a time.`);

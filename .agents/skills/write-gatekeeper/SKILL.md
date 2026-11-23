@@ -299,8 +299,10 @@ gatekeeper):
   (`host.reportFocus()`) begins with the `id` too, so that a frame started again is sent to the
   same item. Keep an `id` well under the 256 characters an anchor may have.
 - The anchor may come from any client, so it only chooses what to draw: resolve it through the
-  session, which checks access as any open does (the Drive session's `openPreview(id)`, which is
-  not in the agent's types).
+  session, which checks access as any open does. Open the item by the methods a gadget bound to
+  the connection would use (the Drive preview walks `openFolder()` to `openGoogleDoc()`), not by
+  one added for the preview: the session then has nothing an agent's types leave out, and the
+  preview's code is what a gadget could run.
 
 #### Revealing pending changes
 

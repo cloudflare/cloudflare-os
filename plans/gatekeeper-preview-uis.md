@@ -182,15 +182,18 @@ type ActionDescription = {
 - The Workshop names the item to the connection's code the way a host tells any gadget UI where
   its user was: `GadgetHost.onNavigate()`, with `id` as the anchor (`plans/focus-tracking.md`,
   and "Where the reader is" below). The frame holds the connection's session, and its code gets
-  from the name to what it draws however its gatekeeper likes; the Drive entry calls
-  `openPreview(id)` on its session. So nothing of a preview is in the kernel's types and the
+  from the name to what it draws by the session's own methods, as a gadget bound to the
+  connection would: the Drive entry walks `openFolder()` to `openGoogleDoc()` or its siblings.
+  So nothing of a preview is in the kernel's types and the
   Workshop calls no method of a session, which is opaque to both: the one convention is that an
   anchor starts with the item's `id` (on `PreviewItem.id` and in the write-gatekeeper skill). A
   gatekeeper that names items and registers no `onNavigate()` gets a pane that draws nothing,
   which a test of its preview catches.
-- This replaced a first design in which the Workshop called `openPreview(id)` itself and handed
-  the frame the item's session alone. That needed a method of a gatekeeper's session known to the
-  Workshop and a cast to call it, and kept the item out of the frame's focus. What it gave is
+- This replaced a first design in which the Workshop called an `openPreview(id)` on the
+  connection's session and handed the frame the item's session alone. That needed a method of a
+  gatekeeper's session known to the Workshop and left out of the agent's types, a cast to call
+  it, and a second such method for the item's kind, and kept the item out of the frame's focus.
+  A session now has no method that is for its preview alone. What it gave is
   given up: the frame of an item's preview now holds the connection's session, which reaches
   every item, where it held one item's. The code in the frame is the gatekeeper's own, and what
   it reads is still authorized and recorded read by read.
@@ -807,15 +810,16 @@ differs is which file, which section 1a answers:
 - **`getGadgetUi()`** is asked before any file is named, so it returns the previews of all three
   kinds, from one list the gatekeepers share (`previews/files.ts`), each client under its kind's
   name beside an entry (`previews/drive/client.js`). UI code cannot `import()`, so the entry
-  imports all three, opens the file its host sends it to, and starts the one whose kind the
-  file's session gives (`getPreviewKind()`,
-  which like `openPreview()` is not in the agent's types). A preview therefore builds nothing
+  imports all three, opens the file its host sends it to, and starts the one of the kind the
+  file's name begins with. A preview therefore builds nothing
   into the frame until its `main()` is called. It asks Google nothing. A Drive connection reports
   no `hasGadgetUi`: it has no preview of itself.
-- **`openPreview(previewOf)`** on the Drive session walks the folders and opens the file with
-  `openGoogleDoc()` and its siblings, so the file's place in the binding's scope is proven as it
-  is for an agent. The entry calls it with the name it is sent, which may come from any client:
-  a name that is not a file of the connection is refused there. It is not in the agent's types.
+- **The entry opens the file as a gadget would**: `openFolder()` for each folder its name
+  gives, then `openGoogleDoc()` or its siblings, each call made on the promise of the one before,
+  so the file's place in the binding's scope is proven as it is for an agent. The name it is
+  sent may come from any client: one that is not a file of the connection is refused by those
+  methods. The name's form is therefore read in two places, `drivePreviewId()` that writes it
+  and the entry.
 - **The Workshop** tells previews apart by connection and item. It asks for the connection's
   code, hands the frame the connection's session, and sends the frame to the item (section 5).
   The card and
@@ -859,9 +863,9 @@ differs is which file, which section 1a answers:
   A fork is of a kind of file, not of one file: the clients take a session and name no file. To
   use one for an item of a connection (a Doc in a folder), the Workshop must learn the item's
   kind, which `previewOf.id` hides on purpose: either a kind beside `id` and `title`, or the
-  gatekeeper naming the type of session `openPreview()` returns, as `describe().tsType` does for
-  a connection. Such a gadget is bound to the folder's connection, so it also calls
-  `openPreview()` itself, as the Drive entry does.
+  gatekeeper naming the type of session the file is opened as, as `describe().tsType` does for
+  a connection. Such a gadget is bound to the folder's connection, so it also opens the file
+  itself, as the Drive entry does, by methods its types have.
 - **Telling the agent what the user is looking at in a preview.** A preview already reports it
   (section 5). What is missing is in the kernel: `MessageFocus` names a gadget, and
   `#stampFocus()` refuses any other workpiece. Accepting a connection there, titled by its

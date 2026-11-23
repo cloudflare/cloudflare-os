@@ -7,8 +7,9 @@
 //
 // A connection has one set of files, and UI code cannot import() a module once it knows which it
 // needs. So the gatekeeper returns this with the previews of all three kinds of file beside it,
-// each under its kind's name, and this starts the one whose kind the file's session says it is,
-// on that session alone. A preview builds nothing until it is started, so the other two stand by.
+// each under its kind's name. This opens the file as a gadget bound to the connection would, by
+// the session's own methods, and starts the preview of its kind on the file's session alone. A
+// preview builds nothing until it is started, so the other two stand by.
 
 import docs from './docs.js';
 import sheets from './sheets.js';
@@ -16,6 +17,11 @@ import slides from './slides.js';
 import { fitLabel, showError } from './ui/chrome.js';
 
 const PREVIEWS = { docs, sheets, slides };
+// The method of a Drive session that opens a file of each kind.
+const OPENERS = { docs: 'openGoogleDoc', sheets: 'openGoogleSheet', slides: 'openGoogleSlides' };
+// The name an edit gives its file (drivePreviewId() in drive-editors.ts): its kind, the folders
+// between the connected one and the file, and the file.
+const NAME = /^(docs|sheets|slides):((?:[\w-]+\/)*)([\w-]+)$/;
 // What a file of each kind is called where its name is not known: its session does not say it.
 const NOUNS = { docs: 'Document', sheets: 'Spreadsheet', slides: 'Presentation' };
 // The longest anchor a host takes (MAX_FOCUS_ANCHOR_LENGTH).
@@ -30,14 +36,22 @@ async function main(session, host) {
   // file's session, with a host that hears of spots in the file and names them from the
   // connection. False when the file or the `spot` in it is not there.
   async function open(item, spot) {
+    const [, kind, way = '', fileId] = NAME.exec(item) ?? [];
+    // A folder opens only what is directly in it, so the way in is walked, in one round trip:
+    // each call is made on the promise of the one before. The file's session stands by itself,
+    // so the folders are let go once it is open.
+    const folders = [];
+    let folder = session;
+    for (const id of way.split('/').filter(Boolean)) folders.push(folder = folder.openFolder(id));
     let file;
-    let kind;
     try {
-      file = await session.openPreview(item);
-      kind = await file.getPreviewKind();
+      if (!kind) throw new Error('This Google Drive connection has no preview by that name.');
+      file = await folder[OPENERS[kind]](fileId);
     } catch (error) {
       showError(error, 'file', () => open(item, spot));
       return false;
+    } finally {
+      for (const opened of folders) opened[Symbol.dispose]();
     }
     drawn = item;
     // Where the reader is, named from the connection: the file, then the spot in it. A spot too
@@ -60,8 +74,8 @@ async function main(session, host) {
     return found;
   }
 
-  // The anchor may come from anywhere, so it only chooses what to draw: openPreview() refuses a
-  // name that is not a file of this connection.
+  // The anchor may come from anywhere, so it only chooses what to draw: the session opens no
+  // file that is not one of this connection's.
   let named = false;
   await host.onNavigate(anchor => {
     named = true;

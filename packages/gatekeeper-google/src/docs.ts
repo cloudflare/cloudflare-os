@@ -1493,9 +1493,4 @@ export class GoogleDocEditSessionImpl extends RpcTarget
   getRenderingTypes(): Promise<string> {
     return this.#session.getRenderingTypes();
   }
-
-  /** Which of a Drive connection's previews draws this session. Not in the agent's types. */
-  async getPreviewKind(): Promise<"docs"> {
-    return "docs";
-  }
 }

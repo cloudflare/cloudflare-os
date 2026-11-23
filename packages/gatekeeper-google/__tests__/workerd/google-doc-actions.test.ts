@@ -3936,16 +3936,15 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(previewOf).toEqual({
       id: "docs:doc-1", title: "Test document", url: "https://docs.google.com/document/d/doc-1/edit",
     });
-    // No preview of the connection, which reaches many files: one of whichever file it is handed,
-    // the three kinds' previews behind an entry that starts the one the file's session names.
+    // No preview of the connection, which reaches many files: one of whichever file it is sent
+    // to, the three kinds' previews behind an entry that opens the file and starts its kind's.
     expect(await hooks().describe(facet)).not.toHaveProperty("hasGadgetUi");
     let files = await hooks().previewUi(facet);
     expect(files.map(({ path }) => path)).toEqual([
       "client.js", "docs.js", ...PREVIEW_PATHS.slice(1, -1), "sheets.js", "slides.js", "slide.js", "shapes.js",
       "ui/chrome.js",
     ]);
-    expect(files[0].code).toContain("file.getPreviewKind()");
-    expect((await hooks().callDoc(facet, "getPreviewKind" as keyof GoogleDocSession, [])).value).toBe("docs");
+    expect(files[0].code).toContain("openGoogleDoc");
 
     expect(await hooks().readPendingChanges(facet, MAIN_TAB)).toMatchObject({
       savedMarkdown: "\\[Image\\]\n",
@@ -4173,7 +4172,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     let reads = new Set([
       "constructor", "getMetadata", "listTabs", "getContent",
       "getPendingChanges", "listImages", "readImage", "readFont", "readDrawing", "getRenderingTypes",
-      "getPreviewKind",
     ]);
     let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
       .filter(name => !reads.has(name));

@@ -100,21 +100,21 @@ class DocSession extends RpcTarget {
   replaceText() {
     this.doc.calls.push('replaceText')
   }
-
-  // What a file's session tells a connection of several kinds of file, to pick its preview.
-  getPreviewKind() {
-    return 'docs'
-  }
 }
 
-/** The session of a connection that reaches several documents, which opens one for its preview. */
+/** The session of a connection that reaches several documents, as GoogleDriveSession opens them. */
 class FolderSession extends RpcTarget {
   constructor(private doc: Doc) {
     super()
   }
 
-  openPreview(item: string) {
-    this.doc.calls.push(`openPreview ${item}`)
+  openFolder(id: string) {
+    this.doc.calls.push(`openFolder ${id}`)
+    return new FolderSession(this.doc)
+  }
+
+  openGoogleDoc(fileId: string) {
+    this.doc.calls.push(`openGoogleDoc ${fileId}`)
     return new DocSession(this.doc)
   }
 }
@@ -325,18 +325,20 @@ it('draws the item of a connection its frame is sent to, with only its changes o
       previewOf: { id, title: id },
     },
   } as Partial<ActionLogEntry>)
-  const { doc, resolved, emit } = renderPane([action(1, on('other', 1)), action(2, on('file', 2))], 'file')
+  const { doc, resolved, emit } = renderPane(
+    [action(1, on('docs:other', 1)), action(2, on('docs:nested/file', 2))], 'docs:nested/file')
 
-  // The frame holds the connection's session, and its code opens the item it is sent to.
+  // The frame holds the connection's session, and its code opens the item it is sent to as a
+  // gadget would: through the folder the item's name gives.
   await expect.poll(() => doc.calls).toContain('getPendingChanges')
-  expect(doc.calls[0]).toBe('openPreview file')
+  expect(doc.calls.slice(0, 2)).toEqual(['openFolder nested', 'openGoogleDoc file'])
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
   await expect.element(page.getByText('Change 2')).toBeVisible()
 
   // A change to another item of the connection is not this pane's to redraw for or to apply.
   await expect.poll(() => doc.calls).toContain('readImage photo')
   const reads = doc.calls.length
-  emit(action(3, on('other', 3)))
+  emit(action(3, on('docs:other', 3)))
   await new Promise(done => setTimeout(done, 600))
   expect(doc.calls).toHaveLength(reads)
   await page.getByRole('button', { name: 'Apply' }).click()
@@ -345,7 +347,7 @@ it('draws the item of a connection its frame is sent to, with only its changes o
 
 it('reads an item again once a change to its connection is approved, which may have moved it out of reach', async () => {
   await page.viewport(1100, 800)
-  const { doc, emit } = renderPane([], 'file')
+  const { doc, emit } = renderPane([], 'docs:file')
   await expect.poll(() => doc.calls).toContain('readImage photo')
   const reads = doc.calls.length
 
@@ -366,10 +368,10 @@ it('sends the frame to the spot its preview was left at, and hears from it where
 })
 
 it('hears of a spot in an item by the item\'s name, which sends the frame back to both', async () => {
-  const { doc, said } = renderPane([], 'file', { at: 'file ?tab=t.1', tabs: ['t.0', 't.1'] })
+  const { doc, said } = renderPane([], 'docs:file', { at: 'docs:file ?tab=t.1', tabs: ['t.0', 't.1'] })
 
   await expect.poll(() => said).toEqual([
-    { anchor: 'file', label: 'Document' }, { anchor: 'file ?tab=t.1', label: 'Document › Tab 2' },
+    { anchor: 'docs:file', label: 'Document' }, { anchor: 'docs:file ?tab=t.1', label: 'Document › Tab 2' },
   ])
-  expect(doc.calls[0]).toBe('openPreview file')
+  expect(doc.calls[0]).toBe('openGoogleDoc file')
 })

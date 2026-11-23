@@ -203,7 +203,7 @@ describe("Slides edits through a read and write Drive binding", () => {
       readFont: ["Roboto", 400, false],
     };
     // Declarations, the same for every presentation: answered whatever has become of this one.
-    Object.assign(args, reads, { getRenderingTypes: [], getPreviewKind: [] });
+    Object.assign(args, reads, { getRenderingTypes: [] });
     // Every method of the writing session has its call here, so a new one cannot be left out.
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
 
@@ -214,7 +214,7 @@ describe("Slides edits through a read and write Drive binding", () => {
         async () => { drive.files.get("deck-1")!.parents = ["elsewhere"]; });
       drive.files.get("deck-1")!.parents = [ROOT];
       expect(refused.error, method)
-        .toBe(method === "getRenderingTypes" || method === "getPreviewKind" ? undefined
+        .toBe(method === "getRenderingTypes" ? undefined
           : method in reads ? "The requested file is outside this Drive binding." : OUT_OF_SCOPE);
       expect(refused.actionId, method).toBeUndefined();
       expect(slidesRequests.requests, method).toEqual([]);
