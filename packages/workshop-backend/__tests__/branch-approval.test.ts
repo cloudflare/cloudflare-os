@@ -1430,10 +1430,11 @@ describe("gadgets", () => {
   it("restart on the branch a denial says was built on, or everywhere for a staged one",
       async () => {
     const {visit} = await workspace({
-      async applyAction() {},
+      async applyActions(_view: BranchView, actions: number[]) { return {applied: actions}; },
       async rejectAction() { return {restart: true}; },
     });
     await visit(async impl => {
+      await impl.adoptsBranches(GK);
       holdStaging(impl);
       addGadget(impl, 10);
       addGadget(impl, 11);
@@ -1477,6 +1478,53 @@ describe("gadgets", () => {
       expect(abort.mock.calls.map(([name]) => name).toSorted())
           .toEqual([impl.gadgetFacetName(10), impl.gadgetFacetName(11)]);
     });
+  });
+
+  it("restart everywhere on a denial at a gatekeeper that has not adopted branches", async () => {
+    const {visit} = await workspace({
+      async applyAction() {},
+      async rejectAction() { return {restart: true}; },
+    });
+    await visit(async impl => {
+      addGadget(impl, 10);
+      addGadget(impl, 11);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      // Gadget 10 runs on chat 2's branch, and 11 outside any chat.
+      await impl.submitAction(GK, 2, description(), CHAT_B);
+      await impl.getGadgetFacetFetcher(10, 2);
+      await impl.getGadgetFacetFetcher(11);
+      const abort = vi.spyOn(impl.ctx.facets, "abort");
+
+      await impl.rejectPendingAction(record(impl, 1), USER);
+      expect(abort.mock.calls.map(([name]) => name).toSorted())
+          .toEqual([impl.gadgetFacetName(10), impl.gadgetFacetName(11)]);
+    });
+  });
+
+  it("tell the agent when a denied action may have been applied anyway", async () => {
+    // The failure is recorded as late as the gatekeeper's rejectAction(), as an apply that was in
+    // flight when the denial read the record would.
+    let fail = () => {};
+    const {visit, client} = await workspace({
+      async applyAction() {},
+      async rejectAction() { fail(); return {restart: true}; },
+    });
+    const id = await visit(async impl => {
+      await impl.submitAction(GK, 1, description(), AGENT_A);
+      const {id} = record(impl, 1);
+      fail = () => {
+        impl.storage.actions.put({
+          ...record(impl, 1),
+          applyError: {message: "Timed out.", retryable: false, outcomeUnknown: true},
+        });
+      };
+      return id;
+    });
+    using overseer = await client();
+    await overseer.rejectAction(id);
+    expect(await visit(impl => [...impl.storage.chats.list({prefix: chatKeyPrefix(1)})]
+        .filter(msg => msg.type === "actionDenied")))
+        .toEqual([expect.objectContaining({actionId: id, outcomeUnknown: true})]);
   });
 
   it("tell a chat's agent of a denial its simulated work was built on", async () => {
