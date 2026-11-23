@@ -126,8 +126,8 @@ Uploads count toward the workspace's storage quota. A workspace is one Durable O
 at most 10 GB and refuses every write when full, so the git store refuses a new blob over 1 MiB
 that would take it past 8 GB (uploaded, written, or pulled by a read) and agent turns stop
 starting from 9.5 GB, each with a message that says why; clients warn from 7 GB (see
-`OverseerImpl.sampleStorageBytes()` and `WorkspaceMetadata.storageBytes`). The quota never refuses
-smaller blobs, so ordinary work goes on.
+`OverseerImpl.sampleStorageBytes()` and `WorkspaceMetadata.storageBytes`). The file quota does not
+apply to smaller blobs, so ordinary work goes on until the Durable Object itself is full.
 
 Filename allocation reserves existing base and pending root names, including directories.
 Prior names are read from chat-scoped message metadata, never from a workspace-wide payload
