@@ -14,7 +14,7 @@
 import {
   addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline,
   outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale, status,
-  touch,
+  touch, ITSELF,
 } from './ui/chrome.js';
 import { drawer, headingLevel, newList, showPicture } from './draw.js';
 import { paginate } from './pages.js';
@@ -647,7 +647,7 @@ function renderOutline() {
     name.append(lineIcon('M6 3h5.5L15 6.5V17H6zM11.5 3v3.5H15M8.5 10.5h4M8.5 13.5h4'), make('span', '', listed.title));
     // A tab still to be added goes by an ID of this form until Google has it.
     const added = listed.id.startsWith('pending-tab-');
-    const says = touch(name, added ? ['added'] : listed.pending ? ['changed'] : []);
+    const says = touch(name, added ? ['added'] : listed.pending ? ['changed'] : [], ITSELF);
     name.title = added ? `${listed.title} (new, not yet added)` : says ? `${listed.title} (${says})` : listed.title;
     name.setAttribute('aria-pressed', String(on));
     name.addEventListener('click', () => {

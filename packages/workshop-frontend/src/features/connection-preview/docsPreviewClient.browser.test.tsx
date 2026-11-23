@@ -481,7 +481,7 @@ it('lists the tabs again on a refresh, and leaves a tab that has gone for the fi
   const buttons = () => [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')]
   // The tab still to be added is marked as new.
   expect(buttons().map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
-    [['Tab 1', 'none'], ['Tab 2 (new, not yet added)', '""']])
+    [['Tab 1', 'none'], ['Tab 2 (new, not yet added)', '"New"']])
   buttons()[1].click()
   await expect.poll(() => text(page)).toBe('pending-tab-1')
 
@@ -885,5 +885,5 @@ it('opens on the first tab with changes waiting, and marks each that has them', 
 
   expect(text(page)).toBe('t.1')
   expect(buttons.map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
-    [['Tab 1', 'none'], ['Tab 2 (has pending edits)', '""'], ['Tab 3 (has pending edits)', '""']])
+    [['Tab 1', 'none'], ['Tab 2 (has pending edits)', '"Edited"'], ['Tab 3 (has pending edits)', '"Edited"']])
 })

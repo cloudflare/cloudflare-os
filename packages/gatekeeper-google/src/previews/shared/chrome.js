@@ -59,12 +59,13 @@ styleSheet.textContent = `
     border-radius: 999px; background: var(--page); box-shadow: var(--float); color: var(--ink);
     font-size: 12px; white-space: nowrap; animation: arrive .2s ease-out; }
   .nav span { margin-right: 4px; color: var(--dim); }
-  /* The dot that says something holds a change, or is one: green where it adds, red where it
+  /* The word that says something holds a change, or is one: green where it adds, red where it
      removes, and purple where it edits or does both. */
-  [data-touched]::after { content: ''; flex: none; width: 6px; height: 6px; margin-right: 3px;
-    border-radius: 50%; background: var(--mark-ink); box-shadow: 0 0 0 3px var(--mark); }
-  [data-touched="removed"]::after { background: var(--gone-ink); box-shadow: 0 0 0 3px var(--gone); }
-  [data-touched="changed"]::after { background: var(--edit-ink); box-shadow: 0 0 0 3px var(--edit); }
+  [data-touched]::after, .said { content: attr(data-says); flex: none; margin-left: 6px; padding: 0 6px;
+    border-radius: 999px; background: var(--mark); color: var(--mark-ink); font-size: 10px;
+    font-weight: 400; line-height: 16px; white-space: nowrap; }
+  [data-touched="removed"]::after { background: var(--gone); color: var(--gone-ink); }
+  [data-touched="changed"]::after, .said { background: var(--edit); color: var(--edit-ink); }
   /* Which copy is shown: one control of equal parts, and a thumb that slides to the one pressed. */
   .views { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; flex: none;
     padding: 2px; border-radius: 999px; background: var(--chip); }
@@ -267,19 +268,23 @@ export function foldArrow(key, label, folded, redraw) {
   return arrow;
 }
 
-// What the dot says of each kind of change, to whoever cannot see its color.
+// What the word says in full of each kind of change, for the element's title.
 const HOLDS = { added: 'has pending additions', removed: 'has pending deletions', changed: 'has pending edits' };
+const WORDS = { added: 'Added', removed: 'Removed', changed: 'Edited' };
+/** The words for what is itself added or removed, rather than holding what is. */
+export const ITSELF = { added: 'New', removed: 'Deleted' };
 
 /**
- * Puts the dot on `element` for `kinds`, what each change it holds does: 'added', 'removed' or
+ * Puts the word on `element` for `kinds`, what each change it holds does: 'added', 'removed' or
  * 'changed'. It is the kind they share, or 'changed' when they differ, and none when there are
- * none. Returns what the dot says, for the element's title.
+ * none. `words` are said in place of the usual ones. Returns what the word says in full, for the
+ * element's title.
  */
-export function touch(element, kinds) {
+export function touch(element, kinds, words) {
   const found = new Set(kinds);
   const kind = found.size > 1 ? 'changed' : [...found][0];
-  if (kind) element.dataset.touched = kind;
-  else delete element.dataset.touched;
+  if (kind) Object.assign(element.dataset, { touched: kind, says: { ...WORDS, ...words }[kind] });
+  else for (const name of ['touched', 'says']) delete element.dataset[name];
   return HOLDS[kind];
 }
 
