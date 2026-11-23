@@ -24,5 +24,5 @@ function GatekeeperApp() {
   useDocumentTitle(app?.title ?? 'App')
   // A trailing slash names the same place; keep apps from seeing an empty last segment.
   const path = `/${(_splat ?? '').replace(/\/+$/, '')}`
-  return <GatekeeperAppPage appId={appId} path={path} />
+  return <GatekeeperAppPage key={appId} appId={appId} path={path} />
 }

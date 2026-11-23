@@ -2,6 +2,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from "react";
+// @ts-expect-error node builtin without @types/node in the browser-only src tsconfig
+import { createServer } from "node:http";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
@@ -31,6 +33,14 @@ import type {
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
 import type GatekeeperUserPickerDialog from "./features/gatekeeper-sharing/GatekeeperUserPickerDialog";
 import type * as Kumo from "@cloudflare/kumo";
+import { Route as GatekeeperAppRoute } from "./routes/gatekeepers_.$appId.$";
+
+const saveBlob = vi.hoisted(() => vi.fn<(blob: Blob, filename: string) => void>());
+vi.mock("./fileTransfers", async importOriginal => ({
+  ...await importOriginal<typeof import("./fileTransfers")>(), saveBlobToFile: saveBlob,
+}));
+vi.mock("./useGatekeeperApps", () => ({ useGatekeeperApps: () => [] }));
+vi.mock("./useDocumentTitle", () => ({ useDocumentTitle: () => {} }));
 
 // Most host cases use callback controls; the replacement race exercises the real picker state.
 type PickerProps = ComponentProps<typeof GatekeeperUserPickerDialog>;
@@ -78,7 +88,8 @@ const WORKSPACE_ID = "a".repeat(64);
 const listWorkspaces = vi.fn<() => Promise<{ id: string; title: string }[]>>(async () => [
   { id: WORKSPACE_ID, title: "Daily Brief" },
 ]);
-const authenticatedApi = { listWorkspaces };
+const getGatekeeperApp = vi.fn<(id: string) => Promise<GatekeeperUiFrame | null>>();
+const authenticatedApi = { listWorkspaces, getGatekeeperApp };
 
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi }),
@@ -154,6 +165,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
 
   beforeEach(() => {
     listWorkspaces.mockClear();
+    getGatekeeperApp.mockReset();
+    saveBlob.mockClear();
   });
 
   afterEach(async () => {
@@ -246,22 +259,86 @@ describe("SandboxedGatekeeperApp navigation", () => {
 
   it("downloads a gatekeeper attachment in the trusted host without opening the iframe sandbox", async () => {
     const { iframe } = await mountApp();
-    const attachments: { href: string; download: string; referrerPolicy: string; attached: boolean }[] = [];
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
-      attachments.push({
-        href: this.href,
-        download: this.download,
-        referrerPolicy: this.referrerPolicy,
-        attached: this.ownerDocument === document && document.body.contains(this),
-      });
-    });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private enrollment", {
+      headers: { "Content-Disposition": 'attachment; filename="Cloudflare OS.cfosoperator"' },
+    }));
     const url = `${window.location.origin}/gatekeeper/scheduler/exports/one-use-ticket`;
 
-    await host!.downloadFile(url);
+    await expect(host!.downloadFile(url)).resolves.toBeUndefined();
 
-    expect(attachments).toEqual([{ href: url, download: "", referrerPolicy: "no-referrer", attached: true }]);
-    expect(document.querySelector(`a[href="${url}"]`)).toBeNull();
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(url, {
+      credentials: "same-origin", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
+    });
+    expect(saveBlob).toHaveBeenCalledOnce();
+    expect(saveBlob.mock.calls[0][1]).toBe("Cloudflare-OS.cfosoperator");
+    expect(await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(reader.result), { once: true });
+      reader.readAsText(saveBlob.mock.calls[0][0]);
+    })).toBe("private enrollment");
     expect(iframe.getAttribute("sandbox")).toBe("allow-scripts allow-modals");
+  });
+
+  it("never requests a redirect destination outside the vendor route", async () => {
+    await mountApp();
+    const requests: string[] = [];
+    const server = createServer((request: { url?: string }, response: {
+      writeHead(status: number, headers: Record<string, string>): void; end(): void;
+    }) => {
+      requests.push(request.url ?? "");
+      response.writeHead(302, { Location: "/api/private" });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected HTTP test server");
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, options) =>
+      realFetch(`http://127.0.0.1:${address.port}${new URL(String(input)).pathname}`, options));
+    try {
+      await expect(host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/redirect`))
+        .rejects.toThrow("fetch failed");
+      expect(requests).toEqual(["/gatekeeper/scheduler/redirect"]);
+      expect(saveBlob).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error?: Error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("does not save an unsuccessful response", async () => {
+    await mountApp();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Not found", { status: 404 }));
+    await expect(host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/missing`))
+      .rejects.toThrow("Gatekeeper download failed.");
+    expect(saveBlob).not.toHaveBeenCalled();
+  });
+
+  it("removes the old vendor's frame while the replacement vendor is loading", async () => {
+    const first = { iframeHtml: "<title>Scheduler</title>", ui: new RpcStub(new EmptyUi()) } as unknown as GatekeeperUiFrame;
+    let finish!: (frame: GatekeeperUiFrame) => void;
+    getGatekeeperApp.mockResolvedValueOnce(first)
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const Component = GatekeeperAppRoute.options.component!;
+    await Component.preload?.();
+    const rootRoute = createRootRoute({ component: Outlet });
+    const appRoute = createRoute({
+      getParentRoute: () => rootRoute, path: "/gatekeepers/$appId/$", component: Component,
+    });
+    vi.spyOn(GatekeeperAppRoute, "useParams").mockImplementation(() => appRoute.useParams());
+    const router = createRouter({
+      history: createMemoryHistory({ initialEntries: ["/gatekeepers/scheduler"] }),
+      routeTree: rootRoute.addChildren([appRoute]),
+    });
+    const iframe = await render(router);
+    await act(async () => { await router.navigate({ to: "/gatekeepers/$appId/$", params: { appId: "calendar", _splat: "" } }); });
+    expect(iframe.isConnected).toBe(false);
+    expect(container!.querySelector("iframe")).toBeNull();
+    await act(async () => finish({ iframeHtml: "<title>Calendar</title>", ui: new RpcStub(new EmptyUi()) } as unknown as GatekeeperUiFrame));
+    expect(container!.querySelector("iframe")).not.toBe(iframe);
+    expect(getGatekeeperApp.mock.calls).toEqual([["scheduler"], ["calendar"]]);
   });
 
   it.each([
@@ -275,10 +352,10 @@ describe("SandboxedGatekeeperApp navigation", () => {
     "/gatekeeper/scheduler/exports/file#credential",
   ])("refuses a download outside the calling gatekeeper's credential-free route: %s", async (path) => {
     await mountApp();
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const fetch = vi.spyOn(globalThis, "fetch");
     await expect(host!.downloadFile(new URL(path, window.location.origin).href))
       .rejects.toThrow("Invalid gatekeeper download URL.");
-    expect(click).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("delivers each pick to the app's receiver while the picker is open, one picker at a time", async () => {

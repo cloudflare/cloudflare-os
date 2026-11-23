@@ -22,6 +22,7 @@ import { useTheme } from './ThemeContext'
 import { useServerConfig } from './ServerConfigContext'
 import { forwardTrustedFrameError } from './errorReporting'
 import { useAuthenticatedApi } from './AuthContext'
+import { makeExportFilename, saveBlobToFile } from './fileTransfers'
 import {
   normalizeGatekeeperAppPrompt,
   parseGatekeeperAppPath,
@@ -184,7 +185,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
 
   // The opaque-origin frame cannot perform authenticated attachment navigation. Keep the download
   // in the trusted host, scoped to this vendor's route; never pass attachment contents to the frame.
-  downloadFile(url: string): void {
+  async downloadFile(url: string): Promise<void> {
     let target: URL
     try {
       if (typeof url !== 'string') throw new TypeError()
@@ -197,16 +198,15 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
       || target.username || target.password || target.search || target.hash) {
       throw new TypeError('Invalid gatekeeper download URL.')
     }
-    const anchor = document.createElement('a')
-    anchor.href = target.href
-    anchor.download = ''
-    anchor.referrerPolicy = 'no-referrer'
-    document.body.append(anchor)
-    try {
-      anchor.click()
-    } finally {
-      anchor.remove()
-    }
+    const response = await fetch(target.href, {
+      credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Gatekeeper download failed.')
+    const disposition = response.headers.get('Content-Disposition') ?? ''
+    const filename = /(?:^|;)\s*filename="([^"]+)"/i.exec(disposition)?.[1]
+      ?? /(?:^|;)\s*filename=([^;]+)/i.exec(disposition)?.[1]
+      ?? target.pathname.split('/').at(-1)
+    saveBlobToFile(await response.blob(), makeExportFilename('download', '', filename))
   }
 
   // Navigate to a workspace the app knows about. The IDs are validated here because the app is
