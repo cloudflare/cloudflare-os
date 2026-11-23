@@ -653,6 +653,17 @@ describe("grep", () => {
         [{ file: "rows.txt", line: 8, text: "match row 7" }]);
   }));
 
+  // More than a call can take as arguments, all within the result's budget.
+  it("returns grep() matches of a file with very many short lines", () => withImpl(async impl => {
+    addChat(impl, 1);
+    await loadFixtureRepo(impl);
+    let { session } = await createWorktreeSession(impl, 1, COMMIT_1);
+    await session.writeBytes("ones.csv", new TextEncoder().encode("1\n".repeat(200_000)));
+    let output = await session.grep(/^1$/, "ones.csv");
+    expect(output).toMatch(/^1:1\n2:1\n/);
+    expect(output).toMatch(/more matches not shown/);
+  }));
+
   it("fills a directory's missing blobs in one batched pull", async () => {
     // Outside the DO: a WorkspaceGitCache with a mock pull source, so the pull count is
     // observable. The commit and trees are local (trees are eager); every blob is missing.

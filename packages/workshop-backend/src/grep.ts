@@ -150,7 +150,8 @@ export async function scanWorkpieceForGrep(
         fileRoom -= length;
         kept.push({ file: candidate.path, ...match });
       }
-      matches.push(...kept);
+      // One at a time: a file can keep more matches than a call can take as arguments.
+      for (let match of kept) matches.push(match);
       omitted += fileOmitted;
       room = fileRoom;
       if (skipped.lines > 0) {

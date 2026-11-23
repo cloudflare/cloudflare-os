@@ -185,8 +185,8 @@ export interface GitPullDelegate {
 
 /**
  * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL), is not
- * valid UTF-8, or is over MAX_WHOLE_TEXT_BYTES for a new read that would hold it whole (see
- * assertWholeTextSize). The message is the agent-visible, path-flavored description. Distinct from path-shape errors
+ * valid UTF-8, or is too large for a new read to hold whole (TextTooLargeError). The message is
+ * the agent-visible, path-flavored description. Distinct from path-shape errors
  * (symlink/gitlink/directory) and from transient pull failures so callers can tell "fine to
  * overwrite whole, but unreadable and undiffable" apart from errors that must propagate: the
  * Worktree binding's writeFile falls back to a whole-file `set` on this error (and only this
@@ -202,13 +202,24 @@ export class UnreadableContentError extends Error {}
 export const MAX_WHOLE_TEXT_BYTES = 16 * 1024 * 1024;
 
 /**
- * Refuses a new whole-text read or edit of a file over MAX_WHOLE_TEXT_BYTES, before any of it is
- * read. Replay and the folding of a chat's saved changes don't call this: an edit saved before
- * the limit existed must still apply to its base.
+ * A text file too large for a new read or edit to hold whole (MAX_WHOLE_TEXT_BYTES). Unreadable
+ * as text, like binary content, to the reads that show a note or overwrite whole instead; but it
+ * is text, so a merge, which would take one side of a binary file whole, refuses it instead.
  */
+export class TextTooLargeError extends UnreadableContentError {}
+
+/**
+ * Options for a whole-text read. `limited` refuses a file over MAX_WHOLE_TEXT_BYTES
+ * (TextTooLargeError) before any of it is read, as every new read or edit must. Replay and the
+ * folding of a chat's saved changes leave it unset: an edit saved before the limit existed must
+ * still apply to its base.
+ */
+export interface WholeTextReadOptions { limited?: boolean }
+
+/** Refuses a whole-text read of a file over MAX_WHOLE_TEXT_BYTES; see WholeTextReadOptions. */
 export function assertWholeTextSize(size: number, path: string): void {
   if (size > MAX_WHOLE_TEXT_BYTES) {
-    throw new UnreadableContentError(`${path} is ${size} bytes, too large to read or edit as ` +
+    throw new TextTooLargeError(`${path} is ${size} bytes, too large to read or edit as ` +
         "whole text. Read it by window (readFile with startLine and lineCount), search it with " +
         "grep, or read its bytes.");
   }
@@ -1096,11 +1107,12 @@ export class WorkspaceGitCache {
    * full-tree materialization) and fault-pulling whatever is missing. Regular files only:
    * a symlink or submodule (gitlink) path throws a descriptive error naming its target, a
    * directory path or absent entry throws "no such file", and binary (non-UTF-8 / NUL-bearing)
-   * content throws a clean, path-specific error. A file of any size is read whole, so a new read
-   * or edit checks assertWholeTextSize() first.
+   * content throws a clean, path-specific error. A file of any size is read whole unless
+   * `options.limited` (see WholeTextReadOptions).
    */
-  async readFileAtCommit(commitOid: GitOid, path: string): Promise<string> {
-    let text = await this.readFileAtCommitIfExists(commitOid, path);
+  async readFileAtCommit(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
+      : Promise<string> {
+    let text = await this.readFileAtCommitIfExists(commitOid, path, options);
     if (text === undefined) throw new Error(`${path}: no such file`);
     return text;
   }
@@ -1113,8 +1125,9 @@ export class WorkspaceGitCache {
    * content: "no base text" is an ordinary state there ("edit of absent file" is then the
    * change's own validation error), while the throwing errors describe the file itself.
    */
-  async readFileAtCommitIfExists(commitOid: GitOid, path: string): Promise<string | undefined> {
-    return (await this.readFileAtCommitWithOid(commitOid, path))?.text;
+  async readFileAtCommitIfExists(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
+      : Promise<string | undefined> {
+    return (await this.readFileAtCommitWithOid(commitOid, path, options))?.text;
   }
 
   /**
@@ -1141,11 +1154,12 @@ export class WorkspaceGitCache {
    * which a later `fileOidAtCommit` on another commit compares equal iff the content is
    * byte-identical. Same rules and errors otherwise.
    */
-  async readFileAtCommitWithOid(commitOid: GitOid, path: string)
+  async readFileAtCommitWithOid(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
       : Promise<{ text: string, oid: GitOid } | undefined> {
     let file = await this.openFileAtCommit(commitOid, path);
-    return file && { text: decodeBlobText(file.reader.read(0, file.reader.size), path),
-                     oid: file.oid };
+    if (file === undefined) return undefined;
+    if (options?.limited) assertWholeTextSize(file.reader.size, path);
+    return { text: decodeBlobText(file.reader.read(0, file.reader.size), path), oid: file.oid };
   }
 
   /**
@@ -1608,7 +1622,7 @@ export class WorkspaceGitCache {
   async readTextBlob(oid: GitOid, referencedBy: GitOid | undefined, path: string)
       : Promise<string> {
     // Its callers are new reads (a binding's readFile, a diff, a replica's merge), never the
-    // replay of a saved change, so it refuses a file too large to hold as text.
+    // replay of a saved change, so it refuses a file too large to hold as text, as `limited`.
     await this.#faultFileBlob(oid, referencedBy);
     assertWholeTextSize(this.blobSize(oid) ?? 0, path);
     return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);

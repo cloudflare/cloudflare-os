@@ -414,8 +414,12 @@ describe("attachment worktree ingress", () => {
         {oid: ref.oid, mimeType: "text/csv", name: "edited.csv"},
         {oid: ref.oid, mimeType: "text/csv", name: "untouched.csv"}]);
       const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
+      // As the code before the limit saved it, reading the base whole.
+      const readFileAtCommit = impl.readFileAtCommit.bind(impl);
+      impl.readFileAtCommit = (commit: string, path: string) => readFileAtCommit(commit, path);
       await step(impl, chatId, {[worktreeId]: [["edited.csv",
         {edit: replaceSpanChange(text.length, 0, "a row", "A ROW")}]]});
+      impl.readFileAtCommit = readFileAtCommit;
       return {chatId, worktreeId};
     });
     // A fresh object, with nothing cached, folds and replays the saved edit over the base.

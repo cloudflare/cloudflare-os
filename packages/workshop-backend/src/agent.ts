@@ -34,7 +34,7 @@ import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
-import { assertNoNul, assertWholeTextSize } from "./git-cache";
+import { assertNoNul, type WholeTextReadOptions } from "./git-cache";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -500,9 +500,11 @@ export interface AgentHooks {
    * the path -- never a whole tree -- the lazy base resolver behind worktree session content and
    * the way every unpinned read is served, gadget or worktree. Returns undefined for an absent
    * path; throws descriptive, agent-visible errors for a symlink or submodule path (naming the
-   * target), binary content, and pull failures.
+   * target), binary content, and pull failures, and with `options.limited` refuses a file too
+   * large to hold as text (see WholeTextReadOptions).
    */
-  readFileAtCommit(commit: string, path: string): Promise<string | undefined>;
+  readFileAtCommit(commit: string, path: string, options?: WholeTextReadOptions)
+      : Promise<string | undefined>;
 
   /**
    * Open one file of a commit's tree by path for reading in pieces, whatever its size, along with
@@ -1792,16 +1794,19 @@ async function runAgentPass(
   // Lazily reads a worktree file's base text into the session content, so later edits (and
   // replayed changes) apply against it exactly as if the base tree had been materialized.
   // Returns undefined for a path absent from the base; throws readFileAtCommit's descriptive
-  // errors (symlink/submodule/binary/pull failure). No-ops for anything that is not a
-  // worktree.
-  let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
+  // errors (symlink/submodule/binary/pull failure, and with `options.limited` a file too large
+  // to hold as text). No-ops for anything that is not a worktree.
+  let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string,
+                                 options?: WholeTextReadOptions)
       : Promise<string | undefined> => {
     let base = worktreeBase(worktreeId);
     if (base === undefined) return undefined;
-    let text = await hooks.readFileAtCommit(base, filename);
+    let text = await hooks.readFileAtCommit(base, filename, options);
     // A re-root by a concurrent call of the same execution can move the base during the read,
     // whose text is then the old base's: read the new one instead.
-    if (worktreeBase(worktreeId) !== base) return await faultWorktreeBase(worktreeId, filename);
+    if (worktreeBase(worktreeId) !== base) {
+      return await faultWorktreeBase(worktreeId, filename, options);
+    }
     if (text === undefined) return undefined;
     sessionContent = new Map(sessionContent);
     let files = new Map(sessionContent.get(worktreeId));
@@ -1812,17 +1817,13 @@ async function runAgentPass(
 
   // The live-read variant of faultWorktreeBase: a path the chat's change stream has removed
   // reports absent instead of resurrecting from the base. Only the tool-facing reads use this;
-  // replay seeding deliberately does not (see seedWorktreeBasesForChange).
-  // It is a new read or edit, so a file too large to hold as text is refused before it is read;
-  // replay (faultWorktreeBase) still reads one, to apply edits saved before that limit.
+  // replay seeding deliberately does not (see seedWorktreeBasesForChange). It is a new read or
+  // edit, so it is `limited`; replay still reads a file of any size, to apply edits saved before
+  // that limit.
   let readWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
-      : Promise<string | undefined> => {
-    if (worktreeRemovedPaths.get(worktreeId)?.has(filename)) return undefined;
-    let base = worktreeBase(worktreeId);
-    let file = base === undefined ? undefined : await hooks.openFileAtCommit(base, filename);
-    if (file) assertWholeTextSize(file.reader.size, filename);
-    return await faultWorktreeBase(worktreeId, filename);
-  };
+      : Promise<string | undefined> =>
+      worktreeRemovedPaths.get(worktreeId)?.has(filename)
+          ? undefined : await faultWorktreeBase(worktreeId, filename, { limited: true });
 
   // Reading a blob-backed UTF-8 upload must not change its representation: text edits over
   // byte replacements still require a separate composition protocol.
