@@ -230,11 +230,16 @@ describe("checking collaborators", () => {
   it("checks each kind of site data against what the collaborator's own key can read there", async () => {
     const { unifi } = installFake();
     const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
-    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/sites/${HOME.siteId}/clients`]]]);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [
+      `/v1/sites/${HOME.siteId}/clients`, `/v1/sites/${HOME.siteId}/devices/${HOME.apId}/statistics/latest`,
+    ]]]);
     const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
     const app = appSubresource(site.props.resource);
     expect(await verify(site, sam, [`${app}/devices/${HOME.siteId}`])).toEqual(ALLOWED);
     expect(await verify(site, sam, [`${app}/clients/${HOME.siteId}`])).toEqual(DENIED);
+    // A device's details and its statistics are routes of their own, allowed apart from the list.
+    expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/device/${HOME.apId}`])).toEqual(ALLOWED);
+    expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/deviceStatistics/${HOME.apId}`])).toEqual(DENIED);
     // A site the collaborator's key doesn't list is one their role doesn't cover.
     const elsewhere = binding(owner, { kind: "site", consoleId, siteId: "5f0ee1aa-0000-4000-8000-ffffffffffff" });
     expect(await verify(elsewhere, sam)).toEqual(DENIED);
@@ -329,6 +334,24 @@ describe("checking collaborators", () => {
     await reconnectCloud(alex, ALEX_NEW_KEY);
     release();
     expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected during the check/) });
+  });
+
+  it("sends nothing more with a replaced key once a reconnect lands, so nothing it loads is cached for the new one", async () => {
+    const { unifi, console } = installFake();
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
+    const owner = await connectCloud();
+    const alex = await connectCloud(ALEX_KEY);
+    const protect = binding(owner, RESOURCES.protect);
+    const cameras = ["a", "b", "c", "d", "e", "f", "g"].map(n => `${appSubresource(RESOURCES.protect)}/camera/66d025b30096e903e40005a${n}`);
+    const release = holdRequestsWith(unifi, ALEX_KEY);
+    const checking = verify(protect, alex, cameras);
+    unifi.addCloudKey(ALEX_NEW_KEY, { ...unifi.cloud.get(ALEX_KEY)! });
+    await reconnectCloud(alex, ALEX_NEW_KEY);
+    const before = unifi.calls.length;
+    release();
+    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected during the check/) });
+    // Only the Site Manager lookup that was already on its way went out with the old key.
+    expect(unifi.calls.slice(before).filter(call => call.headers["x-api-key"] === ALEX_KEY)).toHaveLength(1);
   });
 
   it("can't check anyone once the owner's connection no longer reaches the console", async () => {

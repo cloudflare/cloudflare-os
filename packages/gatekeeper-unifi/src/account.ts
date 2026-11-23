@@ -259,9 +259,19 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
    * nothing either way.
    */
   async canObserve(target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
-    const none = requirements.map(() => false);
     const connection = this.#connection();
-    if (!connection) return none;
+    if (!connection) return requirements.map(() => false);
+    const answers = await this.#observe(connection, target, requirements);
+    // Every answer came from one key. One a reconnect replaced meanwhile answers for no one now.
+    if (!sameCredentials(connection.credentials, this.#connection()?.credentials)) {
+      throw new Error("This UniFi connection was reconnected during the check. Try again.");
+    }
+    return answers;
+  }
+
+  /** `canObserve`'s answers, every request sent with `connection`'s credentials. */
+  async #observe(connection: StoredConnection, target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
+    const none = requirements.map(() => false);
     const { credentials, identity } = connection;
     /** The console to call with this connection's key, or null when it can't be called. */
     let consoleId: string | null;
@@ -296,10 +306,6 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
-    }
-    // Every answer came from one key. One a reconnect replaced meanwhile answers for no one now.
-    if (!sameCredentials(credentials, this.#connection()?.credentials)) {
-      throw new Error("This UniFi connection was reconnected during the check. Try again.");
     }
     return answers;
   }
@@ -354,6 +360,11 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
    */
   async #send(request: UnifiRequest, ttlMs: number | null, connection = this.#connection()): Promise<UnifiResponse> {
     if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
+    // A send pinned to credentials a reconnect has since replaced must not reach the cache, which
+    // the new credentials share: an answer it loaded there would be served as theirs.
+    if (!sameCredentials(connection.credentials, this.#connection()?.credentials)) {
+      return failure({ kind: "auth", message: "This UniFi connection was reconnected. Try again." });
+    }
     const { credentials, identity } = connection;
     if (request.target.kind === "app" && identity.mode === "direct" && request.target.consoleId !== identity.consoleId) {
       return failure({ kind: "notFound", message: "This UniFi connection doesn't reach that console." });

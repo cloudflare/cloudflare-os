@@ -457,10 +457,20 @@ export interface UnifiHotspot {
    * Creates vouchers. They are listed by `listVouchers()` right away; each one's `code` is `null`
    * until the console issues it.
    *
+   * @returns The batch's ID, for `getVoucherBatch()`, which finds exactly these vouchers again.
+   *
    * @example
-   * await env.GUEST_HOTSPOT.createVouchers({ note: "Grandma's visit", durationMinutes: 3 * 24 * 60 });
+   * const batch = await env.GUEST_HOTSPOT.createVouchers({ note: "Grandma's visit", durationMinutes: 3 * 24 * 60 });
+   * const [voucher] = await env.GUEST_HOTSPOT.getVoucherBatch(batch);
    */
-  createVouchers(options: UnifiVoucherOptions): Promise<void>;
+  createVouchers(options: UnifiVoucherOptions): Promise<string>;
+
+  /**
+   * The vouchers one `createVouchers()` call made, however many others the site has. Each one's
+   * `code` is `null` until the console issues it; the list is empty if they were never created, and
+   * leaves out any deleted since.
+   */
+  getVoucherBatch(batchId: string): Promise<UnifiVoucher[]>;
 
   /** Deletes a voucher so it can no longer be used. */
   deleteVoucher(voucherId: string): Promise<void>;

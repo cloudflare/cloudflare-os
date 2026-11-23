@@ -35,7 +35,7 @@ import type { CameraPatch, GuestLimitsBody, LightPatch, UnifiApi, VoucherBody } 
 import { provablyNoEffect, refusedBeforeDispatch, UnifiError } from "./errors";
 import { PERSONAL_SECURITY_TYPES } from "./parse";
 import type { UnifiResourceKind } from "./resources";
-import type { UnifiGuestLimits, UnifiWifiNetworkChanges } from "./network-types";
+import type { UnifiGuestLimits, UnifiVoucher, UnifiWifiNetworkChanges } from "./network-types";
 import type { UnifiDoorbellMessage, UnifiLightMode } from "./protect-types";
 
 /** What an approved action is carried out against: the bound console. */
@@ -43,6 +43,8 @@ export type UnifiActionHost = {
   api: UnifiApi;
   /** Writes a WiFi change through the account, which serializes them per network. */
   updateWifi: (siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges) => Promise<void>;
+  /** Keeps the vouchers a batch created, for `getVoucherBatch()`. */
+  recordVoucherBatch: (batch: string, vouchers: UnifiVoucher[]) => void;
 };
 
 /** Voucher options, normalized at submission. */
@@ -68,6 +70,8 @@ export type UnifiActionPayloads = {
   updateWifi: { siteId: string; wifiNetworkId: string; networkName: string; changes: UnifiWifiNetworkChanges };
   createVouchers: {
     siteId: string; request: VoucherRequest;
+    /** The batch's ID, which `createVouchers()` returned. */
+    batch: string;
     /** Placeholder IDs the pending vouchers are listed under until the console creates them. */
     placeholderIds: string[];
     submittedAt: number;
@@ -329,8 +333,8 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
         b.inline("Guests per voucher", p.request.guestLimit === null ? "Any number" : String(p.request.guestLimit));
         describeLimits(b, p.request);
       }),
-    apply: (p, { api }) => carryOut(async () => {
-      await api.createVouchers(p.siteId, voucherBody(p.request));
+    apply: (p, { api, recordVoucherBatch }) => carryOut(async () => {
+      recordVoucherBatch(p.batch, await api.createVouchers(p.siteId, voucherBody(p.request)));
     }, { idempotent: false }),
   },
   deleteVoucher: {

@@ -23,6 +23,9 @@ describe("subresource IDs", () => {
     [site, { kind: "clients", siteId: SITE }, `${NETWORK}/clients/${SITE}`],
     [site, { kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, `${NETWORK}/site/${SITE}/wifi/${WIFI}`],
     [device, { kind: "devices", siteId: SITE }, `${NETWORK}/devices/${SITE}`],
+    [device, { kind: "device", siteId: SITE, deviceId: "d" }, `${NETWORK}/site/${SITE}/device/d`],
+    [device, { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }, `${NETWORK}/site/${SITE}/deviceStatistics/d`],
+    [hotspot, { kind: "client", siteId: SITE, clientId: "c" }, `${NETWORK}/site/${SITE}/client/c`],
     [hotspot, { kind: "vouchers", siteId: SITE }, `${NETWORK}/vouchers/${SITE}`],
     [protect, { kind: "app" }, PROTECT],
     [protect, { kind: "nvr", id: NVR }, `${PROTECT}/nvr/${NVR}`],
@@ -41,6 +44,8 @@ describe("subresource IDs", () => {
     ["another site's password", site, `${NETWORK}/site/${OTHER_SITE}/wifi/${WIFI}`],
     ["voucher codes, from a device binding", device, `${NETWORK}/vouchers/${SITE}`],
     ["the site's devices, from a hotspot binding", hotspot, `${NETWORK}/devices/${SITE}`],
+    ["another device's statistics, from a device binding", device, `${NETWORK}/site/${SITE}/deviceStatistics/e`],
+    ["a client's details, from a device binding", device, `${NETWORK}/site/${SITE}/client/c`],
     ["another camera", camera, `${PROTECT}/camera/${CAMERA.replace("5", "6")}`],
     ["the NVR, from a camera binding", camera, `${PROTECT}/nvr/${NVR}`],
     ["a non-canonical spelling", site, `console/${CONSOLE}/app/network/site/${SITE}`],
@@ -54,6 +59,8 @@ describe("subresource IDs", () => {
     expect(probeFor("protect", { kind: "camera", id: CAMERA })).toEqual({ path: `/v1/cameras/${CAMERA}` });
     expect(probeFor("protect", { kind: "nvr", id: NVR })).toEqual({ path: "/v1/nvrs" });
     expect(probeFor("network", { kind: "clients", siteId: SITE })).toEqual({ path: `/v1/sites/${SITE}/clients`, query: { limit: "1" } });
+    expect(probeFor("network", { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }))
+      .toEqual({ path: `/v1/sites/${SITE}/devices/d/statistics/latest` });
     expect(probeFor("network", { kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }))
       .toEqual({ path: `/v1/sites/${SITE}/wifi/broadcasts/${WIFI}` });
     // The site list shows a key only its own sites, so the site has to be in the answer.

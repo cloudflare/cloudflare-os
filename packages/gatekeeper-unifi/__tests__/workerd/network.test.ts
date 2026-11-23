@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { account, binding, connectCloud, connectDirect, hooks, installFake, RESOURCES } from "./helpers.js";
-import { HOME } from "../fake-unifi.js";
+import { HOME, rawVoucher } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
@@ -26,23 +26,27 @@ describe("every read is authorized before it returns", () => {
   const guestWifi = `${NETWORK}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`;
   // What each read reports: the endpoints its data came from, so a role limited to other sites,
   // or one that can't read passwords, isn't shown it.
-  const reads: [string, Step, string[]][] = [
+  const item = (kind: string, id: string) => `${NETWORK}/site/${HOME.siteId}/${kind}/${id}`;
+  const ap = item("device", HOME.apId);
+  // [read, step, what it reports, whether it returns a credential that works]
+  const reads: [string, Step, string[], boolean?][] = [
     ["describe", { call: "describe" }, [ofSite("site")]],
     ["listDevices", { call: "listDevices" }, [ofSite("devices")]],
     ["listClients", { call: "listClients" }, [ofSite("clients")]],
-    ["getClient", { call: "getClient", args: [HOME.phoneId] }, [ofSite("clients")]],
+    ["getClient", { call: "getClient", args: [HOME.phoneId] }, [item("client", HOME.phoneId)]],
     ["listNetworks", { call: "listNetworks" }, [ofSite("networks")]],
     ["listWifiNetworks", { call: "listWifiNetworks" }, [ofSite("wifiNetworks")]],
-    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }, [ofSite("devices")]],
-    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" }, [ofSite("devices")]],
-    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, [ofSite("clients"), ofSite("devices")]],
+    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }, [ofSite("devices"), ap]],
+    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" },
+      [ofSite("devices"), ap, item("deviceStatistics", HOME.apId)]],
+    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, [ofSite("clients"), ofSite("devices"), ap]],
     ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }, [guestWifi]],
-    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" }, [guestWifi]],
+    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" }, [guestWifi], true],
     ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, [ofSite("clients")]],
-    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [ofSite("clients")]],
-    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers")]],
+    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [item("client", HOME.guestId)]],
+    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers")], true],
   ];
-  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources) => {
+  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources, restricted) => {
     installFake();
     const accountId = await connectCloud();
     const site = binding(accountId, RESOURCES.site);
@@ -52,6 +56,7 @@ describe("every read is authorized before it returns", () => {
     expect(observations).toHaveLength(1);
     expect(observations[0]!.title).toMatch(/UniFi/);
     expect(observations[0]!.subresources).toEqual(subresources);
+    expect(observations[0]!.containsRestrictedData).toBe(restricted);
     expect(submitted).toEqual([]);
   });
 
@@ -65,6 +70,8 @@ describe("every read is authorized before it returns", () => {
       title: "Read a UniFi WiFi password",
       description: "Read the password of WiFi network \\[Guest\\]\\(https://evil\\.example\\) \\# Free.",
       subresources: [`console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`],
+      // A password that works, which the Workshop then keeps from leaving the workspace.
+      containsRestrictedData: true,
     }]);
   });
 });
@@ -304,6 +311,38 @@ describe("the guest hotspot", () => {
     expect(console.writes()[0]!.body).toEqual({ count: 2, name: "Party", timeLimitMinutes: 240, authorizedGuestLimit: 1 });
     const created = await hotspot.call<{ code: string | null; note: string }[]>("listVouchers");
     expect(created.filter(v => v.note === "Party").every(v => typeof v.code === "string")).toBe(true);
+  });
+
+  it("finds the vouchers one call created, before and after approval", async () => {
+    installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240, count: 2 });
+    await hotspot.call("createVouchers", { note: "Party", durationMinutes: 60 });
+    const queued = await hotspot.call<{ code: string | null }[]>("getVoucherBatch", batch);
+    expect(queued.map(v => v.code)).toEqual([null, null]);
+
+    const [first] = (await hotspot.queue()).submitted;
+    await hotspot.apply(first!.actionId);
+    const created = await hotspot.call<{ code: string | null; note: string }[]>("getVoucherBatch", batch);
+    expect(created).toHaveLength(2);
+    expect(created.every(v => typeof v.code === "string" && v.note === "Party")).toBe(true);
+    // Working codes, which the Workshop keeps from leaving the workspace.
+    expect((await hotspot.queue()).observations.at(-1)).toMatchObject({ containsRestrictedData: true });
+    expect(await hotspot.failure("getVoucherBatch", "not-a-batch")).toMatch(/isn't a voucher batch ID/);
+  });
+
+  it("finds a batch's vouchers on a site with more than listVouchers() returns", async () => {
+    const { console } = installFake();
+    const older = Array.from({ length: 1000 }, (_, i) =>
+      rawVoucher(`5f0ee1aa-0000-4000-9000-${String(i).padStart(12, "0")}`, "Old", String(2_000_000_000 + i), "2026-01-01T00:00:00Z"));
+    console.network!.sites[0]!.vouchers.push(...older);
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240 });
+    await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
+    const listed = await hotspot.call<{ note: string }[]>("listVouchers");
+    expect(listed.some(v => v.note === "Party")).toBe(false);
+    const [voucher] = await hotspot.call<{ code: string | null; note: string }[]>("getVoucherBatch", batch);
+    expect(voucher).toMatchObject({ note: "Party", code: expect.any(String) });
   });
 
   it("deletes a voucher, hiding it until approved, and treats one already gone as done", async () => {

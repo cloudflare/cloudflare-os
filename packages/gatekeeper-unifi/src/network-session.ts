@@ -11,12 +11,14 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { UnifiError } from "./errors";
 import type { VoucherRequest } from "./actions";
+import { MAX_LIST_ITEMS } from "./api";
 import { parseWifiInfo, PERSONAL_SECURITY_TYPES, wifiPassphrase } from "./parse";
 import {
   isPlaceholderVoucherId, simulateClientDetails, simulateClients, simulatePassphrase, simulateVouchers,
   simulateWifiInfo, simulateWifiSummaries,
 } from "./simulation";
 import { count, md, requireId, requireInteger, type SessionContext } from "./session-context";
+import type { UnifiRequirement } from "./subresources";
 import type {
   UnifiClient, UnifiClientDetails, UnifiDevice, UnifiDeviceDetails, UnifiDeviceStatistics,
   UnifiGuestLimits, UnifiHotspot, UnifiLanNetwork, UnifiNetworkDevice, UnifiNetworkSite,
@@ -25,6 +27,7 @@ import type {
 } from "./network-types";
 
 const GUEST_FILTER = "access.type.eq('GUEST')";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_VOUCHERS_PER_REQUEST = 100;
 
 function badRequest(message: string): UnifiError {
@@ -103,7 +106,7 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
       await api.getClient(this.#siteId, requireId(clientId, "client")), this.#siteId, pending(), now());
     await this.#ctx.observe("Read a UniFi client",
       `Read client ${md(client.name)} on UniFi site ${md(await this.#label.get())}.`,
-      [{ kind: "clients", siteId: this.#siteId }]);
+      [{ kind: "client", siteId: this.#siteId, clientId: client.id }]);
     return client;
   }
 
@@ -157,10 +160,15 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
     this.#ctx[Symbol.dispose]();
   }
 
+  /** What a read showing this device's details requires, beyond the device list. */
+  #device(): UnifiRequirement {
+    return { kind: "device", siteId: this.#siteId, deviceId: this.#deviceId };
+  }
+
   async describe(): Promise<UnifiDeviceDetails> {
     const device = await this.#ctx.shared.api.getDevice(this.#siteId, this.#deviceId);
     await this.#ctx.observe("Read a UniFi device", `Read the details of UniFi device ${md(device.name)}.`,
-      [{ kind: "devices", siteId: this.#siteId }]);
+      [{ kind: "devices", siteId: this.#siteId }, this.#device()]);
     return device;
   }
 
@@ -170,7 +178,8 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
       api.getDeviceStatistics(this.#siteId, this.#deviceId), api.getDevice(this.#siteId, this.#deviceId),
     ]);
     await this.#ctx.observe("Read UniFi device statistics", `Read the latest statistics of UniFi device ${md(device.name)}.`,
-      [{ kind: "devices", siteId: this.#siteId }]);
+      [{ kind: "devices", siteId: this.#siteId }, this.#device(),
+        { kind: "deviceStatistics", siteId: this.#siteId, deviceId: this.#deviceId }]);
     return statistics;
   }
 
@@ -188,7 +197,7 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
     const clients = simulateClients(all.filter(client => client.uplinkDeviceId === this.#deviceId), this.#siteId, pending());
     await this.#ctx.observe("List clients of a UniFi device",
       `Listed ${count(clients.length, "client")} connected through UniFi device ${md(device.name)}.`,
-      [{ kind: "clients", siteId: this.#siteId }, { kind: "devices", siteId: this.#siteId }]);
+      [{ kind: "clients", siteId: this.#siteId }, { kind: "devices", siteId: this.#siteId }, this.#device()]);
     return clients;
   }
 
@@ -249,7 +258,7 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
     const network = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, pending());
     const passphrase = simulatePassphrase(wifiPassphrase(raw), this.#siteId, this.#wifiNetworkId, pending());
     await this.#ctx.observe("Read a UniFi WiFi password", `Read the password of WiFi network ${md(network.name)}.`,
-      [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }]);
+      [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }], { restricted: passphrase !== null });
     return passphrase;
   }
 
@@ -316,7 +325,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
   async getGuest(clientId: string): Promise<UnifiClientDetails> {
     const guest = await this.#guest(clientId);
     await this.#ctx.observe("Read a UniFi WiFi guest", `Read guest ${md(guest.name)}'s access to the guest hotspot.`,
-      [{ kind: "clients", siteId: this.#siteId }]);
+      [{ kind: "client", siteId: this.#siteId, clientId: guest.id }]);
     return guest;
   }
 
@@ -340,16 +349,45 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi hotspot vouchers",
       `Listed ${count(vouchers.length, "voucher")} for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
-      [{ kind: "vouchers", siteId: this.#siteId }]);
+      [{ kind: "vouchers", siteId: this.#siteId }], { restricted: vouchers.some(voucher => voucher.code !== null) });
     return vouchers;
   }
 
-  async createVouchers(options: UnifiVoucherOptions): Promise<void> {
+  async createVouchers(options: UnifiVoucherOptions): Promise<string> {
     const request = validateVoucherOptions(options);
     const batch = crypto.randomUUID();
     const placeholderIds = Array.from({ length: request.count }, (_, i) => `pending-${batch}-${i + 1}`);
     await this.#ctx.submit("createVouchers",
-      { siteId: this.#siteId, request, placeholderIds, submittedAt: this.#ctx.shared.now() });
+      { siteId: this.#siteId, request, batch, placeholderIds, submittedAt: this.#ctx.shared.now() });
+    return batch;
+  }
+
+  async getVoucherBatch(batchId: string): Promise<UnifiVoucher[]> {
+    if (!UUID.test(batchId)) throw badRequest("That isn't a voucher batch ID from createVouchers().");
+    const { api, pending, voucherBatch } = this.#ctx.shared;
+    const queued = pending().filter(entry =>
+      entry.action.kind === "createVouchers" && entry.action.payload.siteId === this.#siteId && entry.action.payload.batch === batchId);
+    let vouchers: UnifiVoucher[];
+    if (queued.length > 0) {
+      vouchers = simulateVouchers([], this.#siteId, queued);
+    } else {
+      const created = voucherBatch(batchId) ?? [];
+      // The list stops at 1,000 in no promised order, so a voucher missing from a full one may
+      // just be past its end: it's shown as created. Missing from a shorter list, it was deleted.
+      const listed = created.length > 0 ? await api.listVouchers(this.#siteId) : [];
+      const complete = listed.length < MAX_LIST_ITEMS;
+      const current = created.flatMap(voucher => {
+        const live = listed.find(v => v.id === voucher.id);
+        return live ? [live] : complete ? [] : [voucher];
+      });
+      const ids = new Set(current.map(voucher => voucher.id));
+      // Simulation hides pending deletions; it would add other batches' placeholders, which are dropped.
+      vouchers = simulateVouchers(current, this.#siteId, pending()).filter(voucher => ids.has(voucher.id));
+    }
+    await this.#ctx.observe("Read a batch of UniFi hotspot vouchers",
+      `Read ${count(vouchers.length, "voucher")} created together for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "vouchers", siteId: this.#siteId }], { restricted: vouchers.some(voucher => voucher.code !== null) });
+    return vouchers;
   }
 
   async deleteVoucher(voucherId: string): Promise<void> {

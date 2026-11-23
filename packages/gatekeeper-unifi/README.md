@@ -114,8 +114,11 @@ some sites, a Protect role to some cameras, and not every role may read WiFi pas
 All IDs start `console/<consoleId>/app/<network|protect>`. Then:
 
 - Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
-  `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists; and
-  `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, password included.
+  `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists;
+  `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, password included; and
+  `/site/<siteId>/device/<id>`, `/site/<siteId>/deviceStatistics/<id>` and
+  `/site/<siteId>/client/<id>` for one device's details or statistics or one client's details,
+  since a route can be allowed apart from the list it's under.
 - Protect: `/nvr/<id>` for the alarm, and `/camera/<id>`, `/sensor/<id>` or `/light/<id>` for each
   device a read showed. A snapshot also reports `/snapshot/<id>` (or `/packageSnapshot/<id>`),
   since a camera's images can be allowed apart from its details, for example by a Cloudflare
@@ -137,6 +140,9 @@ Checks:
 A binding's title is what UniFi calls the resource, as are the names in approvals: the Workshop
 shows both to everyone the workspace is shared with, and sharing a workspace shares those names.
 The data behind them stays behind the checks above.
+
+A read that returns a working WiFi password or voucher code also marks the workspace as holding
+restricted data, so the Workshop keeps it from leaving through web fetches and actions elsewhere.
 
 A check that can't be made (the console doesn't answer, the binding owner's own connection no
 longer reaches it, or the collaborator reconnects with another key while it runs) refuses everyone

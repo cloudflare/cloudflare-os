@@ -75,7 +75,7 @@ describe("vouchers", () => {
   const create: UnifiAction = {
     kind: "createVouchers",
     payload: {
-      siteId: HOME.siteId, placeholderIds: ["pending-x-1", "pending-x-2"], submittedAt: NOW,
+      siteId: HOME.siteId, batch: "x", placeholderIds: ["pending-x-1", "pending-x-2"], submittedAt: NOW,
       request: { count: 2, note: "Party", durationMinutes: 240, guestLimit: 1, dataLimitMB: null, downloadLimitKbps: null, uploadLimitKbps: null },
     },
   };

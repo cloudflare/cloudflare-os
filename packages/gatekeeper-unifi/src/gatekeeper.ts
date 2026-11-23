@@ -24,6 +24,7 @@ import { resourceApp, type UnifiResource, type UnifiResourceKind } from "./resou
 import { SessionContext, type SessionShared } from "./session-context";
 import { parseRequirement, requirementId, type UnifiRequirement } from "./subresources";
 import type { UnifiVerifierApi } from "./verifier";
+import type { UnifiVoucher } from "./network-types";
 import NETWORK_TYPES from "./network-types.txt";
 import PROTECT_TYPES from "./protect-types.txt";
 
@@ -34,6 +35,11 @@ export type UnifiGatekeeperProps = { accountId: string; resource: UnifiResource 
 export type UnifiSession =
   | NetworkSiteSession | NetworkDeviceSession | WifiNetworkSession | HotspotSession
   | ProtectSession | CameraSession | SensorSession | LightSession;
+
+/** Where the vouchers each recent batch created are kept, and how many batches are. */
+const VOUCHER_BATCHES_KEY = "unifi:voucherBatches";
+const MAX_VOUCHER_BATCHES = 50;
+const voucherBatchKey = (batch: string) => `unifi:voucherBatch:${batch}`;
 
 /** How each kind of binding presents itself in the Workshop. */
 const PRESENTATION: Record<UnifiResourceKind, { tsType: string; binding: string; title: string; snippet: string }> = {
@@ -58,6 +64,14 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
     updateWifi: async (siteId, wifiNetworkId, changes) => {
       const failure = await this.#account().updateWifi(this.ctx.props.resource.consoleId, siteId, wifiNetworkId, changes);
       if (failure) throw new UnifiError(failure);
+    },
+    recordVoucherBatch: (batch, vouchers) => {
+      const kv = this.ctx.storage.kv;
+      // The most recent batches only: one older than these can still be found with listVouchers().
+      const batches = [...(kv.get<string[]>(VOUCHER_BATCHES_KEY) ?? []).filter(b => b !== batch), batch];
+      for (const old of batches.splice(0, Math.max(0, batches.length - MAX_VOUCHER_BATCHES))) kv.delete(voucherBatchKey(old));
+      kv.put(voucherBatchKey(batch), vouchers);
+      kv.put(VOUCHER_BATCHES_KEY, batches);
     },
   });
 
@@ -100,6 +114,7 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
       consoleName: () => this.#consoleName(),
       now: () => Date.now(),
       subresource: requirement => requirementId(this.ctx.props.resource, requirement),
+      voucherBatch: batch => this.ctx.storage.kv.get<UnifiVoucher[]>(voucherBatchKey(batch)) ?? null,
     };
     const ctx = new SessionContext(shared, approvalQueue.dup());
     const resource = this.ctx.props.resource;

@@ -14,6 +14,7 @@ import type { UnifiActionPayloads } from "./actions";
 import { UnifiError } from "./errors";
 import { isValidId } from "./resources";
 import type { PendingAction } from "./simulation";
+import type { UnifiVoucher } from "./network-types";
 import { APP, type UnifiRequirement } from "./subresources";
 
 /** What a binding's session objects share. */
@@ -26,6 +27,8 @@ export type SessionShared = {
   readonly consoleName: () => Promise<string>;
   /** Wall-clock time, replaceable in tests. */
   readonly now: () => number;
+  /** The vouchers a batch created, once it has been applied (`getVoucherBatch`), or null. */
+  readonly voucherBatch: (batch: string) => UnifiVoucher[] | null;
   /** The subresource ID of a requirement on the bound console's application (`requirementId`). */
   readonly subresource: (requirement: UnifiRequirement) => string;
 };
@@ -54,10 +57,17 @@ export class SessionContext implements Disposable {
    * @param requires What the read disclosed, by the endpoint it came from (see subresources.ts). A
    * listing of Protect devices that found none still shows what the application holds, so none
    * stands for the application.
+   * @param options.restricted Whether the read returned a credential that still works -- a WiFi
+   * password, a voucher code -- which the Workshop then keeps from leaving through web fetches and
+   * actions on other connections.
    */
-  async observe(title: string, description: string, requires: readonly UnifiRequirement[]): Promise<void> {
+  async observe(
+    title: string, description: string, requires: readonly UnifiRequirement[], options: { restricted?: boolean } = {},
+  ): Promise<void> {
     const subresources = (requires.length ? requires : [APP]).map(this.shared.subresource);
-    await this.#queue.authorizeObservation({ title, description, subresources });
+    await this.#queue.authorizeObservation({
+      title, description, subresources, ...(options.restricted && { containsRestrictedData: true }),
+    });
   }
 
   /** Submits an action for approval. */

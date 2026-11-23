@@ -68,6 +68,7 @@ export class RecordingQueue extends RpcTarget {
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push({
       title: description.title, description: description.description, subresources: description.subresources,
+      ...(description.containsRestrictedData && { containsRestrictedData: true }),
     });
   }
 

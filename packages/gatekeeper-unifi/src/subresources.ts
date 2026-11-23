@@ -9,7 +9,9 @@
  * are `/site/<siteId>`; its devices, clients, LAN networks, WiFi network list and voucher codes are
  * `/devices/<siteId>`, `/clients/<siteId>`, `/networks/<siteId>`, `/wifiNetworks/<siteId>` and
  * `/vouchers/<siteId>`; one WiFi network's settings, password included, are
- * `/site/<siteId>/wifi/<wifiNetworkId>`. In Protect, the NVR and its alarm are `/nvr/<id>`, each
+ * `/site/<siteId>/wifi/<wifiNetworkId>`, and one device's details, its statistics and one client's
+ * details `/site/<siteId>/device/<id>`, `/site/<siteId>/deviceStatistics/<id>` and
+ * `/site/<siteId>/client/<id>`, since a route can be allowed apart from the list it's under. In Protect, the NVR and its alarm are `/nvr/<id>`, each
  * device `/camera/<id>`, `/sensor/<id>` or `/light/<id>`, a camera's images `/snapshot/<id>` and
  * `/packageSnapshot/<id>` (its package camera), which can be allowed apart from its details, and the
  * application alone, for a listing that found nothing, has no suffix.
@@ -39,7 +41,10 @@ export type UnifiRequirement =
   | { kind: "networks"; siteId: string }
   | { kind: "wifiNetworks"; siteId: string }
   | { kind: "vouchers"; siteId: string }
-  | { kind: "wifi"; siteId: string; wifiNetworkId: string };
+  | { kind: "wifi"; siteId: string; wifiNetworkId: string }
+  | { kind: "device"; siteId: string; deviceId: string }
+  | { kind: "deviceStatistics"; siteId: string; deviceId: string }
+  | { kind: "client"; siteId: string; clientId: string };
 
 /** The parts of a Network site that UniFi serves from separate endpoints. */
 const SITE_DATA = ["site", "devices", "clients", "networks", "wifiNetworks", "vouchers"] as const;
@@ -53,8 +58,9 @@ export function requirementId(resource: UnifiResource, requirement: UnifiRequire
   const fragments: SubresourceFragment[] = [
     { name: "console", id: resource.consoleId }, { name: "app", id: resourceApp(resource.kind) },
   ];
-  if (requirement.kind === "wifi") {
-    fragments.push({ name: "site", id: requirement.siteId }, { name: "wifi", id: requirement.wifiNetworkId });
+  const item = siteItem(requirement);
+  if (item && "siteId" in requirement) {
+    fragments.push({ name: "site", id: requirement.siteId }, { name: requirement.kind, id: item });
   } else if ("siteId" in requirement) {
     fragments.push({ name: requirement.kind, id: requirement.siteId });
   } else if ("id" in requirement) {
@@ -88,13 +94,28 @@ function decode(id: string): UnifiRequirement | null {
   const [first, second] = rest;
   if (!first) return APP;
   if (second) {
-    return rest.length === 2 && first.name === "site" && second.name === "wifi"
-      ? { kind: "wifi", siteId: first.id, wifiNetworkId: second.id } : null;
+    if (rest.length !== 2 || first.name !== "site") return null;
+    switch (second.name) {
+      case "wifi": return { kind: "wifi", siteId: first.id, wifiNetworkId: second.id };
+      case "device": case "deviceStatistics": return { kind: second.name, siteId: first.id, deviceId: second.id };
+      case "client": return { kind: "client", siteId: first.id, clientId: second.id };
+      default: return null;
+    }
   }
   const name = first.name;
   if (isOneOf(name, PROTECT_ITEMS)) return { kind: name, id: first.id };
   if (isOneOf(name, SITE_DATA)) return { kind: name, siteId: first.id };
   return null;
+}
+
+/** The ID of the one item within a site a requirement names, if it names one. */
+function siteItem(requirement: UnifiRequirement): string | null {
+  switch (requirement.kind) {
+    case "wifi": return requirement.wifiNetworkId;
+    case "device": case "deviceStatistics": return requirement.deviceId;
+    case "client": return requirement.clientId;
+    default: return null;
+  }
 }
 
 function isOneOf<T extends string>(value: string, options: readonly T[]): value is T {
@@ -106,10 +127,13 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
   const inSite = "siteId" in resource && "siteId" in requirement && requirement.siteId === resource.siteId;
   switch (resource.kind) {
     case "site": return inSite;
-    case "device": return inSite && (requirement.kind === "devices" || requirement.kind === "clients");
+    case "device":
+      return inSite && (requirement.kind === "devices" || requirement.kind === "clients" ||
+        (requirement.kind === "device" || requirement.kind === "deviceStatistics") && requirement.deviceId === resource.deviceId);
     case "wifi":
       return requirement.kind === "wifi" && inSite && requirement.wifiNetworkId === resource.wifiNetworkId;
-    case "hotspot": return inSite && (requirement.kind === "clients" || requirement.kind === "vouchers");
+    case "hotspot":
+      return inSite && (requirement.kind === "clients" || requirement.kind === "client" || requirement.kind === "vouchers");
     case "protect": return requirement.kind === "app" || isOneOf(requirement.kind, PROTECT_ITEMS);
     case "camera":
       return (requirement.kind === "camera" || requirement.kind === "snapshot" || requirement.kind === "packageSnapshot") &&
@@ -147,5 +171,9 @@ export function probeFor(app: UnifiApp, requirement: UnifiRequirement): {
     case "wifiNetworks": return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts`, query: first };
     case "vouchers": return { path: `/v1/sites/${at(requirement.siteId)}/hotspot/vouchers`, query: first };
     case "wifi": return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts/${at(requirement.wifiNetworkId)}` };
+    case "device": return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}` };
+    case "deviceStatistics":
+      return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}/statistics/latest` };
+    case "client": return { path: `/v1/sites/${at(requirement.siteId)}/clients/${at(requirement.clientId)}` };
   }
 }
