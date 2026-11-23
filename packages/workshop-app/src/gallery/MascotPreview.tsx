@@ -5,7 +5,7 @@ import { Switch } from '@gadgets/ui'
 import { Mascot, type MascotColor, type MascotEmotion } from '@/components/mascot/Mascot'
 import { Section } from './Section'
 
-const EMOTIONS: MascotEmotion[] = ['idle', 'thinking', 'happy', 'sad', 'error', 'loading']
+const EMOTIONS: MascotEmotion[] = ['idle', 'thinking', 'happy', 'sad', 'error', 'writing']
 const COLORS: MascotColor[] = ['contrast', 'inverse', 'island', 'brand']
 
 /** Every emotion at several sizes, coming and going. The large one can be played with; the others only show the state. */

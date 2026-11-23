@@ -1,10 +1,9 @@
 import { isMotionOff, subscribeMotionLevel } from '@gadgets/ui'
 import { circlePath } from './circlePath'
-import { LoadingMotion } from './loadingMotion'
 import { alignPoints, inverseTransformPoints, orderHalves, roundedPointsToPath, samplePath, splitOutline, transformPoints, type Point, type Pose } from './morph'
 import { cloudLobes, happyEye, sadCores, sadFace, sparkle } from './shapes'
 
-export type MascotEmotion = 'idle' | 'thinking' | 'happy' | 'sad' | 'error' | 'loading'
+export type MascotEmotion = 'idle' | 'thinking' | 'happy' | 'sad' | 'error' | 'writing'
 type FaceEmotion = 'sad' | 'happy'
 
 /** How long, in seconds, before its sparkle starts shaking `onShake` is called. */
@@ -58,6 +57,38 @@ const pop = (value: number) => {
   const left = Math.min(1, value) - 1
   return 1 + 2.7 * left ** 3 + 1.7 * left ** 2
 }
+
+// Writing: three of the four blobs shrink to the dots of a typing indicator, in a row about the
+// middle of the cloud. The fourth, the one that held the sparkle, is taken into the last dot as it
+// shrinks, so nothing is left over. Each dot in turn hops and swells a little, as a typing
+// indicator's do.
+//
+// Going into it is leaving as the cloud does when it is hidden, and for the same reasons: the
+// sparkle goes first, spinning and shrinking, with a swell before it goes, so that the blobs that
+// shrink after it have nothing to clip; then the blobs in turn, last in first out, each springing a
+// little past its dot. Coming out is all of it backwards, the sparkle last. One clock runs it, as
+// one runs showing and hiding, so it can turn round at any point.
+const WRITING_DOTS = [13, 32, 51]
+const WRITING_RADIUS = 7.5
+/** Which dot each blob becomes, by blob: the two on the right go to the last dot, and one of them goes. */
+const WRITING_DOT_OF = [2, 2, 1, 0]
+const WRITING_GONE = 1
+/** A round of the hops, in seconds; how long after the dot before it each dot hops; the share of the round it is in the air. */
+const WRITING_PERIOD = 1.15
+const WRITING_LAG = 0.17
+const WRITING_HOP = 0.55
+const WRITING_RISE = 5.5
+/** The clock of writing: 0 is not, `WRITE_TOTAL` is all of it. How long the sparkle takes to go. */
+const WRITE_SPARKLE = 0.3
+/** When the first blob starts for its dot, so that it starts as the sparkle is nearly gone; how long each blob takes; how long after one the next. */
+const WRITE_BLOBS_AT = 0.26
+const WRITE_BLOB = 0.4
+const WRITE_STAGGER = 0.05
+const WRITE_TOTAL = WRITE_BLOBS_AT + 3 * WRITE_STAGGER + WRITE_BLOB
+/** Each blob's turn when it goes: the order they came in, the other way about. */
+const WRITE_ORDER = TURN.map((turn) => 3 - turn)
+/** How far the sparkle turns, in degrees, as it goes. */
+const WRITE_SPIN = 270
 
 const happyEntrySpeed = 1.25
 const smoothstep = (value: number) => {
@@ -135,16 +166,15 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   const star = { x: 43.5, y: 32.7, rotation: 0, scale: 1 }
   const liquid = { x: 0, y: 0, vx: 0, vy: 0 }
   const shakenBody = { x: 0, velocity: 0 }
-  const loading = new LoadingMotion()
-  const loadingMix = { amount: 0, velocity: 0 }
+  // How far into writing it is, on a clock that runs forward while it writes and back otherwise: so
+  // that it can go into writing, and out of it, from wherever any other state has got to.
+  let writeClock = 0
   const happyMotion = {
     breath: { amount: 0, velocity: 0 },
     shake: { amount: 0, velocity: 0 },
     dance: { amount: 0, velocity: 0 },
   }
   let happyBreathFrom = 0
-  let loadingFrame = loading.step(0)
-  let displayRotation = 0
   const squeeze: { amount: number; velocity: number; phase: 'rest' | 'press' | 'hold' | 'recover'; heldFor: number; pressElapsed: number; pressFrom: number } = { amount: 0, velocity: 0, phase: 'rest', heldFor: 0, pressElapsed: 0, pressFrom: 0 }
   const raindrops = Array.from({ length: RAINDROPS }, () => ({ active: false, birthPending: false, elapsed: 0, duration: 1, x: 0, y: 0, drift: 0, radius: 0, distance: 0 }))
   let nextRaindrop = 0
@@ -306,8 +336,6 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       : spin.from + (spin.target - spin.from) * smoothstep(spin.elapsed / spin.duration)
     const mood = emotion
     if (mood !== previousMood) {
-      if (mood === 'loading' && loadingMix.amount < 0.001) loading.reset(lastPose.rotation - spin.rotation)
-      if (previousMood === 'loading') star.rotation = lastPose.rotation - spin.rotation
       const faceEmotion = mood === 'sad' || mood === 'happy' ? mood : null
       if (faceEmotion || previousMood === 'sad' || previousMood === 'happy') {
         const from = splitShapes ?? orderHalves(outlines().sparkHalves.map((half) => transformPoints(half, lastPose)))
@@ -365,22 +393,14 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     const happyBreath = happyMotion.breath.amount
     // Keep oscillation phases running through clicks; only retarget their strength.
     const happyFaceShake = happyBreath * happyMotion.shake.amount * Math.sin(t * 25 * happyEntrySpeed) * 1.1
-    if (reduced) {
-      loadingMix.amount = mood === 'loading' ? 1 : 0
-      loadingMix.velocity = 0
-      loadingFrame = LoadingMotion.still()
-    } else {
-      const steps = Math.max(1, Math.ceil(dt * 240))
-      const step = dt / steps
-      for (let index = 0; index < steps; index++) {
-        loadingMix.velocity += (110 * ((mood === 'loading' ? 1 : 0) - loadingMix.amount) - 21 * loadingMix.velocity) * step
-        loadingMix.amount = Math.max(0, Math.min(1, loadingMix.amount + loadingMix.velocity * step))
-      }
-      if (mood === 'loading' || loadingMix.amount > 0.0001) loadingFrame = loading.step(dt)
-    }
-    const load = loadingMix.amount
-    const rotationReady = moodTime >= 0.3 && splitTransition === null && load < 0.025 && mood !== 'loading'
-    const shakeAhead = rotationReady || (moodTime >= 0.3 - SHAKE_LEAD && splitTransition === null && load < 0.025 && mood !== 'loading')
+    writeClock = reduced
+      ? mood === 'writing' ? WRITE_TOTAL : 0
+      : Math.max(0, Math.min(WRITE_TOTAL, writeClock + (mood === 'writing' ? dt : -dt)))
+    // How far the sparkle has gone, and how far the body as a whole has gone to its dots.
+    const sparkleGone = Math.min(1, writeClock / WRITE_SPARKLE)
+    const write = smoothstep((writeClock - WRITE_BLOBS_AT) / (WRITE_TOTAL - WRITE_BLOBS_AT))
+    const rotationReady = moodTime >= 0.3 && splitTransition === null && writeClock < 0.01 && mood !== 'writing'
+    const shakeAhead = rotationReady || (moodTime >= 0.3 - SHAKE_LEAD && splitTransition === null && writeClock < 0.01 && mood !== 'writing')
     const pointerEase = 1 - Math.exp(-dt * 16)
     const bodyResponse = mood === 'thinking' ? 0.6 : 1
     follow.x += ((reduced ? 0 : pointer.x * pointer.influence) - follow.x) * pointerEase
@@ -588,11 +608,28 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       if (progress === 1) drop.active = false
     })
 
-    // The same four lobes render every state. Interpolating their geometry
-    // lets any point of the loading loop gather into any other emotion.
+    // Where each blob goes when it is writing: its dot, which hops in its turn and leans a little
+    // towards a pointer, or, for the one that goes, nothing, at the last dot.
+    const hop = (dot: number) => {
+      if (reduced) return 0
+      const place = ((t / WRITING_PERIOD - dot * WRITING_LAG) % 1 + 1) % 1
+      return place < WRITING_HOP ? Math.sin(Math.PI * place / WRITING_HOP) ** 2 : 0
+    }
+    const dots = WRITING_DOT_OF.map((dot, index) => {
+      const lift = hop(dot)
+      return {
+        x: WRITING_DOTS[dot] + follow.x * 3,
+        y: MIDDLE.y - lift * WRITING_RISE + follow.y * 2,
+        radius: index === WRITING_GONE ? 0 : WRITING_RADIUS * (1 + lift * 0.14),
+      }
+    })
+    // The same four lobes render every state. Interpolating their geometry lets any state gather
+    // into writing, and writing spread into any other, wherever it has got to when it changes.
     cloudLobes.forEach((lobe, index) => {
-      const target = loadingFrame.circles[index]
+      const target = dots[index]
       const size = pop((presence - TURN[index] * STAGGER) / GROW)
+      // How far this blob has gone to its dot: on its own turn, springing a little past it.
+      const blend = springEase((writeClock - WRITE_BLOBS_AT - WRITE_ORDER[index] * WRITE_STAGGER) / WRITE_BLOB)
       // Its billowing moves and sizes the blob as a whole, on top of the field every blob shares,
       // so it stays the circle it is.
       const { wanderX, wanderY, swell } = lobes[index]
@@ -600,37 +637,26 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
         const displacement = deformationAt(point.x, point.y)
         const normalX = point.x + displacement.x + wanderX + (point.x - lobe.x) * swell
         const normalY = point.y + displacement.y + wanderY + (point.y - lobe.y) * swell
-        const loadingX = target.x + (point.x - lobe.x) / lobe.radius * target.radius
-        const loadingY = target.y + (point.y - lobe.y) / lobe.radius * target.radius
-        const fullX = normalX + (loadingX - normalX) * load
-        const fullY = normalY + (loadingY - normalY) * load
+        const writingX = target.x + (point.x - lobe.x) / lobe.radius * target.radius
+        const writingY = target.y + (point.y - lobe.y) / lobe.radius * target.radius
+        const fullX = normalX + (writingX - normalX) * blend
+        const fullY = normalY + (writingY - normalY) * blend
         return { x: MIDDLE.x + (fullX - MIDDLE.x) * size, y: MIDDLE.y + (fullY - MIDDLE.y) * size }
       })
       lobePaths[index].setAttribute('d', path)
       lobePaths[index + cloudLobes.length].setAttribute('d', path)
     })
-    figure.style.transform = `translate(${lateral * (1 - load) * TRAVEL_X}%, ${lift * (1 - load) * TRAVEL_Y}%) rotate(${rotation * (1 - load)}deg)`
+    figure.style.transform = `translate(${lateral * (1 - write) * TRAVEL_X}%, ${lift * (1 - write) * TRAVEL_Y}%) rotate(${rotation * (1 - write)}deg)`
     const starDisplacement = deformationAt(star.x, star.y)
     const sloshX = mood === 'error' && !reduced ? liquid.x : 0
     const sloshY = mood === 'error' && !reduced ? liquid.y : 0
-    const normalPose: Pose = { x: star.x + starDisplacement.x + sloshX, y: star.y + starDisplacement.y + sloshY, rotation: star.rotation + spin.rotation, scale: star.scale }
-    const targetPose = loadingFrame.sparkle
-    const targetRotation = normalPose.rotation + (targetPose.rotation + spin.rotation - normalPose.rotation) * load
-    if (load > 0.001) {
-      const difference = ((targetRotation - displayRotation + 180) % 360 + 360) % 360 - 180
-      displayRotation += difference * (1 - Math.exp(-dt * 22))
-    } else {
-      displayRotation = normalPose.rotation
-    }
-    const pose: Pose = {
-      x: normalPose.x + (targetPose.x - normalPose.x) * load,
-      y: normalPose.y + (targetPose.y - normalPose.y) * load,
-      rotation: displayRotation,
-      scale: normalPose.scale + (targetPose.scale - normalPose.scale) * load,
-    }
-    const transform = `translate(${pose.x} ${pose.y}) rotate(${pose.rotation}) scale(${pose.scale * sparkleSize}) translate(-43.5 -32.7)`
+    const pose: Pose = { x: star.x + starDisplacement.x + sloshX, y: star.y + starDisplacement.y + sloshY, rotation: star.rotation + spin.rotation, scale: star.scale }
+    // Writing, the sparkle goes as it goes when hidden, with a swell before it shrinks to nothing, and
+    // turns as it does. The face goes the same way, shrinking into the middle.
+    const sparkleWrite = pop(1 - sparkleGone)
+    const transform = `translate(${pose.x} ${pose.y}) rotate(${pose.rotation + WRITE_SPIN * smoothstep(sparkleGone)}) scale(${pose.scale * sparkleSize * sparkleWrite}) translate(-43.5 -32.7)`
     for (const element of sparkles) element.setAttribute('transform', transform)
-    const faceTransform = `translate(${MIDDLE.x} ${MIDDLE.y}) scale(${sparkleSize}) translate(${-MIDDLE.x} ${-MIDDLE.y})`
+    const faceTransform = `translate(${MIDDLE.x} ${MIDDLE.y}) scale(${sparkleSize * sparkleWrite}) translate(${-MIDDLE.x} ${-MIDDLE.y})`
     for (const element of faces) element.setAttribute('transform', faceTransform)
 
     // Happy eyes float as one pair rather than following separate body lobes.
@@ -740,7 +766,9 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     },
     release: () => { held = false },
     tap: () => {
-      if (emotion === 'sad') return
+      // Not while writing, or going into it or out of it: the sparkle is gone, or turning as it goes or
+      // comes, and that is its spin.
+      if (emotion === 'sad' || emotion === 'writing' || writeClock > 0.01) return
       if (emotion === 'happy') {
         poke = 0
         happyReplay = true

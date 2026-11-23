@@ -59,7 +59,9 @@ const describe = (emotion: MascotEmotion) =>
     ? 'Sad mascot. Hold to squeeze out rain'
     : emotion === 'happy'
       ? 'Happy mascot. Click for a squeeze of joy'
-      : `Mascot is ${emotion}. Make the sparkle spin`
+      : emotion === 'writing'
+        ? 'Mascot is writing'
+        : `Mascot is ${emotion}. Make the sparkle spin`
 
 /**
  * The Workshop cloud, alive: it billows in place when idle, more busily while thinking, and has a face for
