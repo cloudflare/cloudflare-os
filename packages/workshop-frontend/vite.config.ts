@@ -88,6 +88,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api/client-errors': `http://${backendHost}`,
         '/api/device-session/callback': `http://${backendHost}`,
+        '/gatekeeper/': `http://${backendHost}`,
         '/blueprint-screenshot': `http://${backendHost}`,
         '/api/site-logo': `http://${backendHost}`,
       },

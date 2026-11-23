@@ -29,6 +29,8 @@ import {
   parseGatekeeperAppWorkspaceTarget,
   type GatekeeperAppWorkspaceTarget,
 } from './gatekeeperAppNavigation'
+import GatekeeperDownloadDialog from './GatekeeperDownloadDialog'
+import { getBackendHost } from './connectHandoff'
 import GatekeeperUserPickerDialog from './features/gatekeeper-sharing/GatekeeperUserPickerDialog'
 
 // The content-pane rect, in viewport coordinates, that the app pins its page to while the iframe
@@ -116,6 +118,10 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
 class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation, GatekeeperAppThemeHost {
   readonly #ui: RpcStub<RpcTarget>
   readonly #downloadPrefix: string
+  readonly #confirmDownload: () => Promise<boolean>
+  readonly #cancelDownload: () => void
+  readonly #downloadAbort = new AbortController()
+  #downloading = false
   readonly #disposeRateLimiter: () => void
   readonly #present: PresentController
   readonly #openTarget: OpenTarget
@@ -147,6 +153,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     path: string,
     navigatePath: NavigatePath,
     gatekeeperVendorId: string,
+    confirmDownload: () => Promise<boolean>,
+    cancelDownload: () => void,
   ) {
     super()
     this.#theme = theme
@@ -168,6 +176,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     this.#openUserPicker = openUserPicker
     this.#cancelUserPicker = cancelUserPicker
     this.#navigatePath = navigatePath
+    this.#confirmDownload = confirmDownload
+    this.#cancelDownload = cancelDownload
   }
 
   // Static members are unreachable over RPC, so these stay with the Workshop.
@@ -193,20 +203,46 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     } catch {
       throw new TypeError('Invalid gatekeeper download URL.')
     }
+    // Vite's frontend and backend use separate ports. Normalize only that configured backend
+    // through the local proxy; production remains strictly same-origin.
+    if (import.meta.env.DEV && !target.username && !target.password &&
+        target.origin === `http://${getBackendHost()}`) {
+      target = new URL(target.pathname + target.search + target.hash, window.location.origin)
+    }
     if (target.origin !== window.location.origin
       || !target.pathname.startsWith(this.#downloadPrefix)
       || target.username || target.password || target.search || target.hash) {
       throw new TypeError('Invalid gatekeeper download URL.')
     }
-    const response = await fetch(target.href, {
-      credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store',
-    })
-    if (!response.ok) throw new Error('Gatekeeper download failed.')
-    const disposition = response.headers.get('Content-Disposition') ?? ''
-    const filename = /(?:^|;)\s*filename="([^"]+)"/i.exec(disposition)?.[1]
-      ?? /(?:^|;)\s*filename=([^;]+)/i.exec(disposition)?.[1]
-      ?? target.pathname.split('/').at(-1)
-    saveBlobToFile(await response.blob(), makeExportFilename('download', '', filename))
+    // Single-flight includes the prompt and body read. A frame cannot fan out credentialed
+    // requests or trigger automatic downloads without a click in trusted Workshop UI.
+    if (this.#downloading || this.#downloadAbort.signal.aborted) {
+      throw new Error('A download is already pending or this app has closed.')
+    }
+    this.#downloading = true
+    try {
+      if (!await this.#confirmDownload()) throw new Error('Download cancelled.')
+      this.#downloadAbort.signal.throwIfAborted()
+      const response = await fetch(target.href, {
+        credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store',
+        signal: this.#downloadAbort.signal,
+      })
+      if (!response.ok) throw new Error('Gatekeeper download failed.')
+      const disposition = response.headers.get('Content-Disposition') ?? ''
+      if (!/^attachment(?:;|$)/i.test(disposition.trim())) throw new Error('Gatekeeper response is not a download.')
+      let filename: string | undefined
+      const encoded = /(?:^|;)\s*filename\*=UTF-8'[^']*'([^;]+)/i.exec(disposition)?.[1]
+      if (encoded) {
+        try { filename = decodeURIComponent(encoded.trim()) } catch { /* Fall back to filename. */ }
+      }
+      filename ??= /(?:^|;)\s*filename="([^"]+)"/i.exec(disposition)?.[1]
+        ?? /(?:^|;)\s*filename=([^;]+)/i.exec(disposition)?.[1]
+      const blob = await response.blob()
+      this.#downloadAbort.signal.throwIfAborted()
+      saveBlobToFile(blob, makeExportFilename('download', '', filename))
+    } finally {
+      this.#downloading = false
+    }
   }
 
   // Navigate to a workspace the app knows about. The IDs are validated here because the app is
@@ -345,6 +381,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   // Cancel the rate limiter's pending resume timer once this host is no longer in use.
   #dispose() {
     this.#disposeRateLimiter()
+    this.#downloadAbort.abort()
+    this.#cancelDownload()
     this.#cancelUserPicker()
     this.#themeReceiver?.[Symbol.dispose]?.()
     this.#themeReceiver = null
@@ -383,6 +421,18 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
   const connectedRef = useRef(false)
   const invalidatedRef = useRef(false)
   const [overlay, setOverlay] = useState<OverlayState>(null)
+  const [downloadDecision, setDownloadDecision] = useState<((accepted: boolean) => void) | null>(null)
+  const downloadDecisionRef = useRef<((accepted: boolean) => void) | null>(null)
+  const confirmDownload = useCallback(() => new Promise<boolean>((resolve) => {
+    downloadDecisionRef.current = resolve
+    setDownloadDecision(() => resolve)
+  }), [])
+  const finishDownload = useCallback((accepted: boolean) => {
+    downloadDecisionRef.current?.(accepted)
+    downloadDecisionRef.current = null
+    setDownloadDecision(null)
+  }, [])
+  const cancelDownload = useCallback(() => finishDownload(false), [finishDownload])
   // The open picker owns the receiver dup and settles `selectUsers()` on close or cancellation.
   // State drives rendering; the ref lets callbacks check identity before settling, so late
   // callbacks from a cancelled picker cannot close a newly opened picker.
@@ -531,6 +581,8 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
         pathRef.current,
         navigatePath,
         gatekeeperVendorId,
+        confirmDownload,
+        cancelDownload,
       )
       hostRef.current = GatekeeperAppHostImpl.controls(host)
       sessionRef.current = newMessagePortRpcSession(port, host)
@@ -563,7 +615,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
     }
     // Re-establish the session if either the HTML or the `ui` capability changes, so a new frame
     // carrying a fresh stub (even with identical HTML) never keeps talking through the stale one.
-  }, [frame.iframeHtml, frame.ui, gatekeeperVendorId, cancelUserPicker, navigatePath, openPrompt,
+  }, [frame.iframeHtml, frame.ui, gatekeeperVendorId, confirmDownload, cancelDownload, cancelUserPicker, navigatePath, openPrompt,
       openTarget, openUserPicker, present, resolveWorkspaceTitles, setOverlayPhase])
 
   return (
@@ -578,6 +630,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
         title="Gatekeeper app"
         style={iframeStyleForOverlay(overlay)}
       />
+      {downloadDecision && <GatekeeperDownloadDialog onDecision={finishDownload} />}
       {userPicker && (
         <GatekeeperUserPickerDialog
           key={userPicker.id}

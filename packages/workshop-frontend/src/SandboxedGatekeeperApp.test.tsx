@@ -257,6 +257,22 @@ describe("SandboxedGatekeeperApp navigation", () => {
     return done;
   }
 
+  async function decideDownload(accepted: boolean) {
+    await act(async () => {
+      for (let n = 0; n < 20 && !document.querySelector('#gatekeeper-download-description'); ++n) await tick();
+    });
+    const button = [...document.querySelectorAll('button')].find(button => button.textContent === (accepted ? 'Download' : 'Cancel'));
+    if (!button) throw new Error('Missing trusted download confirmation');
+    await act(async () => button.click());
+  }
+
+  async function approvedDownload(url: string) {
+    const pending = host!.downloadFile(url);
+    pending.catch(() => {});
+    await decideDownload(true);
+    return pending;
+  }
+
   it("downloads a gatekeeper attachment in the trusted host without opening the iframe sandbox", async () => {
     const { iframe } = await mountApp();
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private enrollment", {
@@ -264,10 +280,11 @@ describe("SandboxedGatekeeperApp navigation", () => {
     }));
     const url = `${window.location.origin}/gatekeeper/scheduler/exports/one-use-ticket`;
 
-    await expect(host!.downloadFile(url)).resolves.toBeUndefined();
+    await expect(approvedDownload(url)).resolves.toBeUndefined();
 
     expect(fetch).toHaveBeenCalledExactlyOnceWith(url, {
       credentials: "same-origin", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
+      signal: expect.any(AbortSignal),
     });
     expect(saveBlob).toHaveBeenCalledOnce();
     expect(saveBlob.mock.calls[0][1]).toBe("Cloudflare-OS.cfosoperator");
@@ -299,7 +316,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input, options) =>
       realFetch(`http://127.0.0.1:${address.port}${new URL(String(input)).pathname}`, options));
     try {
-      await expect(host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/redirect`))
+      await expect(approvedDownload(`${window.location.origin}/gatekeeper/scheduler/redirect`))
         .rejects.toThrow("fetch failed");
       expect(requests).toEqual(["/gatekeeper/scheduler/redirect"]);
       expect(saveBlob).not.toHaveBeenCalled();
@@ -311,8 +328,80 @@ describe("SandboxedGatekeeperApp navigation", () => {
   it("does not save an unsuccessful response", async () => {
     await mountApp();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Not found", { status: 404 }));
-    await expect(host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/missing`))
+    await expect(approvedDownload(`${window.location.origin}/gatekeeper/scheduler/missing`))
       .rejects.toThrow("Gatekeeper download failed.");
+    expect(saveBlob).not.toHaveBeenCalled();
+  });
+
+  it("requires trusted confirmation and refuses concurrent downloads before fetching", async () => {
+    await mountApp();
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const first = host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/file`);
+    first.catch(() => {});
+    await act(async () => { await tick(); });
+    await expect(host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/other`))
+      .rejects.toThrow("already pending");
+    expect(fetch).not.toHaveBeenCalled();
+    await decideDownload(false);
+    await expect(first).rejects.toThrow("Download cancelled");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending confirmation when its app closes", async () => {
+    await mountApp();
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const pending = host!.downloadFile(`${window.location.origin}/gatekeeper/scheduler/file`);
+    pending.catch(() => {});
+    await act(async () => { await tick(); });
+    await act(async () => root!.unmount());
+    root = undefined;
+    await expect(pending).rejects.toThrow(/cancelled|disconnected|closed|aborted|disposed/i);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(document.querySelector('#gatekeeper-download-description')).toBeNull();
+  });
+
+  it("aborts an in-flight download when its app closes", async () => {
+    await mountApp();
+    let finish!: (response: Response) => void;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = approvedDownload(`${window.location.origin}/gatekeeper/scheduler/file`);
+    pending.catch(() => {});
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    finish(new Response("secret", {headers: {"Content-Disposition": "attachment"}}));
+    await expect(pending).rejects.toThrow(/cancelled|disconnected|closed|aborted|disposed/i);
+    expect(saveBlob).not.toHaveBeenCalled();
+  });
+
+  it("routes configured development-backend downloads through the authenticated frontend proxy", async () => {
+    await mountApp();
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("config", {
+      headers: {"Content-Disposition": "attachment; filename*=UTF-8''Cloudflare%20OS.cfosoperator"},
+    }));
+    await approvedDownload('http://localhost:8787/gatekeeper/scheduler/ticket');
+    expect(fetch.mock.calls[0][0]).toBe(`${window.location.origin}/gatekeeper/scheduler/ticket`);
+    expect(saveBlob.mock.calls[0][1]).toBe('Cloudflare-OS.cfosoperator');
+  });
+
+  it.each([
+    ["attachment; filename=fallback.txt; filename*=UTF-8''Cloudflare%20OS.cfosoperator", 'Cloudflare-OS.cfosoperator'],
+    ["attachment; filename*=UTF-8'en'Cloudflare%20OS.cfosoperator", 'Cloudflare-OS.cfosoperator'],
+    ["attachment; filename*=UTF-8''%broken; filename=ordinary.txt", 'ordinary.txt'],
+    ['attachment', 'download'],
+    ['attachment; filename="../../local-file"', '..-..-local-file'],
+  ])("uses a safe response filename with no ticket fallback: %s", async (disposition, filename) => {
+    await mountApp();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("config", {headers: {'Content-Disposition': disposition}}));
+    await approvedDownload(`${window.location.origin}/gatekeeper/scheduler/secret-one-use-ticket`);
+    expect(saveBlob.mock.calls[0][1]).toBe(filename);
+  });
+
+  it("refuses an HTML fallback instead of saving a successful SPA response", async () => {
+    await mountApp();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('<html>SPA</html>', {headers: {'Content-Type': 'text/html'}}));
+    await expect(approvedDownload(`${window.location.origin}/gatekeeper/scheduler/file`)).rejects.toThrow('not a download');
     expect(saveBlob).not.toHaveBeenCalled();
   });
 
@@ -347,13 +436,15 @@ describe("SandboxedGatekeeperApp navigation", () => {
     "/gatekeeper/computeroperator/enrollment/ticket",
     "/gatekeeper/scheduler-other/exports/file",
     "/api/export",
+    "http://user:password@localhost:8787/gatekeeper/scheduler/file",
+    "http://localhost:8788/gatekeeper/scheduler/file",
     "/gatekeeper/scheduler/../computeroperator/enrollment/ticket",
     "/gatekeeper/scheduler/exports/file?credential=secret",
     "/gatekeeper/scheduler/exports/file#credential",
   ])("refuses a download outside the calling gatekeeper's credential-free route: %s", async (path) => {
     await mountApp();
     const fetch = vi.spyOn(globalThis, "fetch");
-    await expect(host!.downloadFile(new URL(path, window.location.origin).href))
+    await expect(host!.downloadFile(path.startsWith("/") ? `${window.location.origin}${path}` : path))
       .rejects.toThrow("Invalid gatekeeper download URL.");
     expect(fetch).not.toHaveBeenCalled();
   });
