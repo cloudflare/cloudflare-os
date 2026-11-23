@@ -284,6 +284,10 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       await expect(impl.applyPendingAction(last, USER)).rejects.toThrow("was lost");
       expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
       expect([record(impl, 1).applying, record(impl, 2).applying]).toEqual([true, true]);
+      // Until then, each says it may have applied, to a user who would deny it instead.
+      expect(record(impl, 1).applyError).toEqual(
+          {message: expect.stringContaining("was lost"), retryable: true, outcomeUnknown: true});
+      expect(record(impl, 2).applyError?.outcomeUnknown).toBe(true);
 
       await impl.applyPendingAction(record(impl, 2), USER);
       expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);

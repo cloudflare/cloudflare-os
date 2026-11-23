@@ -13,7 +13,7 @@ import {
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, type BranchId, type BranchView, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, type ApplyActionsResult, type BranchId, type BranchView, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -6598,10 +6598,29 @@ class OverseerImpl implements AgentHooks {
       });
       // No creation is pending (see applyActionList), so each action is the gatekeeper's number.
       let named = new Map(items.map(({record}, i) => [record.action as number, {i, id: record.id}]));
-      let {applied, failed} = await gatekeeper.applyActions({branch}, [...named.keys()],
-          new GitCacheImpl(this.gitCache, gatekeeperId,
-              new Map([...named].map(([action, {id}]) => [action, id])),
-              this.pushVisibleTo(gatekeeperId, branch)));
+      let result: ApplyActionsResult;
+      try {
+        result = await gatekeeper.applyActions({branch}, [...named.keys()],
+            new GitCacheImpl(this.gitCache, gatekeeperId,
+                new Map([...named].map(([action, {id}]) => [action, id])),
+                this.pushVisibleTo(gatekeeperId, branch)));
+      } catch (error) {
+        // The call's result is lost, and with it whether anything applied. Each action keeps its
+        // mark, for the next call to reconcile, and says so to a user who would deny it instead.
+        let applyError =
+            {message: stringifyError(error), retryable: true, outcomeUnknown: true as const};
+        this.storage.transaction(() => {
+          for (let {record: {id}} of items) {
+            let record = this.storage.actions.get(id);
+            if (record?.type !== "action" || record.state !== "pending") continue;
+            record.applyError = applyError;
+            record.appliedAt = new Date();
+            this.storage.actions.put(record);
+          }
+        });
+        throw error;
+      }
+      let {applied, failed} = result;
       let appliedAt = new Set(applied.flatMap(action => named.get(action)?.i ?? []));
       let failedAt = failed && named.get(failed.action)?.i;
       let reached = failedAt ?? (appliedAt.size > 0 ? Math.max(...appliedAt)
