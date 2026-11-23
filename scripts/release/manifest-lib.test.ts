@@ -189,6 +189,14 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(workers["gatekeeper-mcp"].singleton, true);
   assert.equal(workers["gatekeeper-mcp-portal"].singleton, true);
   assert.equal(workers["gatekeeper-homeassistant"].singleton, true);
+  // So is the admin gatekeeper, for the same reason, and it is preinstalled without being
+  // ambient: it takes no inputs and no bindings, since what it can do is what the Workshop hands
+  // each account at connect.
+  const adminGatekeeper = workers["gatekeeper-admin"];
+  assert.equal(adminGatekeeper.singleton, true);
+  assert.equal(adminGatekeeper.preinstall, true);
+  assert.deepEqual(adminGatekeeper.inputs, []);
+  assert.deepEqual(adminGatekeeper.bindings, []);
 
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {

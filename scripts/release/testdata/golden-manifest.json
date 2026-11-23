@@ -18,6 +18,48 @@
   "manifestVersion": 1,
   "releaseId": "r000000-fixture",
   "workers": {
+    "gatekeeper-admin": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "admin.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "AdminGatekeeperImpl",
+            "UserAccount"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "admin.js",
+          "r2Key": "blobs/modules/65fd772a3d3a8c3339eb683012f9af9469d1f15d682632ab435e0cc8c88fd82f",
+          "sha256": "65fd772a3d3a8c3339eb683012f9af9469d1f15d682632ab435e0cc8c88fd82f",
+          "size": 58,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "admin",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/admin"
+      }
+    },
     "gatekeeper-cloudflare": {
       "bindings": [
         {
