@@ -148,18 +148,20 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   token's refresh is in flight); only an `invalid_grant` on that refresh makes it `expired`.
 - **Facts derived from a connection are fenced to it.** The coordinator's
   `connectionGeneration()` moves on every connect, reconnect and disconnect, not on a refresh.
-  The observer probe's user id is read from `/user` once per generation and stored against it
+  The membership check's user id is read from `/user` once per generation and stored against it
   (`user: { id, generation }`), a read that finished under a newer generation is neither stored
-  nor returned, and the probe discards a membership row when the generation moved between
+  nor returned, and the check discards a membership row when the generation moved between
   reading the id and reading the row — a reconnect as a different GitLab user landing in that
-  window would otherwise pair one user's Reporter membership with another's token and admit the
-  wrong person. A connect attempt records the generation it began under (`startedUnder`), and
+  window would otherwise pair one user's membership with another's token and grant the wrong
+  person a role; the observer's content and item probes are fenced to one generation the same way.
+  A connect attempt records the generation it began under (`startedUnder`), and
   both an initial connect and `commitReconnect` write through `connect(grant, { ifGeneration })`:
   a disconnect, or a reconnect that overtook a slower one, wins, and the losing flow's tokens are
   revoked rather than committed over the newer grant.
-- **An expired membership admits nobody.** GitLab documents that from a member row's `expires_at`
+- **An expired membership grants no role.** GitLab documents that from a member row's `expires_at`
   onward the user can no longer access the project, but the row is swept by a daily worker, so
-  `members/all` can still list it with the date passed. The probe reads the date (a day, taken as
+  `members/all` can still list it with the date passed. The role check (§8: Maintainer for an
+  archiveless test report, Developer for a cached log) reads the date (a day, taken as
   its UTC midnight) and denies on or after it; a date that does not parse denies too. The row
   `members/all` answers is the direct membership whenever there is one (one row per user,
   `MembersFinder#distinct_on`), so an expired or `awaiting` direct row denies a user whose
@@ -514,7 +516,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   | viewer | `GET /user` | `GET /user` |
   | verified email | `GET /user/emails` | `GET /user` (`email` when `confirmed_at` non-null; `userinfo` rejected — its `email` needs a *public* email) |
   | project metadata | `GET /repos/{o}/{r}` | `GET /projects/P` (`path_with_namespace`, `namespace.full_path`, `default_branch`, `visibility`, `description`, `web_url`, `permissions`) |
-  | project access probe | same | `GET /user` for the observer's id, then `GET /projects/P/members/all?user_ids[]=` (effective membership at its highest level; `[]` for a non-member, 404 for a hidden project) — never `permissions`, which omits inherited access (§8) |
+  | project access probe | same | `GET /projects/P` for the project, then for each feature a read named `GET /projects/P/repository/branches`, `/issues`, `/merge_requests` or `/pipelines` with `per_page=1`, each with the observer's token, 2xx allowing (403/404 denies); a confidential issue or internal note by `GET /projects/P/issues/{iid}` or `…/notes/{id}`; a role, where one is needed, from `GET /projects/P/members/all?user_ids[]=` (effective membership at its highest level) — never `permissions`, which omits inherited access (§8) |
   | configurator: my projects | `GET /user/repos`, `GET /search/repositories` | `GET /projects?membership=true&search=&search_namespaces=true&order_by=last_activity_at&simple=true` |
   | issue | `GET …/issues/{n}` | `GET /projects/P/issues/{iid}?with_labels_details=true` |
   | list / search issues | `GET …/issues`, `GET /search/issues` | `GET /projects/P/issues?state&labels&author_username&assignee_username[]&order_by&sort&search&with_labels_details=true` (`search` covers title+description; the project endpoint has no `in`; `order_by` ∈ `created_at`, `updated_at`, `popularity`, …) |
@@ -913,133 +915,112 @@ substitutes transport endpoints and REST lookups:
 
 ### 8. Observers
 
-Strategy B, as GitHub: `GitLabVerifierApi extends GatekeeperUserVerifier { hasProjectAccess(
-projectPath, minAccessLevel?): Promise<boolean> }`; `GitLabVerifier` probes the observer's
-membership with their own token (below); `addObserver` throws when it returns `false`. Issue and
-MR bindings inherit the project ACL. The internal stub's strategy-C tracker over per-project sets
-is not carried over (no group scope, §Locked).
+Strategy B, as GitHub, kernel-checked: every read reports what restricts it as
+`ObservationDescription.subresources` (docs/observers.md §10), and `verifyObserverAccess` asks the
+observer's own `UserAccount.checkSubresourceAccess` (`GitLabVerifierApi`), which answers with the
+observer's own token. Issue and MR bindings inherit the project ACL. The internal stub's
+strategy-C tracker over per-project sets is not carried over (no group scope, §Locked).
 
-Two tightenings over GitHub's "a 200 means read access", both grounded in GitLab's documentation
-and both places where GitHub's model, carried over unexamined, would leak:
+**What reads report.** `project/<projectId>`, the id the binding pins on first use, on every read
+(each listing page, an empty one, a cache hit, a simulated read), and beside it what GitLab guards
+item by item that the read returned: `project/<projectId>/issue/<iid>` for each confidential issue
+(an issue's discussion reports its issue on every page, confidential or not, since its comments are
+read afresh and may postdate the issue being made confidential),
+`project/<projectId>/issue/<iid>/note/<noteId>` or `.../mergeRequest/<iid>/note/<noteId>` for each
+internal note, `project/<projectId>/jobTrace/<jobId>` for a job log, and
+`project/<projectId>/jobArtifacts/<jobId>` for each job a test report holds. GitLab's documentation
+is why the items are named: "you can create confidential issues in a public project", visible only
+to their author, assignees and Planner+; an *internal note* — public project or not — only to
+Planner+; a job run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log,
+which only Developer+ may read (docs.gitlab.com/ci/variables/variables_troubleshooting); and a job
+can restrict its artifacts, test reports included, with `artifacts:access`
+(docs.gitlab.com/ci/yaml/#artifactsaccess). None of these is decided by a role the reading
+account can see applied to the observer, and the job settings are not exposed at all (REST's job
+and artifact entities and GraphQL's `CiJobArtifact` carry neither). The summary names a report's
+jobs (`build_ids`); the whole report does not, and summaries can lag it, so its jobs are listed
+after it is read: every job with a `junit` report in the pipeline and its same-project children,
+retried attempts included, the read refused if a listing is cut short.
 
-- **Repository read is not implied by seeing the project.** GitLab's **Guest** role can "view and
-  comment on issues" on a private project but "cannot push code or access repository". A 200 on
-  the project alone would admit an observer to cached git data they cannot read on GitLab.
-- **Project visibility is not implied to cover everything in it.** "You can create confidential
-  issues in a public project"; a confidential issue is visible only to Planner+ (Reporter+ before
-  17.7), and an *internal note* — on an issue, epic, or merge request, public project or not — is
-  visible only to Reporter+. A non-member on a public project would be admitted to confidential
-  issues and internal notes the owner's token read. GitHub has no counterpart: a public repo's
-  issues and comments are all public, which is why its probe can stop at "can read the repo".
+**What `project/<projectId>` means: the project itself.** The observer's token must get a 2xx
+from `GET /projects/P` (`canSeeProject`); 403/404 denies and anything else fails the check.
+Membership is not consulted, so a non-member who can see an internal or public project, a custom
+role, or an instance admin is admitted. Every read reports it.
 
-So the probe requires **membership at Reporter (20) or above**, whatever the visibility: the
-documented ladder is 5 Minimal, 10 Guest, 15 Planner, 20 Reporter, 25 Security Manager, 30
-Developer, 40 Maintainer, 50 Owner, and Reporter is the lowest role that sees everything a binding
-can disclose. It reads that from the observer's **effective membership** — `GET /user` for their
-id, then `GET /projects/P/members/all?user_ids[]=:id`, documented as "including members inherited
-or invited through ancestor groups" and returning "only their membership with the highest
-`access_level` … the effective permission of the user" — never from the project's `permissions`
-object. The list form with the documented `user_ids` filter, rather than `members/all/:user_id`:
-its non-member answer is a documented shape (`[]`) that was verified live, where the single-member
-form's 404 is neither documented nor reachable through the tooling used to check. A spot check on the internal instance (as one user, five `cloudflare/…` group projects in
-three subgroups) is why: `permissions` read `project_access: 50` on the one project with a
-*direct* membership and `null`/`null` on the other four, where `members/all` showed the same user
-as an inherited Developer. On that project ~90% of members (75 of 86) hold their access by
-inheritance, so a `permissions`-based probe would have denied nearly every legitimate observer
-once the visibility branch was gone — and before that had admitted them for the wrong reason. The
-same check confirmed the probe's inputs: a genuine non-member (a user-namespace project) reads
-`[]`, the inherited Developer one row at 30, a nonexistent id `[]`. A
-membership still `awaiting` acceptance is not one, nor is one whose `expires_at` has arrived (the
-locked decision above); 404 (non-member, or a project the token cannot see) and 403 → `false`;
-anything else rethrows.
+**Project features.** What a project shows beyond that is set per *project feature* (Settings ›
+General › Visibility, project features, permissions; API `*_access_level`), so reads also report
+`project/<projectId>/feature/<repository|issues|mergeRequests|builds>` for each feature their
+data came from, allowed iff the project is and the observer's token gets a 2xx from that
+feature's listing — `repository/branches`, `issues`, `merge_requests` or `pipelines`,
+`per_page=1` (`canReadProjectFeature`); 403 covers a feature restricted to members or above the
+user's role (GitLab's Guest "cannot … access repository" on a private project). Reads name them
+from the data: `getMetadata` repository only when GitLab returned `default_branch`;
+branches, tags, `resolveRef`, commits and history repository (+builds when a commit's `ci` is
+present); issue listings, search, details and discussions issues; MR listings, search, details,
+discussions, diffs, diff files, diff threads, commits and merge base mergeRequests and repository
+(+builds when MR details carry `ci`); an MR's pipelines mergeRequests, repository and builds;
+pipelines, pipeline details, jobs, test reports, failed tests, job details and job logs builds and
+repository. A disabled feature returns no data, so no read names it and it never blocks (91
+projects on the internal instance have merge requests or CI/CD disabled).
 
-Over-strictness is accepted where the ladder is finer than our threshold: Planner (15) sees
-confidential issues and gains private-repository read in 18.7+, and a per-role custom permission
-could too — both are denied here, which under `excludeObservers` semantics blocks an observation
-rather than leaking one. So is the non-member collaborator on a public open-source project: they
-can observe once the owner grants them Reporter, and until then a workspace that never read a
-confidential issue still denies them. That trade is the right way round — the alternative,
-stripping confidential issues and internal notes from what the gatekeeper discloses so that the
-public-project admission becomes sound, would take a headline GitLab feature (security triage in
-confidential issues) away from every owner to serve the rarer case.
+**What an item needs.** Its project's answer and its feature's (a job builds, an issue issues, a note issues or mergeRequests by its noteable), then its own probe with the observer's token: a
+confidential issue `GET /projects/P/issues/{iid}`, an internal note
+`GET /projects/P/{issues|merge_requests}/{iid}/notes/{id}` (GitLab's `get_note` answers 404 unless
+`note.readable_by?(user)`), 2xx allowing; a 403/404 denying everyone, whatever their role, since
+GitLab answers 404 both for a deleted item and for a hidden one, and `IssuePolicy`'s
+`hidden & ~admin` hides a banned user's issues from every non-administrator; a job's log, the job then its
+`/trace` (403 denies); its artifacts, GraphQL `job.userPermissions.readJobArtifacts`. A job that is
+erased or gone allows, as there is nothing left to withhold — and GitLab answers 404 for a job
+the token cannot see at all, which is why every item needs its project and feature first; a denied project or feature denies without asking further. GraphQL answers
+`readJobArtifacts` from the job's archive, and a job with no archive reads as public though its
+`junit` report may be restricted; that report's access is exposed nowhere, so such a job needs
+Maintainer, read from the observer's **effective membership** — `GET /user` for their id, then
+`GET /projects/P/members/all?user_ids[]=:id` ("including members inherited or invited through
+ancestor groups", "the effective permission of the user"), never the project's `permissions`
+object, which a spot check on the internal instance found `null`/`null` for the inherited access
+~90% of members hold. The list form's non-member answer is a documented shape (`[]`) that was
+verified live; an `awaiting` invitation or an arrived `expires_at` holds no role (§Locked).
 
-The CI reads (Punted) make one exception to "Reporter sees everything a binding can disclose":
-**job logs and test reports need Developer (30).** A job run with `CI_DEBUG_TRACE` writes every
-CI/CD variable, masked or not, into its log, and "access to debug logging is restricted to users
-with the Developer, Maintainer, or Owner role"
-(docs.gitlab.com/ci/variables/variables_troubleshooting); the gatekeeper does not try to tell
-debug logs from others, and a failed test's recorded output is job output too. And **a test
-report read through a Maintainer needs Maintainer (40)**: a job can restrict its artifacts, test
-reports included, to Maintainers with `artifacts:access: maintainer` (GitLab 18.4,
-docs.gitlab.com/ci/yaml/#artifactsaccess), and GitLab's report endpoints filter by what the
-reading account may download, so a Maintainer's read can carry reports a Developer could not see.
-Below Maintainer GitLab has already left them out, so Developer is exact there. The jobs API does
-not expose a job's `access`, so the gatekeeper cannot tell which reports were restricted; a
-per-artifact check is left open. So the binding's strategy is the kit's
-`trackedCollectionObservers` with two sets: `ci-logs` (Developer), marked by the first job-log
-read or test-report read below Maintainer, and `ci-test-reports` (Maintainer), marked by a
-test-report read whose connected account holds Maintainer, checked with the owner's token
-alongside the report. The probe answers "no" when a reconnect lands mid-probe, though the report
-may have been fetched with the replaced Maintainer's token, so the pair is fenced to one
-connection generation and refused ("read again") if it moved. Pipeline and job capabilities
-authorize through their own `ObservationGate`, those reads with their set: from then on
-`addObserver` asks `hasProjectAccess(path, level)` for each marked set, and every such read
-excludes stored observers below its set's role. Observers are stored for this alone, so
-`removeObserver` is no longer a no-op. A binding that never reads a log or test report keeps the
-Reporter bar.
+**Accepted over-denial.** Erring toward denial never leaks. A feature turned off after a read named it
+denies everyone. A confidential issue or internal note deleted since it was read still denies
+whoever could see it only as its author or an assignee, or as an administrator or through a custom
+role, which the membership row doesn't show: GitLab's 404 can't tell gone from hidden, and GraphQL's
+`ProjectPermissions` has no field that answers for confidential issues or internal notes.
 
-Two consequences of storing them. Bindings from before: observers admitted before this version
-were never stored, and the overseer neither re-admits a viewer already connected nor enforces
-anyone `excludeObservers` does not name, so a log or test-report read on such a binding could
-reach a Reporter admitted then. The gatekeeper therefore decides once, synchronously in its
-constructor before anything else touches storage, whether its roster is complete: storage
-without the `observerRoster` marker is empty on a new binding (`"complete"`) and holds keys on
-one an earlier version used (`"legacy"`); the answer is stored. A legacy binding refuses
-`readLog()`, `getTestReport()` and `listFailedTests()` before fetching anything — the connection
-must be removed and added again — and serves every other CI read. The tracker once capped its
-roster at 50 observers, because each such read re-checked every stored observer's membership
-with GitLab; reads now report subresources, nothing fans out over the roster, and the kit no
-longer caps admission.
+**Reuse.** The observer's `UserAccount` caches each project, feature and item ID's answer under its own ID in a `KvTtlCache` partitioned by
+its connection generation: a grant for 15 minutes (a still-running job's for 15 seconds, since it
+may yet become a debug trace or upload a restricted archive), a denial for 15 seconds. A check
+the connection moved during fails rather than combine two users' answers; GitLab's error text is
+kept out of what it throws.
 
-The owner's own access is checked too: the job read that revalidates a cached log is Reporter's,
-a debug trace Developer's, so a cached log is served only while the connected account holds
-Developer on the project (the verifier's `members/all` probe, run with the owner's token);
-otherwise the read goes to `/trace` and GitLab decides.
+The owner's own access is checked too: the job read that revalidates a cached log does not show a
+debug trace, so a cached log is served only while the connected account holds Developer on the
+project (the `members/all` role check, with the owner's token); otherwise the read goes to
+`/trace` and GitLab decides.
 
-**Kernel-checked subresources.** Every read now reports what it depends on as
-`ObservationDescription.subresources` (docs/observers.md §10): `project/<projectId>`, the id the
-binding pins on first use, or for CI data the role it needs, `project/<projectId>/role/developer`
-(job logs, and test reports read below Maintainer) or `project/<projectId>/role/maintainer` (test
-reports read as a Maintainer, an administrator or no member), chosen inside the report's
-connection fence and never recomputed from the owner's later role. `verifyObserverAccess` answers
-through the observer's `UserAccount.checkSubresourceAccess`: the `members/all` probe above, by id,
-at the role named, reusing a grant for 15 minutes and a denial for 15 seconds within one
-connection generation. Reads no longer mark sets, exclude observers or consult the roster, which
-is dropped: the Workshop checks the whole audience, observers admitted unrecorded included.
-`addObserver` keeps the tracker for the sets reads marked before, and requires the baseline and
-each marked set's role by the binding's path, since those reads followed it, and by the stored id
-once there is one. It never pins, which would ask with the owner's token and lock collaborators out
-of the history once the owner's grant lapsed; a binding without an id has read nothing by it. A
-reported id is only true if the read came from it, so REST is addressed by id (§5, redirects), git
-by the path the id has now, and caches filled while reads followed the path are discarded once on
-upgrade.
+**History.** `project/<projectId>` first meant an effective membership at Reporter or above,
+whatever the visibility, which stood in for confidential issues and internal notes but denied
+every non-member of an internal project; it was redefined as a content check (2xx from all four feature listings)
+when confidential issues and internal notes were first named per item, and then as the
+project's visibility alone, beside per-feature IDs reported only by reads that drew on the
+feature, since the four-listing check denied every project with a feature disabled. Recorded bare
+`project/<projectId>` IDs take the new meaning: they are checked as visibility only, though
+older releases' reads they cover may have drawn on members-only features or returned confidential
+items, so a viewer who sees the project but not that data may be admitted — an accepted risk. CI data
+first marked tracked sets (`ci-logs`, `ci-test-reports`) that raised `addObserver`'s bar to
+Developer or Maintainer, then reported `project/<projectId>/role/developer` or `.../role/maintainer`,
+which overreported and were replaced by the per-job IDs; recorded `role/*` IDs and the legacy
+sets now need the project alone, a deliberate loosening, and so do confidential issues or internal
+notes legacy reads returned before they were named. Reads no longer mark sets, exclude observers
+or consult the observer roster, which is dropped.
 
-**Per-job CI subresources** (superseding the role IDs above). The role IDs overreported: every
-job log demanded Developer though GitLab gates only debug-trace (and Duo workflow) jobs' logs,
-and every test report read through a Maintainer demanded Maintainer though `artifacts:access` is
-set per job and rarely, so project members were refused workspaces they could otherwise read.
-Neither setting is exposed to the reading account (REST's job and artifact entities and GraphQL's
-`CiJobArtifact` carry neither), so reads now name the job and let the observer's token ask:
-`project/<projectId>/jobTrace/<jobId>` for a log (the observer reads the job, then `/trace`; 403
-denies) and `project/<projectId>/jobArtifacts/<jobId>` for each job a test report holds (GraphQL
-`job.userPermissions.readJobArtifacts`), each in place of `project/<projectId>`, since each checks
-that membership first (a report holding no jobs' reports still reports the project). An erased or
-deleted job allows, as there is nothing left to withhold. The summary
-names its jobs (`build_ids`); the whole report does not, and summaries can lag it, so its jobs
-are listed after it is read: every job with a `junit` report in the pipeline and its same-project
-children, retried attempts included, the read refused if a listing is cut short.
-Recorded `role/*` IDs and the legacy `ci-logs`/`ci-test-reports` sets now need the baseline alone,
-a deliberate loosening for existing workspaces.
+`addObserver` keeps the tracker for legacy bindings and requires the visibility check of the project
+the binding's path names, since those reads followed it (resolved at the project's root, following
+a moved project's redirect), and of the stored id once there is one. It never pins, which would
+ask with the owner's token and lock collaborators out of the history once the owner's grant
+lapsed; a binding without an id has read nothing by it. A reported id is only true if the read
+came from it, so REST is addressed by id (§5, redirects), git by the path the id has now, and
+caches filled while reads followed the path, or before issues and notes carried their
+`confidential`/`internal` flags, are discarded once on upgrade.
 
 New bindings carry `reportsSubresources: true` in their immutable props. No read of theirs
 predates reporting, so their `addObserver` and `removeObserver` are no-ops: no check, no stored
@@ -1073,8 +1054,8 @@ with `capnwebValidate()`, `assert-workerd.ts`, a `TestHooks` DO reaching the gat
   committed,
   a stub-era grant still served, `ensureResources` answering an under-scoped grant with the
   reconnect URL, a disconnect racing the code exchange, identity), `resources.test.ts` (pattern
-  order incl. tab suffixes, URL parsing, stale props, the membership probe: Reporter admitted
-  however held, Guest/Planner/non-member/awaiting/expired denied, `permissions` never consulted),
+  order incl. tab suffixes, URL parsing, stale props, the project, feature and item probes, the
+  Maintainer membership fallback for test reports, `permissions` never consulted),
   `reads.test.ts` (every read's shape, the Access headers on every request, the `diff_refs`
   inversion, a diff re-read when the target moves under the same head, approvals left out when
   unreadable, confidential issues and internal notes, a short page mid-listing, MR commit order,
@@ -1545,9 +1526,6 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   base is a reduction over pairwise bases, whose criss-cross ties need commit dates to break.
   Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
   which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
-- **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential
-  issues, and an agent that knows an issue is confidential can avoid quoting it into a public
-  merge request description. A one-field addition to the approved API, deferred to its own review.
 - **Merge readiness in the details, and tighter id types.** `approvedBy?` says who approved, not
   whether the rules are met; `approvals_required`/`approvals_left`, from the `GET …/approvals`
   already made, would (until then `mergeStatus: "not_approved"` is the merge-blocking signal).

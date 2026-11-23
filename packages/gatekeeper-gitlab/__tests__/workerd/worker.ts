@@ -94,19 +94,21 @@ type TestExports = {
 // return-type inference collapses several of these returns to `never`, while the runtime objects
 // are exactly the production ones.
 type Pages<T> = { next(): Promise<T[] | null> };
+/** A listing whose rows are guarded one by one; its pages' subresources are read through `session`. */
+type Guarded<T> = { cursor: Pages<T> };
 type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   describe(): Promise<{ url: string; title: string; snippet: string; suggestedBindingName: string; tsType: string }>;
-  projectMetadata(): Promise<GitLabProjectMetadata>;
+  projectMetadata(): Promise<{ metadata: GitLabProjectMetadata }>;
   openIssue(id: string): Promise<GitLabIssueDetails>;
   openMergeRequest(id: string, cache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails>;
   mergeRequestDetails(id: string, cache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails>;
   startSession(queue: unknown): Promise<Record<string, (...args: unknown[]) => Promise<unknown>>>;
-  issueDiscussion(kind: "issue" | "mergeRequest", id: string, pageSize: number): Promise<Pages<GitLabDiscussionEntry>>;
+  issueDiscussion(kind: "issue" | "mergeRequest", id: string, pageSize: number): Promise<Guarded<GitLabDiscussionEntry>>;
   mergeRequestDiff(id: string, pageSize: number, cache?: RpcStub<GitCache>):
     Promise<{ revision: GitLabMergeRequestRevision; files: Pages<GitLabDiffFile> }>;
   mergeRequestMergeBase(id: string, cache?: RpcStub<GitCache>): Promise<string>;
-  mergeRequestThreads(id: string, pageSize: number): Promise<Pages<GitLabDiffThread>>;
-  listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<Pages<GitLabIssueSummary>>;
+  mergeRequestThreads(id: string, pageSize: number): Promise<Guarded<GitLabDiffThread>>;
+  listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<Guarded<GitLabIssueSummary>>;
   listMergeRequests(filter: undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabMergeRequestSummary>>;
   listBranches(filter: undefined, pageSize: number): Promise<Pages<GitLabBranchSummary>>;
   getCommit(ref: string | undefined, cache?: RpcStub<GitCache>): Promise<{ details: GitLabCommitDetails; fromCache: boolean }>;
@@ -273,7 +275,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   async projectMetadata(facetName: string, props: GatekeeperProps): Promise<Outcome<GitLabProjectMetadata>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).projectMetadata());
+    return await outcome(async () => (await this.#gatekeeper(facetName, props).projectMetadata()).metadata);
   }
 
   async openIssue(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<GitLabIssueDetails>> {
@@ -335,7 +337,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async discussionAll(facetName: string, props: GatekeeperProps, kind: "issue" | "mergeRequest", id: string, pageSize: number):
       Promise<Outcome<GitLabDiscussionEntry[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).issueDiscussion(kind, id, pageSize)));
+    return await outcome(async () => await drain((await this.#gatekeeper(facetName, props).issueDiscussion(kind, id, pageSize)).cursor));
   }
 
   async diffAll(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
@@ -351,11 +353,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   async threadsAll(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<GitLabDiffThread[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).mergeRequestThreads(id, 20)));
+    return await outcome(async () => await drain((await this.#gatekeeper(facetName, props).mergeRequestThreads(id, 20)).cursor));
   }
 
   async listIssuesAll(facetName: string, props: GatekeeperProps, pageSize: number): Promise<Outcome<GitLabIssueSummary[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listIssues(undefined, pageSize)));
+    return await outcome(async () => await drain((await this.#gatekeeper(facetName, props).listIssues(undefined, pageSize)).cursor));
   }
 
   /**
@@ -368,7 +370,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       Promise<Outcome<GitLabIssueSummary[]>> {
     return await outcome(async () => {
       const gatekeeper = this.#gatekeeper(facetName, props);
-      const cursor = await gatekeeper.listIssues(options.filter, pageSize);
+      const { cursor } = await gatekeeper.listIssues(options.filter, pageSize);
       const served: GitLabIssueSummary[] = [];
       for (let i = 0; i < (options.pagesBefore ?? 0); i++) served.push(...await cursor.next() ?? []);
       if (options.reject) await gatekeeper.rejectAction(actionId);
@@ -596,7 +598,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#user(userObjectId).getSupportedResources());
   }
 
-  /** The verifier's membership check, by the project's id (a number) or its path (a string). */
+  /** The verifier's check that GitLab shows the user the project, by its id (a number) or its path (a string). */
   async hasProjectAccess(userObjectId: string, project: number | string): Promise<Outcome<boolean>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } });
     return await outcome(() => typeof project === "number"

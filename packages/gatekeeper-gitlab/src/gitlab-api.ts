@@ -105,6 +105,8 @@ export type GitLabIssueResponse = {
   updated_at: string;
   closed_at?: string | null;
   web_url: string;
+  /** Whether only its author, its assignees and Planners up may read it. */
+  confidential: boolean;
   references?: { short: string; relative: string; full: string };
 };
 
@@ -304,6 +306,10 @@ export type GitLabNoteResponse = {
   resolved_by?: GitLabSimpleUser | null;
   /** Present on `DiffNote`s. */
   position?: GitLabPositionResponse | null;
+  /** Whether only Planners up may read it: an internal note. */
+  internal?: boolean;
+  /** `internal`'s deprecated name, the only one older instances send. */
+  confidential?: boolean;
 };
 
 /** A diff-note position. `line_range` is present for multi-line comments. */
@@ -990,11 +996,22 @@ export class GitLabApi {
   }
 
   /**
-   * A user's effective membership of a project -- direct, inherited through ancestor groups, or
-   * through a group the project is shared with -- or null when they have none. This, not the
-   * project's `permissions` object, is the source for "what can this user see": `permissions`
-   * reports only direct project membership on the instance this was checked against, reading
-   * `null` for the group-inherited access that most members hold. The list form with the
+   * Whether this account may GET `path`: a 2xx is true, a 403 or 404 false -- GitLab answers 404 for
+   * what it hides from the account, and 403 for a feature its role can't reach or that is disabled.
+   * The body is discarded unread. Any other status throws.
+   */
+  async isReadable(path: string, query?: Query): Promise<boolean> {
+    const response = await this.#send("GET", path, { query, okStatuses: [403, 404] });
+    await response.body?.cancel().catch(() => {});
+    return response.ok;
+  }
+
+  /**
+   * A user's effective membership of the project with id `projectId` -- direct, inherited through
+   * ancestor groups, or through a group the project is shared with -- or null when they have none.
+   * This, not the project's `permissions` object, is the source for the role a user holds:
+   * `permissions` reports only direct project membership on the instance this was checked against,
+   * reading `null` for the group-inherited access that most members hold. The list form with the
    * documented `user_ids` filter is used rather than `members/all/:user_id` because its
    * non-member answer is a documented, verified shape (`[]`), where the single-member form's
    * 404 is neither. GitLab answers one row per user (`MembersFinder#distinct_on`): the direct
@@ -1002,9 +1019,8 @@ export class GitLabApi {
    * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
    * The highest is taken anyway, should a version return several.
    */
-  async getProjectMember(project: number | string, userId: number): Promise<GitLabMemberResponse | null> {
-    const rows = await this.#get<GitLabMemberResponse[]>(
-      `/projects/${typeof project === "number" ? project : encodeProjectPath(project)}/members/all`,
+  async getProjectMember(projectIdprojectId: number, userId: number): Promise<GitLabMemberResponse | null> {
+    const rows = await this.#get<GitLabMemberResponse[]>(`/projects/${projectIdprojectId}/members/all`,
       { user_ids: [userId], per_page: 100 });
     let best: GitLabMemberResponse | null = null;
     for (const row of rows) {

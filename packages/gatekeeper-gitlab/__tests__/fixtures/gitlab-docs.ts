@@ -155,6 +155,7 @@ export const issueResponse = docs("api/issues", {
   closed_at: "2016-01-05T15:31:46.176Z",
   user_notes_count: 1,
   upvotes: 4,
+  confidential: false,
   web_url: "http://gitlab.example.com/my-group/my-project/issues/1",
   references: { short: "#1", relative: "#1", full: "my-group/my-project#1" },
 });

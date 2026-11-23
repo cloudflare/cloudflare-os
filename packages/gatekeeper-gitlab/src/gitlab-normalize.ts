@@ -239,6 +239,8 @@ export function normalizeIssueSummary(instanceUrl: string, projectPath: string, 
     closedAt: parseDate(response.closed_at),
     commentCount: response.user_notes_count,
     upvotes: response.upvotes,
+    // Read as confidential unless GitLab says otherwise: a row that hid it would go unreported.
+    confidential: response.confidential !== false,
   };
 }
 
@@ -710,7 +712,13 @@ export function discussionCommentFromNote(instanceUrl: string, noteableUrl: stri
     createdAt: new Date(note.created_at),
     updatedAt: parseDate(note.updated_at),
     url: `${noteableUrl}#note_${note.id}`,
+    internal: isInternalNote(note),
   };
+}
+
+/** Whether a note is internal, by its `internal` flag or the deprecated `confidential` one. */
+export function isInternalNote(note: GitLabNoteResponse): boolean {
+  return note.internal === true || note.confidential === true;
 }
 
 /**

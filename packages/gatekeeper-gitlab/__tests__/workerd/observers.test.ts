@@ -1,8 +1,8 @@
 // Collaborator ("observer") verification for GitLab bindings, through the real gatekeeper and
 // UserAccount Durable Objects with GitLab faked at `fetch`: what each read reports to the Workshop,
-// the CI jobs it disclosed included, how verifyObserverAccess and addObserver answer, and how both
-// hold up when the bound project is renamed or transferred, deleted, or its path taken by another
-// project.
+// the project features and CI jobs it disclosed included, how verifyObserverAccess and addObserver
+// answer, and how both hold up when the bound project is renamed or transferred, deleted, or its
+// path taken by another project.
 
 import type { RpcStub } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -17,8 +17,17 @@ import type { GatekeeperProps, SessionStep } from "./worker";
 
 const PATH = "group/sub/project";
 const PROJECT_ID = 42;
-/** What an ordinary read through the binding reports. */
+/** What every read through the binding reports: the project itself. */
 const PROJECT = `project/${PROJECT_ID}`;
+/** What a read reports beside the project for each project feature its data came from. */
+const REPOSITORY = `${PROJECT}/feature/repository`;
+const ISSUES = `${PROJECT}/feature/issues`;
+const MERGE_REQUESTS = `${PROJECT}/feature/mergeRequests`;
+const BUILDS = `${PROJECT}/feature/builds`;
+/** What a CI read reports: the project, its CI/CD, and the repository its commits are in. */
+const CI = [PROJECT, BUILDS, REPOSITORY];
+/** What a merge request read reports: the project, its merge requests, and their repository. */
+const MERGE_REQUEST = [PROJECT, MERGE_REQUESTS, REPOSITORY];
 /** What a read of job 8's log reports beside the project. */
 const TRACE = `project/${PROJECT_ID}/jobTrace/8`;
 /** What a read of the test reports of pipeline 6, which job 66004's report makes up, reports. */
@@ -34,9 +43,13 @@ const OWNER_TOKEN = "owner-token";
 const MINUTE = 60_000;
 
 /** GitLab's levels, as `members/all` reports them. */
+const GUEST = 10;
+const PLANNER = 15;
 const REPORTER = 20;
 const DEVELOPER_LEVEL = 30;
 const MAINTAINER_LEVEL = 40;
+/** The listing an observer's token must read one row of for each project feature to be theirs. */
+const FEATURE_LISTINGS = ["/repository/branches", "/issues", "/merge_requests", "/pipelines"];
 
 /** An upload-pack answer carrying a pack of one byte. */
 const uploadPackResponse = () => new Blob([
@@ -49,20 +62,40 @@ function failedCase(name: string) {
 
 /**
  * GitLab's REST API as each token's user sees it: the projects that exist, by id, with their path
- * now; each user's effective membership of each; and the bound project's issues and CI.
+ * now; which are internal, visible to every user, and which are private, visible to members; each
+ * user's effective membership of each; and the bound project's issues, notes and CI.
  */
 class ObserverGitLab extends FakeGitLab {
   readonly projects = new Map<number, string>([[PROJECT_ID, PATH]]);
+  /** Projects every signed-in user can see, member or not. The rest are private. */
+  readonly internal = new Set<number>();
   /** Paths projects have left, with the project each redirects to until another takes the path. */
   readonly formerPaths = new Map<string, number>();
   /** Each token's GitLab user: its id, and its access level on each project it is a member of. */
   readonly users = new Map<string, { id: number; levels: Map<number, number> }>();
-  /** What a token's membership reads are answered with instead, as for an outage. */
+  /** What a token's project, membership and feature reads are answered with instead, as for an outage. */
   readonly refusals = new Map<string, () => Response>();
+  /**
+   * The status a token's read of one of the bound project's listings fails with (keyed
+   * `<token> <listing>`, as in FEATURE_LISTINGS), as for a feature disabled or restricted to members.
+   */
+  readonly featureRefusals = new Map<string, number>();
   /** The status the bound project's path fails with, while set. */
   probeStatus: number | undefined;
+  /**
+   * Whether the project has no default branch to show: an empty repository, or one GitLab hides
+   * from the binding's account, which then reads no code.
+   */
+  noDefaultBranch = false;
   /** The bound project's open issues. */
   issues: number[] = [];
+  /** Its confidential issues, which GitLab shows only to Planners and above here. */
+  readonly confidentialIssues = new Set<number>();
+  /** Issues GitLab hides from every non-administrator: a banned user's (`IssuePolicy`'s `hidden & ~admin`). */
+  readonly hiddenIssues = new Set<number>();
+  /** Its internal notes, which GitLab shows only to Planners and above; and notes deleted. */
+  readonly internalNotes = new Set<number>();
+  readonly deletedNotes = new Set<number>();
   /** The paths git requests reached. */
   readonly gitRequests: string[] = [];
   /** Runs as a git request reaches GitLab, before it is answered. */
@@ -136,18 +169,46 @@ class ObserverGitLab extends FakeGitLab {
         return new Response(null, { status: 301, headers: { location: `${WEB}/api/v4/projects/${moved}${rest}` } });
       }
     }
-    // GitLab hides a project a user is no member of (all of these are private).
-    if (id === undefined || !user?.levels.has(id)) return notFound;
-    if (rest === "") return json(this.#project(id));
+    // GitLab hides a private project from a user who is no member of it.
+    if (id === undefined || !(user?.levels.has(id) || this.internal.has(id))) return notFound;
+    const level = user?.levels.get(id) ?? 0;
+    if (rest === "") return this.refusals.get(token)?.() ?? json(this.#project(id));
     if (rest === "/members/all") {
       const refusal = this.refusals.get(token);
       if (refusal) return refusal();
       const asked = Number(request.url.searchParams.get("user_ids[]"));
       const [name, member] = [...this.users].find(([, candidate]) => candidate.id === asked) ?? [];
-      const level = member?.levels.get(id);
-      return json(level === undefined ? [] : [{ id: asked, username: name, access_level: level }]);
+      const memberLevel = member?.levels.get(id);
+      return json(memberLevel === undefined ? [] : [{ id: asked, username: name, access_level: memberLevel }]);
+    }
+    if (FEATURE_LISTINGS.includes(rest)) {
+      const refusal = this.refusals.get(token);
+      if (refusal) return refusal();
+      const refused = this.featureRefusals.get(`${token} ${rest}`);
+      if (refused !== undefined) return json({ message: `${refused} Forbidden` }, { status: refused });
+      // A Guest of a private project cannot read its repository.
+      if (rest === "/repository/branches" && level === GUEST && !this.internal.has(id)) {
+        return json({ message: "403 Forbidden" }, { status: 403 });
+      }
+      if (id !== PROJECT_ID || rest === "/repository/branches" || rest === "/pipelines") return json([]);
     }
     if (id !== PROJECT_ID) return notFound;
+    const issue = /^\/issues\/(\d+)$/.exec(rest);
+    if (issue) {
+      const iid = Number(issue[1]);
+      const confidential = this.confidentialIssues.has(iid);
+      if (this.hiddenIssues.has(iid)) return notFound;
+      if (confidential ? level < PLANNER : iid !== 1 && !this.issues.includes(iid)) return notFound;
+      return json({ ...fx.issueResponse.data, iid, project_id: PROJECT_ID, confidential,
+        web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/issues/${iid}` });
+    }
+    const note = /^\/(issues|merge_requests)\/\d+\/notes\/(\d+)$/.exec(rest);
+    if (note) {
+      const noteId = Number(note[2]);
+      const internal = this.internalNotes.has(noteId);
+      if (this.deletedNotes.has(noteId) || (internal && level < PLANNER)) return json({ message: "404 Not found" }, { status: 404 });
+      return json({ ...fx.issueNotesResponse.data[0], id: noteId, internal, confidential: internal });
+    }
     const job = /^\/jobs\/(\d+)(\/trace)?$/.exec(rest);
     if (job) {
       const jobId = Number(job[1]);
@@ -160,7 +221,7 @@ class ObserverGitLab extends FakeGitLab {
           artifacts: this.archivelessJobs.has(jobId) ? [{ file_type: "junit" }] : [{ file_type: "archive" }, { file_type: "junit" }],
           pipeline: { ...fx.jobResponse.data.pipeline, id: 6, project_id: PROJECT_ID } });
       }
-      if (this.debugJobs.has(jobId) && user!.levels.get(id)! < DEVELOPER_LEVEL) {
+      if (this.debugJobs.has(jobId) && level < DEVELOPER_LEVEL) {
         return json({ message: "403 Forbidden" }, { status: 403 });
       }
       return this.erasedJobs.has(jobId) ? json({ message: "404 Not found" }, { status: 404 }) : new Response("hello\n");
@@ -184,12 +245,10 @@ class ObserverGitLab extends FakeGitLab {
         const open = request.url.searchParams.get("state") !== "closed";
         return json(firstPage && open ? this.issues.map(iid => ({
           ...fx.issueResponse.data, iid, id: 1000 + iid, project_id: PROJECT_ID, title: `Issue ${iid}`,
+          confidential: this.confidentialIssues.has(iid),
           web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/issues/${iid}`,
         })) : []);
       }
-      case "/issues/1":
-        return json({ ...fx.issueResponse.data, iid: 1, project_id: PROJECT_ID,
-          web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/issues/1` });
       case "/merge_requests":
         return json(firstPage ? [{ ...fx.mergeRequestResponse.data, iid: 1,
           project_id: PROJECT_ID, source_project_id: PROJECT_ID, target_project_id: PROJECT_ID,
@@ -199,12 +258,12 @@ class ObserverGitLab extends FakeGitLab {
           project_id: PROJECT_ID, source_project_id: PROJECT_ID, target_project_id: PROJECT_ID,
           web_url: `${WEB}/${this.projects.get(PROJECT_ID)}/-/merge_requests/1` });
       case "/issues/1/discussions":
-        return json(firstPage ? fx.issueDiscussionsResponse.data : []);
+        return json(firstPage ? this.#markInternal(fx.issueDiscussionsResponse.data) : []);
       case "/merge_requests/1/discussions":
-        return json(firstPage ? [
+        return json(firstPage ? this.#markInternal([
           fx.diffDiscussionResponse.data,
           { id: "plain", individual_note: true, notes: [fx.issueNotesResponse.data[1]] },
-        ] : []);
+        ]) : []);
       case "/pipelines/6":
         return json({ ...fx.pipelineResponse.data, id: 6, project_id: PROJECT_ID, sha: HEAD });
       case "/pipelines/6/test_report_summary":
@@ -225,16 +284,22 @@ class ObserverGitLab extends FakeGitLab {
     const { variables } = JSON.parse(request.body!) as { variables: { project: string[]; job: string } };
     const projectId = Number(variables.project[0].replace("gid://gitlab/Project/", ""));
     const jobId = Number(variables.job.replace("gid://gitlab/Ci::Build/", ""));
-    const level = user?.levels.get(projectId);
-    // GitLab lists only projects the user can see; all of these are private.
-    if (level === undefined) return json({ data: { projects: { nodes: [] } } });
+    // GitLab lists only projects the user can see.
+    if (!(user?.levels.has(projectId) || this.internal.has(projectId))) return json({ data: { projects: { nodes: [] } } });
+    const level = user?.levels.get(projectId) ?? 0;
     const job = this.deletedJobs.has(jobId) ? null : {
       erasedAt: this.erasedJobs.has(jobId) ? "2026-01-01T00:00:00Z" : null,
       userPermissions: {
-        readJobArtifacts: this.archivelessJobs.has(jobId) || level >= (this.restrictedArtifacts.get(jobId) ?? REPORTER),
+        readJobArtifacts: this.archivelessJobs.has(jobId) || level >= (this.restrictedArtifacts.get(jobId) ?? 0),
       },
     };
     return json({ data: { projects: { nodes: [{ job }] } } });
+  }
+
+  /** `discussions` with each note in `internalNotes` marked internal, as GitLab lists them. */
+  #markInternal<D extends { notes: Array<{ id: number }> }>(discussions: D[]) {
+    return discussions.map(discussion => ({ ...discussion, notes: discussion.notes.map(note => this.internalNotes.has(note.id)
+      ? { ...note, internal: true, confidential: true } : note) }));
   }
 
   #git(request: FakeRequest): Response {
@@ -255,6 +320,7 @@ class ObserverGitLab extends FakeGitLab {
     return {
       ...fx.projectResponse.data, id, name: path.slice(path.lastIndexOf("/") + 1), path_with_namespace: path,
       web_url: `${WEB}/${path}`, namespace: { ...fx.projectResponse.data.namespace, full_path: path.slice(0, path.lastIndexOf("/")) },
+      ...this.noDefaultBranch ? { default_branch: undefined } : {},
     };
   }
 }
@@ -317,7 +383,7 @@ afterEach(() => {
 });
 
 describe("reads", () => {
-  it("report the pinned project by its id, whatever served them", async () => {
+  it("report the pinned project by its id, and the features whose data they returned, whatever served them", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.issues = [1, 2];
     gitlab.install();
@@ -334,18 +400,31 @@ describe("reads", () => {
       .toMatchObject({ ok: [{ id: "1" }, { id: "2" }] });
     // A listing that finds nothing answers too.
     expect(await gk.read([{ method: "listIssues", args: [{ state: "closed" }], drain: true }])).toEqual({ ok: [] });
-    // CI that is no more than the project's, through the stub opening a pipeline returns.
+    // CI, through the stub opening a pipeline returns.
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getDetails" }]))
       .toMatchObject({ ok: { id: "6" } });
 
     expect(await gk.observations()).toEqual([
-      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT] },
-      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT] },
-      { title: "List issues", subresources: [PROJECT] },
-      { title: "List issues (page 2)", subresources: [PROJECT] },
-      { title: "List issues", subresources: [PROJECT] },
-      { title: "Read pipeline #6", subresources: [PROJECT] },
+      // Its default branch is the repository's.
+      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT, REPOSITORY] },
+      { title: `Read project metadata for ${PATH}`, subresources: [PROJECT, REPOSITORY] },
+      { title: "List issues", subresources: [PROJECT, ISSUES] },
+      { title: "List issues (page 2)", subresources: [PROJECT, ISSUES] },
+      { title: "List issues", subresources: [PROJECT, ISSUES] },
+      { title: "Read pipeline #6", subresources: CI },
     ]);
+  });
+
+  it("report the project's metadata as the project alone when GitLab returns no default branch", async () => {
+    // GitLab leaves the default branch out for an account that may not read the code, and has
+    // none for an empty repository: nothing of the repository was read.
+    const gitlab = new ObserverGitLab();
+    gitlab.noDefaultBranch = true;
+    gitlab.install();
+    const gk = await binding();
+
+    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: { path: PATH } });
+    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [PROJECT] }]);
   });
 
   it("report the jobs whose log or test reports CI data came from", async () => {
@@ -361,14 +440,14 @@ describe("reads", () => {
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getTestReport" }])).toMatchObject({ ok: {} });
 
     expect(await gk.observations()).toEqual([
-      { title: "Read log of job `rubocop` #8, lines 1–1", subresources: [TRACE] },
-      { title: "Read failed tests of pipeline #6", subresources: [ARTIFACTS] },
-      { title: "Read failed tests of pipeline #6 (page 2)", subresources: [ARTIFACTS] },
-      { title: "Read test report of pipeline #6", subresources: [ARTIFACTS] },
+      { title: "Read log of job `rubocop` #8, lines 1–1", subresources: [...CI, TRACE] },
+      { title: "Read failed tests of pipeline #6", subresources: [...CI, ARTIFACTS] },
+      { title: "Read failed tests of pipeline #6 (page 2)", subresources: [...CI, ARTIFACTS] },
+      { title: "Read test report of pipeline #6", subresources: [...CI, ARTIFACTS] },
     ]);
   });
 
-  it("report the project for a test report that holds no job's reports", async () => {
+  it("report CI data for a test report that holds no job's reports", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/pipelines/6/test_report_summary$`), () =>
@@ -376,7 +455,7 @@ describe("reads", () => {
     const gk = await binding();
 
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getTestReport" }])).toMatchObject({ ok: {} });
-    expect(await gk.observations()).toEqual([{ title: "Read test report of pipeline #6", subresources: [PROJECT] }]);
+    expect(await gk.observations()).toEqual([{ title: "Read test report of pipeline #6", subresources: CI }]);
   });
 
   it("report failed tests as from every job with a test report the whole report could hold", async () => {
@@ -393,8 +472,113 @@ describe("reads", () => {
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true }]))
       .toMatchObject({ ok: [{ name: "first" }, { name: "second" }] });
     const [{ subresources }] = await gk.observations();
-    expect(subresources?.toSorted()).toEqual([70, 71, 90].map(jobId => `project/${PROJECT_ID}/jobArtifacts/${jobId}`));
+    expect(subresources?.toSorted()).toEqual([...CI, ...[70, 71, 90].map(jobId => `project/${PROJECT_ID}/jobArtifacts/${jobId}`)]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).not.toContain(`/api/v4/projects/${PROJECT_ID}/pipelines/6/test_report_summary`);
+  });
+
+  it("report each confidential issue a page or a details read returned, and no other", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.issues = [1, 2];
+    gitlab.confidentialIssues.add(2);
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+    const confidential = `${PROJECT}/issue/2`;
+
+    expect(await gk.read([{ method: "listIssues", args: [{ resultsPerPage: 1 }], drain: true }]))
+      .toMatchObject({ ok: [{ id: "1", confidential: false }, { id: "2", confidential: true }] });
+    expect(await gk.read([{ method: "searchIssues", args: [{ text: "Issue" }], drain: true }]))
+      .toMatchObject({ ok: [{ id: "1" }, { id: "2" }] });
+    expect(await gk.read([{ method: "getIssue", args: ["2"] }, { method: "getDetails" }])).toMatchObject({ ok: { confidential: true } });
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "getDetails" }])).toMatchObject({ ok: { confidential: false } });
+    // An issue a queued create stands for is the caller's own words, and not on GitLab.
+    expect(await gk.read([{ method: "createIssue", args: [{ title: "Queued" }] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: { id: "~1", confidential: false } });
+    expect(await gk.observations()).toEqual([
+      { title: "List issues", subresources: [PROJECT, ISSUES] },
+      { title: "List issues (page 2)", subresources: [PROJECT, ISSUES, confidential] },
+      { title: `Search issues for "Issue"`, subresources: [PROJECT, ISSUES, confidential] },
+      { title: expect.stringMatching(/^Read issue #2: /), subresources: [PROJECT, ISSUES, confidential] },
+      { title: expect.stringMatching(/^Read issue #1: /), subresources: [PROJECT, ISSUES] },
+      { title: "Read issue #~1: Queued", subresources: [PROJECT, ISSUES] },
+    ]);
+  });
+
+  it("report an issue's internal notes in its discussion, and the issue on every page", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.confidentialIssues.add(1);
+    gitlab.internalNotes.add(1129);
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+
+    // A queued comment on the confidential issue answers its words: it is reported as the issue's.
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "postComment", args: ["Queued"] }])).toEqual({ ok: undefined });
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "readDiscussion", args: [{ resultsPerPage: 2 }], drain: true }]))
+      .toMatchObject({ ok: [
+        { id: "1126", internal: false }, { id: "1128", internal: false },
+        { id: "1129", internal: true }, { id: "~comment1", internal: false },
+      ] });
+    expect(await gk.observations()).toEqual([
+      { title: "Read discussion for #1", subresources: [PROJECT, ISSUES, `${PROJECT}/issue/1`] },
+      { title: "Read discussion for #1 (page 2)", subresources: [PROJECT, ISSUES, `${PROJECT}/issue/1`, `${PROJECT}/issue/1/note/1129`] },
+    ]);
+  });
+
+  it("report the issue on every page of its discussion, even when cached details still call it public", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "getDetails" }])).toMatchObject({ ok: { confidential: false } });
+    // Made confidential while those details are cached: the comments are read afresh.
+    gitlab.confidentialIssues.add(1);
+    expect(await gk.read([{ method: "getIssue", args: ["1"] }, { method: "readDiscussion", args: [{ resultsPerPage: 2 }], drain: true }]))
+      .toMatchObject({ ok: [{ id: "1126" }, { id: "1128" }, { id: "1129" }] });
+    expect((await gk.observations()).slice(1)).toEqual([
+      { title: "Read discussion for #1", subresources: [PROJECT, ISSUES, `${PROJECT}/issue/1`] },
+      { title: "Read discussion for #1 (page 2)", subresources: [PROJECT, ISSUES, `${PROJECT}/issue/1`] },
+    ]);
+  });
+
+  it("report a merge request's internal notes, in its discussion and its diff threads", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.internalNotes.add(1128);
+    gitlab.internalNotes.add(305);
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "readDiffThreads", drain: true }]))
+      .toMatchObject({ ok: [{ comments: [{ id: "1128", internal: true }] }] });
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "readDiscussion", drain: true }]))
+      .toMatchObject({ ok: [{ id: "305", internal: true }] });
+    expect(await gk.read([{ method: "getMergeRequest", args: ["1"] }, { method: "getDetails" }])).toMatchObject({ ok: { id: "1" } });
+    // GitLab returns this merge request no head pipeline, so its details hold no CI.
+    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([
+      [...MERGE_REQUEST, `${PROJECT}/mergeRequest/1/note/1128`],
+      [...MERGE_REQUEST, `${PROJECT}/mergeRequest/1/note/305`],
+      MERGE_REQUEST,
+    ]);
+  });
+
+  it("serve no issue an earlier version cached, before cached issues said whether they are confidential", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.issues = [2];
+    gitlab.confidentialIssues.add(2);
+    gitlab.install();
+    const gk = await binding({ pinned: true });
+    const project = { path: PATH, name: "project", namespace: "group/sub", url: `${WEB}/${PATH}` };
+    // As that version left it: an entry of the current generation, fresh, and without the flag.
+    await gk.upgradeFrom({
+      cachesFlagConfidential: null,
+      cacheGeneration: 0,
+      "cache:issue:2": { fetchedAt: Date.now(), generation: 0, value: {
+        project, id: "2", url: `${WEB}/${PATH}/-/issues/2`, title: "Cached", state: "opened", labels: [], author: null,
+        assignees: [], createdAt: new Date(0), updatedAt: new Date(0), commentCount: 0, upvotes: 0, bodyMarkdown: "",
+      } },
+    });
+
+    expect(await gk.read([{ method: "getIssue", args: ["2"] }, { method: "getDetails" }]))
+      .toMatchObject({ ok: { id: "2", confidential: true, title: fx.issueResponse.data.title } });
+    expect((await gk.observations()).at(-1)?.subresources).toEqual([PROJECT, ISSUES, `${PROJECT}/issue/2`]);
   });
 
   it("authorize each page of a listing as it leaves, a refused one ending the listing", async () => {
@@ -426,7 +610,7 @@ describe("reads", () => {
     expect(await gk.read([{ method: "listIssues", drain: true }])).toMatchObject({ ok: [{ id: "1" }] });
     expect(gitlab.requestsWith(OWNER_TOKEN).filter(path => !path.startsWith(`/api/v4/projects/${PROJECT_ID}`)))
       .toEqual([]);
-    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT], [PROJECT]]);
+    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT, REPOSITORY], [PROJECT, ISSUES]]);
   });
 
   it("returns current issue and merge request references when the original path is reused", async () => {
@@ -563,24 +747,83 @@ describe("reads", () => {
 
     gitlab.probeStatus = undefined;
     expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });
-    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [PROJECT] }]);
+    expect(await gk.observations()).toEqual([{ title: `Read project metadata for ${PATH}`, subresources: [PROJECT, REPOSITORY] }]);
   });
 });
 
 describe("verifyObserverAccess", () => {
+  it("allows the project to whoever GitLab shows it, member or not, and each feature to whoever can list its data", async () => {
+    const gitlab = new ObserverGitLab();
+    // Internal: every signed-in user can see it, and read whatever its features let them.
+    gitlab.internal.add(PROJECT_ID);
+    gitlab.install();
+    const tokens = ["outsider", "no-repo", "no-issues", "no-mrs", "no-pipelines"];
+    const [outsider, noRepo, noIssues, noMrs, noPipelines] = await Promise.all(tokens.map(token => account(token)));
+    for (const token of tokens) gitlab.member(token);
+    gitlab.featureRefusals.set("no-repo /repository/branches", 403);
+    gitlab.featureRefusals.set("no-issues /issues", 404);
+    gitlab.featureRefusals.set("no-mrs /merge_requests", 403);
+    gitlab.featureRefusals.set("no-pipelines /pipelines", 404);
+    const gk = await binding();
+    const everyone = { outsider, noRepo, noIssues, noMrs, noPipelines };
+    const all = Object.keys(everyone);
+
+    // A feature an observer cannot read keeps nothing else from them.
+    expect(await gk.verify(everyone)).toEqual({ ok: all });
+    // Each observer is asked with their own token, by the project's id, for the project alone.
+    expect(gitlab.requestsWith("outsider")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`]);
+    expect(await gk.verify(everyone, [REPOSITORY])).toEqual({ ok: all.filter(id => id !== "noRepo") });
+    expect(await gk.verify(everyone, [ISSUES])).toEqual({ ok: all.filter(id => id !== "noIssues") });
+    expect(await gk.verify(everyone, [MERGE_REQUESTS])).toEqual({ ok: all.filter(id => id !== "noMrs") });
+    expect(await gk.verify(everyone, [BUILDS])).toEqual({ ok: all.filter(id => id !== "noPipelines") });
+    // Then for one row of each feature's listing it needs, the project's answer reused, and never
+    // for their membership.
+    const listings = FEATURE_LISTINGS.map(listing => `/api/v4/projects/${PROJECT_ID}${listing}`);
+    expect(gitlab.requestsWith("outsider")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`, ...listings]);
+    expect(gitlab.requests.filter(request => tokenOf(request) === "outsider" && listings.includes(request.url.pathname))
+      .map(request => request.url.searchParams.get("per_page"))).toEqual(["1", "1", "1", "1"]);
+    expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
+  });
+
+  it("requires no feature a read never named: one the project turned off blocks no one", async () => {
+    // Merge requests and CI/CD are off, so GitLab refuses their listings to everyone; a project's
+    // issues and metadata say nothing of them.
+    const gitlab = new ObserverGitLab();
+    gitlab.issues = [1];
+    gitlab.install();
+    const observer = await account("observer");
+    gitlab.member("observer", { [PROJECT_ID]: REPORTER });
+    for (const token of [OWNER_TOKEN, "observer"]) {
+      gitlab.featureRefusals.set(`${token} /merge_requests`, 403);
+      gitlab.featureRefusals.set(`${token} /pipelines`, 403);
+    }
+    const gk = await binding();
+    expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: { path: PATH } });
+    expect(await gk.read([{ method: "listIssues", drain: true }])).toMatchObject({ ok: [{ id: "1" }] });
+    const reported = [...new Set((await gk.observations()).flatMap(observation => observation.subresources ?? []))];
+    expect(reported).toEqual([PROJECT, REPOSITORY, ISSUES]);
+
+    expect(await gk.verify({ observer }, reported)).toEqual({ ok: ["observer"] });
+    expect(gitlab.requestsWith("observer").filter(path => /\/(merge_requests|pipelines)$/.test(path))).toEqual([]);
+    // A read that named one would deny them.
+    expect(await gk.verify({ observer }, [MERGE_REQUESTS])).toEqual({ ok: [] });
+  });
+
   it("allows a member to see a job's log or artifacts unless GitLab withholds that job's from them", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [guest, reporter, developer, maintainer, outsider] = await Promise.all(
       ["guest", "reporter", "developer", "maintainer", "outsider"].map(token => account(token)));
-    gitlab.member("guest", { [PROJECT_ID]: 10 });
+    gitlab.member("guest", { [PROJECT_ID]: GUEST });
     gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
     gitlab.member("developer", { [PROJECT_ID]: DEVELOPER_LEVEL });
     gitlab.member("maintainer", { [PROJECT_ID]: MAINTAINER_LEVEL });
     gitlab.member("outsider");
     const gk = await binding();
     const everyone = { guest, reporter, developer, maintainer, outsider };
-    const members = ["reporter", "developer", "maintainer"];
+    // A Guest of this private project sees it, and its CI/CD here, but not its repository; an
+    // outsider cannot see it at all.
+    const members = ["guest", "reporter", "developer", "maintainer"];
     const trace = (jobId: number) => `project/${PROJECT_ID}/jobTrace/${jobId}`;
     const artifacts = (jobId: number) => `project/${PROJECT_ID}/jobArtifacts/${jobId}`;
     gitlab.debugJobs.add(9);
@@ -588,24 +831,110 @@ describe("verifyObserverAccess", () => {
     gitlab.restrictedArtifacts.set(11, MAINTAINER_LEVEL);
 
     expect(await gk.verify(everyone, [PROJECT])).toEqual({ ok: members });
-    // An ordinary job's log and artifacts are every member's.
+    // An ordinary job's log and artifacts are every member's who can read CI/CD.
     expect(await gk.verify(everyone, [trace(8), artifacts(8)])).toEqual({ ok: members });
     // A debug trace is a Developer's, and restricted artifacts their role's.
     expect(await gk.verify(everyone, [trace(9)])).toEqual({ ok: ["developer", "maintainer"] });
     expect(await gk.verify(everyone, [artifacts(10)])).toEqual({ ok: ["developer", "maintainer"] });
     expect(await gk.verify(everyone, [artifacts(11)])).toEqual({ ok: ["maintainer"] });
-    // Each observer is asked with their own token, membership by the project's id once and first,
-    // then its jobs, a few at a time and so in no fixed order.
+    // The project is asked once and first, then CI/CD once, then its jobs, a few at a time and
+    // so in no fixed order.
     const asked = gitlab.requestsWith("reporter");
-    expect(asked.slice(0, 2)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`]);
-    expect(asked.slice(2).toSorted()).toEqual([
+    expect(asked.slice(0, 3)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`, `/api/v4/projects/${PROJECT_ID}/pipelines`]);
+    expect(asked.slice(3).toSorted()).toEqual([
       `/api/v4/projects/${PROJECT_ID}/jobs/8`, `/api/v4/projects/${PROJECT_ID}/jobs/8/trace`,
       `/api/v4/projects/${PROJECT_ID}/jobs/8`, "/api/graphql",
       `/api/v4/projects/${PROJECT_ID}/jobs/9`, `/api/v4/projects/${PROJECT_ID}/jobs/9/trace`,
       `/api/v4/projects/${PROJECT_ID}/jobs/10`, "/api/graphql", `/api/v4/projects/${PROJECT_ID}/jobs/11`, "/api/graphql",
     ].toSorted());
+    expect(await gk.verify(everyone, [REPOSITORY])).toEqual({ ok: ["reporter", "developer", "maintainer"] });
     // The binding's own account was never asked.
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
+  });
+
+  it("denies a job's log or artifacts to whoever cannot list the project's pipelines, without asking about the job", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.internal.add(PROJECT_ID);
+    gitlab.install();
+    const [outsider, noPipelines] = await Promise.all([account("outsider"), account("no-pipelines")]);
+    gitlab.member("outsider");
+    gitlab.member("no-pipelines");
+    // GitLab would let them read the job itself.
+    gitlab.featureRefusals.set("no-pipelines /pipelines", 403);
+    const gk = await binding();
+
+    expect(await gk.verify({ outsider, noPipelines }, [TRACE, ARTIFACTS])).toEqual({ ok: ["outsider"] });
+    expect(await gk.verify({ outsider, noPipelines }, [PROJECT])).toEqual({ ok: ["outsider", "noPipelines"] });
+    expect(gitlab.requestsWith("no-pipelines").filter(path => path.includes("/jobs/") || path === "/api/graphql"))
+      .toEqual([]);
+  });
+
+  it("allows a confidential issue or an internal note to whoever GitLab shows it, and its project and feature", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.internal.add(PROJECT_ID);
+    gitlab.confidentialIssues.add(3);
+    for (const noteId of [1128, 1129, 305]) gitlab.internalNotes.add(noteId);
+    gitlab.deletedNotes.add(1129);
+    gitlab.install();
+    const [reporter, outsider, restricted] = await Promise.all(["reporter", "outsider", "restricted"].map(token => account(token)));
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.member("outsider");
+    gitlab.member("restricted", { [PROJECT_ID]: REPORTER });
+    gitlab.featureRefusals.set("restricted /merge_requests", 403);
+    const gk = await binding();
+    const everyone = { reporter, outsider, restricted };
+    const issue = `project/${PROJECT_ID}/issue/3`;
+    const note = `project/${PROJECT_ID}/issue/1/note/1128`;
+    const mrNote = `project/${PROJECT_ID}/mergeRequest/1/note/305`;
+    const start = Date.now();
+    const at = (offset: number) => vi.setSystemTime(start + offset);
+    const askedFor = (token: string, path: string) =>
+      gitlab.requestsWith(token).filter(asked => asked === `/api/v4/projects/${PROJECT_ID}${path}`).length;
+
+    expect(await gk.verify(everyone, [PROJECT])).toEqual({ ok: ["reporter", "outsider", "restricted"] });
+    expect(await gk.verify(everyone, [issue])).toEqual({ ok: ["reporter", "restricted"] });
+    expect(await gk.verify(everyone, [note])).toEqual({ ok: ["reporter", "restricted"] });
+    expect(await gk.verify(everyone, [mrNote])).toEqual({ ok: ["reporter"] });
+    // Deleted since it was read: GitLab's 404 can't be told from a hidden note's, so it denies everyone.
+    expect(await gk.verify(everyone, [`project/${PROJECT_ID}/issue/1/note/1129`])).toEqual({ ok: [] });
+    expect([askedFor("reporter", "/issues/3"), askedFor("reporter", "/issues/1/notes/1128"),
+      askedFor("reporter", "/merge_requests/1/notes/305")]).toEqual([1, 1, 1]);
+    // Denied the project's merge requests, the restricted member is never asked about a note on one.
+    expect(askedFor("restricted", "/merge_requests/1/notes/305")).toBe(0);
+
+    // Each item's answer is reused as the project's is: a grant for 15 minutes, a denial for 15 seconds.
+    at(14_000);
+    expect(await gk.verify(everyone, [issue])).toEqual({ ok: ["reporter", "restricted"] });
+    expect([askedFor("reporter", "/issues/3"), askedFor("outsider", "/issues/3")]).toEqual([1, 1]);
+    at(16_000);
+    expect(await gk.verify(everyone, [issue])).toEqual({ ok: ["reporter", "restricted"] });
+    expect([askedFor("reporter", "/issues/3"), askedFor("outsider", "/issues/3")]).toEqual([1, 2]);
+  });
+
+  it("denies a confidential issue or an internal note GitLab no longer shows to everyone, Planners included", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.internal.add(PROJECT_ID);
+    gitlab.confidentialIssues.add(3);
+    gitlab.internalNotes.add(1128);
+    gitlab.deletedNotes.add(1129);
+    // A banned user's issue: still there, but hidden from every non-administrator, whatever the role.
+    gitlab.issues.push(7);
+    gitlab.hiddenIssues.add(7);
+    gitlab.install();
+    const [planner, guest, outsider] = await Promise.all(["planner", "guest", "outsider"].map(token => account(token)));
+    gitlab.member("planner", { [PROJECT_ID]: PLANNER });
+    gitlab.member("guest", { [PROJECT_ID]: GUEST });
+    gitlab.member("outsider");
+    const gk = await binding();
+    const everyone = { planner, guest, outsider };
+
+    // Hidden, deleted, and a confidential issue GitLab no longer has: its 404 can't tell them apart.
+    expect(await gk.verify(everyone, [`project/${PROJECT_ID}/issue/7`])).toEqual({ ok: [] });
+    expect(await gk.verify(everyone, [`project/${PROJECT_ID}/issue/1/note/1129`])).toEqual({ ok: [] });
+    expect(await gk.verify(everyone, [`project/${PROJECT_ID}/issue/99`])).toEqual({ ok: [] });
+    // Still there and shown to Planners: GitLab's own answer admits them, and no one below.
+    expect(await gk.verify(everyone, [`project/${PROJECT_ID}/issue/3`, `project/${PROJECT_ID}/issue/1/note/1128`]))
+      .toEqual({ ok: ["planner"] });
   });
 
   it("holds a test report from a job with no archive to Maintainer, which GitLab's job check would call public", async () => {
@@ -625,7 +954,7 @@ describe("verifyObserverAccess", () => {
     expect(gitlab.requestsWith("reporter")).not.toContain("/api/graphql");
   });
 
-  it("lets any member see an erased or deleted job's, which hold nothing left to withhold", async () => {
+  it("lets any reader of the project see an erased or deleted job's, which hold nothing left to withhold", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [reporter, outsider] = await Promise.all([account("reporter"), account("outsider")]);
@@ -639,6 +968,7 @@ describe("verifyObserverAccess", () => {
     gitlab.deletedJobs.add(10);
     const gk = await binding();
 
+    // The outsider, who cannot see the project, would read its jobs as deleted too.
     expect(await gk.verify({ reporter, outsider }, [9, 10].flatMap(jobId =>
       [`project/${PROJECT_ID}/jobTrace/${jobId}`, `project/${PROJECT_ID}/jobArtifacts/${jobId}`])))
       .toEqual({ ok: ["reporter"] });
@@ -673,7 +1003,7 @@ describe("verifyObserverAccess", () => {
     expect(await gk.verify({ alice, carol })).toEqual({ ok: ["alice", "carol"] });
   });
 
-  it("reuses an account's answer, a grant for 15 minutes and a denial for 15 seconds", async () => {
+  it("reuses an account's answer for a project and a feature, a grant for 15 minutes and a denial for 15 seconds", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [alice, bob] = await Promise.all([account("alice"), account("bob")]);
@@ -683,22 +1013,27 @@ describe("verifyObserverAccess", () => {
     const [first, second] = [await binding(), await binding()];
     const start = Date.now();
     const at = (offset: number) => vi.setSystemTime(start + offset);
-    const asked = (token: string) => gitlab.requestsWith(token).filter(path => path.endsWith("/members/all")).length;
+    const asked = (token: string, path: string) =>
+      gitlab.requestsWith(token).filter(requested => requested === `/api/v4/projects/${PROJECT_ID}${path}`).length;
+    const read = [PROJECT, REPOSITORY];
 
-    expect(await first.verify({ alice, bob })).toEqual({ ok: ["alice"] });
+    expect(await first.verify({ alice, bob }, read)).toEqual({ ok: ["alice"] });
     at(14_000);
-    expect(await second.verify({ alice, bob })).toEqual({ ok: ["alice"] });
-    expect([asked("alice"), asked("bob")]).toEqual([1, 1]);
+    expect(await second.verify({ alice, bob }, read)).toEqual({ ok: ["alice"] });
+    // Bob, whom GitLab does not show the project, is never asked about its repository.
+    expect([asked("alice", ""), asked("bob", ""), asked("alice", "/repository/branches"), asked("bob", "/repository/branches")])
+      .toEqual([1, 1, 1, 0]);
 
     // Bob is made a member, and alice is removed.
     gitlab.member("bob", { [PROJECT_ID]: REPORTER });
     gitlab.users.get("alice")!.levels.clear();
     at(16_000);
-    expect(await first.verify({ alice, bob })).toEqual({ ok: ["alice", "bob"] });
+    expect(await first.verify({ alice, bob }, read)).toEqual({ ok: ["alice", "bob"] });
     // Each answer is dated from when GitLab was asked: alice's grant has expired, bob's not yet.
     at(15 * MINUTE + 1_000);
-    expect(await first.verify({ alice, bob })).toEqual({ ok: ["bob"] });
-    expect([asked("alice"), asked("bob")]).toEqual([2, 2]);
+    expect(await first.verify({ alice, bob }, read)).toEqual({ ok: ["bob"] });
+    expect([asked("alice", ""), asked("bob", ""), asked("alice", "/repository/branches"), asked("bob", "/repository/branches")])
+      .toEqual([2, 2, 1, 1]);
   });
 
   it("reuses an allowed answer for a running job only as long as a denial", async () => {
@@ -735,7 +1070,7 @@ describe("verifyObserverAccess", () => {
 
     // Access can no longer be determined, so the check fails rather than reuse the grant.
     expect(await gk.verify({ alice })).toEqual({ error: expect.stringMatching(/expired|revoked/i) });
-    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all"))).toHaveLength(1);
+    expect(gitlab.requestsWith("alice").filter(path => path === `/api/v4/projects/${PROJECT_ID}`)).toHaveLength(1);
   });
 
   it("keys answers by account, not observer, and asks again after the account reconnects", async () => {
@@ -758,7 +1093,7 @@ describe("verifyObserverAccess", () => {
       await instance.commitReconnect(await stageReconnect(instance, "code-1"));
     });
     expect(await gk.verify({ observer: alice })).toEqual({ ok: [] });
-    expect(gitlab.requestsWith("access-1")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`]);
+    expect(gitlab.requestsWith("access-1")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`]);
   });
 
   it("refuses to answer for a check the account reconnected during, its answers two users' combined", async () => {
@@ -768,34 +1103,37 @@ describe("verifyObserverAccess", () => {
     gitlab.member("alice", { [PROJECT_ID]: REPORTER });
     gitlab.member("access-1");
     const gk = await binding();
-    const trace = `project/${PROJECT_ID}/jobTrace/8`;
 
-    // As GitLab answers alice's membership, her connection is replaced by another GitLab user's,
-    // who is no member: the job, hidden from them, would read as deleted and so allowed.
+    // As GitLab answers alice's read of the project's pipelines, her connection is replaced by
+    // another GitLab user's, who is no member: the job, hidden from them, would read as deleted
+    // and so allowed.
     gitlab.oauth = () => json(tokenResponse(1));
     await hooks().installCallback(alice);
     let reconnected = false;
-    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/members/all`), async request => {
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/pipelines\\?`), async request => {
       if (!reconnected) {
         reconnected = true;
         await runInDurableObject(env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(alice)), async instance => {
           await instance.commitReconnect(await stageReconnect(instance, "code-1"));
         });
       }
-      const level = gitlab.users.get(tokenOf(request))?.levels.get(PROJECT_ID);
-      return level === undefined ? json([]) : json([{ id: gitlab.users.get(tokenOf(request))!.id, access_level: level }]);
+      return gitlab.users.get(tokenOf(request))?.levels.has(PROJECT_ID)
+        ? json([]) : json({ message: "404 Project Not Found" }, { status: 404 });
     });
 
-    expect(await gk.verify({ observer: alice }, [trace])).toEqual({ error: expect.stringContaining("changed while access") });
+    expect(await gk.verify({ observer: alice }, [TRACE])).toEqual({ error: expect.stringContaining("changed while access") });
     // Asked again, the new user is checked throughout.
-    expect(await gk.verify({ observer: alice }, [trace])).toEqual({ ok: [] });
+    expect(await gk.verify({ observer: alice }, [TRACE])).toEqual({ ok: [] });
   });
 
   it.each([
     "gitlab/project/42", "project/042", "project/abc", "project/-1", "project/0", "project/9007199254740993",
-    "project/42/role/reporter", "project/42/role/owner", "project/42/issue/7", "role/developer",
+    "project/42/role/reporter", "project/42/role/owner", "role/developer",
     "project/42/role/developer/role/maintainer", "project/4%32", "project/42/jobTrace/08",
     "project/42/jobArtifacts/x", "project/42/jobTrace/8/jobArtifacts/8", "jobTrace/8",
+    "project/42/issue/07", "project/42/issue/x", "project/42/mergeRequest/7", "project/42/note/5",
+    "project/42/issue/7/note/x", "project/42/issue/7/note/5/note/6", "project/42/jobTrace/8/note/5",
+    "project/42/mergeRequest/7/issue/5",
   ])("refuses the whole call for %s, asking no one", async id => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
@@ -809,7 +1147,7 @@ describe("verifyObserverAccess", () => {
 });
 
 describe("addObserver", () => {
-  it("requires Reporter on the pinned project by its id, and on the one its path names, asked each time", async () => {
+  it("requires GitLab to show the observer the pinned project by its id, and the one its path names, asked each time", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
     const [alice, bob, carol] = await Promise.all([account("alice"), account("bob"), account("carol")]);
@@ -821,23 +1159,40 @@ describe("addObserver", () => {
 
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
-    // Its path is read at the project's root, then its membership by the id that names.
-    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
-      .toEqual(Array(4).fill(`/api/v4/projects/${PROJECT_ID}/members/all`));
+    // The project is read by its path and by the stored id, each time; neither its features nor
+    // the observer's membership are asked.
+    expect(gitlab.requestsWith("alice").filter(path => path === `/api/v4/projects/${PROJECT_ID}`)).toHaveLength(2);
     expect(gitlab.requestsWith("alice").filter(path => path === "/api/v4/projects/group%2Fsub%2Fproject"))
       .toHaveLength(2);
+    expect(gitlab.requestsWith("alice").filter(path => path.startsWith(`/api/v4/projects/${PROJECT_ID}/`))).toEqual([]);
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
     // An answer that says nothing about access fails admission, as an error rather than a denial.
     expect(await gk.admit(carol)).toEqual({ error: expect.stringContaining("500") });
 
     // The project moves, and another takes its path. A release that read by path may have read
-    // that one, so an observer must be a member of it too: alice no longer passes, bob still not.
+    // that one, so GitLab must show the observer it too: alice no longer passes, bob still not.
     gitlab.projects.set(PROJECT_ID, "acme/renamed");
     gitlab.projects.set(OTHER_ID, PATH);
     expect(await gk.admit(alice)).toEqual({ error: expect.stringContaining("does not have read access") });
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
     gitlab.member("alice", { [OTHER_ID]: REPORTER });
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
+  });
+
+  it("admits a non-member of an internal project, and one denied its features: earlier reads stand for the project alone", async () => {
+    const gitlab = new ObserverGitLab();
+    gitlab.internal.add(PROJECT_ID);
+    gitlab.install();
+    const [outsider, noMrs] = await Promise.all([account("outsider"), account("no-mrs")]);
+    gitlab.member("outsider");
+    gitlab.member("no-mrs");
+    gitlab.featureRefusals.set("no-mrs /merge_requests", 403);
+    const gk = await binding({ pinned: true });
+
+    expect(await gk.admit(outsider)).toEqual({ ok: undefined });
+    expect(await gk.admit(noMrs)).toEqual({ ok: undefined });
+    // What a read since reports of the feature is still checked.
+    expect(await gk.verify({ outsider, noMrs }, [MERGE_REQUESTS])).toEqual({ ok: ["outsider"] });
   });
 
   it("admits anyone to a new binding, uncapped and without asking GitLab, leaving its reads to be checked", async () => {
@@ -884,10 +1239,10 @@ describe("addObserver", () => {
     gitlab.formerPaths.set(PATH, PROJECT_ID);
 
     expect(await gk.read([{ method: "listIssues", drain: true }])).toMatchObject({ ok: [{ id: "1" }] });
-    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT]]);
+    expect((await gk.observations()).map(observation => observation.subresources)).toEqual([[PROJECT, ISSUES]]);
   });
 
-  it("admits an observer on their own membership by path while no id is stored, never asking the owner", async () => {
+  it("admits an observer on their own access by path while no id is stored, never asking the owner", async () => {
     // A binding not read since ids were pinned has read nothing by id, and its owner's grant may
     // have lapsed since; that must not keep out collaborators who can see the project themselves.
     const gitlab = new ObserverGitLab();
@@ -901,8 +1256,7 @@ describe("addObserver", () => {
 
     expect(await gk.admit(alice)).toEqual({ ok: undefined });
     expect(await gk.admit(bob)).toEqual({ error: expect.stringContaining("does not have read access") });
-    expect(gitlab.requestsWith("alice").filter(path => path.endsWith("/members/all")))
-      .toEqual([`/api/v4/projects/${PROJECT_ID}/members/all`]);
+    expect(gitlab.requestsWith("alice")).toEqual(["/api/v4/user", "/api/v4/projects/group%2Fsub%2Fproject"]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
   });
 });

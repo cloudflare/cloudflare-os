@@ -132,6 +132,13 @@ class CiFake extends FakeGitLab {
       return json(this.pipelines.filter(row => sha === null || row.sha === sha));
     });
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/events\\?(.*&)?action=pushed(&|$)`), () => json(this.pushEvents));
+    // An observer's check of a project feature, one row of its listing (the owner's own listings
+    // carry more of a query): readable to the owner and to members, hidden from others.
+    this.on("GET", new RegExp(`^/api/v4/projects/${P}/(repository/branches|issues|merge_requests|pipelines)\\?per_page=1$`), request => {
+      const name = request.headers.get("authorization")!.replace("Bearer ", "");
+      if (name === "test-token") return json(request.url.pathname.endsWith("/pipelines") ? this.pipelines : []);
+      return this.members.has(name) ? json([]) : json({ message: "404 Project Not Found" }, { status: 404 });
+    });
   }
 
   /** Requests that asked GitLab anything about CI. */
@@ -257,6 +264,25 @@ describe("a commit's CI", () => {
     const { details } = await unwrap(await hooks().getCommit(name, props, HEAD));
     expect(details.id).toBe(HEAD);
     expect(details).not.toHaveProperty("ci");
+  });
+
+  it("names CI/CD to observers beside the repository only when the read reports CI", async () => {
+    const fake = new CiFake();
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.commits.set(BASE, commit(BASE, { parent_ids: [], last_pipeline: null }));
+    let pipelinesRefused = false;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => pipelinesRefused
+      ? json({ message: "403 Forbidden" }, { status: 403 }) : json([]));
+    const { props, name } = await setup(fake);
+    expect(await session(name, props, { method: "getCommit", args: [HEAD] })).toHaveProperty("ci");
+    // CI/CD turned off, or above the account's role: the commit alone, which a project whose
+    // pipelines an observer cannot list still shows them.
+    pipelinesRefused = true;
+    expect(await session(name, props, { method: "getCommit", args: [HEAD] })).not.toHaveProperty("ci");
+    expect((await hooks().queueLog(name)).subresources).toEqual([
+      [`project/${P}`, `project/${P}/feature/builds`, `project/${P}/feature/repository`],
+      [`project/${P}`, `project/${P}/feature/repository`],
+    ]);
   });
 
   it("reads a queued push's commit as notStarted without asking GitLab about CI", async () => {
@@ -497,25 +523,36 @@ describe("a merge request's CI", () => {
     expect(mr).not.toHaveProperty("ci");
   });
 
-  it("shows a fork's pipeline as data that cannot be opened", async () => {
-    const fake = mrFake(pipeline(400, { project_id: FORK_ID }), { source_project_id: FORK_ID });
-    const { props, name } = await setup(fake);
-    expect((await details(name, props)).ci).toMatchObject({ pipeline: { id: "400", project: { path: "someone/fork" } } });
-    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
-      .rejects.toThrow(/ran in someone\/fork, another project, so it cannot be opened/);
+  it("names CI/CD to observers beside the merge request and repository only when the read reports CI", async () => {
+    const read = [{ method: "getMergeRequest", args: ["133"] }, { method: "getDetails" }];
+    const withCi = await setup(mrFake(pipeline(300, { status: "manual" })));
+    expect(await session(withCi.name, withCi.props, ...read)).toHaveProperty("ci");
+    const withoutCi = await setup(mrFake(undefined));
+    expect(await session(withoutCi.name, withoutCi.props, ...read)).not.toHaveProperty("ci");
+    const mergeRequest = [`project/${P}`, `project/${P}/feature/mergeRequests`, `project/${P}/feature/repository`];
+    expect((await hooks().queueLog(withCi.name)).subresources).toEqual([[...mergeRequest, `project/${P}/feature/builds`]]);
+    expect((await hooks().queueLog(withoutCi.name)).subresources).toEqual([mergeRequest]);
   });
 
-  it("looks a fork's project up once for a page of its pipelines", async () => {
-    // The merge request names its own project, so nothing before the listing looks the fork up.
-    const fake = mrFake(undefined);
+  it("shows a fork's pipeline as data that cannot be opened, naming the fork by its id alone", async () => {
+    const fake = mrFake(pipeline(400, { project_id: FORK_ID }), { source_project_id: FORK_ID });
+    const { props, name } = await setup(fake);
+    expect((await details(name, props)).ci).toMatchObject({ pipeline: { id: "400", project: { path: `project-${FORK_ID}` } } });
+    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
+      .rejects.toThrow(new RegExp(`ran in project-${FORK_ID}, another project, so it cannot be opened`));
+  });
+
+  it("never asks GitLab for a fork's path, which observers of this project may not be allowed to see", async () => {
+    const fake = mrFake(undefined, { source_project_id: FORK_ID });
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/pipelines\\?`), () => json([
-      pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(401, { project_id: FORK_ID }), pipeline(6),
+      pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(6),
     ]));
     const { props, name } = await setup(fake);
+    expect((await details(name, props)).source.project).toMatchObject({ path: `project-${FORK_ID}` });
     const listed = await session<GitLabPipelineSummary[]>(name, props,
       { method: "getMergeRequest", args: ["133"] }, { method: "listPipelines", args: [], drain: true });
-    expect(listed.map(row => row.project?.path ?? null)).toEqual(["someone/fork", "someone/fork", "someone/fork", null]);
-    expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(1);
+    expect(listed.map(row => row.project?.path ?? null)).toEqual([`project-${FORK_ID}`, `project-${FORK_ID}`, null]);
+    expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(0);
   });
 
   it("reads a head a queued push moved as notStarted without asking GitLab about CI", async () => {
@@ -925,6 +962,8 @@ describe("job logs", () => {
 
 describe("what CI reads disclose to observers", () => {
   const PROJECT_SUBRESOURCE = `project/${P}`;
+  /** What every CI read reports: the project, its CI/CD, and the repository its commits are in. */
+  const CI_DATA = [PROJECT_SUBRESOURCE, `project/${P}/feature/builds`, `project/${P}/feature/repository`];
   const TRACE = `project/${P}/jobTrace/8`;
   /** The job whose test report pipeline 6's reports come from. */
   const ARTIFACTS = `project/${P}/jobArtifacts/66004`;
@@ -949,8 +988,7 @@ describe("what CI reads disclose to observers", () => {
     const before = (await hooks().queueLog(name)).subresources.length;
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    // The pipeline each open reads is reported by the project alone; the reports after it.
-    return (await hooks().queueLog(name)).subresources.slice(before).filter(ids => ids?.[0] !== PROJECT_SUBRESOURCE);
+    return (await hooks().queueLog(name)).subresources.slice(before);
   }
 
   it("reports a job log by its job, leaving the observers and the admission bar to the Workshop", async () => {
@@ -962,7 +1000,7 @@ describe("what CI reads disclose to observers", () => {
     await session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" });
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual(["Read pipeline #6", "Read log of job `rubocop` #8, lines 1–1"]);
-    expect(log.subresources).toEqual([[PROJECT_SUBRESOURCE], [TRACE]]);
+    expect(log.subresources).toEqual([CI_DATA, [...CI_DATA, TRACE]]);
     expect(log.excluded).toEqual([undefined, undefined]);
     await observer(name, props, "reporter2");
   });
@@ -975,7 +1013,7 @@ describe("what CI reads disclose to observers", () => {
       const { props, name } = await setup(fake, { reporter: 20 });
       const reported = await readTestReports(name, props);
       expect(reported.length).toBeGreaterThanOrEqual(2);
-      expect(reported).toEqual(reported.map(() => [ARTIFACTS]));
+      expect(reported).toEqual(reported.map(() => [...CI_DATA, ARTIFACTS]));
       await observer(name, props, "reporter");
     });
 
@@ -987,28 +1025,24 @@ describe("what CI reads disclose to observers", () => {
 
   describe("after CI data an earlier version marked", () => {
     // Those versions marked the binding when it read job logs or test reports, and held observers
-    // to a role for the marks; they now need only the baseline membership.
-    it.each(["ci-logs", "ci-test-reports"])("admits any member for %s", async set => {
+    // to a role for the marks; they now need only the baseline: GitLab showing them the project.
+    it.each(["ci-logs", "ci-test-reports"])("admits any reader of the project for %s", async set => {
       const { props, name } = await setup(gateFake(), { reporter: 20 });
       await hooks().startOnEarlierStorage(name, props, { [`observedSet:${set}`]: "observed" });
       await observer(name, props, "reporter");
     });
 
     it.each([["the pinned id", false], ["the project its path names now", true]] as const)(
-      "needs Reporter on %s as well", async (_, pathMoved) => {
+      "needs %s to be shown them as well", async (_, pathMoved) => {
         // The marked reads followed the path, which may since name another project than the one
-        // the binding has pinned since: a membership of either alone does not show the observer may
-        // see what was read.
+        // the binding has pinned since: seeing either alone does not show the observer may see
+        // what was read.
         const fake = gateFake();
         const { props, name } = await setup(fake, { reporter: 20 });
         await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed", projectId: PROJECT_ID });
-        const address = pathMoved ? String(PROJECT_ID + 1000) : P;
-        if (pathMoved) {
-          fake.on("GET", new RegExp(`^/api/v4/projects/${PATH}$`), () =>
-            json({ ...fx.projectResponse.data, id: Number(address), path_with_namespace: PROJECT }));
-        }
-        // Here the Reporter is no member.
-        fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), () => json([]));
+        // Here GitLab hides the project from the Reporter, by its path or by the pinned id.
+        fake.on("GET", new RegExp(`^/api/v4/projects/${pathMoved ? PATH : P}$`), () =>
+          json({ message: "404 Project Not Found" }, { status: 404 }));
         await expect(observer(name, props, "reporter")).rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
       });
   });
@@ -1020,15 +1054,15 @@ describe("what CI reads disclose to observers", () => {
     await hooks().startOnEarlierStorage(name, props, { cachesByProjectId: null, observerRoster: "legacy", cacheGeneration: 1 });
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, TRACE]);
     expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).toMatchObject({ total: 3363 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
     // And still after a restart.
     await hooks().restart(name);
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, TRACE]);
   });
 });

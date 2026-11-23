@@ -461,6 +461,11 @@ export type GitLabIssueSummary = GitLabIssuableSummary & {
   state: GitLabIssueState;
   /** Thumbs-up reactions; what `sort: "popularity"` orders by. */
   upvotes: number;
+  /**
+   * Whether the issue is confidential: GitLab shows it only to its author, its assignees, and
+   * project members with at least the Planner role.
+   */
+  confidential: boolean;
 }
 
 /** Full issue details returned by `GitLabIssue.getDetails()`. */
@@ -873,6 +878,8 @@ export type GitLabDiscussionEntry = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Reporter role. */
+  internal: boolean;
 };
 
 /** The side of a merge request diff. */
@@ -952,6 +959,8 @@ export type GitLabDiffThreadComment = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Reporter role. */
+  internal: boolean;
 }
 
 /** A diff thread attached to one diff location. */

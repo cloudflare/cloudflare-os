@@ -59,8 +59,10 @@ import {
   getBaseUrl,
   getRedirectUri,
   canReadJobData,
+  canReadProjectFeature,
+  canReadProjectItem,
+  canSeeProject,
   gitlabInstance,
-  hasProjectMembership,
   instanceUrl,
   oauthApp,
   supportedResources,
@@ -72,7 +74,7 @@ import {
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
-import { parseProjectSubresource, projectSubresourceId } from "./project-subresources";
+import { featureSubresourceId, parseProjectSubresource, projectSubresourceId } from "./project-subresources";
 import {
   GitLabIssueConfiguratorUI,
   GitLabMergeRequestConfiguratorUI,
@@ -278,15 +280,15 @@ type ReconnectStage = { grant: GitLabGrant; startedUnder: string };
 /** The GitLab user behind a connection, kept against the generation it was read under. */
 type StoredUser = { id: number; generation: string };
 
-// How long an account reuses an answer about its access to a project, counted from when it started
-// asking GitLab. GitLab doesn't say when membership changes: a revoked membership is noticed only
-// once the answer that allowed it expires, while a denial is kept briefly so that a new membership
-// is noticed soon.
+// How long an account reuses an answer about its access to a project or an item in it, counted from
+// when it started asking GitLab. GitLab doesn't say when access changes: a revoked membership, a
+// project made private or a feature restricted is noticed only once the answer that allowed it
+// expires, while a denial is kept briefly so that new access is noticed soon.
 const PROJECT_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const PROJECT_ACCESS_DENIED_TTL_MS = 15_000;
 const projectAccessTtl = (allowed: boolean) => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS;
-/** How many jobs one access check asks GitLab about at once. */
-const JOB_CHECK_CONCURRENCY = 6;
+/** How many items one access check asks GitLab about at once. */
+const ITEM_CHECK_CONCURRENCY = 6;
 
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
@@ -522,12 +524,15 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
   }
 
   /**
-   * Whether this account can read each project subresource (see projectSubresourceId and
-   * jobSubresourceId), in order: whether its GitLab user's effective membership of the project
-   * reaches Reporter (see hasProjectMembership), and for a job's log or artifacts, whether GitLab
-   * lets it read them too (see canReadJobData). An allowed answer is reused for up to
+   * Whether this account can read each project subresource (see project-subresources.ts), in order:
+   * whether GitLab shows its GitLab user the project (see canSeeProject); for a project feature,
+   * whether it can read that feature's data (see canReadProjectFeature); and for an item, whether
+   * GitLab lets it read that too, once it may read the item's feature -- a job's log or artifacts
+   * under CI/CD (see canReadJobData), a confidential issue under issues, an internal note under
+   * issues or merge requests (see canReadProjectItem). An ID whose project or feature is denied is
+   * denied without asking further. An allowed answer is reused for up to
    * PROJECT_ACCESS_ALLOWED_TTL_MS, or a running job's for up to PROJECT_ACCESS_DENIED_TTL_MS like
-   * a denial, while this connection lasts; a job's ID reuses its project's membership answer.
+   * a denial, while this connection lasts; an item's ID reuses its project's and feature's answers.
    * Throws for an ID it can't check, or when access can't be determined, which is never reused,
    * including when the connection moved during the check: its answers may then be two GitLab
    * users' combined. GitLab's own error text is kept out of what it throws, which the Workshop logs
@@ -535,26 +540,51 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
-    const required = subresources.map(parseProjectSubresource);
-    // GitLab answers for one project's membership, or one job, per request, so each ID is cached
-    // on its own, and a later failure keeps what earlier requests learned. Each project's membership
-    // is asked once, first, then its jobs a few at a time: a test report can name hundreds.
+    const required = subresources.map(parseProjectSubresource).map(({ projectId, item }) => ({
+      projectId, item,
+      feature: item === undefined ? undefined
+        : item.kind === "feature" ? item.feature
+        : item.kind === "job" ? "builds" as const
+        : item.kind === "note" && item.noteable === "mergeRequest" ? "mergeRequests" as const
+        : "issues" as const,
+    }));
+    // GitLab answers for one project, feature or item per request, so each ID is cached on its own,
+    // and a later failure keeps what earlier requests learned. Each project is asked once, first,
+    // then each feature an ID needs, then the items a few at a time: a test report can name
+    // hundreds of jobs.
     const generation = this.#creds.connectionGeneration();
     try {
-      const members = new Map<number, boolean>();
+      const projects = new Map<number, boolean>();
       for (const { projectId } of required) {
-        if (members.has(projectId)) continue;
-        members.set(projectId, await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
-          () => hasProjectMembership(this.env, this, projectId)));
+        if (projects.has(projectId)) continue;
+        projects.set(projectId, await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
+          () => canSeeProject(this.env, this, projectId)));
       }
-      // A running job's log may yet become a debug trace, and its artifacts restricted, so an
-      // answer allowing it is kept no longer than a denial.
+      const features = new Map<string, boolean>();
+      for (const { projectId, feature } of required) {
+        if (feature === undefined || !projects.get(projectId)) continue;
+        const id = featureSubresourceId(projectId, feature);
+        if (features.has(id)) continue;
+        features.set(id, await this.#access.cached(id, projectAccessTtl,
+          () => canReadProjectFeature(this.env, this, projectId, feature)));
+      }
       const answers = await mapLimit(subresources.map((subresource, index) => ({ subresource, ...required[index] })),
-        JOB_CHECK_CONCURRENCY, async ({ subresource, projectId, job }) =>
-          members.get(projectId)! && (job === undefined || (await this.#access.cached(subresource,
+        ITEM_CHECK_CONCURRENCY, async ({ subresource, projectId, item, feature }) => {
+          if (!projects.get(projectId)) return false;
+          if (item === undefined || feature === undefined) return true;
+          if (!features.get(featureSubresourceId(projectId, feature))) return false;
+          if (item.kind === "feature") return true;
+          if (item.kind !== "job") {
+            return await this.#access.cached(subresource, projectAccessTtl,
+              () => canReadProjectItem(this.env, this, projectId, item));
+          }
+          // A running job's log may yet become a debug trace, and its artifacts restricted, so an
+          // answer allowing it is kept no longer than a denial.
+          return (await this.#access.cached(subresource,
             ({ readable, running }: JobDataAccess) =>
               readable && !running ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
-            () => canReadJobData(this.env, this, projectId, job.data, job.jobId))).readable));
+            () => canReadJobData(this.env, this, projectId, item.data, item.jobId))).readable;
+        });
       if (this.#creds.connectionGeneration() !== generation) {
         throw new Error("GitLab credentials changed while access was being checked. Please try again.");
       }
@@ -760,29 +790,40 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //
 // GitLab uses the "ACL check (single unit)" observer strategy: a binding is a single project (or
 // a single issue/MR, which inherits the project's ACL), so verifying an observer reduces to "can
-// this user see everything this binding can disclose?".
+// this user's own account read everything this binding disclosed?".
 //
-// Neither a 200 on the project nor its visibility answers that. GitLab's Guest role can see a
-// private project and its issues but "cannot push code or access repository", so it would be
-// admitted to cached git data it cannot read. And a *public* project can hold confidential issues
-// (Planner+ only) and internal notes (Reporter+ only), so a non-member admitted on visibility
-// alone would see confidential data the owner's token read -- GitHub has no counterpart, since a
-// public repo's issues and comments are all public. The probe therefore requires membership at
-// Reporter (20) or higher, whatever the visibility, and reads it from the user's *effective*
-// membership (`GET …/members/all?user_ids[]=`, inherited and shared-group access included) rather
-// than the project's `permissions` object, which reported `null` for group-inherited access on
-// every project it was checked against -- the access most members of most projects hold. The
-// same check, live: a non-member reads as `[]`, an inherited Developer as one row at 30.
-// Over-strictness (Planner's confidential-issue and 18.7+ private-repo read, custom roles, the
-// non-member collaborator on an open-source project) is accepted: erring toward denial never
-// leaks.
+// Neither the project's visibility nor a role answers that. GitLab's Guest can see a private
+// project and its issues but not its repository; a project can restrict or turn off its
+// repository, issues, merge requests or CI/CD one by one (its "project features"); and an internal
+// project is readable by every signed-in user, member or not. So reads report what they returned:
+// `project/<id>` for the project itself, checked by `GET /projects/:id` with the observer's own
+// token (see canSeeProject), and `project/<id>/feature/<feature>` for each project feature their
+// data came from (see featureSubresourceId), checked by listing that feature's data, one item a
+// page (see canReadProjectFeature): 2xx admits, a 403 or 404 denies. That admits the non-member
+// who can read an internal or public project, and the custom role or Planner who reaches what was
+// read, which an earlier check, Reporter membership read from `members/all`, denied; and since a
+// feature turned off returns no data, nothing read names it, so it never blocks anyone.
 //
-// CI job logs and test reports are asked about per job: a job run with `CI_DEBUG_TRACE` writes
-// every CI/CD variable, masked or not, into its log, which GitLab lets only Developers and above
-// read (https://docs.gitlab.com/ci/variables/variables_troubleshooting/), and a job can restrict
-// its artifacts, test reports included, to Developers or Maintainers
+// What GitLab guards item by item is named item by item, since no project-wide answer covers it:
+// a confidential issue (its author, assignees and Planners up -- a public project can hold them)
+// and an internal note (Planners up) are reported by every read that returned one (see
+// issueSubresourceId, noteSubresourceId), and the observer's token reads that issue or note, GitLab
+// answering 404 to an account it hides it from (a note's `readable_by?`). CI job logs and test
+// reports are asked about per job too: a job run with `CI_DEBUG_TRACE` writes every CI/CD variable,
+// masked or not, into its log, which GitLab lets only Developers and above read
+// (https://docs.gitlab.com/ci/variables/variables_troubleshooting/), and a job can restrict its
+// artifacts, test reports included, to Developers or Maintainers
 // (https://docs.gitlab.com/ci/yaml/#artifactsaccess). Neither setting is visible to the reading
 // account, so such reads name the job (see jobSubresourceId) and the observer's token asks GitLab.
+// Every item needs its project and its feature as well (CI/CD for a job; issues or merge requests
+// for an issue or note): GitLab answers 404 for a job the token can't see at all, which reads as
+// gone.
+//
+// Over-denial is accepted, since erring toward denial never leaks: a feature turned off after a
+// read named it denies everyone, and so does a confidential issue or internal note deleted or
+// hidden since it was read, since GitLab answers 404 for both and hides a banned user's issues
+// from every non-administrator (see canReadProjectItem). Releases before features were named
+// recorded `project/<id>` alone for every read, and are now checked as the project alone.
 
 type GitLabVerifierProps = {
   userObjectId: string;
@@ -794,14 +835,14 @@ type GitLabVerifierProps = {
  */
 export interface GitLabVerifierApi extends GatekeeperUserVerifier {
   /**
-   * Whether the user holds an effective membership of at least Reporter on the project with GitLab
-   * id `projectId`, asked now. A reconnect mid-probe answers false; the overseer asks again on the
-   * next open.
+   * Whether GitLab shows the user the project with GitLab id `projectId`, asked now (see
+   * canSeeProject). A reconnect mid-probe answers false; the overseer asks again on the next open.
    */
   hasProjectAccess(projectId: number): Promise<boolean>;
   /**
-   * As hasProjectAccess, for the project at `projectPath` now: the check made before reads were
-   * addressed by id, kept for what they read by path (see GitLabGatekeeperImpl.addObserver).
+   * As hasProjectAccess, for the project at `projectPath` now, following a redirect from a path it
+   * left: the check made before reads were addressed by id, kept for what they read by path (see
+   * GitLabGatekeeperImpl.addObserver).
    */
   hasProjectPathAccess(projectPath: string): Promise<boolean>;
   /**
@@ -816,11 +857,11 @@ export interface GitLabVerifierApi extends GatekeeperUserVerifier {
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
   async hasProjectAccess(projectId: number): Promise<boolean> {
-    return await hasProjectMembership(this.env, this.#account(), projectId);
+    return await canSeeProject(this.env, this.#account(), projectId);
   }
 
   async hasProjectPathAccess(projectPath: string): Promise<boolean> {
-    return await hasProjectMembership(this.env, this.#account(), projectPath);
+    return await canSeeProject(this.env, this.#account(), projectPath);
   }
 
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
