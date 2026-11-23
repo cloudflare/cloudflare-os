@@ -10,9 +10,10 @@
  * - Changes reads can't show -- a restart, a power-cycle, a PTZ move, the codes of new vouchers --
  *   make the agent await the decision, so it doesn't act on a world where they didn't happen.
  * - Restarting the gateway, changing a WiFi network, granting or ending guest access, creating or
- *   deleting vouchers, and changing a camera's microphone volume can never be auto-approved. The
- *   WiFi and guest changes change who can use the network; the gateway restart takes it down, and
- *   the microphone volume changes what a camera records.
+ *   deleting vouchers, showing a doorbell message, and changing a camera's microphone volume can
+ *   never be auto-approved. The WiFi and guest changes change who can use the network, and a
+ *   doorbell message is shown to whoever comes to the door; the gateway restart takes the network
+ *   down, and the microphone volume changes what a camera records.
  * - Requests that aren't safe to send twice (restarts, power-cycles, guest grants, voucher creation)
  *   are claimed before they're sent, so a crash mid-request is reported as an unknown outcome,
  *   never replayed.
@@ -70,13 +71,8 @@ export type UnifiActionPayloads = {
     submittedAt: number;
   };
   deleteVoucher: { siteId: string; voucherId: string; note: string };
-  cameraSettings: {
-    cameraId: string; cameraName: string;
-    change:
-      | { name: string }
-      | { statusLight: boolean }
-      | { doorbellMessage: UnifiDoorbellMessage; until: number | null };
-  };
+  cameraSettings: { cameraId: string; cameraName: string; change: { name: string } | { statusLight: boolean } };
+  doorbellMessage: { cameraId: string; cameraName: string; change: DoorbellChange };
   cameraMicVolume: { cameraId: string; cameraName: string; volume: number };
   cameraPtz: {
     cameraId: string; cameraName: string;
@@ -87,6 +83,9 @@ export type UnifiActionPayloads = {
     change: { forcedOn: boolean } | { mode: UnifiLightMode; activeWhen: "always" | "dark" } | { brightness: number };
   };
 };
+
+/** A doorbell message to show, and until when (epoch milliseconds), or the doorbell's default timeout. */
+export type DoorbellChange = { doorbellMessage: UnifiDoorbellMessage; until: number | null };
 
 /** A stored action. */
 export type UnifiAction = TaggedAction<UnifiActionPayloads>;
@@ -99,7 +98,8 @@ const KINDS = {
   updateWifi: { tag: "unifi.updateWifi", label: "Changing UniFi WiFi networks" },
   createVouchers: { tag: "unifi.createVouchers", label: "Creating UniFi guest WiFi vouchers" },
   deleteVoucher: { tag: "unifi.deleteVoucher", label: "Deleting UniFi guest WiFi vouchers" },
-  cameraSettings: { tag: "unifi.cameraSettings", label: "Renaming cameras and changing status lights and doorbell messages" },
+  cameraSettings: { tag: "unifi.cameraSettings", label: "Renaming UniFi cameras and switching their status lights" },
+  doorbellMessage: { tag: "unifi.doorbellMessage", label: "Showing messages on UniFi doorbells" },
   cameraMicVolume: { tag: "unifi.cameraMicVolume", label: "Changing UniFi camera microphone volume" },
   cameraPtz: { tag: "unifi.cameraPtz", label: "Moving UniFi PTZ cameras" },
   lightSettings: { tag: "unifi.lightSettings", label: "Controlling UniFi floodlights" },
@@ -111,8 +111,8 @@ const RESOURCE_ACTIONS: Record<UnifiResourceKind, readonly (keyof UnifiActionPay
   device: ["restartDevice", "restartGateway", "powerCyclePort"],
   wifi: ["updateWifi"],
   hotspot: ["guestAccess", "createVouchers", "deleteVoucher"],
-  protect: ["cameraSettings", "cameraMicVolume", "cameraPtz", "lightSettings"],
-  camera: ["cameraSettings", "cameraMicVolume", "cameraPtz"],
+  protect: ["cameraSettings", "doorbellMessage", "cameraMicVolume", "cameraPtz", "lightSettings"],
+  camera: ["cameraSettings", "doorbellMessage", "cameraMicVolume", "cameraPtz"],
   sensor: [],
   light: ["lightSettings"],
 };
@@ -213,8 +213,8 @@ export function voucherBody(request: VoucherRequest): VoucherBody {
   };
 }
 
-/** Protect's camera settings change for a camera-settings action. */
-export function cameraPatch(change: UnifiActionPayloads["cameraSettings"]["change"]): CameraPatch {
+/** Protect's camera settings change for a camera-settings or doorbell-message action. */
+export function cameraPatch(change: UnifiActionPayloads["cameraSettings"]["change"] | DoorbellChange): CameraPatch {
   if ("name" in change) return { name: change.name };
   if ("statusLight" in change) return { ledSettings: { isEnabled: change.statusLight } };
   const message = change.doorbellMessage;
@@ -362,18 +362,25 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
         return present(`Rename camera ${quoted(p.cameraName)}`, "Renames this camera.",
           b => b.inline("Camera", p.cameraName).inline("New name", change.name));
       }
-      if ("statusLight" in change) {
-        return present(`Turn ${change.statusLight ? "on" : "off"} the status light on ${quoted(p.cameraName)}`,
-          "Turns this camera's status light on or off.", b => b.inline("Camera", p.cameraName));
-      }
-      const message = change.doorbellMessage;
+      return present(`Turn ${change.statusLight ? "on" : "off"} the status light on ${quoted(p.cameraName)}`,
+        "Turns this camera's status light on or off.", b => b.inline("Camera", p.cameraName));
+    },
+    apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, cameraPatch(p.change)), { idempotent: true }),
+  },
+  doorbellMessage: {
+    kind: KINDS.doorbellMessage,
+    // Rule 2: shows text to whoever comes to the door, outside the binding's audience.
+    autoApprovable: false,
+    delivery: "continue-with-simulation",
+    describe: p => {
+      const { doorbellMessage: message, until } = p.change;
       return present(`Change the message on doorbell ${quoted(p.cameraName)}`,
-        "Shows a message on this doorbell's screen.",
+        "Shows a message on this doorbell's screen, to whoever comes to the door.",
         b => {
           b.inline("Doorbell", p.cameraName);
           b.inline("Message", message.kind === "text" ? message.text
             : message.kind === "doNotDisturb" ? "Do not disturb" : "Leave package at door");
-          b.inline("Until", change.until === null ? "the doorbell's default timeout" : new Date(change.until).toISOString());
+          b.inline("Until", until === null ? "the doorbell's default timeout" : new Date(until).toISOString());
         });
     },
     apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, cameraPatch(p.change)), { idempotent: true }),

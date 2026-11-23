@@ -168,6 +168,11 @@ export async function sendUnifiRequest(
   try {
     if (request.accept === "jpeg") {
       const bytes = await readBytesCapped(response, MAX_BODY_BYTES);
+      // A proxy in front of a console can answer 200 with an HTML page; only a JPEG is a snapshot.
+      const contentType = response.headers.get("Content-Type")?.split(";")[0]?.trim().toLowerCase();
+      if ((contentType !== undefined && contentType !== "image/jpeg") || !isJpeg(bytes)) {
+        return { ok: false, failure: { kind: "protocol", status: response.status, message: "UniFi returned something other than a JPEG image." } };
+      }
       return {
         ok: true, status: response.status,
         bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
@@ -187,6 +192,11 @@ export async function sendUnifiRequest(
       },
     };
   }
+}
+
+/** Whether bytes start with JPEG's start-of-image marker. */
+function isJpeg(bytes: Uint8Array): boolean {
+  return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 }
 
 /**

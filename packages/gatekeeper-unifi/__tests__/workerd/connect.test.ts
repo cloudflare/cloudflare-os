@@ -227,6 +227,21 @@ describe("reconnecting", () => {
     // Same console ID, so existing bindings keep working.
     expect(await account(accountId).identity()).toEqual(before);
   });
+
+  it("won't reconnect in place a connection whose console never said who it was", async () => {
+    // With no MAC address from the first connect, nothing proves a later console is the same one.
+    const { console } = installFake();
+    console.unavailable.add("/v1/nvrs").add("/v1/sites");
+    const accountId = await connectDirect();
+    expect(await account(accountId).identity()).toMatchObject({ macs: [] });
+    console.unavailable.clear();
+    const { url } = unwrap(await hooks().user(accountId, "reconnect")) as { url: string };
+    const refused = await postForm(new URL(url).pathname.replace("/gatekeeper/unifi", ""),
+      { mode: "direct", localApiKey: LOCAL_KEY });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("never confirmed which console it reaches");
+    expect((await hooks().callbackLog(accountId)).stages).toEqual([]);
+  });
 });
 
 describe("credential expiry", () => {

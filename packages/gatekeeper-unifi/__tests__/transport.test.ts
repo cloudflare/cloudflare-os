@@ -85,6 +85,15 @@ describe("sending", () => {
     expect(new Uint8Array(response.bytes)).toEqual(SNAPSHOT_BYTES);
     expect(response.contentType).toBe("image/jpeg");
   });
+
+  it("refuses a snapshot that isn't a JPEG, such as a proxy's error page", async () => {
+    const snapshot: UnifiRequest = { ...sites, target: { kind: "app", app: "protect", consoleId: HOME.hostId }, path: "/v1/cameras/x/snapshot", accept: "jpeg" };
+    const page = await sendUnifiRequest(DIRECT, snapshot, async () =>
+      new Response("<html>Sign in</html>", { status: 200, headers: { "Content-Type": "text/html" } }));
+    expect(page).toMatchObject({ ok: false, failure: { kind: "protocol" } });
+    const unlabelled = await sendUnifiRequest(DIRECT, snapshot, async () => new Response("not an image", { status: 200 }));
+    expect(unlabelled).toMatchObject({ ok: false, failure: { kind: "protocol" } });
+  });
 });
 
 describe("failures", () => {

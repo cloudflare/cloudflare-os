@@ -37,7 +37,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   async describe(): Promise<UnifiProtectInfo> {
     const { api, consoleName } = this.#ctx.shared;
     const [info, nvr, name] = await Promise.all([api.protectInfo(), api.getNvr(), consoleName()]);
-    await this.#ctx.observe("Read UniFi Protect", `Read the version and alarm state of UniFi Protect on ${md(name)}.`);
+    await this.#ctx.observe("Read UniFi Protect", `Read the version and alarm state of UniFi Protect on ${md(name)}.`,
+      [{ kind: "nvr", id: nvr.id }]);
     return { consoleId: api.consoleId, consoleName: name, protectVersion: info.applicationVersion, alarm: nvr.alarm };
   }
 
@@ -149,7 +150,7 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
       throw badRequest("`until` must be in the future.");
     }
     const camera = await this.#camera();
-    await this.#ctx.submit("cameraSettings", {
+    await this.#ctx.submit("doorbellMessage", {
       cameraId: this.#cameraId, cameraName: camera.name,
       change: { doorbellMessage: message, until: until === undefined ? null : until.valueOf() },
     });

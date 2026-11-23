@@ -71,14 +71,16 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
     const [site, info, consoleName] = await Promise.all([
       api.getSite(this.#siteId), api.networkInfo(), this.#ctx.shared.consoleName(),
     ]);
-    await this.#ctx.observe("Read a UniFi site", `Read the name of UniFi site ${md(site.name)} on ${md(consoleName)}.`);
+    await this.#ctx.observe("Read a UniFi site", `Read the name of UniFi site ${md(site.name)} on ${md(consoleName)}.`,
+      [{ kind: "site", siteId: this.#siteId }]);
     return { consoleId: api.consoleId, consoleName, siteId: site.id, name: site.name, networkVersion: info.applicationVersion };
   }
 
   async listDevices(): Promise<UnifiDevice[]> {
     const devices = await this.#ctx.shared.api.listDevices(this.#siteId);
     await this.#ctx.observe("List UniFi devices",
-      `Listed ${count(devices.length, "device")} on UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(devices.length, "device")} on UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "devices", siteId: this.#siteId }]);
     return devices;
   }
 
@@ -90,7 +92,8 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
     const clients = simulateClients(
       await this.#ctx.shared.api.listClients(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi clients",
-      `Listed ${count(clients.length, "client")} connected to UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(clients.length, "client")} connected to UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "clients", siteId: this.#siteId }]);
     return clients;
   }
 
@@ -99,14 +102,16 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
     const client = simulateClientDetails(
       await api.getClient(this.#siteId, requireId(clientId, "client")), this.#siteId, pending(), now());
     await this.#ctx.observe("Read a UniFi client",
-      `Read client ${md(client.name)} on UniFi site ${md(await this.#label.get())}.`);
+      `Read client ${md(client.name)} on UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "clients", siteId: this.#siteId }]);
     return client;
   }
 
   async listNetworks(): Promise<UnifiLanNetwork[]> {
     const networks = await this.#ctx.shared.api.listLanNetworks(this.#siteId);
     await this.#ctx.observe("List UniFi networks",
-      `Listed ${count(networks.length, "network")} on UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(networks.length, "network")} on UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "networks", siteId: this.#siteId }]);
     return networks;
   }
 
@@ -114,7 +119,8 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
     const networks = simulateWifiSummaries(
       await this.#ctx.shared.api.listWifiNetworks(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi WiFi networks",
-      `Listed ${count(networks.length, "WiFi network")} on UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(networks.length, "WiFi network")} on UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "wifiNetworks", siteId: this.#siteId }]);
     return networks;
   }
 
@@ -153,7 +159,8 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
 
   async describe(): Promise<UnifiDeviceDetails> {
     const device = await this.#ctx.shared.api.getDevice(this.#siteId, this.#deviceId);
-    await this.#ctx.observe("Read a UniFi device", `Read the details of UniFi device ${md(device.name)}.`);
+    await this.#ctx.observe("Read a UniFi device", `Read the details of UniFi device ${md(device.name)}.`,
+      [{ kind: "devices", siteId: this.#siteId }]);
     return device;
   }
 
@@ -162,7 +169,8 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
     const [statistics, device] = await Promise.all([
       api.getDeviceStatistics(this.#siteId, this.#deviceId), api.getDevice(this.#siteId, this.#deviceId),
     ]);
-    await this.#ctx.observe("Read UniFi device statistics", `Read the latest statistics of UniFi device ${md(device.name)}.`);
+    await this.#ctx.observe("Read UniFi device statistics", `Read the latest statistics of UniFi device ${md(device.name)}.`,
+      [{ kind: "devices", siteId: this.#siteId }]);
     return statistics;
   }
 
@@ -179,14 +187,22 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
     ]);
     const clients = simulateClients(all.filter(client => client.uplinkDeviceId === this.#deviceId), this.#siteId, pending());
     await this.#ctx.observe("List clients of a UniFi device",
-      `Listed ${count(clients.length, "client")} connected through UniFi device ${md(device.name)}.`);
+      `Listed ${count(clients.length, "client")} connected through UniFi device ${md(device.name)}.`,
+      [{ kind: "clients", siteId: this.#siteId }, { kind: "devices", siteId: this.#siteId }]);
     return clients;
   }
 
   async restart(): Promise<void> {
-    const device = await this.#ctx.shared.api.getDevice(this.#siteId, this.#deviceId);
+    const { api } = this.#ctx.shared;
+    const [device, gateway] = await Promise.all([
+      api.getDevice(this.#siteId, this.#deviceId), api.isGateway(this.#siteId, this.#deviceId),
+    ]);
+    if (gateway === null) {
+      throw badRequest(`UniFi didn't say what ${device.name} does, so it can't be told apart from the gateway, ` +
+        "whose restart takes the network down. Restart it in UniFi instead.");
+    }
     const payload = { siteId: this.#siteId, deviceId: this.#deviceId, deviceName: device.name, model: device.model };
-    await this.#ctx.submit(device.roles.includes("gateway") ? "restartGateway" : "restartDevice", payload);
+    await this.#ctx.submit(gateway ? "restartGateway" : "restartDevice", payload);
   }
 
   async powerCyclePort(portIndex: number): Promise<void> {
@@ -222,7 +238,8 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
   async describe(): Promise<UnifiWifiNetworkInfo> {
     const network = simulateWifiInfo(
       await this.#ctx.shared.api.getWifi(this.#siteId, this.#wifiNetworkId), this.#siteId, this.#ctx.shared.pending());
-    await this.#ctx.observe("Read a UniFi WiFi network", `Read the settings of WiFi network ${md(network.name)}.`);
+    await this.#ctx.observe("Read a UniFi WiFi network", `Read the settings of WiFi network ${md(network.name)}.`,
+      [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }]);
     return network;
   }
 
@@ -291,13 +308,15 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       (await api.listClients(this.#siteId, GUEST_FILTER)).filter(client => client.guest !== null),
       this.#siteId, pending());
     await this.#ctx.observe("List UniFi WiFi guests",
-      `Listed ${count(guests.length, "guest")} connected to the guest hotspot of UniFi site ${md(await this.#label.get())}.`);
+      `Listed ${count(guests.length, "guest")} connected to the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
+      [{ kind: "clients", siteId: this.#siteId }]);
     return guests;
   }
 
   async getGuest(clientId: string): Promise<UnifiClientDetails> {
     const guest = await this.#guest(clientId);
-    await this.#ctx.observe("Read a UniFi WiFi guest", `Read guest ${md(guest.name)}'s access to the guest hotspot.`);
+    await this.#ctx.observe("Read a UniFi WiFi guest", `Read guest ${md(guest.name)}'s access to the guest hotspot.`,
+      [{ kind: "clients", siteId: this.#siteId }]);
     return guest;
   }
 

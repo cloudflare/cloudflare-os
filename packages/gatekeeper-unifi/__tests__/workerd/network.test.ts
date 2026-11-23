@@ -22,25 +22,27 @@ function lastSubmitted(queue: { submitted: { actionId: number; description: Acti
 
 describe("every read is authorized before it returns", () => {
   const NETWORK = `console/${encodeURIComponent(HOME.hostId)}/app/network`;
-  // What each read reports: the application, unless it disclosed a password or voucher codes.
-  const reads: [string, Step, string][] = [
-    ["describe", { call: "describe" }, NETWORK],
-    ["listDevices", { call: "listDevices" }, NETWORK],
-    ["listClients", { call: "listClients" }, NETWORK],
-    ["getClient", { call: "getClient", args: [HOME.phoneId] }, NETWORK],
-    ["listNetworks", { call: "listNetworks" }, NETWORK],
-    ["listWifiNetworks", { call: "listWifiNetworks" }, NETWORK],
-    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }, NETWORK],
-    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" }, NETWORK],
-    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, NETWORK],
-    ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }, NETWORK],
-    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" },
-      `${NETWORK}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`],
-    ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, NETWORK],
-    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, NETWORK],
-    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, `${NETWORK}/vouchers/${HOME.siteId}`],
+  const ofSite = (part: string) => `${NETWORK}/${part}/${HOME.siteId}`;
+  const guestWifi = `${NETWORK}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`;
+  // What each read reports: the endpoints its data came from, so a role limited to other sites,
+  // or one that can't read passwords, isn't shown it.
+  const reads: [string, Step, string[]][] = [
+    ["describe", { call: "describe" }, [ofSite("site")]],
+    ["listDevices", { call: "listDevices" }, [ofSite("devices")]],
+    ["listClients", { call: "listClients" }, [ofSite("clients")]],
+    ["getClient", { call: "getClient", args: [HOME.phoneId] }, [ofSite("clients")]],
+    ["listNetworks", { call: "listNetworks" }, [ofSite("networks")]],
+    ["listWifiNetworks", { call: "listWifiNetworks" }, [ofSite("wifiNetworks")]],
+    ["device.describe", { via: [["getDevice", HOME.apId]], call: "describe" }, [ofSite("devices")]],
+    ["device.getStatistics", { via: [["getDevice", HOME.apId]], call: "getStatistics" }, [ofSite("devices")]],
+    ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, [ofSite("clients"), ofSite("devices")]],
+    ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }, [guestWifi]],
+    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" }, [guestWifi]],
+    ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, [ofSite("clients")]],
+    ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [ofSite("clients")]],
+    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers")]],
   ];
-  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresource) => {
+  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources) => {
     installFake();
     const accountId = await connectCloud();
     const site = binding(accountId, RESOURCES.site);
@@ -49,7 +51,7 @@ describe("every read is authorized before it returns", () => {
     const { observations, submitted } = await site.queue();
     expect(observations).toHaveLength(1);
     expect(observations[0]!.title).toMatch(/UniFi/);
-    expect(observations[0]!.subresources).toEqual([subresource]);
+    expect(observations[0]!.subresources).toEqual(subresources);
     expect(submitted).toEqual([]);
   });
 
@@ -109,6 +111,14 @@ describe("a site", () => {
 });
 
 describe("a device", () => {
+  it("won't restart a device the device list doesn't classify, since it might be the gateway", async () => {
+    const { console } = installFake();
+    delete console.network!.sites[0]!.devices.find(d => d.overview.id === HOME.apId)!.overview.features;
+    const ap = binding(await connectCloud(), RESOURCES.device(HOME.apId));
+    expect(await ap.failure("restart")).toMatch(/didn't say what Living Room AP does/);
+    expect((await ap.queue()).submitted).toEqual([]);
+  });
+
   it("restarts an access point only once approved, as an auto-approvable kind", async () => {
     const { console } = installFake();
     const ap = binding(await connectCloud(), RESOURCES.device(HOME.apId));
@@ -332,15 +342,18 @@ describe("pending actions survive a restart", () => {
 });
 
 describe("the binding", () => {
-  it("presents itself with the resource's name and a link into UniFi", async () => {
+  it("presents itself by its kind of resource, never UniFi's names, and links into UniFi", async () => {
+    // Every collaborator sees this, unchecked, so it names nothing a UniFi role might hide.
     installFake();
     const accountId = await connectCloud();
-    expect(await binding(accountId, RESOURCES.device(HOME.apId)).describe()).toMatchObject({
-      title: "Living Room AP", tsType: "UnifiNetworkDevice", suggestedBindingName: "UNIFI_DEVICE",
+    const ap = await binding(accountId, RESOURCES.device(HOME.apId)).describe();
+    expect(ap).toMatchObject({
+      title: "UniFi device", tsType: "UnifiNetworkDevice", suggestedBindingName: "UNIFI_DEVICE",
       url: `https://unifi.ui.com/consoles/${HOME.hostId}/network/default/dashboard`,
     });
+    expect(JSON.stringify(ap)).not.toContain("Living Room AP");
     expect(await binding(accountId, RESOURCES.hotspot).describe()).toMatchObject({
-      title: "Guest hotspot · Default", tsType: "UnifiHotspot",
+      title: "UniFi guest hotspot", tsType: "UnifiHotspot",
     });
   });
 

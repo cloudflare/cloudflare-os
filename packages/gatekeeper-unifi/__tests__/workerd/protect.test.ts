@@ -22,7 +22,7 @@ describe("every read is authorized before it returns", () => {
   const PROTECT = `console/${encodeURIComponent(HOME.hostId)}/app/protect`;
   // What each read reports: every Protect device it disclosed, or else the application.
   const reads: [string, Step, string[]][] = [
-    ["describe", { call: "describe" }, [PROTECT]],
+    ["describe", { call: "describe" }, [`${PROTECT}/nvr/${HOME.nvrId}`]],
     ["listCameras", { call: "listCameras" }, [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
     ["listSensors", { call: "listSensors" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
     ["listLights", { call: "listLights" }, [`${PROTECT}/light/${HOME.lightId}`]],
@@ -135,6 +135,8 @@ describe("a camera", () => {
     await doorbell.call("setDoorbellMessage", { kind: "text", text: " Back in 10 minutes " });
     const { actionId, description } = lastSubmitted(await doorbell.queue());
     expect(description.title).toBe("Change the message on doorbell “Front Door”");
+    // Shown to whoever comes to the door, so it never applies without a decision.
+    expect(description).toMatchObject({ autoApprovable: false, actionKind: { tag: "unifi.doorbellMessage" } });
     expect(JSON.stringify(description.fields)).toContain("the doorbell's default timeout");
     expect(await doorbell.call("describe")).toMatchObject({ doorbellDisplay: { kind: "text", text: "Back in 10 minutes", until: null } });
 
@@ -211,13 +213,15 @@ describe("a camera", () => {
     expect(console.writes()).toHaveLength(1);
   });
 
-  it("presents itself with the camera's name and a link into Protect", async () => {
+  it("presents itself as a camera, without the camera's name, and links into Protect", async () => {
     installFake();
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
-    expect(await doorbell.describe()).toMatchObject({
-      title: "Front Door", tsType: "UnifiCamera", suggestedBindingName: "UNIFI_CAMERA",
+    const described = await doorbell.describe();
+    expect(described).toMatchObject({
+      title: "UniFi camera", tsType: "UnifiCamera", suggestedBindingName: "UNIFI_CAMERA",
       url: `https://unifi.ui.com/consoles/${HOME.hostId}/protect/dashboard`,
     });
+    expect(JSON.stringify(described)).not.toContain("Front Door");
   });
 
   it("explains a camera that's gone", async () => {

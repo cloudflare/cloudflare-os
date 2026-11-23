@@ -149,15 +149,16 @@ describe("checking collaborators", () => {
     return { owner, sam, consoleId: await directConsoleId(owner) };
   }
 
-  it("admits a cloud collaborator to what their UniFi role covers, and nothing else", async () => {
+  it("admits nothing for a collaborator who only administers the console through the cloud", async () => {
+    // Site Manager says their role grants the application, but not which sites or cameras it
+    // covers, and the Cloud Connector won't let a console's administrator ask the console.
     const { unifi } = installFake();
-    addAdmin(unifi, ALEX_KEY, { "network.management": ["admin"] });
+    addAdmin(unifi, ALEX_KEY, { "network.management": ["admin"], "protect.management": ["admin"] });
     const owner = await connectCloud();
     const alex = await connectCloud(ALEX_KEY);
-    const site = binding(owner, RESOURCES.site);
-    expect(await verify(site, alex)).toEqual(ALLOWED);
-    const camera = binding(owner, RESOURCES.camera(HOME.doorbellId));
-    expect(await verify(camera, alex)).toEqual(DENIED);
+    expect(await verify(binding(owner, RESOURCES.site), alex)).toEqual(DENIED);
+    expect(await verify(binding(owner, RESOURCES.protect), alex)).toEqual(DENIED);
+    expect(await verify(binding(owner, RESOURCES.camera(HOME.doorbellId)), alex)).toEqual(DENIED);
   });
 
   it("refuses a collaborator whose UniFi account can't see the console", async () => {
@@ -169,16 +170,14 @@ describe("checking collaborators", () => {
     expect(await verify(site, sam)).toEqual(DENIED);
   });
 
-  it("admits a cloud administrator to the application on a console the owner connected directly, but to no one camera", async () => {
-    // Site Manager matches the console by MAC and says the role grants Protect, but not which
-    // cameras it covers, and the Cloud Connector won't let a console's administrator ask it.
-    const { unifi } = installFake();
-    addAdmin(unifi, ALEX_KEY, { "protect.management": ["viewer"] });
+  it("admits a collaborator who owns a console its owner connected directly, matching it by MAC", async () => {
+    const { unifi, console } = installFake();
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
     const owner = await connectDirect();
     const alex = await connectCloud(ALEX_KEY);
     const consoleId = await directConsoleId(owner);
     expect(await verify(binding(owner, { kind: "protect", consoleId }), alex)).toEqual(ALLOWED);
-    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), alex)).toEqual(DENIED);
+    expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), alex)).toEqual(ALLOWED);
   });
 
   it("admits a collaborator who owns the console, through the cloud, to each camera their key can open", async () => {
@@ -210,22 +209,23 @@ describe("checking collaborators", () => {
     unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/sites/${HOME.siteId}/wifi/broadcasts/${HOME.guestWifiId}`]]]);
     const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
     const app = appSubresource(site.props.resource);
-    expect(await verify(site, sam, [app])).toEqual(ALLOWED);
+    expect(await verify(site, sam)).toEqual(ALLOWED);
     expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`])).toEqual(DENIED);
     expect(await verify(site, sam, [`${app}/site/${HOME.siteId}/wifi/${HOME.homeWifiId}`])).toEqual(ALLOWED);
     expect(await verify(site, sam, [`${app}/vouchers/${HOME.siteId}`])).toEqual(ALLOWED);
   });
 
-  it("admits a cloud administrator to a site, but not to its passwords or voucher codes", async () => {
+  it("checks each kind of site data against what the collaborator's own key can read there", async () => {
     const { unifi } = installFake();
-    addAdmin(unifi, ALEX_KEY, { "network.management": ["admin"] });
-    const owner = await connectCloud();
-    const alex = await connectCloud(ALEX_KEY);
-    const site = binding(owner, RESOURCES.site);
-    const app = appSubresource(RESOURCES.site);
-    expect(await verify(site, alex, [app])).toEqual(ALLOWED);
-    expect(await verify(site, alex, [`${app}/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`])).toEqual(DENIED);
-    expect(await verify(site, alex, [`${app}/vouchers/${HOME.siteId}`])).toEqual(DENIED);
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, [`/v1/sites/${HOME.siteId}/clients`]]]);
+    const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
+    const app = appSubresource(site.props.resource);
+    expect(await verify(site, sam, [`${app}/devices/${HOME.siteId}`])).toEqual(ALLOWED);
+    expect(await verify(site, sam, [`${app}/clients/${HOME.siteId}`])).toEqual(DENIED);
+    // A site the collaborator's key doesn't list is one their role doesn't cover.
+    const elsewhere = binding(owner, { kind: "site", consoleId, siteId: "5f0ee1aa-0000-4000-8000-ffffffffffff" });
+    expect(await verify(elsewhere, sam)).toEqual(DENIED);
   });
 
   it("admits a direct collaborator at the owner's console URL, proving access with their own key", async () => {

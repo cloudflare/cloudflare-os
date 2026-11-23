@@ -15,7 +15,8 @@ import type { UnifiRequirement } from "./subresources";
 export interface UnifiVerifierApi extends GatekeeperUserVerifier {
   /**
    * Whether this connection can read each requirement, within `target.app` on the console `target`
-   * identifies. A direct connection vouches only for a binding read through its own console URL.
+   * identifies, by calling the endpoint each one's read calls with its own key. A direct connection
+   * vouches only for a binding read through its own console URL.
    * @returns One answer per requirement, false for no access; throws when a check itself failed.
    */
   canObserve(target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]>;

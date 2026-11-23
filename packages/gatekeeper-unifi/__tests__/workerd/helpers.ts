@@ -106,14 +106,18 @@ export function appSubresource(resource: UnifiResource): string {
   return `console/${encodeURIComponent(resource.consoleId)}/app/${resourceApp(resource.kind)}`;
 }
 
-/** What a binding's `describe()` reports: its Protect device, or else the application. */
+/** What reading a binding's main data reports, by the endpoint it comes from. */
 export function describeSubresource(resource: UnifiResource): string {
   const app = appSubresource(resource);
   switch (resource.kind) {
+    case "site": return `${app}/site/${resource.siteId}`;
+    case "device": return `${app}/devices/${resource.siteId}`;
+    case "wifi": return `${app}/site/${resource.siteId}/wifi/${resource.wifiNetworkId}`;
+    case "hotspot": return `${app}/clients/${resource.siteId}`;
+    case "protect": return `${app}/nvr/${HOME.nvrId}`;
     case "camera": return `${app}/camera/${resource.cameraId}`;
     case "sensor": return `${app}/sensor/${resource.sensorId}`;
     case "light": return `${app}/light/${resource.lightId}`;
-    default: return app;
   }
 }
 

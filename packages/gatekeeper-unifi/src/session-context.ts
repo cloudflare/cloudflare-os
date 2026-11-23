@@ -51,11 +51,11 @@ export class SessionContext implements Disposable {
 
   /**
    * Authorizes a read before its data is returned. Every read reaches this.
-   * @param requires What the read disclosed (see subresources.ts): the console's application unless
-   * it read a Protect device, a WiFi password or voucher codes. A listing of Protect devices that
-   * found none still shows what the application holds, so it requires the application.
+   * @param requires What the read disclosed, by the endpoint it came from (see subresources.ts). A
+   * listing of Protect devices that found none still shows what the application holds, so none
+   * stands for the application.
    */
-  async observe(title: string, description: string, requires: readonly UnifiRequirement[] = [APP]): Promise<void> {
+  async observe(title: string, description: string, requires: readonly UnifiRequirement[]): Promise<void> {
     const subresources = (requires.length ? requires : [APP]).map(this.shared.subresource);
     await this.#queue.authorizeObservation({ title, description, subresources });
   }

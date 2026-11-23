@@ -154,6 +154,18 @@ function deviceRoles(features: unknown): UnifiDeviceRole[] {
   return order.filter(role => roles.has(role));
 }
 
+/**
+ * Whether an entry of the device list is a gateway, or null when its `features` don't say what it
+ * does: missing, not a list of names, or naming no role this knows. Restarting a gateway takes the
+ * network down, so an unclassified device must not be taken for one that isn't.
+ */
+export function listedAsGateway(value: unknown): boolean | null {
+  const features = asObject(value, "device").features;
+  if (!Array.isArray(features)) return null;
+  const roles = deviceRoles(features);
+  return roles.length === 0 ? null : roles.includes("gateway");
+}
+
 /** Parses one device from `GET /v1/sites/{siteId}/devices`. */
 export function parseDevice(value: unknown): UnifiDevice {
   const o = asObject(value, "device");

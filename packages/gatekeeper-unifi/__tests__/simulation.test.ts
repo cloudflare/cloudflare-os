@@ -104,7 +104,7 @@ describe("cameras", () => {
       { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, cameraName: "Front Door", change: { name: "Porch" } } },
       { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", change: { statusLight: false } } },
       { kind: "cameraMicVolume", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", volume: 40 } },
-      { kind: "cameraSettings", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", change: { doorbellMessage: { kind: "doNotDisturb" }, until } } },
+      { kind: "doorbellMessage", payload: { cameraId: HOME.doorbellId, cameraName: "Porch", change: { doorbellMessage: { kind: "doNotDisturb" }, until } } },
     ));
     expect(result).toMatchObject({
       name: "Porch", statusLight: false, micVolume: 40, doorbellDisplay: { kind: "doNotDisturb", until: new Date(until) },

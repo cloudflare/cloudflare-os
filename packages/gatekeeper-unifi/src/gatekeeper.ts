@@ -2,8 +2,8 @@
  * The per-binding gatekeeper: a Durable Object facet of the workspace's overseer, one class for
  * every resource kind. It starts sessions over the bound resource, keeps the binding's action
  * journal, applies and rejects actions once the user decides, and checks collaborators against
- * what its reads report (observer strategies B and C): the console application, or the Protect
- * devices, WiFi password or voucher codes a read disclosed (see subresources.ts).
+ * what its reads report (observer strategies B and C): the site data, WiFi settings, voucher
+ * codes, NVR or Protect devices a read disclosed, by the endpoint it came from (see subresources.ts).
  */
 
 import { DurableObject, RpcStub } from "cloudflare:workers";
@@ -36,15 +36,15 @@ export type UnifiSession =
   | ProtectSession | CameraSession | SensorSession | LightSession;
 
 /** How each kind of binding presents itself in the Workshop. */
-const PRESENTATION: Record<UnifiResourceKind, { tsType: string; binding: string; fallbackTitle: string; snippet: string }> = {
-  site: { tsType: "UnifiNetworkSite", binding: "UNIFI_NETWORK_SITE", fallbackTitle: "UniFi site", snippet: "A UniFi Network site: devices, clients, WiFi, and guest hotspot." },
-  device: { tsType: "UnifiNetworkDevice", binding: "UNIFI_DEVICE", fallbackTitle: "UniFi device", snippet: "One UniFi gateway, switch, or access point." },
-  wifi: { tsType: "UnifiWifiNetwork", binding: "UNIFI_WIFI_NETWORK", fallbackTitle: "UniFi WiFi network", snippet: "One WiFi network's settings and password." },
-  hotspot: { tsType: "UnifiHotspot", binding: "UNIFI_HOTSPOT", fallbackTitle: "UniFi guest hotspot", snippet: "Guest vouchers and guest access, nothing else." },
-  protect: { tsType: "UnifiProtect", binding: "UNIFI_PROTECT", fallbackTitle: "UniFi Protect", snippet: "Cameras, doorbells, sensors, floodlights, and the alarm's state." },
-  camera: { tsType: "UnifiCamera", binding: "UNIFI_CAMERA", fallbackTitle: "UniFi camera", snippet: "One camera or doorbell: snapshots and settings." },
-  sensor: { tsType: "UnifiSensor", binding: "UNIFI_SENSOR", fallbackTitle: "UniFi sensor", snippet: "One sensor's readings." },
-  light: { tsType: "UnifiLight", binding: "UNIFI_LIGHT", fallbackTitle: "UniFi floodlight", snippet: "One floodlight: its state and settings." },
+const PRESENTATION: Record<UnifiResourceKind, { tsType: string; binding: string; title: string; snippet: string }> = {
+  site: { tsType: "UnifiNetworkSite", binding: "UNIFI_NETWORK_SITE", title: "UniFi site", snippet: "A UniFi Network site: devices, clients, WiFi, and guest hotspot." },
+  device: { tsType: "UnifiNetworkDevice", binding: "UNIFI_DEVICE", title: "UniFi device", snippet: "One UniFi gateway, switch, or access point." },
+  wifi: { tsType: "UnifiWifiNetwork", binding: "UNIFI_WIFI_NETWORK", title: "UniFi WiFi network", snippet: "One WiFi network's settings and password." },
+  hotspot: { tsType: "UnifiHotspot", binding: "UNIFI_HOTSPOT", title: "UniFi guest hotspot", snippet: "Guest vouchers and guest access, nothing else." },
+  protect: { tsType: "UnifiProtect", binding: "UNIFI_PROTECT", title: "UniFi Protect", snippet: "Cameras, doorbells, sensors, floodlights, and the alarm's state." },
+  camera: { tsType: "UnifiCamera", binding: "UNIFI_CAMERA", title: "UniFi camera", snippet: "One camera or doorbell: snapshots and settings." },
+  sensor: { tsType: "UnifiSensor", binding: "UNIFI_SENSOR", title: "UniFi sensor", snippet: "One sensor's readings." },
+  light: { tsType: "UnifiLight", binding: "UNIFI_LIGHT", title: "UniFi floodlight", snippet: "One floodlight: its state and settings." },
 };
 
 
@@ -65,15 +65,17 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
     return this.ctx.exports.UnifiAccount.get(this.ctx.exports.UnifiAccount.idFromString(this.ctx.props.accountId));
   }
 
+  /**
+   * The Workshop stores this and shows it to every collaborator without an observation check, so
+   * the title names the kind of resource, never what UniFi calls it: a camera's or site's name is
+   * for the authorized session reads.
+   */
   async describe(): Promise<ResourceDescription> {
     const { resource } = this.ctx.props;
     const presentation = PRESENTATION[resource.kind];
-    const [title, url] = await Promise.all([
-      this.#title().catch(() => presentation.fallbackTitle),
-      this.#uiUrl().catch(() => "https://unifi.ui.com"),
-    ]);
     return {
-      url, title, snippet: presentation.snippet,
+      url: await this.#uiUrl().catch(() => "https://unifi.ui.com"),
+      title: presentation.title, snippet: presentation.snippet,
       suggestedBindingName: presentation.binding, tsType: presentation.tsType,
     };
   }
@@ -157,21 +159,6 @@ export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProp
   async #consoleName(): Promise<string> {
     const consoles = await this.#account().listConsoles();
     return consoles.find(c => c.id === this.ctx.props.resource.consoleId)?.name ?? "the UniFi console";
-  }
-
-  async #title(): Promise<string> {
-    const resource = this.ctx.props.resource;
-    const api = this.#api;
-    switch (resource.kind) {
-      case "site": return (await api.getSite(resource.siteId)).name;
-      case "device": return (await api.getDevice(resource.siteId, resource.deviceId)).name;
-      case "wifi": return (await api.getWifi(resource.siteId, resource.wifiNetworkId)).name;
-      case "hotspot": return `Guest hotspot · ${(await api.getSite(resource.siteId)).name}`;
-      case "protect": return `UniFi Protect · ${await this.#consoleName()}`;
-      case "camera": return (await api.getCamera(resource.cameraId)).name;
-      case "sensor": return (await api.getSensor(resource.sensorId)).name;
-      case "light": return (await api.getLight(resource.lightId)).name;
-    }
   }
 
   async #uiUrl(): Promise<string> {

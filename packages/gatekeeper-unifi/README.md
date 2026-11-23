@@ -83,13 +83,16 @@ Every read is recorded as an observation. Every change waits for approval:
 | Change a WiFi network's name, password, visibility, or whether it's on | Never | Continues; reads show the change |
 | Create guest vouchers | Never | Waits for the decision, since codes exist only once created |
 | Delete a voucher | Never | Continues; reads show the change |
-| Rename a camera, switch its status light, or show a doorbell message | Yes | Continues; reads show the change |
+| Rename a camera, or switch its status light | Yes | Continues; reads show the change |
+| Show a message on a doorbell | Never | Continues; reads show the change |
 | Set a camera's microphone volume | Never | Continues; reads show the change |
 | Move a PTZ camera to a preset, or start or stop a patrol | Yes | Waits for the decision |
 | Force a floodlight on, or change its mode or brightness | Yes | Continues; reads show the change |
 
 Changes to WiFi and guest access are never auto-approvable because they change who can use the
-network. An approval never shows a WiFi password or voucher code that still works, since action
+network, and a doorbell message isn't because it's shown to whoever comes to the door. A device
+the device list doesn't classify can't be restarted, since it can't be told apart from the
+gateway. An approval never shows a WiFi password or voucher code that still works, since action
 history is visible to every collaborator: a new password is described as changing, and a voucher
 by its note and ID.
 
@@ -102,15 +105,18 @@ it can echo what a request carried; errors are described by their status.
 
 ## Observers
 
-Strategies B and C (`docs/observers.md`): every read reports what it disclosed, and the Workshop
-shows it only to a collaborator whose own UniFi connection can read all of it.
+Strategies B and C (`docs/observers.md`): every read reports the data it disclosed, named by the
+UniFi endpoint it came from, and the Workshop shows it only to a collaborator whose own key can
+read all of it there. UniFi roles differ in what they can see: a Network role can be limited to
+some sites, a Protect role to some cameras, and not every role may read WiFi passwords.
 
-- General data reports the console's application, `console/<consoleId>/app/<network|protect>`.
-- A read of Protect devices reports each one it showed, `…/app/protect/camera/<id>` (or `sensor`,
-  `light`), since a Protect role can limit a viewer to some of them. A listing that found none
-  reports the application.
-- A WiFi password reports `…/app/network/site/<siteId>/wifi/<wifiNetworkId>`, and voucher codes
-  `…/app/network/vouchers/<siteId>`, since not every role that can see a site may read them.
+All IDs start `console/<consoleId>/app/<network|protect>`. Then:
+
+- Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
+  `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists; and
+  `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, password included.
+- Protect: `/nvr/<id>` for the alarm, and `/camera/<id>`, `/sensor/<id>` or `/light/<id>` for each
+  device a read showed. A listing that found none reports the application alone.
 
 Checks:
 
@@ -118,14 +124,15 @@ Checks:
   at the same console URL. What a direct connection knows about its console came from whatever
   answered at the URL its owner typed, so it can't vouch for a console reached any other way: a
   server the collaborator runs could claim any MAC address. It then calls, with its own key, the
-  endpoint each requirement's read calls (the application's info, the camera, the WiFi network's
-  settings, the voucher list), so whatever its role is refused there is refused here.
+  endpoint each requirement names, and for a site's details also needs the site in its own site
+  list.
 - A collaborator's cloud connection needs Site Manager to list the console, matched by host ID or
-  by MAC address, with a role that grants the application. That alone passes the application.
-  Anything narrower is checked as for a direct connection, through the Cloud Connector, which
-  reaches only consoles the collaborator owns. A collaborator who only administers the console
-  passes nothing narrower, since Site Manager doesn't say which cameras a role covers or whether
-  it may read passwords.
+  by MAC address, and is then checked the same way through the Cloud Connector, which reaches only
+  consoles the collaborator owns. A collaborator who only administers the console passes nothing,
+  since nothing can show what their role may read.
+
+A binding's title names only its kind of resource ("UniFi camera"), never what UniFi calls it,
+since the Workshop shows binding titles to every collaborator unchecked.
 
 A check that can't be made (the console doesn't answer, or the binding owner's own connection no
 longer reaches it) refuses everyone rather than guessing.

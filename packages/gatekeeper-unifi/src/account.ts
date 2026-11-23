@@ -24,7 +24,7 @@ import { wifiPutBody } from "./actions";
 import { UnifiApi } from "./api";
 import type { ConnectInput, ConnectPageMode } from "./connect-form";
 import {
-  cloudConsoleSummary, listSiteManagerConsoles, probeDirectConsole, sameConsole,
+  cloudConsoleSummary, jsonOf, listSiteManagerConsoles, probeDirectConsole, sameConsole,
   type ConsoleSummary, type ObserveTarget, type UnifiSend,
 } from "./consoles";
 import { UnifiError, type UnifiFailure } from "./errors";
@@ -36,6 +36,7 @@ import { logger, VENDOR_ID, type UnifiEnv } from "./env";
 import { sendUnifiRequest, type UnifiApp, type UnifiCredentials, type UnifiRequest, type UnifiResponse } from "./transport";
 import type { UnifiWifiNetworkChanges } from "./network-types";
 import { probeFor, type UnifiRequirement } from "./subresources";
+import { asObject, parseNetworkPage } from "./parse";
 
 /** Who a connection belongs to, recorded when it connects. */
 export type UnifiIdentity =
@@ -247,14 +248,13 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
    * Whether this connection's account can read each requirement within an application on a
    * console, for observer verification.
    *
-   * Where this connection can call the console, it calls the endpoint each requirement's read calls
-   * (`probeFor`) with its own key, so a role limited to some cameras, or one that can't read WiFi
-   * passwords, is refused here as it would be there. A direct connection knows only what answered
-   * at the URL its owner chose, so it vouches for a binding read through that same URL alone. A
-   * cloud connection finds the console in Site Manager, which can't be forged, by host ID or MAC
-   * address; the Cloud Connector reaches only consoles the account owns. On a console it only
-   * administers, Site Manager's role says whether it may use the application at all, and nothing
-   * finer, so it passes the application and nothing narrower.
+   * It calls the endpoint each requirement's read calls (`probeFor`) with its own key, so whatever
+   * its role is refused there -- another site, a camera it isn't allowed, a WiFi password -- is
+   * refused here. A direct connection knows only what answered at the URL its owner chose, so it
+   * vouches for a binding read through that same URL alone. A cloud connection finds the console
+   * in Site Manager, which can't be forged, by host ID or MAC address, and calls it through the
+   * Cloud Connector, which reaches only consoles the account owns. On a console it only
+   * administers, nothing can show what its role may read, so it passes nothing.
    * @returns One answer per requirement, false for no access; throws for a failure that proves
    * nothing either way.
    */
@@ -284,13 +284,13 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     // A few at a time: each is a request on this connection's own budget for the console.
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
-        // Site Manager's role grants the application itself.
-        if (identity.mode === "cloud" && requirement.kind === "app") return true;
         if (consoleId === null) return false;
-        const probe = await this.#send({
-          target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(target.app, requirement),
-        }, GET_TTL_MS);
-        if (probe.ok) return true;
+        const { listsSite, ...request } = probeFor(target.app, requirement);
+        const probe = await this.#send({ target: { kind: "app", app: target.app, consoleId }, method: "GET", ...request }, GET_TTL_MS);
+        if (probe.ok) {
+          return listsSite === undefined ||
+            parseNetworkPage(jsonOf(probe), "site list").data.some(site => asObject(site, "site").id === listsSite);
+        }
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
@@ -459,9 +459,14 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const facts = await probeDirectConsole(request => sendUnifiRequest(credentials, request));
     if (existing?.identity.mode === "direct") {
       const before = existing.identity;
-      // A console that identified itself when it connected must do so again: bindings keep its ID,
-      // so an answer without MAC addresses would hand them to whatever now answers at the URL.
-      if (before.macs.length > 0 && !sameConsole(before.macs, facts.macs)) {
+      // Bindings keep the console's ID across a reconnect, so it must prove it's the same console,
+      // by MAC address, or they'd follow whatever now answers at the URL. One that never said who
+      // it was when it connected has nothing to compare against.
+      if (before.macs.length === 0) {
+        throw new ConnectRefusal("This connection never confirmed which console it reaches, so it can't be " +
+          "reconnected in place. Remove it and connect the console again.");
+      }
+      if (!sameConsole(before.macs, facts.macs)) {
         throw new ConnectRefusal(facts.macs.length === 0
           ? "Couldn't confirm that the address still reaches the same console. Try again in a moment."
           : "That address now reaches a different console. Reconnect to the original console.");

@@ -163,13 +163,13 @@ export function simulateCamera(camera: UnifiCameraInfo, pending: readonly Pendin
     if (action.kind === "cameraSettings" && action.payload.cameraId === camera.id) {
       const change = action.payload.change;
       if ("name" in change) result = { ...result, name: change.name };
-      else if ("statusLight" in change) result = result.statusLight === null ? result : { ...result, statusLight: change.statusLight };
-      else {
-        result = {
-          ...result,
-          doorbellDisplay: { ...change.doorbellMessage, until: change.until === null ? null : new Date(change.until) },
-        };
-      }
+      else result = result.statusLight === null ? result : { ...result, statusLight: change.statusLight };
+    } else if (action.kind === "doorbellMessage" && action.payload.cameraId === camera.id) {
+      const change = action.payload.change;
+      result = {
+        ...result,
+        doorbellDisplay: { ...change.doorbellMessage, until: change.until === null ? null : new Date(change.until) },
+      };
     } else if (action.kind === "cameraMicVolume" && action.payload.cameraId === camera.id) {
       result = result.micVolume === null ? result : { ...result, micVolume: action.payload.volume };
     }

@@ -12,7 +12,7 @@ import { UnifiError } from "./errors";
 import {
   asObject, parseCamera, parseClient, parseClientDetails, parseDevice, parseDeviceDetails,
   parseDeviceStatistics, parseLanNetwork, parseLight, parseNetworkInfo, parseNetworkPage, parseNvr,
-  parseProtectInfo, parseSensor, parseSite, parseVoucher, parseWifiInfo, parseWifiSummary,
+  parseProtectInfo, parseSensor, parseSite, parseVoucher, parseWifiInfo, parseWifiSummary, listedAsGateway,
   type NetworkSite, type ProtectNvr,
 } from "./parse";
 import { isValidId } from "./resources";
@@ -98,6 +98,14 @@ export class UnifiApi {
   /** A site's adopted devices. */
   async listDevices(siteId: string): Promise<UnifiDevice[]> {
     return (await this.#list("network", `/v1/sites/${id(siteId, "site")}/devices`, "device list")).map(parseDevice);
+  }
+
+  /** Whether a device is the site's gateway, from the device list; null when the list doesn't say. */
+  async isGateway(siteId: string, deviceId: string): Promise<boolean | null> {
+    const listed = (await this.#list("network", `/v1/sites/${id(siteId, "site")}/devices`, "device list"))
+      .find(device => asObject(device, "device").id === deviceId);
+    if (!listed) throw new UnifiError({ kind: "notFound", message: "That device isn't on this site." });
+    return listedAsGateway(listed);
   }
 
   /**
