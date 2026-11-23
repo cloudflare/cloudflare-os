@@ -9,6 +9,7 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
 export const DOC_MIME = "application/vnd.google-apps.document";
 export const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 export const SLIDES_MIME = "application/vnd.google-apps.presentation";
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 /** One file or folder. A capability that is a function is read when Drive is asked. */
 export type FakeDriveFile = {
@@ -62,6 +63,11 @@ export class DriveFiles implements ProviderFake {
         await held.released;
       }
       return this.#batch(ids);
+    }
+    // A folder binding's lookup of a shortcut to a file that is not its child: none is held here.
+    if (url.pathname === "/drive/v3/files" && url.searchParams.get("q")?.includes(SHORTCUT_MIME)) {
+      this.requests.push(`GET ${url.pathname}`);
+      return Response.json({ files: [] });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)$/.exec(url.pathname);
     if (!match) return undefined;
