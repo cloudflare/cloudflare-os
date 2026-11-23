@@ -265,6 +265,6 @@ it("hands a client the preview its connection's gatekeeper supplies, built from 
   const { entries: [write] } = await ws.listActions({ filter: "pending" });
   expect(write.description).toMatchObject({ previewOf: { id: "part", title: "Item part" } });
   expect(await gatekeeper.getPreviewUi("part")).toEqual({ modules: [
-    { path: "client.js", code: `export default {"item":"part"};\n` },
+    { path: "client.js", code: `export default { main() { document.body.textContent = "part"; } };\n` },
   ] });
 });

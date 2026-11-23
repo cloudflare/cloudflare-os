@@ -919,7 +919,8 @@ export class TestGatekeeper
 
   async getPreviewUi(previewOf?: string): Promise<{ path: string; code: string }[]> {
     if (previewOf !== undefined) {
-      return [{ path: "client.js", code: `export default ${JSON.stringify({ item: previewOf })};\n` }];
+      return [{ path: "client.js", code: `export default { main() { ` +
+        `document.body.textContent = ${JSON.stringify(previewOf)}; } };\n` }];
     }
     return [
       { path: "client.js", code: `import { text } from "./ui/text.js";\n` +

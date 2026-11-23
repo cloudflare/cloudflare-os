@@ -1292,11 +1292,13 @@ export interface Gatekeeper<Session> extends DurableObject {
   /**
    * Returns client-side code that draws this resource for a person, for describe().hasPreview:
    * its files as a gadget's file tree holds its UI. `client.js` is the entry, and the import rules
-   * of a gadget's UI apply.
+   * of a gadget's UI apply. Its default export's `main()` starts it, as `UiBundle.modules` says: a
+   * `client.js` with no default export, a gadget's legacy form, is refused, and one whose default
+   * export has no `main()` never starts.
    *
    * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
-   * server. It therefore holds no more than a gadget bound to this resource would, and its reads
-   * and actions go through the approval queue like any other.
+   * server, as `main()`'s first argument. It therefore holds no more than a gadget bound to this
+   * resource would, and its reads and actions go through the approval queue like any other.
    *
    * With `previewOf`, the ID of an `ActionDescription.previewOf`, returns the code that draws
    * that item instead, and throws for an ID that names nothing it can draw. That code runs with
