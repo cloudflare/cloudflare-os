@@ -37,7 +37,7 @@ describe("reading a git-backed collection's repo", () => {
     let commit = await fake.push("main", { "readme.md": "# Hi" });
 
     expect((await read(fake, commit)).result).toEqual({ commit, changed: false });
-    expect(fake.logRefs).toEqual(["refs/heads/main"]);
+    expect(fake.logRefs).toEqual(["main"]);
     expect(fake.treeReads).toEqual([]);
     expect(fake.disposed).toBe(1);
   });

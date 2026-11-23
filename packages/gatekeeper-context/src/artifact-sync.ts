@@ -106,8 +106,9 @@ async function readArtifactRepoDocumentsWithContext(
   store: ArtifactSyncStore,
 ): Promise<ArtifactRepoReadResult> {
   using repo = await artifacts.get(repoName);
-  // A full ref name, so a tag named like the branch can't stand in for it.
-  let [tip] = await repo.log({ ref: `refs/heads/${branch}`, limit: 1 });
+  // The bare branch name: Artifacts resolves a full ref name such as `refs/heads/main` to no commits,
+  // which would read as an emptied branch and delete every document.
+  let [tip] = await repo.log({ ref: branch, limit: 1 });
   if (!tip) {
     return currentCommit === ""
       ? { commit: "", changed: false }

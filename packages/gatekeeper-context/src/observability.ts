@@ -7,6 +7,7 @@ export type ContextObservabilityFields = {
   collectionId: string;
   commit: string;
   consecutiveFailures: number;
+  documentCount: number;
   filepath: string;
   invalidSkillManifestCount: number;
   invalidSkillManifests: Array<{ filepath: string; reason: string }>;
