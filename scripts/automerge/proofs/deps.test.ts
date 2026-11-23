@@ -5,7 +5,7 @@ import { assertNames } from "../assert-names.ts";
 import { asArray, asObject, asString, parseJson } from "../json.ts";
 import { DEPENDABOT_LOGIN } from "../producers.ts";
 import {
-  advisoriesFromOsv, evaluateDeps, lockfileNames, readLockfile, workspaceReasons,
+  advisoriesFromOsv, evaluateDeps, lockfileNames, readLockfile,
   type DepsInput, type PackageVersion,
 } from "./deps.ts";
 import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
@@ -31,6 +31,7 @@ function fixture(name: string): DepsInput {
   const published = asObject(data.published, "published");
   const minimumReleaseAgeMinutes = data.minimum_release_age_minutes;
   assert.ok(typeof minimumReleaseAgeMinutes === "number");
+  const workspace = data.workspace === undefined ? { base: "", head: "" } : asObject(data.workspace, "workspace");
   return {
     author: DEPENDABOT_LOGIN,
     headRef: "dependabot/npm_and_yarn/recorded",
@@ -51,6 +52,7 @@ function fixture(name: string): DepsInput {
       base: readLockfile(readFileSync(new URL(`${name}.base.lock.yaml`, dir), "utf8")),
       head: readLockfile(readFileSync(new URL(`${name}.head.lock.yaml`, dir), "utf8")),
     },
+    workspace: { base: asString(workspace.base, "workspace base"), head: asString(workspace.head, "workspace head") },
     now: new Date(asString(data.now, "now")),
   };
 }
@@ -94,9 +96,11 @@ describe("proof-deps on recorded Dependabot pull requests", () => {
   });
 
   it("fails a major bump (#629 node-html-parser 7 -> 9), in the manifest and in the lockfile", () => {
+    const importer = "importers/packages/gatekeeper-confluence/dependencies/node-html-parser";
     assertNames(reasons(fixture("pr629")), [
       "packages/gatekeeper-confluence/package.json",
-      "importers/packages/gatekeeper-confluence/dependencies/node-html-parser",
+      importer,
+      `${importer} specifier`,
       "node-html-parser@9.0.4",
     ]);
   });
@@ -126,8 +130,12 @@ describe("proof-deps on recorded Dependabot pull requests", () => {
     assert.deepEqual(evaluateDeps(input).details.age_hours, { "@cloudflare/workers-types@5.20260924.1": 10 });
   });
 
-  it("fails closed when the added version has no publish time from the registry", () => {
-    assertNames(reasons({ ...fixture("pr622"), published: {} }), ["@cloudflare/workers-types@5.20260924.1"]);
+  it("fails closed when the added version has no publish time from the registry, or one that is not a date and time", () => {
+    const key = "@cloudflare/workers-types@5.20260924.1";
+    const answers: Record<string, string>[] = [{}, { [key]: "2000" }, { [key]: "last week" }, { [key]: "" }];
+    for (const published of answers) {
+      assertNames(reasons({ ...fixture("pr622"), published }), [key], JSON.stringify(published));
+    }
   });
 
   it("fails closed when the added and the removed version were not checked against OSV", () => {
@@ -196,7 +204,7 @@ describe("lockfile rule: what a version resolves to", () => {
       lockfiles: { base: readLockfile(withPackage(recorded("pr622.base.lock.yaml"), kept)), head: readLockfile(head) },
     };
     assert.equal(tampered.lockfiles.head.problems.length, 1);
-    assertNames(reasons(tampered), ["pnpm-lock.yaml", "terser@5.49.2"]);
+    assertNames(reasons(tampered), ["# managed by pnpm", "pnpm-lock.yaml", "terser@5.49.2"]);
   });
 
   it("fails a column-0 line that is not a section, and a resolution not on one line", () => {
@@ -236,6 +244,141 @@ describe("lockfile rule: what a version resolves to", () => {
       "{}",
     ]) {
       assertNames(reasons(withResolution(written)), [key]);
+    }
+  });
+});
+
+// A lockfile as pnpm writes one: two peer variants of foo@1.0.0 lock bar at different versions.
+const VARIANTS = [
+  "lockfileVersion: '9.0'",
+  "",
+  "importers:",
+  "",
+  "  .:",
+  "    dependencies:",
+  "      foo:",
+  "        specifier: ^1.0.0",
+  "        version: 1.0.0(react@18.0.0)",
+  "",
+  "packages:",
+  "",
+  "  bar@1.0.0:",
+  "    resolution: {integrity: sha512-AAAA}",
+  "",
+  "  bar@2.0.0:",
+  "    resolution: {integrity: sha512-BBBB}",
+  "",
+  "  foo@1.0.0:",
+  "    resolution: {integrity: sha512-CCCC}",
+  "    peerDependencies:",
+  "      react: '*'",
+  "    deprecated: |-",
+  "      Use bar. If you configured foo by hand,",
+  "         # see the notes: https://example.com/foo",
+  "",
+  "snapshots:",
+  "",
+  "  bar@1.0.0: {}",
+  "",
+  "  bar@2.0.0: {}",
+  "",
+  "  foo@1.0.0(react@17.0.0):",
+  "    dependencies:",
+  "      bar: 2.0.0",
+  "",
+  "  foo@1.0.0(react@18.0.0):",
+  "    dependencies:",
+  "      bar: 1.0.0",
+  "    transitivePeerDependencies:",
+  "      - supports-color",
+  "",
+].join("\n");
+
+/** A Dependabot pull request that changes only the lockfile, from `base` to `head`. */
+function relocked(base: string, head: string, hunks: Hunk[] = []): DepsInput {
+  return {
+    ...fixture("pr622"),
+    files: [{ path: "pnpm-lock.yaml", status: "modified", binary: false, modeChanged: false, hunks }],
+    lockfiles: { base: readLockfile(base), head: readLockfile(head) },
+    advisories: { "bar@1.0.0": [], "bar@2.0.0": [] },
+  };
+}
+
+/** `VARIANTS` with `from` replaced by `to`. */
+function variantsWith(from: string, to: string): string {
+  const changed = VARIANTS.replace(from, to);
+  assert.notEqual(changed, VARIANTS, from);
+  return changed;
+}
+
+/** `VARIANTS` with the importer's specifier for foo changed. */
+function respecified(specifier: string): DepsInput {
+  return relocked(VARIANTS, variantsWith("specifier: ^1.0.0", `specifier: ${specifier}`));
+}
+
+describe("lockfile rule: every line is one the rules read", () => {
+  it("takes a lockfile as pnpm writes it", () => {
+    assert.deepEqual(readLockfile(VARIANTS).problems, []);
+    assert.deepEqual(reasons(relocked(VARIANTS, VARIANTS)), []);
+  });
+
+  // Each of these is YAML for a dependency or a pin that the line reader would not see.
+  it("fails a dependency or a pin written as pnpm does not write it", () => {
+    for (const [from, to] of [
+      ["    dependencies:\n      bar: 1.0.0\n", "    dependencies: {bar: 2.0.0}\n"],
+      ["    dependencies:\n      bar: 1.0.0\n", "        bar: 2.0.0\n"],
+      ["      bar: 1.0.0\n", '      "bar": 2.0.0\n'],
+      ["      - supports-color\n", "      supports-color\n"],
+      ["      foo:\n        specifier: ^1.0.0\n        version: 1.0.0(react@18.0.0)\n", "      foo: {specifier: ^1.0.0, version: 2.0.0}\n"],
+    ]) {
+      assert.notDeepEqual(readLockfile(variantsWith(from, to)).problems, [], to);
+    }
+  });
+
+  it("fails a field changed in a package or snapshot entry that keeps its version", () => {
+    const built = variantsWith("{integrity: sha512-CCCC}\n", "{integrity: sha512-CCCC}\n    requiresBuild: true\n");
+    assertNames(reasons(relocked(VARIANTS, built)), ["foo@1.0.0"]);
+    const optional = variantsWith("  bar@2.0.0: {}\n", "  bar@2.0.0:\n    optional: true\n");
+    assertNames(reasons(relocked(VARIANTS, optional)), ["bar@2.0.0"]);
+  });
+
+  // git names a hunk after the key above its first line, so a key added inside the hunk starts a
+  // section the hunk is not named for.
+  it("fails a top-level key added inside a packages or snapshots hunk", () => {
+    const hunk = { section: "snapshots:", removed: [], added: ["overrides:", "    lodash: 4.17.21"] };
+    assertNames(reasons(relocked(VARIANTS, VARIANTS, [hunk])), ["overrides:"]);
+  });
+
+  it("fails one peer variant's dependency moved to a version another variant already locks", () => {
+    const moved = variantsWith("      bar: 1.0.0\n", "      bar: 2.0.0\n");
+    assertNames(reasons(relocked(VARIANTS, moved)), ["snapshots/foo@1.0.0/dependencies/bar"]);
+  });
+
+  it("takes a new peer variant that locks what another variant already locks as no move", () => {
+    const grown = `${VARIANTS}\n  foo@1.0.0(react@19.0.0):\n    dependencies:\n      bar: 1.0.0\n`;
+    const outcome = evaluateDeps(relocked(VARIANTS, grown));
+    assert.deepEqual([outcome.holds, outcome.details.moved_to], [true, []], JSON.stringify(outcome.details));
+  });
+
+  it("fails an importer's specifier changed to anything but a minor or patch move of its range", () => {
+    assert.deepEqual(reasons(respecified("^1.1.0")), []);
+    for (const specifier of ["file:../foo", "^2.0.0", "~1.0.0"]) {
+      assertNames(reasons(respecified(specifier)), ["importers/./dependencies/foo"], specifier);
+    }
+  });
+});
+
+describe("advisoriesFromOsv", () => {
+  const entries = [{ name: "a", version: "1.0.0" }];
+
+  it("reads an empty result as no advisory and a listed advisory by its id", () => {
+    assert.deepEqual(advisoriesFromOsv(entries, { results: [{}] }), { "a@1.0.0": [] });
+    assert.deepEqual(advisoriesFromOsv(entries, { results: [{ vulns: [{ id: "GHSA-x", modified: "2026-11-02T00:00:00Z" }] }] }), { "a@1.0.0": ["GHSA-x"] });
+  });
+
+  it("throws on a response that does not answer every query with a whole advisory list", () => {
+    for (const results of [[], [{}, {}], [{ error: { code: 429 } }], [{ vulns: "none" }], [{ vulns: [{}] }], [{ next_page_token: "t" }], ["none"]]) {
+      assert.throws(() => advisoriesFromOsv(entries, { results }), JSON.stringify(results));
     }
   });
 });
@@ -366,9 +509,21 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
 });
 
 describe("pnpm-workspace.yaml rule", () => {
-  it("rejects edits outside the catalog (38bd5821b added overrides and minimumReleaseAge)", () => {
-    const [file] = parseDiff(readFileSync(new URL("./testdata/deps/workspace-38bd5821b.diff", import.meta.url), "utf8"));
-    assertNames(workspaceReasons(file.hunks), ["overrides:"]);
+  const input = fixture("pr622");
+  const WORKSPACE = "packages:\n  - packages/*\ncatalog:\n  zod: ^4.6.7\n'overrides':\n  lodash: 4.17.20\n";
+  const between = (base: string, head: string) => reasons({ ...input, workspace: { base, head } });
+
+  it("fails a change outside the catalog, under a quoted key that git's hunk header does not name", () => {
+    const { base, head } = input.workspace;
+    assertNames(between(base, head.replace("minimumReleaseAge: 1440", "minimumReleaseAge: 1")), ["pnpm-workspace.yaml"]);
+    assertNames(between(WORKSPACE, WORKSPACE.replace("4.17.20", "4.17.21")), ["pnpm-workspace.yaml"]);
+    assert.deepEqual(between(WORKSPACE, WORKSPACE.replace("^4.6.7", "^4.7.0")), []);
+  });
+
+  it("fails a catalog entry moved across a major version or to another range operator", () => {
+    for (const range of ["^5.0.0", "~4.6.8", "4.6.8"]) {
+      assertNames(between(WORKSPACE, WORKSPACE.replace("^4.6.7", range)), ["catalog zod"], range);
+    }
   });
 });
 

@@ -34,8 +34,10 @@ switched on in `automerge.json`:
     `pnpm-workspace.yaml`, and fails when any other file changes.
   - For a maintainer, `proof-tests`, on a pull request that changes only test files vitest runs
     (`*.test.*` and `*.spec.*`) in one package. It holds when those tests still kill every mutant
-    of the source they import that the base's version of them killed. It does not apply when any
-    other file changes: source, a helper, a fixture or a document.
+    of the source they import that the base's version of them killed. Test files that are all new
+    have no base version to compare with, and hold when the mutation run with them completes. It
+    does not apply when any other file changes (source, a helper, a fixture or a document) or
+    when the pull request only deletes test files.
 - **Rung 2, scored.** A maintainer wrote it, it is low risk, and both reviewers' verdicts are full
   reviews of this head with no P0 or P1 finding and no `NEEDS-A-PERSON`, name models from different
   providers, and give scores whose lower one is at least `threshold`. Medium and high risk never

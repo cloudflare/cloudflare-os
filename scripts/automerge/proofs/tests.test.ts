@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { FileDiff } from "./diff.ts";
-import { asObject, parseJson, type JsonObject } from "../json.ts";
+import { asArray, asObject, parseJson, type JsonObject } from "../json.ts";
 import {
   budgetMinutes, DEFAULT_BUDGET_MINUTES, evaluateKills, killedMutants, narrowedConfig, OverBudget,
   planScope, runBounded, selfImportPath, sourceGraph,
@@ -21,6 +21,11 @@ const report = (name: string): JsonObject =>
   asObject(parseJson(readFileSync(new URL(`./testdata/tests/error-reporting-${name}.json`, import.meta.url), "utf8")), name);
 
 const file = (path: string): FileDiff => ({ path, status: "modified", binary: false, modeChanged: false, hunks: [] });
+
+/** A Stryker report of one mutant. */
+function reportOf(mutant: JsonObject): JsonObject {
+  return { files: { "src/a.ts": { mutants: [mutant] } } };
+}
 
 describe("proof-tests verdict", () => {
   it("fails the weakened assertions: three mutants the base killed survive", () => {
@@ -45,10 +50,49 @@ describe("proof-tests verdict", () => {
     assert.equal(killed.size, 213);
   });
 
+  // A mutant is told from the next by where it is and what it puts there.
+  it("throws on a report that does not say where a mutant is or what it replaces", () => {
+    const mutant = { mutatorName: "ConditionalExpression", replacement: "true", status: "Killed" };
+    const place = { start: { line: 1, column: 1 }, end: { line: 1, column: 5 } };
+    assert.equal(killedMutants(reportOf({ ...mutant, location: place })).size, 1);
+    const unplaced: JsonObject[] = [
+      mutant,
+      { ...mutant, location: { start: {}, end: {} } },
+      { ...mutant, location: { ...place, end: { line: "1", column: 5 } } },
+      { ...mutant, location: place, replacement: 7 },
+    ];
+    for (const entry of unplaced) {
+      assert.throws(() => killedMutants(reportOf(entry)), JSON.stringify(entry));
+    }
+  });
+
   it("fails a run that made no mutants", () => {
-    const outcome = evaluateKills({ files: {} }, { files: {} }, {});
-    assert.equal(outcome.status, "ok");
-    assert.equal(outcome.holds, false);
+    for (const base of [{ files: {} }, undefined]) {
+      const outcome = evaluateKills(base, { files: {} }, {});
+      assert.deepEqual([outcome.status, outcome.holds], ["ok", false]);
+    }
+  });
+
+  // Source is the same on both sides, so a base run with other mutants did not mutate what the
+  // head run did, and its kills say nothing about the head's.
+  it("fails when the base run and the head run did not make the same mutants", () => {
+    assert.equal(evaluateKills({ files: {} }, report("green-head"), {}).holds, false);
+    // The head run with a mutant no test killed found somewhere else, and with one more.
+    const head = report("green-head");
+    const files = asObject(head.files, "files");
+    const [path] = Object.keys(files);
+    const entry = asObject(files[path], path);
+    const mutants = asArray(entry.mutants, "mutants");
+    const survivor = mutants.findIndex((mutant) => asObject(mutant, "mutant").status === "Survived");
+    const elsewhere = { ...asObject(mutants[survivor], "mutant"), location: { start: { line: 9999, column: 1 }, end: { line: 9999, column: 2 } } };
+    for (const other of [mutants.with(survivor, elsewhere), [...mutants, elsewhere]]) {
+      const run = { ...head, files: { ...files, [path]: { ...entry, mutants: other } } };
+      assert.equal(evaluateKills(report("green-base"), run, {}).holds, false, `${other.length} mutants`);
+    }
+  });
+
+  it("holds for new test files, which have no base run to compare with", () => {
+    assert.equal(evaluateKills(undefined, report("green-head"), {}).holds, true);
   });
 });
 
@@ -93,6 +137,15 @@ describe("proof-tests scope", () => {
     assert.ok("outOfScope" in planScope([file("packages/a/x.test.ts"), file("packages/b/y.test.ts")]));
     assert.ok("outOfScope" in planScope([file("scripts/automerge/proofs/tests.test.ts")]));
     assert.ok("outOfScope" in planScope([file(".agents/skills/write-gatekeeper/__tests__/a.test.ts")]));
+  });
+
+  // With no test file left at head there is nothing to run, and every vitest config would list
+  // all of none of them.
+  it("does not apply when every changed test file is deleted", () => {
+    const kept = file("packages/error-reporting/src/index.test.ts");
+    const deleted: FileDiff = { ...file("packages/error-reporting/src/old.test.ts"), status: "deleted" };
+    assert.ok("outOfScope" in planScope([deleted]));
+    assert.ok(!("outOfScope" in planScope([kept, deleted])));
   });
 
   // The test imports an index that defines identity() and re-exports double() from double.ts, so

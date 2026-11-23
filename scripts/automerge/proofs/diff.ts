@@ -1,8 +1,9 @@
 // Reads a pull request's diff: `git diff -U0` (the exact command is `DIFF_ARGS`) and its parser.
 // With no context lines, each hunk is one contiguous run of changed lines, and git's default hunk
-// header names the last line above it that starts at column 0. For YAML that is the top-level key
-// the hunk sits under, which is how the lockfile and workspace rules tell `packages:` from
-// `importers:`.
+// header names the last line above it that starts with a letter, `_` or `$`. The lockfile rule
+// reads that as the top-level key the hunk sits under, to tell `packages:` from `importers:`. It
+// may because readLockfile fails a lockfile with any other line at column 0, and the rule fails a
+// hunk that adds or removes one.
 
 import { git } from "../git.ts";
 
@@ -14,7 +15,7 @@ const DIFF_ARGS = [
 
 /** One run of changed lines. */
 export interface Hunk {
-  /** The column-0 line git printed after the `@@` header, or "" when there was none. */
+  /** The line git printed after the `@@` header, or "" when there was none. */
   section: string;
   removed: string[];
   added: string[];

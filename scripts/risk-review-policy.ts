@@ -351,7 +351,8 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
 /**
  * Whether `head` differs from `base` only in the values of existing catalog entries: the same
  * lines outside `catalog:`/`catalogs:`, and inside them the same keys in the same order. A new or
- * removed entry is a new dependency, not a version bump.
+ * removed entry is a new dependency, not a version bump. Any other line that starts at column 0,
+ * a comment aside, is another top-level key, however YAML lets it be quoted, and ends the catalog.
  */
 export function isCatalogVersionBump(base: string, head: string): boolean {
   const before = base.split("\n");
@@ -361,8 +362,7 @@ export function isCatalogVersionBump(base: string, head: string): boolean {
   for (const [index, line] of before.entries()) {
     const other = after[index];
     if (other === undefined) return false;
-    const topLevel = /^([A-Za-z][\w-]*):/.exec(line);
-    if (topLevel) inCatalog = topLevel[1] === "catalog" || topLevel[1] === "catalogs";
+    if (/^[^\s#]/.test(line)) inCatalog = /^catalogs?:\s*(#.*)?$/.test(line);
     if (line === other) continue;
     if (!inCatalog) return false;
     const entry = catalogEntry(line);

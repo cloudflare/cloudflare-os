@@ -2,9 +2,9 @@
 
 // preview-smoke: the pull request's workers answer on their two public paths.
 //
-//   GET /             the router serves the frontend (200, HTML)
+//   GET /             the router serves the frontend (200, an HTML document)
 //   GET /api/version  the router reaches the backend over its service binding, and the backend's
-//                     module loads (200, JSON with a `version` field)
+//                     module loads (200, JSON with a `version` string that is not blank)
 //
 // Builds and runs the workers on this machine (scripts/run-local.ts: `wrangler dev` over every
 // worker, in workerd) and smokes http://localhost:LOCAL_PORT. Needs no secret and deploys nothing,
@@ -31,17 +31,22 @@ const LOCAL_READY_MINUTES = 15;
 /** How long one request, body included, may take before the smoke is status `error`. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
+/** How an HTML document starts, the frontend's `index.html` among them. */
+const HTML_DOCUMENT = /^\s*<(?:!doctype html|html)[\s>]/i;
+
 /** Judges the answers to `GET /` and `GET /api/version`. */
 export function evaluateSmoke(url: string, root: Answer, version: Answer): Outcome {
   const reasons: string[] = [];
   if (root.status !== 200 || !root.contentType.startsWith("text/html")) {
     reasons.push(`GET / answered ${root.status} ${root.contentType}`);
+  } else if (!HTML_DOCUMENT.test(root.body)) {
+    reasons.push("GET / answered 200 without an HTML document");
   }
   let backend = "";
   if (version.status === 200) {
     const body = parseJson(version.body);
     const reported = isObject(body) ? body.version : undefined;
-    if (typeof reported === "string" && reported !== "") backend = reported;
+    if (typeof reported === "string" && reported.trim() !== "") backend = reported;
     else reasons.push("GET /api/version answered 200 without a version");
   } else {
     reasons.push(`GET /api/version answered ${version.status}`);
