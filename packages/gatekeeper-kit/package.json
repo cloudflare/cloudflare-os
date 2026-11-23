@@ -38,7 +38,8 @@
     "./serial-queue": "./src/serial-queue.ts",
     "./simulation": "./src/simulation.ts",
     "./single-flight": "./src/single-flight.ts",
-    "./subresource-ids": "./src/subresource-ids.ts"
+    "./subresource-ids": "./src/subresource-ids.ts",
+    "./test-support": "./src/test-support.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
