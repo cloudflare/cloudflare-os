@@ -181,6 +181,20 @@ describe('PendingChangesTray approval', () => {
     expect(calls).toEqual(['retry:1'])
   })
 
+  it('marks no request as blocked on a failure in another chat or outside any', async () => {
+    const error = { message: 'Quota exceeded.', retryable: true }
+    await render({
+      groups: [group([
+        { ...request(1), chatId: 7, applyError: error },
+        request(2, { origin: 'elsewhere' }),
+        { ...request(3), chatId: 7 },
+      ])],
+      actions: branch([]),
+    })
+    await openGroup()
+    expect(document.body.textContent?.match(/Blocked/g)).toHaveLength(1)
+  })
+
   it('offers no Retry for a failure that cannot be retried', async () => {
     const failed = { ...request(1), applyError: { message: 'Gone.', retryable: false } }
     await render({ groups: [group([failed])], actions: branch([]) })

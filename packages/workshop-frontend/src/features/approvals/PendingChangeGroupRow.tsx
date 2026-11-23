@@ -4,8 +4,8 @@ import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
 import { ReviewRequest } from './ReviewRequest'
 import {
-  describeGroupSize, isFromElsewhere, needsReview, OUTCOME_UNKNOWN_COPY, type PendingChange,
-  type PendingChangeGroup,
+  branchChatId, describeGroupSize, isFromElsewhere, needsReview, OUTCOME_UNKNOWN_COPY,
+  type PendingChange, type PendingChangeGroup,
 } from './pendingChangeGroups'
 
 /** What the tray can do with one request, once the user drills into it. */
@@ -108,10 +108,12 @@ export const PendingChangeGroupRow = ({
               request can carry a whole JSON document. */}
           <div className="max-h-[min(18rem,20vh)] overflow-y-auto">
             {group.entries.map(entry => {
-              // An apply stops at the first request that fails, and what is queued behind it on
-              // the connection waits for it to be retried or denied.
-              const failedBefore =
-                group.entries.find(other => other.id < entry.id && other.applyError)
+              // An apply stops at the first request that fails, and what its own chat, or no
+              // chat, queued behind it on the connection waits for it to be retried or denied.
+              // Whether another's requests wait too depends on the order the connection applies
+              // them in, which is not known here.
+              const failedBefore = group.entries.find(other => other.id < entry.id &&
+                other.applyError && branchChatId(other) === branchChatId(entry))
               return (
                 <div key={entry.id}>
                   {!allElsewhere && entry.origin === 'elsewhere' && (
