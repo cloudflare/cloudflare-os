@@ -2,11 +2,12 @@
 // deployment admin who connected it. An ordinary connect-flow gatekeeper, with one difference:
 // what an account stores is no provider token but a capability the Workshop hands it when a
 // deployment admin connects it (GatekeeperConnectOptions.adminApi, an AdminApiGrant). Every
-// session opens the Admin API from that grant, and the Workshop checks and records each call
-// where it lands.
+// session, and every approved action, opens the Admin API from that grant, and the Workshop
+// checks and records each call where it lands.
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   CONNECT_TIMEOUT_MS, INITIATION_NONCE_LIFETIME_MS, NONCE_BYTES, generateNonce, isLiveNonce,
   type TimedNonce,
@@ -16,7 +17,9 @@ import {
 } from "@gadgets/gatekeeper-kit/connect-pages";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { createLogger } from "@gadgets/observability/logger";
-import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError } from "@gadgets/workshop-shared/api";
+import {
+  ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminApi,
+} from "@gadgets/workshop-shared/api";
 import type {
   AccountDescription,
   ActionKind,
@@ -39,6 +42,7 @@ import type {
 import {
   resourceTypeUrlPattern, stripTrailingSlashes, workerVersionTag,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { ADMIN_ACTIONS, type AdminActions } from "./actions.js";
 import type { DeploymentConfiguratorRpc } from "./configurator/deployment-configurator-types";
 import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js";
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
@@ -138,8 +142,9 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       tagline: "Give a deployment admin's agents this deployment's Admin API",
       description: "For deployment admins only. Agents in a workspace you add it to use this " +
         "deployment's Admin API as you: they read what admins read (users, workspaces, " +
-        "settings, the audit log and audited views of workspaces and accounts), and nothing " +
-        "else. What they read is restricted: a collaborator opens such a workspace only with " +
+        "settings, the audit log and audited views of workspaces and accounts), and what " +
+        "they would write to a workspace or ask of the admins is queued as an action for a " +
+        "person to approve. What they read is restricted: a collaborator opens such a workspace only with " +
         "an account of their own, so only as a deployment admin. Removing this account ends " +
         "every connection made with it.",
     };
@@ -183,6 +188,12 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 }
 
+/**
+ * The grant as the Workshop mints it: over the Admin API. gatekeeper.ts cannot name AdminApi (see
+ * AdminApiGrant), so this Worker says here what it was handed.
+ */
+type AdminGrant = Fetcher<AdminApiGrant<AdminApi & RpcTarget>>;
+
 // ---------------------------------------------------------------------------
 // UserAccount: one deployment admin's connection. Its credential is the AdminApiGrant the
 // Workshop handed over at connect, stored as it is; nothing is cached beside it.
@@ -220,8 +231,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /** The Admin API grant the Workshop handed over when this account was connected. */
-  async adminApi(): Promise<Fetcher<AdminApiGrant>> {
-    const grant = this.ctx.storage.kv.get<Fetcher<AdminApiGrant>>("grant");
+  async adminApi(): Promise<AdminGrant> {
+    const grant = this.ctx.storage.kv.get<AdminGrant>("grant");
     if (grant === undefined || !this.#connected()) throw new Error(NOT_CONNECTED);
     return grant;
   }
@@ -411,6 +422,9 @@ export class AdminGatekeeperImpl
   };
   /** What every forwarded call asks first (see UserAccount.requireAdmin()). */
   readonly #requireAdmin = () => accountOf(this.ctx).requireAdmin();
+  readonly #journal = new ActionJournal<TaggedAction<AdminActions>>(
+      this.ctx.storage.kv, { namespace: "admin" });
+  readonly #actions = ADMIN_ACTIONS.bind(this.#journal, { openAdminApi: this.#openAdminApi });
 
   /** Describes the admin binding. */
   async describe(): Promise<ResourceDescription> {
@@ -428,14 +442,14 @@ export class AdminGatekeeperImpl
     return TYPES;
   }
 
-  /** Reports no action kinds. */
+  /** The action kinds a rule may apply: none, since both kinds wait for a person. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return this.#actions.autoApprovableKinds();
   }
 
   /**
    * Opens a session that forwards each Admin API read to the Admin API it opens, on first use,
-   * from the account's grant.
+   * from the account's grant, and queues the rest as actions.
    *
    * Skips validation: capnweb-validate builds a method's return validator from its declared
    * type, and the session's type declares none of its Admin API methods (they are defined from
@@ -448,7 +462,7 @@ export class AdminGatekeeperImpl
   async startSession(queue: RpcStub<ApprovalQueue>): Promise<AdminSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
     return new (forwarderFor(ADMIN_SCHEMA.entry))(
-        queue.dup(), this.#requireAdmin, { open: this.#openAdminApi });
+        queue.dup(), this.#requireAdmin, { open: this.#openAdminApi, actions: this.#actions });
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -489,24 +503,20 @@ export class AdminGatekeeperImpl
   /** Compatibility only; there is no observer state to remove. */
   async removeObserver(_id: string): Promise<void> {}
 
-  /** Refuses: this gatekeeper queues no action. */
-  applyAction(action: number, _cache: RpcStub<GitCache>): Promise<void> {
-    throw noAction(action);
+  /** Applies an approved action: its one call on the Admin API, opened for it now. */
+  async applyAction(action: number, _cache: RpcStub<GitCache>): Promise<void> {
+    await this.#actions.apply(action);
   }
 
-  /** Refuses: this gatekeeper queues no action. */
-  rejectAction(action: number): Promise<void> {
-    throw noAction(action);
+  /** Withdraws an action: nothing was written or filed for it. */
+  async rejectAction(action: number): Promise<void> {
+    await this.#actions.reject(action);
   }
 
-  /** Refuses: this gatekeeper queues no action. */
+  /** Refuses: a write and a filed request cannot be taken back from here. */
   revertAction(
-    action: number,
+    _action: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
-    throw noAction(action);
+    throw new Error("The admin gatekeeper's actions cannot be reverted.");
   }
-}
-
-function noAction(action: number): Error {
-  return new Error(`The admin gatekeeper has no action ${action}.`);
 }

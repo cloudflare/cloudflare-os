@@ -10,9 +10,11 @@ import { describe, expect, it } from "vitest";
 import { ADMIN_AGENT_KINDS } from "../src/kinds.js";
 import { adminSchema } from "../src/subset.js";
 import {
-  ADMIN_SCHEMA, PREAMBLE, SERVICES, assertAdminSchema, generatedDeclarations, kindOf,
+  ADMIN_SCHEMA, PREAMBLE, QUEUED_DOC, SERVICES, assertAdminSchema, generatedDeclarations, kindOf,
+  queued,
 } from "../src/surface.js";
 import SURFACE_SOURCE from "../src/surface.ts?raw";
+import HAND_WRITTEN_TYPES from "../src/types.d.ts?raw";
 
 const ROOT = "AdminApi";
 const VIEW = "AdminWorkspaceView";
@@ -24,6 +26,7 @@ const WORKSHOP_SCHEMA = WORKSHOP_SCHEMA_JSON as unknown as Schema;
 const namesOfKind = (...kinds: string[]) =>
   Object.keys(ADMIN_AGENT_KINDS).filter((name) => kinds.includes(kindOf(name)!)).toSorted();
 const READS = namesOfKind("read");
+const ACTS = namesOfKind("act");
 const OMITTED = namesOfKind("omitted");
 
 const method = (schema: Schema, service: string, name: string): SchemaMethod =>
@@ -59,10 +62,21 @@ function member(declarations: string, service: string, name: string) {
   return { doc, signature: body[at]! };
 }
 
+/** The properties of the object shape `name` of ADMIN_SCHEMA. */
+const properties = (name: string) => {
+  const shape = ADMIN_SCHEMA.shapes[name]!;
+  return shape.kind === "object" ? shape.properties : {};
+};
+
+/** The literal values among the branches of `shape`, a union. */
+const literals = (shape: ApiShape | undefined) => shape?.kind === "union"
+    ? shape.branches.flatMap((branch) => branch.kind === "literal" ? [branch.value] : []) : [];
+
 describe("the schema", () => {
   it("gives a session exactly the methods the kind table does not omit", () => {
-    expect(SERVICES.get(ROOT)!.toSorted()).toEqual(READS);
+    expect(SERVICES.get(ROOT)!.toSorted()).toEqual([...READS, ...ACTS].toSorted());
     expect(READS.length).toBeGreaterThan(0);
+    expect(ACTS).toEqual(["requestContentAccess", "writeWorkspace"]);
   });
 
   it("holds the two views the binding opens, and no omitted method", () => {
@@ -104,7 +118,7 @@ describe("the schema's generation", () => {
     expect(whole.map((candidate) => candidate.name).toSorted())
         .toEqual(Object.keys(ADMIN_AGENT_KINDS).toSorted());
     expect(ADMIN_SCHEMA.services[ROOT]!.methods)
-        .toEqual(whole.filter((candidate) => READS.includes(candidate.name)));
+        .toEqual(whole.filter((candidate) => !OMITTED.includes(candidate.name)));
     for (const view of [VIEW, USER_VIEW]) {
       expect(ADMIN_SCHEMA.services[view]).toEqual(WORKSHOP_SCHEMA.services[view]);
     }
@@ -143,7 +157,7 @@ describe("the schema's generation", () => {
 
 describe("the declarations", () => {
   const declarations = generatedDeclarations();
-  const emitted = emitDeclarations(ADMIN_SCHEMA, { root: ROOT, header: PREAMBLE }).full;
+  const unqueued = emitDeclarations(ADMIN_SCHEMA, { root: ROOT, header: PREAMBLE }).full;
 
   it("start with the preamble", () => {
     const preamble = PREAMBLE.split("\n").map((line) => `// ${line}`.trimEnd()).join("\n");
@@ -160,14 +174,68 @@ describe("the declarations", () => {
         "the audit log itself leave no record there.");
   });
 
+  it("are followed by hand-written ones that name, to follow a write or a request, only what they declare", () => {
+    const recipe = HAND_WRITTEN_TYPES.replace(/\n \* /g, " ");
+    expect(recipe).toContain(
+        "read listAdminAudit({ kind: \"write\", workspace: <the workspace you named> }): its " +
+        "record's `via` is \"gatekeeper\". To follow a request, listContentAccessRequests() " +
+        "lists it, with the same `via`");
+
+    // Each name of that recipe, against the schema: a rename upstream fails here.
+    expect(SERVICES.get(ROOT)).toEqual(
+        expect.arrayContaining(["listAdminAudit", "listContentAccessRequests"]));
+    expect(method(ADMIN_SCHEMA, ROOT, "listAdminAudit").params.map((param) => param.type))
+        .toEqual([{ kind: "ref", name: "AdminAuditQuery" }]);
+    expect(literals(properties("AdminAuditQuery").kind)).toContain("write");
+    expect(properties("AdminAuditQuery").workspace).toBeDefined();
+    const via = { kind: "ref", name: "AdminVia" };
+    expect(properties("AdminWriteRecord").via).toEqual(via);
+    expect(properties("AdminContentRequest").via).toEqual(via);
+    expect(literals(ADMIN_SCHEMA.shapes.AdminVia)).toContain("gatekeeper");
+  });
+
+  it("declare each act method as resolving to nothing, saying first that it is queued", () => {
+    expect(QUEUED_DOC).toBe(
+        "Through the admin gatekeeper this call does not run: it queues an action, which runs " +
+        "once a member of the workspace approves it, and resolves to undefined. Until then no " +
+        "read shows what it will do.");
+    for (const name of ACTS) {
+      const declared = member(declarations, ROOT, name)!;
+      expect(declared.signature, name).toMatch(/\): Promise<void>;$/);
+      expect(declared.doc.startsWith(`${QUEUED_DOC}\n\n`), name).toBe(true);
+      expect(declared.doc.slice(QUEUED_DOC.length + 2), name).toBe(member(unqueued, ROOT, name)!.doc);
+    }
+    // The agent is not told of a result the call never hands it.
+    expect(member(declarations, ROOT, "requestContentAccess")!.signature)
+        .not.toContain("Promise<AdminContentRequest>");
+    expect(member(unqueued, ROOT, "requestContentAccess")!.signature)
+        .toContain("Promise<AdminContentRequest>");
+  });
+
   it("declare every read method, and every method of a view, as the schema has it", () => {
-    expect(declarations).toBe(emitted);
     for (const name of READS) {
-      expect(member(declarations, ROOT, name), name).toBeDefined();
+      expect(member(declarations, ROOT, name), name).toEqual(member(unqueued, ROOT, name));
+      expect(member(declarations, ROOT, name)!.doc, name).not.toContain(QUEUED_DOC);
     }
     for (const name of SERVICES.get(VIEW)!) {
-      expect(member(declarations, VIEW, name), name).toBeDefined();
+      expect(member(declarations, VIEW, name), name).toEqual(member(unqueued, VIEW, name));
     }
+  });
+
+  it("are built from a copy: queued() leaves the schema it is given as it was", () => {
+    const before = structuredClone(ADMIN_SCHEMA);
+    const copy = queued(ADMIN_SCHEMA);
+    expect(ADMIN_SCHEMA).toEqual(before);
+    expect(method(ADMIN_SCHEMA, ROOT, "requestContentAccess").returns)
+        .toEqual({ kind: "ref", name: "AdminContentRequest" });
+    for (const name of ACTS) {
+      expect(method(copy, ROOT, name).returns, name).toEqual({ kind: "void" });
+      expect(method(copy, ROOT, name).doc.startsWith(QUEUED_DOC), name).toBe(true);
+    }
+    for (const name of READS) {
+      expect(method(copy, ROOT, name), name).toEqual(method(ADMIN_SCHEMA, ROOT, name));
+    }
+    expect(copy.services[VIEW]).toEqual(ADMIN_SCHEMA.services[VIEW]);
   });
 
   it("declare no omitted method", () => {

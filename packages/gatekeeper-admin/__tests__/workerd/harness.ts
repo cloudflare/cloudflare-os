@@ -4,7 +4,7 @@
 import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import { RpcTarget, env } from "cloudflare:workers";
 import type {
-  AdminApiGrant, GatekeeperConnectCallback, ObservationDescription,
+  ActionDescription, AdminApiGrant, GatekeeperConnectCallback, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import handler, { type AdminGatekeeperImpl } from "../../src/admin.js";
 import { workshop, type Observer, type TestExports } from "./worker.js";
@@ -73,9 +73,13 @@ export function withFacet<T>(
   });
 }
 
-/** The approval queue of one session: it records each observation, and can refuse them. */
+/**
+ * The approval queue of one session: it records each observation and each submitted action, and
+ * can refuse observations.
+ */
 export class Queue extends RpcTarget {
   readonly observations: ObservationDescription[] = [];
+  readonly submitted: { action: number; description: ActionDescription }[] = [];
   refuseObservations = false;
   /** Runs while an observation waits to be authorized, as a collaborator's check would. */
   whileObserving: (() => Promise<void>) | undefined;
@@ -86,6 +90,11 @@ export class Queue extends RpcTarget {
     this.observations.push(description);
     await this.whileObserving?.();
     if (this.refuseObservations) throw new Error("The approval queue refused this observation.");
+  }
+
+  async submitAction(action: number, description: ActionDescription): Promise<void> {
+    workshop.log.push(`submit ${description.actionKind?.tag}`);
+    this.submitted.push({ action, description });
   }
 
   [Symbol.dispose](): void {

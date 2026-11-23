@@ -71,7 +71,8 @@ export type Recording = ReturnType<typeof recordingTarget>;
 export const workshop = {
   /** Who is a deployment admin now. */
   admins: new Set<string>(),
-  /** What the fakes saw, in order: "open <user>", "observe <title>" and "<service>.<method>". */
+  /** What the fakes saw, in order: "open <user>", "observe <title>", "submit <tag>" and
+   * "<service>.<method>". */
   log: [] as string[],
   /** Every Admin API a grant opened, and every view those opened, oldest first. */
   apis: [] as Recording[],

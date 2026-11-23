@@ -11,10 +11,14 @@
  *   - "read":    runs at once and returns its result. A view it returns (inspectWorkspace(),
  *                inspectUser()) answers every method of that view, each under the checks the view
  *                makes itself.
+ *   - "act":     never runs when called: it is queued as one of this gatekeeper's actions
+ *                (actions.ts) and runs only once that action is approved. A write to a workspace
+ *                is one, and so is a request for content access, which another admin must still
+ *                approve once it is filed.
  *   - "omitted": absent from the agent's declarations and from the sessions, so it cannot be
  *                called.
  */
-export type AdminAgentKind = "read" | "omitted";
+export type AdminAgentKind = "read" | "act" | "omitted";
 
 /**
  * The kind of every AdminApi method. THE one table: the "omitted" methods are left out of
@@ -23,22 +27,20 @@ export type AdminAgentKind = "read" | "omitted";
  * here (see the check in surface.ts). When in doubt, "omitted": a method an agent lacks can be
  * added, a call it made cannot be taken back.
  *
- * Omitted, by rule: every setter and every other method that changes a deployment setting or a
- * workspace; the gateway tests, which send requests the deployment pays for; checkForUpdates(),
+ * Omitted, by rule: every setter and every other method that changes a deployment setting; the
+ * gateway tests, which send requests the deployment pays for; checkForUpdates(),
  * which calls out and stores what it learns, and getUpdateStatus(), whose answer holds the link
  * that opens the deploy flow; isBlueprintFeatured(), which repairs the featured catalog's mirror
- * as it reads; asking for, approving or denying access to a workspace's content, and ending a
- * grant.
+ * as it reads; approving or denying a content access request and ending an admins' grant.
  */
 export const ADMIN_AGENT_KINDS = {
   // Reads.
   getSettings: "read",
   listUsers: "read", listWorkspaces: "read", inspectWorkspace: "read", inspectUser: "read",
   listAdminAudit: "read", getAdminAuditStats: "read",
-  // Content access: an agent reads the requests and changes nothing.
   listContentAccessRequests: "read", getContentAccessRequest: "read",
-  requestContentAccess: "omitted", approveContentAccess: "omitted",
-  denyContentAccess: "omitted", endWorkspaceGrant: "omitted",
+  // Actions of the gatekeeper.
+  writeWorkspace: "act", requestContentAccess: "act",
   // Omitted.
   getUpdateStatus: "omitted", isBlueprintFeatured: "omitted",
   setSignupsEnabled: "omitted", setUserSearchEnabled: "omitted",
@@ -57,5 +59,6 @@ export const ADMIN_AGENT_KINDS = {
   checkForUpdates: "omitted", setUpdateChecksEnabled: "omitted",
   setUpdateCheckIntervalMinutes: "omitted", setUpdateMinimumAgeHours: "omitted",
   setUpdateNoticeSnoozeHours: "omitted", setAdminWorkspaceAccess: "omitted",
-  setAdminAuditRetentionDays: "omitted", writeWorkspace: "omitted",
+  setAdminAuditRetentionDays: "omitted", approveContentAccess: "omitted",
+  denyContentAccess: "omitted", endWorkspaceGrant: "omitted",
 } as const satisfies Record<string, AdminAgentKind>;

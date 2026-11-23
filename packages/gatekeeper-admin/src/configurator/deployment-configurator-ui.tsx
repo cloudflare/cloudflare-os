@@ -23,7 +23,7 @@ export default {
     return <Section>
       <Field
         label="This deployment's Admin API"
-        description="Agents in this workspace, and the code of any gadget bound to this connection (a blueprint's included), can read, as you, what this deployment's admins can read: its settings, users and audit log, and the metadata of its workspaces and accounts, never their content. They cannot change anything. What they read is restricted data: a collaborator can open the workspace only with a Deployment admin account of their own, which only a deployment admin can connect. From the first read on, and for good, nothing in this workspace is applied without a person, and its web fetches reach only the hosts this deployment trusts.">
+        description="Agents in this workspace, and the code of any gadget bound to this connection (a blueprint's included), can read, as you, what this deployment's admins can read: its settings, users and audit log, and the metadata of its workspaces and accounts, and a workspace's content only while that workspace has a live grant. They can also ask to change a workspace, or to read one's content without its owner: each such request waits as a card in this workspace and runs, as you, only once a person approves it, and a request for content then needs another admin's approval too. What they read is restricted data: a collaborator can open the workspace only with a Deployment admin account of their own, which only a deployment admin can connect. From the first read on, and for good, nothing in this workspace is applied without a person, and its web fetches reach only the hosts this deployment trusts.">
       </Field>
     </Section>;
   },

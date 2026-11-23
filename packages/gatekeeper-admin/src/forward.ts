@@ -1,15 +1,19 @@
 // The sessions the admin binding opens, built from the Admin API's schema: one class per service,
 // with one method per method of that service, each a forward to the Admin API the session opened
-// from its account (or to a view that API returned). A session decides nothing: the Workshop
-// checks and records each call where it lands.
+// from its account (or to a view that API returned), except an "act" method, which is queued as
+// one of the facet's actions. A session decides nothing: the Workshop checks and records each
+// call where it lands.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { checkArguments } from "@gadgets/api-schema/check";
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
 import { GLOBAL_SUBRESOURCE_ID } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { createLogger } from "@gadgets/observability/logger";
+import type { AdminApi } from "@gadgets/workshop-shared/api";
 import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { ADMIN_SCHEMA, SERVICES } from "./surface.js";
+import { type BoundAdminActions, requestArgs, requestReason } from "./actions.js";
+import type { ADMIN_AGENT_KINDS } from "./kinds.js";
+import { ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
 
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
 // argument) are deployment admin data, kept in the workspace's activity and the audit log.
@@ -45,9 +49,38 @@ export type RequireAdmin = () => Promise<void>;
 
 /**
  * What a forwarder forwards to. The entry service takes `open` (its session opens the Admin API
- * on first use); every other service takes the `view` an Admin API call returned.
+ * on first use) and the facet's `actions`, which it queues its "act" calls through: a session
+ * made without them refuses those calls. Every other service takes the `view` an Admin API call
+ * returned, and never has actions.
  */
-export type ForwarderSource = { open: OpenAdminApi } | { view: Target };
+export type ForwarderSource =
+    { open: OpenAdminApi; actions?: BoundAdminActions } | { view: Target };
+
+type Kinds = typeof ADMIN_AGENT_KINDS;
+
+/** The AdminApi methods of kind "act". */
+type ActMethod = { [M in keyof Kinds]: Kinds[M] extends "act" ? M : never }[keyof Kinds];
+
+/**
+ * Queues the action of one "act" method of AdminApi, whose arguments fit the schema. It reads
+ * nothing and observes nothing: the card is made from the arguments alone, so queuing does not
+ * mark the workspace.
+ */
+type ActRoute<M extends ActMethod> = (
+  actions: BoundAdminActions, queue: RpcStub<ApprovalQueue>, ...args: Parameters<AdminApi[M]>
+) => Promise<unknown>;
+
+/**
+ * The route of each "act" method of AdminApi: which kind a call is queued as. It does not
+ * compile unless it routes exactly the methods ADMIN_AGENT_KINDS queues.
+ */
+const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
+  writeWorkspace: (actions, queue, workspaceId, action, args, reason) => actions.submit(
+      queue, "workspaceWriteRequest",
+      { workspaceId, action, args: requestArgs(action, args), reason: requestReason(reason) }),
+  requestContentAccess: (actions, queue, workspaceId, reason) => actions.submit(
+      queue, "contentAccessRequest", { workspaceId, reason: requestReason(reason) }),
+};
 
 /**
  * The class forwarderFor() returns. It owns what it is made with: the queue, and for a view the
@@ -137,6 +170,8 @@ class Forwarder extends RpcTarget {
   readonly #requireAdmin: RequireAdmin;
   /** What calls are forwarded to: a view's stub, or the Admin API the session opens. */
   readonly #target: Target | Opened;
+  /** What "act" calls are queued through, on a session of the entry service that was given it. */
+  readonly #actions: BoundAdminActions | undefined;
 
   constructor(
     service: string, queue: RpcStub<ApprovalQueue>, requireAdmin: RequireAdmin,
@@ -151,6 +186,7 @@ class Forwarder extends RpcTarget {
     this.#queue = queue;
     this.#requireAdmin = requireAdmin;
     this.#target = "open" in source ? new Opened(source.open) : source.view;
+    this.#actions = "open" in source ? source.actions : undefined;
   }
 
   /**
@@ -177,9 +213,10 @@ class Forwarder extends RpcTarget {
   }
 
   /**
-   * Checks the arguments and the account, then forwards the call: opened first, called second,
-   * observed third, and only then answered. A method the schema says returns a view answers with
-   * a forwarder over it, which checks and observes as this one does.
+   * Checks the arguments and the account, then queues an "act" call as its action and forwards
+   * any other: opened first, called second, observed third, and only then answered. A method the
+   * schema says returns a view answers with a forwarder over it, which checks and observes as
+   * this one does.
    */
   async #call(name: string, args: unknown[]): Promise<unknown> {
     const service = this.#service;
@@ -188,6 +225,16 @@ class Forwarder extends RpcTarget {
       throw new TypeError(`Invalid arguments for ${service}.${name}: ${problems.join("; ")}`);
     }
     await this.#requireAdmin();
+    if (service === ROOT && kindOf(name) === "act") {
+      const route = Object.hasOwn(ACT_ROUTES, name) ? ACT_ROUTES[name as ActMethod] : undefined;
+      if (!this.#actions || !route) {
+        throw new Error(`${service}.${name}() has no action defined for it.`);
+      }
+      // The arguments fit the schema, which is what the route's parameters are typed from.
+      await Reflect.apply(route, undefined, [this.#actions, this.#queue, ...args]);
+      // An "act" call resolves to undefined, as the generated declarations say.
+      return undefined;
+    }
     const target = this.#target instanceof Opened ? await this.#target.get() : this.#target;
 
     let result: unknown;

@@ -42,13 +42,21 @@ function sample(shape: ApiShape): unknown {
   }
 }
 
-/** Arguments that fit `service.name`: one for each required parameter. */
+/**
+ * Arguments that fit `service.name`: one for each required parameter. A write's are those its
+ * sample action takes, which the schema does not say.
+ */
 function sampleArguments(service: string, name: string): unknown[] {
   const method = ADMIN_SCHEMA.services[service]!.methods.find((candidate) => candidate.name === name)!;
-  return method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  const args = method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  if (service === ROOT && name === "writeWorkspace") {
+    args[2] = args[1] === "stopAgent" ? { chatId: 1 } : {};
+  }
+  return args;
 }
 
 const READS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "read");
+const ACTS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "act");
 
 /** Runs `body` with a session of a connection made from ada's account, and its queue. */
 async function withSession<T>(body: (session: Session, queue: Queue) => Promise<T>): Promise<T> {
@@ -85,18 +93,9 @@ describe("the facet", () => {
     expect(HAND_WRITTEN_TYPES).not.toMatch(/^export interface (AdminApi|AdminWorkspaceView) /m);
   });
 
-  it("has no action: none is auto-approvable, and each entry point refuses", async () => {
-    await withFacet(await connectAccount("ada"), async (facet) => {
-      expect(await facet.getAutoApprovableActions()).toEqual([]);
-      expect(await facet.getAgentCatalog()).toBeNull();
-      const refusals = await Promise.all([
-        rejection(facet.applyAction(7, new RpcStub(new (class extends RpcTarget {})()) as never)),
-        rejection(facet.rejectAction(7)),
-        rejection(facet.revertAction(7)),
-      ]);
-      expect(refusals.map((refusal) => refusal.message))
-          .toEqual(Array(3).fill("The admin gatekeeper has no action 7."));
-    });
+  it("has no agent catalog", async () => {
+    expect(await withFacet(await connectAccount("ada"), (facet) => facet.getAgentCatalog()))
+        .toBeNull();
   });
 });
 
@@ -419,10 +418,43 @@ describe("a view a session opened", () => {
 });
 
 describe("what a session refuses", () => {
+  it("to run an act method: it is queued, and nothing is opened, observed or forwarded", async () => {
+    await withSession(async (session, queue) => {
+      expect(ACTS.toSorted()).toEqual(["requestContentAccess", "writeWorkspace"]);
+      for (const name of ACTS) {
+        expect(await session[name]!(...sampleArguments(ROOT, name)), name).toBeUndefined();
+      }
+
+      expect(workshop.log.toSorted()).toEqual(
+          ["submit content-access-request", "submit workspace-write-request"]);
+      expect(workshop.apis).toEqual([]);
+      expect(queue.observations).toEqual([]);
+    });
+  });
+
+  it("an act method on a session that was given no actions, and on a view", async () => {
+    using session = new (forwarderFor(ROOT))(
+        new RpcStub(new Queue()) as never, admin,
+        { open: async () => { throw new Error("unused"); } },
+    ) as unknown as Session;
+    for (const name of ACTS) {
+      expect((await rejection(session[name]!(...sampleArguments(ROOT, name)))).message, name)
+          .toBe(`AdminApi.${name}() has no action defined for it.`);
+    }
+
+    await withSession(async (bound) => {
+      using view = await bound.inspectWorkspace!("workspace-1", "a check") as Session;
+      workshop.log.length = 0;
+      expect((await rejection(view.writeWorkspace!("workspace-1", "restartWorkspace", {}, "x")))
+          .message).not.toBe("did not reject");
+      expect(workshop.log).toEqual([]);
+    });
+  });
+
   it("an omitted method, and every name the schema does not hold", async () => {
     await withSession(async (session) => {
       // Every name on an RPC stub is callable, so only the call's rejection says it is not served.
-      for (const name of ["setSiteName", "getUpdateStatus", "checkForUpdates", "writeWorkspace",
+      for (const name of ["setSiteName", "getUpdateStatus", "checkForUpdates", "approveContentAccess",
         "serving", "#call", "#target", "#queue", "describe"]) {
         expect((await rejection(session[name]!("x"))).message, name).not.toBe("did not reject");
       }
