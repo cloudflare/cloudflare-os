@@ -6071,7 +6071,8 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure).
+   * marks a run the user stopped, which is not a failure). "resume_exhausted" marks a turn that
+   * exhausted its resume attempts before saving a step; `retryAgent()` tells the agent so.
    */
   code?: string;
 } | {
@@ -6096,13 +6097,18 @@ export type AiChatMessageBody = {
   bindingName?: string;
 } | {
   /**
-   * A model-visible control note for an approved-decision handoff, explicit Retry, or Stop.
-   * It also ends the preceding decision segment for recovery. Not rendered in the chat UI:
-   * the decision cards and turn controls already show these transitions to the user.
+   * A control record for an approved-decision handoff, explicit Retry, or Stop. It ends the
+   * preceding decision segment for recovery. Not rendered in the chat UI: the decision cards and
+   * turn controls already show these transitions to the user.
    * Older logs used this variant to nudge an agent whose callbacks were still unresolved.
    */
   type: "agentNudge";
-  text: string;
+  /**
+   * The note the model reads, as a user message. Absent when the record only marks the segment
+   * boundary, as for Stop and for a Retry with nothing to tell the agent, which then reruns on
+   * the same history.
+   */
+  text?: string;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").
