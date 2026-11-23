@@ -45,7 +45,7 @@ requiring a special invocation. Idle detection remains unchanged; a hung command
 printing output can take five minutes longer to terminate than with the previous ten-minute cap.
 
 Import-heavy backend unit tests use a 120-second idle allowance, and the `workshop-evals` unit tests
-a 240-second one: `evals/chat-views.test.ts` reports only when it ends, and took 114 seconds on
+and `create-gatekeeper`'s Node suite, which compiles five generated packages in one file, a 240-second one: `evals/chat-views.test.ts` reports only when it ends, and took 114 seconds on
 CI on 2026-11-09. These process-level watchdogs are separate from Vitest's per-test limits and
 Linux Container execution deadlines. Google test projects allow 15 seconds per test.
 

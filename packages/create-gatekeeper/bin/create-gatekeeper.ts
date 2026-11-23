@@ -4,10 +4,17 @@
 // repository lists gatekeepers by hand, and generates its Worker config and types.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { AUTH_KINDS, namesFor, scaffold, stops, type Names, type ScaffoldOptions } from "../src/scaffold.ts";
+import {
+  AUTH_KINDS, OPENAPI_OPERATIONS, OPENAPI_URL, namesFor, openApiDocument, openApiUrlRefusal, scaffold, stops,
+  type Names, type OpenApiOptions, type ScaffoldOptions,
+} from "../src/scaffold.ts";
 
 const USAGE = `Usage: pnpm create-gatekeeper <name> --auth <${AUTH_KINDS.join("|")}> [options]
 
@@ -18,6 +25,19 @@ Writes packages/gatekeeper-<name>, a gatekeeper built on gatekeeper-kit.
                      "api-key", a key the user pastes into the connect page.
   --hooks            Push events to gadgets, from a webhook the provider delivers to.
   --display <text>   The provider's name as users read it, e.g. "PagerDuty".
+  --openapi <file>   The provider's OpenAPI description, a JSON or YAML file. The package gets a script
+                     that generates the typed client's schema from it, pinned by its hash, and
+                     no copy of it. Nothing is fetched.
+  --openapi-url <url>
+                     Where that description is published, an https URL: the script then
+                     generates from there. Without it the script takes the file.
+  --fetch            Download the description from --openapi-url, in place of --openapi. What it
+                     serves now is what the package is pinned to.
+  --keep-description Keep a copy of the description in the package, and generate from that.
+  --operations <ids> With --openapi, the operationIds the gatekeeper calls, separated by commas,
+                     or a file of the lines printed for them: their schema is generated now.
+                     Without it, the description's operations are printed to choose from, and
+                     none is generated.
   --out <dir>        Write the package here instead, and register nothing.
   --no-install       Don't run "pnpm install" and "pnpm types:generate" afterwards.
 
@@ -25,6 +45,8 @@ Don't run it to try it out in a checkout you will commit from: use --out.
 `;
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
+/** The kit's schema generator, run by path so that it works before the new package is installed. */
+const OPENAPI_SCHEMA_BIN = join(ROOT, "packages", "gatekeeper-kit", "bin", "openapi-schema.ts");
 
 function fail(message: string): never {
   console.error(message);
@@ -72,6 +94,102 @@ function register(names: Names, auth: ScaffoldOptions["auth"], hooks: boolean): 
   }
 }
 
+/**
+ * Runs the kit's schema generator, and returns what it printed, however long: a large
+ * description lists more than the megabyte a child is allowed by default.
+ * @throws Error in the generator's own words, with `scratch`, a file of this command's that it
+ * was given, named as `shown` instead.
+ */
+function openapiSchema(args: string[], scratch?: string, shown?: string): string {
+  const result = spawnSync(process.execPath, [OPENAPI_SCHEMA_BIN, ...args], { encoding: "utf8", maxBuffer: Infinity });
+  if (result.status !== 0) {
+    const said = result.stderr.trim() || "gatekeeper-openapi-schema failed.";
+    throw new Error(scratch === undefined || shown === undefined ? said : said.replaceAll(scratch, shown));
+  }
+  return result.stdout;
+}
+
+/**
+ * `text` as a shell takes one argument: quoted, unless it is plain. cmd.exe takes a path's
+ * backslashes as they are, and knows only double quotes.
+ */
+function shellArgument(text: string): string {
+  if (process.platform === "win32") return /^[\w@+=:,./\\-]+$/.test(text) ? text : `"${text}"`;
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/** The lines of `listed` for the operationIds in `ids`, which commas separate. */
+function chosenLines(listed: string[], ids: string): string {
+  const chosen = new Set(ids.split(",").map(id => id.trim()).filter(id => id !== ""));
+  const lines = listed.filter(line => chosen.delete((JSON.parse(line) as { operationId: string }).operationId));
+  if (chosen.size > 0) {
+    throw new Error(`The description has no operation ${[...chosen].join(", ")}. Run this without --operations to list the ones it has.`);
+  }
+  return lines.map(line => `${line}\n`).join("");
+}
+
+/**
+ * Downloads the description at `url` into a directory of its own, removed on exit, as the text
+ * the package's own script will read from there, so that the two hash alike.
+ * @returns The file's path.
+ * @throws Error for a URL that is not `https`, that names a user or password, or that does not
+ * serve the description.
+ */
+async function fetchOpenApi(url: string): Promise<string> {
+  if (!OPENAPI_URL.test(url)) throw new Error(openApiUrlRefusal(url));
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Fetching ${url} failed with status ${response.status}.`);
+  const text = await response.text();
+  const dir = mkdtempSync(join(tmpdir(), "create-gatekeeper-fetched-"));
+  // On any way out: a failure exits from where it is found.
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, openApiDocument(text));
+  writeFileSync(path, text);
+  console.log(`Fetched ${url}: ${Buffer.byteLength(text)} bytes, SHA-256 ${createHash("sha256").update(text).digest("hex")}.`);
+  return path;
+}
+
+/**
+ * Reads the description at `path`, and with `ids`, generates the schema of the operations it
+ * names: operationIds, or a file of their lines as listed, which an id with a comma in it needs.
+ * Nothing of the package is written yet, so a description or an operation the generator refuses
+ * leaves nothing behind.
+ * @returns What the scaffold needs, and the lines of every operation the description has.
+ * @throws Error for a description or operations that cannot be read or generated from.
+ */
+function readOpenApi(path: string, ids: string | undefined): { openapi: OpenApiOptions; listed: string[] } {
+  let document: string;
+  try {
+    document = readFileSync(path, "utf8");
+  } catch (error) {
+    throw new Error(`Could not read --openapi ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  const listed = openapiSchema([path, "--list"]).split("\n").filter(line => line !== "");
+  if (ids === undefined) return { openapi: { document }, listed };
+
+  // A file's lines are the generator's to check, as they are whenever the schema is generated again.
+  const operations = existsSync(ids) ? readFileSync(ids, "utf8") : chosenLines(listed, ids);
+  if (operations.trim() === "") throw new Error("--operations names no operation.");
+
+  const work = mkdtempSync(join(tmpdir(), "create-gatekeeper-openapi-"));
+  try {
+    const list = join(work, OPENAPI_OPERATIONS);
+    writeFileSync(list, operations);
+    const out = join(work, "schema");
+    // The list is this command's own file, gone by the time a failure is read.
+    openapiSchema([path, "--out", out, "--operations", list], list, "--operations");
+    const schema = new Map(readdirSync(out, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile())
+      .map(entry => {
+        const file = join(entry.parentPath, entry.name);
+        return [relative(out, file).replaceAll("\\", "/"), readFileSync(file, "utf8")] as const;
+      }));
+    return { openapi: { document, generated: { operations, schema } }, listed };
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
 function run(command: string, args: string[]): void {
   console.log(`\n$ ${command} ${args.join(" ")}`);
   const result = spawnSync(command, args, { cwd: ROOT, stdio: "inherit", shell: process.platform === "win32" });
@@ -86,6 +204,11 @@ try {
       auth: { type: "string" },
       display: { type: "string" },
       hooks: { type: "boolean" },
+      openapi: { type: "string" },
+      "openapi-url": { type: "string" },
+      fetch: { type: "boolean" },
+      "keep-description": { type: "boolean" },
+      operations: { type: "string" },
       out: { type: "string" },
       "no-install": { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -102,31 +225,47 @@ if (values.help) {
 if (positionals.length !== 1 || values.auth === undefined) fail(USAGE);
 // As an unset variable leaves it: joined to a file's name, it is the current directory.
 if (values.out === "") fail("--out names no directory.");
+const url = values["openapi-url"];
+if (values.fetch && (url === undefined || values.openapi !== undefined)) {
+  fail(`--fetch downloads the description from --openapi-url, in place of --openapi.\n\n${USAGE}`);
+}
+for (const option of ["operations", "openapi-url", "keep-description"] as const) {
+  if (values[option] !== undefined && values.openapi === undefined && !values.fetch) {
+    fail(`--${option} needs --openapi, or --fetch to download the description.\n\n${USAGE}`);
+  }
+}
+if (url !== undefined && values["keep-description"] && !values.fetch) {
+  fail(`--keep-description generates from the package's copy, which leaves --openapi-url nothing to do.\n\n${USAGE}`);
+}
 
 let names: Names;
 let files: ReturnType<typeof scaffold>;
+let described: ReturnType<typeof readOpenApi> | undefined;
+let dir: string;
 try {
   const options = { name: positionals[0], display: values.display, auth: values.auth as ScaffoldOptions["auth"], hooks: values.hooks };
   names = namesFor(options);
-  files = scaffold(options);
+  // Resolved, so that the directory looked for is the one written to: "missing/../here" is not
+  // found, and yet names "here".
+  dir = resolve(values.out ?? join(ROOT, "packages", `gatekeeper-${names.name}`));
+  // A release folds the hyphens out of a package's name to make its install slug, the route and
+  // binding this name becomes, so a package with another name can already have it.
+  const owner = values.out === undefined ? readdirSync(join(ROOT, "packages")).find(other =>
+    other !== `gatekeeper-${names.name}` && other.startsWith("gatekeeper-") &&
+      other.slice("gatekeeper-".length).replaceAll("-", "") === names.name) : undefined;
+  if (owner !== undefined) throw new Error(`packages/${owner} already has the install slug "${names.name}": use another name.`);
+  if (existsSync(dir)) {
+    // Only what Git has none of can be what an interrupted run left: the rest is someone's package.
+    const listed = spawnSync("git", ["ls-files", "--", dir], { cwd: ROOT, encoding: "utf8" });
+    throw new Error(`${dir} already exists.` + (values.out === undefined && listed.status === 0 && listed.stdout === ""
+      ? " If an earlier run was interrupted, delete it and run this again: registering twice is harmless." : ""));
+  }
+  const file = values.fetch ? await fetchOpenApi(url!) : values.openapi;
+  if (file !== undefined) described = readOpenApi(file, values.operations);
+  const source = { url, copy: values["keep-description"] };
+  files = scaffold({ ...options, openapi: described && { ...described.openapi, ...source } });
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
-}
-
-// Resolved, so that the directory looked for is the one written to: "missing/../here" is not
-// found, and yet names "here".
-const dir = resolve(values.out ?? join(ROOT, "packages", `gatekeeper-${names.name}`));
-// A release folds the hyphens out of a package's name to make its install slug, the route and
-// binding this name becomes, so a package with another name can already have it.
-const owner = values.out === undefined ? readdirSync(join(ROOT, "packages")).find(other =>
-  other !== `gatekeeper-${names.name}` && other.startsWith("gatekeeper-") &&
-    other.slice("gatekeeper-".length).replaceAll("-", "") === names.name) : undefined;
-if (owner !== undefined) fail(`packages/${owner} already has the install slug "${names.name}": use another name.`);
-if (existsSync(dir)) {
-  // Only what Git has none of can be what an interrupted run left: the rest is someone's package.
-  const listed = spawnSync("git", ["ls-files", "--", dir], { cwd: ROOT, encoding: "utf8" });
-  fail(`${dir} already exists.` + (values.out === undefined && listed.status === 0 && listed.stdout === ""
-    ? " If an earlier run was interrupted, delete it and run this again: registering twice is harmless." : ""));
 }
 for (const [path, file] of files) {
   const target = join(dir, path);
@@ -144,6 +283,29 @@ if (values.out === undefined) {
     run("pnpm", ["install", "--no-frozen-lockfile"]);
     run("pnpm", ["types:generate", `gatekeeper-${names.name}`]);
   }
+}
+
+if (described?.openapi.generated) {
+  console.log(`\nGenerated the schema of ${described.openapi.generated.operations.trimEnd().split("\n").length} operations ` +
+    `into src/openapi, from the description and ${OPENAPI_OPERATIONS}. The scaffold's own calls are still invented:\n` +
+    `STOP(api) in src/${names.name}-api-schema.ts says how to move them onto the provider's.`);
+} else if (described) {
+  console.log(`\nNo operation is chosen, so no schema is generated. The description has these ${described.listed.length}.
+Put the lines of the ones the gatekeeper calls in ${OPENAPI_OPERATIONS}, then run
+"pnpm --filter @gadgets/${names.name}-gatekeeper generate:openapi" and import the generated Api, as
+STOP(api) in src/${names.name}-api-schema.ts says:\n`);
+  for (const line of described.listed) console.log(line);
+}
+if (described && !values["keep-description"] && values["openapi-url"] === undefined) {
+  console.log(`\nThe package keeps no copy of the description and knows no URL for it: generate:openapi takes the file,
+"pnpm --filter @gadgets/${names.name}-gatekeeper generate:openapi ${shellArgument(relative(dir, resolve(values.openapi!)))}", and checks it by its hash.`);
+}
+if (described && values.out !== undefined) {
+  console.log(`\n--out registered and installed nothing, so "pnpm --filter" selects no package, and exits 0 having run
+none: generate:openapi runs once this is a package of the workspace.`);
+}
+if (described && url?.includes("?") && !values["keep-description"]) {
+  console.log("\nThe URL's query string is now in package.json's generate:openapi script: commit it only if it carries no token.");
 }
 
 const left = stops(files);
