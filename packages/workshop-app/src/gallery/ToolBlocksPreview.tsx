@@ -60,7 +60,7 @@ export const ToolBlocksPreview = () => {
 
   return (
     <>
-      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written, which is open; then thinking; then drafting the reply; then drafting one with a view written and one being drawn, named and not run; then nothing yet)">
+      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written; then thinking; then drafting the reply; then drafting one with a view written and one being drawn, named and not run; then nothing yet; the steps open when they are clicked, and what is drafted is open here to show it)">
         <Column>
           <WorkLog steps={steps} openSteps={open} onToggleStep={toggle} />
           <WorkLog

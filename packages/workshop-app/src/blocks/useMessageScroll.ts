@@ -68,6 +68,16 @@ export const useMessageScroll = () => {
     capture()
   }, [contentRef, state, capture])
 
+  /**
+   * Puts the end of the conversation at the bottom of the view now, if it is being followed. For what changes
+   * the conversation's height a little every frame, such as the thinking indicator's rows coming in and
+   * its steps opening, where the library's eased catching-up would run a little behind, and the end of
+   * the conversation would sway. Called from a resize observer, it is in the same frame as the change.
+   */
+  const followNow = useCallback(() => {
+    if (state.isAtBottom) state.scrollTop = state.targetScrollTop
+  }, [state])
+
   const jumpToLatest = useCallback(() => {
     void scrollToBottom({ animation })
   }, [scrollToBottom, animation])
@@ -237,5 +247,5 @@ export const useMessageScroll = () => {
   // Preserve React-driven replacements before paint; observers cover subsequent layout changes.
   useLayoutEffect(reconcile)
 
-  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile }
+  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile, followNow }
 }

@@ -1,0 +1,52 @@
+/* Words that change fade: the old go, and the new come in a moment after (`--fade-lag`, over `--fade-enter`),
+   with nothing moving. Nothing as the first words are drawn. With motion off the new words are simply there. */
+.shimmer-switch {
+  position: relative;
+  display: inline-block;
+}
+
+.shimmer-switch-live {
+  display: inline-block;
+}
+
+/* The old words, where they were, over the new, and not part of their room. */
+.shimmer-switch-leaving {
+  position: absolute;
+  inset: 0 auto auto 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Where they are to be cut off with an ellipsis: the live words are the room, and they are cut at its edge. */
+.shimmer-switch[data-truncate] {
+  max-width: 100%;
+  vertical-align: bottom;
+}
+
+.shimmer-switch[data-truncate] .shimmer-switch-live {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+:root:not([data-motion='off']) .shimmer-switch:not([data-first]) .shimmer-switch-live {
+  animation: shimmer-switch-in var(--fade-enter, 240ms) ease-out var(--fade-lag, 60ms) backwards;
+}
+
+:root:not([data-motion='off']) .shimmer-switch-leaving {
+  animation: shimmer-switch-out 260ms ease-out forwards;
+}
+
+@keyframes shimmer-switch-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer-switch-out {
+  to {
+    opacity: 0;
+  }
+}

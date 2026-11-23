@@ -22,6 +22,11 @@ export type MascotProps = {
    */
   interactive?: boolean
   /**
+   * Called on a click, as well as the mascot being played with: for whatever it is part of to answer
+   * to it too. Hand it one that stays the same (`useHandler`), or the mascot is drawn again for it.
+   */
+  onClick?: () => void
+  /**
    * `contrast` (the default) draws it in the colours of the viewer's own messages; `inverse` the
    * other way round, for on top of something drawn in `contrast`; `island` the same way round, for
    * on top of the connection island, which is all black in light; `brand` in the logo's orange,
@@ -95,7 +100,7 @@ const describe = (emotion: MascotEmotion) =>
  * Memoized: it is drawn by its motion, not by React, so its parent rendering again (a chat, for
  * every piece of a reply) has nothing to change in it.
  */
-export const Mascot = memo(function Mascot({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, hdr: swells = true, onShake, className }: MascotProps) {
+export const Mascot = memo(function Mascot({ emotion, shown = true, interactive, onClick, color = 'contrast', reach = DEFAULT_REACH, hdr: swells = true, onShake, className }: MascotProps) {
   const frame = useRef<HTMLDivElement>(null)
   const motion = useRef<MascotMotion>(undefined)
   const interior = useId()
@@ -193,6 +198,7 @@ export const Mascot = memo(function Mascot({ emotion, shown = true, interactive,
           if (sad) event.preventDefault()
         }}
         onClick={(event) => {
+          onClick?.()
           if (!sad) return motion.current?.tap()
           // Pressing already squeezed it. A click with no press behind it comes from assistive
           // technology, which gets one squeeze.

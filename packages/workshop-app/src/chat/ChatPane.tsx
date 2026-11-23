@@ -42,6 +42,7 @@ import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
+import { THINKING, WRITING } from './statusWords'
 import { useLinkConnections } from './useLinkConnections'
 import { ConnectResource } from '@/connections/SetUpConnection'
 import { useChatSession } from './useChatSession'
@@ -161,6 +162,20 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Shown or put away for every chat at once, and kept: developer mode turns it on (`writeDevMode`).
   const [liveWorkOpen, setLiveWorkOpen] = useLiveWorkOpen()
   const openWork = useOpenKeys(disclosure, work.map(({ key }) => key))
+  // The work handed over to a reply as it arrives (`work` is empty again): what showed it folds at
+  // once, with the steps as they were rather than for a moment saying there is nothing to show, until
+  // there are steps again.
+  const lastWork = useRef(work)
+  if (work.length > 0) lastWork.current = work
+  const [handedOver, setHandedOver] = useState({ over: false, length: work.length })
+  const working = chat.status === 'ready' && chat.activity !== undefined
+  // Whether the step under way is kept open as the agent goes on (`WorkLog`'s `follow`): for as long as
+  // it is at work, and not into the next time.
+  const [followWork, setFollowWork] = useState(false)
+  if (!working && followWork) setFollowWork(false)
+  if (work.length !== handedOver.length || (!working && handedOver.over)) {
+    setHandedOver({ over: working && work.length === 0 && handedOver.length > 0, length: work.length })
+  }
   const keepKeys = useMemo(() => (chat.status === 'ready' && chat.keep ? [keepKey(chat.keep)] : []), [chat])
   const keepOpen = useOpenKeys(disclosure, keepKeys)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
@@ -531,11 +546,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           <AssistantPresence
             working={chat.activity !== undefined}
             status={chat.activity}
+            writing={chat.activity === WRITING}
             details={{
-              open: liveWorkOpen,
+              open: liveWorkOpen && !handedOver.over,
               onToggle: () => setLiveWorkOpen(!liveWorkOpen),
               content: (
-                <WorkLog steps={work} openSteps={openWork} onToggleStep={disclosure.toggle} />
+                <WorkLog steps={handedOver.over ? lastWork.current : work} openSteps={openWork} onToggleStep={disclosure.toggle} follow={{ on: followWork, onChange: setFollowWork }} />
               ),
             }}
           />
@@ -549,7 +565,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
               ? <span role="status" className="text-sm text-kumo-subtle">This chat was deleted.</span>
               : sentFirst
                 // Just sent from the page before, drawn as it was there while the history is read.
-                ? <><UserMessage {...sentFirst} /><AssistantPresence working status="Thinking…" /></>
+                ? <><UserMessage {...sentFirst} /><AssistantPresence working status={THINKING} /></>
                 : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}

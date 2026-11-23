@@ -62,7 +62,7 @@ const markArriving = (row: Element) => {
 
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
 export const MessageList = ({ messages, children, history, streaming, ref }: MessageListProps) => {
-  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile } = useMessageScroll()
+  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile, followNow } = useMessageScroll()
   useImperativeHandle(ref, () => ({
     scrollToMessage: (id) => {
       const sequence = messages.find((message) => message.id === id)?.sequence
@@ -109,6 +109,15 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
     observer.observe(liveRef.current!, { childList: true })
     return () => observer.disconnect()
   }, [])
+  // What is under way at the end of the conversation changes its height frame by frame, as the thinking
+  // indicator's rows come in and open, and cards arrive (all of it eased, none of it jumping): the view is
+  // held to the end in step with it, in the same frame, rather than by the library's eased catching-up,
+  // which would trail it and have the end of the conversation sway.
+  useEffect(() => {
+    const observer = new ResizeObserver(followNow)
+    observer.observe(liveRef.current!)
+    return () => observer.disconnect()
+  }, [followNow])
   const { hasMore, loading, error, onLoadEarlier } = history ?? {}
   useEffect(() => {
     if (!hasMore || loading || error || !onLoadEarlier) return

@@ -199,10 +199,54 @@ its block. The mapping is pure and returns the same objects for messages that di
 only changed rows render.
 
 The conversation is what was said, so it reads like chatting with someone. How a reply came about
-(the tools the agent called, what it read, what it thought) is never a row. While the agent works,
-the mascot shows at the end of the conversation with what it is doing ("Running code…"); that
-status opens to the steps taken since the last message, with the one under way shown open,
-including the reply as it is drafted. A reply becomes a message only once it is written. Its
+(the tools the agent called, what it read, what it thought) is never a row. While the agent works, the
+mascot shows at the end of the conversation with what it is doing ("Floating ideas", "Running code":
+words with no files or tools in them but for the code it runs, from `chat/statusWords.ts`, and no closing
+"…"). The words are settled on rather than followed (`hooks/settler.ts`: shown once they have held still
+for 600ms, and never held at one thing for longer than 1.8s while they keep changing). They shimmer, and
+when they change the old fade out and, a moment after, the new fade in, with nothing moving
+(`ShimmerSwitchText`). The mascot turns to typing dots while the reply is being written
+(`AssistantPresence`'s `writing`, from `chat.activity === WRITING`). It is played with: a click spins its
+sparkle, which does not swell brighter than white on an HDR screen here (`Mascot`'s `hdr`, on by default
+elsewhere, off for this one, which is clicked to open the steps), and opens what is behind the status as the
+status does, and puts it away.
+
+What is behind the status is the steps taken since the last message (`WorkLog`), each a row (`ToolStep`) in
+13px with no outline and no fill, run the width of the column, 40px tall and padded 6px. A row is one element
+from its first moment to its last, so nothing in it is made again as it goes on. Its mark is in a 28px column
+(the middle of it 20px in): Kumo's spinner while it is under way, the icon of what it did once it is done
+(Hugeicons, from `components/HugeIcon.tsx`), which grows out (`mark-grows`, a little overshoot) only once the
+mascot has moved on from the row (`LeavingSlot` watches how far it is, 24px being clear), until when its
+place is bare. The words are in the full colour while it is under way and go to the quiet one when it is
+done, as an animation (`row-quiets`) rather than a transition, so that what a row takes when it is pointed at
+is at once: its icon, words and caret go to the full colour, the same for all of them. A failed step has an
+"Error" badge. When the words change the old fade out and the new in (`ShimmerSwitchText`), even after the
+step is done, as the server words it afresh then. A new row (not one there when the log was shown) opens to
+its height as it fades in (`row-enter`, which clears `min-height` too, and which a row that takes the place of
+the bare row between steps does not do, or the height would dip), and its words wait for the mascot to be
+there (`MascotSlot`'s `holdUntilArrived`). A row that opens gains its caret by fading it in, and what it did
+shows in the words' column with a line of 1px down the middle of the marks' column; what streams in has its
+room ease to it (`SmoothHeight`). The reply as it is drafted (the "Writing…" step) is not drawn as the message
+will be: quiet grey 13px text behind a rule at its side, with no bubble. Nothing opens by itself; opening the
+step under way means to follow it (`WorkLog`'s `follow`, held by `ChatPane` until the agent is done):
+whichever step is under way is open, and the next opens in its place, until that one is closed by hand.
+
+The mascot is the last row of the steps while they are open: the mark of the step under way, or a row of its
+own when none is (`WorkLog` finds the place through `PresenceSlotContext`). It is one element, carried to each
+place by `useFlight` on a critically damped spring, eased into so that a long way is not a kick, that carries
+on from its speed when sent elsewhere. What the spring settles is how far the mascot is from the row, so that
+what moves the row while it is there, such as a step above it opening, moves it too, in the same frame. Where
+it goes is what the slot has settled on (`SLOT_SETTLE`): steps that come faster are not each gone to, and the
+step it left is where it was last seen. The mascot is 32px, shrinks to 80% among the steps (the `scale`
+property), and is carried with `translate`, not `transform`, so that the scale is not multiplied into how far
+it is moved. Out to the steps and home again it is on a quicker spring (`brisk`, until it is there), as the
+steps open and close in 420ms (`.presence-panel`, the status line's room shutting and opening as they do), so
+it is where it is going as they have. The words beside it, on the line it is on while the steps are closed, are
+gone the moment they open and, as they close, wait for the mascot to be there before they fade in
+(`.presence-label`, told by `useFlight`'s `onArrive`); they are 10px from it. The steps are put away by the
+mascot (there is no button), and focus that was on the words goes to it.
+
+A reply becomes a message only once it is written. Its
 steps then go with it (`AssistantItem.trace`), out of the conversation but there for whoever asks:
 a message's details (`messageInfo`) show in a separate outlined panel under it. In width it is a
 bubble of its own: as wide as what is in it, up to the limit a message has. The model/other
@@ -301,6 +345,14 @@ WebKit moves the view before the scroll event that says so, so a correction made
 a position on screen undoes the reader's own scrolling, and on iOS stops its momentum dead
 (`useMessageScroll`). Set the scroll position only for a change to the conversation, never while
 the reader moves it.
+
+What is under way at the end of the conversation (the live output: the thinking indicator's rows coming
+in and opening, cards arriving) is followed in step with it: a resize observer on the live output puts
+the view at the end in the same frame (`followNow`, for a reader who is at the end), where the
+library's eased catching-up would trail the change and the end would sway. So everything that changes
+its height has to ease, never jump (a row opening from nothing, `row-enter`, which has to clear `min-height` too,
+and the bare row the mascot has between steps opening as the others do), and a row that takes the place
+of another is not opened from nothing again, or the conversation's height would dip and the view with it.
 
 A draft is only let go of once its message has gone: `Composer`'s `onSend` resolves to whether it
 did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One
