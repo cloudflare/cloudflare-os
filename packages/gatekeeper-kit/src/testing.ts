@@ -244,6 +244,9 @@ export function branchHarnessCases<Session>(subject: BranchHarnessSubject<Sessio
         await expectApplied(viewB, idB);
         await expectReads(await open({ branch: null }), onB, true,
           "After it applied, a session outside any chat");
+        // Only what was named applied, whatever the result reported.
+        await expectReads(await open({ branch: null }), onA, false,
+          "After another branch applied, a session outside any chat");
         await expectApplied(viewA, idA);
         await expectReads(await open(viewB), onA, true, "After it applied, the other branch");
       }),
@@ -343,6 +346,8 @@ export function branchHarnessCases<Session>(subject: BranchHarnessSubject<Sessio
           throw new Error(`applyActions() did not apply staged action ${ids[0]}: `
             + `${JSON.stringify(staged)}.`);
         }
+        await expectReads(await open(other), second, false,
+          "After the staged action applied, the action left on its branch, another branch");
         await expectApplied(view, ids[1]!);
       })] : [],
   ];

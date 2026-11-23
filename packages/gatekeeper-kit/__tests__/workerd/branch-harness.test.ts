@@ -37,6 +37,21 @@ describe("the branch harness", () => {
     await expect(runBranchHarness(without)).rejects.toThrow(/must implement stageActions/);
   });
 
+  it("refuses a gatekeeper that applies more than it was given", async () => {
+    // Applies every action up to the last one named, and reports only those named.
+    const honest = subject("over-applying");
+    const overApplying: BranchHarnessSubject<Session> = {
+      ...honest,
+      applyActions: async (branch, actions, cache) => {
+        const all = Array.from({ length: Math.max(...actions) }, (_, i) => i + 1);
+        const result = await honest.applyActions(branch, all, cache);
+        return { ...result, applied: result.applied.filter(id => actions.includes(id)) };
+      },
+    };
+    await expect(runBranchHarness(overApplying)).rejects.toThrow(
+      /After another branch applied, a session outside any chat sees/);
+  });
+
   it("refuses a gatekeeper whose reads cross branches", async () => {
     await expect(runBranchHarness(subject("leaky"))).rejects.toThrow(
       /two branches do not see each other's pending actions.*A session on another branch sees/);
