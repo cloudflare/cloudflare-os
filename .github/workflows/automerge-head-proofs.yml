@@ -1,4 +1,4 @@
-name: Automerge evidence
+name: Automerge head proofs
 
 # Producers that build or run the pull request's code. Each job writes one `automerge-<name>`
 # artifact (scripts/automerge/proofs/artifact.ts) for the risk-review gate, which binds it to this

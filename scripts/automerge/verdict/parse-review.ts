@@ -4,8 +4,9 @@
 // (a finding with no tag is P1, a stray NEEDS-A-PERSON counts, a second or malformed score is an
 // error).
 
-/** A REVIEW.md severity. P0 and P1 block an automatic merge. */
-type Severity = "P0" | "P1" | "P2" | "P3";
+/** REVIEW.md's severities. P0 and P1 block an automatic merge. */
+export const SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
+export type Severity = (typeof SEVERITIES)[number];
 
 /** One finding, as the producer contract carries it. */
 export interface Finding {
@@ -43,7 +44,6 @@ and any other section makes the review invalid. Write the words NEEDS-A-PERSON a
 MERGE-CONFIDENCE only on those lines.
 `;
 
-const SEVERITIES: readonly Severity[] = ["P0", "P1", "P2", "P3"];
 const TAG = /\[(P[0-3])\]/g;
 const LEADING_TAG = /^\[(P[0-3])\]\s+(.+)$/;
 const LOCATION = /^`?([^\s`:]+):(\d+)(?:-\d+)?`?$/;

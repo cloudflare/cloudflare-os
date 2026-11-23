@@ -3,9 +3,9 @@
 // are written structurally because this repository does not depend on the Octokit types.
 //
 // The gate posts the one `risk-review` check run on each pull request head and merge group, as the
-// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts, rung 1
-// proofs, the preview smoke) run on `pull_request`, write one artifact each, and post nothing; the
-// gate reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs
+// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts and rung
+// 1 proofs) run on `pull_request`, write one artifact each, and post nothing; the gate reads those
+// artifacts only from runs bound to the head (risk-review-contract.ts). It runs
 // only from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
 // through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
 // its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
@@ -54,13 +54,12 @@ import {
   type ContentsKind,
   type EscapeSnapshot,
 } from "./risk-review-policy.ts";
+import { PRODUCERS, artifactName, isProducerName, type ProducerName } from "./automerge/producers.ts";
+import type { Severity } from "./automerge/verdict/parse-review.ts";
 import {
-  PRODUCERS,
   VERDICT_NAMES,
-  artifactName,
   bindingError,
   identityError,
-  isProducerName,
   modelProvider,
   newestRun,
   parseProducerArtifact,
@@ -70,7 +69,6 @@ import {
   type BindingExpectation,
   type ProducerArtifact,
   type ProducerInput,
-  type ProducerName,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
 
@@ -230,7 +228,7 @@ export interface PullInputs {
 export type InputSummary =
   | { absent: string }
   | { status: string; holds: boolean }
-  | { status: string; merge_confidence: number | null; findings: Record<"P0" | "P1" | "P2" | "P3", number>; needs_person: string[] };
+  | { status: string; merge_confidence: number | null; findings: Record<Severity, number>; needs_person: string[] };
 
 /** The decision for one pull request, as the check run records it. */
 export interface PullDecision {

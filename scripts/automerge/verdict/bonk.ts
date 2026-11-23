@@ -8,22 +8,22 @@
 // pull request or a compromised dependency can forge this verdict: an accepted limit. The Opus
 // verdict, which no pull request code reaches, is the other one the gate requires.
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 import { git } from "../git.ts";
+import { isMain } from "../main.ts";
+import { PRODUCERS, artifactName } from "../producers.ts";
 import { parseReview, REPORT_FORMAT } from "./parse-review.ts";
 import { replaceInstructionFiles } from "./review-copy.ts";
 import { fetchReviewedHeads, fetchTimeline, githubJson, planRound, readyAt, roundLimitReasons } from "./rounds.ts";
 import { env, eventPullRequest, type Verdict } from "./verdict.ts";
 
-const WORKFLOW_FILE = "bonk-pr.yml";
-/** Bonk's job in that workflow. It has no `name:`, so the jobs API lists it by its id. */
-const JOB_NAME = "bonk";
-const REVIEW_STEP = "Run Bonk";
+/** Bonk's job in its workflow. It has no `name:`, so the jobs API lists it by its id. */
+export const JOB_NAME = "bonk";
+/** The step of that job that runs the review; a head counts as reviewed when it succeeded. */
+export const REVIEW_STEP = "Run Bonk";
 const REPORT_FILE = "automerge-bonk-report.md";
-const VERDICT_FILE = "automerge-verdict-bonk.json";
 
 /**
  * What Bonk is asked to do: review under the base REVIEW.md, then write its report to `reportPath`.
@@ -106,7 +106,7 @@ async function verdictFromJob(repo: string, temp: string, model: string,
   const getJson = (path: string) => githubJson(path, token);
   const reviewed = await fetchReviewedHeads({
     repository,
-    workflowFile: WORKFLOW_FILE,
+    workflowFile: basename(PRODUCERS.bonk.workflow),
     pullNumber: pr.number,
     headRef: pr.headRef,
     jobName: JOB_NAME,
@@ -154,7 +154,7 @@ async function main(command: string | undefined): Promise<void> {
       verdict = errorVerdict({ headSha: pr.headSha, baseSha: pr.baseSha, round: null, report: null, model },
         error instanceof Error ? error.message : String(error));
     }
-    writeFileSync(join(env("RUNNER_TEMP"), VERDICT_FILE), `${JSON.stringify(verdict, null, 2)}\n`);
+    writeFileSync(join(env("RUNNER_TEMP"), `${artifactName("bonk")}.json`), `${JSON.stringify(verdict, null, 2)}\n`);
     // The job's result stays Bonk's: an error verdict does not fail it. A head whose Bonk job
     // succeeded therefore counts as a round even with an error verdict, which reaches the round
     // limit sooner, never later.
@@ -166,7 +166,4 @@ async function main(command: string | undefined): Promise<void> {
   throw new Error(`usage: bonk.ts prepare|verdict (got ${JSON.stringify(command)})`);
 }
 
-// Through realpath, since import.meta.url resolves symlinks in the path the script was run by.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  await main(process.argv[2]);
-}
+if (isMain(import.meta.url)) await main(process.argv[2]);

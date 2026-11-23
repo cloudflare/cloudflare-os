@@ -5,8 +5,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JsonObject } from "../json.ts";
+import { PRODUCERS, SHA, artifactName, type ProducerName } from "../producers.ts";
 
-type Kind = "proof" | "evidence";
+/** Where every producer job writes its artifact, and its workflow uploads it from. */
+const OUT_DIR = "automerge-out";
 
 /** What a producer decided. `holds` is true only with status `ok`. */
 export interface Outcome {
@@ -32,8 +34,6 @@ export function errored(error: string, details: JsonObject = {}): Outcome {
   return { status: "error", holds: false, details: { ...details, error } };
 }
 
-const SHA = /^[0-9a-f]{40}$/;
-
 /** A full commit SHA from the environment, or an error naming the variable. */
 function shaFromEnv(name: string): string {
   const value = process.env[name] ?? "";
@@ -42,12 +42,12 @@ function shaFromEnv(name: string): string {
 }
 
 /**
- * Runs one producer and writes `automerge-<name>.json` into `AUTOMERGE_OUT_DIR` (default
- * `automerge-out`), bound to `AUTOMERGE_HEAD_SHA` and `AUTOMERGE_BASE_SHA`. A thrown error becomes
- * status `error`; the process fails only when the artifact itself cannot be written.
+ * Runs one producer and writes its artifact's file into `automerge-out`, bound to
+ * `AUTOMERGE_HEAD_SHA` and `AUTOMERGE_BASE_SHA`. A thrown error becomes status `error`; the
+ * process fails only when the artifact itself cannot be written.
  */
 export async function runProducer(
-  kind: Kind, name: string, produce: (shas: { head: string; base: string }) => Promise<Outcome>,
+  name: ProducerName, produce: (shas: { head: string; base: string }) => Promise<Outcome>,
 ): Promise<void> {
   const shas = { head: shaFromEnv("AUTOMERGE_HEAD_SHA"), base: shaFromEnv("AUTOMERGE_BASE_SHA") };
   let outcome: Outcome;
@@ -58,12 +58,11 @@ export async function runProducer(
     outcome = errored(error instanceof Error ? error.message : String(error));
   }
   const artifact = {
-    schema: 1, kind, name, head_sha: shas.head, base_sha: shas.base,
+    schema: 1, kind: PRODUCERS[name].kind, name, head_sha: shas.head, base_sha: shas.base,
     status: outcome.status, holds: outcome.status === "ok" && outcome.holds, details: outcome.details,
   };
-  const dir = process.env.AUTOMERGE_OUT_DIR ?? "automerge-out";
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `automerge-${name}.json`);
+  mkdirSync(OUT_DIR, { recursive: true });
+  const file = join(OUT_DIR, `${artifactName(name)}.json`);
   writeFileSync(file, JSON.stringify(artifact, null, 2) + "\n");
   console.log(`${file}: status=${artifact.status} holds=${artifact.holds}`);
   console.log(JSON.stringify(artifact.details, null, 2));

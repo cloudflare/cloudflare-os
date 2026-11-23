@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import { PRODUCERS, type Artifact, type WorkflowRun } from "./risk-review-contract.ts";
+import { PRODUCERS } from "./automerge/producers.ts";
+import type { Artifact, WorkflowRun } from "./risk-review-contract.ts";
 import { BASE, HEAD, MODELS, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
 import { dig, jobsOf, parseWorkflow, stepsOf, texts } from "./risk-review-fixtures/workflow.ts";
 import {
@@ -459,7 +460,7 @@ function verdictsWith(key: "merge_confidence" | "model", bonk: Json, opus: Json)
 }
 
 function proofInput(name: "proof-deps" | "proof-equivalence" | "proof-tests" | "preview-smoke", holds = true) {
-  return { artifact: { ...JSON.parse(proofJson(name, name === "preview-smoke" ? "evidence" : "proof", holds)), name } };
+  return { artifact: { ...JSON.parse(proofJson(name, holds)), name } };
 }
 
 const DEPENDABOT_PROVEN = { "proof-deps": proofInput("proof-deps"), "preview-smoke": proofInput("preview-smoke") };
@@ -1054,7 +1055,7 @@ async function decideFiles(files: ChangedFile[], contents: Record<string, string
 function smokeIn(path: string, name = "automerge-preview-smoke", holds = true): ProducerRun {
   return {
     run: run(path, { created_at: "2026-11-02T10:20:00Z", run_started_at: "2026-11-02T10:20:00Z" }),
-    artifacts: { [name]: proofJson("preview-smoke", "evidence", holds) },
+    artifacts: { [name]: proofJson("preview-smoke", holds) },
   };
 }
 
@@ -1066,14 +1067,14 @@ async function smokeInput(runs: ProducerRun[]): Promise<InputSummary | undefined
 }
 
 describe("runRiskReview preview smoke", () => {
-  it("counts the smoke from Automerge evidence on the head, and not from preview.yml, whatever its artifact's name", async () => {
-    assert.deepEqual(await smokeInput([smokeIn(".github/workflows/automerge-evidence.yml")]), { status: "ok", holds: true });
+  it("counts the smoke from its producer's workflow on the head, and not from preview.yml, whatever its artifact's name", async () => {
+    assert.deepEqual(await smokeInput([smokeIn(PRODUCERS["preview-smoke"].workflow)]), { status: "ok", holds: true });
     // Recorded: a real pull_request run of preview.yml, moved onto the test head.
     const preview: WorkflowRun = { ...JSON.parse(read("scripts/risk-review-fixtures/preview-run.json")), head_sha: HEAD };
     for (const name of ["automerge-preview-smoke", `automerge-preview-smoke-${HEAD}`]) {
       // Archived under the file name the gate reads, so only the binding can reject it.
       const archived = { [name]: "automerge-preview-smoke.json" };
-      const input = await smokeInput([{ run: preview, artifacts: { [name]: proofJson("preview-smoke", "evidence", true) }, archived }]);
+      const input = await smokeInput([{ run: preview, artifacts: { [name]: proofJson("preview-smoke", true) }, archived }]);
       assert.ok(input && "absent" in input, `${name}: ${JSON.stringify(input)}`);
     }
   });
@@ -1221,7 +1222,7 @@ type RungOneProof = "proof-deps" | "proof-equivalence" | "proof-tests";
 /** A run of the proof's workflow on the test head, with a holding proof made against `BASE`. */
 function proofRun(name: RungOneProof, pullNumber = 7): ProducerRun {
   const pullRequests = [{ number: pullNumber, base: { ref: "main" } }];
-  return { run: run(PRODUCERS[name].workflow, { pull_requests: pullRequests }), artifacts: { [`automerge-${name}`]: proofJson(name, "proof", true) } };
+  return { run: run(PRODUCERS[name].workflow, { pull_requests: pullRequests }), artifacts: { [`automerge-${name}`]: proofJson(name, true) } };
 }
 
 /** The two files proof-deps reads at its merge base, as they stand at `sha`. */

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import { PRODUCERS, type Producer, type ProducerName } from "./automerge/producers.ts";
 import {
-  PRODUCERS,
   bindingError,
   modelProvider,
   newestRun,
@@ -11,8 +11,6 @@ import {
   pickArtifact,
   readArtifactFile,
   type Artifact,
-  type Producer,
-  type ProducerName,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
 import { BASE, HEAD, MODELS, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";

@@ -10,10 +10,11 @@
 //
 // GITHUB_REPOSITORY defaults to cloudflare/cloudflare-os. The table goes to stdout as Markdown.
 
-import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
+import { isMain } from "./automerge/main.ts";
+import { SEVERITIES } from "./automerge/verdict/parse-review.ts";
 import { CHECK_NAME } from "./risk-review.ts";
 
 /** A follow-up counts if it merged within this long after the pull request. */
@@ -67,7 +68,7 @@ function verdictCell(value: Json | undefined): VerdictCell | undefined {
   const findings = maybeObject(input?.findings);
   const confidence = input?.merge_confidence;
   if (!input || !findings || (confidence !== null && typeof confidence !== "number")) return undefined;
-  const counts = ["P0", "P1", "P2", "P3"].map((severity) => {
+  const counts = SEVERITIES.map((severity) => {
     const count = findings[severity];
     return typeof count === "number" ? count : 0;
   });
@@ -264,7 +265,7 @@ export async function buildReport(get: GitHubGet, { repository, app, since, unti
   return rows;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { app: { type: "string" }, since: { type: "string" }, until: { type: "string" } } });
   const token = process.env.GITHUB_TOKEN;
   if (!token || !values.app || !values.since) {

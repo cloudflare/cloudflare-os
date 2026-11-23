@@ -36,7 +36,7 @@ function summaryFor(number: number, { scored = false, opus = {} }: { scored?: bo
     producers: {
       bonk: { artifact: { ...JSON.parse(verdictJson({ name: "bonk" })), name: "bonk" } },
       opus: { artifact: { ...JSON.parse(verdictJson({ name: "opus", ...opus })), name: "opus" } },
-      "proof-tests": { artifact: { ...JSON.parse(proofJson("proof-tests", "proof", false)), name: "proof-tests" } },
+      "proof-tests": { artifact: { ...JSON.parse(proofJson("proof-tests", false)), name: "proof-tests" } },
     },
   };
   const { config } = parseConfig(JSON.stringify({ mode: "shadow", app_approvals_count: false, threshold: 7, rungs: { proven: false, scored } }));

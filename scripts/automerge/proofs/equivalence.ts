@@ -16,9 +16,9 @@
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
 import { decide, runProducer, type Outcome } from "./artifact.ts";
 import { asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "../json.ts";
+import { isMain } from "../main.ts";
 
 /** Manifest fields that name the build rather than what it contains. */
 const BUILD_IDENTITY = ["commit", "createdAt", "releaseId"];
@@ -60,7 +60,7 @@ export function evaluateEquivalence(base: JsonObject, head: JsonObject): Outcome
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: { base: { type: "string" }, head: { type: "string" } } });
-  await runProducer("proof", "proof-equivalence", async () => {
+  await runProducer("proof-equivalence", async () => {
     const { base, head } = values;
     if (!base || !head) throw new Error("--base and --head manifests are required");
     return evaluateEquivalence(
@@ -69,4 +69,4 @@ async function main(): Promise<void> {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isMain(import.meta.url)) await main();
