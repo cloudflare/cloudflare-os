@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig, type BuiltInReasoning,
 } from "@gadgets/workshop-shared/api";
-import { Type, type ClassifierContext } from "@earendil-works/pi-ai";
+import {
+  type AssistantMessage, type ClassifierContext, type ToolResultMessage,
+} from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
+import { zeroUsage } from "../src/ai-invoke.js";
 import {
   DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
   getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
@@ -121,11 +125,7 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
-  it("routes Google through the gateway's google-ai-studio passthrough", () => {
-    // The @google/genai SDK sends its API key as `x-goog-api-key`, which AI Gateway forwards to
-    // the provider verbatim (taking precedence over the gateway's stored keys), so the documented
-    // stored-key flow passes the gateway token as the SDK API key. The adapter rejects injected
-    // fetch, so only the descriptor is asserted here; the header behavior is the SDK's.
+  it("routes Google through the gateway's google-ai-studio passthrough", async () => {
     const handle = getModel(env(), {
       provider: "google",
       model: "gemini-2.5-flash",
@@ -141,7 +141,31 @@ describe("getModel AI Gateway routing", () => {
       accountId: "gateway-account-id",
       apiToken: "gateway-token",
     });
-  });
+
+    // Exercise the default globalThis.fetch fallback (no options.fetch) and
+    // verify `this` stays bound to globalThis for workerd compatibility.
+    const receivers: unknown[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+        function (this: unknown, input, init) {
+          receivers.push(this);
+          return fetchStub(input, init);
+        });
+    try {
+      const stream = await handle.stream(handle.model, {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      }, { maxRetries: 0 });
+      expect((await stream.result()).stopReason).toBe("error");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(receivers).toEqual([globalThis]);
+    const request = capturedRequests[0]!;
+    expect(urlWithoutQuery(request.url)).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    expect(request.headers.get("x-goog-api-key")).toBeNull();
+  }, 15000);
 
   it("preserves gadget automation metadata", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, GADGET_INITIATOR, {
@@ -221,6 +245,21 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
     expect(request.headers.get("x-api-key")).toBeNull();
     expect(request.headers.get("authorization")).toBeNull();
+
+    capturedRequests.length = 0;
+    const googleHandle = getModel(env(), {
+      provider: "google",
+      model: "gemini-2.5-flash",
+      apiToken: "ignored-in-user-gateway-mode",
+    }, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+    const googleRequest = await captureRequest(googleHandle);
+    expect(urlWithoutQuery(googleRequest.url)).toBe(
+        "https://gateway.ai.cloudflare.com/v1/user-account-id/default/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(googleRequest.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
+    expect(googleRequest.headers.get("x-goog-api-key")).toBeNull();
   }, 15000);
 
   it("routes Workers AI through the platform gateway like every other provider", async () => {
@@ -255,6 +294,111 @@ describe("getModel AI Gateway routing", () => {
         { provider: "ollama", model: "llama3", apiToken: "" }, INITIATOR))
         .toThrow(new Error('Provider "ollama" is not supported through AI Gateway.'));
   });
+
+  describe("the Auto Router model", () => {
+    const AUTO: AiModelConfig =
+        { provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "" };
+    const COMPAT =
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/compat";
+
+    it("speaks Chat Completions on the gateway's unified route, steered by its headers",
+        async () => {
+      const handle = getModel(env(), {
+        ...AUTO, autoRouterPool: { providers: ["anthropic", "google", "cloudflare", "ollama"] },
+      }, INITIATOR, { sessionAffinity: "session-a" });
+      // The model behind a request is the router's to pick, so the descriptor claims only what
+      // every candidate has, and the catalog's limits are the smallest a candidate may have.
+      expect(handle.model).toMatchObject({
+        api: "openai-completions", id: "cloudflare/auto", baseUrl: COMPAT, reasoning: false,
+        input: ["text", "image"], contextWindow: 128000, maxTokens: 32768,
+      });
+      expect(gatewayReasoningLevels("cloudflare-auto-router", "cloudflare/auto")).toEqual([]);
+
+      const request = await captureRequest(handle);
+      expect(request.url).toBe(`${COMPAT}/chat/completions`);
+      expect(JSON.parse(request.body).model).toBe("cloudflare/auto");
+      expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+      // The pool, in the gateway's names for the providers it serves; the chat as the router's
+      // session, so a turn's requests stay with one model and its prompt cache.
+      expect(request.headers.get("cf-aig-allowed-providers"))
+          .toBe("anthropic,workers-ai");
+      expect(request.headers.get("cf-aig-allowed-models")).toBeNull();
+      expect(request.headers.get("cf-aig-session-id")).toBe("session-a");
+    }, 15000);
+
+    it("sends the models its admin listed in place of the providers", async () => {
+      const handle = getModel(env(),
+          { ...AUTO, autoRouterPool: { models: ["anthropic/*", "openai/gpt-6-luna"] } }, INITIATOR);
+      const request = await captureRequest(handle);
+      expect(request.headers.get("cf-aig-allowed-models")).toBe("anthropic/*,openai/gpt-6-luna");
+      expect(request.headers.get("cf-aig-allowed-providers")).toBeNull();
+      expect(request.headers.get("cf-aig-session-id")).toBeNull();
+    }, 15000);
+
+    // A provider test's config carries no pool: the gateway's own default pool answers.
+    it("leaves the pool to the gateway for a config that carries none", async () => {
+      const request = await captureRequest(getModel(env(), AUTO, INITIATOR));
+      expect(request.headers.get("cf-aig-allowed-models")).toBeNull();
+      expect(request.headers.get("cf-aig-allowed-providers")).toBeNull();
+    }, 15000);
+
+    it("refuses a pool of providers the gateway serves none of, and one of no models", () => {
+      expect(() => getModel(env(), { ...AUTO, autoRouterPool: { providers: ["ollama"] } },
+          INITIATOR)).toThrow("Auto Router has no models to pick from");
+      expect(() => getModel(env(), { ...AUTO, autoRouterPool: { providers: [] } }, INITIATOR))
+          .toThrow("Auto Router has no models to pick from");
+      expect(() => getModel(env(), { ...AUTO, autoRouterPool: { models: [] } }, INITIATOR))
+          .toThrow("Auto Router has no models to pick from");
+    });
+
+    // The binding's gateway passthrough forwards any `{gateway}/{segment}/...` path, so the
+    // unified /compat route rides it like the per-provider ones, with no token.
+    it("rides the binding like any provider, and a connected user's gateway over HTTPS",
+        async () => {
+      const binding = { fetch: vi.fn() } as unknown as Ai;
+      const BOUND = "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/compat";
+      expect(getModel(env({ WORKERS_AI: binding }), AUTO, INITIATOR).model.baseUrl).toBe(BOUND);
+      expect(getModel(env({
+        WORKERS_AI: binding, CF_AI_GATEWAY_API_TOKEN: undefined,
+        CF_AI_GATEWAY_PROVIDERS: "anthropic",
+      }), AUTO, INITIATOR).model.baseUrl).toBe(BOUND);
+
+      const user = getModel(env(), { ...AUTO, autoRouterPool: { providers: ["openai"] } },
+          INITIATOR, { userGateway: { accountId: "user-account-id", apiKey: "user-token" } });
+      expect(user.model.baseUrl)
+          .toBe("https://gateway.ai.cloudflare.com/v1/user-account-id/default/compat");
+      const request = await captureRequest(user);
+      expect(request.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
+      expect(request.headers.get("cf-aig-allowed-providers")).toBe("openai");
+    }, 15000);
+
+    it("remembers which model the router answered with", async () => {
+      const handle = getModel(env(), AUTO, INITIATOR);
+      const stream = await handle.stream(handle.model,
+          { messages: [{ role: "user", content: "hello", timestamp: 0 }] }, {
+        maxRetries: 0,
+        fetch: (async () => new Response(`data: ${JSON.stringify({
+          id: "completion", object: "chat.completion.chunk", created: 0,
+          model: "claude-sonnet-5-5",
+          choices: [
+            { index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        })}\n\ndata: [DONE]\n\n`, { headers: {
+          "content-type": "text/event-stream", "cf-aig-log-id": "log-1",
+          "cf-aig-routed-model": "anthropic/claude-sonnet-5.5",
+        } })) as typeof fetch,
+      });
+      expect((await stream.result()).stopReason).toBe("stop");
+      expect(handle.lastResponse).toEqual(
+          { status: 200, aiGatewayLogId: "log-1", routedModel: "anthropic/claude-sonnet-5.5" });
+    }, 15000);
+
+    it("runs through no direct connection", () => {
+      expect(() => getModel(env({ CF_AI_GATEWAY: undefined }), AUTO, INITIATOR))
+          .toThrow("The Auto Router model runs only through an AI Gateway.");
+    });
+  });
 });
 
 describe("getModel AI Gateway binding transport", () => {
@@ -288,8 +432,7 @@ describe("getModel AI Gateway binding transport", () => {
   } as unknown as Ai;
 
   // Binding transport selects by default: binding present, no API token (in-account gateways;
-  // CF_AI_GATEWAY_USE_BINDING=false is the cross-account opt-out). google must not be an
-  // enabled provider in this mode (its transport still needs the token).
+  // CF_AI_GATEWAY_USE_BINDING=false is the cross-account opt-out).
   function bindingEnv(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
     return env({
       CF_AI_GATEWAY_API_TOKEN: undefined,
@@ -381,10 +524,7 @@ describe("getModel AI Gateway binding transport", () => {
         .toBe("Bearer cloudflare-gateway-binding");
   }, 15000);
 
-  it("keeps Google on HTTPS with the token while other providers use the binding", async () => {
-    // Hybrid mode: binding and token both present. pi's Google adapter rejects a custom fetch,
-    // so Google inference rides HTTPS with the gateway token -- but same-account log reads
-    // still use the binding.
+  it("routes Google through the binding when both binding and token are present", async () => {
     const hybridEnv = env({
       CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
       WORKERS_AI: fakeBinding,
@@ -396,33 +536,44 @@ describe("getModel AI Gateway binding transport", () => {
       apiToken: "ignored-in-gateway-mode",
     }, INITIATOR);
     expect(googleHandle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
         "google-ai-studio/v1beta");
     expect(googleHandle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
 
-    const anthropicHandle = getModel(hybridEnv, ANTHROPIC_CONFIG, INITIATOR);
-    const entry = await captureEntry(anthropicHandle);
-    expect(urlWithoutQuery(entry.url)).toBe(
-        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic/v1/messages");
-    // The binding arm carries the sentinel, never the real gateway token.
-    expect(entry.headers["cf-aig-authorization"]).toBe("Bearer cloudflare-gateway-binding");
+    const googleEntry = await captureEntry(googleHandle);
+    expect(urlWithoutQuery(googleEntry.url)).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(googleEntry.headers["cf-aig-authorization"])
+        .toBe("Bearer cloudflare-gateway-binding");
+    expect(googleEntry.headers["x-goog-api-key"]).toBeUndefined();
   }, 15000);
 
-  it("requires the token when google is an enabled provider", () => {
-    expect(() => getModel(
+  it("allows google as an enabled provider without a token when binding is present", () => {
+    const handle = getModel(
         bindingEnv({ CF_AI_GATEWAY_PROVIDERS: "anthropic,google" }),
-        ANTHROPIC_CONFIG, INITIATOR)).toThrow(
-        "enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
+        ANTHROPIC_CONFIG, INITIATOR);
+    expect(handle.model.baseUrl).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic");
   });
 
-  it("rejects a stored google config when the deployment has no token", () => {
-    expect(() => getModel(bindingEnv(), {
+  it("routes a stored google config through the binding when the deployment has no token", async () => {
+    const googleHandle = getModel(bindingEnv(), {
       provider: "google",
       model: "gemini-2.5-flash",
       apiToken: "ignored-in-gateway-mode",
-    }, INITIATOR)).toThrow(
-        'Provider "google" cannot use the Workers AI binding transport');
-  });
+    }, INITIATOR);
+    expect(googleHandle.model.baseUrl).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta");
+    const entry = await captureEntry(googleHandle);
+    expect(urlWithoutQuery(entry.url)).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(entry.headers["cf-aig-authorization"])
+        .toBe("Bearer cloudflare-gateway-binding");
+    expect(entry.headers["x-goog-api-key"]).toBeUndefined();
+  }, 15000);
 
 });
 
@@ -434,7 +585,7 @@ describe("getModel direct routing (no gateway)", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
     ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
-    ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000],
+    ["anthropic", "claude-fable-5-2", "Claude Fable 5.2", 1_000_000],
     ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000],
     ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000],
     ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000],
@@ -465,7 +616,7 @@ describe("getModel direct routing (no gateway)", () => {
       : { supportsExplicitPromptCacheMode: true });
   });
 
-  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2"])(
       "keeps quick requests valid for %s", async (model) => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "anthropic",
@@ -728,9 +879,12 @@ describe("gateway model reasoning levels", () => {
   const GPT_6_SOL: GatewayConfig = { provider: "openai", model: "gpt-6-sol" };
   const GLM: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.2" };
   const GLM_FLASH: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.3-flash" };
+  const GLM_5_3: GatewayConfig = { provider: "cloudflare", model: "@cf/zai-org/glm-5.3" };
   const KIMI: GatewayConfig = { provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code" };
   const DEEPSEEK: GatewayConfig =
       { provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813" };
+  const DEEPSEEK_FLASH: GatewayConfig =
+      { provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4.1-flash-1017" };
   // pi marks this one as a model that does no reasoning.
   const LLAMA: GatewayConfig = { provider: "cloudflare", model: WORKERS_AI_CONFIG.model };
 
@@ -748,7 +902,7 @@ describe("gateway model reasoning levels", () => {
       type: "adaptive", display: "summarized",
       block_binding: { prefix_mismatch_behavior: "drop_block" },
     },
-    output_config: { effort: "high" },
+    output_config: { effort: "low" },
   });
   const claudeBody = (config: GatewayConfig, max_tokens: number, extra: object = {}) =>
       ({ model: config.model, messages: [CLAUDE_HELLO], max_tokens, stream: true, ...extra });
@@ -761,6 +915,15 @@ describe("gateway model reasoning levels", () => {
   const gptEffortBody = (config: GatewayConfig, effort: string) => gptBody(config, {
     reasoning: { effort, summary: "auto" }, include: ["reasoning.encrypted_content"],
   });
+  // pi sends an OpenAI model that takes a mid-conversation effort that effort in a
+  // configuration_update item; the top-level one is fixed.
+  const gptUpdateBody = (config: GatewayConfig, effort: string) => ({
+    ...gptEffortBody(config, "medium"),
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "hello" }] },
+      { type: "configuration_update", reasoning: { effort } },
+    ],
+  });
   const completionsBody = (config: GatewayConfig, extra: object = {}) => ({
     model: config.model, messages: [{ role: "user", content: "hello" }], stream: true,
     stream_options: { include_usage: true }, ...extra,
@@ -771,10 +934,12 @@ describe("gateway model reasoning levels", () => {
   it.each([
     ["an adaptive Claude", OPUS, opusBody("high")],
     ["Haiku", HAIKU, claudeBody(HAIKU, 64000)],
-    ["an OpenAI model", GPT, gptEffortBody(GPT, "medium")],
+    ["an OpenAI model", GPT, gptUpdateBody(GPT, "medium")],
     ["GLM 5.2", GLM, completionsBody(GLM)],
     // pi's DeepSeek format turns thinking off whenever it is given no effort.
     ["DeepSeek V4 Pro", DEEPSEEK, completionsBody(DEEPSEEK, { thinking: { type: "disabled" } })],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH,
+      completionsBody(DEEPSEEK_FLASH, { thinking: { type: "disabled" } })],
   ])("sends %s its built-in request while no level is set", async (_, config, body) => {
     expect(await requestBody(config)).toBe(JSON.stringify(body));
   });
@@ -827,7 +992,7 @@ describe("gateway model reasoning levels", () => {
     ["off", "low"], ["minimal", "low"], ["low", "low"], ["medium", "medium"], ["high", "high"],
     ["xhigh", "xhigh"], ["max", "max"],
   ] as const)("asks an OpenAI model for level %s as effort %s", async (level, effort) => {
-    expect(await parsed({ ...GPT, reasoning: level })).toEqual(gptEffortBody(GPT, effort));
+    expect(await parsed({ ...GPT, reasoning: level })).toEqual(gptUpdateBody(GPT, effort));
   });
 
   it("turns reasoning off on an OpenAI model that can stop reasoning", async () => {
@@ -847,6 +1012,9 @@ describe("gateway model reasoning levels", () => {
     ["GLM 5.3 Flash", GLM_FLASH, "off", { reasoning_effort: "low" }],
     ["GLM 5.3 Flash", GLM_FLASH, "medium", { reasoning_effort: "high" }],
     ["GLM 5.3 Flash", GLM_FLASH, "max", { reasoning_effort: "max" }],
+    ["GLM 5.3", GLM_5_3, "off", { reasoning_effort: "low" }],
+    ["GLM 5.3", GLM_5_3, "medium", { reasoning_effort: "high" }],
+    ["GLM 5.3", GLM_5_3, "max", { reasoning_effort: "max" }],
     // Its "off" is to send no effort.
     ["Kimi K2.7", KIMI, "off", {}],
     ["Kimi K2.7", KIMI, "minimal", { reasoning_effort: "minimal" }],
@@ -855,6 +1023,11 @@ describe("gateway model reasoning levels", () => {
     ["DeepSeek V4 Pro", DEEPSEEK, "low",
       { thinking: { type: "enabled" }, reasoning_effort: "high" }],
     ["DeepSeek V4 Pro", DEEPSEEK, "max",
+      { thinking: { type: "enabled" }, reasoning_effort: "max" }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "off", { thinking: { type: "disabled" } }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "low",
+      { thinking: { type: "enabled" }, reasoning_effort: "high" }],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH, "max",
       { thinking: { type: "enabled" }, reasoning_effort: "max" }],
     ["a model that does no reasoning", LLAMA, "high", {}],
   ] as const)("sends $0 level $2", async (_, config, level, extra) => {
@@ -930,6 +1103,7 @@ describe("gateway model reasoning levels", () => {
     ["an adaptive Claude", OPUS], ["an adaptive Claude that can stop thinking", SONNET_5],
     ["Haiku", HAIKU], ["an OpenAI model", GPT], ["an OpenAI model that can stop", GPT_6_SOL],
     ["GLM 5.3 Flash", GLM_FLASH], ["Kimi K2.7", KIMI], ["DeepSeek V4 Pro", DEEPSEEK],
+    ["DeepSeek V4.1 Flash", DEEPSEEK_FLASH],
   ])("sends %s the same quick request whatever level is set", async (_, config) => {
     const quick = await requestBody(config, { thinking: false });
     for (const level of ["off", "high", "max"] as const) {
@@ -958,8 +1132,10 @@ describe("gateway model reasoning levels", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", LOW_TO_MAX],
     ["anthropic", "claude-sonnet-5-5", LOW_TO_MAX],
+    ["anthropic", "claude-haiku-5-5", ["off", ...LOW_TO_MAX]],
+    ["anthropic", "claude-fable-5-2", ["minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-fable-5-1", ["minimal", ...LOW_TO_MAX]],
-    ["anthropic", "claude-opus-5", ["minimal", ...LOW_TO_MAX]],
+    ["anthropic", "claude-opus-5", ["off", "minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-sonnet-5", ["off", "minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-haiku-4-5", OFF_TO_HIGH],
     ["openai", "gpt-6.1-sol", LOW_TO_MAX],
@@ -974,6 +1150,8 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/zai-org/glm-5.2", ["off", "high", "max"]],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", ["low", "high", "max"]],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", ["off", "high", "max"]],
+    ["cloudflare", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", ["off", "high", "max"]],
+    ["cloudflare", "@cf/zai-org/glm-5.3", ["low", "high", "max"]],
     // Models pi does not know: one that is assumed to reason takes the levels every such model
     // has, and a Workers AI one is assumed not to.
     ["anthropic", "claude-next", OFF_TO_HIGH],
@@ -990,6 +1168,8 @@ describe("gateway model reasoning levels", () => {
   const BUILT_IN: [AiModelConfig["provider"], string, BuiltInReasoning][] = [
     ["anthropic", "claude-opus-5-5", "adaptive"],
     ["anthropic", "claude-sonnet-5-5", "adaptive"],
+    ["anthropic", "claude-haiku-5-5", "adaptive"],
+    ["anthropic", "claude-fable-5-2", "adaptive"],
     ["anthropic", "claude-fable-5-1", "adaptive"],
     ["anthropic", "claude-opus-5", "adaptive"],
     ["anthropic", "claude-sonnet-5", "adaptive"],
@@ -1006,8 +1186,11 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/zai-org/glm-5.2", null],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", null],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],
+    ["cloudflare", "@cf/deepseek-ai/deepseek-v4.1-flash-1017", null],
+    ["cloudflare", "@cf/zai-org/glm-5.3", null],
     ["cloudflare", "@cf/cloudflare/clef", null],
     ["cloudflare", "@cf/cloudflare/clef-flash", null],
+    ["cloudflare-auto-router", "cloudflare/auto", null],
   ];
   it.each(BUILT_IN)("says what %s model %s is asked for while no level is set",
       (provider, model, builtIn) => {
@@ -1063,8 +1246,8 @@ describe("gateway model reasoning levels", () => {
       { userGateway: { accountId: "user-account-id", apiKey: "user-token" } }],
   ] as const;
 
-  // DeepSeek V4 Pro is left out: it is asked for nothing, and pi's format for it then turns
-  // thinking off (see its built-in request above).
+  // The DeepSeek models are left out: they are asked for nothing, and pi's format for them then
+  // turns thinking off (see their built-in requests above).
   it.each<[string, GatewayConfig, BuiltInReasoning]>([
     ["a Claude whose effort pi manages", OPUS, "adaptive"],
     ["an adaptive Claude", SONNET_5, "adaptive"],
@@ -1459,6 +1642,30 @@ describe("LanguageModelGatekeeper.startSession", () => {
     }
   });
 
+  // The pool is the admin's spend policy, so a binding follows the current one, not its own.
+  it("gives the Auto Router model the deployment's current pool", async () => {
+    const minted: AiModelConfig = {
+      provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "",
+      autoRouterPool: { providers: ["anthropic", "openai"] },
+    };
+    const narrowed: Partial<AdminConfig> =
+        { modelSettings: { "cloudflare/auto": { allowedModels: ["anthropic/*"] } } };
+    vi.stubGlobal("fetch", fetchStub);
+    try {
+      capturedRequests.length = 0;
+      const binding = await startSession(minted, narrowed,
+          { CF_AI_GATEWAY_PROVIDERS: "anthropic,cloudflare-auto-router" }).session;
+      await expect(binding.run({ prompt: "hello" })).rejects.toThrow();
+      expect(capturedRequests[0].headers.get("cf-aig-allowed-models")).toBe("anthropic/*");
+      expect(capturedRequests[0].headers.get("cf-aig-allowed-providers")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // Once the deployment stops offering it, the binding stops rather than run without a pool.
+    await expect(startSession(minted, {}, { CF_AI_GATEWAY_PROVIDERS: "anthropic" }).session)
+        .rejects.toThrow("The Auto Router model is no longer offered on this deployment.");
+  });
+
   it("does not read the admin config outside AI Gateway mode", async () => {
     const { session, getConfig } = startSession(
         { provider: "anthropic", model: MODEL_ID, apiToken: "direct-api-token" },
@@ -1513,7 +1720,7 @@ describe("LanguageModelGatekeeper.startSession", () => {
   });
 });
 
-// A decision model binding is revoked as a language model binding is (see refuseRevokedModel()).
+// A decision model binding is revoked as a language model binding is (see bindingConfig()).
 describe("DecisionModelGatekeeper.startSession", () => {
   it("refuses a decision model the admin disabled", async () => {
     const admin = { ...DEFAULT_ADMIN_CONFIG, modelModes: { "@cf/cloudflare/clef": "disabled" } };
@@ -1601,6 +1808,100 @@ describe("PDF attachment bridging", () => {
   }, 15000);
 });
 
+describe("Gemini function call signatures", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Gemini 3 rejects a request whose current turn holds a function call without a thought
+  // signature, which history replay's synthetic calls lack. pi's Google adapter refuses an injected
+  // fetch, so the request is read from the global one.
+  it("gives a call the model didn't make Google's stand-in, and keeps the model's own", async () => {
+    vi.stubGlobal("fetch", fetchStub);
+    const handle = getModel(env(), {
+      provider: "google",
+      model: "gemini-3.6-flash",
+      apiToken: "ignored-in-gateway-mode",
+    }, INITIATOR);
+    // One step of a tool loop: the call, then its result.
+    const step = (id: string, thoughtSignature?: string): [AssistantMessage, ToolResultMessage] => [{
+      role: "assistant",
+      content: [{
+        type: "toolCall", id, name: "observeUserChanges", arguments: {},
+        ...(thoughtSignature !== undefined && { thoughtSignature }),
+      }],
+      api: handle.model.api,
+      provider: handle.model.provider,
+      model: handle.model.id,
+      usage: zeroUsage(),
+      stopReason: "toolUse",
+      timestamp: 0,
+    }, {
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "observeUserChanges",
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+      timestamp: 0,
+    }];
+    const stream = handle.stream(handle.model, {
+      messages: [
+        { role: "user", content: "hello", timestamp: 0 },
+        ...step("model-call", "c2lnbmF0dXJl"),
+        ...step("synthetic_3"),
+      ],
+    }, { maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+
+    const part = z.object({
+      functionCall: z.object({}).optional(),
+      thoughtSignature: z.string().optional(),
+    });
+    const body = z.object({ contents: z.array(z.object({ parts: z.array(part) })) })
+        .parse(JSON.parse(capturedRequests[0].body));
+    expect(body.contents.flatMap(content => content.parts)
+        .filter(entry => entry.functionCall !== undefined)
+        .map(entry => entry.thoughtSignature))
+        .toEqual(["c2lnbmF0dXJl", "skip_thought_signature_validator"]);
+  }, 15000);
+});
+
+describe("Tool-call arguments", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // A model can emit half of a surrogate pair in its arguments, and every later request resends
+  // them; Anthropic rejects a body holding one.
+  it("reach the provider well-formed", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      apiToken: "direct-api-token",
+    }, INITIATOR);
+    const stream = handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }, {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_1", name: "editFile", arguments: { replacement: "'\ud83d'" } }],
+        api: handle.model.api,
+        provider: handle.model.provider,
+        model: handle.model.id,
+        usage: zeroUsage(),
+        stopReason: "toolUse",
+        timestamp: 0,
+      }],
+    }, { fetch: fetchStub, maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+
+    // Compared JSON-encoded: a lone surrogate in a failure report breaks the vitest pool's WebSocket.
+    expect(JSON.stringify(JSON.parse(capturedRequests[0].body).messages[1].content[0].input))
+        .toBe(JSON.stringify({ replacement: "'\uFFFD'" }));
+  });
+});
+
 // Counts the cache breakpoints in an Anthropic request body.
 const breakpointCount = (body: string) => body.split(`"cache_control"`).length - 1;
 
@@ -1682,9 +1983,17 @@ describe("System prompt cache blocks", () => {
     return handle;
   }
 
+  // A request's instructions: pi declares a model's tools ahead of them in an additional_tools
+  // item, where the model takes one.
+  const instructions = (body: string) => (JSON.parse(body).input as { type?: string }[])
+      .find(item => item.type !== "additional_tools");
+
   it("puts an OpenAI GPT-5.6+ breakpoint after the static text", async () => {
     const handle = openAiHandle("gpt-6-luna");
-    expect(JSON.parse(await captureBody(handle, true)).input[0]).toEqual({
+    const split = await captureBody(handle, true);
+    // The breakpoint caches the tools ahead of the instructions too.
+    expect(JSON.parse(split).input[0]).toMatchObject({ type: "additional_tools" });
+    expect(instructions(split)).toEqual({
       role: "developer",
       content: [
         { type: "input_text", text: STATIC_TEXT, prompt_cache_breakpoint: { mode: "explicit" } },
@@ -1699,7 +2008,7 @@ describe("System prompt cache blocks", () => {
   ] as const)("leaves the OpenAI prompt whole for $name", async ({ model, options }) => {
     const handle = openAiHandle(model);
     const split = await captureBody(handle, true, options);
-    expect(JSON.parse(split).input[0]).toMatchObject({ content: RENDERED_TEXT });
+    expect(instructions(split)).toMatchObject({ content: RENDERED_TEXT });
     expect(split).toBe(await captureBody(handle, false, options));
   }, 15000);
 
@@ -1720,6 +2029,164 @@ describe("System prompt cache blocks", () => {
   ])("keeps the chat's prompt cache key on $name", async ({ model, sections }) => {
     const body = JSON.parse(await captureBody(chatHandle(model), sections));
     expect(body.prompt_cache_key).toBe("chat-7");
+  }, 15000);
+});
+
+describe("Resending a request to keep its cache", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs,
+  // logged by AI Gateway as `log-1`.
+  const events = (sent: Record<string, unknown>[]) => new Response(
+      sent.map(event => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream", "cf-aig-log-id": "log-1" } });
+
+  // Answers every request to a 100k-token prompt with an empty reply in the API's own format, 90k
+  // of the prompt read from the cache unless Anthropic caches none of it. Anthropic's reply counts
+  // 5k tokens, which a resend doesn't send again.
+  const answering = ({ cached = true } = {}) => (async (input: RequestInfo | URL,
+                                                        init?: RequestInit) => {
+    const request = new Request(input as RequestInfo, init);
+    capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
+    const { pathname } = new URL(request.url);
+    if (pathname.endsWith("/messages")) {
+      return events([
+        { type: "message_start", message: {
+          id: "message", type: "message", role: "assistant", model: "claude", content: [],
+          stop_reason: null, stop_sequence: null,
+          usage: cached ? {
+            input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 9_990,
+            output_tokens: 1,
+          } : { input_tokens: 100_000, output_tokens: 1 },
+        } },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 5_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    if (pathname.endsWith("/responses")) {
+      return events([{ type: "response.completed", response: {
+        id: "response", status: "completed", output: [],
+        usage: {
+          input_tokens: 100_000, output_tokens: 1, total_tokens: 100_001,
+          input_tokens_details: { cached_tokens: 90_000 },
+        },
+      } }]);
+    }
+    return new Response(`data: ${JSON.stringify({
+      id: "completion", object: "chat.completion.chunk", created: 0, model: "model",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100_000, completion_tokens: 1, total_tokens: 100_001,
+        prompt_tokens_details: { cached_tokens: 90_000 },
+      },
+    })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+
+  // An agent turn's request: a split system prompt whose static text and tools come to about 10k
+  // tokens, and a user message.
+  async function send(handle: ModelHandle,
+                      options: NonNullable<Parameters<ModelHandle["stream"]>[2]> = {}) {
+    const message = await handle.stream(handle.model, {
+      messages: [
+        {
+          role: "system", content: "Shared instructions. ".repeat(1_900),
+          sections: { environment: "This workspace's gadgets." },
+          toolsAdded: [{ name: "lookUp", description: "Looks up.", parameters: Type.Object({}) }],
+          timestamp: 0,
+        },
+        { role: "user", content: "hello", timestamp: 0 },
+      ],
+    }, { fetch: answering(), maxRetries: 0, ...options }).result();
+    expect(message.stopReason).toBe("stop");
+  }
+
+  // A captured request's headers, less the ones that differ between a request and its resend.
+  const sharedHeaders = ({ headers }: CapturedRequest) => Object.fromEntries(
+      [...headers].filter(([name]) =>
+          !["content-length", "cf-aig-metadata", "cf-aig-skip-cache"].includes(name)));
+
+  it("resends an Anthropic request as sent, with a one-token cap, marked and logged in the gateway",
+      async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR, {
+          sessionAffinity: "chat-7",
+          metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
+        });
+    await send(handle);
+    expect(handle.aiGatewayLogRoute).toBeDefined();
+    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({
+      usage: { cacheRead: 90_000 },
+      aiGatewayLogId: "log-1",
+      aiGatewayLogRoute: handle.aiGatewayLogRoute,
+    });
+
+    const [sent, resent] = capturedRequests;
+    expect(resent.url).toBe(sent.url);
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_tokens: 1 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(JSON.parse(resent.headers.get("cf-aig-metadata")!)).toEqual({
+      user: "user-123", source: "cache-warm", gadgetId: "gadget-123", chatId: 7,
+    });
+    expect(resent.headers.get("cf-aig-skip-cache")).toBe("true");
+    expect(sent.headers.get("cf-aig-skip-cache")).toBeNull();
+    expect(handle.lastRequest?.cacheLifetime).toBe(5 * 60_000);
+  }, 15000);
+
+  it("resends a GPT-5.6+ request as sent, with the smallest output cap", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }),
+        { provider: "openai", model: "gpt-6-luna", apiToken: "direct-api-token" }, INITIATOR,
+        { sessionAffinity: "chat-7" });
+    await send(handle);
+    await expect(handle.lastRequest?.resend())
+        .resolves.toMatchObject({ usage: { cacheRead: 90_000 } });
+
+    const [sent, resent] = capturedRequests;
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
+  }, 15000);
+
+  it("prices a resend as a read of the whole prompt and a one-token answer, and a miss as a " +
+      "write of the chat's own part", async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    await send(handle);
+
+    const { cacheRead, cacheWrite, output } = handle.model.cost;
+    expect(handle.lastRequest?.resendCost).toBeCloseTo((100_000 * cacheRead + output) / 1e6, 8);
+    // The tools and static system text, about 10k tokens, are cached apart from the chat's part.
+    const ownTokens = handle.lastRequest!.expiryCost / ((cacheWrite - cacheRead) / 1e6);
+    expect(ownTokens).toBeGreaterThan(89_900);
+    expect(ownTokens).toBeLessThan(90_100);
+  }, 15000);
+
+  it.each([
+    { name: "a Claude given a thinking budget, which must stay below the cap",
+      config: { provider: "anthropic", model: "claude-haiku-4-5", reasoning: "high" } },
+    { name: "OpenAI models before GPT-5.6, whose cache has no set lifetime",
+      config: { provider: "openai", model: "gpt-5.2" } },
+    { name: "Workers AI", config: { provider: "cloudflare", model: WORKERS_AI_CONFIG.model } },
+  ] as const)("keeps no request to resend for $name", async ({ config }) => {
+    const handle = getModel(env({ CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" }),
+        { ...config, apiToken: "" }, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+
+  it("keeps no request that the provider didn't cache, or that the handle sent with caching off",
+      async () => {
+    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeDefined();
+    await send(handle, { cacheRetention: "none" });
+    expect(handle.lastRequest).toBeUndefined();
+
+    // As for a prompt below the model's minimum.
+    await send(handle, { fetch: answering({ cached: false }) });
+    expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 });
 
@@ -1766,14 +2233,17 @@ describe("getDecisionModel routing", () => {
     user: "owner-456", source: "model-binding", gadgetId: "gadget-789", automated: true,
   };
 
-  // pi's classify() takes no fetch from getDecisionModel on HTTP routes, so it uses the global one.
-  beforeEach(() => {
-    capturedRequests.length = 0;
+  // The direct route and the HTTPS gateway route both reach the network through the global fetch.
+  function stubGatewayFetch(respond: () => Response) {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
-      return Response.json({ success: true, result: CLEF_RESULT });
+      return respond();
     });
+  }
+  beforeEach(() => {
+    capturedRequests.length = 0;
+    stubGatewayFetch(() => Response.json({ success: true, result: CLEF_RESULT }));
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -1796,16 +2266,31 @@ describe("getDecisionModel routing", () => {
   });
 
   it("decides through the platform gateway over HTTPS with the gateway token", async () => {
+    // The gateway passes Workers AI's bare result through, as the binding's run() returns it.
+    stubGatewayFetch(() => Response.json(CLEF_RESULT));
     const decide = getDecisionModel(env(), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
 
     expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
     const [request] = capturedRequests;
-    expect(request.url).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/workers-ai/run");
-    // Workers AI's /run checks `authorization` itself; the gateway checks its own header.
-    expect(request.headers.get("authorization")).toBe("Bearer gateway-token");
+    expect(request.url).toBe("https://gateway.ai.cloudflare.com/v1/gateway-account-id/" +
+        "platform-gateway/workers-ai/run/@cf/cloudflare/clef");
+    // An `authorization` header would be forwarded to Workers AI as the credential, in place of
+    // the one the gateway supplies.
+    expect(request.headers.has("authorization")).toBe(false);
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
     expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual(GATEWAY_METADATA);
+    expect(JSON.parse(request.body)).toEqual(WIRE_INPUT);
+  });
+
+  it("reports a gateway refusal as an error result", async () => {
+    stubGatewayFetch(() => Response.json(
+        { success: false, errors: [{ message: "Authentication error" }] }, { status: 401 }));
+    const decide = getDecisionModel(env(), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+    expect(await decide(CONTEXT)).toMatchObject({
+      stopReason: "error",
+      errorMessage: expect.stringContaining("Authentication error"),
+    });
   });
 
   describe("over the Workers AI binding", () => {

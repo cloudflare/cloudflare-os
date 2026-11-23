@@ -1,13 +1,15 @@
-// Retrying a model request that failed transiently: runAgent runs the pass again even when the
-// failed request already streamed output, and tells clients to discard that output first. Drives
-// the real runAgent against a real OverseerImpl, with pi's faux provider standing in for the model.
+// How runAgent ends a turn. It retries a model request that failed transiently, running the pass
+// again even when the failed request already streamed output, and tells clients to discard that
+// output first. And it leaves the turn's last request to keep cached only when the chat's next
+// request will start with it. Drives the real runAgent against a real OverseerImpl, with pi's faux
+// provider standing in for the model.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
   createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall,
-  type AssistantMessage, type TranscriptContext,
+  type AssistantMessage,
 } from "@earendil-works/pi-ai";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent,
@@ -15,6 +17,7 @@ import type {
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GadgetRecord } from "../src/storage-schema/overseer-storage.js";
 import { runAgent, type AgentHooks } from "../src/agent";
+import type { CachedRequest, ModelHandle } from "../src/ai-models.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -60,31 +63,19 @@ function seedChat(impl: OverseerInternals): void {
 // Runs one agent turn whose model answers each request with the next scripted response,
 // returning the stream events sent to clients.
 async function runScriptedTurn(
-    impl: OverseerInternals,
-    steps: AssistantMessage[],
-): Promise<{events: AiChatStreamEvent[]; contexts: TranscriptContext[]}> {
+    impl: OverseerInternals, steps: AssistantMessage[]): Promise<AiChatStreamEvent[]> {
   let events: AiChatStreamEvent[] = [];
-  let contexts: TranscriptContext[] = [];
   impl.emitChatStreamEvent = (_chatId, event) => events.push(event);
   let faux = createFauxCore({ models: [{ id: "faux-model" }] });
-  faux.setResponses(steps.map(step => (context: TranscriptContext) => {
-    contexts.push(structuredClone(context));
-    return step;
-  }));
+  faux.setResponses(steps);
   await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, CHAT_ID,
       { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, OWNER,
       { provider: "cloudflare", model: "faux-model", apiToken: "" });
-  return {events, contexts};
+  return events;
 }
 
 function streamedText(events: AiChatStreamEvent[]): string {
   return events.flatMap(event => event.type === "textDelta" ? [event.delta] : []).join("");
-}
-
-function toolResultImages(context: TranscriptContext) {
-  return context.messages.flatMap(message => message.role === "toolResult"
-    ? message.content.flatMap(part => part.type === "image" ? [part] : [])
-    : []);
 }
 
 describe("transient model failures", () => {
@@ -92,7 +83,7 @@ describe("transient model failures", () => {
       () => withImpl(async impl => {
     seedChat(impl);
 
-    let {events} = await runScriptedTurn(impl, [
+    let events = await runScriptedTurn(impl, [
       fauxAssistantMessage([fauxThinking("Planning the answer"), fauxText("A partial ans")],
           { stopReason: "error", errorMessage: "503 Service Unavailable" }),
       fauxAssistantMessage(fauxText("The full answer.")),
@@ -122,172 +113,57 @@ describe("transient model failures", () => {
       fauxAssistantMessage(fauxText("Never requested.")),
     ])).rejects.toThrow("400 Invalid request");
   }));
+});
 
-  it("replays executeCode images after a transient failure reload", () => withImpl(async impl => {
-    seedChat(impl);
-    impl.executeCodeMode = async () => ({
-      output: "captured screenshot",
-      images: [{
-        data: Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
-        mimeType: "image/png",
-      }],
-    });
-
-    let {contexts} = await runScriptedTurn(impl, [
-      fauxAssistantMessage([
-        fauxToolCall("executeCode", {code: "capture()"}),
-      ], {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxText("Retry me"), {
-        stopReason: "error",
-        errorMessage: "503 Service Unavailable",
-      }),
-      fauxAssistantMessage(fauxText("Screenshot received.")),
-    ]);
-
-    expect(toolResultImages(contexts[1])).toEqual([{
-      type: "image",
-      data: "iVBORw0KGgo=",
-      mimeType: "image/png",
-    }]);
-    expect(toolResultImages(contexts[2])).toEqual(toolResultImages(contexts[1]));
-  }));
-
-  it("bounds image bytes across all executeCode calls in one persisted step",
-      () => withImpl(async impl => {
-    seedChat(impl);
-    impl.executeCodeMode = async () => ({
-      output: "captured screenshot",
-      images: [{
-        data: new Uint8Array(7 * 1024 * 1024 / 2),
-        mimeType: "image/png",
-      }],
-    });
-
-    let {contexts} = await runScriptedTurn(impl, [
-      fauxAssistantMessage([
-        fauxToolCall("executeCode", {code: "captureFirst()"}),
-        fauxToolCall("executeCode", {code: "captureSecond()"}),
-      ], {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxText("Done.")),
-    ]);
-
-    let results = contexts[1].messages.filter(message => message.role === "toolResult");
-    expect(results).toHaveLength(2);
-    expect(results[0].isError).toBe(false);
-    expect(results[0].content.filter(part => part.type === "image")).toHaveLength(1);
-    expect(results[1].isError).toBe(true);
-    expect(results[1].content).toContainEqual({
-      type: "text",
-      text: "Image output exceeds 6 MiB for this agent step.",
-    });
-  }));
-
-  it("elides older executeCode images before the provider request becomes too large",
-      () => withImpl(async impl => {
-    seedChat(impl);
-    let imageIndex = 0;
-    let mimeTypes = ["image/png", "image/jpeg", "image/webp"] as const;
-    let headers = [
-      Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
-      Uint8Array.of(0xff, 0xd8, 0xff),
-      Uint8Array.of(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50),
-    ];
-    impl.executeCodeMode = async () => {
-      let data = new Uint8Array(4 * 1024 * 1024 + 1);
-      data.set(headers[imageIndex]);
-      return {
-        output: "captured screenshot",
-        images: [{data, mimeType: mimeTypes[imageIndex++]}],
-      };
+describe("the request a turn leaves to keep cached", () => {
+  // Runs one turn whose model answers each request with the next of `steps`, with a compaction
+  // trigger at 85% of `compactionInputBudget`. Returns what runAgent left to keep cached and every
+  // request the handle could have resent.
+  async function runTurn(
+      impl: OverseerInternals, steps: AssistantMessage[], compactionInputBudget: number) {
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    faux.setResponses(steps);
+    let requests: CachedRequest[] = [];
+    let handle: ModelHandle = {
+      model: faux.getModel(),
+      stream: (model, context, options) => {
+        handle.lastRequest = {
+          sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 0,
+          resend: () => Promise.reject(new Error("Not resent in this test.")),
+        };
+        requests.push(handle.lastRequest);
+        return faux.stream(model, context, options);
+      },
     };
+    let kept = await runAgent(impl, handle, CHAT_ID,
+        { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, OWNER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "", compactionInputBudget });
+    return { kept, requests };
+  }
 
-    let {contexts} = await runScriptedTurn(impl, [
-      fauxAssistantMessage(fauxToolCall("executeCode", {code: "captureFirst()"}),
-          {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxToolCall("executeCode", {code: "captureSecond()"}),
-          {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxToolCall("executeCode", {code: "captureThird()"}),
-          {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxText("Done.")),
-    ]);
-
-    expect(toolResultImages(contexts[2]).map(image => image.mimeType))
-        .toEqual(["image/png", "image/jpeg"]);
-    expect(toolResultImages(contexts[3]).map(image => image.mimeType))
-        .toEqual(["image/jpeg", "image/webp"]);
-    let oldestResult = contexts[3].messages.find(message => message.role === "toolResult");
-    expect(oldestResult?.content).toContainEqual({
-      type: "text",
-      text: "[Earlier image output omitted to keep this model request within its size limit. " +
-          "Capture it again with executeCode if needed.]",
-    });
+  it("leaves the last request when the next one fits", () => withImpl(async impl => {
+    seedChat(impl);
+    let { kept, requests } = await runTurn(
+        impl, [fauxAssistantMessage(fauxText("A short answer."))], 200_000);
+    expect(requests).toHaveLength(1);
+    expect(kept).toBe(requests[0]);
   }));
 
-  it("retains only the newest four executeCode images",
-      () => withImpl(async impl => {
+  // A turn that ends to wait for the user's decision leaves its tool results for the next
+  // request, which compacts first if they don't fit. The model calls a tool that doesn't exist,
+  // whose error result repeats the tool's name: with a 50k-token name, the call fits under the
+  // trigger at 95k tokens, and the call with its result passes it.
+  it.each([
+    { name: "fits", tool: "lookUp", fits: true },
+    { name: "would compact", tool: "x".repeat(200_000), fits: false },
+  ])("leaves the last request of a turn awaiting a decision only if the next one $name",
+      ({ tool, fits }) => withImpl(async impl => {
     seedChat(impl);
-    let imageIndex = 0;
-    impl.executeCodeMode = async () => ({
-      output: "captured screenshot",
-      images: [{
-        data: Uint8Array.of(++imageIndex),
-        mimeType: "image/png" as const,
-      }],
-    });
-
-    let toolSteps = Array.from({length: 5}, (_, index) =>
-      fauxAssistantMessage(fauxToolCall("executeCode", {code: `capture${index}()`}),
-          {stopReason: "toolUse"}));
-    let {contexts} = await runScriptedTurn(impl, [
-      ...toolSteps,
-      fauxAssistantMessage(fauxText("Done.")),
-    ]);
-
-    expect(toolResultImages(contexts[4]).map(image => image.data))
-        .toEqual(["AQ==", "Ag==", "Aw==", "BA=="]);
-    expect(toolResultImages(contexts[5]).map(image => image.data))
-        .toEqual(["Ag==", "Aw==", "BA==", "BQ=="]);
-    let oldestResult = contexts[5].messages.find(message => message.role === "toolResult");
-    expect(oldestResult?.content).toContainEqual({
-      type: "text",
-      text: "[Earlier image output omitted to keep this model request within its size limit. " +
-          "Capture it again with executeCode if needed.]",
-    });
-  }));
-
-  it("includes chat attachments in the request media budget",
-      () => withImpl(async impl => {
-    seedChat(impl);
-    impl.storage.chats.put({
-      chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(1),
-      author: OWNER, type: "message", message: "Use this reference image.",
-      attachments: [{
-        id: "reference-image", mimeType: "image/png", size: 9 * 1024 * 1024,
-      }],
-    });
-    // Budget from canonical metadata; the backing bytes can stay tiny in this focused test.
-    impl.getChatAttachmentData = async () => Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
-    impl.executeCodeMode = async () => ({
-      output: "captured screenshot",
-      images: [{
-        data: new Uint8Array(4 * 1024 * 1024),
-        mimeType: "image/png",
-      }],
-    });
-
-    let {contexts} = await runScriptedTurn(impl, [
-      fauxAssistantMessage(fauxToolCall("executeCode", {code: "capture()"}),
-          {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxText("Done.")),
-    ]);
-
-    let result = contexts[1].messages.find(message => message.role === "toolResult");
-    expect(result?.isError).toBe(true);
-    expect(result?.content).toContainEqual({
-      type: "text",
-      text: "Image output cannot fit in this model request alongside the chat's attachments. " +
-          "Start a new chat without those attachments and try again.",
-    });
-    expect(toolResultImages(contexts[1])).toEqual([]);
+    impl.consumeCapturedActions =
+        () => ({ actions: [], accessedGadget: false, awaitDecision: true });
+    let { kept, requests } = await runTurn(
+        impl, [fauxAssistantMessage(fauxToolCall(tool, {}))], 112_000);
+    expect(requests).toHaveLength(1);
+    expect(kept).toBe(fits ? requests[0] : undefined);
   }));
 });

@@ -18,6 +18,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import { search } from "./search.js";
 import type { WebSearchResult, WebSearchSession } from "./types.js";
 import TYPES_CODE from "./types.txt";
@@ -33,18 +34,18 @@ const WEB_SEARCH_ICON = {
 
 @validateRpc()
 class WebSearchSessionImpl extends RpcTarget implements WebSearchSession {
-  readonly #ai: Ai;
+  readonly #env: Cloudflare.Env;
   readonly #approvalQueue: RpcStub<ApprovalQueue>;
 
-  constructor(ai: Ai, approvalQueue: RpcStub<ApprovalQueue>) {
+  constructor(env: Cloudflare.Env, approvalQueue: RpcStub<ApprovalQueue>) {
     super();
-    this.#ai = ai;
+    this.#env = env;
     this.#approvalQueue = approvalQueue;
   }
 
   /** Searches the web, recording the query first. */
   search(query: string): Promise<WebSearchResult[]> {
-    return search(this.#ai, query,
+    return search(this.#env, query,
         description => this.#approvalQueue.authorizeObservation(description));
   }
 
@@ -82,7 +83,7 @@ export class WebSearchGatekeeper
   /** Opens a session that records each query through `approvalQueue`. */
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<WebSearchSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
-    return new WebSearchSessionImpl(this.env.AI, approvalQueue.dup());
+    return new WebSearchSessionImpl(this.env, approvalQueue.dup());
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -95,6 +96,14 @@ export class WebSearchGatekeeper
 
   /** Removes a collaborator; no observer state is kept. */
   async removeObserver(_id: string): Promise<void> {}
+
+  /** Allows every observer: search results are public. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
 
   applyAction(_action: number): Promise<void> {
     throw new Error("Web Search implements no actions.");
@@ -189,6 +198,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       autoProvisionsAccount: true,
       providesAuth: false,
     };
+  }
+
+  /** The version tag of this Worker's running version, for the deployment's admins. */
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   /** Mints a new account. All accounts are alike: none holds credentials or state. */

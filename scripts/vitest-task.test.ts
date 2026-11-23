@@ -20,6 +20,7 @@ const HAND_DECLARED_CONFIGS = [
   "packages/workshop-backend/vite.config.ts",
   "packages/integration-tests/vite.config.ts",
   "scripts/vite.config.ts",
+  "packages/api-cli/vite.config.ts",
 ];
 
 const [DISABLE_VAR] = TESTS_WITH_TIMEOUT_ENV;
@@ -64,20 +65,20 @@ describe("withTestTimeout", () => {
   it("wraps a bare command in the default thresholds", () => {
     assert.equal(
       withTestTimeout("vitest run"),
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run");
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run");
   });
 
   it("lets the object form override only the idle threshold", () => {
     assert.equal(
       withTestTimeout({ command: "vitest run", idleSeconds: 120 }),
-      "gadgets-with-timeout --idle 120 --max 600 -- vitest run");
+      "gadgets-with-timeout --idle 120 --max 900 -- vitest run");
   });
 
   it("never lets a command override the wall-clock backstop", () => {
     // The type has no such field; this pins the runtime shape against a future one.
     const wrapped = withTestTimeout(
       { command: "vitest run", idleSeconds: 30, maxSeconds: 5 } as never);
-    assert.match(wrapped, / --max 600 -- /);
+    assert.match(wrapped, / --max 900 -- /);
   });
 });
 
@@ -87,25 +88,45 @@ describe("the progress reporter", () => {
   it("is pinned on every vitest command a builder generates", () => {
     assert.equal(
       vitestTask("vitest run").command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=default");
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --reporter=default --no-fsModuleCache");
     assert.equal(
       vitestTask({ command: "vitest run -c vitest.app.config.ts", idleSeconds: 120 }).command,
-      "gadgets-with-timeout --idle 120 --max 600 -- " +
-        "vitest run -c vitest.app.config.ts --reporter=default");
+      "gadgets-with-timeout --idle 120 --max 900 -- " +
+        "vitest run -c vitest.app.config.ts --reporter=default --no-fsModuleCache");
     assert.equal(
       vitestTaskWithExclusions("vitest run", []).command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=default");
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --reporter=default --no-fsModuleCache");
   });
 
   it("leaves other commands, and a vitest command that names its own reporter, as written", () => {
     const task = vitestTask(["node scripts/codegen.ts", "vitest run --reporter=json"]);
     assert.deepEqual(task.command, [
-      "gadgets-with-timeout --idle 60 --max 600 -- node scripts/codegen.ts",
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=json",
+      "gadgets-with-timeout --idle 60 --max 900 -- node scripts/codegen.ts",
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --reporter=json --no-fsModuleCache",
     ]);
     assert.equal(
       vitestTask("vitest run --reporter verbose").command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter verbose");
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --reporter verbose --no-fsModuleCache");
+  });
+});
+
+// vp caches the whole task, and every package's vitest would share one cache directory under the
+// workspace root, which parallel tasks race on.
+describe("the module cache", () => {
+  it("is turned off on every vitest command a builder generates", () => {
+    assert.match(vitestTask("vitest run").command as string, / --no-fsModuleCache$/);
+    assert.match(
+      vitestTask({ command: "vitest run -c vitest.app.config.ts", idleSeconds: 120 }).command as string,
+      / --no-fsModuleCache$/);
+  });
+
+  it("leaves other commands, and a vitest command that sets it itself, as written", () => {
+    assert.equal(
+      vitestTask("node scripts/codegen.ts").command,
+      "gadgets-with-timeout --idle 60 --max 900 -- node scripts/codegen.ts");
+    assert.equal(
+      vitestTask("vitest run --reporter=json --fsModuleCache").command,
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --reporter=json --fsModuleCache");
   });
 });
 
@@ -116,6 +137,13 @@ describe("the watchdog environment policy", () => {
     ]);
     for (const variable of TESTS_WITH_TIMEOUT_ENV) {
       assert.ok(vitestTask("vitest run").cache.env.includes(variable));
+    }
+  });
+
+  // What `property-runs.ts` reads. A suite whose task dropped it would run a fresh seed in CI.
+  it("is joined by the property suites' seed on every generated test task", () => {
+    for (const task of [vitestTask("vitest run"), vitestTaskWithExclusions("vitest run", [])]) {
+      assert.ok(task.cache.env.includes("FAST_CHECK_SEED"));
     }
   });
 
@@ -271,8 +299,9 @@ describe("backend watchdog allowance", () => {
     assert.ok(test, "backend test task must remain watchdogged");
     const commands = [test.command].flat();
     assert.deepEqual(commands, [
-      "gadgets-with-timeout --idle 120 --max 600 -- vitest run --reporter=default",
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --config vitest.integration.config.ts --reporter=default",
+      "gadgets-with-timeout --idle 120 --max 900 -- vitest run --reporter=default --no-fsModuleCache",
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --config vitest.integration.config.ts --reporter=default --no-fsModuleCache",
+      "gadgets-with-timeout --idle 60 --max 900 -- vitest run --config vitest.native.config.ts --reporter=default --no-fsModuleCache",
     ]);
   });
 });

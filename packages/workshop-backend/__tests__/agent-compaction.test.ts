@@ -186,9 +186,26 @@ describe("compaction trigger", () => {
     let compact = record(1, user, {
       type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
     });
-    expect(isCompactionTurn([message(0, user, "hi"), compact])).toBe(true);
-    expect(isCompactionTurn([compact, message(2, user, "hi")])).toBe(false);
+    // Newest first.
+    expect(isCompactionTurn([compact, message(0, user, "hi")])).toBe(true);
+    expect(isCompactionTurn([message(2, user, "hi"), compact])).toBe(false);
     expect(isCompactionTurn([message(0, user, "hi")])).toBe(false);
+    expect(isCompactionTurn([])).toBe(false);
+  });
+
+  it("still recognizes /compact behind its error and a Retry's boundary", () => {
+    let compact = record(1, user, {
+      type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
+    });
+    let error = record(2, agent, {type: "error", message: "The summary request failed."});
+    expect(isCompactionTurn([record(3, user, {type: "agentNudge"}), error, compact])).toBe(true);
+    // The user's edits, saved as Retry or a turn starts, ask the model for nothing either.
+    expect(isCompactionTurn([record(3, user, {type: "changes"}), error, compact])).toBe(true);
+    expect(isCompactionTurn([record(2, user, {type: "changes"}), compact])).toBe(true);
+    // A nudge the model reads asks for something else, as does a new prompt after the error.
+    expect(isCompactionTurn([record(3, user, {type: "agentNudge", text: "Go."}), error, compact]))
+        .toBe(false);
+    expect(isCompactionTurn([message(3, user, "hi"), error, compact])).toBe(false);
   });
 
   // Every one of these produces a `user` model message, so retained context can begin at it. A chat
@@ -200,6 +217,8 @@ describe("compaction trigger", () => {
       type: "agentCallback", methodName: "run", argsSummary: "", initiatorModelId: "m",
     }))).toBe(true);
     expect(startsAgentTurn(record(0, agent, {type: "agentNudge", text: "continue"}))).toBe(true);
+    // A textless nudge (Stop, or a plain Retry) produces no model message, so the turn starts earlier.
+    expect(startsAgentTurn(record(0, user, {type: "agentNudge"}))).toBe(false);
     expect(startsAgentTurn(record(0, agent, {
       type: "connectionRequest", requestId: "1:1", vendorId: "v", vendorName: "V",
       reason: "Needed", state: "accepted",
@@ -251,6 +270,7 @@ describe("compaction boundary", () => {
     expect(findProtectedFromSequence(pending)).toBe(1);
   });
 
+  // Below a 66,667-token budget, 30 percent is smaller than the fixed limit and binds.
   it("keeps complete recent turns within the 30 percent target", () => {
     let messages = [
       message(0, user, "a".repeat(40_000)),
@@ -261,8 +281,22 @@ describe("compaction boundary", () => {
       message(5, agent, "f".repeat(40_000)),
     ];
 
-    // Exclusive: everything below 4 is summarized, so the last turn is retained whole.
-    expect(findCompactionBoundary(projection(messages), 100_000, 120_000)).toBe(4);
+    // About 9,500 tokens a message. Exclusive: the 18k share stops the walk at 4, so the last turn
+    // is retained whole; the 20k limit would have gone on to 3.
+    expect(findCompactionBoundary(projection(messages), 60_000, 57_000)).toBe(4);
+  });
+
+  // On a 1M-token window, 30 percent would retain 300k tokens. The fixed limit binds instead, so
+  // a compaction frees most of a large window just as it does a small one.
+  it("retains about 20k tokens however large the window", () => {
+    // Equal messages, so each holds a twelfth of the measured tokens.
+    let messages = projection(Array.from({ length: 12 }, (_, index) =>
+      message(index, index % 2 === 0 ? user : agent, "x".repeat(4_000))));
+
+    // About 67k tokens a message: the newest record alone passes the limit.
+    expect(findCompactionBoundary(messages, 1_000_000, 800_000)).toBe(11);
+    // About 7,500 tokens a message: the walk stops at the record that passes 20k.
+    expect(findCompactionBoundary(messages, 1_000_000, 90_000)).toBe(9);
   });
 
   it("stops the boundary short of a pending connection request", () => {

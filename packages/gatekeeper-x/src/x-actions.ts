@@ -29,11 +29,12 @@ import {
 } from "./x-api";
 import type { StoredIdentity } from "./x-credentials";
 import { VENDOR_ID } from "./x-env";
-import { sentContent, type SentContent, type WireList, type WirePost, type WireUser } from "./x-normalize";
+import { mentionsProtectedAuthor, sentContent, type SentContent, type WireList, type WirePost, type WireUser } from "./x-normalize";
 import {
   TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, comparableUrl, duplicateKey, extractCashtags, extractMentions, extractUrls,
   weightedLength, withoutLeadingMentions,
 } from "./x-text";
+import { postUrl } from "./x-urls";
 
 /** Most posts one thread may hold. */
 export const MAX_THREAD_POSTS = 25;
@@ -61,8 +62,12 @@ export type StoredDraft = {
 /** The post an action targets: its ID (possibly temporary), and what was read of it when staged. */
 export type PostTarget = { id: string; info: XPostInfo };
 
-/** The List an action targets. */
-export type ListTarget = { id: string; info: XListInfo };
+/**
+ * The List an action targets. `nameRestricted` marks a List X reports private (or would be, with a
+ * pending change), whose provider-supplied name must stay out of the preview; it is kept apart from
+ * `info.private`, which carries the simulated privacy the preview's warnings describe.
+ */
+export type ListTarget = { id: string; info: XListInfo; nameRestricted?: true };
 
 /**
  * What a send recorded just before it went to X: when; for a post, the media it attached; for a
@@ -334,13 +339,34 @@ function linkNote(drafts: readonly StoredDraft[]): string {
     : "";
 }
 
+/**
+ * Whether a preview may show what X returned about the post. Action descriptions are visible
+ * through the action log without observation authorization, so a protected or unknown-privacy
+ * author's post is redacted; a pending post is the workspace's own draft, never provider data.
+ */
+function showsPost(target: PostTarget): boolean {
+  return isProvisional(target.id) || !mentionsProtectedAuthor([target.info]);
+}
+
+/** Where a preview points for a post: the pending draft by its temporary ID, or the post on X. */
+function postLink(target: PostTarget): string {
+  if (isProvisional(target.id)) return `your pending post ${target.id}`;
+  return showsPost(target) ? target.info.url ?? postUrl(target.id) : postUrl(target.id);
+}
+
 function targetFields(builder: ActionDescriptionBuilder, post: PostTarget): ActionDescriptionBuilder {
-  builder.inline("Post", post.info.url ?? `your pending post ${post.id}`);
-  if (post.info.text) builder.verbatim("Post text", post.info.text);
+  builder.inline("Post", postLink(post));
+  if (showsPost(post) && post.info.text) builder.verbatim("Post text", post.info.text);
   return builder;
 }
 
-const post = (target: PostTarget) => handle(target.info.author.username);
+const post = (target: PostTarget) => showsPost(target)
+  ? handle(target.info.author.username) : "a protected or unverified X account";
+
+/** A List's provider-private name, unlike its numeric ID, cannot appear in unguarded action logs. */
+function listLabel(target: ListTarget): string {
+  return target.nameRestricted ? `X List ${target.id}` : `X List "${target.info.name}"`;
+}
 
 // ---------------------------------------------------------------------------
 // Apply.
@@ -645,23 +671,12 @@ async function publishAll(host: XActionHost, ctx: ActionContext, drafts: readonl
 }
 
 /**
- * Refuses to reject a publish that may already be on X: part of its thread went out, or X never
- * reported a send's outcome. Approving it again checks the account's recent posts before sending,
- * so nothing posts twice, and the result can then be reverted.
+ * Forgets a rejected publish's thread progress and send attempts. Rejecting withdraws the action
+ * without asking X, so any post X already published stays on the account.
  */
-function refuseIfSent(host: XActionHost, id: number, posts: number): void {
-  const published = host.progress.get(id).length;
-  const unconfirmed = Array.from({ length: posts }, (_, index) => host.attempts.get(`${id}:${index}`))
-    .some(attempt => attempt !== undefined);
-  if (published > 0) {
-    throw new Error(`${published} of this thread's ${posts} posts are already on X, so it can't be ` +
-      "rejected. Approve it again to finish the thread, then revert it to delete every post.");
-  }
-  if (unconfirmed) {
-    throw new Error("X never confirmed whether this post was published, so it may already be on X " +
-      "and can't be rejected. Approve it again -- that checks the account's recent posts first, so " +
-      "it is never posted twice -- then revert it if it shouldn't stay.");
-  }
+function forgetAttempts(host: XActionHost, id: number, posts: number): void {
+  host.progress.delete(id);
+  for (let index = 0; index < posts; index++) host.attempts.delete(`${id}:${index}`);
 }
 
 /** Deletes posts, newest first; one already gone counts as deleted. */
@@ -683,6 +698,8 @@ const postId = (host: XActionHost, target: PostTarget) => host.refs.requireResol
 export const actions = defineActions<XActionHost, XActions>({
   createPost: {
     kind: { tag: "x.post.create", label: "Publish X posts" },
+    // X's developer policy forbids automating posts.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     // Non-idempotent at X: a lost activation must not replay a post.
     claimBeforeApply: true,
@@ -711,24 +728,26 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdIds, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, payload.drafts.length);
+      forgetAttempts(host, ctx.id, payload.drafts.length);
       host.releaseImages(payload.drafts);
     },
   },
 
   reply: {
     kind: { tag: "x.post.reply", label: "Reply to X posts" },
+    // A reply is a public post, and X requires prior approval for AI-generated replies.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
       const me = await host.me();
       const builder = buildDescription(`Reply on X as ${handle(me.username)} to a post by ` +
         `${post(payload.parent)}.${linkNote([payload.draft])}`);
-      builder.inline("Replying to", payload.parent.info.url ?? `your pending post ${payload.parent.id}`);
-      if (payload.parent.info.text) builder.verbatim("Their post", payload.parent.info.text);
+      builder.inline("Replying to", postLink(payload.parent));
+      if (showsPost(payload.parent) && payload.parent.info.text) builder.verbatim("Their post", payload.parent.info.text);
       addDraftFields(builder, payload.draft, "Reply");
       return {
-        title: sanitizeTitle(`Reply on X to @${payload.parent.info.author.username} as @${me.username}`),
+        title: sanitizeTitle(`Reply on X to ${post(payload.parent)} as @${me.username}`),
         ...builder.finish(),
         implementsRevert: true,
       };
@@ -740,13 +759,15 @@ export const actions = defineActions<XActionHost, XActions>({
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
     reject: async (payload, host, ctx) => {
-      refuseIfSent(host, ctx.id, 1);
+      forgetAttempts(host, ctx.id, 1);
       host.releaseImages([payload.draft]);
     },
   },
 
   deletePost: {
     kind: { tag: "x.post.delete", label: "Delete X posts" },
+    // A deleted post can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -767,13 +788,15 @@ export const actions = defineActions<XActionHost, XActions>({
 
   like: {
     kind: { tag: "x.post.like", label: "Like X posts" },
+    // X's developer policy requires likes to be the user's own; unliking shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Like a post by @${payload.post.info.author.username} on X`
-          : `Remove a like from a post by @${payload.post.info.author.username}`),
+          ? `Like a post by ${post(payload.post)} on X`
+          : `Remove a like from a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Like this post by ${post(payload.post)} as ${handle(me.username)}.`
           : `Remove ${handle(me.username)}'s like from this post by ${post(payload.post)}.`), payload.post).finish(),
@@ -792,13 +815,15 @@ export const actions = defineActions<XActionHost, XActions>({
 
   repost: {
     kind: { tag: "x.post.repost", label: "Repost X posts" },
+    // X's developer policy forbids automating reposts; undoing one shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Repost a post by @${payload.post.info.author.username} on X`
-          : `Undo a repost of a post by @${payload.post.info.author.username}`),
+          ? `Repost a post by ${post(payload.post)} on X`
+          : `Undo a repost of a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Repost this post by ${post(payload.post)} to ${handle(me.username)}'s followers.`
           : `Undo ${handle(me.username)}'s repost of this post by ${post(payload.post)}.`), payload.post).finish(),
@@ -824,8 +849,8 @@ export const actions = defineActions<XActionHost, XActions>({
       const me = await host.me();
       return {
         title: sanitizeTitle(payload.on
-          ? `Bookmark a post by @${payload.post.info.author.username} on X`
-          : `Remove a bookmark of a post by @${payload.post.info.author.username}`),
+          ? `Bookmark a post by ${post(payload.post)} on X`
+          : `Remove a bookmark of a post by ${post(payload.post)}`),
         ...targetFields(buildDescription(payload.on
           ? `Bookmark this post by ${post(payload.post)} in ${handle(me.username)}'s private bookmarks.`
           : `Remove this post by ${post(payload.post)} from ${handle(me.username)}'s bookmarks.`), payload.post).finish(),
@@ -849,8 +874,8 @@ export const actions = defineActions<XActionHost, XActions>({
     delivery: "continue-with-simulation",
     describe: async payload => ({
       title: sanitizeTitle(payload.hidden
-        ? `Hide a reply by @${payload.post.info.author.username} on X`
-        : `Unhide a reply by @${payload.post.info.author.username} on X`),
+        ? `Hide a reply by ${post(payload.post)} on X`
+        : `Unhide a reply by ${post(payload.post)} on X`),
       ...targetFields(buildDescription(payload.hidden
         ? `Hide this reply by ${post(payload.post)} from the conversation. It stays reachable behind X's "hidden replies" link.`
         : `Show this reply by ${post(payload.post)} in the conversation again.`), payload.post).finish(),
@@ -867,6 +892,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   follow: {
     kind: { tag: "x.user.follow", label: "Follow X accounts" },
+    // X's developer policy forbids automating follows; unfollowing shares the kind.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async (payload, host) => {
       const me = await host.me();
@@ -922,6 +949,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   createList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Lists can be public, and the kind also covers List deletion and privacy changes.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: async (payload, host) => {
@@ -971,17 +1000,14 @@ export const actions = defineActions<XActionHost, XActions>({
       host.refs.bind(payload.ref, createdId);
       return { action: { ...payload, createdId, appliedAt: Date.now() } };
     },
-    reject: async (_payload, host, ctx) => {
-      if (host.attempts.get(`${ctx.id}:0`)) {
-        throw new Error("X never confirmed whether this List was created, so it may already exist and " +
-          "can't be rejected. Approve it again -- that checks the account's Lists first, so it is never " +
-          "created twice -- then revert it if it shouldn't stay.");
-      }
-    },
+    // A List X already created stays on the account.
+    reject: async (_payload, host, ctx) => host.attempts.delete(`${ctx.id}:0`),
   },
 
   updateList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // Can make a private List public.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription("Change this List's details.");
@@ -989,7 +1015,7 @@ export const actions = defineActions<XActionHost, XActions>({
       if (payload.changes.name !== undefined) builder.inline("New name", payload.changes.name);
       if (payload.changes.description !== undefined) builder.verbatim("New description", payload.changes.description);
       if (payload.changes.private !== undefined) builder.inline("Private", payload.changes.private ? "yes" : "no");
-      return { title: sanitizeTitle(`Change the X List "${payload.list.info.name}"`), ...builder.finish(), implementsRevert: true };
+      return { title: sanitizeTitle(`Change the ${listLabel(payload.list)}`), ...builder.finish(), implementsRevert: true };
     },
     dependsOn: payload => isProvisional(payload.list.id) ? [payload.list.id] : [],
     apply: async (payload, host, ctx) => {
@@ -1017,9 +1043,11 @@ export const actions = defineActions<XActionHost, XActions>({
 
   deleteList: {
     kind: { tag: "x.list.manage", label: "Manage X Lists" },
+    // A deleted List can't be restored.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => ({
-      title: sanitizeTitle(`Delete the X List "${payload.list.info.name}"`),
+      title: sanitizeTitle(`Delete the ${listLabel(payload.list)}`),
       ...buildDescription("Permanently delete this List. A deleted List can't be restored.")
         .inline("List", payload.list.info.url ?? `your pending List ${payload.list.id}`).finish(),
       implementsRevert: false,
@@ -1038,6 +1066,8 @@ export const actions = defineActions<XActionHost, XActions>({
 
   listMember: {
     kind: { tag: "x.list.members", label: "Manage X List members" },
+    // Changes List membership, and X may notify someone added to a public List.
+    autoApprovable: false,
     delivery: "continue-with-simulation",
     describe: async payload => {
       const builder = buildDescription(payload.add
@@ -1048,8 +1078,8 @@ export const actions = defineActions<XActionHost, XActions>({
       builder.inline("Account", payload.user.url);
       return {
         title: sanitizeTitle(payload.add
-          ? `Add @${payload.user.username} to the X List "${payload.list.info.name}"`
-          : `Remove @${payload.user.username} from the X List "${payload.list.info.name}"`),
+          ? `Add @${payload.user.username} to the ${listLabel(payload.list)}`
+          : `Remove @${payload.user.username} from the ${listLabel(payload.list)}`),
         ...builder.finish(),
         implementsRevert: false,
       };

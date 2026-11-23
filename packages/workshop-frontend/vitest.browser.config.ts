@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { playwright } from '@vitest/browser-playwright'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 
 /**
@@ -9,7 +10,7 @@ import tsconfigPaths from 'vite-tsconfig-paths'
  * rest of the tests run under `vite.config.ts`, which leaves these out.
  */
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  plugins: [react(), tailwindcss(), tsconfigPaths()],
   test: {
     include: ['src/**/*.browser.test.tsx'],
     // Kept with vitest's other scratch, under node_modules/.vite, out of the source tree and the
@@ -17,7 +18,9 @@ export default defineConfig({
     attachmentsDir: 'node_modules/.vite/vitest-browser/attachments',
     browser: {
       enabled: true,
-      provider: playwright(),
+      // Headless Chromium hides scrollbars by default, but they take layout space in a desktop
+      // browser with classic scrollbars, which the composer must measure around.
+      provider: playwright({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } }),
       headless: true,
       instances: [{ browser: 'chromium' }],
       screenshotDirectory: 'node_modules/.vite/vitest-browser/screenshots',

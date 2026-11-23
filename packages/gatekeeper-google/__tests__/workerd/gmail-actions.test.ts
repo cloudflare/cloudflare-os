@@ -6,7 +6,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes,
-  GmailApi, GmailOutboundSpec, parseGmailDraft, parseMimeMessage,
+  GmailApi, GmailApiError, GmailOutboundSpec, parseGmailDraft, parseMimeMessage,
 } from "../../src/google-api";
 import {
   GmailDraftState, GmailForwardSnapshotReference,
@@ -15,6 +15,7 @@ import {
 import type {GmailGatekeeperImpl, GmailGatekeeperImplProps} from "../../src/gmail";
 import type {
   EmailContent, GmailAttachmentInfo, GmailAttachmentInput, GmailComposeOptions, GmailCustomLabel, GmailDraftInfo,
+  GmailLabel,
   GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
@@ -380,8 +381,8 @@ class TestSession {
       private readonly call: SessionCall, private readonly restricted: boolean,
   ) {}
 
-  hasMailboxMethods(): Promise<boolean> {
-    return this.call("session.hasMailboxMethods") as Promise<boolean>;
+  listLabels(): Promise<GmailLabel[]> {
+    return this.call("session.listLabels") as Promise<GmailLabel[]>;
   }
 
   getMailboxAddress(): Promise<{address: string; name?: string}> {
@@ -791,10 +792,40 @@ describe("Gmail session API surface", () => {
       tsType: "GmailScopedSession",
     });
 
-    const mailboxSession = await mailbox.gatekeeper.startSession(approvalQueue());
-    const searchSession = await search.gatekeeper.startSession(approvalQueue());
-    await expect(mailboxSession.hasMailboxMethods()).resolves.toBe(true);
-    await expect(searchSession.hasMailboxMethods()).resolves.toBe(false);
+  });
+
+  // An agent used to a whole-mailbox binding calls its methods on a narrower one all the same.
+  it.each([
+    ["search", {searchQuery: "is:unread"}],
+    ["label", {labelName: "Important"}],
+  ] as const)("refuses each whole-mailbox method on a %s binding, saying which connection has it", async (_kind, scope) => {
+    const {gatekeeper} = actionHarness(url => {
+      // A label binding resolves its label to open a session; nothing else is asked of Gmail.
+      if (url.pathname === "/gmail/v1/users/me/labels") {
+        return json({labels: [{id: "Label_9", name: "Important", type: "user"}]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, scope);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const label: GmailCustomLabel = {id: "Label_1", name: "Label", type: "custom"};
+    const refusals: Array<[string, () => Promise<unknown>]> = [
+      ["send", () => session.send(["to@example.com"], "Subject", "Body")],
+      ["createDraft", () => session.createDraft({to: ["to@example.com"], subject: "Subject", text: "Body"})],
+      ["listLabels", () => session.listLabels()],
+      ["createLabel", () => session.createLabel("Label")],
+      ["renameLabel", () => session.renameLabel(label, "Renamed")],
+      ["deleteLabel", () => session.deleteLabel(label)],
+    ];
+    for (const [method, call] of refusals) {
+      await expect(call()).rejects.toThrow(
+        `${method}() needs a whole-mailbox Gmail connection, and this one is limited to a search or a label.`);
+      await expect(call()).rejects.toThrow(
+        `To use ${method}(), connect Gmail again with "All Gmail" as its mailbox scope (https://mail.google.com/mail/).`);
+    }
+    await expect(refusals[0][1]()).rejects.toThrow(/use that message's reply\(\) or replyAll\(\)/);
+    await expect(refusals[1][1]()).rejects.toThrow(/use that message's createReplyDraft\(\)/);
+    await expect(queue.read!()).resolves.toMatchObject({observations: [], submissions: []});
   });
 
   it("authorizes and returns the connected mailbox address through a restricted binding", async () => {
@@ -938,6 +969,34 @@ describe("Gmail session API surface", () => {
     expect(writes).toBe(1);
     expect(await values.has("pending:action:1")).toBe(true);
     expect(await values.has(`gmail:sentAlias:${messageId.slice(1, -1)}`)).toBe(false);
+  });
+
+  it("withdraws a send whose outcome Gmail never confirmed when it is denied", async () => {
+    let writes = 0;
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: []});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+        writes++;
+        throw new Error("connection lost after write");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    await session.send(["to@example.com"], "Subject", "Body");
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(
+      /outcome is still unknown.*deny this request to clear it/);
+    expect(writes).toBe(1);
+
+    await gatekeeper.rejectAction(1);
+
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/Unknown pending Gmail action/);
+    expect(writes).toBe(1);
   });
 
   it("admits a sent message created through a restricted binding", async () => {
@@ -1203,7 +1262,7 @@ describe("Gmail auto-approval eligibility", () => {
     expect(descriptions).toHaveLength(6);
     for (const index of [0, 1, 2, 3, 5]) {
       expect(descriptions[index]).not.toHaveProperty("actionKind");
-      expect(descriptions[index]).not.toHaveProperty("autoApprovable");
+      expect(descriptions[index]).toHaveProperty("autoApprovable", false);
     }
     // Later reads show each message as sent, so no send stops the caller to wait for a decision.
     for (const description of descriptions) {
@@ -1745,8 +1804,6 @@ describe("Gmail forward action snapshots", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
     expect((await values.keys()).some(key => key.includes(snapshot.handle))).toBe(true);
     expect(await values.has("gmail:applying:1")).toBe(true);
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
-    expect(await values.has("pending:action:1")).toBe(true);
 
     const chunkKey = (await values.keys()).find(key =>
       key.includes(snapshot.handle) && key.includes(":chunk:"))!;
@@ -1984,6 +2041,30 @@ describe("Gmail forward action snapshots", () => {
     expect(creates).toBe(1);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({providerId: "provider-draft"});
+  });
+
+  it("withdraws an ambiguous draft create Gmail shows no trace of when it is denied", async () => {
+    let creates = 0;
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/drafts" && init.method === "POST") {
+        creates++;
+        throw new Error("connection lost after draft create");
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) return json({messages: []});
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.createDraft({to: ["to@example.com"], subject: "Subject", text: "Body"});
+    const {id: logicalId} = await draft.getMetadata();
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/outcome is still unknown/);
+    await gatekeeper.rejectAction(1);
+
+    expect(creates).toBe(1);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({status: "rejected"});
   });
 
   it("allows rejection when an ambiguously created draft was edited externally", async () => {
@@ -2820,6 +2901,27 @@ describe("Gmail draft lookup", () => {
 
     await expect(session.getDraft("not/a/draft")).rejects.toThrow(/Invalid Gmail draft ID/);
     await expect(session.getDraft("unknown-draft")).rejects.toThrow(/Unknown Gmail draft ID/);
+  });
+});
+
+describe("Gmail request failures", () => {
+  // On real timers: workerd ends a read that waits on a body only when its reader is cancelled.
+  it("gives up on an error body that never ends, cancelling it, and still reports Gmail's status", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cancel = vi.fn();
+    vi.stubGlobal("fetch", async () => new Response(new ReadableStream({cancel}), {status: 400}));
+    try {
+      const started = Date.now();
+      const error = await new GmailApi("me@example.com", async () => "token")
+        .listMessages(20).catch(value => value);
+      expect(error).toBeInstanceOf(GmailApiError);
+      expect(error.status).toBe(400);
+      expect(error.reasons).toEqual([]);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(Date.now() - started).toBeLessThan(5000);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
 
@@ -3790,7 +3892,7 @@ describe("Gmail message mutations", () => {
     if (body) expect(JSON.parse(String(call?.init.body))).toEqual(body);
   });
 
-  it("keeps a partially applied multi-chunk mutation unrejectable until retry succeeds", async () => {
+  it("retries a partially applied multi-chunk mutation from its first chunk", async () => {
     let rejectSecond = true;
     const writes: string[] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
@@ -3814,11 +3916,36 @@ describe("Gmail message mutations", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(true);
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
 
     await gatekeeper.applyAction(1);
 
     expect(writes).toEqual(["m0", "m1000", "m0", "m1000"]);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+  });
+
+  it("withdraws a partially applied multi-chunk mutation when it is denied", async () => {
+    const writes: string[] = [];
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const first = (JSON.parse(String(init.body)) as BatchBody).ids[0];
+        writes.push(first);
+        return first === "m1000" ? json({error: "invalid mutation"}, 400) : new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation: "markRead",
+      target: {kind: "messages", messageIds: Array.from({length: 1001}, (_, i) => `m${i}`)},
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
+    expect(await values.has("gmail:applying:1")).toBe(true);
+
+    await gatekeeper.rejectAction(1);
+
+    expect(writes).toEqual(["m0", "m1000"]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
@@ -4891,6 +5018,52 @@ describe("Gmail pending sends", () => {
     for (const key of ["pending:action:2", "gmail:applying:2"]) {
       expect(await values.has(key)).toBe(false);
     }
+  });
+
+  it("reads and sends Gmail's own draft after denying an inline-forward update whose response was lost",
+      async () => {
+    const {gatekeeper, receive, values, mailbox} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+
+    await gatekeeper.rejectAction(2);
+
+    expect(await values.has("gmail:applying:2")).toBe(false);
+    // Gmail holds the update, so reads show it, not the forward body retained from before.
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    expect((await current.getContent()).text).toContain("After");
+    // A send queued now is staged against what Gmail holds, so it is not refused as an outside edit.
+    await current.send();
+    await gatekeeper.applyAction(3);
+    expect(await values.has("pending:action:3")).toBe(false);
+    expect(mailbox.some(mail => mail.labelIds.includes("SENT"))).toBe(true);
+  });
+
+  it("forwards once in reads after denying an inline-forward update an update still builds on",
+      async () => {
+    const {gatekeeper, receive} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+    await draft.update({text: "Third"});
+
+    await gatekeeper.rejectAction(2);
+
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    const {text} = await current.getContent();
+    expect(text).toContain("After");
+    expect(text?.split("Forwarded message")).toHaveLength(2);
   });
 
   it.each(["update", "delete", "send"] as const)(
@@ -6142,6 +6315,19 @@ describe("Gmail pending sends", () => {
     expect(mailbox[1].labelIds).toEqual(["SENT", "STARRED"]);
   });
 
+  it("reports that a send denied while its outcome was unknown may already have been sent",
+      async () => {
+    const {gatekeeper, saveDraft} = mailHarness({loseDraftSendResponse: true});
+    saveDraft(calendarSpec());
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await (await session.listDrafts()).next())![0].draft.send();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft send/);
+
+    const {error} = await (await session.getMessage(id)).readAcrossDecision(1, "reject");
+
+    expect(error).toMatch(/denied while its outcome was unknown, so it may already have been sent/);
+  });
+
   it("reports that the message was not sent once the send is rejected", async () => {
     const {gatekeeper, receive} = mailHarness();
     const source = receive();
@@ -6409,8 +6595,8 @@ describe("Gmail draft dependency reconciliation", () => {
       typeof observation === "object" && observation !== null && "title" in observation &&
       /^Read \d+ Gmail drafts$/.test(String(observation.title)));
     expect(pageObservations).toEqual([
-      {title: "Read 1 Gmail drafts", description: expect.any(String)},
-      {title: "Read 0 Gmail drafts", description: expect.any(String)},
+      expect.objectContaining({title: "Read 1 Gmail drafts"}),
+      expect.objectContaining({title: "Read 0 Gmail drafts"}),
     ]);
   });
 
@@ -7124,7 +7310,6 @@ describe("Gmail draft dependency reconciliation", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/drafts\.get failed/);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(true);
 
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
     const session = await gatekeeper.startSession(approvalQueue());
     await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
     await gatekeeper.applyAction(1);
@@ -7765,7 +7950,6 @@ describe("Gmail draft dependency reconciliation", () => {
     const session = await gatekeeper.startSession(approvalQueue());
     expect(await (await session.listDrafts()).next()).toBeNull();
 
-    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
     gone = true;
     await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
     await gatekeeper.applyAction(1);

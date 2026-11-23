@@ -24,6 +24,8 @@ const MODELS_DEV_PROVIDER_IDS: Record<AiModelProvider, string | null> = {
   google: 'google',
   cloudflare: 'cloudflare-workers-ai',
   ollama: null,
+  // No model can be added under it: Auto Router is the gateway's one model of its own.
+  'cloudflare-auto-router': null,
 }
 
 // The longest ID or name the server accepts for an added model.

@@ -122,6 +122,7 @@ async function openChat(
       subscriber = next
       return { [Symbol.dispose]: () => {} }
     },
+    viewChat: () => ({ [Symbol.dispose]: () => {} }),
   })
   await testRoot.render(
     <ChatInterface
@@ -135,7 +136,7 @@ async function openChat(
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}}
+      onOpenGadget={() => {}} onOpenFocus={() => {}}
       outputOfWorkpiece={() => undefined}
     />,
   )

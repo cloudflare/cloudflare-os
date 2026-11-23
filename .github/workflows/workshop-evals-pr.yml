@@ -57,6 +57,10 @@ concurrency:
 env:
   NODE_VERSION: "24.19.0"
   EVAL_TRIALS: "10"
+  # Per-task models and trials, as WORKSHOP_EVAL_TASK_OVERRIDES (packages/workshop-evals/src/config.ts).
+  # Compaction runs one trial on each provider's model: enough to show it pass or fail on each path,
+  # though the comparison draws no statistics from one trial.
+  EVAL_TASK_OVERRIDES: '{"compaction": {"models": ["gpt-6-luna", "claude-sonnet-5-5"], "trials": 1}}'
 
 jobs:
   trust:
@@ -119,7 +123,7 @@ jobs:
           fetch-depth: 2
 
       - name: Set up Node.js
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           run-install: false
@@ -162,11 +166,16 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
           run-install: true
+
+      # Tasks that check an `<inline-html>` view run it in Chromium (src/view-host.ts). The frontend
+      # pins the same catalog `playwright` and has it on both revisions, so it does the install.
+      - name: Install Chromium for view checks
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
 
       - name: Run ${{ join(matrix.tasks, ', ') }}
         continue-on-error: true
@@ -176,6 +185,7 @@ jobs:
           CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
+          WORKSHOP_EVAL_TASK_OVERRIDES: ${{ env.EVAL_TASK_OVERRIDES }}
           WORKSHOP_EVAL_COMMIT: ${{ matrix.sha }}
           TASKS: ${{ join(matrix.tasks, ' ') }}
         run: |
@@ -203,7 +213,8 @@ jobs:
               packages/workshop-evals/.wrangler/evals/results.json > "$file"; then
               echo "::error::No results for $task"
               rm -f "$file"
-            elif node scripts/evals/validate-results.ts "$file" "$EVAL_TRIALS"; then
+            elif node scripts/evals/validate-results.ts "$file" "$(jq -r --arg task "$task" \
+              --arg trials "$EVAL_TRIALS" '.[$task].trials // $trials' <<< "$EVAL_TASK_OVERRIDES")"; then
               clean+=("$task")
             fi
           done
@@ -211,7 +222,7 @@ jobs:
 
       - name: Upload ${{ matrix.revision }} results
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: ${{ runner.temp }}/run
@@ -234,7 +245,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.store) }}
     steps:
       - name: Download ${{ matrix.revision }} results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: run
@@ -258,7 +269,7 @@ jobs:
 
       - name: Store ${{ matrix.task }}
         if: steps.clean.outputs.clean == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-${{ matrix.name }}
           path: run/${{ matrix.revision }}/${{ matrix.task }}.json
@@ -290,7 +301,7 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
@@ -299,7 +310,7 @@ jobs:
       # Each leg's files sit under its revision, so merging gives one layout for one leg or two.
       - name: Download this run's results
         if: needs.plan.outputs.legs != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: workshop-evals-run-*
           path: runs
@@ -315,7 +326,7 @@ jobs:
         run: node scripts/evals/workflow.ts join runs artifacts
 
       - name: Upload baseline trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline/results.json
@@ -324,7 +335,7 @@ jobs:
           retention-days: 30
 
       - name: Upload candidate trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate/results.json
@@ -348,7 +359,7 @@ jobs:
           cat artifacts/comparison/comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload comparison
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
@@ -397,19 +408,19 @@ jobs:
         run: echo /artifacts/ >> .git/info/exclude
 
       - name: Download baseline trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline
 
       - name: Download candidate trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate
 
       - name: Download deterministic comparison
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
@@ -418,7 +429,7 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
@@ -459,7 +470,7 @@ jobs:
           # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
           # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
           # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
-          opencode_version: 1.18.24
+          opencode_version: 1.19.6
           prompt: |
             This is an advisory review of the eval runs, not a code review. Read
             artifacts/baseline/trajectories.md, artifacts/candidate/trajectories.md,

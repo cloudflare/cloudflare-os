@@ -134,7 +134,7 @@ Tools · Choose how much of this server the Gadget may call.
 (•) Choose tools   Only the tools you tick. Anything else is refused, including tools added later.
 
 Allowed tools · 3 selected. Read-only tools return data straight away; the rest queue for approval.
-[ 🔍 Filter tools... ]
+[ 🔍 Filter tools...                                  ]  3 of 14 selected   Select all   Clear
 ☑ Search issues                                                                        read-only
 ☑ Create issue                                                                    needs approval
 ```
@@ -174,12 +174,16 @@ produce. Every call records which side classified it (`McpToolInfo.classifiedBy`
 find each one taken on the server's word. See `tools.ts` in `@gadgets/mcp-shared` for the tier
 rules.
 
-A Gadget bound to an MCP server can only be opened by its owner: `addObserver` refuses
-unconditionally. Being able to authenticate to a server is not evidence of being allowed to see what
-the *owner* read from it, and the Gadget runs on the owner's credentials throughout. Writes still
-work — the alternative, marking every observation `containsRestrictedData`, would set that
-flag, whose restricted mode blocks every action for the rest of the session. See
-[`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
+A Gadget bound to an MCP server can only be opened by its owner. Every observation reports the
+subresource `server/<serverId>` (the binding's display slug), and `verifyObserverAccess` checks
+that each ID is exactly that, then admits nobody; an ID naming another server or any other shape
+fails the call. The inherited `addObserver` still refuses unconditionally, for history recorded
+before reads reported subresources. Slug collisions across hosts are harmless since no one is
+admitted; grants and action-kind tags still compare the full endpoint. Being able to authenticate
+to a server is not evidence of being allowed to see what the *owner* read from it, and the Gadget
+runs on the owner's credentials throughout. Writes still work — the alternative, marking every
+observation `containsRestrictedData`, would set that flag, whose restricted mode blocks every
+action for the rest of the session. See [`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
 
 To share the work rather than the binding, publish the Gadget as a blueprint and let each person
 connect their own server.
@@ -206,7 +210,7 @@ connect their own server.
   compatibility flag in `cloudflare.config.ts`, which makes workerd reject reserved IP ranges after
   resolution on every request and redirect hop. It does not apply under `wrangler dev`, which is
   what keeps `MCP_ALLOW_INSECURE` usable locally.
-- **Sharing UI reports late.** `GadgetMetadata.containsRestrictedData` derives only from
+- **Sharing UI reports late.** `WorkspaceMetadata.containsRestrictedData` derives only from
   `ObservationDescription.containsRestrictedData`, so creating a share key appears to succeed and
   fails when the recipient opens it (their observer verification is refused). Fixing this needs a
   kernel change.

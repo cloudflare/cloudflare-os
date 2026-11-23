@@ -11,15 +11,13 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
-import type {
-  ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
-} from "@gadgets/workshop-shared/gatekeeper";
+import type { HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
 import { GmailApi, GmailApiError } from "./google-api";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
-import type { GmailMessageHook } from "./types";
+import type { GmailGroupMessageEntry, GmailMessageEntry } from "./types";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.gmail-hooks", vendorId: "google" });
 
@@ -28,7 +26,10 @@ type Env = Cloudflare.Env & PushHooksEnv;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
-export type GmailMessageHookTarget = RpcTarget & GmailMessageHook;
+/** A hook's target: a gadget's `GmailMessageHook`, or a `GmailGroupMessageHook` on a group binding. */
+export type GmailMessageHookTarget = RpcTarget & {
+  receiveMessage(entry: GmailMessageEntry | GmailGroupMessageEntry): Promise<void>;
+};
 
 /**
  * Where a hook delivers, sealed into its delivery stub by the facet's `ctx.restore()`: one thread,
@@ -36,14 +37,19 @@ export type GmailMessageHookTarget = RpcTarget & GmailMessageHook;
  */
 export type GmailHookParams = { threadId?: string };
 
-/** What a hook's delivery stub reaches: the connection's facet, narrowed to delivering. */
-export interface GmailHookDelivery extends RpcTarget {
+/**
+ * What a hook's delivery stub reaches: the connection's facet, narrowed to delivering a message, by
+ * id, if it is new mail the hook watches for.
+ */
+export type GmailHookDelivery = HookDelivery<GmailMessageHookTarget, string>;
+
+/** A delivery that can be asked first, as a `screened` hook's is. */
+export interface GmailScreenedHookDelivery extends GmailHookDelivery {
   /**
-   * Deliver message `messageId` to one firing of the hook if it is new mail the hook watches for;
-   * otherwise return without calling it.
+   * Whether `deliver` might take message `messageId`. Answers only for the driver, which starts no
+   * firing for a message it refuses: `deliver` checks again.
    */
-  deliver(callback: RpcStub<GmailMessageHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
-          messageId: string): Promise<void>;
+  screen(messageId: string): Promise<boolean>;
 }
 
 /** Everything a hook needs once enabled, captured when the facet binds it. */
@@ -54,6 +60,12 @@ export type GmailHookProps = GmailHookParams & {
   userObjectId: string;
   /** A label new mail must arrive with for this hook to be tried: grants nothing, only spares deliveries the facet would refuse. */
   labelId?: string;
+  /**
+   * Put each message to the delivery's `screen()` (it is a `GmailScreenedHookDelivery`) before
+   * starting a firing, for a binding no label narrows. Without it, all of the mailbox's new mail
+   * would wake the workspace.
+   */
+  screened?: boolean;
   delivery: RpcStub<GmailHookDelivery>;
 };
 
@@ -96,24 +108,21 @@ const MAX_HISTORY_PAGES_PER_SYNC = 10;
 const TRACKING_RECHECK_MS = 24 * HOUR_MS;
 /**
  * Labels whose mail no hook is delivered: the account's own mail, spam and trash, even on a label
- * binding to SPAM or TRASH, which lists them.
+ * binding to SPAM or TRASH, which lists them. A screened hook is offered the account's own mail.
  */
 export const UNDELIVERED_GMAIL_LABELS: readonly string[] = ["SENT", "DRAFT", "SPAM", "TRASH"];
+// The owner's own posts to a group are the group's mail, so a screened hook's screen() decides them.
+const UNDELIVERED_TO_SCREENED_GMAIL_LABELS = UNDELIVERED_GMAIL_LABELS.filter(label => label !== "SENT");
 
 type Registration = Omit<GmailHookProps, "key" | "delivery"> & {
   /** The mailbox's history ID when the hook was enabled: only later records reach it. */
   since: string;
 };
-type Capabilities = {
-  delivery: RpcStub<GmailHookDelivery>;
-  initiator: Fetcher<HookInitiator<GmailMessageHookTarget>>;
-};
+type Capabilities = HookCapabilities<GmailMessageHookTarget, string>;
 type Watch = { expiration: number; renewAt: number };
 type Profile = { emailAddress: string; historyId: string };
 type AddedMessage = { id: string; threadId: string; labelIds?: string[] };
 
-const registrationKey = (key: string) => `reg:${key}`;
-const capabilitiesKey = (key: string) => `caps:${key}`;
 /** When the account last confirmed it knows this driver holds hooks of its (see UserAccount.trackHookDriver()). */
 const trackedKey = (userObjectId: string) => `tracked:${userObjectId}`;
 /** Set when a disconnected account's hooks are dropped, so that an enable it was making is refused. */
@@ -139,9 +148,10 @@ class MailboxChangedError extends Error {
  */
 export class GmailHookDriver extends DurableObject<Env> {
   #watching = new SingleFlight();
-  #queue = new HookDeliveryQueue<string>(this.ctx.storage.kv, () => {
+  #hooks = new HookRegistry<GmailMessageHookTarget, string, Registration>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Gmail message after repeated delivery failures", { event: "gmail.hooks.delivery.dropped" });
-  });
+  }, async (registration, { delivery }, messageId) =>
+    !registration.screened || await (delivery as RpcStub<GmailScreenedHookDelivery>).screen(messageId));
 
   async register(key: string, registration: Omit<Registration, "since">, capabilities: Capabilities): Promise<void> {
     const kv = this.ctx.storage.kv;
@@ -162,19 +172,14 @@ export class GmailHookDriver extends DurableObject<Env> {
     } else if (kv.get("syncAt") === undefined) {
       kv.put("syncAt", Date.now() + SAFETY_SYNC_INTERVAL_MS);
     }
-    const replaced = kv.get<Capabilities>(capabilitiesKey(key));
-    kv.put<Registration>(registrationKey(key), { ...registration, since: profile.historyId });
-    kv.put(capabilitiesKey(key), capabilities);
-    disposeStubs(replaced);
+    this.ctx.storage.transactionSync(() =>
+      this.#hooks.set(key, { ...registration, since: profile.historyId }, capabilities));
     await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
     const kv = this.ctx.storage.kv;
-    disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
-    kv.delete(registrationKey(key));
-    kv.delete(capabilitiesKey(key));
-    this.#queue.cancel(key);
+    this.#hooks.remove(key);
     // The watch is left to lapse rather than stopped: stopping would race a concurrent enable's
     // fresh watch, and needs credentials a removed connection may no longer have.
     if (this.#registrations().length === 0) {
@@ -186,8 +191,8 @@ export class GmailHookDriver extends DurableObject<Env> {
   /** Drop the hooks of an account being disconnected (see UserAccount.revoke()). */
   async forgetAccount(userObjectId: string): Promise<void> {
     this.ctx.storage.kv.put(forgottenKey(userObjectId), Date.now());
-    for (const [regKey, registration] of this.#registrations()) {
-      if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
+    for (const [key, registration] of this.#registrations()) {
+      if (registration.userObjectId === userObjectId) await this.unregister(key);
     }
     this.ctx.storage.kv.delete(trackedKey(userObjectId));
   }
@@ -234,7 +239,7 @@ export class GmailHookDriver extends DurableObject<Env> {
     }
 
     // After the sync, so the rows it just queued are due in this same run.
-    await this.#queue.run(Date.now(), (hookKey, messageId) => this.#deliver(hookKey, messageId));
+    await this.#hooks.run(Date.now());
     await this.#reschedule();
   }
 
@@ -320,27 +325,13 @@ export class GmailHookDriver extends DurableObject<Env> {
   #enqueue(registrations: [string, Registration][], recordId: string, { id, threadId, labelIds }: AddedMessage): void {
     // The facet re-checks authoritatively. This prefilter exists because every delivery attempt
     // starts a hook firing in its workspace, so unfiltered spam would wake every subscriber.
-    if (labelIds?.some(label => UNDELIVERED_GMAIL_LABELS.includes(label))) return;
-    for (const [regKey, registration] of registrations) {
+    for (const [key, registration] of registrations) {
+      const undelivered = registration.screened ? UNDELIVERED_TO_SCREENED_GMAIL_LABELS : UNDELIVERED_GMAIL_LABELS;
+      if (labelIds?.some(label => undelivered.includes(label))) continue;
       if (labelIds && registration.labelId !== undefined && !labelIds.includes(registration.labelId)) continue;
       if (BigInt(recordId) <= BigInt(registration.since)) continue;
       if (registration.threadId !== undefined && registration.threadId !== threadId) continue;
-      this.#queue.enqueue(regKey.slice("reg:".length), id, id, Date.now());
-    }
-  }
-
-  async #deliver(hookKey: string, messageId: string): Promise<void> {
-    // An unregistered hook's rows are finished, and it gets no new ones.
-    const capabilities = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(hookKey));
-    if (!capabilities) return;
-    try {
-      // A refused firing is retried like a failed one, being indistinguishable from a transient
-      // failure; disabling or deleting the hook unregisters it, which ends the retries.
-      using hook = await capabilities.initiator.startHook();
-      // @ts-expect-error Worker RPC's mapped types can't relate an ApprovalQueue stub to itself.
-      await capabilities.delivery.deliver(hook.callback, hook.approvalQueue, messageId);
-    } finally {
-      disposeStubs(capabilities);
+      this.#hooks.enqueue(key, id, id, Date.now());
     }
   }
 
@@ -424,10 +415,10 @@ export class GmailHookDriver extends DurableObject<Env> {
     return this.#watching.run("watch", async () => {
       let watch: { expiration: number };
       try {
-        watch = await api.watch(this.env.PUBSUB_TOPIC!);
+        watch = await api.watch(this.env.PUBSUB_GMAIL_TOPIC!);
       } catch (cause) {
         if (!(cause instanceof GmailApiError && (cause.status === 400 || cause.status === 403))) throw cause;
-        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
+        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_GMAIL_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
       }
       this.ctx.storage.kv.put<Watch>("watch", {
         expiration: watch.expiration, renewAt: Date.now() + WATCH_RENEW_INTERVAL_MS,
@@ -436,7 +427,7 @@ export class GmailHookDriver extends DurableObject<Env> {
   }
 
   #registrations(): [string, Registration][] {
-    return [...this.ctx.storage.kv.list<Registration>({ prefix: "reg:" })];
+    return this.#hooks.entries();
   }
 
   async #wakeBy(time: number): Promise<void> {
@@ -447,7 +438,7 @@ export class GmailHookDriver extends DurableObject<Env> {
   async #reschedule(): Promise<void> {
     const kv = this.ctx.storage.kv;
     const times: number[] = [];
-    const queueDue = this.#queue.nextDue();
+    const queueDue = this.#hooks.nextDue();
     if (queueDue !== undefined) times.push(queueDue);
     const watch = kv.get<Watch>("watch");
     if (this.#registrations().length > 0) {

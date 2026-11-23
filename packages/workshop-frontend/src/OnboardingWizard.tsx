@@ -23,7 +23,7 @@ import {
   Hexagon,
 } from '@phosphor-icons/react'
 import AddModelModal from './AddModelModal'
-import { persistSelectedModel } from './modelSelection'
+import { cacheSelectedModel } from './modelSelection'
 import { logoComponents } from './components/ConnectionLogos'
 import { getVendorIconBackground } from './components/vendorColors'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
@@ -36,6 +36,7 @@ import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 // ─── constants ──────────────────────────────────────────────────────────────────
 
@@ -279,10 +280,11 @@ export default function OnboardingWizard({
   const handleConnect = async (vendorId: string) => {
     setConnectingVendorId(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId), authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to start connection:', err)
-      toasts.add({ title: 'Failed to start connection', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection', variant: 'error' })
     } finally {
       // Reset after a short delay — the subscription will update the UI when the connection completes
       setTimeout(() => setConnectingVendorId(null), 2000)
@@ -331,7 +333,7 @@ export default function OnboardingWizard({
       }
       // selectedModelId is null when the user chose "No agent" or didn't pick one
       await authenticatedApi.setPreferredModel(selectedModelId)
-      persistSelectedModel(selectedModelId)
+      cacheSelectedModel(currentUser?.id, selectedModelId)
       // The tools are optional, so one that fails (say, an admin disabled it meanwhile) is
       // reported and doesn't keep the user in onboarding.
       const ambientToProvision = ambientVendors.filter((v) => !switchedOffAmbientIds.has(v.id))
@@ -576,7 +578,7 @@ export default function OnboardingWizard({
                               {model.name}
                             </p>
                             <p className="text-xs text-kumo-subtle truncate">
-                              {model.id}
+                              {model.description ?? model.id}
                             </p>
                           </div>
                           {selectedModelId === model.id && (

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Generates dev-only wrangler.dev.jsonc files for dynamic service bindings,
-// then launches `wrangler dev` with all discovered workers.
+// then launches `wrangler dev` with all discovered workers and the PDF renderer.
 //
 // Flags:
 //   --use-workers-ai-binding   Include the Workers AI binding in workshop-backend and in the
@@ -32,6 +32,9 @@ const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 const WORKSHOP_BACKEND_DIR = join(PACKAGES_DIR, "workshop-backend");
+// The Worker that draws PDF pages for the Google gatekeeper, which binds to it by name. It is not a
+// gatekeeper, so nothing below discovers it, routes to it or gives it credentials.
+const PDF_RENDERER_DIR = join(PACKAGES_DIR, "pdf-renderer");
 
 /** A gatekeeper package as {@link findGatekeepers} discovers it. */
 interface Gatekeeper {
@@ -78,6 +81,19 @@ try {
 } catch (err) {
   console.error((err as Error).message);
   process.exit(1);
+}
+
+// The deploy service binds CLOUDFLARE_OS_DEPLOYMENT as JSON, and the backend treats the string form
+// as absent, so a value from the shell or `.dev.vars` is parsed here, before the builds so bad JSON
+// fails fast, and written into the backend's config as an object. An empty value counts as unset.
+let cloudflareOsDeployment: unknown;
+if (process.env.CLOUDFLARE_OS_DEPLOYMENT) {
+  try {
+    cloudflareOsDeployment = JSON.parse(process.env.CLOUDFLARE_OS_DEPLOYMENT);
+  } catch {
+    console.error("CLOUDFLARE_OS_DEPLOYMENT is not valid JSON; set it as one JSON line.");
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +499,8 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-linear": { id: "LINEAR_CLIENT_ID", secret: "LINEAR_CLIENT_SECRET" },
   "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
   "gatekeeper-x": { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
+  "gatekeeper-microsoft": { id: "MICROSOFT_CLIENT_ID", secret: "MICROSOFT_CLIENT_SECRET" },
+  "gatekeeper-pagerduty": { id: "PAGERDUTY_CLIENT_ID", secret: "PAGERDUTY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
@@ -505,6 +523,17 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
   // Each connection's daily read limit; unset, the in-code default.
   "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
+  // The signing secret of the PagerDuty webhook a tunnel delivers to; unset, hooks are refused.
+  "gatekeeper-pagerduty": ["PAGERDUTY_WEBHOOK_SECRET"],
+  // The most Google Drive connections may do (unset, read and write), whether a vision model
+  // reads the pages of a PDF that have no text (unset, it does), and how many calls to it one
+  // PDF's text may have in flight (unset, the number in the code).
+  "gatekeeper-google": ["GOOGLE_DRIVE_ACCESS", "PDF_OCR", "PDF_OCR_CALLS"],
+  // The Entra tenant (or allowlist of tenant IDs) to accept, which must be set or the gatekeeper
+  // refuses to start, the most agents may do in SharePoint, Outlook and Calendar (unset: write, send
+  // and schedule), and whether SharePoint asks for every site or only those granted to the app
+  // (unset, every site).
+  "gatekeeper-microsoft": ["MICROSOFT_TENANT_ID", "MICROSOFT_ALLOWED_TENANT_IDS", "MICROSOFT_SHAREPOINT_ACCESS", "MICROSOFT_SHAREPOINT_SITES", "MICROSOFT_OUTLOOK_ACCESS", "MICROSOFT_CALENDAR_ACCESS"],
 };
 
 for (const gk of gatekeepers) {
@@ -540,6 +569,20 @@ for (const gk of gatekeepers) {
 }
 
 // ---------------------------------------------------------------------------
+// Generate packages/pdf-renderer/wrangler.dev.jsonc. Only other Workers reach the renderer, through
+// a service binding their own config declares, so all its config needs for dev is the dev build
+// settings.
+// ---------------------------------------------------------------------------
+{
+  const config = parse(readFileSync(join(PDF_RENDERER_DIR, "wrangler.jsonc"), "utf8"));
+  config.build = devBuildConfig(config.build, PDF_RENDERER_DIR);
+
+  const outPath = join(PDF_RENDERER_DIR, "wrangler.dev.jsonc");
+  writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
+  console.log(`generated: ${outPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // Generate packages/workshop-backend/wrangler.dev.jsonc (with gatekeeper
 // service bindings using the GatekeeperVendor entrypoint).
 // ---------------------------------------------------------------------------
@@ -552,6 +595,12 @@ for (const gk of gatekeepers) {
   // For local testing, create an account named "admin" to test admin features.
   config.vars = config.vars || {};
   config.vars.ADMINS = ["admin"];
+  // A local instance, where `cf-os api` may act as anyone. Never set by a deployment.
+  config.vars.WORKSHOP_ENVIRONMENT = "development";
+
+  if (cloudflareOsDeployment !== undefined) {
+    config.vars.CLOUDFLARE_OS_DEPLOYMENT = cloudflareOsDeployment;
+  }
 
   // Pass through the optional OAuth sign-in / AI Gateway billing env vars from the shell
   // environment, so you can run e.g.
@@ -560,14 +609,17 @@ for (const gk of gatekeepers) {
   const OPTIONAL_FEATURE_VARS = [
     "DISABLE_PASSWORD_AUTH", "AUTH_GATEKEEPERS", "ENABLE_CLOUDFLARE_LIMITS", "PUBLIC_BASE_URL",
     "DAILY_LLM_CALL_LIMIT", "MINIMUM_CLOUDFLARE_BALANCE",
-    // Platform AI Gateway — makes the cross-provider model catalog available. CF_AI_GATEWAY
-    // always needs CF_AI_GATEWAY_ACCOUNT_ID plus one transport: the WORKERS_AI binding
-    // (start with --use-workers-ai-binding; CF_AI_GATEWAY_USE_BINDING=false opts out, e.g.
-    // when the gateway lives in a different account than the dev binding) or
-    // CF_AI_GATEWAY_API_TOKEN over HTTPS. The google provider can't ride the binding and
-    // needs the token even when the binding is present.
+    // Platform AI Gateway -- makes the cross-provider model catalog available.
+    // CF_AI_GATEWAY always needs CF_AI_GATEWAY_ACCOUNT_ID plus one transport:
+    // the WORKERS_AI binding (start with --use-workers-ai-binding;
+    // CF_AI_GATEWAY_USE_BINDING=false opts out, e.g. when the gateway lives in
+    // a different account than the dev binding) or CF_AI_GATEWAY_API_TOKEN.
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
+    // The bounds on admin access to workspaces (see docs/admin-access.md), e.g.
+    // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off, and
+    // `ADMIN_WORKSPACE_WRITES=on pnpm dev-server` lets the dev admin write to workspaces.
+    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS", "ADMIN_WORKSPACE_WRITES",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
@@ -629,6 +681,7 @@ const configs = [
   "wrangler.dev.jsonc",
   join("packages", "workshop-backend", "wrangler.dev.jsonc"),
   ...gatekeepers.map(gk => join(gk.dir, "wrangler.dev.jsonc")),
+  join(PDF_RENDERER_DIR, "wrangler.dev.jsonc"),
 ];
 
 const args = configs.flatMap(c => ["-c", c]);

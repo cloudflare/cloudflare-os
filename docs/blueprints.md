@@ -29,7 +29,7 @@ A blueprint does **not** capture:
 
 - The gadget's SQLite storage contents.
 - AI chat history, or the gadget's commit history. Its commit messages hold chat titles and its authors include collaborators, neither of which the publisher chose to share.
-- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, URL pattern, etc.) is recorded.
+- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, resource type ID or legacy URL pattern, etc.) is recorded.
 
 ## Binding Annotations
 
@@ -45,7 +45,7 @@ All named bindings are included in the blueprint. Annotations are configured in 
 
 Blueprints support three types of bindings, matching the three types of gatekeepers:
 
-1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
+1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a `resourceTypeId` identifying the expected resource type within that vendor. An explicit ID is authoritative; a legacy record without one resolves only through an exact current URL pattern. When instantiating, the user picks a connected account and configures a matching resource. See [resource type identity](gatekeeper-resource-types.md).
 
 2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a decision model binding when `modelKind: "decision"` (see `ModelKind`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 
@@ -53,7 +53,7 @@ Blueprints support three types of bindings, matching the three types of gatekeep
 
 ## Releases
 
-Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-store.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
+Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-cache.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
 
 ### Lineage
 
@@ -133,7 +133,7 @@ A pack arrives from an upload, or from storage that any uploader can write, so i
 - The pack is at most 32 MiB, no object inflates to more than that, and no delta refers to an object outside the pack. Object IDs are computed from content, never taken from the pack.
 - The commit that `metadata.commitId` names is present, and so is every ancestor of it, up to 10,000 commits. Each is in the canonical form the encoder writes.
 - The release's tree is complete. Any other commit's tree is either complete or absent.
-- Trees hold only subtrees and mode `100644` blobs, under names `GitStore` can read back. Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
+- Trees hold only subtrees and mode `100644` blobs, under names the workspace's git store would write (none that `isReservedTreeEntryName()` refuses). Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
 - Nothing else is in the pack.
 
 Publishing runs the same check on what it is about to pack, so a blueprint that publishes always instantiates. Imported objects are stored with no record of any gatekeeper remote possessing them (`WorkspaceGitCache.importObjects`), so they grant no gatekeeper a read.
@@ -210,7 +210,7 @@ Importing a version 2 archive stores the same release commit under a new bluepri
 
 ## Admin Features and Featured Blueprints
 
-Deployments can optionally configure a set of admin usernames through the backend worker's `ADMINS` binding as an array of usernames.
+Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` bound what those admins may choose for inspecting workspaces and users' accounts and for audit retention, and `ADMIN_WORKSPACE_WRITES` decides whether they may change a workspace at all; see [admin-access.md](admin-access.md).
 
 Admins get access to two extra RPCs:
 
@@ -269,7 +269,7 @@ When someone opens a blueprint link (`/blueprint/<id>`), they see the **Blueprin
    - For gatekeeper bindings: pick a connected account and configure the matching resource.
    - For AI model bindings: pick from their configured models.
    - For agent spawner bindings: pick a model (or none).
-5. Clicking "Create Gadget" calls `AuthenticatedApi.newGadgetFromBlueprint()`, which:
+5. Clicking "Create Gadget" calls `AuthenticatedApi.newWorkspaceFromBlueprint()`, which:
    - Reads the blueprint's metadata from KV.
    - Creates a new Overseer DO and has it initialize itself via `initializeFromBlueprint`. The Overseer reads the release from R2 for itself, as the version that metadata describes, so the code is the code the bindings set up below belong to even if the blueprint is republished meanwhile. The pack never crosses an RPC.
    - Creates gatekeepers from the user's binding assignments (pipelined for performance).
@@ -289,7 +289,7 @@ The AI agent can also instantiate a blueprint as an *additional* gadget within a
 
 - The `listBlueprints` tool lists the blueprints available to the workspace owner (the deployment's standard formats, listed first and marked as preferred, then their own published blueprints, their library, and the deployment's featured set) as formatted text; there is no search index, so the model scans the list itself.
 - Passing a `blueprintId` to the `createGadget` tool creates the new gadget from the blueprint's code instead of empty. The gadget is provisional to the chat like any agent-created gadget, and the blueprint's files are copied into the chat's proposed changes (recorded in the same `changes` message as the creation), so accepting or reverting the chat's changes covers the files and the creation together.
-- Bindings are not auto-assigned on this path: the tool result describes the bindings the blueprint expects, and the agent wires them up itself under the same names (via `setGadgetBinding`, requesting connections as needed), or asks the user to add AI-model / agent-spawner bindings from the Connections panel.
+- Bindings are not auto-assigned on this path: the tool result describes the bindings the blueprint expects, and the agent wires them up itself under the same names (via `setGadgetBinding`, requesting connections as needed). For an agent-spawner binding, the agent requests a spawner with `requestConnection` (vendor id `agent-spawner`) and then gives it the listed bindings with `setGadgetBinding` on the spawner. It asks the user to add AI-model bindings from the Connections panel.
 - The creation's `changes` message also records which release the files came from (a `blueprintMerges` entry of kind `fastForward`, see [The proposal record](#the-proposal-record)). Accepting the chat's changes reads it: the gadget's first commit is written as `[e, R]`, over an empty root of its own and marked as merging R, and the gadget follows the blueprint from then on. This is the one case in which accept adds a release to a gadget's history; every other merge of a release is already a commit by then. A gadget made this way has the same lineage as one made from the landing page, though its first commit may already include the agent's edits.
 
 When a `.gadget` file is uploaded, the target instance creates a new local blueprint ID, stores the uploaded content in its own R2 bucket, writes the imported metadata to its own KV namespace, and records the blueprint under the importing user's account. The original blueprint author metadata is preserved, but ownership of the imported copy belongs to the importing user on the new instance.
@@ -478,4 +478,4 @@ A blueprint can outlive its source gadget. If a gadget is deleted, its blueprint
 
 ## Creation Specs
 
-To support blueprint metadata derivation, each gatekeeper stores a `GatekeeperCreationSpec` that records how it was originally created. This includes the vendor ID (for gatekeeper bindings), provider and model name (for AI model bindings), or the full spawner config (for agent spawner bindings). The creation spec, combined with the blueprint annotation, is used by `collectBindingMetadata` to produce the `BlueprintBinding` records stored in the blueprint.
+To support blueprint metadata derivation, each gatekeeper stores a `GatekeeperCreationSpec` that records how it was originally created. This includes the vendor ID (for gatekeeper bindings), provider and model name (for AI model bindings), or the spawner config less its `env` (for agent spawner bindings). A spawner's bindings change after creation, so they are binding edges on its record (`GatekeeperRecord.bindings`), edited like a gadget's. The creation spec and those edges, combined with the blueprint annotation, are used by `collectBindingMetadata` to produce the `BlueprintBinding` records stored in the blueprint.

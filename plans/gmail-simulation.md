@@ -207,7 +207,9 @@ draft.
 - **After approval**, the same capability and the same `GmailMessageId` become Gmail's real copy
   without the agent doing anything. The store already records which Gmail ID each sent Message-ID
   maps to when a send completes.
-- **After rejection**, the message reports that it was not sent.
+- **After rejection**, the message reports that it was not sent, or, when the rejected send's
+  outcome was unknown, that it may already have been sent. Only the binding's 100 most recent
+  such sends are remembered; an older one reports that it was not sent.
 
 A pending message is read-only. The gatekeeper refuses the following, with an error saying they
 become available once the message has been delivered:
@@ -344,7 +346,8 @@ How it builds the label changes:
   - For label changes this is harmless: patching a label Gmail has already changed does nothing.
   - For a send (commit 2) it can show the reply twice in its thread, once as Gmail's copy and once
     as the pending message. That lasts for the instant between Gmail accepting the send and the
-    store recording it, or, after a send whose outcome is unknown, until the approval is retried.
+    store recording it, or, after a send whose outcome is unknown, until the approval is retried
+    or the send is denied, which drops the pending message.
     This is accepted and not fixed.
 
 ### Part 1 steps
@@ -502,7 +505,8 @@ Left unchanged:
    - if a sent receipt exists (`store.sentMessageByRfcMessageId()`), delegate to a
      `GmailMessageStub` for the provider ID, scoped the way `getMessage()` scopes sent mail today;
    - if the send is still pending, serve the simulation;
-   - otherwise, throw "This message was not sent."
+   - otherwise, throw "This message was not sent.", or, for a send denied while its outcome was
+     unknown, that it may already have been sent.
 
    The simulated methods:
    - **`getMetadata()`** returns the overlay's info, passed through `messageInfo()` so the labels

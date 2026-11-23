@@ -67,10 +67,10 @@ function rejectUserCalls(impl: any, error: unknown): string[] {
   };
   let user = {
     id: { toString: () => OWNER_ID },
-    setGadgetLastActive: reject("setGadgetLastActive"),
+    setWorkspaceLastActive: reject("setWorkspaceLastActive"),
     syncWorkspaceOutputs: reject("syncWorkspaceOutputs"),
     listProvidedAccounts: reject("listProvidedAccounts"),
-    updatePinned: reject("updatePinned"),
+    listModels: reject("listModels"),
     getChatContext: reject("getChatContext"),
   };
   impl.users = { idFromString: (id: string) => id, get: () => user };
@@ -101,7 +101,7 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     impl.bumpLastActive();
     await settle();
 
-    expect(calls).toEqual(["setGadgetLastActive"]);
+    expect(calls).toEqual(["setWorkspaceLastActive"]);
     expect(restarts).toEqual([RESTART_REASON]);
     // The restart is an error-level event carrying the rejection; the bump's own failure log is
     // still written.
@@ -145,16 +145,16 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let error = new Error(LOOP_LIMIT_MESSAGE);
     let calls = rejectUserCalls(impl, error);
-    // A real build client interface whose user stubs are the real impl's: setPinned goes through
+    // A real build client interface whose user stubs are the real impl's: listModels goes through
     // OverseerClientInterface.#clientUser.
     let client = await openFakeOverseer({}, { impl: {
       users: impl.users,
       wrapUserDo: (stub: unknown) => impl.wrapUserDo(stub),
     } });
 
-    await expect(client.setPinned(true)).rejects.toBe(error);
+    await expect(client.listModels()).rejects.toBe(error);
 
-    expect(calls).toEqual(["updatePinned"]);
+    expect(calls).toEqual(["listModels"]);
     expect(restarts).toEqual([RESTART_REASON]);
   }));
 
@@ -224,7 +224,7 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     impl.bumpLastActive();
     await settle();
 
-    expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts", "setGadgetLastActive"]);
+    expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts", "setWorkspaceLastActive"]);
     expect(restarts).toEqual([]);
     expect(logged(errors, "workspace.loop.limit.restart")).toEqual([]);
 

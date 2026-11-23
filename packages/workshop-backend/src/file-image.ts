@@ -1,0 +1,39 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { canInlineChatAttachmentImage } from "./chat-attachment-validation";
+import type { BlobReader } from "./git-chunked-blob";
+
+/** Maximum bytes read into one model image, matching the chat attachment limit. */
+export const MAX_FILE_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/** Raw-byte budget for file images, after reserving space for existing chat attachments. */
+export const MAX_FILE_IMAGE_CONTEXT_BYTES = 12 * 1024 * 1024;
+
+/** Newest file images retained in model history; older files remain available to read again. */
+export const MAX_FILE_IMAGE_CONTEXT_COUNT = 4;
+
+/** Replacement for pixels discarded from model history. The immutable file is still readable. */
+export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history. Read the file again if needed.";
+
+/** Recognize supported images by bytes, without decoding or allocating an entire large blob. */
+export function readFileImage(reader: BlobReader): ImageContent | undefined {
+  const head = reader.read(0, Math.min(12, reader.size));
+  let mimeType: string;
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    mimeType = "image/png";
+  } else if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    mimeType = "image/jpeg";
+  } else if (head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46 &&
+      head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) {
+    mimeType = "image/webp";
+  } else {
+    return undefined;
+  }
+  if (reader.size > MAX_FILE_IMAGE_BYTES) {
+    throw new Error("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
+  }
+  const bytes = reader.read(0, reader.size);
+  if (!canInlineChatAttachmentImage(mimeType, bytes)) {
+    throw new Error("Image header is unsupported or dimensions exceed 8000 pixels. Resize or convert the file first.");
+  }
+  return { type: "image", data: bytes.toBase64(), mimeType };
+}

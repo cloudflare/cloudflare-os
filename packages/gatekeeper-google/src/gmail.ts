@@ -24,7 +24,7 @@ import type {
   EmailAddress, EmailContent, GmailAttachment, GmailAttachmentEntry, GmailAttachmentInfo, GmailAttachmentInput,
   GmailComposeOptions, GmailCustomLabel,
   GmailDraft, GmailDraftAttachment, GmailDraftAttachmentEntry, GmailDraftEntry, GmailDraftInfo, GmailDraftInput, GmailDraftPatch, GmailHeader,
-  GmailLabel, GmailMessage, GmailMessageEntry, GmailMessageInfo, GmailMutableLabel,
+  GmailGroupSession, GmailLabel, GmailMessage, GmailMessageEntry, GmailMessageInfo, GmailMutableLabel, GmailPdfText,
   GmailReplyOptions, GmailScopedSession, GmailSession, GmailSystemLabel, GmailThread, GmailThreadEntry,
   GmailThreadInfo,
 } from "./types";
@@ -57,13 +57,28 @@ import {
 import {
   ActionDescriptionBuilder, buildDescription, plainInline, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
+import {formatSubresourceId, parseSubresourceId} from "@gadgets/gatekeeper-kit/subresource-ids";
 import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
 import {CursorPager} from "./cursor";
 import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-approval-queue";
+import {verifyGoogleSubresourceAccess} from "./google-verifier-types";
 import {
   UNDELIVERED_GMAIL_LABELS, type GmailHookDelivery, type GmailHookParams, type GmailMessageHookTarget,
 } from "./gmail-hooks";
-import {pushHooksConfigured, type PushHooksEnv} from "./pubsub-push";
+import {gmailHooksConfigured, type PushHooksEnv} from "./pubsub-push";
+import {
+  GMAIL_PDF, pdfConverter, pdfUpload, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
+  type PdfRangeReader, type PdfRead,
+} from "./drive-pdf";
+import {forwardRangeReader, type PdfOpener} from "./pdf-forward-reader";
+import {
+  GmailGroupGone, GmailGroupHookDelivery, GmailGroupSessionImpl, GmailGroupState, type GmailGroupContext,
+  type GmailGroupReadContext,
+} from "./gmail-group";
+import {
+  CloudIdentityApi, CloudIdentityApiError, GROUP_NAME_PREFIX, validateGroupName, type CloudIdentityGroup,
+} from "./cloud-identity-api";
+import {groupResourceUrl} from "./resources";
 import TYPES_CODE from "./types.txt";
 
 type Env = Cloudflare.Env & PushHooksEnv;
@@ -73,6 +88,8 @@ const GMAIL_RESTRICTED_THREAD_RESULT_PAGE_SIZE = 20;
 const MAX_GMAIL_RESTRICTED_THREAD_MESSAGES = 1000;
 const MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES = 20;
 const GMAIL_FORWARD_SNAPSHOT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+/** Sends denied while their outcome was unknown that are remembered; the oldest go first. */
+const GMAIL_WITHDRAWN_SEND_MAX = 100;
 // Keep draft inspection aligned with the maximum inline-forward message size.
 const MAX_GMAIL_DRAFT_MIME_BYTES = MAX_GMAIL_FORWARD_SOURCE_BYTES;
 const GMAIL_LOGICAL_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
@@ -88,7 +105,61 @@ export type GmailGatekeeperImplProps = {
   userObjectId: string;
   searchQuery?: string;
   labelName?: string;
+  /** Shares the mail addressed to this Google Group with the group's members; see gmail-group.ts. */
+  groupAddress?: string;
+  /** With `groupAddress`: the group takes mail from outside its domain (see gmail-group-admission.ts). */
+  groupOutsideSenders?: true;
 };
+
+/** How long a group binding's session reads on before asking again whether the group's addresses still stand. */
+const GROUP_REVALIDATE_MS = 5_000;
+
+/** The namespace of the subresource IDs Gmail reads report. */
+export const GMAIL_SUBRESOURCE_NAMESPACE = "gmail";
+
+/**
+ * The subresource ID every read through a Gmail binding reports: `gmail/user/<sub>`, naming the
+ * mailbox by its owner as Gmail's REST API does (`users/{userId}`), but by the Google account's
+ * stable subject rather than an address, which can change. A mailbox is private to its owner, so
+ * only an observer whose account is that same Google account can read it.
+ */
+function gmailUserSubresourceId(subject: string): string {
+  return formatSubresourceId({
+    namespace: GMAIL_SUBRESOURCE_NAMESPACE, fragments: [{name: "user", id: subject}],
+  });
+}
+
+/**
+ * The subresource ID every read through a Google Group binding reports instead:
+ * `gmail/group/<groupId>`, naming the group by its Cloud Identity resource name (`groups/<groupId>`),
+ * which no other group ever takes. The group's mail is its members', so an observer whose own
+ * account is a direct member can read it.
+ */
+function gmailGroupSubresourceId(group: CloudIdentityGroup): string {
+  return formatSubresourceId({
+    namespace: GMAIL_SUBRESOURCE_NAMESPACE,
+    fragments: [{name: "group", id: group.name.slice(GROUP_NAME_PREFIX.length)}],
+  });
+}
+
+/**
+ * What a Gmail read can depend on: the mailbox's owner (see gmailUserSubresourceId), or on a Google
+ * Group binding the group (see gmailGroupSubresourceId).
+ */
+export type GmailSubresource =
+  | {kind: "gmailUser"; subject: string}
+  | {kind: "gmailGroup"; groupName: string};
+
+/** What a Gmail subresource ID names; throws for any other ID. */
+export function parseGmailSubresource(id: string): GmailSubresource {
+  const {namespace, fragments} = parseSubresourceId(id);
+  if (namespace === GMAIL_SUBRESOURCE_NAMESPACE && fragments.length === 1) {
+    const [{name, id: value}] = fragments;
+    if (name === "user") return {kind: "gmailUser", subject: value};
+    if (name === "group") return {kind: "gmailGroup", groupName: validateGroupName(GROUP_NAME_PREFIX + value)};
+  }
+  throw new Error("Not a Gmail subresource ID.");
+}
 
 type GmailSourceAttachment = GmailForwardSnapshotReference & {
   messageId: string;
@@ -284,11 +355,12 @@ function actionKinds(labels: Record<string, string>): ActionKind[] {
 
 function gmailAutoApprovalMetadata(
     action: GmailAction,
-): Partial<Pick<ActionDescription, "actionKind" | "autoApprovable">> {
+): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
   switch (action.type) {
   case "send":
   case "draftSend":
-    return {};
+    // Rule 2: sends mail as the user to people outside the bound mailbox.
+    return {autoApprovable: false};
   case "messageMutation":
     return {
       actionKind: {tag: action.operation, label: MESSAGE_MUTATION_LABELS[action.operation]},
@@ -360,6 +432,9 @@ class GmailStore {
     return `gmail:sentAlias:${gmailMessageIdQueryValue(rfcMessageId)}`;
   }
   #sentProviderKey(providerId: string) { return `gmail:sentProvider:${providerId}`; }
+  #withdrawnSendKey(rfcMessageId: string) {
+    return `gmail:withdrawnSend:${gmailMessageIdQueryValue(rfcMessageId)}`;
+  }
 
   #bumpActionGeneration(): void {
     this.#kv.put("pending:actionGeneration", this.actionGeneration() + 1);
@@ -407,6 +482,20 @@ class GmailStore {
     if (action) {
       for (const file of actionFileReferences(action)) this.releaseFile(file);
     }
+  }
+
+  /** Remembers a send denied while its outcome was unknown, which Gmail may still have delivered. */
+  markSendWithdrawn(rfcMessageId: string): void {
+    this.#kv.put(this.#withdrawnSendKey(rfcMessageId), Date.now());
+    const marks = [...this.#kv.list<number>({prefix: "gmail:withdrawnSend:"})]
+      .toSorted(([, a], [, b]) => a - b);
+    for (const [key] of marks.slice(0, Math.max(0, marks.length - GMAIL_WITHDRAWN_SEND_MAX))) {
+      this.#kv.delete(key);
+    }
+  }
+
+  wasSendWithdrawn(rfcMessageId: string): boolean {
+    return this.#kv.get<number>(this.#withdrawnSendKey(rfcMessageId)) !== undefined;
   }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
@@ -1830,9 +1919,13 @@ function pendingForwardSnapshot(
       description: "Inline forward source snapshot.",
     };
   }
+  // Skipped like the overlay skips them: an action built on a rejected one never applies, and
+  // its snapshot would rebuild the forward on top of a body Gmail may already have.
+  const decisions = store.decisions();
   const actions = store.listActions()
     .filter(({action}) => isDraftAction(action) &&
-      store.resolveDraftId(actionResourceId(action)!) === logicalId)
+      store.resolveDraftId(actionResourceId(action)!) === logicalId &&
+      !(action.dependsOn ?? []).some(id => decisions.get(id) === "rejected"))
     .toReversed();
   for (const {action} of actions) {
     const snapshot = actionSourceAttachment(action);
@@ -1995,11 +2088,18 @@ type GmailReadContext = {
   api: GmailApi;
   store: GmailStore;
   selfEmail: string;
+  /**
+   * The mailbox owner's Google account subject, which every read reports (see
+   * gmailUserSubresourceId).
+   */
+  accountSubject: string;
   searchQuery?: string;
   labelId?: string;
   labelName?: string;
   restricted: boolean;
   providerLabels(): Promise<GmailLabelRaw[]>;
+  /** Converts a PDF attachment to its text, or `undefined` where the deployment cannot. */
+  convertPdf: PdfConverter | undefined;
 };
 
 /** What every capability of this binding shares, over one approval queue. */
@@ -2698,6 +2798,23 @@ function gmailRestrictedThreadCursor(
   }), ctx.approvalQueue);
 }
 
+/**
+ * What a search- or label-scoped binding answers a whole-mailbox method with: which connection
+ * has the method, and how the user makes one. `instead` names what this binding offers in its
+ * place, when it offers anything.
+ */
+function wholeMailboxOnlyError(method: string, instead = ""): Error {
+  return new Error(
+    `${method}() needs a whole-mailbox Gmail connection, and this one is limited to a search or a ` +
+    `label.${instead} To use ${method}(), connect Gmail again with "All Gmail" as its mailbox ` +
+    "scope (https://mail.google.com/mail/).");
+}
+
+const REPLY_INSTEAD_OF_SEND =
+  " To answer a message this connection can read, use that message's reply() or replyAll().";
+const REPLY_DRAFT_INSTEAD_OF_DRAFT =
+  " To draft an answer to a message this connection can read, use that message's createReplyDraft().";
+
 @validateRpc()
 class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   #ctx: GmailContext;
@@ -2820,8 +2937,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   async send(
       to: string[], subject: string, body: string, options: GmailComposeOptions = {}): Promise<string> {
     if (this.#ctx.restricted) {
-      throw new Error(
-        "send() is unavailable on a search- or label-scoped binding. Use a message capability.");
+      throw wholeMailboxOnlyError("send", REPLY_INSTEAD_OF_SEND);
     }
     const message = this.#ctx.api.buildSendRaw(to, subject, body, options);
     validateOutboundFields(message, message.subject, message.body, message.html);
@@ -2859,7 +2975,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async createDraft(input: GmailDraftInput): Promise<GmailDraft> {
     if (this.#ctx.restricted) {
-      throw new Error("createDraft() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("createDraft", REPLY_DRAFT_INSTEAD_OF_DRAFT);
     }
     const message = this.#ctx.api.buildSendRaw(
       input.to ?? [], input.subject ?? "", input.text ?? "", input);
@@ -2868,7 +2984,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async listLabels(): Promise<GmailLabel[]> {
     if (this.#ctx.restricted) {
-      throw new Error("listLabels() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("listLabels");
     }
     const labels = await currentLabels(this.#ctx);
     await this.#ctx.approvalQueue.authorizeObservation({
@@ -2883,7 +2999,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async createLabel(name: string): Promise<GmailCustomLabel> {
     if (this.#ctx.restricted) {
-      throw new Error("createLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("createLabel");
     }
     validateGmailLabelName(name);
     const existing = (await currentLabels(this.#ctx)).labels.some(
@@ -2901,7 +3017,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async renameLabel(label: GmailCustomLabel, name: string): Promise<GmailCustomLabel> {
     if (this.#ctx.restricted) {
-      throw new Error("renameLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("renameLabel");
     }
     validateGmailLabelName(name);
     let generation: number;
@@ -2926,7 +3042,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async deleteLabel(label: GmailCustomLabel): Promise<void> {
     if (this.#ctx.restricted) {
-      throw new Error("deleteLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("deleteLabel");
     }
     const canonical = await resolveMutableLabel(this.#ctx, label);
     if (canonical.type !== "custom") throw new Error("System Gmail labels cannot be deleted.");
@@ -2974,6 +3090,20 @@ class GmailScopedSessionImpl extends ApprovalQueueRpcTarget implements GmailScop
   subscribeNewMessages(hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
     return this.#mailbox.subscribeNewMessages(hook);
   }
+
+  // The whole-mailbox methods, which GmailScopedSession does not declare. A caller used to a
+  // whole-mailbox binding calls them all the same, and "no such method" tells it nothing, so each
+  // refuses here, whatever it is passed, and says which connection has it. None reaches #mailbox.
+  async send(..._args: unknown[]): Promise<void> {
+    throw wholeMailboxOnlyError("send", REPLY_INSTEAD_OF_SEND);
+  }
+  async createDraft(..._args: unknown[]): Promise<void> {
+    throw wholeMailboxOnlyError("createDraft", REPLY_DRAFT_INSTEAD_OF_DRAFT);
+  }
+  async listLabels(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("listLabels"); }
+  async createLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("createLabel"); }
+  async renameLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("renameLabel"); }
+  async deleteLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("deleteLabel"); }
 
   [Symbol.dispose](): void {
     this.#mailbox[Symbol.dispose]();
@@ -3466,7 +3596,8 @@ class GmailMessageStub extends ApprovalQueueRpcTarget implements GmailMessage {
     return snapshots.map(snapshot => ({
       info: snapshot.info,
       attachment: new GmailAttachmentStub(
-        this.#ctx, snapshot.info, () => this.#ctx.api.getAttachmentContent(snapshot)),
+        this.#ctx, snapshot.info, () => this.#ctx.api.getAttachmentContent(snapshot),
+        () => this.#ctx.api.openAttachmentContent(snapshot)),
     }));
   }
 
@@ -3598,7 +3729,8 @@ class GmailMessageStub extends ApprovalQueueRpcTarget implements GmailMessage {
  * Gmail has no such message until the send is approved, so until then this serves the message
  * from the pending action, as the email that will be sent. Once the send is delivered the same
  * capability is Gmail's copy, with nothing for its holder to do; if the send is rejected instead,
- * it reports that the message was not sent. Each call works out afresh where the message stands.
+ * it reports that the message was not sent, or, when the rejected send's outcome was unknown, that
+ * it may already have been. Each call works out afresh where the message stands.
  *
  * The simulated message is read-only. Changing, answering or forwarding it would queue an action
  * on a message that has no Gmail ID yet, and new mail has no thread until Gmail assigns one.
@@ -3627,7 +3759,12 @@ class GmailPendingMessageStub extends ApprovalQueueRpcTarget implements GmailMes
     }
     const overlay = loadGmailOverlay(this.#ctx.store);
     const sent = overlay.sent.find(candidate => candidate.rfcMessageId === this.#rfcMessageId);
-    if (!sent) throw new Error("This message was not sent.");
+    if (!sent) {
+      throw new Error(this.#ctx.store.wasSendWithdrawn(this.#rfcMessageId)
+        ? "This send was denied while its outcome was unknown, so it may already have been sent. " +
+          "Check Sent mail before sending it again."
+        : "This message was not sent.");
+    }
     return {sent, overlay};
   }
 
@@ -3741,13 +3878,15 @@ class GmailPendingMessageStub extends ApprovalQueueRpcTarget implements GmailMes
       title: `List ${attachments.length} Gmail attachments`,
       description: "Read attachment and inline MIME-part metadata for this message.",
     });
-    return attachments.map(({info, data}) => ({
-      info,
-      attachment: new GmailAttachmentStub(this.#ctx, info, async () => {
+    return attachments.map(({info, data}) => {
+      const read = async () => {
         const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0));
         return bytes.buffer as ArrayBuffer;
-      }),
-    }));
+      };
+      return {
+        info, attachment: new GmailAttachmentStub(this.#ctx, info, read, storedAttachmentOpener(read, info.size)),
+      };
+    });
   }
 
   async reply(body: string, options?: GmailReplyOptions): Promise<string> {
@@ -3796,20 +3935,70 @@ class GmailPendingMessageStub extends ApprovalQueueRpcTarget implements GmailMes
   }
 }
 
+/** What an attachment's capability needs of its binding, a Google Group's included. */
+type GmailAttachmentContext = Pick<GmailContext, "approvalQueue" | "convertPdf">;
+
+/** Opens an attachment's bytes from their start, as a stream that is read only as it is read. */
+type AttachmentOpener = () => Promise<ReadableStream<Uint8Array>>;
+
+/** Bytes of a stored attachment that {@link storedAttachmentOpener}'s stream gives at a time. */
+const STORED_ATTACHMENT_STEP_BYTES = 64 * 1024;
+
+/**
+ * How long a read of an attachment's bytes may be outstanding with none arriving while
+ * `readPdf()` converts them, before it gives the attachment up. Nothing else times Gmail's body
+ * then: the open is timed only until the answer begins, and the text's own idle minute starts
+ * once there is a text. It is an object so that a test can shorten it.
+ */
+export const PDF_FIRST_READ = {idleMs: 60_000};
+/** What `readPdf()` fails with when the attachment stopped arriving. */
+const ATTACHMENT_STALLED = "The attachment stopped arriving while it was being read; read it again.";
+
+/**
+ * The opener of an attachment whose bytes this binding stores, which `read` gives whole: a
+ * pending message's part, or a draft's uploaded file, inline part or forward source. Each open
+ * reads them all, one whole copy, and gives them in steps, so it is held to this binding's
+ * upload limit. A forward is limited only as a whole message, and a part it copies from its
+ * source can be larger: one of `size` over the limit is refused before anything of it is read,
+ * as `getContent()` refuses it. An attachment that Gmail stores is opened with
+ * `GmailApi.openAttachmentContent()` instead, which holds nothing of it.
+ */
+function storedAttachmentOpener(read: () => Promise<ArrayBuffer>, size: number): AttachmentOpener {
+  return async () => {
+    if (size > MAX_GMAIL_ATTACHMENT_BYTES) {
+      throw new Error(
+        `This attachment exceeds the ${MAX_GMAIL_ATTACHMENT_BYTES}-byte safe limit for a PDF read ` +
+        "from a pending message or a draft.");
+    }
+    const bytes = new Uint8Array(await read());
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset < bytes.byteLength) {
+          controller.enqueue(bytes.subarray(offset, offset += STORED_ATTACHMENT_STEP_BYTES));
+        }
+        if (offset >= bytes.byteLength) controller.close();
+      },
+    }, {highWaterMark: 0});
+  };
+}
+
 @validateRpc()
 class GmailAttachmentStub extends ApprovalQueueRpcTarget implements GmailAttachment {
-  #ctx: GmailContext;
+  #ctx: GmailAttachmentContext;
   #info: GmailAttachmentInfo;
   #read: () => Promise<ArrayBuffer>;
+  #open: AttachmentOpener;
   #validate?: () => void;
 
   constructor(
-      ctx: GmailContext, info: GmailAttachmentInfo, read: () => Promise<ArrayBuffer>,
-      validate?: () => void) {
+      ctx: GmailAttachmentContext, info: GmailAttachmentInfo, read: () => Promise<ArrayBuffer>,
+      open: AttachmentOpener, validate?: () => void) {
     super(ctx.approvalQueue);
     this.#ctx = ctx;
     this.#info = info;
     this.#read = read;
+    this.#open = open;
     this.#validate = validate;
   }
 
@@ -3841,6 +4030,105 @@ class GmailAttachmentStub extends ApprovalQueueRpcTarget implements GmailAttachm
     this.#validate?.();
     return content;
   }
+
+  async readPdf(): Promise<GmailPdfText> {
+    this.#validate?.();
+    // A text that reads the attachment again has those reads authorized as it is read, which may
+    // be after this capability is disposed, so the text holds the queue, and the pass over the
+    // attachment its page images are read from, until it ends. Any other text needs neither,
+    // and both are let go before it is returned.
+    const releaseQueue = this.#ctx.approvalQueue.retain();
+    const pages = forwardRangeReader(purpose => this.#openPdfAgain(purpose), GMAIL_PDF);
+    const release = () => {
+      pages.release();
+      releaseQueue();
+    };
+    try {
+      const {text, hasText, transcribed, rereads} = await this.#readPdf(pages.readRange);
+      if (rereads) return {text: releasedAtEnd(text, release), hasText, transcribed};
+      release();
+      return {text, hasText, transcribed};
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  /**
+   * This attachment's text as its conversion gives it, once the read has been reported. Whatever
+   * this throws, it has let go of what it opened: the attachment's bytes and the conversion.
+   */
+  async #readPdf(readRange: PdfRangeReader): Promise<PdfRead> {
+    if (!/^\s*application\/pdf\s*(;|$)/i.test(this.#info.mimeType) &&
+        !/\.pdf$/i.test(this.#info.filename ?? "")) {
+      throw new Error("This attachment is not a PDF.");
+    }
+    const convert = this.#ctx.convertPdf;
+    if (!convert) throw new Error("PDF reading is not available on this deployment.");
+    const download = (await this.#open()).getReader();
+    // The checks after the conversion must cover everything the text is converted from, and
+    // Gmail's bytes are known to be the snapshot's only at their end, so a conversion that
+    // answers before they have ended is refused.
+    const upload = pdfUpload(download, () => {
+      // Only a read that is outstanding is timed: the conversion takes the bytes at the pace of
+      // its own upload.
+      let clock!: ReturnType<typeof setTimeout>;
+      const stalled = new Promise<never>((_, reject) => {
+        clock = setTimeout(() => reject(new Error(ATTACHMENT_STALLED)), PDF_FIRST_READ.idleMs);
+      });
+      return Promise.race([download.read(), stalled]).finally(() => clearTimeout(clock));
+    });
+    let converted: PdfRead | undefined;
+    try {
+      // A refusal to transcribe says what the attachment's content is like, so it discloses
+      // something too and has to be authorized: it rides back as a value, and is thrown only
+      // once the read has been reported.
+      const outcome = await convert(upload.pdf, readRange).catch((error: unknown) => {
+        if (error instanceof TranscriptionRefusal) return {refusal: error};
+        throw error;
+      });
+      if (!("refusal" in outcome)) converted = outcome;
+      if (!upload.whole()) throw new Error(GMAIL_PDF.conversionFailed);
+      this.#validate?.();
+      await this.#ctx.approvalQueue.authorizeObservation({
+        title: "Read Gmail attachment text",
+        description: "Read the text of this PDF attachment.",
+      });
+      this.#validate?.();
+      if ("refusal" in outcome) throw outcome.refusal;
+      return outcome;
+    } catch (error) {
+      // A text refused after its conversion still holds the response open, and an idle timer.
+      await converted?.text.cancel().catch(() => undefined);
+      await download.cancel().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Opens the attachment's bytes for a text that is being read, which may be long after
+   * `readPdf()` returned and this capability was disposed. Each such open is a read of its own:
+   * checked for staleness, opened with nothing of it read, reported, and checked again, and it is
+   * let go when it is refused.
+   */
+  async #openPdfAgain({page, again}: Parameters<PdfOpener>[0]): Promise<ReadableStream<Uint8Array>> {
+    this.#validate?.();
+    const opened = await this.#open();
+    try {
+      await this.#ctx.approvalQueue.authorizeObservation({
+        title: "Read Gmail attachment text",
+        description: page === undefined
+          ? "Read this PDF attachment whole, to render its pages and transcribe them."
+          : `Read this PDF attachment's stored page images${again ? " again" : ""}, from page image ${
+            page} on, to transcribe them.`,
+      });
+      this.#validate?.();
+    } catch (error) {
+      await opened.cancel().catch(() => undefined);
+      throw error;
+    }
+    return opened;
+  }
 }
 
 @validateRpc()
@@ -3849,8 +4137,8 @@ class GmailDraftAttachmentStub extends GmailAttachmentStub implements GmailDraft
 
   constructor(
       ctx: GmailContext, info: GmailAttachmentInfo, read: () => Promise<ArrayBuffer>,
-      validate: () => void, remove: () => Promise<void>) {
-    super(ctx, info, read, validate);
+      open: AttachmentOpener, validate: () => void, remove: () => Promise<void>) {
+    super(ctx, info, read, open, validate);
     this.#remove = remove;
   }
 
@@ -4250,9 +4538,13 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
         ...attachment.info,
         mimeType: snapshot.info.mimeType, size: snapshot.info.size, readable: snapshot.info.readable,
       }} : attachment;
+      // Only a provider snapshot's bytes are Gmail's to stream. They are held to the size this
+      // capability is listed with, as getContent() holds them.
+      const open = snapshot &&
+        (() => this.#ctx.api.openAttachmentContent({...snapshot, info: current.info}));
       return {
         info: current.info,
-        attachment: this.#attachmentCapability(logicalId, current, read),
+        attachment: this.#attachmentCapability(logicalId, current, read, open),
       };
     });
     try {
@@ -4286,12 +4578,14 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
   #attachmentCapability(
       logicalId: string, attachment: GmailDraftAttachmentState,
       readPart: () => Promise<ArrayBuffer> = () =>
-        Promise.reject(new Error("This draft attachment is no longer available."))):
+        Promise.reject(new Error("This draft attachment is no longer available.")),
+      openPart?: AttachmentOpener):
       GmailDraftAttachmentStub {
     const {file} = attachment;
     const read = file
       ? async () => (await this.#ctx.store.readFile(file)).buffer as ArrayBuffer
       : readPart;
+    const open = !file && openPart ? openPart : storedAttachmentOpener(read, attachment.info.size);
     const validate = file ? () => {
       const current = localDraftAttachments(this.#ctx.store, logicalId)
         ?.find(part => part.key === attachment.key);
@@ -4299,7 +4593,7 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
         throw new Error("This draft attachment capability became stale after the attachment changed.");
       }
     } : this.#versionValidator(logicalId);
-    return new GmailDraftAttachmentStub(this.#ctx, attachment.info, read, validate, async () => {
+    return new GmailDraftAttachmentStub(this.#ctx, attachment.info, read, open, validate, async () => {
       validate();
       await this.#update({}, state => {
         const target = state.attachments.find(part => part.key === attachment.key);
@@ -4720,7 +5014,7 @@ async function existingMessageIds(api: GmailApi, ids: readonly string[]): Promis
 
 @validateRpc()
 export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplProps>
-    implements Gatekeeper<GmailScopedSession | GmailSession> {
+    implements Gatekeeper<GmailScopedSession | GmailSession | GmailGroupSession> {
   #applying = new Set<number>();
   #verifiedToken?: string;
   #subjectToken?: string;
@@ -4752,7 +5046,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     return token;
   }
 
-  async #getSelfEmail(): Promise<string> {
+  /** The mailbox's address and its owner's Google account subject, which the binding pins. */
+  async #getAccount(): Promise<{email: string; subject: string}> {
     const cached = this.ctx.storage.kv.get<string>("selfEmail");
     const token = await this.#getAccessToken();
     const [subject, description] = await Promise.all([
@@ -4772,7 +5067,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     }
     if (!pinned) this.ctx.storage.kv.put("gmail:accountSubject", subject);
     this.ctx.storage.kv.put("selfEmail", description.uniqueName);
-    return description.uniqueName;
+    return {email: description.uniqueName, subject};
   }
 
   async #resolveBindingLabel(api: GmailApi): Promise<{id?: string; name?: string}> {
@@ -4796,6 +5091,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   }
 
   async describe(): Promise<ResourceDescription> {
+    if (this.ctx.props.groupAddress !== undefined) {
+      const address = this.ctx.props.groupAddress;
+      const outside = this.ctx.props.groupOutsideSenders === true;
+      return {
+        url: groupResourceUrl(address, outside),
+        title: `Google Group: ${address}`,
+        snippet: `Mail addressed to ${address}${outside ? ", from outside the organization included" : ""}, ` +
+          "readable by the group's members",
+        suggestedBindingName: "GMAIL_GROUP",
+        tsType: "GmailGroupSession",
+        hookTsType: "GmailGroupMessageHook",
+      };
+    }
     if (this.ctx.props.labelName !== undefined) {
       validateGmailLabelName(this.ctx.props.labelName);
       return {
@@ -4829,17 +5137,27 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
   async getAutoApprovableActions(): Promise<ActionKind[]> {
+    if (this.ctx.props.groupAddress !== undefined) return [];
     return [...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)];
   }
 
   async startSession(
       approvalQueue: RpcStub<ApprovalQueue>,
-  ): Promise<GmailScopedSession | GmailSession> {
+  ): Promise<GmailScopedSession | GmailSession | GmailGroupSession> {
+    if (this.ctx.props.groupAddress !== undefined) {
+      return new GmailGroupSessionImpl(this.#groupContext(await this.#groupReadContext(), approvalQueue));
+    }
     const ctx = this.#context(await this.#readContext(), approvalQueue);
     return ctx.restricted ? new GmailScopedSessionImpl(ctx) : new GmailSessionImpl(ctx);
   }
 
   [restore](params: GmailHookParams): GmailHookDelivery {
+    if (this.ctx.props.groupAddress !== undefined) {
+      if (params.threadId !== undefined) throw new TypeError("A group binding has no thread hooks.");
+      return new GmailGroupHookDelivery(
+        () => this.#groupReadContext(), () => this.#pinnedGroupReadContext(),
+        (read, approvalQueue) => this.#groupContext(read, approvalQueue));
+    }
     // The binding's own props decide admission; `params` can only narrow it to a thread.
     if (params.threadId !== undefined && !GMAIL_PROVIDER_ID_RE.test(params.threadId)) {
       throw new TypeError("Invalid Gmail thread ID.");
@@ -4852,25 +5170,28 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     if (this.ctx.props.searchQuery !== undefined) {
       validateGmailQueryForGrouping(this.ctx.props.searchQuery);
     }
-    const selfEmail = await this.#getSelfEmail();
-    const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
+    const account = await this.#getAccount();
+    const api = new GmailApi(account.email, opts => this.#getAccessToken(opts));
     const bindingLabel = await this.#resolveBindingLabel(api);
     return {
       api,
       store: new GmailStore(this.ctx.storage),
-      selfEmail,
+      selfEmail: account.email,
+      accountSubject: account.subject,
       searchQuery: this.ctx.props.searchQuery,
       labelId: bindingLabel.id,
       labelName: bindingLabel.name,
       restricted: this.ctx.props.searchQuery !== undefined || bindingLabel.id !== undefined,
       providerLabels: () => api.listLabelRecords(),
+      convertPdf: pdfConverter(this.env, GMAIL_PDF),
     };
   }
 
   #context(read: GmailReadContext, approvalQueue: RpcStub<ApprovalQueue>): GmailContext {
     const ctx: GmailContext = {
       ...read,
-      approvalQueue: new SharedApprovalQueue(approvalQueue.dup()),
+      approvalQueue: new SharedApprovalQueue(
+        approvalQueue.dup(), [gmailUserSubresourceId(read.accountSubject)]),
       subscribe: (threadId, hook) => this.#subscribe(ctx, threadId, hook),
     };
     return ctx;
@@ -4878,7 +5199,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   async #subscribe(
       ctx: GmailContext, threadId: string | undefined, hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
-    if (!pushHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
+    if (!gmailHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
     if (ctx.searchQuery !== undefined) {
       throw new Error(
         "A Gmail search binding can't be watched for new mail. Connect the inbox or a label instead.");
@@ -4907,14 +5228,123 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     });
   }
 
+  /**
+   * The group, as Cloud Identity names it now. Pinned by its resource name on first use, so a group
+   * deleted and recreated at the same address is refused rather than taken for the original.
+   */
+  async #groupReadContext(): Promise<GmailGroupReadContext> {
+    const address = this.ctx.props.groupAddress!;
+    const {email: selfEmail} = await this.#getAccount();
+    const identity = new CloudIdentityApi(opts => this.#getAccessToken(opts));
+    const state = new GmailGroupState(this.ctx.storage);
+    const pinned = state.pinnedGroup;
+    let group: CloudIdentityGroup;
+    try {
+      group = pinned ? await identity.getGroup(pinned.name) : await identity.lookupGroup(address);
+    } catch (error) {
+      // A connection whose account has since withdrawn the Google Group grant.
+      if (error instanceof CloudIdentityApiError && error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+        throw new Error("This account no longer lets this app see its groups. Connect the group again.", {cause: error});
+      }
+      // The pinned group's own name answers 404 only once the group is deleted. Remembered, so
+      // hook screening stops taking the owner's mail for its.
+      if (pinned && error instanceof CloudIdentityApiError && error.status === 404) {
+        state.markGone();
+        throw new GmailGroupGone();
+      }
+      throw error;
+    }
+    if (group.address !== address) {
+      throw new Error("The connected Google Group now answers at another address. Connect it again.");
+    }
+    // Kept current for hook screening, which reads the group from here.
+    state.pinGroup(group);
+    let checked = Date.now();
+    const revalidate = async (force = false) => {
+      if (!force && Date.now() - checked < GROUP_REVALIDATE_MS) return;
+      const now = await identity.getGroup(group.name);
+      if (now.address !== group.address || now.aliases.toSorted().join() !== group.aliases.toSorted().join()) {
+        throw new Error("The connected Google Group's addresses have changed. Start again.");
+      }
+      checked = Date.now();
+    };
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group), revalidate,
+    };
+  }
+
+  /**
+   * The group as {@link #groupReadContext} last resolved it and the mailbox as {@link #getAccount}
+   * last verified it, with no Google request. For screening, which `deliver` re-checks in full.
+   */
+  async #pinnedGroupReadContext(): Promise<GmailGroupReadContext> {
+    const state = new GmailGroupState(this.ctx.storage);
+    if (state.gone) throw new GmailGroupGone();
+    const group = state.pinnedGroup;
+    const selfEmail = this.ctx.storage.kv.get<string>("selfEmail");
+    if (!group || !selfEmail) return await this.#groupReadContext();
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group),
+      // Screening decides only whether to start a firing; the delivery resolves the group again.
+      revalidate: async () => {},
+    };
+  }
+
+  /** `group` with what this binding's own URL says of it. */
+  #bound(group: CloudIdentityGroup): GmailGroupReadContext["group"] {
+    return {...group, outsideSenders: this.ctx.props.groupOutsideSenders === true};
+  }
+
+  #groupContext(read: GmailGroupReadContext, approvalQueue: RpcStub<ApprovalQueue>): GmailGroupContext {
+    const attachments: GmailAttachmentContext = {
+      approvalQueue: new SharedApprovalQueue(approvalQueue.dup(), [gmailGroupSubresourceId(read.group)]),
+      convertPdf: pdfConverter(this.env, GMAIL_PDF),
+    };
+    const ctx: GmailGroupContext = {
+      ...read,
+      approvalQueue: attachments.approvalQueue,
+      subscribe: hook => this.#groupSubscribe(ctx, hook),
+      attachment: (snapshot, readmit) => new GmailAttachmentStub(
+        attachments, snapshot.info,
+        async () => {
+          await readmit();
+          return await read.api.getAttachmentContent(snapshot);
+        },
+        async () => {
+          await readmit();
+          return await read.api.openAttachmentContent(snapshot);
+        }),
+    };
+    return ctx;
+  }
+
+  async #groupSubscribe(ctx: GmailGroupContext, hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
+    if (!gmailHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
+    const {emailAddress} = await ctx.api.getProfile();
+    using delivery: RpcStub<GmailHookDelivery> = await this.ctx.restore({});
+    const controller = this.ctx.exports.GmailHookController({props: {
+      key: crypto.randomUUID(),
+      mailbox: emailAddress.toLowerCase(),
+      userObjectId: this.ctx.props.userObjectId,
+      screened: true,
+      delivery,
+    }});
+    await ctx.approvalQueue.bindHook(controller, hook, {
+      title: `Watch for new ${ctx.group.address} mail`,
+      description: `Call this hook with each new message sent to ${ctx.group.address}, letting it ` +
+        "read that message.",
+    });
+  }
+
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    if (this.ctx.props.groupAddress !== undefined) throw new Error("A Google Group binding has no actions.");
     const store = new GmailStore(this.ctx.storage);
     const initialAction = store.getAction(actionId);
     if (!initialAction) throw new Error(`Unknown pending Gmail action: ${actionId}`);
     if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
     this.#applying.add(actionId);
     try {
-      const selfEmail = await this.#getSelfEmail();
+      const selfEmail = (await this.#getAccount()).email;
       const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
 
       await reconcileDraftActionAlias(api, store, initialAction);
@@ -4953,7 +5383,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           const existing = await api.findMessageByRfcMessageId(action.spec.messageId, "delivered");
           if (!existing) {
             throw new Error(
-              "The previous Gmail send outcome is still unknown; refusing to risk duplicate delivery.");
+              "The previous Gmail send outcome is still unknown, so it may already have been sent; " +
+              "refusing to risk duplicate delivery. Check your Sent mail, then deny this request to " +
+              "clear it.");
           }
           let approvedFingerprint = store.getSendFingerprint(actionId, action.spec.messageId);
           if (!approvedFingerprint) {
@@ -5019,7 +5451,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           if (!existing) {
             draftSourceSnapshot(action);
             throw new Error(
-              "The previous Gmail draft creation outcome is still unknown; refusing to create a duplicate.");
+              "The previous Gmail draft creation outcome is still unknown, so the draft may already " +
+              "exist; refusing to create a duplicate. Check your Drafts, then deny this request to " +
+              "clear it.");
           }
           const current = await api.getDraft(existing.id);
           const receipt = {
@@ -5206,7 +5640,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             : undefined;
           if (!sent) {
             throw new Error(
-              "The previous Gmail draft send outcome is still unknown; refusing to risk duplicate delivery.");
+              "The previous Gmail draft send outcome is still unknown, so it may already have been " +
+              "sent; refusing to risk duplicate delivery. Check your Sent mail, then deny this " +
+              "request to clear it.");
           }
           const sentMessage = await api.getMessage(sent.id);
           if (sentMessage.id !== sent.id ||
@@ -5278,7 +5714,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             label => label.type === "user" && label.name === action.label.name);
           if (matches.length !== 1) {
             throw new Error(
-              "The previous Gmail label creation outcome is unknown; refusing to map or create a label.");
+              "The previous Gmail label creation outcome is unknown, so the label may already " +
+              "exist; refusing to map or create a label. Check your labels, then deny this request " +
+              "to clear it.");
           }
           store.mapLabelToProvider(actionId, matches[0]);
           break;
@@ -5346,21 +5784,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     const store = new GmailStore(this.ctx.storage);
     const action = store.getAction(actionId);
     if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
+    if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
+    // An earlier apply's uncertain outcome does not block the rejection: it withdraws the action,
+    // and whatever Gmail already did stays.
     const receipt = store.getDraftWriteReceipt(actionId);
-    const writeReceipt = (action.type === "draftCreate" || action.type === "draftUpdate")
-      ? receipt
-      : undefined;
-    if (this.#applying.has(actionId) ||
-        (store.isApplying(actionId) &&
-         !(action.type === "draftCreate" && writeReceipt !== undefined))) {
-      throw new Error(
-        `Gmail action ${actionId} has an uncertain provider outcome and must be reconciled first.`);
-    }
+    const uncertain = store.isApplying(actionId);
     if (receipt && !receipt.missing && action.type === "draftCreate") {
       // The stable Message-ID proves the remote write is real even if its content changed before
       // reconciliation. Preserve that provider draft while rejecting the local pending action.
       store.mapDraftToProvider(action.draft.logicalId, receipt.draftId, actionId);
     }
+    const sentMessageId = action.type === "send" ? ("spec" in action ? action.spec.messageId : undefined)
+      : action.type === "draftSend" ? action.messageId : undefined;
+    if (uncertain && sentMessageId) store.markSendWithdrawn(sentMessageId);
     store.setDecision(actionId, "rejected");
     store.removeAction(actionId);
     store.clearApplying(actionId);
@@ -5368,6 +5804,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       const resource = store.getDraft(action.draft.logicalId);
       if (resource) {
         // Rejecting reconciliation cannot undo an identified provider write, so keep it visible.
+        // A draft an unidentified write may have created is left in Gmail, untracked.
         if (receipt?.missing) resource.status = "deleted";
         else if (!resource.providerId) resource.status = "rejected";
         resource.version++;
@@ -5384,6 +5821,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         resource.version++;
         store.putDraft(resource);
       }
+      // Gmail may hold the update, so the retained forward body may no longer be the draft's;
+      // reads fall back to Gmail's own.
+      if (action.type === "draftUpdate" && uncertain) store.clearDraftForwardSnapshot(action.draftId);
     } else if (action.type === "labelCreate") {
       const resource = store.getLabel(action.label.logicalId);
       if (resource) {
@@ -5401,10 +5841,33 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     throw new Error("Gmail actions are not revertible.");
   }
 
+  /**
+   * Refuses every observer of a mailbox, label or search binding: reads made before reads reported
+   * their owner's account recorded nothing to check an observer against. A Google Group binding has
+   * no such reads, every one of its having reported the group, so it leaves the check to
+   * verifyObserverAccess.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    if (this.ctx.props.groupAddress !== undefined) return;
     throw new Error(
       "Gmail data is private to the connected account owner and cannot be shared with observers.");
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the subresource every read reports, `gmail/group/<groupId>` on a Google Group binding
+   * and `gmail/user/<sub>` on any other, failing the whole call for any other ID. An observer is
+   * allowed only when their own account is a direct member of that group, or is that same Google
+   * account, as their UserAccount answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+      observers: {id: string; verifier: Fetcher<GatekeeperUserVerifier>}[],
+      subresources: string[]): Promise<{allowedObserverIds: string[]}> {
+    const reported = this.ctx.props.groupAddress !== undefined ? "gmailGroup" : "gmailUser";
+    for (const id of subresources) {
+      if (parseGmailSubresource(id).kind !== reported) throw new Error("Not a subresource this Gmail binding reports.");
+    }
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }

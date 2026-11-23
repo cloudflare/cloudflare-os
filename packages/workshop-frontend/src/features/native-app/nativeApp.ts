@@ -1,6 +1,8 @@
 type NativeNotificationBridge = {
   currentDeviceRegistration: () => string | undefined
-  requestDeviceRegistration: () => void
+  authorizationRequired?: boolean
+  requestDeviceRegistration: (authorization?: string) => void
+  disconnect?: () => void
   registrationFinished: (outcome: 'ready' | 'failed') => void
 }
 
@@ -10,6 +12,11 @@ export type CloudflareOSNative = {
   loginReady: () => void
   returnToInstalls: () => void
   notifications?: NativeNotificationBridge
+  authentication?: { open: (id: string, url: string) => void; close: (id: string) => void }
+  /** Optional desktop/mobile badge sink. Counts are instance-scoped, not local increments. */
+  unreadStateChanged?: (state: {unreadMessageCount: number}) => void
+  /** Explicit logout; transport loss is not session termination. */
+  sessionEnded?: () => void
 }
 
 type NativeAppWindow = Window & { cloudflareOSNative?: CloudflareOSNative }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import { Badge, Dialog, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsClockwise, Check, Copy, ImageSquare, Pencil, Plus, Trash, Warning, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { BlueprintGadgetSummary, GadgetClient, GadgetMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload } from '@gadgets/workshop-shared/api'
+import { BlueprintGadgetSummary, GadgetClient, WorkspaceMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput, WorkshopInputArea } from './components/WorkshopControls'
 import { copyToClipboard } from './clipboard'
 import {
@@ -67,7 +67,7 @@ type Props = {
   overseer: RpcStub<Overseer>
   // The gadget this modal exports blueprints from (the gadget currently selected in the editor).
   gadget: RpcStub<GadgetClient>
-  metadata: GadgetMetadata
+  metadata: WorkspaceMetadata
 }
 
 export default function BlueprintModal({ open, onClose, overseer, gadget, metadata }: Props) {

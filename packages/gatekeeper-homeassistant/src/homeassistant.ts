@@ -3,6 +3,7 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
   stripTrailingSlashes,
+  workerVersionTag,
   type AccountDescription,
   type AvatarImage,
   type ConnectHandoff,
@@ -11,10 +12,12 @@ import {
   type GatekeeperUser,
   type GatekeeperUserVerifier,
   type GatekeeperVendor as GatekeeperVendorIface,
+  type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -50,6 +53,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
+import { autoApprovableKinds, dashboardVerdict, serviceCallVerdict } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -82,6 +86,14 @@ import type {
   ServiceInfo,
 } from "./types";
 import TYPES_CODE from "./types.txt";
+
+/** Observation that must state its subresources, so an omitted list is a type error. */
+type ObservationWithSubresources = ObservationDescription & { subresources: string[] };
+
+/** Reports a read; this gatekeeper's reads expose no tracked subresources, so callers pass `[]`. */
+function authorizeRead(queue: RpcStub<ApprovalQueue>, observation: ObservationWithSubresources): Promise<void> {
+  return queue.authorizeObservation(observation);
+}
 
 // ---------------------------------------------------------------------------
 // Configuration & nonce helpers
@@ -142,6 +154,7 @@ const HOMEASSISTANT_ICON: AvatarImage = { url: HOMEASSISTANT_LOGO_URL };
 // pattern so any HA URL the user pastes will match. The Workshop's resource picker recognizes
 // `https://*` as a special "any URL" pattern.
 const INSTANCE_RESOURCE: SupportedResource = {
+  id: "instance",
   urlPattern: "https://*",
   title: "Home Assistant",
   description: "Access to a Home Assistant instance: every area, device, entity, and dashboard.",
@@ -152,6 +165,7 @@ const INSTANCE_RESOURCE: SupportedResource = {
 // a unique scheme/host marker so the resource picker doesn't confuse them with the catch-all
 // `https://*` whole-instance resource, and so URLPattern.test() routes correctly.
 const AREA_RESOURCE: SupportedResource = {
+  id: "area",
   urlPattern: "https://homeassistant.local/_resource/area/:areaId",
   title: "Home Assistant Area",
   description: "Access to a single Home Assistant area (room): its devices and entities only.",
@@ -159,6 +173,7 @@ const AREA_RESOURCE: SupportedResource = {
 };
 
 const LABEL_RESOURCE: SupportedResource = {
+  id: "label",
   urlPattern: "https://homeassistant.local/_resource/label/:labelId",
   title: "Home Assistant Label",
   description: "Access to all Home Assistant entities carrying a particular label.",
@@ -166,6 +181,7 @@ const LABEL_RESOURCE: SupportedResource = {
 };
 
 const DEVICE_RESOURCE: SupportedResource = {
+  id: "device",
   urlPattern: "https://homeassistant.local/_resource/device/:deviceId",
   title: "Home Assistant Device",
   description: "Access to a single physical device and the entities it provides.",
@@ -173,6 +189,7 @@ const DEVICE_RESOURCE: SupportedResource = {
 };
 
 const ENTITY_RESOURCE: SupportedResource = {
+  id: "entity",
   urlPattern: "https://homeassistant.local/_resource/entity/:entityId",
   title: "Home Assistant Entity",
   description: "Access to a single Home Assistant entity (light, sensor, switch, etc).",
@@ -361,6 +378,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "to control devices, edit dashboards, and render templates. Build agents that automate " +
           "your home, alert on sensor changes, or generate custom dashboards.",
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>): Promise<{ url: string }> {
@@ -600,6 +621,7 @@ export class HomeAssistantUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const userAccount = this.#userAccount();
     const credsGetter = async () => await userAccount.getCredentials();
 
@@ -979,7 +1001,7 @@ class EntityConfiguratorUI extends RpcTarget implements HomeAssistantEntityConfi
 // ---------------------------------------------------------------------------
 // GatekeeperImpl
 
-type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
+export type HomeAssistantResourceKind = "instance" | "area" | "label" | "device" | "entity";
 
 type HomeAssistantGatekeeperImplProps = {
   userObjectId: string;
@@ -1059,6 +1081,10 @@ type PendingActionRow = {
   id: number;
   action: HomeAssistantAction;
   submittedAt: number;
+  /** The verdict submitted with the action; apply re-checks a `true` one (see applyAction). */
+  autoApprovable?: boolean;
+  /** Set when the overseer first applies it, which proves it received the action (see submitWrite). */
+  applyStarted?: true;
 };
 
 // Internal storage row for actions that have been applied. Retained so that revertAction() can
@@ -1161,7 +1187,7 @@ export class HomeAssistantGatekeeperImpl
   }
 
   async getAutoApprovableActions() {
-    return [];
+    return autoApprovableKinds(this.ctx.props.resourceKind, this.ctx.props.resourceId);
   }
 
   async startSession(
@@ -1187,17 +1213,37 @@ export class HomeAssistantGatekeeperImpl
     // The overseer only knows the numeric action ID; the full action lives in DO storage.
     const pending = this.#getPending(actionId);
     if (!pending) {
+      // The overseer records completion only after this returns, so an apply that already ran can
+      // be delivered again after a lost reply or a restart; it has nothing left to do.
+      if (this.#getApplied(actionId) !== undefined) return;
       throw new Error(`No queued Home Assistant action exists with id ${actionId}.`);
     }
     const action = pending.action;
+    if (!pending.applyStarted) this.ctx.storage.kv.put<PendingActionRow>(`pending:${actionId}`, { ...pending, applyStarted: true });
     const creds = await this.#getCreds();
-
     let revertInfo: HomeAssistantRevertInfo;
     try {
       revertInfo = await this.#snapshotForRevert(action, creds);
     } catch {
       // If we can't snapshot, proceed without revert.
       revertInfo = { type: "noRevert" };
+    }
+
+    // Home Assistant resolves area, device, label and floor targets when the call runs, so what a
+    // device-control call reaches can change while it is queued (a template switch moved into the
+    // area). One that could be auto-approved is held unless it would still qualify now, checked
+    // last, just before the call: Home Assistant has no conditional call to close the gap entirely.
+    // An apply cannot tell a rule's approval from a person's, so this holds one a person approved
+    // too, as GitHub's and GitLab's push gates and Calendar's do: they approved what the card
+    // showed, which reached only device control.
+    if (action.type === "callService" && pending.autoApprovable === true &&
+        !serviceCallVerdict(action, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("What this call reaches has changed since it was queued, so it is no longer only device control. Queue it again to have it reviewed.");
+    }
+    // The same holds for the entities a dashboard shows controls for.
+    if (action.type === "saveDashboard" && pending.autoApprovable === true &&
+        !dashboardVerdict(action.config, await fetchRegistrySnapshot(creds)).autoApprovable) {
+      throw new Error("An entity this dashboard shows has changed since it was queued, so its controls are no longer only device control. Queue it again to have it reviewed.");
     }
 
     try {
@@ -1277,10 +1323,20 @@ export class HomeAssistantGatekeeperImpl
    * system, and the connection is a long-lived access token that grants the same all-or-nothing
    * access as the HA user who created it — HA has no per-user/per-entity ACL oracle we could verify
    * an observer against. So any collaborator may observe: addObserver/removeObserver are no-ops and
-   * we never set excludeObservers on observations.
+   * reads report `subresources: []`, so verifyObserverAccess allows every observer.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
+  /** addObserver never restricted anyone, so there is no historical requirement to export. */
+  async getHistoricalSubresources(): Promise<string[]> { return []; }
+
+  /** Allows every observer under the low-stakes observer policy. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
 
   // ---------------------------------------------------------------------
   // Internal helpers
@@ -1344,9 +1400,14 @@ export class HomeAssistantGatekeeperImpl
           description = describeAction(action, emptyRegistry);
         }
 
+        self.ctx.storage.kv.put<PendingActionRow>(`pending:${id}`, { ...row, autoApprovable: description.autoApprovable });
         try {
           await approvalQueue.submitAction(id, description);
         } catch (e) {
+          // An auto-approval can apply the action before the reply arrives, so a lost reply on an
+          // action the overseer has started applying proves it received it; failing would invite a
+          // repeated call, and dropping the row would take away its retry.
+          if (self.ctx.storage.kv.get(`applied:${id}`) !== undefined || self.#getPending(id)?.applyStarted) return;
           // The submit failed (e.g., the approval queue stub is gone). Drop the pending row.
           self.#deletePending(id);
           throw e;
@@ -2028,7 +2089,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
 
   async getConfig(): Promise<HomeAssistantConfig> {
     const config = normalizeConfig(await callApi(this.#ctx, (r) => r.getConfig()));
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "Read Home Assistant configuration",
       description:
         `Fetched the HA instance configuration ` +
@@ -2043,7 +2105,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       ws.send<any[]>({ type: "config/area_registry/list" }),
     );
     const result = list.map(normalizeArea);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant areas",
       description: `Listed ${result.length} area${result.length === 1 ? "" : "s"}.`,
     });
@@ -2059,7 +2122,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       }
     });
     const result = list.map(normalizeFloor);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant floors",
       description: `Listed ${result.length} floor${result.length === 1 ? "" : "s"}.`,
     });
@@ -2075,7 +2139,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       }
     });
     const result = list.map(normalizeLabel);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant labels",
       description: `Listed ${result.length} label${result.length === 1 ? "" : "s"}.`,
     });
@@ -2087,7 +2152,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       ws.send<any[]>({ type: "config/device_registry/list" }),
     );
     const result = list.map(normalizeDevice);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant devices",
       description: `Listed ${result.length} device${result.length === 1 ? "" : "s"}.`,
     });
@@ -2108,7 +2174,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       summaries.push(buildSummary(undefined, state, snapshot.devices));
     }
     const filtered = applyEntityFilter(summaries, filter);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant entities",
       description:
         `Listed ${filtered.length} entit${filtered.length === 1 ? "y" : "ies"}` +
@@ -2128,7 +2195,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       if (idx > 0) set.add(id.slice(0, idx));
     }
     const result = [...set].toSorted();
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant integration domains",
       description: `Listed ${result.length} domain${result.length === 1 ? "" : "s"}.`,
     });
@@ -2139,7 +2207,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
     const raw = await callApi(this.#ctx, (r) => r.getServices());
     let services = normalizeServices(raw);
     if (domain) services = services.filter((s) => s.domain === domain);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Home Assistant services",
       description:
         `Listed ${services.length} service${services.length === 1 ? "" : "s"}` +
@@ -2153,7 +2222,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
     const snapshot = await this.#ctx.registrySnapshot();
     const area = snapshot.areas.find((a: any) => a.area_id === id);
     if (!area) throw new Error(`Area not found: ${id}`);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open area capability`,
       description: `Opened a capability for area "${area.name}" (\`${id}\`).`,
     });
@@ -2166,7 +2236,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
     const snapshot = await this.#ctx.registrySnapshot();
     const label = snapshot.labels.find((l: any) => l.label_id === id);
     if (!label) throw new Error(`Label not found: ${id}`);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open label capability`,
       description: `Opened a capability for label "${label.name}" (\`${id}\`).`,
     });
@@ -2178,7 +2249,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
     const device = snapshot.devices.find((d: any) => d.id === id);
     if (!device) throw new Error(`Device not found: ${id}`);
     const name = device.name_by_user ?? device.name ?? id;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open device capability`,
       description: `Opened a capability for device "${name}" (\`${id}\`).`,
     });
@@ -2187,7 +2259,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
 
   async getEntity(entityId: string): Promise<Entity> {
     const state = await callApi(this.#ctx, (r) => r.getState(entityId));
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open entity capability`,
       description: `Opened a capability for entity \`${entityId}\` (current state: ${state.state}).`,
     });
@@ -2199,7 +2272,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
     // capability accessors (`getArea`, `getEntity`, etc.) we still record the act of obtaining
     // the capability in the approval queue. Actual dashboard reads (describe / getConfig) and
     // writes (saveConfig) authorize / submit themselves separately.
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open dashboard capability`,
       description: `Opened a capability for Lovelace dashboard \`${urlPath}\`.`,
     });
@@ -2234,7 +2308,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
   async renderTemplate(template: string, variables?: Record<string, unknown>): Promise<string> {
     const result = await callApi(this.#ctx, (r) => r.renderTemplate(template, variables));
     const preview = template.length > 80 ? template.slice(0, 77) + "..." : template;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "Render Jinja template",
       description:
         `Rendered template \`${preview}\`. Templates can read every entity in the instance, ` +
@@ -2252,7 +2327,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       r.getHistory(entityIds, coerceDate(start), end ? coerceDate(end) : undefined, false),
     );
     const histories = normalizeHistoryBundle(bundle);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "Read entity history",
       description:
         `Read state history for ${entityIds.length} entit${entityIds.length === 1 ? "y" : "ies"} ` +
@@ -2270,7 +2346,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       r.getLogbook(coerceDate(start), end ? coerceDate(end) : undefined, entityId),
     );
     const result = normalizeLogbook(items);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "Read Home Assistant logbook",
       description:
         `Read ${result.length} logbook entr${result.length === 1 ? "y" : "ies"} ` +
@@ -2293,7 +2370,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       showInSidebar: d.show_in_sidebar ?? true,
       requireAdmin: d.require_admin ?? false,
     }));
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Lovelace dashboards",
       description: `Listed ${result.length} dashboard${result.length === 1 ? "" : "s"}.`,
     });
@@ -2305,7 +2383,8 @@ class HomeAssistantSessionImpl extends RpcTarget implements HomeAssistantSession
       ws.send<any[]>({ type: "lovelace/resources" }),
     );
     const result = list.map((r: any) => ({ id: r.id, url: r.url, type: r.type }));
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: "List Lovelace resources",
       description: `Listed ${result.length} custom Lovelace resource${result.length === 1 ? "" : "s"}.`,
     });
@@ -2341,7 +2420,8 @@ class AreaImpl extends RpcTarget implements Area {
     const area = snap.areas.find((a: any) => a.area_id === this.#areaId);
     if (!area) throw new Error(`Area not found: ${this.#areaId}`);
     const info = normalizeArea(area);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Describe area: ${info.name}`,
       description: `Read metadata for area "${info.name}" (\`${info.id}\`).`,
     });
@@ -2352,7 +2432,8 @@ class AreaImpl extends RpcTarget implements Area {
     const snap = await this.#snapshot();
     const area = snap.areas.find((a: any) => a.area_id === this.#areaId);
     if (!area?.floor_id) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read area floor`,
         description: `Area \`${this.#areaId}\` is not assigned to a floor.`,
       });
@@ -2360,7 +2441,8 @@ class AreaImpl extends RpcTarget implements Area {
     }
     const floor = snap.floors.find((f: any) => f.floor_id === area.floor_id);
     const info = floor ? normalizeFloor(floor) : null;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read area floor`,
       description: `Area \`${this.#areaId}\` is on floor "${info?.name ?? area.floor_id}".`,
     });
@@ -2375,7 +2457,8 @@ class AreaImpl extends RpcTarget implements Area {
       buildSummary(reg, snap.states.get(reg.entity_id), snap.devices),
     );
     const filtered = applyEntityFilter(summaries, { ...filter, areaId: this.#areaId });
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `List entities in area`,
       description:
         `Listed ${filtered.length} entit${filtered.length === 1 ? "y" : "ies"} ` +
@@ -2389,7 +2472,8 @@ class AreaImpl extends RpcTarget implements Area {
   async listDevices(): Promise<DeviceInfo[]> {
     const snap = await this.#snapshot();
     const result = snap.devices.filter((d: any) => d.area_id === this.#areaId).map(normalizeDevice);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `List devices in area`,
       description:
         `Listed ${result.length} device${result.length === 1 ? "" : "s"} ` +
@@ -2415,7 +2499,8 @@ class AreaImpl extends RpcTarget implements Area {
     if (!inArea) {
       throw new Error(`Entity ${entityId} is not part of area ${this.#areaId}.`);
     }
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open entity capability (in area)`,
       description: `Opened capability for entity \`${entityId}\` within area \`${this.#areaId}\`.`,
     });
@@ -2428,7 +2513,8 @@ class AreaImpl extends RpcTarget implements Area {
     if (!device) {
       throw new Error(`Device ${deviceId} is not part of area ${this.#areaId}.`);
     }
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open device capability (in area)`,
       description: `Opened capability for device \`${deviceId}\` within area \`${this.#areaId}\`.`,
     });
@@ -2458,7 +2544,8 @@ class AreaImpl extends RpcTarget implements Area {
       if (inArea) entityIds.push(reg.entity_id);
     }
     if (entityIds.length === 0) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read area history`,
         description: `Area \`${this.#areaId}\` has no entities to fetch history for.`,
       });
@@ -2468,7 +2555,8 @@ class AreaImpl extends RpcTarget implements Area {
       r.getHistory(entityIds, coerceDate(start), end ? coerceDate(end) : undefined, false),
     );
     const histories = normalizeHistoryBundle(bundle);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read area history`,
       description:
         `Read history for ${entityIds.length} entit${entityIds.length === 1 ? "y" : "ies"} ` +
@@ -2507,7 +2595,8 @@ class LabelImpl extends RpcTarget implements Label {
     const label = snap.labels.find((l: any) => l.label_id === this.#labelId);
     if (!label) throw new Error(`Label not found: ${this.#labelId}`);
     const info = normalizeLabel(label);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Describe label: ${info.name}`,
       description: `Read metadata for label "${info.name}" (\`${info.id}\`).`,
     });
@@ -2523,7 +2612,8 @@ class LabelImpl extends RpcTarget implements Label {
       summaries.push(buildSummary(reg, snap.states.get(reg.entity_id), snap.devices));
     }
     const filtered = applyEntityFilter(summaries, { ...filter, labelId: this.#labelId });
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `List entities with label`,
       description:
         `Listed ${filtered.length} entit${filtered.length === 1 ? "y" : "ies"} ` +
@@ -2541,7 +2631,8 @@ class LabelImpl extends RpcTarget implements Label {
     if (!labels.includes(this.#labelId)) {
       throw new Error(`Entity ${entityId} does not carry label ${this.#labelId}.`);
     }
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open entity capability (by label)`,
       description: `Opened capability for entity \`${entityId}\` carrying label \`${this.#labelId}\`.`,
     });
@@ -2567,7 +2658,8 @@ class LabelImpl extends RpcTarget implements Label {
       if (labels.includes(this.#labelId)) entityIds.push(reg.entity_id);
     }
     if (entityIds.length === 0) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read label history`,
         description: `Label \`${this.#labelId}\` has no entities.`,
       });
@@ -2577,7 +2669,8 @@ class LabelImpl extends RpcTarget implements Label {
       r.getHistory(entityIds, coerceDate(start), end ? coerceDate(end) : undefined, false),
     );
     const histories = normalizeHistoryBundle(bundle);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read label history`,
       description:
         `Read history for ${entityIds.length} entit${entityIds.length === 1 ? "y" : "ies"} ` +
@@ -2614,7 +2707,8 @@ class DeviceImpl extends RpcTarget implements Device {
     const device = snap.devices.find((d: any) => d.id === this.#deviceId);
     if (!device) throw new Error(`Device not found: ${this.#deviceId}`);
     const info = normalizeDevice(device);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Describe device: ${info.name}`,
       description: `Read metadata for device "${info.name}" (\`${this.#deviceId}\`).`,
     });
@@ -2625,7 +2719,8 @@ class DeviceImpl extends RpcTarget implements Device {
     const snap = await this.#snapshot();
     const device = snap.devices.find((d: any) => d.id === this.#deviceId);
     if (!device?.area_id) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read device area`,
         description: `Device \`${this.#deviceId}\` is not assigned to an area.`,
       });
@@ -2633,7 +2728,8 @@ class DeviceImpl extends RpcTarget implements Device {
     }
     const area = snap.areas.find((a: any) => a.area_id === device.area_id);
     const info = area ? normalizeArea(area) : null;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read device area`,
       description: `Device \`${this.#deviceId}\` is in area "${info?.name ?? device.area_id}".`,
     });
@@ -2648,7 +2744,8 @@ class DeviceImpl extends RpcTarget implements Device {
       summaries.push(buildSummary(reg, snap.states.get(reg.entity_id), snap.devices));
     }
     const filtered = applyEntityFilter(summaries, { ...filter, deviceId: this.#deviceId });
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `List entities for device`,
       description:
         `Listed ${filtered.length} entit${filtered.length === 1 ? "y" : "ies"} ` +
@@ -2665,7 +2762,8 @@ class DeviceImpl extends RpcTarget implements Device {
     if (!reg || reg.device_id !== this.#deviceId) {
       throw new Error(`Entity ${entityId} does not belong to device ${this.#deviceId}.`);
     }
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Open entity capability (on device)`,
       description: `Opened capability for entity \`${entityId}\` on device \`${this.#deviceId}\`.`,
     });
@@ -2690,7 +2788,8 @@ class DeviceImpl extends RpcTarget implements Device {
       if (reg.device_id === this.#deviceId) entityIds.push(reg.entity_id);
     }
     if (entityIds.length === 0) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read device history`,
         description: `Device \`${this.#deviceId}\` has no entities.`,
       });
@@ -2700,7 +2799,8 @@ class DeviceImpl extends RpcTarget implements Device {
       r.getHistory(entityIds, coerceDate(start), end ? coerceDate(end) : undefined, false),
     );
     const histories = normalizeHistoryBundle(bundle);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read device history`,
       description:
         `Read history for ${entityIds.length} entit${entityIds.length === 1 ? "y" : "ies"} ` +
@@ -2736,7 +2836,8 @@ class EntityImpl extends RpcTarget implements Entity {
     const { snapshot, appliedCount } = await this.#ctx.registrySnapshotWithOverlay();
     const summary = summarizeEntity(snapshot, this.#entityId);
     if (!summary) throw new Error(`Entity not found: ${this.#entityId}`);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Describe entity: ${summary.name}`,
       description:
         `Read metadata for entity \`${this.#entityId}\` (state: ${summary.state})` +
@@ -2765,7 +2866,8 @@ class EntityImpl extends RpcTarget implements Entity {
       appliedCount = result.appliedCount;
     }
     const state = normalizeState(raw);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity state`,
       description:
         `Read state of \`${this.#entityId}\` (current: ${state.state})` +
@@ -2779,7 +2881,8 @@ class EntityImpl extends RpcTarget implements Entity {
     const snap = await this.#ctx.registrySnapshot();
     const reg = snap.entities.find((e: any) => e.entity_id === this.#entityId);
     if (!reg?.device_id) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read entity device`,
         description: `Entity \`${this.#entityId}\` is not provided by a device.`,
       });
@@ -2787,7 +2890,8 @@ class EntityImpl extends RpcTarget implements Entity {
     }
     const device = snap.devices.find((d: any) => d.id === reg.device_id);
     const info = device ? normalizeDevice(device) : null;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity device`,
       description: `Entity \`${this.#entityId}\` is provided by device "${info?.name ?? reg.device_id}".`,
     });
@@ -2798,7 +2902,8 @@ class EntityImpl extends RpcTarget implements Entity {
     const snap = await this.#ctx.registrySnapshot();
     const summary = summarizeEntity(snap, this.#entityId);
     if (!summary?.areaId) {
-      await this.#ctx.approvalQueue.authorizeObservation({
+      await authorizeRead(this.#ctx.approvalQueue, {
+        subresources: [],
         title: `Read entity area`,
         description: `Entity \`${this.#entityId}\` is not assigned to an area.`,
       });
@@ -2806,7 +2911,8 @@ class EntityImpl extends RpcTarget implements Entity {
     }
     const area = snap.areas.find((a: any) => a.area_id === summary.areaId);
     const info = area ? normalizeArea(area) : null;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity area`,
       description: `Entity \`${this.#entityId}\` is in area "${info?.name ?? summary.areaId}".`,
     });
@@ -2820,7 +2926,8 @@ class EntityImpl extends RpcTarget implements Entity {
     const result = snap.labels
       .filter((l: any) => labelIds.includes(l.label_id))
       .map(normalizeLabel);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity labels`,
       description: `Entity \`${this.#entityId}\` carries ${result.length} label${result.length === 1 ? "" : "s"}.`,
     });
@@ -2832,7 +2939,8 @@ class EntityImpl extends RpcTarget implements Entity {
       r.getHistory([this.#entityId], coerceDate(start), end ? coerceDate(end) : undefined, false),
     );
     const histories = normalizeHistoryBundle(bundle);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity history`,
       description:
         `Read history for \`${this.#entityId}\` from ${coerceDate(start).toISOString()}` +
@@ -2847,7 +2955,8 @@ class EntityImpl extends RpcTarget implements Entity {
       r.getLogbook(coerceDate(start), end ? coerceDate(end) : undefined, this.#entityId),
     );
     const result = normalizeLogbook(items);
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read entity logbook`,
       description: `Read ${result.length} logbook entr${result.length === 1 ? "y" : "ies"} for \`${this.#entityId}\`.`,
     });
@@ -3129,7 +3238,8 @@ class DashboardImpl extends RpcTarget implements Dashboard {
 
   async describe(): Promise<DashboardInfo> {
     const info = await this.#describeRaw();
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Describe dashboard: ${info.title}`,
       description: `Read metadata for dashboard \`${this.#urlPath}\` (mode: ${info.mode}).`,
     });
@@ -3150,7 +3260,8 @@ class DashboardImpl extends RpcTarget implements Dashboard {
     const { config: overlaid, appliedCount } = overlayDashboardConfig(real, urlPathArg, pending);
     const config = overlaid as DashboardConfig;
     const viewCount = Array.isArray(config?.views) ? config.views.length : 0;
-    await this.#ctx.approvalQueue.authorizeObservation({
+    await authorizeRead(this.#ctx.approvalQueue, {
+      subresources: [],
       title: `Read dashboard config: ${this.#urlPath}`,
       description:
         `Read Lovelace configuration for dashboard \`${this.#urlPath}\` ` +

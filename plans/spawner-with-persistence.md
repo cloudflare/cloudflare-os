@@ -1,5 +1,9 @@
 # Agent Spawner: Durable Calls and Persistent Stubs
 
+Historical implementation plan: the callback-return nudge loop below was removed. `agentNudge`
+has since been reused for decision handoffs, Retry, and Stop; it is no longer obsolete. See its
+current API documentation rather than the removal instructions below.
+
 ## Background
 
 The agent spawner binding predates two runtime features: persistent stubs (`[restore]()`, storing an
@@ -77,8 +81,9 @@ of freeform prompts. But the machinery underneath is a mismatch with how agents 
    `bindingName`) remain in the log for display and are replayed to the model as a call whose
    arguments are no longer available; they bind nothing in `env`. The replay-order `PARAMS_<n>`
    allocation, currently simulated in four places that must stay in sync, is deleted outright.
-   `agentNudge` messages and `giveUp` tool calls likewise stay in the `api.ts` unions, marked
-   obsolete and no longer emitted, so old logs keep rendering.
+   This plan originally retained `agentNudge` messages and `giveUp` tool calls in the `api.ts`
+   unions as obsolete, display-only variants. `agentNudge` has since been reused for decision
+   handoffs, Retry, and Stop; only `giveUp` remains obsolete.
 8. **One PR, several commits**, grouped so the `workshop-backend`/`workshop-shared` changes can be
    read apart from UI touch-ups, and pure deletion apart from new behaviour.
 
@@ -343,9 +348,9 @@ it.
 ## Shared API changes (`workshop-shared/src/api.ts`)
 
 - `agentCallback` message (`2917`): add optional `bindingName`.
-- `agentNudge` message variant (`2930`) and `giveUp` tool-call variant (`3226`): keep, doc comment
-  marked **Obsolete** -- "No longer emitted since callable agents stopped returning values;
-  retained so older chat logs remain readable."
+- The original migration marked both `agentNudge` (`2930`) and `giveUp` (`3226`) obsolete while
+  keeping old logs readable. Only `giveUp` remains obsolete; `agentNudge` now has the live uses
+  described at the top of this historical plan.
 - `AgentSpawnerConfig` doc comment fix (above). No structural change to the config, the blueprint
   types, or `GatekeeperCreationSpec`.
 

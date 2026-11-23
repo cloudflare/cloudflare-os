@@ -42,7 +42,7 @@ class Triage extends RpcTarget {
 
 const SUBSCRIBE = `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.GITHUB.subscribe(await env.TRIAGE[restore]({ type: "triage" }));
+  await env.GITHUB.subscribe(await env.TRIAGE.rpc[restore]({ type: "triage" }));
 }`;
 
 it("connects, reads and writes, but refuses hooks and never touches webhooks", async () => {
@@ -58,7 +58,7 @@ it("connects, reads and writes, but refuses hooks and never touches webhooks", a
   await api.addModel(model.userModel.profile, model.userModel.config);
   const account = await connectGitHub(harness, api, username!);
   const repo = github.addRepository(`widgets-${username}`);
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   const connection = stack.use(await ws.newGatekeeper(account.id, `https://github.com/acme/${repo.name}`));
   if (!connection) throw new Error("Failed to connect the repository");
   const gadget = stack.use(await ws.createGadget("Triage", undefined, "TRIAGE"));

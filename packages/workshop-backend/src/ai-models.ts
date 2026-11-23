@@ -2,8 +2,9 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
-  ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Message, Model,
+  ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  ToolCall, Usage,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
   from "@earendil-works/pi-ai";
@@ -33,11 +34,14 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
-  AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+  AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, getAiGatewayConfig, getGatewayModels,
+  type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
-import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
+import {
+  estimateSharedHeadTokens, hasGpt56PromptCaching, splitSystemPrompt,
+} from "./system-prompt-blocks.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -62,7 +66,7 @@ type GatewayMetadata = {
 };
 
 type GatewayMetadataContext = {
-  source: "chat" | "thread-title" | "gadget-title" | "model-binding";
+  source: "chat" | "thread-title" | "gadget-title" | "model-binding" | "cache-warm";
   gadgetId?: string;
   chatId?: number;
 };
@@ -112,13 +116,59 @@ export type ModelHandle = {
   aiGatewayLogRoute?: AiGatewayLogRoute;
 
   /**
-   * Status and AI Gateway log id of the most recent HTTP response observed by `stream`. Reset at
-   * the start of every request and set from pi's onResponse callback (which fires only once a
-   * response arrives -- an SDK-level failure leaves this undefined), so consumers must read it
-   * right after the request they care about completes. Turns run requests sequentially, so this
-   * is safe.
+   * Status and AI Gateway log id of the most recent HTTP response observed by `stream`, and for
+   * the Auto Router model the gateway model that answered. Reset at the start of every request
+   * and set from pi's onResponse callback (which fires only once a response arrives -- an
+   * SDK-level failure leaves this undefined), so consumers must read it right after the request
+   * they care about completes. Turns run requests sequentially, so this is safe.
    */
-  lastResponse?: { status: number; aiGatewayLogId?: string };
+  lastResponse?: { status: number; aiGatewayLogId?: string; routedModel?: string };
+
+  /**
+   * The most recent request `stream` sent with prompt caching on, once its response ends, if the
+   * provider cached any of it and the handle can send it again to keep that copy (see
+   * CachedRequest). Cleared at the start of every request, so consumers must read it right after
+   * the request they care about completes.
+   */
+  lastRequest?: CachedRequest;
+};
+
+/**
+ * A request a handle completed with prompt caching on, which it can send again to keep the
+ * provider's cached copy of its prompt: each read of that copy restarts its lifetime.
+ */
+export type CachedRequest = {
+  /** When the request was sent. The provider counts the cache lifetime from a request's start. */
+  sentAt: number;
+
+  /** How long the provider keeps the prompt cached after a request last read or wrote it. */
+  cacheLifetime: number;
+
+  /**
+   * What one resend costs at most, in dollars: a read of the whole prompt from the cache, and the
+   * longest response its cap allows.
+   */
+  resendCost: number;
+
+  /**
+   * What the chat's next request pays extra, in dollars, if the cached copy expires first: a
+   * write instead of a read of the chat's own part of the prompt (see estimateSharedHeadTokens).
+   */
+  expiryCost: number;
+
+  /**
+   * Sends the request again with the smallest response cap its API takes, through the handle's
+   * routing, marked as a cache warm-up in AI Gateway. Resolves with what the resend used, and the
+   * AI Gateway log that prices it where it went through a gateway; rejects if it fails.
+   */
+  resend(): Promise<Resent>;
+};
+
+/** What a resend used, priced from the model catalog, and the AI Gateway log that prices it. */
+export type Resent = {
+  usage: Usage;
+  aiGatewayLogId?: string;
+  aiGatewayLogRoute?: AiGatewayLogRoute;
 };
 
 function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataContext): GatewayMetadata {
@@ -142,6 +192,12 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 };
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+// What the Auto Router model's answers cost per million tokens, roughly: the router picks among
+// frontier models priced around Claude Sonnet's. A chat's real cost comes from the gateway's log
+// of each request, which prices the model that answered (see AiGatewayLogRoute); the estimate
+// only sizes the resends that keep a prompt cached (see CachedRequest).
+const AUTO_ROUTER_COST: ModelCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 
 // pi's builtin catalogs, by provider. Import per-provider, not providers/all.
 const CATALOGS: Partial<Record<AiModelProvider, Record<string, Model<Api>>>> = {
@@ -251,12 +307,12 @@ function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCo
 // (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}) or, for binding-routed requests,
 // over the AI binding (https://workers-binding.ai/ai-gateway/gateways/{gateway}); each
 // provider's native API is exposed under the same per-provider path on either. AI Gateway also
-// offers a unified OpenAI-compat
-// translation layer (/compat), which we deliberately never use: we already speak every
-// provider's native API, and the translation drops provider features pi relies on (extended
-// thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
-// including unified billing on a user's own gateway -- is orthogonal to which API a request
-// speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
+// offers a unified OpenAI-compat translation layer (/compat), which only the Auto Router model
+// speaks, because the router exists nowhere else: for every other model we speak the provider's
+// native API, since the translation drops provider features pi relies on (extended thinking,
+// Anthropic cache_control prompt caching, the OpenAI Responses API). Billing -- including unified
+// billing on a user's own gateway -- is orthogonal to which API a request speaks. Returns
+// undefined for providers AI Gateway cannot serve (ollama).
 function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
   const catalog = gatewayCatalogModel(config);
   const window = modelTokenWindow(config, catalog);
@@ -329,6 +385,21 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         // requests are otherwise sent no effort at all.
         ...(config.reasoning !== undefined ? { thinkingLevelMap: catalog?.thinkingLevelMap } : {}),
         compat: workersAiCompat(catalog),
+      };
+    case "cloudflare-auto-router":
+      // Auto Router answers on the gateway's /compat route in Chat Completions format whichever
+      // model it picks, so the descriptor claims only what every candidate has: text and image
+      // input, and no reasoning levels.
+      return {
+        id: config.model,
+        name: catalog?.name ?? config.model,
+        api: "openai-completions",
+        provider: "cloudflare-auto-router",
+        baseUrl: `${gatewayUrl}/compat`,
+        reasoning: false,
+        input: ["text", "image"],
+        cost: AUTO_ROUTER_COST,
+        ...window,
       };
     default:
       return undefined;
@@ -483,11 +554,15 @@ function makeHandle(args: HandleArgs): ModelHandle {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
     stream: (model, context, { thinking = true, ...options } = {}) => {
-      // Never let a failed request read a previous request's response metadata.
+      // Never let a failed request read a previous request's response metadata, or leave the
+      // previous request to be resent in its place.
       handle.lastResponse = undefined;
+      handle.lastRequest = undefined;
       // This request's own response metadata: concurrent requests on one handle overwrite
       // `lastResponse`, but not this.
       let received: ModelHandle["lastResponse"];
+      // This request as sent, and when, if prompt caching is on.
+      let sent: { payload: unknown; at: number } | undefined;
       const headers: ProviderHeaders = {
         ...args.headers,
         ...options.headers,
@@ -495,7 +570,22 @@ function makeHandle(args: HandleArgs): ModelHandle {
             ? { "cf-aig-metadata": JSON.stringify(args.gatewayMetadata) }
             : {}),
       };
-      const transcript = normalizeContext(context);
+      const baseFetch = options.fetch ?? args.fetch;
+      let fetch = baseFetch;
+      if (args.model.api === "google-generative-ai" &&
+          headers["x-goog-api-key"] === null) {
+        // @google/genai appends `x-goog-api-key` after `httpOptions.headers`,
+        // so a null header entry cannot suppress it like Anthropic/OpenAI SDKs.
+        fetch = (input, init) => {
+          const stripped = new Headers(
+              init?.headers ?? (input instanceof Request ? input.headers : undefined));
+          stripped.delete("x-goog-api-key");
+          const nextInit = { ...init, headers: stripped };
+          return baseFetch ? baseFetch(input, nextInit) : globalThis.fetch(input, nextInit);
+        };
+      }
+      const transcript = normalizeContext(
+          {...context, messages: context.messages.map(wellFormedToolCalls)});
       const merged: SimpleStreamOptions = {
         // API defaults first, so an explicit per-call option can override them. A handle with a
         // reasoning level sends that level's options in their place. `thinking: false` replaces
@@ -511,8 +601,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
                 ? (anthropicCompat?.supportsMidConvoEffort === true
                     ? { effort: "low" } : { thinkingEnabled: false })
                 : {}),
-        ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
+        ...(fetch !== undefined ? { fetch } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
@@ -521,26 +611,51 @@ function makeHandle(args: HandleArgs): ModelHandle {
           received = {
             status: response.status,
             aiGatewayLogId: getHeader(response.headers, "cf-aig-log-id"),
+            routedModel: getHeader(response.headers, "cf-aig-routed-model"),
           };
           handle.lastResponse = received;
           await options.onResponse?.(response, responseModel);
         },
         // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
         // apply to: PDF attachments ride pi image parts and become the provider's native document
-        // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
-        // split after its static text (see system-prompt-blocks.ts), and a split request drops
-        // pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
+        // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
+        // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
-          if (options.cacheRetention === "none") return bridged;
-          const split = splitSystemPrompt(args.model, transcript, bridged ?? payload);
-          if (split === undefined) return bridged;
-          return withoutPromptCacheKey(args.model, split) ?? split;
+          const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
+          if (options.cacheRetention === "none") return signed;
+          const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
+          const final = split === undefined
+              ? signed
+              : withoutPromptCacheKey(args.model, split) ?? split;
+          sent = { payload: final ?? payload, at: Date.now() };
+          return final;
         },
       };
-      return traceChat(model, () => received,
+      const stream = traceChat(model, () => received,
           () => streamFn(model, transcript, merged));
+      // Kept once the response ends, which is before its caller can start another request.
+      void stream.result().then(message => {
+        if (sent === undefined) return;
+        handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage,
+            args.aiGatewayLogRoute, {
+          fetch: merged.fetch,
+          apiKey: merged.apiKey,
+          sessionId: merged.sessionId,
+          cacheRetention: options.cacheRetention,
+          headers: args.gatewayMetadata ? {
+            ...headers,
+            "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
+            // The resend is the same every time, which a gateway that caches responses would
+            // answer without asking the provider.
+            "cf-aig-skip-cache": "true",
+          } : headers,
+        });
+      });
+      return stream;
     },
   };
   return handle;
@@ -559,6 +674,124 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   }
   const { prompt_cache_key, ...rest } = payload;
   return rest;
+}
+
+// The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
+// resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
+// can't keep the cache (see cappedForResend), or the provider cached none of the request, as for a
+// prompt below its minimum. Resending takes nothing else from the request, so a kept request holds
+// only its payload, not the caller's options or transcript.
+function cachedRequest(
+    streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
+    sent: { payload: unknown; at: number }, usage: Usage,
+    aiGatewayLogRoute: AiGatewayLogRoute | undefined,
+    routing: SimpleStreamOptions): CachedRequest | undefined {
+  const resent = cappedForResend(model, sent.payload);
+  if (resent === undefined || usage.cacheRead + usage.cacheWrite === 0) return undefined;
+  const { cacheRead, cacheWrite, output } = model.cost;
+  const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  const own = Math.max(prompt - estimateSharedHeadTokens(context), 0);
+  return {
+    sentAt: sent.at,
+    cacheLifetime: resent.cacheLifetime,
+    // Prices are per million tokens.
+    resendCost: (prompt * cacheRead + resent.responseCap * output) / 1e6,
+    expiryCost: own * (cacheWrite - cacheRead) / 1e6,
+    resend: async () => {
+      let aiGatewayLogId: string | undefined;
+      // pi builds a request from the context and then replaces it with the payload.
+      const message = await streamFn(model, normalizeContext({ messages: [] }), {
+        ...routing,
+        onPayload: () => resent.payload,
+        onResponse: response => {
+          aiGatewayLogId = getHeader(response.headers, "cf-aig-log-id");
+        },
+      }).result();
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        throw new Error(message.errorMessage ?? "The model request failed.");
+      }
+      return { usage: message.usage, aiGatewayLogId, aiGatewayLogRoute };
+    },
+  };
+}
+
+// The cache lifetime of `payload`'s API, and `payload` with the smallest response cap it takes.
+// Undefined where a resend isn't known to keep the cache.
+// - anthropic-messages: pi's default retention keeps the conversation 5 minutes from the start
+//   of the last request that read it. Anthropic's pre-warm takes max_tokens 0, but not with
+//   streaming, which pi always uses, so 1 it is. An enabled thinking budget must stay below
+//   max_tokens, so such requests can't be resent; adaptive thinking takes any cap.
+// - openai-responses, GPT-5.6 and later: at least 30 minutes after the last write or reuse. 16
+//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too.
+// - Other APIs: undefined.
+function cappedForResend(model: Model<Api>, payload: unknown)
+    : { payload: object; responseCap: number; cacheLifetime: number } | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  switch (model.api) {
+    case "anthropic-messages":
+      return hasEnabledThinking(payload) ? undefined : {
+        payload: { ...payload, max_tokens: 1 }, responseCap: 1, cacheLifetime: 5 * 60_000,
+      };
+    case "openai-responses":
+      return hasGpt56PromptCaching(model) ? {
+        payload: { ...payload, max_output_tokens: 16 }, responseCap: 16,
+        cacheLifetime: 30 * 60_000,
+      } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+const hasEnabledThinking = (payload: object): boolean =>
+    "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
+    "type" in payload.thinking && payload.thinking.type === "enabled";
+
+// Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
+// The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do
+// calls another model made, so they get the value Google documents for a call the model didn't
+// make. pi can't send it: it passes on only base64 signatures.
+function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "google-generative-ai" || typeof payload !== "object" || payload === null ||
+      !("contents" in payload) || !Array.isArray(payload.contents)) {
+    return undefined;
+  }
+  let signed = false;
+  const contents = payload.contents.map((content: unknown) => {
+    if (typeof content !== "object" || content === null || !("parts" in content) ||
+        !Array.isArray(content.parts)) {
+      return content;
+    }
+    return {...content, parts: content.parts.map((part: unknown) => {
+      if (typeof part !== "object" || part === null || !("functionCall" in part) ||
+          "thoughtSignature" in part) {
+        return part;
+      }
+      signed = true;
+      return {...part, thoughtSignature: "skip_thought_signature_validator"};
+    })};
+  });
+  return signed ? {...payload, contents} : undefined;
+}
+
+// The message with every string in its tool calls' arguments well-formed, a lone surrogate
+// becoming U+FFFD. pi strips lone surrogates from the text it sends but not from tool-call
+// arguments, and a provider rejects a request holding one. A model can emit one in its arguments,
+// and every later request of the chat (compaction's too) resends them as stored.
+// TODO: remove once pi sanitizes tool-call arguments (earendil-works/pi#12014).
+function wellFormedToolCalls(message: Message): Message {
+  if (message.role !== "assistant") return message;
+  return {...message, content: message.content.map(block => block.type !== "toolCall" ? block
+      : {...block, arguments: toWellFormedJson(block.arguments) as ToolCall["arguments"]})};
+}
+
+// Arguments hold whatever JSON the model sent, not necessarily the tool's flat parameters: a call
+// that fails its tool's parameter check is stored, and resent, as the model made it.
+function toWellFormedJson(value: unknown): unknown {
+  if (typeof value === "string") return value.toWellFormed();
+  if (Array.isArray(value)) return value.map(toWellFormedJson);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [key.toWellFormed(), toWellFormedJson(item)]));
 }
 
 /**
@@ -610,14 +843,15 @@ function getModelViaUserGateway(
   }
   return makeHandle({
     model,
-    // The Google SDK requires an API key and sends it as `x-goog-api-key`, which the gateway
-    // forwards verbatim unless it recognizes the token as gateway auth -- same stored-key flow
-    // as the platform path (see getModelViaGateway).
-    ...(config.provider === "google" ? { apiKey: userGateway.apiKey } : {}),
+    // pi's Google adapter checks for a non-empty apiKey before dispatch;
+    // `"x-goog-api-key": null` strips the header @google/genai derives from it.
+    ...(config.provider === "google" ? { apiKey: "unused" } : {}),
     headers: {
       "cf-aig-authorization": `Bearer ${userGateway.apiKey}`,
       Authorization: null,
       "x-api-key": null,
+      "x-goog-api-key": null,
+      ...autoRouterHeaders(config, sessionAffinity),
     },
     gatewayMetadata: metadata,
     sessionAffinity,
@@ -638,6 +872,26 @@ function getModelViaUserGateway(
  * recognizes and strips it rather than treating it as a BYOK provider key.
  */
 const CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL = "cloudflare-gateway-binding";
+
+// The headers that steer Auto Router, for its model alone: the pool (see AutoRouterPool), and the
+// chat as the router's session, so a turn's requests stay with one model and its prompt cache. An
+// empty pool is refused rather than sent, since it would leave the router nothing to pick.
+function autoRouterHeaders(config: AiModelConfig, sessionAffinity?: string): ProviderHeaders {
+  if (config.provider !== "cloudflare-auto-router") return {};
+  const pool = config.autoRouterPool;
+  const headers: ProviderHeaders =
+      sessionAffinity !== undefined ? { "cf-aig-session-id": sessionAffinity } : {};
+  if (pool === undefined) return headers;
+  const names = "models" in pool
+      ? pool.models
+      : pool.providers.flatMap(provider => AUTO_ROUTER_PROVIDER_NAMES[provider]?.header ?? []);
+  if (names.length === 0) {
+    throw new Error("Auto Router has no models to pick from: enable another provider on this " +
+        "deployment, or list models of one that is on.");
+  }
+  const header = "models" in pool ? "cf-aig-allowed-models" : "cf-aig-allowed-providers";
+  return { ...headers, [header]: names.join(",") };
+}
 
 /**
  * `Ai#fetch` exists at runtime but @cloudflare/workers-types' `Ai` doesn't declare it, so the
@@ -662,27 +916,23 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
-  const binding = gwConfig.bindingFor(config.provider);
-  // No binding means either the provider can't ride one or the deployment has none; the second
-  // case already required a token in the constructor, so this only fires for the first
-  if (!binding && !gwConfig.apiToken) {
-    throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
-        "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");
-  }
+  const binding = gwConfig.binding;
   const gatewayAuthHeaders: ProviderHeaders = {
-    // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
-    // values suppress the SDKs' own auth headers so the gateway's server-managed provider keys
-    // apply.
+    // pi's API impls recognize cf-aig-authorization and skip SDK auth; the
+    // null values suppress the SDKs' own auth headers so the gateway's
+    // server-managed provider keys apply.
     "cf-aig-authorization":
         `Bearer ${binding ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
     Authorization: null,
     "x-api-key": null,
+    "x-goog-api-key": null,
+    ...autoRouterHeaders(config, options.sessionAffinity),
   };
   const gatewayBase =
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}`;
-  // Cost-log reads are same-account, so the binding arm applies whenever the binding transport
-  // is active (gwConfig.binding is unset when CF_AI_GATEWAY_USE_BINDING=false opts out) --
-  // even for Google inference, which itself rides HTTPS (see AiGatewayConfig.bindingFor).
+  // Cost-log reads are same-account, so the binding arm applies whenever the
+  // binding transport is active (gwConfig.binding is unset when
+  // CF_AI_GATEWAY_USE_BINDING=false opts out).
   const logRoute = (gateway: string): AiGatewayLogRoute => gwConfig.binding
       ? { gateway }
       : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
@@ -702,13 +952,10 @@ function getModelViaGateway(
 
   return makeHandle({
     model,
-    // The google API impl requires an apiKey (it doesn't recognize header-owned auth), and the
-    // @google/genai SDK sends it as `x-goog-api-key` on every request -- which AI Gateway treats
-    // as a provider key and forwards to Google verbatim, bypassing the gateway's server-managed
-    // keys (credential precedence gives a request-supplied provider key top priority). The
-    // documented stored-key flow for this SDK is to pass the *gateway token* as the SDK API key:
-    // the gateway recognizes its own token there and applies the stored Google key instead.
-    ...(config.provider === "google" ? { apiKey: gwConfig.apiToken } : {}),
+    // pi's Google adapter checks for a non-empty apiKey before dispatch;
+    // `"x-goog-api-key": null` in gatewayAuthHeaders strips the header
+    // @google/genai derives from it before the request reaches AI Gateway.
+    ...(config.provider === "google" ? { apiKey: "unused" } : {}),
     headers: gatewayAuthHeaders,
     ...(binding ? { fetch: bindingFetch(binding) } : {}),
     gatewayMetadata: metadata,
@@ -860,6 +1107,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
+    case "cloudflare-auto-router":
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
     default:
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);
@@ -899,33 +1148,44 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
         { apiKey: config.apiToken, headers: config.extraHeaders });
   }
   const metadata = buildMetadata(initiator, metadataContext);
-  const binding = gwConfig.bindingFor(config.provider);
+  // pi's System One transport POSTs {model, input} as Workers AI's REST API takes them and reads
+  // back the REST envelope; both gateway routes take the bare input and return the bare result.
+  // pi requires a key, which goes unsent.
+  const piInput = async (init?: RequestInit) =>
+      (await new Response(init?.body).json<{ input: Record<string, unknown> }>()).input;
+  const binding = gwConfig.binding;
   if (binding) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding
-    // requests take the binding's own run(), which reaches the same gateway. pi's System One
-    // transport POSTs {model, input} as Workers AI's REST API takes them and reads back the REST
-    // envelope; run() takes and returns the bare values. pi requires a key, which goes unsent.
+    // requests take the binding's own run(), which reaches the same gateway.
     return modelAt(catalog.baseUrl, {
       apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
-      fetch: async (_url, init) => {
-        const { model, input } = JSON.parse(init!.body as string);
-        const result = await binding.run(model, input, { gateway: { id: gwConfig.gateway, metadata } });
-        return Response.json({ success: true, result });
-      },
+      fetch: async (_url, init) => Response.json({ success: true, result: await binding.run(
+          config.model, await piInput(init), { gateway: { id: gwConfig.gateway, metadata } }) }),
     });
   }
-  // Unlike the chat route, /run wants a Workers AI credential as `Authorization`, and a request
-  // sending this token there is refused even when the token grants Workers AI. Until AI Gateway
-  // authenticates /run as it does chat, this route fails, so the docs have such deployments
-  // disable decision models.
-  return modelAt(
-      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`, {
-        apiKey: gwConfig.apiToken,
+  // Over HTTPS the gateway supplies Workers AI's credential only to a request that names the model
+  // in the path and carries no `Authorization`, which it would otherwise forward to Workers AI as
+  // the credential. A failure goes back to pi as is, for its retries and error message.
+  const gatewayUrl =
+      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
+  return modelAt(catalog.baseUrl, {
+    apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+    fetch: async (_url, init) => {
+      const response = await fetch(`${gatewayUrl}/workers-ai/run/${config.model}`, {
+        method: "POST",
         headers: {
+          "content-type": "application/json",
           "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
           "cf-aig-metadata": JSON.stringify(metadata),
         },
+        body: JSON.stringify(await piInput(init)),
+        signal: init?.signal,
       });
+      return response.ok
+          ? Response.json({ success: true, result: await response.json() })
+          : response;
+    },
+  });
 }
 
 // =======================================================================================
@@ -938,18 +1198,29 @@ export type AiModelGatekeeperProps = {
 };
 
 /**
- * Throws if the deployment no longer lets a model binding run its model. A session starts on each
- * call of the binding, so a binding minted before an admin disabled its gateway model stops working
- * at its next call. While users may not add their own models, so does a binding for any other
- * model: one a user added, or one the admin added and removed.
+ * The config a model binding runs with: the one it was minted with, except that the Auto Router
+ * model's pool is the deployment's current one, as the pool is the admin's spend policy rather
+ * than the binding's to keep. Throws if the deployment no longer lets the binding run its model.
+ * A session starts on each call of the binding, so a binding minted before an admin disabled its
+ * gateway model stops working at its next call. While users may not add their own models, so does
+ * a binding for any other model: one a user added, or one the admin added and removed.
  */
-async function refuseRevokedModel(env: Cloudflare.Env, props: AiModelGatekeeperProps) {
+async function bindingConfig(
+    env: Cloudflare.Env, props: AiModelGatekeeperProps): Promise<AiModelConfig> {
   let models = await getGatewayModels(env);
-  if (models?.get(props.config.model)?.provider === props.config.provider) {
-    models.refuseDisabled(props.config.model);
-  } else {
+  let { autoRouterPool, ...config } = props.config;
+  if (models?.get(config.model)?.provider !== config.provider) {
+    // Never a user's own model, so the deployment stopped offering it; without its pool it would
+    // run on the gateway's default one.
+    if (config.provider === "cloudflare-auto-router") {
+      throw new Error("The Auto Router model is no longer offered on this deployment.");
+    }
     models?.refuseUserModel(props.displayName);
+    return config;
   }
+  models.refuseDisabled(config.model);
+  let pool = models.runConfig(config.model)?.autoRouterPool;
+  return pool ? { ...config, autoRouterPool: pool } : config;
 }
 
 export class LanguageModelGatekeeper
@@ -984,8 +1255,7 @@ export class LanguageModelGatekeeper
       : Promise<LanguageModelBinding> {
     // A binding makes one-shot calls, which ask for no reasoning level. Without the level it was
     // minted with, its model is described as one with none set, whatever the admin has set since.
-    let { reasoning, ...config } = this.ctx.props.config;
-    await refuseRevokedModel(this.env, this.ctx.props);
+    let { reasoning, ...config } = await bindingConfig(this.env, this.ctx.props);
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
@@ -1056,8 +1326,8 @@ export class DecisionModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<DecisionModelBinding> {
-    let { config, initiator, metadata } = this.ctx.props;
-    await refuseRevokedModel(this.env, this.ctx.props);
+    let { initiator, metadata } = this.ctx.props;
+    let config = await bindingConfig(this.env, this.ctx.props);
     return new DecisionModelBindingImpl(getDecisionModel(this.env, config, initiator, metadata));
   }
 

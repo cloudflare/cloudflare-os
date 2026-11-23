@@ -13,11 +13,13 @@ import {
   VendorDescription,
   SupportedResource,
   resolveRequestedResource,
+  getResourceTypeId, getGrantedResourceTypeIds,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -25,7 +27,7 @@ import { openConnectWindow } from './connectHandoff'
 // to the data the Gadget read — that's how we uphold the "observers can't see data they couldn't
 // otherwise read" invariant. See observers-implementation-plan.md §5 Step 4.
 //
-// The overseer invokes ObserverConfigCallback.configure(needs) during openGadget(); this modal is
+// The overseer invokes ObserverConfigCallback.configure(needs) during openWorkspace(); this modal is
 // what fulfills that call. Resolving with one ObserverAccountChoice per need lets the open proceed;
 // cancelling rejects it (the open is denied and the caller shows an access-denied page).
 
@@ -48,7 +50,7 @@ function accountLabel(account: AccountInfo | undefined, accountId: number): stri
 // preferred because it reflects the resources currently available to that account; vendor metadata
 // is the fallback used before an account has been connected. Non-grantable resources require no
 // OAuth scope expansion.
-function requiredResourceUrlPatterns(
+function requiredResourceTypeIds(
   need: ObserverBindingNeed,
   vendor: GatekeeperVendorInfo | undefined,
   account?: AccountInfo,
@@ -57,15 +59,15 @@ function requiredResourceUrlPatterns(
     ? account.supportedResources
     : vendor?.supportedResources
   if (!supportedResources) return []
-  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl)
-  return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
+  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl, need.resourceTypeId)
+  return resolved.ok && resolved.resource.grantable ? [getResourceTypeId(resolved.resource)] : []
 }
 
 // Older account records may not list which resources were granted. Ask the gatekeeper to check
 // instead of assuming the account has access.
-function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
-  const granted = account.description.grantedResourceUrlPatterns
-  return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
+function missingResourceTypeIds(account: AccountInfo, required: string[]): string[] {
+  const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
+  return granted === undefined ? required : required.filter(typeId => !granted.includes(typeId))
 }
 
 interface ObserverConfigModalProps {
@@ -73,6 +75,8 @@ interface ObserverConfigModalProps {
   authenticatedApi: RpcStub<AuthenticatedApi>
   onConfirm: (choices: ObserverAccountChoice[]) => void
   onCancel: () => void
+  // What is being opened: the workspace, or one gadget of it.
+  subject: 'workspace' | 'gadget'
 }
 
 export default function ObserverConfigModal({
@@ -80,6 +84,7 @@ export default function ObserverConfigModal({
   authenticatedApi,
   onConfirm,
   onCancel,
+  subject,
 }: ObserverConfigModalProps) {
   const toasts = useKumoToastManager()
 
@@ -202,15 +207,16 @@ export default function ObserverConfigModal({
       if (vendor?.description.autoProvisionsAccount) {
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
-        const required = requiredResourceUrlPatterns(need, vendor)
-        openConnectWindow(await authenticatedApi.connectAccount(
+        const required = requiredResourceTypeIds(need, vendor)
+        await openConnectWindow(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
-        ))
+        ), authenticatedApi)
       }
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', err)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection flow', variant: 'error' })
     } finally {
       setConnecting(null)
     }
@@ -219,28 +225,29 @@ export default function ObserverConfigModal({
   const handleReconnect = async (accountId: number) => {
     setReconnecting(accountId)
     try {
-      // The popup redeems the ticket itself; the restored account arrives through the subscription.
-      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      // After ticket redemption the restored account arrives through the subscription.
+      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate reconnection:', err)
-      toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete re-authentication flow', variant: 'error' })
     } finally {
       setReconnecting(null)
     }
   }
 
   const handleGrantResourceAccess = async (need: ObserverBindingNeed, account: AccountInfo) => {
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    const missing = missingResourceUrlPatterns(account, required)
+    const missing = missingResourceTypeIds(account, required)
     if (missing.length === 0) return
     setGranting(account.id)
     try {
       const flow = await authenticatedApi.ensureAccountResources(account.id, missing)
-      if (flow) openConnectWindow(flow)
+      if (flow) await openConnectWindow(flow, authenticatedApi)
       else {
         // The gatekeeper confirmed this account already has access. Update the modal so the user can
         // continue without an OAuth flow.
@@ -252,9 +259,9 @@ export default function ObserverConfigModal({
             ...current,
             description: {
               ...current.description,
-              grantedResourceUrlPatterns: [
+              grantedResourceTypeIds: [
                 ...new Set([
-                  ...(current.description.grantedResourceUrlPatterns ?? []),
+                  ...(getGrantedResourceTypeIds(current.description, current.supportedResources) ?? []),
                   ...missing,
                 ]),
               ],
@@ -264,8 +271,9 @@ export default function ObserverConfigModal({
         })
       }
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to request additional access:', err)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setGranting(null)
     }
@@ -279,12 +287,12 @@ export default function ObserverConfigModal({
   }
   const accountSatisfies = (need: ObserverBindingNeed, account: AccountInfo | undefined) => {
     if (!account?.credentialsValid) return false
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    return missingResourceUrlPatterns(account, required).length === 0
+    return missingResourceTypeIds(account, required).length === 0
   }
   const allSatisfied = needs.every(need => accountSatisfies(need, accountFor(need.gatekeeperId)))
 
@@ -311,10 +319,10 @@ export default function ObserverConfigModal({
           </Dialog.Title>
           <Text variant="secondary" size="sm" as="p">
             {isRetry
-              ? 'We couldn’t confirm your access to everything this workspace has read. Depending on ' +
+              ? `We couldn’t confirm your access to everything this ${subject} has read. Depending on ` +
                 'the reason below, re-authenticate an expired account, choose a different one, or ask ' +
-                'the workspace owner to share what your account can’t access.'
-              : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
+                `the ${subject} owner to share what your account can’t access.`
+              : `Before opening this ${subject}, confirm that your own accounts can access the connected ` +
                 'data it uses.'}
           </Text>
         </div>
@@ -332,8 +340,8 @@ export default function ObserverConfigModal({
                 const vendor = matching[0]?.vendor ?? vendorInfo?.description
                 const vendorName = vendor?.displayName || need.vendorId || 'service'
                 const chosen = accountFor(need.gatekeeperId)
-                const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
-                const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
+                const required = requiredResourceTypeIds(need, vendorInfo, chosen)
+                const missing = chosen ? missingResourceTypeIds(chosen, required) : []
 
                 return (
                   <div key={need.gatekeeperId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">

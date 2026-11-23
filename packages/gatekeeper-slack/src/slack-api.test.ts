@@ -209,7 +209,8 @@ describe("Slack org installations", () => {
     let release = Promise.withResolvers<void>();
     let checks = 0;
     vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-      if (input.includes("auth.test")) {
+      // Each access proof starts with the first page of app-granted workspaces.
+      if (input.includes("auth.teams.list") && !input.includes("cursor=")) {
         checks++;
         started.resolve();
         await release.promise;
@@ -377,6 +378,72 @@ describe("Slack org installations", () => {
     expect(history.items[0].permalink).toContain("https://tone.slack.com/");
   });
 
+  it.each([false, true])("reads a Slack Connect channel with internal membership (private %s)", async isPrivate => {
+    mockSlack();
+    // Captured Slack Connect shape: shared_team_ids names only the external workspace;
+    // internal_team_ids identifies the selected workspace within our Enterprise org.
+    channel = { id: "CONE", name: "external", is_private: isPrivate, is_ext_shared: true,
+      context_team_id: "TONE", shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TONE"],
+      connected_team_ids: ["EEXTERNAL", "EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE",
+      kind: isPrivate ? "private_channel" : "public_channel" });
+    await expect(client.listHistory("CONE", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listConversationMembers("CONE", undefined, 10))
+        .resolves.toMatchObject({ items: ["WSELF"] });
+    await expect(client.searchMessages("test", undefined, 10))
+        .resolves.toMatchObject({ items: [{ channelId: "CONE", message: { text: "test" } }] });
+    for (let method of ["conversations.info", "conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.find(url => url.pathname.endsWith(method))?.searchParams.get("client_context_team_id")).toBe("TONE");
+    }
+    expect(requests.find(url => url.pathname.endsWith("search.messages"))?.searchParams.get("team_id")).toBe("TONE");
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("recognizes internal channel membership without a shared-team array", async () => {
+    mockSlack(); channel = { id: "CONE", internal_team_ids: ["TONE"] };
+    await expect(api().getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("denies a Slack Connect channel attached only to another internal workspace", async () => {
+    mockSlack();
+    channel = { id: "CONE", team_id: "TONE", context_team_id: "TONE", is_ext_shared: true,
+      shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TTWO"], connected_team_ids: ["EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listConversationMembers("CONE", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.searchMessages("test", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    for (let method of ["conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.some(url => url.pathname.endsWith(method))).toBe(false);
+    }
+  });
+
+  it("still requires app and user workspace access before accepting internal channel membership", async () => {
+    mockSlack(); memberTeams = ["TTWO"];
+    channel = { id: "CONE", internal_team_ids: ["TONE"], shared_team_ids: ["TEXTERNAL"] };
+    await expect(api().getConversationInfo("CONE")).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.info"))).toBe(false);
+  });
+
+  it("preserves provider denial even when channel metadata names the selected workspace", async () => {
+    mockSlack(); channel.internal_team_ids = ["TONE"];
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.includes("conversations.info")) {
+        return Response.json({ ok: false, error: "not_in_channel", channel });
+      }
+      return fetchSlack(input);
+    });
+    await expect(api().listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "not_in_channel" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.history"))).toBe(false);
+  });
+
   it("proves a metadata-less DM through workspace-scoped discovery", async () => {
     mockSlack(); channel = { id: "DONE", is_im: true };
     await expect(api().listHistory("DONE", undefined, 1)).resolves.toMatchObject({ items: [{ text: "test" }] });
@@ -450,5 +517,59 @@ describe("Slack org installations", () => {
     let error = new SlackApiError("team_access_not_granted", 200);
     expect(error.isAccessError).toBe(true);
     expect(error.isAuthError).toBe(false);
+  });
+});
+
+describe("Slack external users", () => {
+  const users: Record<string, Record<string, unknown>> = {
+    WSELF: { team_id: "TONE", enterprise_user: { enterprise_id: "EORG", teams: ["TONE"] } },
+    WCOLLEAGUE: { team_id: "TTWO", enterprise_user: { enterprise_id: "EORG" } },
+    UPARTNER: { team_id: "TPARTNER", profile: { image_48: "https://a/48", image_72: "https://a/72" } },
+    WPARTNER: { team_id: "TPARTNERONE", enterprise_user: { enterprise_id: "EPARTNER" } },
+    UUNKNOWN: {},
+  };
+
+  function mockUsers(failAuthTest = false) {
+    mockSlack();
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      let url = new URL(input);
+      switch (url.pathname.split("/").pop()) {
+        case "auth.test": return Response.json(failAuthTest ? { ok: false, error: "fatal_error" }
+            : { ok: true, team_id: "TONE", enterprise_id: "EORG", user_id: "WSELF" });
+        case "users.info": {
+          let id = url.searchParams.get("user")!;
+          return Response.json({ ok: true, user: { id, name: id, ...users[id] } });
+        }
+        case "conversations.history": return Response.json({ ok: true, messages: [
+          { ts: "123.000002", user: "UPARTNER" }, { ts: "123.000001", user: "WSELF" }] });
+      }
+      return fetchSlack(input, init);
+    });
+    return { recover: () => { failAuthTest = false; } };
+  }
+
+  it("compares each user's organization with the account's", async () => {
+    mockUsers();
+    let client = api();
+    for (let [id, isExternal] of Object.entries(
+        { WCOLLEAGUE: false, UPARTNER: true, WPARTNER: true, UUNKNOWN: undefined })) {
+      expect((await client.getUser(id)).isExternal, id).toBe(isExternal);
+    }
+  });
+
+  it("describes message authors", async () => {
+    mockUsers();
+    let page = await api().listHistory("CONE", undefined, 10);
+    expect(page.items.map(({ author }) => [author?.isExternal, author?.avatarUrl]))
+        .toEqual([[true, "https://a/72"], [false, undefined]]);
+  });
+
+  it("leaves isExternal unset while the account's organization is unavailable", async () => {
+    let slack = mockUsers(true);
+    let client = new SlackApi(async () => "token");
+    expect((await client.getUser("UPARTNER")).isExternal).toBeUndefined();
+    slack.recover();
+    expect((await client.getUser("WPARTNER")).isExternal).toBe(true);
   });
 });

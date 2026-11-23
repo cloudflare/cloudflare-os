@@ -8,7 +8,7 @@ import type {
   AiChatMessage, AiChatMetadata, AiChatSubscriber, BlueprintMerge, FileAtCommit,
   MergeChangesResult, Overseer,
 } from '@gadgets/workshop-shared/api'
-import type { CodeContent } from '@gadgets/workshop-shared/code-change'
+import { requireTextContent, type CodeContent } from '@gadgets/workshop-shared/code-change'
 
 // Covers a merge as the chat shows it: a blueprint proposal's notice in the transcript, accept
 // and discard for a proposal that the chat's metadata does not announce, the check for
@@ -144,6 +144,7 @@ async function renderProposalChat(options: {
       subscriber = next
       return { [Symbol.dispose]: () => {} }
     },
+    viewChat: () => ({ [Symbol.dispose]: () => {} }),
     readFilesAtCommit: async (commitId: string, paths: string[]) =>
       paths.map((path): [string, FileAtCommit] => {
         const text = options.commits?.[commitId]?.[path]
@@ -164,7 +165,7 @@ async function renderProposalChat(options: {
         chatId: CHAT_ID,
         read: () => {
           const content = options.content!()
-          return content && ((gadgetId, path) => content.get(gadgetId)?.get(path))
+          return content && ((gadgetId, path) => requireTextContent(content.get(gadgetId)?.get(path)))
         },
         hasLocalEdits: options.hasLocalEdits ?? (() => false),
       }}
@@ -173,7 +174,7 @@ async function renderProposalChat(options: {
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}}
+      onOpenGadget={() => {}} onOpenFocus={() => {}}
       outputOfWorkpiece={() => undefined}
     />,
   )

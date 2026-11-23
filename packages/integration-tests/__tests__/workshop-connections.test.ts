@@ -153,6 +153,70 @@ it.concurrent("denying a connection request leaves the agent stopped", async () 
   expect(model.remainingSteps()).toBe(0);
 });
 
+interface Spawner extends RpcTarget {
+  spawn(title: string, prompt: string): Promise<void>;
+}
+
+it.concurrent("an agent spawner request is granted, and the bindings the agent gives it reach " +
+    "spawned agents once accepted", async () => {
+  const describeDesk: ChatCompletionStep = {
+    toolCall: { id: "describe-desk", name: "describeBinding", arguments: { name: "DESK" } },
+  };
+  const model = models.script([
+    { toolCall: { id: "create-desk", name: "createGadget",
+                  arguments: { title: "Desk", bindingName: "DESK" } } },
+    { toolCall: { id: "request", name: "requestConnection", arguments: {
+      vendorId: "agent-spawner", reason: "Triage each new ticket.", bindingName: "TRIAGE",
+    } } },
+    // Resumed once the user grants the spawner.
+    { toolCall: { id: "bind-desk", name: "setGadgetBinding",
+                  arguments: { gadget: "TRIAGE", source: "DESK" } } },
+    { toolCall: { id: "describe-triage", name: "describeBinding", arguments: { name: "TRIAGE" } } },
+    { text: "Wired up." },
+    // An agent spawned before the user accepts the chat's changes, then one spawned after.
+    describeDesk,
+    { text: "No desk yet." },
+    describeDesk,
+    { text: "Triaged." },
+  ]);
+  await using session = await openSession(model, "spawnerrequest");
+
+  const first = await session.runTurn("Give a new desk gadget its own triage agent.");
+  expect(first.outcome).toEqual({ status: "completed" });
+  const pending = connectionCard(first.history);
+  expect(pending).toMatchObject(
+      { state: "pending", vendorId: "agent-spawner", bindingName: "TRIAGE" });
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using spawner = await ws.newAgentSpawnerGatekeeper(
+        { displayName: "Triage", modelId: SCRIPTED_MODEL_ID, env: {} });
+    await ws.acceptConnectionRequest(pending.requestId, { gatekeeperId: await spawner.getId() });
+    await waitFor("the resumed turn", async () => model.requests.length === 5 || null);
+    await waitForIdleChat(ws, pending.chatId);
+
+    // newAgentSpawnerGatekeeper types its session as `any`, as connectToGadget does a gadget's.
+    using binding = await spawner.openSession() as RpcStub<Spawner>;
+    const spawnAndFinish = async (title: string, requests: number) => {
+      await binding.spawn(title, "Triage the newest ticket.");
+      await waitFor(`the ${title} agent's turn`,
+          async () => model.requests.length === requests || null);
+      const chat = (await ws.listChats()).find(entry => entry.title === title);
+      if (!chat) throw new Error(`No spawned chat titled ${title}`);
+      await waitForIdleChat(ws, chat.id);
+    };
+    await spawnAndFinish("Before", 7);
+    await session.acceptChanges();
+    await spawnAndFinish("After", 9);
+  });
+
+  expect(JSON.stringify(model.requests[2])).toContain("accepted your connection request");
+  expect(JSON.stringify(model.requests[4])).toContain(
+      `DESK: \\"Desk\\" (proposed in this chat`);
+  expect(JSON.stringify(model.requests[6])).toContain(`There is no binding named \\"DESK\\"`);
+  expect(JSON.stringify(model.requests[8])).toContain("Binding: env.DESK");
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("removing a connection cuts off its pending action, its bindings and its sessions",
     async () => {
   const model = models.script([
@@ -245,7 +309,7 @@ it.concurrent("a connection's stubs to itself outlive its session and a restart,
   await api.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const { id: workspaceId } = await ws.getMetadata();
   using thing = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/self");
   if (!thing) throw new Error("Failed to create the test connection");
@@ -266,7 +330,7 @@ it.concurrent("a connection's stubs to itself outlive its session and a restart,
   // The restart ends the whole RPC session, not just the workspace.
   using reconnected = connect(harness.url);
   using reopenedApi = await logIn(reconnected, username);
-  using reopened = await reopenedApi.openGadget(workspaceId);
+  using reopened = await reopenedApi.openWorkspace(workspaceId);
   expect(await streamGeneration(reopened)).not.toBe(generation);
   expect(await callSelfStub()).toEqual(reached);
   using connection = await reopened.getGatekeeperById(thingId);

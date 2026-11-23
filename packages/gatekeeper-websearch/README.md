@@ -15,8 +15,10 @@ The admin Gatekeepers panel sets the mode, like every auto-provisioned gatekeepe
 - **Disabled**: no one gets it, and existing accounts go dormant.
 
 A user who has it gets a `WEB_SEARCH` binding in the agent's `executeCode`, in every workspace. The
-agent can bind it into a gadget with `setGadgetBinding`. The binding appears in chats that start
-after the workspace next opens, because a chat's bindings are fixed when it starts.
+agent can bind it into a gadget with `setGadgetBinding`. The binding appears when the workspace
+next opens, from the next turn of each chat, including chats that started before. The agent is
+told about it in that chat; the system prompt doesn't change. A spawned agent's chat keeps the
+bindings its spawner gave it.
 
 A change of mode, or a user turning it off, also takes effect when each workspace next opens. Until
 then, its open chats and scheduled gadgets can still search. Uninstalling the Worker stops every
@@ -36,9 +38,15 @@ export default async function(self, env) {
 `query` is 1 to 1,024 characters, the API's limits. The caller picks no provider and no result
 count, and gets up to 10 results.
 
+Ceramic, the provider `search.ts` pins, matches keywords, not meaning. So `types.d.ts` tells the
+agent to send a few specific keywords rather than a question, as
+[Ceramic's agent skill](https://docs.ceramic.ai/api/search/agent-skill) advises. In our blind test
+of 36 questions, two graders scored Ceramic's results about 0.4 points higher out of 4 for queries
+written this way than for the queries a model wrote without the guidance.
+
 ## How a search runs
 
-<p align="center"><img src="../../docs/images/web-search-flow.svg" alt="A search passes the gatekeeper's query check and is recorded in the Activity log before it goes through the Workers AI binding and the default AI Gateway to Ceramic" width="860"></p>
+<p align="center"><img src="../../docs/images/web-search-flow.svg" alt="A search passes the gatekeeper's query check and is recorded in the Activity log before it goes through the Workers AI binding and the deployment's AI Gateway to Ceramic" width="860"></p>
 
 `src/search.ts` does the work:
 
@@ -46,7 +54,7 @@ count, and gets up to 10 results.
 2. It records the query through the session's `ApprovalQueue`. The query goes in a literal field,
    built with gatekeeper-kit's `buildDescription`, so the record shows exactly what was sent. If
    the record is refused or fails, nothing is sent.
-3. It calls `env.AI.websearch({ gatewayId: "default", query, provider: "ceramic", limit: 10 })`.
+3. It calls `env.AI.websearch({ gatewayId: env.CF_AI_GATEWAY ?? "default", query, provider: "ceramic", limit: 10 })`.
 4. It parses the response with zod, which drops the image and favicon fields. A failed search
    throws `Web search failed with HTTP <status>.` without the provider's body, which can quote the
    query back. The record stays.
@@ -57,14 +65,15 @@ A query goes only to the provider that `search.ts` pins. The agent cannot choose
 it can with a `webFetch` URL, so a workspace that has observed restricted data can still search,
 as it can search GitHub or Slack through their gatekeepers.
 
-- **Observers.** `addObserver` admits every collaborator, because search results are public.
+- **Observers.** Each query reports `subresources: []`, and `addObserver` and
+  `verifyObserverAccess` admit every collaborator, because search results are public.
 - **Ambience.** The gatekeeper declares only that it can mint an account and that the account has
   a singleton. The admin's mode and the user's opt-in decide who gets it.
 
 ## Why Cloudflare's Web Search API
 
-- It runs on a Workers AI binding and an AI Gateway. Every account has a gateway named `default`,
-  so the gatekeeper needs no secrets, inputs or deploy-service configuration.
+- It runs on a Workers AI binding and the deployment's AI Gateway, so the gatekeeper needs no
+  secrets or inputs.
 - Logs, billing and provider keys stay in AI Gateway.
 - The standalone `web_search` Worker binding (`env.WEBSEARCH.search`) is not an option. Cloudflare
   removed it before launch ([workers-sdk#15453](https://github.com/cloudflare/workers-sdk/pull/15453)).
@@ -75,7 +84,9 @@ as it can search GitHub or Slack through their gatekeepers.
 <p align="center"><img src="../../docs/images/web-search-providers.svg" alt="Price per 1,000 searches and data retention: Ceramic $0.25 with ZDR, Linkup $5 with ZDR, Exa $7 without ZDR, model-native search $10 to $35" width="860"></p>
 
 - **Zero data retention.** A query can carry workspace text, so the provider must not keep it.
-  Exa offers no zero data retention, so we exclude it.
+  Exa offers no zero data retention, so we exclude it. Ceramic's zero data retention applies to
+  searches billed to AI Gateway credits. With an operator's own Ceramic key, their Ceramic terms
+  apply instead.
 - **Cost.** $0.25 per 1,000 searches: a twentieth of Linkup and a twenty-eighth of Exa.
 - **Content.** Ceramic runs its own index of 40B+ pages and returns descriptions of up to 8,000
   characters, so a result often answers the question without a fetch.
@@ -93,12 +104,23 @@ outside AI Gateway.
 
 - The release manifest gives the Worker an `AI` binding and asks for no inputs. The deploy service
   installs it on every new deploy, like Scheduled Tasks and the Context Library.
-- **Billing.** Each search spends the deployment account's AI Gateway credits. The free daily
-  allowance and Cloudflare-credits top-up for models do not cover searches, and there is no
-  per-user limit. On a public server, set the mode to Disabled unless you accept that: under the
-  default, Optional, every new user who leaves it on in onboarding gets it.
+- **Gateway.** `CF_AI_GATEWAY` names the AI Gateway searches go through. The deploy service sets
+  it on every gatekeeper it uploads to the instance's gateway, the one the backend's
+  `CF_AI_GATEWAY` names. Everywhere else (the dev server, previews, a deploy you run yourself) it
+  stays `default`, which every account has, unless you set it on this Worker. The gateway must be
+  in the Worker's own account: the `AI` binding can't reach another.
+- **Billing.** Each search spends the deployment account's AI Gateway credits, unless the gateway
+  holds a Ceramic key (see Known limits). The free daily allowance and Cloudflare-credits top-up
+  for models do not cover searches, and there is no per-user limit. On a public server, set the
+  mode to Disabled unless you accept that: under the default, Optional, every new user who leaves
+  it on in onboarding gets it.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
+
+## Testing
+
+`pnpm --filter @gadgets/gatekeeper-websearch test:run` runs search and observer-access tests in
+workerd with RPC validation enabled. No live provider calls or Cloudflare login are needed.
 
 ## Known limits
 
@@ -106,10 +128,13 @@ outside AI Gateway.
   workspace data in a query with no one present.
 - **Untrusted results.** Results are page text. An agent that reads them can meet a prompt
   injection, as with `webFetch`.
-- **Gateway logs.** The `default` gateway logs each query (log collection is on by default), apart
-  from the deployment's model gateway when that has another name. Ceramic's zero data retention
-  covers Ceramic, not those logs. The `default` gateway's own settings, such as rate limits, apply.
-- **Your own Ceramic key.** If an operator stores a Ceramic key on the `default` gateway, their own
-  agreement with Ceramic applies instead of AI Gateway billing.
+- **Gateway logs.** The gateway that `CF_AI_GATEWAY` names logs each query (log collection is on
+  by default). When that is `default` and the backend uses a gateway with another name, search
+  logs sit apart from model logs. Ceramic's zero data retention covers Ceramic, not those logs.
+  That gateway's own settings, such as rate limits, apply to searches.
+- **Your own Ceramic key.** If the gateway that `CF_AI_GATEWAY` names holds a Ceramic key under
+  the alias `default`, AI Gateway uses it. Ceramic bills the operator, their Ceramic terms apply,
+  including data retention, and a search no longer falls back to credits: a revoked or empty key
+  fails every search. The deploy wizard can store the key; a key on any other gateway is not used.
 - **Blueprints.** A blueprint export drops ambient bindings, so a gadget installed from a blueprint
   loses `WEB_SEARCH` until the agent binds it again with `setGadgetBinding`.

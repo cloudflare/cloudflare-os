@@ -10,7 +10,7 @@
 // `durableObjectReset` or the `durableObjectId` we log:
 // https://developers.cloudflare.com/durable-objects/best-practices/error-handling/
 //
-// Local vitest-pool-workers aborts reject FLAGLESS (pinned by the "user-DO reset flags"
+// Local `@cloudflare/vitest-plugin` aborts reject FLAGLESS (pinned by the "user-DO reset flags"
 // integration test), so the predicates and the retry path are unit-tested with synthetic
 // production shapes.
 
@@ -100,7 +100,7 @@ const RETRY_JITTER_MS = 250;
  * storage-timeout resets arrive in), a deliberate divergence from the never-retry-`overloaded`
  * guidance in the error-handling docs linked above. Bare `retryable` (connection lost to a
  * possibly-live object) retries only if it isn't shedding load. */
-function shouldRetryAfterReset(e: unknown): boolean {
+export function shouldRetryAfterReset(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const flags = e as { durableObjectReset?: unknown; retryable?: unknown; overloaded?: unknown };
   if (flags.durableObjectReset === true) return true;

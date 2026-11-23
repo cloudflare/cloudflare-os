@@ -38,6 +38,13 @@ export type MirrorToken = ComposerRange & {
 
 export type ComposerMirrorHandle = {
   syncLayout(textarea: HTMLTextAreaElement): void;
+  /**
+   * Sizes the mirror to the textarea's content box, which is `contentWidth` wide beside any
+   * scrollbar. The width must be exact: clientWidth is rounded to a whole pixel, and a mirror even
+   * a fraction of one off wraps some line differently, after which every glyph sits apart from
+   * the caret. A ResizeObserver entry reports it unrounded.
+   */
+  syncWidth(textarea: HTMLTextAreaElement, contentWidth: number): void;
   syncScroll(textarea: HTMLTextAreaElement): void;
   textOffsetTop(offset: number): number | null;
   tokenAtPoint(clientX: number, clientY: number): { start: number; edge: number } | null;
@@ -83,10 +90,18 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     mirror.style.letterSpacing = computedStyle.letterSpacing;
     mirror.style.padding = computedStyle.padding;
     mirror.style.border = `${computedStyle.borderWidth} solid transparent`;
-    // A scrollbar narrows the textarea's client box, so offset dimensions would wrap differently.
     mirror.style.height = `${textarea.clientHeight}px`;
-    mirror.style.width = `${textarea.clientWidth}px`;
     syncScroll(textarea);
+  };
+
+  const syncWidth = (textarea: HTMLTextAreaElement, contentWidth: number) => {
+    const mirror = node.current;
+    if (!mirror) return;
+    const computedStyle = getComputedStyle(textarea);
+    const horizontalInsets =
+      parseFloat(computedStyle.paddingLeft) + parseFloat(computedStyle.paddingRight) +
+      parseFloat(computedStyle.borderLeftWidth) + parseFloat(computedStyle.borderRightWidth);
+    mirror.style.width = `${contentWidth + horizontalInsets}px`;
   };
 
   const textOffsetTop = (offset: number): number | null => {
@@ -166,6 +181,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     setHoveredToken: updateHoveredToken,
     syncLayout,
     syncScroll,
+    syncWidth,
     textOffsetTop,
     tokenAtPoint,
   }), []);

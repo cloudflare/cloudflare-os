@@ -68,6 +68,20 @@ export const usersByUsernameResponse = docs("api/users", [
   },
 ]);
 
+/** `GET /users/:id` -- api/users "Retrieve a single user", as a user who is not an administrator sees it. Trailing fields trimmed. */
+export const singleUserResponse = docs("api/users", {
+  id: 1,
+  username: "john_smith",
+  name: "John Smith",
+  state: "active",
+  locked: false,
+  avatar_url: "http://localhost:3000/uploads/user/avatar/1/cd8.jpeg",
+  web_url: "http://localhost:3000/john_smith",
+  created_at: "2012-05-23T08:00:58Z",
+  bio: "",
+  bot: false,
+});
+
 /** `GET /projects/:id` -- api/projects "Retrieve a project", the fields this gatekeeper reads. */
 export const projectResponse = docs("api/projects", {
   id: 3,
@@ -538,4 +552,200 @@ export const errorBodies = docs("api/rest", {
   unauthorized: { message: "401 Unauthorized" },
   mergeShaMismatch: { message: "SHA does not match HEAD of source branch" },
   mergeNotAllowed: { message: "405 Method Not Allowed" },
+});
+
+/** `GET /projects/:id/pipelines/:pipeline_id` -- api/pipelines "Retrieve a single pipeline" (`detailed_status` trimmed). */
+export const pipelineResponse = docs("api/pipelines", {
+  id: 287,
+  iid: 144,
+  project_id: 21,
+  name: "Build pipeline",
+  sha: "50f0acb76a40e34a4ff304f7347dcc6587da8a14",
+  ref: "main",
+  status: "success",
+  source: "push",
+  created_at: "2022-09-21T01:05:07.200Z",
+  updated_at: "2022-09-21T01:05:50.185Z",
+  web_url: "http://127.0.0.1:3000/test-group/test-project/-/pipelines/287",
+  before_sha: "8a24fb3c5877a6d0b611ca41fc86edc174593e2b",
+  tag: false,
+  yaml_errors: null as string | null,
+  user: {
+    id: 1,
+    username: "root",
+    name: "Administrator",
+    state: "active",
+    avatar_url: "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+    web_url: "http://127.0.0.1:3000/root",
+  },
+  started_at: "2022-09-21T01:05:14.197Z",
+  finished_at: "2022-09-21T01:05:50.175Z",
+  committed_at: null,
+  duration: 34,
+  queued_duration: 6,
+  coverage: null,
+  archived: false,
+});
+
+/** `GET /projects/:id/jobs/:job_id` -- api/jobs "Retrieve a job by job ID" (`user` trimmed). */
+export const jobResponse = docs("api/jobs", {
+  commit: {
+    author_email: "admin@example.com",
+    author_name: "Administrator",
+    created_at: "2015-12-24T16:51:14.000+01:00",
+    id: "0ff3ae198f8601a285adcf5c0fff204ee6fba5fd",
+    message: "Test the CI integration.",
+    short_id: "0ff3ae19",
+    title: "Test the CI integration.",
+  },
+  coverage: null,
+  archived: false,
+  source: "push",
+  allow_failure: false,
+  created_at: "2015-12-24T15:51:21.880Z",
+  started_at: "2015-12-24T17:54:30.733Z",
+  finished_at: "2015-12-24T17:54:31.198Z",
+  erased_at: null as string | null,
+  duration: 0.465,
+  queued_duration: 0.010,
+  artifacts_expire_at: "2016-01-23T17:54:31.198Z",
+  tag_list: ["docker runner", "macos-10.15"],
+  id: 8,
+  name: "rubocop",
+  pipeline: {
+    id: 6,
+    project_id: 1,
+    ref: "main",
+    sha: "0ff3ae198f8601a285adcf5c0fff204ee6fba5fd",
+    status: "pending",
+  },
+  ref: "main",
+  artifacts: [],
+  runner: null,
+  runner_manager: null,
+  stage: "test",
+  status: "failed",
+  tag: false,
+  web_url: "https://example.com/foo/bar/-/jobs/8",
+  project: { ci_job_token_scope_enabled: false },
+});
+
+/**
+ * One row of `GET /projects/:id/pipelines/:pipeline_id/trigger_jobs` -- api/jobs "List all trigger
+ * jobs by pipeline" (`user` trimmed). The example's `downstream_pipeline` omits `project_id`, which
+ * the entity (`API::Entities::Ci::PipelineBasic`) always exposes; tests add it.
+ */
+export const triggerJobResponse = docs("api/jobs", {
+  commit: {
+    author_email: "admin@example.com",
+    author_name: "Administrator",
+    created_at: "2015-12-24T16:51:14.000+01:00",
+    id: "0ff3ae198f8601a285adcf5c0fff204ee6fba5fd",
+    message: "Test the CI integration.",
+    short_id: "0ff3ae19",
+    title: "Test the CI integration.",
+  },
+  coverage: null,
+  archived: false,
+  source: "push",
+  allow_failure: false,
+  created_at: "2015-12-24T15:51:21.802Z",
+  started_at: "2015-12-24T17:54:27.722Z",
+  finished_at: "2015-12-24T17:58:27.895Z",
+  erased_at: null,
+  duration: 240,
+  queued_duration: 0.123,
+  id: 7,
+  name: "teaspoon",
+  pipeline: {
+    id: 6,
+    project_id: 1,
+    ref: "main",
+    sha: "0ff3ae198f8601a285adcf5c0fff204ee6fba5fd",
+    status: "pending",
+    created_at: "2015-12-24T15:50:16.123Z",
+    updated_at: "2015-12-24T18:00:44.432Z",
+    web_url: "https://example.com/foo/bar/pipelines/6",
+  },
+  ref: "main",
+  stage: "test",
+  status: "pending",
+  tag: false,
+  web_url: "https://example.com/foo/bar/-/jobs/7",
+  project: { ci_job_token_scope_enabled: false },
+  downstream_pipeline: {
+    id: 5,
+    sha: "f62a4b2fb89754372a346f24659212eb8da13601",
+    ref: "main",
+    status: "pending",
+    created_at: "2015-12-24T17:54:27.722Z",
+    updated_at: "2015-12-24T17:58:27.896Z",
+    web_url: "https://example.com/diaspora/diaspora-client/pipelines/5",
+  },
+});
+
+/** `GET /projects/:id/pipelines/:pipeline_id/test_report_summary` -- api/pipelines. */
+export const testReportSummaryResponse = docs("api/pipelines", {
+  total: { time: 1904, count: 3363, success: 3351, failed: 0, skipped: 12, error: 0, suite_error: null },
+  test_suites: [{
+    name: "test", total_time: 1904, total_count: 3363, success_count: 3351, failed_count: 0,
+    skipped_count: 12, error_count: 0, build_ids: [66004], suite_error: null,
+  }],
+});
+
+/** `GET /projects/:id/pipelines/:pipeline_id/test_report` -- api/pipelines. */
+export const testReportResponse = docs("api/pipelines", {
+  total_time: 5,
+  total_count: 1,
+  success_count: 1,
+  failed_count: 0,
+  skipped_count: 0,
+  error_count: 0,
+  test_suites: [{
+    name: "Secure",
+    total_time: 5,
+    total_count: 1,
+    success_count: 1,
+    failed_count: 0,
+    skipped_count: 0,
+    error_count: 0,
+    test_cases: [{
+      status: "success",
+      name: "Security Reports can create an auto-remediation MR",
+      classname: "vulnerability_management_spec",
+      execution_time: 5,
+      system_output: null as string | null,
+      stack_trace: null as string | null,
+    }],
+  }],
+});
+
+/**
+ * A push event, one row of `GET /projects/:id/events?action=pushed` -- api/events (the push row of
+ * "Retrieve contribution events for a user", `author` trimmed). The example leaves out
+ * `created_at`, which every event carries; it is added here.
+ */
+export const pushEventResponse = docs("api/events", {
+  id: 4,
+  title: null,
+  project_id: 15,
+  action_name: "pushed",
+  target_id: null,
+  target_iid: null,
+  target_type: null,
+  author_id: 1,
+  author_username: "john",
+  imported: false,
+  imported_from: "none",
+  created_at: "2015-12-04T10:33:58.089Z",
+  push_data: {
+    commit_count: 1,
+    action: "pushed",
+    ref_type: "branch",
+    commit_from: "50d4420237a9de7be1304607147aec22e4a14af7",
+    commit_to: "c5feabde2d8cd023215af4d2ceeb7a64839fc428",
+    ref: "main",
+    commit_title: "Add simple search to projects in public area",
+  },
+  target_title: null,
 });

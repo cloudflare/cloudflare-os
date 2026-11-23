@@ -1,19 +1,17 @@
 // git-transport.ts coverage: pkt-line round-trips, fetch-command composition (the
-// hints-to-filter-spec matrix, and that no fetch command ever emits a `have` line -- the
+// hints-to-filter-spec matrix, and that a cache fill never emits a `have` line -- the
 // transport locked decision of plans/worktrees.md), response demultiplexing feeding
-// `consumePack()` (against a mock cache; real pack decoding is workshop-backend's test surface),
-// the pull driver's requested-oid verification with its filtered-blob carve-out, and the
+// raw binary pack streams (real decoding and requested-object checks live in the kernel), and the
 // send-pack side: ref-update command encoding (branch-name/oid validation included), the
 // canonical empty pack, report-status parsing, the push driver's body composition, and the
 // branch-head simulation over queued ref updates.
 
-import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitPullHints, GitPullStatus } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
 import {
   DELIM_PKT,
   FLUSH_PKT,
   GitRefUpdateRejectedError,
-  MAX_GIT_FETCH_BYTES,
   PktLineParser,
   ZERO_OID,
   buildGitFetchRequest,
@@ -25,10 +23,11 @@ import {
   parsePktItems,
   parseReceivePackResponse,
   pktText,
-  pullGitObjectsIntoCache,
+  pullGitPack,
   pushGitRefUpdate,
   simulateBranchHead,
   validateBranchName,
+  openGitFetchResponse,
 } from "../src/git-transport";
 
 /** Deterministic fake full oid. */
@@ -179,7 +178,7 @@ describe("buildGitFetchRequest", () => {
     expect(lines.at(-1)).toBe("<flush>");
   });
 
-  it("never emits a have line, and at most one filter line, for every hint shape", () => {
+  it("emits no have line without haves, and at most one filter line, for every hint shape", () => {
     for (const { name, hints, filter } of HINT_MATRIX) {
       const lines = requestLines(buildGitFetchRequest([oid(1), oid(2)], hints));
       expect(lines.filter(line => line.startsWith("have")), name).toEqual([]);
@@ -202,6 +201,21 @@ describe("buildGitFetchRequest", () => {
     const full = requestLines(buildGitFetchRequest([oid(1)],
         { type: "commit", commitHistory: { kind: "full" } }));
     expect(full.filter(line => line.startsWith("deepen"))).toEqual([]);
+  });
+
+  it("sends the requester's haves and shallow commits, and relative deepens", () => {
+    const lines = requestLines(buildGitFetchRequest([oid(1)], {
+      type: "commit", commitHistory: { kind: "relative", depth: 3 },
+      haves: [oid(2), oid(3), oid(2)], shallow: [oid(4)],
+    }));
+    expect(lines.filter(line => /^(have|shallow|deepen)/.test(line))).toEqual([
+      `shallow ${oid(4)}`, "deepen 3", "deepen-relative", `have ${oid(2)}`, `have ${oid(3)}`,
+    ]);
+    expect(lines.at(-2)).toBe("done");
+    expect(() => buildGitFetchRequest([oid(1)], { type: "commit", commitHistory: DEPTH_1, haves: ["main"] }))
+      .toThrow(/invalid git oid/);
+    expect(() => buildGitFetchRequest([oid(1)], { type: "commit", commitHistory: DEPTH_1, shallow: ["x"] }))
+      .toThrow(/invalid git oid/);
   });
 
   it("rejects malformed oids and empty requests", () => {
@@ -259,28 +273,57 @@ function packfileResponse(options: { withSections?: boolean; progress?: boolean 
 }
 
 describe("demuxGitFetchResponse", () => {
+  it("reports the shallow-info section before any pack data is read", async () => {
+    let reads = 0;
+    const chunks = [
+      encodePktLine("acknowledgments"), encodePktLine("ready"), DELIM_PKT,
+      encodePktLine("shallow-info"), encodePktLine(`shallow ${oid(1)}`),
+      encodePktLine(`unshallow ${oid(2)}`), DELIM_PKT, ...packfileResponse(),
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++;
+        const next = chunks.shift();
+        if (next) controller.enqueue(next); else controller.close();
+      },
+    }, {highWaterMark: 0});
+    const response = openGitFetchResponse(body);
+    expect(await response.shallowInfo()).toEqual({shallow: [oid(1)], unshallow: [oid(2)]});
+    expect(reads).toBe(8);
+    expect(await collect(response.pack)).toEqual(PACK_BYTES);
+    expect(await response.shallowInfo()).toEqual({shallow: [oid(1)], unshallow: [oid(2)]});
+  });
+
+  it("rejects shallowInfo() when the response fails before its pack", async () => {
+    let terminal: GitPullStatus | undefined;
+    const response = openGitFetchResponse(streamOf([encodePktLine("ERR not our ref"), FLUSH_PKT]),
+      Infinity, status => { terminal = status; });
+    await expect(response.shallowInfo()).rejects.toThrow("git fetch failed: not our ref");
+    expect(terminal).toEqual({state: "failed", message: "git fetch failed: not our ref"});
+    await expect(collect(response.pack)).rejects.toThrow("git fetch failed: not our ref");
+  });
+
   it("yields exactly the band-1 payload bytes", async () => {
-    const pack = await collect(
-        demuxGitFetchResponse(streamOf(packfileResponse()), MAX_GIT_FETCH_BYTES));
+    const pack = await collect(demuxGitFetchResponse(streamOf(packfileResponse())));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("skips leading sections and progress frames", async () => {
     const pack = await collect(demuxGitFetchResponse(
-        streamOf(packfileResponse({ withSections: true, progress: true })), MAX_GIT_FETCH_BYTES));
+        streamOf(packfileResponse({ withSections: true, progress: true }))));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("parses across arbitrary chunk boundaries", async () => {
     const whole = concatBytes(packfileResponse({ withSections: true, progress: true }));
     const rechunked = [whole.subarray(0, 3), whole.subarray(3, 27), whole.subarray(27)];
-    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked), MAX_GIT_FETCH_BYTES));
+    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked)));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("fails the stream on an ERR pkt with the server's message", async () => {
     const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
   });
 
@@ -290,19 +333,19 @@ describe("demuxGitFetchResponse", () => {
       sidebandPkt(1, PACK_BYTES.subarray(0, 4)),
       sidebandPkt(3, new TextEncoder().encode("fatal: the remote end hung up")),
     ];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow("git fetch failed: fatal: the remote end hung up");
   });
 
   it("rejects a response that ends without a flush", async () => {
     const truncated = packfileResponse().slice(0, -1);
-    await expect(collect(demuxGitFetchResponse(streamOf(truncated), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(truncated))))
       .rejects.toThrow(/missing final flush/);
   });
 
   it("rejects a response with no packfile section", async () => {
     const response = [encodePktLine("acknowledgments"), encodePktLine("NAK"), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(/no packfile section/);
   });
 
@@ -314,97 +357,70 @@ describe("demuxGitFetchResponse", () => {
   });
 });
 
-describe("pullGitObjectsIntoCache", () => {
-  /** A GitCache stand-in that records what it was fed and answers with fixed stored oids. */
-  function fakeCache(stored: GitOid[]) {
-    const consumed: Uint8Array[] = [];
-    return {
-      consumed,
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        consumed.push(await collect(pack));
-        return stored;
-      },
-    };
-  }
-
-  function fakeFetch(requests: Uint8Array[], pieces: Uint8Array[]): (body: Uint8Array) => Promise<Response> {
-    return async body => {
-      requests.push(body);
-      return new Response(streamOf(pieces) as unknown as BodyInit);
-    };
-  }
-
-  const HINTS: GitPullHints = { type: "commit", commitHistory: DEPTH_1, filterBlobSize: 65536 };
-
-  it("streams the demuxed pack into consumePack and verifies the requested oids", async () => {
+describe("pullGitPack", () => {
+  const options: GitPullHints = { type: "commit", commitHistory: DEPTH_1 };
+  it("composes typed options and returns raw binary pack bytes", async () => {
     const requests: Uint8Array[] = [];
-    const cache = fakeCache([oid(1), oid(2), oid(9)]);
-    await pullGitObjectsIntoCache(
-        fakeFetch(requests, packfileResponse()), [oid(1), oid(2)], HINTS, cache);
-    expect(cache.consumed).toEqual([PACK_BYTES]);
-    expect(requests).toHaveLength(1);
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async body => {
+      requests.push(body);
+      return new Response(streamOf(packfileResponse()) as unknown as BodyInit);
+    }, [oid(1), oid(2)], options, status => { terminal = status; });
+    expect(await collect(pack)).toEqual(PACK_BYTES);
+    expect(terminal).toEqual({state: "complete"});
     expect(requestLines(requests[0])).toContain(`want ${oid(1)}`);
+    expect(requestLines(requests[0])).toContain(`want ${oid(2)}`);
+    expect(requestLines(requests[0]).some(line => line.startsWith("filter "))).toBe(false);
   });
-
-  it("throws when a requested non-blob object is missing from the stored list", async () => {
-    const cache = fakeCache([oid(1)]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1), oid(2)], HINTS, cache))
-      .rejects.toThrow(`git fetch did not provide the requested object ${oid(2)}`);
-  });
-
-  it("tolerates a missing blob when the request was bounded by filterBlobSize", async () => {
-    // The gitPull contract's carve-out: consumePack() measures, records, and skips an oversized
-    // blob (absent from the stored list); the pull reports success without it and the overseer
-    // surfaces the too-large read error.
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)],
-        { type: "blob", commitHistory: DEPTH_1, filterBlobSize: 1048577 }, cache))
-      .resolves.toBeUndefined();
-  });
-
-  it("reports why the fetch failed, not how consumePack saw it end", async () => {
-    // Across RPC, consumePack() sees a failed stream only as one that ended early.
-    const cache = {
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        await collect(pack).catch(() => {
-          throw new Error("ReadableStream disconnected prematurely");
-        });
-        return [];
+  it("does not impose the DO cache's 64 MiB limit on native hydration", async () => {
+    const payload = new Uint8Array(60_000);
+    const frame = sidebandPkt(1, payload);
+    let frames = 1200;
+    const pack = await pullGitPack(async () => new Response(new ReadableStream({
+      start(c) { c.enqueue(encodePktLine("packfile")); },
+      pull(c) {
+        if (frames-- > 0) c.enqueue(frame);
+        else { c.enqueue(FLUSH_PKT); c.close(); }
       },
-    };
-    const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
-    await expect(pullGitObjectsIntoCache(fakeFetch([], response), [oid(1)], HINTS, cache))
-      .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
+    }) as unknown as BodyInit), [oid(1)], options);
+    let bytes = 0;
+    for await (const chunk of pack) bytes += chunk.length;
+    expect(bytes).toBe(72_000_000);
   });
-
-  it("reports consumePack's own failure when the fetch itself succeeded", async () => {
-    const cache = {
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        await collect(pack);
-        throw new Error("invalid packfile: bad signature");
+  it("cancels an unfinished upstream when its consumer stops", async () => {
+    let canceled = false;
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async () => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(encodePktLine("packfile"));
+        c.enqueue(sidebandPkt(1, PACK_BYTES));
       },
-    };
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)], HINTS, cache))
-      .rejects.toThrow("invalid packfile: bad signature");
+      cancel() { canceled = true; },
+    }) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
+    const reader = pack.getReader();
+    expect((await reader.read()).value).toEqual(PACK_BYTES);
+    await reader.cancel();
+    expect(canceled).toBe(true);
+    expect(terminal).toEqual({state: "canceled"});
   });
-
-  it("still throws for a missing blob when no blob filter bounded the request", async () => {
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)],
-        { type: "blob", commitHistory: DEPTH_1 }, cache))
-      .rejects.toThrow(/did not provide/);
+  it("propagates upstream protocol failures while streaming", async () => {
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async () => new Response(streamOf([
+      encodePktLine("ERR not our ref"), FLUSH_PKT,
+    ]) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
+    await expect(collect(pack)).rejects.toThrow("git fetch failed: not our ref");
+    expect(terminal).toEqual({state: "failed", message: "git fetch failed: not our ref"});
   });
-
-  it("fails on a non-OK response", async () => {
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        async () => new Response("nope", { status: 502 }), [oid(1)], HINTS, cache))
-      .rejects.toThrow(/HTTP 502/);
-    expect(cache.consumed).toEqual([]);
+  it("rejects non-OK responses and cancels their bodies", async () => {
+    let canceled = false;
+    await expect(pullGitPack(async () => new Response(new ReadableStream({
+      cancel() { canceled = true; },
+    }) as unknown as BodyInit, {status: 502}), [oid(1)], options)).rejects.toThrow(/HTTP 502/);
+    expect(canceled).toBe(true);
+  });
+  it("rejects a missing response body", async () => {
+    await expect(pullGitPack(async () => new Response(null), [oid(1)], options))
+      .rejects.toThrow(/no body/);
   });
 });
 

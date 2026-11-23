@@ -1,7 +1,7 @@
 // Client for the Cloudflare-operated notification service. Every request is signed with this
 // installation's key; the service accepts only fixed, typed templates. See docs/notifications.md.
 
-import type { UserNotification } from "@gadgets/workshop-shared/api";
+import type { UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
 
 const encoder = new TextEncoder();
 
@@ -19,7 +19,8 @@ function threadTitle(title: string): string | undefined {
 }
 
 async function signedPost(
-    env: Cloudflare.Env, pathname: string, payload: object): Promise<Response> {
+    env: Cloudflare.Env, pathname: string, payload: object, signal?: AbortSignal,
+): Promise<Response> {
   let {
     NOTIFICATION_SERVICE_URL: serviceUrl, CFOS_INSTALL_ID: installId,
     CFOS_INSTALL_KEY_ID: keyId, CFOS_INSTALL_PRIVATE_KEY: privateKey,
@@ -55,6 +56,7 @@ async function signedPost(
     // A followed redirect would resend the signed request, possibly over plaintext; a 3xx is not
     // ok, so callers fail as for any other bad status. (Workers has no `redirect: "error"`.)
     redirect: "manual",
+    signal,
   });
 }
 
@@ -64,13 +66,44 @@ const isServiceId = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
 /**
- * Exchange the native app's one-time device registration for an install-bound subscription, along
- * with the install-scoped key of the device it reaches.
+ * Exchange the native app's one-time device registration, or a browser's Web Push subscription,
+ * for an install-and-user-bound subscription, along with the install-scoped key of the device it
+ * reaches.
  */
 export async function registerDevice(
-    env: Cloudflare.Env, deviceRegistrationId: string,
+    env: Cloudflare.Env, registration: string | WebPushSubscription, subject: string,
 ): Promise<{ deviceKey: string; subscriptionId: string }> {
-  let response = await signedPost(env, "/v1/subscriptions", { deviceRegistrationId });
+  // A Web Push subscription is rebuilt field by field: RPC validation forwards extra properties,
+  // and the service's schema is strict.
+  let body = typeof registration === "string"
+      ? { deviceRegistrationId: registration, subject }
+      : { webPush: { endpoint: registration.endpoint,
+          keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } }, subject };
+  return notificationRequest(async signal =>
+    subscription(await signedPost(env, "/v1/subscriptions", body, signal)));
+}
+
+/** Claim only a native registration authorized for this installation and authenticated CFOS user. */
+export async function registerAuthorizedDevice(
+    env: Cloudflare.Env, deviceRegistrationId: string, subject: string,
+): Promise<{ deviceKey: string; subscriptionId: string }> {
+  return notificationRequest(async signal =>
+    subscription(await signedPost(env, "/v2/subscriptions", { deviceRegistrationId, subject }, signal)));
+}
+
+// Bound each service exchange through response parsing so a stalled service cannot pin the caller.
+// AbortSignal.timeout leaves its timer alive after success, delaying Durable Object eviction.
+async function notificationRequest<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  let controller = new AbortController();
+  let timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await request(controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function subscription(response: Response): Promise<{ deviceKey: string; subscriptionId: string }> {
   if (!response.ok) {
     throw new Error(`Notification registration failed with status ${response.status}.`);
   }
@@ -82,13 +115,29 @@ export async function registerDevice(
   return { deviceKey, subscriptionId };
 }
 
+/** Ask the central service for a short-lived grant for this authenticated installation user. */
+export async function authorizeDevice(env: Cloudflare.Env, subject: string): Promise<string> {
+  return notificationRequest(async signal => {
+    let response = await signedPost(env, "/v2/device-authorizations", { subject }, signal);
+    if (!response.ok) {
+      throw new Error(`Notification authorization failed with status ${response.status}.`);
+    }
+    let { authorization } = await response.json<{ authorization?: unknown }>();
+    if (!isServiceId(authorization)) {
+      throw new Error("Notification service returned an invalid authorization.");
+    }
+    return authorization;
+  });
+}
+
 /**
- * Push a notification to the device behind `subscriptionId`. Resolves to false when the service
- * reports it will never deliver to that subscription again.
+ * Push a notification to the device behind `subscriptionId` as its owning User DO subject.
+ * Resolves to false when the service reports it will never deliver to that subscription again.
  */
 export async function deliver(
-    env: Cloudflare.Env, subscriptionId: string,
-    { id, kind, workspaceId, chatId, chatTitle }: UserNotification): Promise<boolean> {
+    env: Cloudflare.Env, subject: string, subscriptionId: string,
+    { id, kind, workspaceId, chatId, chatTitle }: UserNotification,
+    signal?: AbortSignal): Promise<boolean> {
   let response = await signedPost(env, "/v1/deliveries", {
     type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
     eventId: id,
@@ -96,7 +145,8 @@ export async function deliver(
     threadTitle: threadTitle(chatTitle),
     path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
     subscriptionId,
-  });
+    subject,
+  }, signal);
   if (response.ok) return true;
   // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
   // which must not discard every device's subscription.
@@ -105,4 +155,18 @@ export async function deliver(
     if (status === "invalid_subscription" || status === "device_gone") return false;
   }
   throw new Error(`Notification delivery failed with status ${response.status}.`);
+}
+
+/** Replace the subscription's instance unread total. Retrying the same version is idempotent. */
+export async function deliverBadge(
+    env: Cloudflare.Env, subscriptionId: string, version: number, count: number): Promise<boolean> {
+  return notificationRequest(async signal => {
+    let response = await signedPost(env, "/v1/badges", {subscriptionId, version, count}, signal);
+    if (response.ok) return true;
+    if (response.status === 401 || response.status === 410) {
+      let {status} = await response.json<{status?: unknown}>();
+      if (status === "invalid_subscription" || status === "device_gone") return false;
+    }
+    throw new Error(`Badge delivery failed with status ${response.status}.`);
+  });
 }

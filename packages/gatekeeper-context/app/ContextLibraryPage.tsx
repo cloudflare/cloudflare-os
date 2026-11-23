@@ -18,7 +18,9 @@ import {
   UploadSimple,
   FilePlus,
   FolderPlus,
+  ShareNetwork,
   User,
+  Users,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -31,6 +33,8 @@ import {
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import type {
   ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  ContextCollectionSharing,
   ContextDocumentSummary,
   ContextGitTokenCreateResult,
   ContextGitTokenInfo,
@@ -57,7 +61,7 @@ import { json } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
-import { useContextApi, usePresentWhileOpen, useResolvedThemeMode } from "./bridge";
+import { useAppLocation, useContextApi, usePresentWhileOpen, useResolvedThemeMode } from "./bridge";
 import {
   CollectionIconPicker,
   DEFAULT_COLLECTION_ICON,
@@ -65,8 +69,12 @@ import {
 import { extractDescription } from "../src/description-extractors";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { COLLECTION_ROLE_LABELS } from "./skills/collectionRole";
+import { ShareCollectionDialog } from "./skills/ShareCollectionDialog";
 import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
 import { fileToBase64, readUploadFile } from "./uploadFiles";
+import { reportIssue } from "./error-reporting";
+import { contextPath, parseContextPath } from "./navigation";
 
 function baseName(path: string): string {
   const i = path.lastIndexOf("/");
@@ -429,37 +437,52 @@ function DeletePermanentlyDescription({
 // ---------------------------------------------------------------------------
 
 export default function ContextLibraryPage() {
-  // Iframe-local selection state (no router/URL).
-  const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
+  // The Workshop owns the URL: the selection is whatever the host's committed path names, and
+  // selecting something asks the host to navigate there.
+  const { path, navigate } = useAppLocation();
+  const go = useCallback(
+    (collectionId: string | null, documentPath: string | null, replace = false) => {
+      navigate(contextPath(collectionId, documentPath), { replace })
+        .catch((error: unknown) => reportIssue("context.navigate", error));
+    },
+    [navigate],
+  );
 
-  const goToCollection = useCallback((id: string | null) => {
-    setSelectedCollection(id);
-    setSelectedDoc(null);
-  }, []);
-  const goToDoc = useCallback((path: string | null) => {
-    setSelectedDoc(path);
-  }, []);
+  // The first path arrives right after the handshake.
+  if (path === null) return null;
+  const view = parseContextPath(path);
 
-  if (selectedCollection) {
+  if (view.kind === "invalid") {
+    return (
+      <UnavailablePage
+        title="This page doesn't exist"
+        detail="Check the link and try again."
+        onBack={() => go(null, null, true)}
+      />
+    );
+  }
+
+  if (view.kind === "collection") {
+    const { collectionId } = view;
     return (
       <div className="h-full bg-kumo-base">
         <CollectionEditor
-          collectionId={selectedCollection}
-          selectedPath={selectedDoc}
-          onSelectPath={goToDoc}
-          onBack={() => {
-            goToCollection(null);
-          }}
+          key={collectionId}
+          collectionId={collectionId}
+          selectedPath={view.documentPath}
+          onSelectPath={(documentPath, replace) => go(collectionId, documentPath, replace)}
+          onBack={(replace) => go(null, null, replace)}
         />
       </div>
     );
   }
 
-  return <SkillsNavigatorPage onSelectSkill={(collectionId, manifestPath) => {
-    setSelectedCollection(collectionId);
-    setSelectedDoc(manifestPath);
-  }} />;
+  return (
+    <SkillsNavigatorPage
+      onSelectSkill={(collectionId, manifestPath) => go(collectionId, manifestPath)}
+      onOpenCollection={(collectionId) => go(collectionId, null)}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -488,28 +511,36 @@ function MetaField({
 }
 
 // The collection overview — identity, description, and metadata shown in the detail pane when no
-// file is selected. Collection-level actions (edit/delete) live on the index's ⋮ menu.
+// file is selected. Collection-level actions (edit/share/delete) live on the index's ⋮ menu.
 function CollectionOverview({
   metadata,
-  canWrite,
+  permissions,
+  sharing,
   supportsGitCollections,
   refreshingSource,
   onRefreshSource,
   onEditDetails,
   onManageGitTokens,
+  onShare,
   onDelete,
 }: {
   metadata: ContextCollectionMetadata;
-  canWrite: boolean;
+  permissions: ContextCollectionPermissions;
+  /** Private collections only; null while loading or when it could not be read. */
+  sharing: ContextCollectionSharing | null;
   supportsGitCollections: boolean;
   refreshingSource: boolean;
   onRefreshSource: () => void;
   onEditDetails: () => void;
   onManageGitTokens: () => void;
+  onShare: () => void;
   onDelete: () => void;
 }) {
   const isPublic = metadata.visibility === "public";
   const isSynced = metadata.content.source === "git";
+  const viewerRole = sharing?.members.find((member) => member.isViewer)?.role;
+  const sharedRole = viewerRole === "owner" ? undefined : viewerRole;
+  const othersCanRead = Boolean(sharing && (sharing.everyoneCanView || sharing.members.length > 1));
   return (
     <div className="ctx-scroll @container min-h-0 flex-1 overflow-auto">
       <div className="mx-auto max-w-[850px] px-8 py-10 sm:px-11 sm:py-12">
@@ -526,38 +557,54 @@ function CollectionOverview({
                 </p>
               </div>
             </div>
-            {canWrite && (
-              <div className="flex shrink-0 items-center gap-2">
-                {isSynced && supportsGitCollections && (
-                  <WorkshopButton
-                    tone="secondary"
-                    className="h-9!"
-                    onClick={onRefreshSource}
-                    loading={refreshingSource}
-                  >
-                    Refresh
-                  </WorkshopButton>
-                )}
-                <CollectionOptionsMenu
-                  isSynced={isSynced}
-                  supportsGitCollections={supportsGitCollections}
-                  onEditDetails={onEditDetails}
-                  onManageGitTokens={onManageGitTokens}
-                  onDelete={onDelete}
-                />
-              </div>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {permissions.canEdit && isSynced && supportsGitCollections && (
+                <WorkshopButton
+                  tone="secondary"
+                  className="h-9!"
+                  onClick={onRefreshSource}
+                  loading={refreshingSource}
+                >
+                  Refresh
+                </WorkshopButton>
+              )}
+              <CollectionOptionsMenu
+                permissions={permissions}
+                isSynced={isSynced}
+                supportsGitCollections={supportsGitCollections}
+                onEditDetails={onEditDetails}
+                onManageGitTokens={onManageGitTokens}
+                onShare={onShare}
+                onDelete={onDelete}
+              />
+            </div>
           </div>
 
           <div className="mt-9 grid grid-cols-2 gap-x-8 gap-y-5 @xl:grid-cols-4">
             <MetaField label="Source">
               <span className="inline-flex items-center gap-1.5">
-                {isPublic ? <Buildings size={12} className="shrink-0" /> : <User size={12} className="shrink-0" />}
-                {isPublic ? "Your organization" : "You"}
+                {isPublic
+                  ? <Buildings size={12} className="shrink-0" />
+                  : sharedRole || othersCanRead
+                  ? <Users size={12} className="shrink-0" />
+                  : <User size={12} className="shrink-0" />}
+                {isPublic
+                  ? "Your organization"
+                  : sharing && !sharing.hasOwner
+                  ? "No active owner"
+                  : sharedRole
+                  ? `Shared with you · ${COLLECTION_ROLE_LABELS[sharedRole]}`
+                  : "You"}
               </span>
             </MetaField>
             <MetaField label="Access">
-              {isPublic ? "Everyone (required)" : "Private to you"}
+              {isPublic
+                ? "Everyone (required)"
+                : sharing?.everyoneCanView
+                ? "Anyone in your organization"
+                : sharing && sharing.members.length > 1
+                ? `${sharing.members.length} people`
+                : "Private to you"}
             </MetaField>
             <MetaField label="Documents">{metadata.documentCount}</MetaField>
             <MetaField label={isSynced ? "Refreshed" : "Updated"} align="right">
@@ -609,7 +656,7 @@ function CollectionOverview({
                     ? supportsGitCollections
                       ? "This git mirror is empty. Mirror content from git, then refresh."
                       : "No Git content was cached before synchronization became unavailable."
-                    : canWrite
+                    : permissions.canEdit
                     ? "Use the + in the Files panel to create or upload skills or files. Agents use the names and descriptions to decide what to read."
                     : "This collection is empty."}
                 </p>
@@ -622,19 +669,26 @@ function CollectionOverview({
   );
 }
 
+// Renders nothing when the viewer may only read the collection.
 function CollectionOptionsMenu({
+  permissions,
   isSynced,
   supportsGitCollections,
   onEditDetails,
   onManageGitTokens,
+  onShare,
   onDelete,
 }: {
+  permissions: ContextCollectionPermissions;
   isSynced: boolean;
   supportsGitCollections: boolean;
   onEditDetails: () => void;
   onManageGitTokens: () => void;
+  onShare: () => void;
   onDelete: () => void;
 }) {
+  const { canEdit, canShare, canDelete } = permissions;
+  if (!canEdit && !canShare && !canDelete) return null;
   return (
     <KebabMenu
       trigger={
@@ -647,30 +701,43 @@ function CollectionOptionsMenu({
         </WorkshopIconButton>
       }
     >
-      <DropdownMenu.Item
-        icon={<PencilSimple size={13} className="mr-2" />}
-        onClick={onEditDetails}
-        className={MENU_ITEM}
-      >
-        Edit details
-      </DropdownMenu.Item>
-      {isSynced && supportsGitCollections && (
+      {canEdit && (
         <DropdownMenu.Item
-          icon={<Key size={13} className="mr-2" />}
+          icon={<PencilSimple className="size-3.25" />}
+          onClick={onEditDetails}
+          className={MENU_ITEM}
+        >
+          Edit details
+        </DropdownMenu.Item>
+      )}
+      {canEdit && isSynced && supportsGitCollections && (
+        <DropdownMenu.Item
+          icon={<Key className="size-3.25" />}
           onClick={onManageGitTokens}
           className={MENU_ITEM}
         >
           Manage git tokens
         </DropdownMenu.Item>
       )}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item
-        icon={<Trash size={13} className="mr-2" />}
-        onClick={onDelete}
-        className={`${MENU_ITEM_DANGER} text-kumo-danger`}
-      >
-        Delete collection
-      </DropdownMenu.Item>
+      {canShare && (
+        <DropdownMenu.Item
+          icon={<ShareNetwork className="size-3.25" />}
+          onClick={onShare}
+          className={MENU_ITEM}
+        >
+          Share
+        </DropdownMenu.Item>
+      )}
+      {canDelete && (canEdit || canShare) && <DropdownMenu.Separator />}
+      {canDelete && (
+        <DropdownMenu.Item
+          icon={<Trash className="size-3.25" />}
+          onClick={onDelete}
+          className={`${MENU_ITEM_DANGER} text-kumo-danger`}
+        >
+          Delete collection
+        </DropdownMenu.Item>
+      )}
     </KebabMenu>
   );
 }
@@ -1387,21 +1454,21 @@ function FolderView({
               }
             >
               <DropdownMenu.Item
-                icon={<FilePlus size={12} className="mr-2" />}
+                icon={<FilePlus className="size-3" />}
                 onClick={() => ctx.startCreate(folder.path, "file")}
                 className={MENU_ITEM}
               >
                 New file
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<FolderPlus size={12} className="mr-2" />}
+                icon={<FolderPlus className="size-3" />}
                 onClick={() => ctx.startCreate(folder.path, "folder")}
                 className={MENU_ITEM}
               >
                 New folder
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<PencilSimple size={12} className="mr-2" />}
+                icon={<PencilSimple className="size-3" />}
                 onClick={() => ctx.startRename(folder.path)}
                 className={MENU_ITEM}
               >
@@ -1409,7 +1476,7 @@ function FolderView({
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<Trash size={12} className="mr-2" />}
+                icon={<Trash className="size-3" />}
                 variant="danger"
                 onClick={() => ctx.deletePath(folder.path, true)}
                 className={MENU_ITEM_DANGER}
@@ -1513,14 +1580,14 @@ function FileView({
           }
         >
           <DropdownMenu.Item
-            icon={<PencilSimple size={12} className="mr-2" />}
+            icon={<PencilSimple className="size-3" />}
             onClick={() => ctx.startRename(doc.path)}
             className={MENU_ITEM}
           >
             Rename
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            icon={<Trash size={12} className="mr-2" />}
+            icon={<Trash className="size-3" />}
             variant="danger"
             onClick={() => ctx.deletePath(doc.path, false)}
             className={MENU_ITEM_DANGER}
@@ -1537,6 +1604,50 @@ function FileView({
 // Collection Editor (file manager + document editor)
 // ---------------------------------------------------------------------------
 
+// A full-pane "can't show this" state with the way back to the library.
+function UnavailablePage({
+  title,
+  detail,
+  onBack,
+}: {
+  title: string;
+  detail: string;
+  onBack: () => void;
+}) {
+  return (
+    <div className="h-full bg-kumo-base px-5 py-4 sm:px-8">
+      <div className="mx-auto max-w-[520px]">
+        <button
+          onClick={onBack}
+          className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
+        >
+          <CaretLeft size={14} />
+          Context &amp; Skills
+        </button>
+        <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
+          <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
+          <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
+            {title}
+          </p>
+          <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
+            {detail}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only until permissions load, so edit controls never flash to viewers.
+const NO_PERMISSIONS: ContextCollectionPermissions = {
+  canEdit: false,
+  canShare: false,
+  canManageOwners: false,
+  canDelete: false,
+};
+
+// Selection is the host's URL. `replace` swaps the current history entry instead of pushing one,
+// for when the old target no longer exists (renamed, moved, deleted, or left).
 function CollectionEditor({
   collectionId,
   selectedPath,
@@ -1545,8 +1656,8 @@ function CollectionEditor({
 }: {
   collectionId: string;
   selectedPath: string | null;
-  onSelectPath: (path: string | null) => void;
-  onBack: () => void;
+  onSelectPath: (path: string | null, replace?: boolean) => void;
+  onBack: (replace?: boolean) => void;
 }) {
   const context = useContextApi();
   const toasts = useKumoToastManager();
@@ -1558,12 +1669,13 @@ function CollectionEditor({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsMode, setSettingsMode] = useState<"edit" | "delete">("edit");
   const [gitTokensOpen, setGitTokensOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const openSettings = (m: "edit" | "delete") => {
     setSettingsMode(m);
     setSettingsOpen(true);
   };
-  // Default read-only until access loads so edit controls never flash to viewers.
-  const [canWrite, setCanWrite] = useState(false);
+  const [permissions, setPermissions] = useState(NO_PERMISSIONS);
+  const [sharing, setSharing] = useState<ContextCollectionSharing | null>(null);
   const [supportsGitCollections, setSupportsGitCollections] = useState(false);
   const [refreshingSource, setRefreshingSource] = useState(false);
 
@@ -1614,21 +1726,27 @@ function CollectionEditor({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement>(null);
-  const canEditDocuments = canWrite && metadata?.content.source !== "git";
+  const canEditDocuments = permissions.canEdit && metadata?.content.source !== "git";
 
   const loadDocs = useCallback(async () => {
     try {
-      const [meta, list, writable, viewer] = await Promise.all([
+      const [meta, list, loadedPermissions, viewer, loadedSharing] = await Promise.all([
         context.getContextCollectionMetadata(collectionId),
         context.listContextDocuments(collectionId),
-        context.canWriteContextCollection(collectionId),
+        context.getContextCollectionPermissions(collectionId),
         context.getViewerInfo(),
+        // Only private collections have sharing state; it labels the overview and is not needed
+        // for anything else.
+        context.getContextCollectionSharing(collectionId).catch(() => null),
       ]);
       setMetadata(meta);
       setDocs(list);
-      setCanWrite(writable);
+      setPermissions(loadedPermissions);
+      setSharing(meta?.visibility === "private" ? loadedSharing : null);
       setSupportsGitCollections(viewer.supportsGitCollections);
     } catch (err) {
+      setPermissions(NO_PERMISSIONS);
+      setSharing(null);
       console.error("Failed to load documents:", err);
     } finally {
       setLoading(false);
@@ -1738,7 +1856,7 @@ function CollectionEditor({
       await context.moveContextDocument(collectionId, from, dest);
     }
     if (selectedPath === from || selectedPath?.startsWith(from + "/")) {
-      setSelectedPath(replacePathPrefix(selectedPath, from, dest));
+      setSelectedPath(replacePathPrefix(selectedPath, from, dest), true);
     }
     await loadDocs();
   };
@@ -1815,9 +1933,9 @@ function CollectionEditor({
       afterDeleteExitRef.current = () => {
         if (isDir) {
           if (selectedPath === path || selectedPath?.startsWith(path + "/"))
-            setSelectedPath(null);
+            setSelectedPath(null, true);
         } else if (selectedPath === path) {
-          setSelectedPath(null);
+          setSelectedPath(null, true);
         }
         void loadDocs();
       };
@@ -1894,26 +2012,11 @@ function CollectionEditor({
   // The collection is gone (deleted by an admin) or no longer accessible.
   if (!loading && !metadata) {
     return (
-      <div className="h-full bg-kumo-base px-5 py-4 sm:px-8">
-        <div className="mx-auto max-w-[520px]">
-          <button
-            onClick={onBack}
-            className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
-          >
-            <CaretLeft size={14} />
-            Context &amp; Skills
-          </button>
-          <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
-            <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
-            <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
-              This collection is no longer available
-            </p>
-            <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-              It may have been deleted.
-            </p>
-          </div>
-        </div>
-      </div>
+      <UnavailablePage
+        title="This collection is unavailable"
+        detail="It may have been deleted, or you may no longer have access."
+        onBack={() => onBack(true)}
+      />
     );
   }
 
@@ -1928,7 +2031,7 @@ function CollectionEditor({
           collectionId={collectionId}
           onClose={() => setSettingsOpen(false)}
           onUpdated={loadDocs}
-          onDeleted={onBack}
+          onDeleted={() => onBack(true)}
         />
       )}
 
@@ -1938,6 +2041,15 @@ function CollectionEditor({
           collectionId={collectionId}
           branch={metadata.content.branch}
           onClose={() => setGitTokensOpen(false)}
+        />
+      )}
+
+      {shareOpen && metadata && (
+        <ShareCollectionDialog
+          collection={{ id: collectionId, title: metadata.title }}
+          onChanged={() => void loadDocs()}
+          onLeft={() => onBack(true)}
+          onClose={() => setShareOpen(false)}
         />
       )}
 
@@ -2003,7 +2115,7 @@ function CollectionEditor({
       >
         <div className="flex h-14 shrink-0 items-center px-5">
           <button
-            onClick={onBack}
+            onClick={() => onBack()}
             className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
@@ -2028,17 +2140,17 @@ function CollectionEditor({
                     {metadata.title}
                   </span>
                 </button>
-                {canWrite && (
-                  <div className="pr-1 sm:hidden">
-                    <CollectionOptionsMenu
-                      isSynced={metadata.content.source === "git"}
-                      supportsGitCollections={supportsGitCollections}
-                      onEditDetails={() => openSettings("edit")}
-                      onManageGitTokens={() => setGitTokensOpen(true)}
-                      onDelete={() => openSettings("delete")}
-                    />
-                  </div>
-                )}
+                <div className="pr-1 sm:hidden">
+                  <CollectionOptionsMenu
+                    permissions={permissions}
+                    isSynced={metadata.content.source === "git"}
+                    supportsGitCollections={supportsGitCollections}
+                    onEditDetails={() => openSettings("edit")}
+                    onManageGitTokens={() => setGitTokensOpen(true)}
+                    onShare={() => setShareOpen(true)}
+                    onDelete={() => openSettings("delete")}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -2061,14 +2173,14 @@ function CollectionEditor({
               }
             >
               <DropdownMenu.Item
-                icon={<FilePlus size={13} className="mr-2" />}
+                icon={<FilePlus className="size-3.25" />}
                 onClick={() => startCreate("", "file")}
                 className={MENU_ITEM}
               >
                 New file
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<FolderPlus size={13} className="mr-2" />}
+                icon={<FolderPlus className="size-3.25" />}
                 onClick={() => startCreate("", "folder")}
                 className={MENU_ITEM}
               >
@@ -2076,14 +2188,14 @@ function CollectionEditor({
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 onClick={() => fileInputRef.current?.click()}
                 className={MENU_ITEM}
               >
                 Upload files
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<Folder size={13} className="mr-2" />}
+                icon={<Folder className="size-3.25" />}
                 onClick={() => dirInputRef.current?.click()}
                 className={MENU_ITEM}
               >
@@ -2124,7 +2236,7 @@ function CollectionEditor({
                   ? supportsGitCollections
                     ? "No files yet. Mirror content from git, then refresh."
                     : "No Git content was cached before synchronization became unavailable."
-                  : canWrite ? "No files yet. Use + to create or upload skills or files." : "No files yet."}
+                  : permissions.canEdit ? "No files yet. Use + to create or upload skills or files." : "No files yet."}
               </p>
             ) : (
               <FolderView folder={tree} depth={0} ctx={ctx} />
@@ -2155,22 +2267,25 @@ function CollectionEditor({
                   onChanged={loadDocs}
                   onRenamed={(newPath) => {
                     setDirty(false);
-                    setSelectedPath(newPath);
+                    setSelectedPath(newPath, true);
                     loadDocs();
                   }}
                   onRequestDelete={() => deletePath(selectedPath, false)}
+                  onUnavailable={() => setSelectedPath(null, true)}
                 />
               </div>
             </>
           ) : metadata ? (
             <CollectionOverview
               metadata={metadata}
-              canWrite={canWrite}
+              permissions={permissions}
+              sharing={sharing}
               supportsGitCollections={supportsGitCollections}
               refreshingSource={refreshingSource}
               onRefreshSource={handleRefreshArtifactSource}
               onEditDetails={() => openSettings("edit")}
               onManageGitTokens={() => setGitTokensOpen(true)}
+              onShare={() => setShareOpen(true)}
               onDelete={() => openSettings("delete")}
             />
           ) : null}
@@ -2355,6 +2470,7 @@ function DocumentEditor({
   onRenamed,
   onRequestDelete,
   onDirtyChange,
+  onUnavailable,
 }: {
   collectionId: string;
   path: string;
@@ -2366,6 +2482,8 @@ function DocumentEditor({
   onRenamed: (newPath: string) => void;
   onRequestDelete: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  // Leaves a document that doesn't exist (e.g. a stale link) for the collection overview.
+  onUnavailable: () => void;
 }) {
   const context = useContextApi();
   const toasts = useKumoToastManager();
@@ -2379,6 +2497,8 @@ function DocumentEditor({
   // fallback while the document loads.
   const [contentType, setContentType] = useState(() => contentTypeFromPath(path));
   const [loading, setLoading] = useState(true);
+  // A link can name a document that doesn't exist; never present it as an empty, editable file.
+  const [unavailable, setUnavailable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const savedDocumentRef = useRef<{ description: string; body: string } | null>(null);
@@ -2419,8 +2539,9 @@ function DocumentEditor({
         setSkillName(d.skillName ?? null);
         setDirty(false);
         setMode(readOnly || initialMode !== "edit" ? "read" : "edit");
+      } else {
+        setUnavailable(true);
       }
-      // Also clears loading for not-found.
       setLoading(false);
     }).catch((err) => {
       if (cancelled) return;
@@ -2508,6 +2629,25 @@ function DocumentEditor({
     return (
       <div className="flex h-full items-center justify-center text-sm text-kumo-subtle">
         Loading…
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <FileText size={32} className="text-kumo-subtle" />
+        <div>
+          <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
+            This document is unavailable
+          </p>
+          <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+            It may have been renamed or deleted.
+          </p>
+        </div>
+        <WorkshopButton tone="secondary" className="!h-8" onClick={onUnavailable}>
+          Back to collection
+        </WorkshopButton>
       </div>
     );
   }

@@ -16,22 +16,51 @@ const CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
 
 const MAX_LIST_EVENTS = 2500;
 
+/** Most calendars Google answers in one free/busy query. */
+export const MAX_FREE_BUSY_CALENDARS = 50;
+
 export type GoogleCalendarListOptions = {
   maxResults?: number;
 };
+
+// Google's calendar roles split "can edit the calendar" from "can see private event details":
+// `writerWithoutPrivateAccess` edits events but sees private ones only as busy blocks. The two
+// predicates below are the only places that distinction is encoded, so keep them together.
+
+/**
+ * Whether the connected account can create and edit events on the calendar. This is the bar for
+ * choosing a calendar to operate on, in the picker and when checking a suggested calendar.
+ */
+export function hasCalendarWriteRole(calendar: GoogleCalendarInfo): boolean {
+  return calendar.accessRole === "owner" || calendar.accessRole === "writer" ||
+    calendar.accessRole === "writerWithoutPrivateAccess";
+}
+
+/**
+ * Whether the account also sees private event details. A collaborator observing a calendar's
+ * metadata or events must hold one of these roles, because what the workspace read through the
+ * owner's account may include private details; a limited writer could not see them on their own.
+ */
+export function hasCalendarPrivateAccessRole(calendar: GoogleCalendarInfo): boolean {
+  return calendar.accessRole === "owner" || calendar.accessRole === "writer";
+}
+
+// The weakest role the picker offers. Must agree with `hasCalendarWriteRole`.
+const CALENDAR_PICKER_MIN_ACCESS_ROLE = "writerWithoutPrivateAccess";
 
 // Rank calendars so the ones the user is most likely to pick appear first
 const CALENDAR_ACCESS_ROLE_RANK: Record<string, number> = {
   owner: 0,
   writer: 1,
-  reader: 2,
-  freeBusyReader: 3,
-  none: 4,
+  writerWithoutPrivateAccess: 2,
+  reader: 3,
+  freeBusyReader: 4,
+  none: 5,
 };
 
 export function calendarPickerRank(calendar: GoogleCalendarInfo): number {
   if (calendar.primary) return -1;
-  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 5;
+  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 6;
 }
 
 type GoogleCalendarTime = {
@@ -54,6 +83,24 @@ type GoogleCalendarEvent = {
   transparency?: "opaque" | "transparent";
   visibility?: "default" | "public" | "private" | "confidential";
   recurringEventId?: string;
+  eventType?: string;
+  attendeesOmitted?: boolean;
+  organizer?: { self?: boolean };
+  etag?: string;
+};
+
+/**
+ * An event as one read reports it, with the fields that decide whether changing it reaches anyone
+ * but the bound calendar: who organizes it, whether Google left attendees out of the list, and its
+ * type (an out-of-office event can decline invitations on the user's behalf). The agent-facing
+ * `CalendarEvent` omits them. `etag` identifies this version of the event, so a write can be made
+ * conditional on nothing having changed since.
+ */
+export type LiveCalendarEvent = CalendarEvent & {
+  eventType?: string;
+  attendeesOmitted?: boolean;
+  organizer?: { self?: boolean };
+  etag?: string;
 };
 
 export function encodeCalendarId(calendarId: string): string {
@@ -167,6 +214,12 @@ export function validateCalendarTimeWindow(timeMin: Date, timeMax: Date, maxDays
   }
 }
 
+export class GoogleCalendarApiError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`Google Calendar API request failed: ${status} ${body}`);
+  }
+}
+
 export class GoogleCalendarApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -186,7 +239,7 @@ export class GoogleCalendarApi {
 
     if (!response.ok) {
       let text = await response.text();
-      throw new Error(`Google Calendar API request failed: ${response.status} ${text}`);
+      throw new GoogleCalendarApiError(response.status, text);
     }
 
     if (response.status === 204) return undefined as T;
@@ -201,8 +254,9 @@ export class GoogleCalendarApi {
     do {
       let params = new URLSearchParams({
         maxResults: "250",
-        // Only surface calendars the user can edit.
-        minAccessRole: "writer",
+        // Only surface calendars the user can edit. Google filters on its role ordering, so a
+        // limited writer's calendars are included but a reader's are not.
+        minAccessRole: CALENDAR_PICKER_MIN_ACCESS_ROLE,
         fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
       });
       if (pageToken) params.set("pageToken", pageToken);
@@ -232,6 +286,20 @@ export class GoogleCalendarApi {
       ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
       ...(cal.primary ? { primary: cal.primary } : {}),
     };
+  }
+
+  /**
+   * Returns whether the connected account can write the exact calendar. A calendar that is not on
+   * the account's list (404) is reported as unwritable; any other failure is rethrown so a
+   * transient error is not mistaken for missing access.
+   */
+  async canWriteCalendar(calendarId: string): Promise<boolean> {
+    try {
+      return hasCalendarWriteRole(await this.getCalendar(calendarId));
+    } catch (error) {
+      if (error instanceof GoogleCalendarApiError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   /** Lists all events in the window, paginating fully. */
@@ -273,6 +341,9 @@ export class GoogleCalendarApi {
     timeMax: Date;
     timeZone?: string;
   }): Promise<PersonAvailability[]> {
+    if (opts.people.length > MAX_FREE_BUSY_CALENDARS) {
+      throw new Error(`At most ${MAX_FREE_BUSY_CALENDARS} people/calendars can be checked at once.`);
+    }
     let body = await this.#fetch<{
       calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: {reason?: string; domain?: string}[] }>;
     }>("/freeBusy", {
@@ -302,19 +373,25 @@ export class GoogleCalendarApi {
     });
   }
 
-  async hasFreeBusyAccess(calendarId: string): Promise<boolean> {
+  /**
+   * Whether the connected account can see each calendar's free/busy information, in order: false
+   * where Google reports the calendar `notFound`, and a throw for any other error it reports for
+   * one. Takes at most MAX_FREE_BUSY_CALENDARS calendars, as every free/busy query does.
+   */
+  async hasFreeBusyAccess(calendarIds: readonly string[]): Promise<boolean[]> {
     let timeMin = new Date();
-    let [availability] = await this.freeBusy({
-      people: [calendarId],
+    let availability = await this.freeBusy({
+      people: [...calendarIds],
       timeMin,
       timeMax: new Date(timeMin.valueOf() + 60_000),
     });
-    if (!availability || availability.error === "notFound") return false;
-    if (availability.error) {
-      throw new Error(
-        `Google Calendar free/busy access check failed for ${calendarId}: ${availability.error}`);
-    }
-    return true;
+    return availability.map(({email, error}) => {
+      if (error === "notFound") return false;
+      if (error) {
+        throw new Error(`Google Calendar free/busy access check failed for ${email}: ${error}`);
+      }
+      return true;
+    });
   }
 
   async createEvent(
@@ -329,24 +406,39 @@ export class GoogleCalendarApi {
     return calendarEventFromGoogle(created, { includeDescriptions: true });
   }
 
+  /**
+   * Applies `patch` to the event. With `ifMatch`, Google applies it only while the event is still
+   * at that etag and answers 412 otherwise.
+   */
   async patchEvent(
     calendarId: string,
     eventId: string,
     patch: Partial<GoogleCalendarEvent>,
     sendUpdates: CalendarSendUpdates = "all",
+    ifMatch?: string,
   ): Promise<CalendarEvent> {
     let updated = await this.#fetch<GoogleCalendarEvent>(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+        ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
+      },
     );
     return calendarEventFromGoogle(updated, { includeDescriptions: true });
   }
 
-  async getEvent(calendarId: string, eventId: string): Promise<CalendarEvent> {
+  async getEvent(calendarId: string, eventId: string): Promise<LiveCalendarEvent> {
     let event = await this.#fetch<GoogleCalendarEvent>(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}`,
     );
-    return calendarEventFromGoogle(event, { includeDescriptions: true });
+    return {
+      ...calendarEventFromGoogle(event, { includeDescriptions: true }),
+      ...(event.eventType ? { eventType: event.eventType } : {}),
+      ...(event.attendeesOmitted ? { attendeesOmitted: true } : {}),
+      ...(event.organizer ? { organizer: { self: event.organizer.self === true } } : {}),
+      ...(event.etag ? { etag: event.etag } : {}),
+    };
   }
 
   async deleteEvent(

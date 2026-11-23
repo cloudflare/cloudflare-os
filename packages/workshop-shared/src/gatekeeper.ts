@@ -80,11 +80,107 @@ export type VendorDescription = {
 }
 
 /**
- * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). `isAdmin` is supplied fresh
- * each time rather than baked into the account, since a user's admin status can change over time.
+ * Presentation-only snapshot of a Workshop user. Carries no authority and
+ * should not be used as an identity: it is not unique, not verified, and can
+ * change from one snapshot to the next.
+ */
+export type GatekeeperUserProfileSnapshot = {
+  /** The user's Workshop display name at the time of the snapshot. */
+  displayName: string;
+};
+
+/**
+ * One user selected in the Workshop-owned user picker, as delivered to the
+ * gatekeeper's management UI (see GatekeeperUserSelectionReceiver). The
+ * Workshop hands this to the iframe, not to the gatekeeper's server: the UI
+ * decides whether to send the ticket to its backend right away or to hold it in
+ * local form state and submit it later (within the ticket's lifetime).
+ */
+export type GatekeeperUserSelection = {
+  /**
+   * Opaque, single-use ticket for the selected user. It conveys nothing on its
+   * own and can only be redeemed through the `GatekeeperUserSelectionExchange`
+   * capability provided by the Workshop.
+   */
+  ticket: string;
+
+  /**
+   * Snapshot for rendering the selected user immediately; see
+   * GatekeeperUserProfileSnapshot.
+   */
+  profile: GatekeeperUserProfileSnapshot;
+};
+
+/**
+ * One connected account belonging to the selected Workshop user and vendor,
+ * rebuilt from Workshop-owned state when their ticket is redeemed. An exchange
+ * returns one such result per eligible account; the gatekeeper decides how to
+ * handle zero, one, or multiple results.
+ */
+export type RedeemedGatekeeperUserSelection = {
+  /**
+   * This account's vendor-specific identity capability
+   * (GatekeeperUser.getVerifier), exactly as `Gatekeeper.addObserver()`
+   * receives one. May be stored. No other vendor's accounts are returned.
+   */
+  verifier: Fetcher<GatekeeperUserVerifier>;
+
+  /**
+   * Presentation snapshot read afresh during redemption; see
+   * GatekeeperUserProfileSnapshot.
+   */
+  profile: GatekeeperUserProfileSnapshot;
+};
+
+/**
+ * Workshop-owned capability through which a gatekeeper account redeems the
+ * tickets its management UI received from the user picker. It is scoped to one
+ * selecting user and one UI-providing account (the one `startAppUi` was called
+ * on), so it can only resolve tickets that the Workshop minted for that scope.
+ */
+export interface GatekeeperUserSelectionExchange extends WorkerEntrypoint {
+  /**
+   * Redeem one user's selection ticket for all their eligible accounts with
+   * this vendor. Returns an empty array if there are none; multiple accounts
+   * are returned without choosing one. Only accounts with valid credentials and
+   * enabled deployment policy are included. The gatekeeper decides what zero or
+   * multiple accounts mean for its operation.
+   */
+  redeem(ticket: string): Promise<RedeemedGatekeeperUserSelection[]>;
+}
+
+/**
+ * The capability a gatekeeper's management UI passes to the Workshop host's
+ * `selectUsers()` to receive picker selections. Called once for every selected
+ * user, while the picker is still open.
+ */
+export interface GatekeeperUserSelectionReceiver extends RpcTarget {
+  /**
+   * Delivers one selected user. The receiver may act immediately (e.g. send the
+   * ticket to the gatekeeper's backend for redemption) or retain the selection
+   * and submit it later, while the ticket is valid. The picker marks the person
+   * as added only once this resolves; a rejection's message is shown to the
+   * user beside the selected user's name.
+   */
+  receive(selection: GatekeeperUserSelection): Promise<void>;
+}
+
+/**
+ * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). Supplied
+ * fresh each time rather than baked into the account: a user's admin status can
+ * change over time, and the exchange is scoped to the account whose UI is being
+ * opened.
  */
 export type AppUiContext = {
+  /** Whether the opening user is currently a deployment admin. */
   isAdmin: boolean;
+
+  /**
+   * Redeems the tickets this account's UI receives from the Workshop user
+   * picker (via the host's `selectUsers()`); see
+   * GatekeeperUserSelectionExchange.
+   */
+  userSelectionExchange: Fetcher<GatekeeperUserSelectionExchange>;
 }
 
 // The agent catalog is bounded discovery metadata a gatekeeper exposes via
@@ -170,6 +266,12 @@ export type AccountDescription = {
   grantedResourceUrlPatterns?: string[];
 
   /**
+   * Stable IDs of the independently grantable types enabled on this account. Takes precedence over
+   * the legacy pattern list, including when empty. Omit both lists only for a full/legacy grant.
+   */
+  grantedResourceTypeIds?: string[];
+
+  /**
    * If set, this account provides an agent singleton: a gatekeeper (see
    * GatekeeperUser.getSingletonGatekeeperClass) that the Workshop installs into the owner's gadgets
    * and whose session it auto-provides as an unnamed capsule. `tsType` names the session's interface
@@ -237,6 +339,14 @@ export type ResourceDescription = {
  * Mailbox") rather than a specific instance.
  */
 export type SupportedResource = {
+  /**
+   * Stable identifier for this type, unique within its vendor (e.g. "repository"). Never reuse
+   * it for another type or change it when the title or URL pattern changes. Older gatekeepers
+   * omit it; their exact URL pattern remains their identity until they advertise an ID. Supplying
+   * an ID also advertises support for IDs in configurator, creation and grant-selection calls.
+   */
+  id?: string;
+
   /** URLPattern string for matching URLs, e.g. "https://jira.cfdata.org/*" */
   urlPattern: string;
 
@@ -259,10 +369,106 @@ export type SupportedResource = {
   grantable?: boolean;
 
   /**
+   * Whether to offer this type in existing-resource connection pickers and requestConnection.
+   * Omitted means true. Set false for types that can only be created; existing bindings are
+   * unaffected.
+   */
+  connectable?: boolean;
+
+  /**
    * If true, an agent may create a new resource of this type with the createExternalResource tool
-   * (see GatekeeperVendor.createResource()).
+   * (see GatekeeperVendor.createResource()). Omitted means false.
    */
   creatable?: boolean;
+
+  /**
+   * With `creatable`: the approver of a creation of this type configures it, in the account they
+   * create it in, through that account's GatekeeperUser.startCreationConfigurator(). Callers gate
+   * on this flag rather than probing, since RPC stubs cannot report optional-method presence.
+   */
+  creationConfigurator?: boolean;
+
+  /**
+   * With `creationConfigurator`: what a configuration of this type is, as a noun phrase for the
+   * agent, e.g. "the URL of the Google Drive folder to create it in". It lets the agent suggest one
+   * with createExternalResource's `configuration`, which the approver's configurator opens on; a
+   * type without it takes no suggestion. The configuration is the vendor-defined URL the
+   * configurator returns, so it may carry several settings.
+   */
+  creationConfigurationDescription?: string;
+
+  /**
+   * With `creationConfigurator`: the content types (MIME) of files the user can save as a resource
+   * of this type through GatekeeperUser.saveFile(), best first, e.g. a word processor's document
+   * type lists the docx MIME type. The Workshop offers a save for a gadget export whose content
+   * type is exactly a listed one. Callers gate on this rather than probing.
+   */
+  savableFrom?: string[];
+
+  /**
+   * The stable ID of the type whose connect card this type appears on, instead of a card of its
+   * own. A card's types share one configurator, which may return a URL of any of them, so
+   * startResourceConfigurator must return that configurator for each of them.
+   *
+   * Each type is still granted separately: holding a grant for one does not cover the others. The
+   * configurator offers only the types the account has granted, and the Workshop asks for the rest
+   * in a single consent request, so a user connecting any type on the card is asked for all of them.
+   */
+  groupedWith?: string;
+}
+
+/** This type's vendor-scoped identity; the pattern fallback supports older gatekeepers. */
+export function getResourceTypeId(resource: SupportedResource): string {
+  return resource.id ?? resource.urlPattern;
+}
+
+/**
+ * Resolve a stored type reference within one vendor. An ID is authoritative; only records without
+ * one may fall back to an exact current URL pattern. Never infer a type from overlapping patterns.
+ */
+export function findResourceType(
+    resources: readonly SupportedResource[], resourceTypeId?: string, legacyUrlPattern?: string)
+    : SupportedResource | undefined {
+  return resourceTypeId !== undefined
+    ? resources.find(resource => getResourceTypeId(resource) === resourceTypeId)
+    : resources.find(resource => resource.urlPattern === legacyUrlPattern);
+}
+
+/**
+ * The account's granted type IDs. Legacy pattern grants translate only by exact current match;
+ * undefined retains the existing full-grant semantics, whereas an empty list grants nothing.
+ */
+export function getGrantedResourceTypeIds(
+    account: Pick<AccountDescription, "grantedResourceTypeIds" | "grantedResourceUrlPatterns">,
+    resources: readonly SupportedResource[]): string[] | undefined {
+  if (account.grantedResourceTypeIds !== undefined) return account.grantedResourceTypeIds;
+  return account.grantedResourceUrlPatterns?.flatMap(pattern => {
+    const resource = findResourceType(resources, undefined, pattern);
+    return resource ? [getResourceTypeId(resource)] : [];
+  });
+}
+
+/**
+ * Translate a type selector at an upgraded gatekeeper's legacy implementation boundary. Also
+ * accepts an exact current pattern for calls from an older Workshop; unknown selectors fail closed.
+ */
+export function resourceTypeUrlPattern(
+    resources: readonly SupportedResource[], resourceTypeId: string): string {
+  const resource = findResourceType(resources, resourceTypeId)
+    ?? findResourceType(resources, undefined, resourceTypeId);
+  if (!resource) throw new Error(`Unknown resource type: ${resourceTypeId}`);
+  return resource.urlPattern;
+}
+
+/** Resolve account-connect type IDs to the patterns used by a gatekeeper's OAuth scope mapping. */
+export function requestedResourceUrlPatterns(
+    options: GatekeeperConnectOptions | undefined, resources: readonly SupportedResource[])
+    : string[] | undefined {
+  if (options?.resourceTypeIds === undefined) return options?.resourceUrlPatterns;
+  if (options.resourceUrlPatterns !== undefined) {
+    throw new Error("Specify resourceTypeIds or legacy resourceUrlPatterns, not both.");
+  }
+  return options.resourceTypeIds.map(id => resourceTypeUrlPattern(resources, id));
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -284,27 +490,26 @@ export function stripTrailingSlashes(value: string): string {
  * Callers are responsible for handling the whole-instance catch-all ("https://*") separately
  * (e.g. as a fallback) — this function does not special-case it.
  *
- * Returns false if URLPattern is unavailable in the current runtime or the pattern is invalid.
+ * Returns false if URLPattern is unavailable in the current runtime, or the pattern or URL is
+ * invalid.
  */
 export function matchesResourceUrlPattern(pattern: string, url: string): boolean {
   const URLPatternCtor = (globalThis as { URLPattern?: new (p: string) => { test(u: string): boolean } }).URLPattern;
   if (!URLPatternCtor) return false;
   let compiled: { test(u: string): boolean };
+  let toggled: URL;
   try {
+    toggled = new URL(url);
     compiled = new URLPatternCtor(pattern);
   } catch {
     return false;
   }
-  // Try the URL as given plus the trailing-slash-toggled variant, since URLPattern distinguishes
-  // them and we don't know which form the pattern expects.
-  const candidates = url.endsWith('/') ? [url, stripTrailingSlashes(url)] : [url, url + '/'];
-  return candidates.some(candidate => {
-    try {
-      return compiled.test(candidate);
-    } catch {
-      return false;
-    }
-  });
+  // Also try the path with its trailing slash toggled, since URLPattern distinguishes the two and
+  // we don't know which form the pattern expects. The path, not the whole URL, since the URL may
+  // end in a query or fragment.
+  toggled.pathname = toggled.pathname.endsWith('/')
+    ? stripTrailingSlashes(toggled.pathname) : `${toggled.pathname}/`;
+  return compiled.test(url) || compiled.test(toggled.href);
 }
 
 export type ResolveRequestedResourceResult =
@@ -313,7 +518,7 @@ export type ResolveRequestedResourceResult =
 
 /**
  * Determines which SupportedResource an agent connection request would pre-select in the accept
- * modal, using the exact same precedence the modal uses:
+ * modal, using the modal's precedence:
  *   1. the resource whose urlPattern matches `resourceUrl` (ignoring the catch-all), else
  *   2. the whole-instance catch-all ("https://*") if the vendor offers one, else
  *   3. the sole resource, if the vendor offers exactly one.
@@ -325,10 +530,19 @@ export type ResolveRequestedResourceResult =
  *
  * This is the single source of truth shared by the backend (which enforces it at request time)
  * and the frontend (which pre-seeds from the resolved resource), so the two cannot diverge.
+ * Connection discovery callers must first exclude types marked connectable: false. Observer
+ * verification uses the full list, since an already-bound resource still needs its grants.
  */
 export function resolveRequestedResource(
     supportedResources: SupportedResource[],
-    resourceUrl: string | undefined): ResolveRequestedResourceResult {
+    resourceUrl: string | undefined, resourceTypeId?: string): ResolveRequestedResourceResult {
+  if (resourceTypeId !== undefined) {
+    const resource = findResourceType(supportedResources, resourceTypeId);
+    return resource ? { ok: true, resource } : {
+      ok: false,
+      reason: `Unknown resourceTypeId "${resourceTypeId}". Call listConnectableResources for available types.`,
+    };
+  }
   if (resourceUrl) {
     const matched = supportedResources.find(
       r => r.urlPattern !== 'https://*' && matchesResourceUrlPattern(r.urlPattern, resourceUrl));
@@ -385,9 +599,18 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * The concrete resource URL the configurator should pre-fill to (e.g. supplied by an AI agent's
    * connection request), together with this resource's urlPattern, or null for a fresh/manual
    * configuration. The iframe runtime uses this to seed the form's initial values so it opens
-   * pre-filled and editable.
+   * pre-filled and editable. For a creation configurator, `resourceUrl` is the configuration the
+   * agent suggested (createExternalResource's `configuration`), not a URL of
+   * `resourceUrlPattern`, the type being created.
    */
   getInitialResource(): Promise<{ resourceUrl: string; resourceUrlPattern: string } | null>;
+
+  /**
+   * The resource types (urlPatterns) the Workshop asks this configurator to choose among, so one
+   * that can return several (see SupportedResource.groupedWith) offers only these. For a creation
+   * configurator, this is the type being created.
+   */
+  getAcceptedResourceUrlPatterns(): Promise<string[]>;
 
   /**
    * Update the parent's iframe sizing to match content in selection/configuration UI.
@@ -413,6 +636,16 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * when user expects the connections modal to scroll.
    */
   forwardScroll(deltaX: number, deltaY: number): void;
+
+  /**
+   * Ask Workshop to make sure the account the configurator was opened for holds grants covering
+   * `resourceUrlPatterns`, asking the user for consent when it does not. Resolves true when the
+   * account already holds them. Otherwise Workshop opens the provider's consent pop-up and resolves
+   * false, and the configurator learns the outcome by re-checking through its own gatekeeper
+   * capability. Rejects when the request fails or Workshop sees the user cancel. Call it from a
+   * click in the iframe, so the browser allows the pop-up.
+   */
+  ensureResources(resourceUrlPatterns: string[]): Promise<boolean>;
 }
 
 /**
@@ -426,7 +659,16 @@ export type GatekeeperUiFrame = {
   /** Complete HTML for the UI. Workshop hosts it in a sandboxed iframe. */
   iframeHtml: string;
 
-  /** Capability exposed to the iframe for any RPCs needed by the UI. */
+  /**
+   * Capability exposed to the iframe for any RPCs needed by the UI. A gatekeeper app's (see
+   * AuthenticatedApi.getGatekeeperApp()) implements an interface its gatekeeper declares; a
+   * configurator's, that vendor's `*ConfiguratorUI` class in
+   * `packages/gatekeeper-<vendor>/src/`, which helps look up what fills the URL the configurator
+   * yields: for a resource configurator, the resource URL Overseer.newGatekeeper() takes (see
+   * AuthenticatedApi.startResourceConfigurator()); for a creation configurator, the
+   * CreationApproval.configuration Overseer.approveAction() takes (see
+   * AuthenticatedApi.startCreationConfigurator()).
+   */
   ui: RpcStub<RpcTarget>;
 }
 
@@ -437,12 +679,8 @@ export type GatekeeperUiFrame = {
 export type ResourceConfiguratorFrame = GatekeeperUiFrame;
 
 /**
- * The root interface of an Adapter, as provided to the Gadget Workshop.
- *
- * An installation of the Gadget Workshop is provided with a set of Adapters to allow it to
- * interface with other services.
  * Options for GatekeeperVendor.connectAccount(). `scopes` selects the access tier (see that
- * method). `resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+ * method). `resourceTypeIds`, if given, limits the connection to the authorization needed for
  * those grantable resource types; if omitted, authorization for all the vendor's resource types
  * is requested. An **empty array is meaningful and distinct from omitting it**: it requests no
  * resource authorization at all, which is how a caller connects an account for a non-resource
@@ -450,6 +688,9 @@ export type ResourceConfiguratorFrame = GatekeeperUiFrame;
  */
 export type GatekeeperConnectOptions = {
   scopes?: "auth" | "full";
+  /** Stable vendor-scoped type IDs to grant; omitted means all, [] means none. */
+  resourceTypeIds?: string[];
+  /** Legacy Workshop callers send exact current patterns. Do not combine with resourceTypeIds. */
   resourceUrlPatterns?: string[];
 };
 
@@ -472,6 +713,7 @@ export type ConnectHandoff = {
   ticket: string;
 };
 
+/** Root interface of a gatekeeper Worker: describes its service and connects user accounts. */
 export interface GatekeeperVendor extends WorkerEntrypoint {
   /** Get display info for the service, suitable for display to a user. */
   describe(): Promise<VendorDescription>;
@@ -510,7 +752,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    *     transient — after `complete()` lets the caller read getAuthenticatedEmail(), the gatekeeper
    *     discards it. Vendors without `providesAuth` ignore this and always use their full scopes.
    *
-   * `options.resourceUrlPatterns`, if given, limits the connection to the authorization needed for
+   * `options.resourceTypeIds` (or legacy `options.resourceUrlPatterns`), if given, limits the
+   * connection to the authorization needed for
    * those grantable resource types. If omitted, authorization for all of the vendor's resource
    * types is requested. An empty array is not the same as omitting it: it requests no resource
    * authorization, so a vendor must treat `[]` as "none" rather than falling back to "all" -- doing
@@ -521,7 +764,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 
   /**
    * Get the list of resource types this vendor supports. Each entry describes a category of
-   * resource the vendor can provide access to, along with a URL pattern for matching.
+   * resource the vendor can provide access to, along with a URL pattern for matching. Each type's
+   * connectable (default true) and creatable (default false) flags control which flows offer it.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
    * query, which the gatekeeper can consider in deciding what resources are available. If it
@@ -562,19 +806,52 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   createAccount?(): Promise<Fetcher<GatekeeperUser>>;
 
   /**
-   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceUrlPattern`,
+   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceTypeId`,
    * titled `title`, and the `action` that creates it. Like createAccount(), this takes no user
    * identity, so the class belongs to no account: it simulates the resource locally, with no
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
-   * Present only on vendors with a `creatable` resource type.
+   * While the creation is pending, reads are audited but record no observer requirements (see
+   * ObservationDescription.subresources).
+   * Present only on vendors with a `creatable` resource type. The `action` (the creation card) sets
+   * `autoApprovable: false`: approving it means choosing the account to create the resource in.
    */
-  createResource?(resourceUrlPattern: string, title: string): Promise<{
+  createResource?(resourceTypeId: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
     action: ActionDescription;
   }>;
+
+  /**
+   * The version tag of the running version of this gatekeeper's Worker, from its
+   * `CF_VERSION_METADATA` binding, or undefined when it has none. Implement it as
+   * `workerVersionTag(this.env)`. The Workshop compares it with the tag the service that installed
+   * the deployment recorded, to tell its admins whether the deployment was modified. It is
+   * deliberately not part of VendorDescription, which every signed-in user receives: the tag
+   * names the release and the installation, so it is for the deployment's admins only. Since RPC
+   * stubs cannot report optional-method presence, the Workshop calls it on every vendor and reads
+   * a vendor without it (a call that throws) as one whose version is unknown.
+   */
+  versionTag?(): Promise<string | undefined>;
+}
+
+/**
+ * The version tag of the running version of a Worker, read from the `CF_VERSION_METADATA`
+ * version-metadata binding in its `env`, or undefined when it has no such binding or the tag is
+ * empty. Never throws. Takes `env` as a plain object because no public gatekeeper config declares
+ * the binding: the service that installs a deployment adds it.
+ */
+export function workerVersionTag(env: object): string | undefined {
+  try {
+    if (!("CF_VERSION_METADATA" in env)) return undefined;
+    const metadata = env.CF_VERSION_METADATA;
+    if (typeof metadata !== "object" || metadata === null || !("tag" in metadata)) return undefined;
+    const tag = metadata.tag;
+    return typeof tag === "string" && tag !== "" ? tag : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface GatekeeperConnectCallback extends WorkerEntrypoint {
@@ -669,11 +946,36 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
   /**
    * Get the UI used to choose a specific resource.
-   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   * `resourceTypeId` is the type's stable vendor-scoped ID. Older gatekeepers without IDs receive
+   * their exact current pattern instead. Upgraded implementations accept that legacy form too.
    */
   startResourceConfigurator(
-    resourceUrlPattern: string,
+    resourceTypeId: string,
   ): Promise<ResourceConfiguratorFrame>;
+
+  /**
+   * Get the UI in which the approver of a creation of the creatable type `resourceTypeId`
+   * configures it in this account, e.g. where to create it. The frame starts on the vendor's
+   * default, or on the configuration the agent suggested (see ResourceConfiguratorHost.
+   * getInitialResource()), and its collectResourceUrl() returns the vendor-defined value passed to
+   * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
+   * With `purpose` "save" (omitted means "create") the user is instead choosing where saveFile()
+   * puts a new resource, there is no agent, and the frame is ready only once this account can save
+   * there. Present when the type sets SupportedResource.creationConfigurator.
+   */
+  startCreationConfigurator?(resourceTypeId: string, purpose?: "create" | "save")
+      : Promise<GatekeeperUiFrame>;
+
+  /**
+   * Save `file`, of the MIME type `contentType`, as a resource of the type `resourceTypeId` in
+   * this account, at the user's own request: no agent is involved and nothing is simulated.
+   * `destination` is either what the creation configurator returned for purpose "save", which
+   * makes a new resource named `name`, or the URL an earlier save returned, which replaces that
+   * resource's content and keeps its name. Returns the saved resource's URL. Present when the type
+   * sets SupportedResource.savableFrom, which lists `contentType`.
+   */
+  saveFile?(resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }>;
 
   /**
    * Revoke this account connection. The GatekeeperUser, and all Gatekeepers created through it,
@@ -737,7 +1039,7 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * SECURITY: As with reconnect(), any returned URL is a bearer capability, so the flow must stage
    * the widened grant rather than write it live, and the URL must include a cryptographic nonce.
    */
-  ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}>;
+  ensureResources(resourceTypeIds: string[]): Promise<{url?: string}>;
 
   // ---------------------------------------------------------------------------
   // Singleton / management-UI capabilities. Present only on accounts created by
@@ -760,8 +1062,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   getSingletonGatekeeperClass?(): Promise<DurableObjectClass<Gatekeeper<any>>>;
 
   /**
-   * The account's full-page management UI (iframe HTML + ui capability). `context.isAdmin` is passed
-   * fresh per open (not baked into the account) so admin-gated features reflect current status.
+   * The account's full-page management UI (iframe HTML + ui capability). `context` is passed fresh
+   * per open (not baked into the account): `isAdmin` so admin-gated features reflect current
+   * status, and `userSelectionExchange` scoped to this account, through which the account redeems
+   * the tickets its UI receives from the Workshop user picker (GatekeeperUserSelection).
    */
   startAppUi?(context: AppUiContext): Promise<GatekeeperUiFrame>;
 
@@ -771,8 +1075,11 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
 /**
  * Opaque object representing one of a user's accounts. Minted by `GatekeeperUser`, and then passed
- * to `Gatekeeper.addObserver()`, to verify whether the user is able to access a particular
- * Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a resource with the account's authority.
+ * to `Gatekeeper.addObserver()` or `Gatekeeper.verifyObserverAccess()`, to verify whether the user
+ * is able to access a particular Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a
+ * resource with the account's authority. Also returned from
+ * `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible accounts with the
+ * same vendor.
  *
  * At present, this interface has no methods, because it is merely meant to be passed back to the
  * Gatekeeper that created it.
@@ -780,12 +1087,40 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * IMPLEMENTATION NOTE: As of this writing, there is no runtime-supported way to "unwrap" a
  * `Fetcher` passed back to its implementer in order to extract the underlying `props`. This will
  * be added eventually. For now, we recommend that the `GatekeeperUserVerifier` implement a public
- * but non-standard method which the same gatekeeper's `addObserver()` and `applyCreation()`
- * implementations can call. The overseer promises only to pass a `GatekeeperUserVerifier` object
- * back to the same gatekeeper that created it, so they can then call that non-standard method and
- * trust the results.
+ * but non-standard method which the same gatekeeper's `addObserver()`, `verifyObserverAccess()`
+ * and `applyCreation()` implementations can call. The overseer promises only to pass a
+ * `GatekeeperUserVerifier` object back to the same gatekeeper that created it, so they can then
+ * call that non-standard method and trust the results.
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
+
+/** Status of a Git pack stream in its producing gatekeeper. */
+export type GitPullStatus =
+  | { state: "streaming" | "complete" | "canceled" }
+  | { state: "failed"; message: string };
+
+/** One-shot pack stream with an RPC-visible status independent of stream exceptions. */
+export interface GitPullTransfer extends RpcTarget {
+  /** Claim the raw PACK stream exactly once; consume it to EOF or cancel it. */
+  stream(): Promise<ReadableStream<Uint8Array>>;
+  /** Snapshot; a consumer that fails before end-of-stream may still see `streaming`. */
+  status(): Promise<GitPullStatus>;
+  /**
+   * How the pack changes the requester's shallow boundary, as reported by the provider before
+   * the pack itself. Both lists are empty unless the pull limited `commitHistory` or passed
+   * `shallow` commits. A native Git consumer needs this alongside the pack, which doesn't carry
+   * it.
+   */
+  shallowInfo(): Promise<GitShallowInfo>;
+}
+
+/** How a pull changes the requester's shallow boundary: Git's `shallow-info` section. */
+export type GitShallowInfo = {
+  /** Commits the pack includes without their parents. */
+  shallow: GitOid[];
+  /** Commits from the pull's `shallow` hint whose history the pack now includes. */
+  unshallow: GitOid[];
+};
 
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
@@ -818,11 +1153,12 @@ export interface Gatekeeper<Session> extends DurableObject {
   getTypeScriptTypes(): Promise<string>;
 
   /**
-   * Catalog of action kinds this gatekeeper MAY auto-apply without per-action review, for
-   * pre-approval UIs that must list them before any action has been submitted. Each entry is the
-   * {tag, label} an action of that kind carries on its ActionDescription.actionKind. This is the
-   * *potential* set; the per-action `autoApprovable` verdict is still the binding gate at apply
-   * time. Gatekeepers with no auto-approvable actions return [].
+   * Catalog of action kinds whose actions may carry `autoApprovable: true`, for pre-approval UIs
+   * that let a user enable a rule for a kind before any such action has been submitted. Each entry
+   * is the {tag, label} an action of that kind carries on its ActionDescription.actionKind. The
+   * catalog approves nothing by itself: the user must enable a rule for the kind, and each submitted
+   * action's own `autoApprovable` verdict still gates it. Gatekeepers with no auto-approvable
+   * actions return [].
    */
   getAutoApprovableActions(): Promise<ActionKind[]>;
 
@@ -889,6 +1225,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * access. However, if the Gadget itself carefully reads only emails addressed to a particular
    * mailing list, then it is OK to reveal those observations to any member of the mailing list.
    * The gatekeeper should ideally permit observers who are mailing list members.
+   *
+   * The Workshop calls this for every connection, whether or not its observations report
+   * `ObservationDescription.subresources`, and checks the subresources they recorded itself,
+   * through `verifyObserverAccess()`: a collaborator must pass both. So a gatekeeper need not
+   * track here what its reads report as subresources, but must keep enforcing everything else:
+   * any binding-wide requirement its reads rely on (such as tenant membership), the reads that
+   * omit subresources, and whatever it recorded before it began reporting them.
    */
   addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
 
@@ -902,12 +1245,39 @@ export interface Gatekeeper<Session> extends DurableObject {
    */
   removeObserver(id: string): Promise<void>;
 
+  /**
+   * Required of a gatekeeper whose observations report `ObservationDescription.subresources`:
+   * which of `observers` can read every one of `subresources` now. See
+   * `ObservationDescription.subresources` for the Workshop's audience and scheduling policy.
+   * Answers must not depend on whether the check is for read authorization or admission; the
+   * Workshop does not identify which.
+   *
+   * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
+   * unique within one call. It is not a cache key: the same observer may arrive later with a
+   * different account's verifier. Each `verifier` was minted by this gatekeeper's vendor (see
+   * `GatekeeperUserVerifier`) and is meant for this call only. A call carries at most 10,000
+   * subresource IDs, never none; the Workshop splits larger checks.
+   *
+   * `allowedObserverIds` lists the IDs of the observers whose account can read every one of
+   * `subresources`; every observer it omits is denied. Throw if access cannot be determined
+   * (expired credentials, provider outage). A throw, a malformed result, or an ID that was not
+   * passed in denies every observer in the call.
+   *
+   * The Workshop may call this while one of this gatekeeper's own `authorizeObservation()` calls
+   * is pending, so it must not wait on anything a read holds while it awaits authorization.
+   */
+  verifyObserverAccess?(
+    observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+    subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}>;
+
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Request that the gatekeeper populate the git cache with the given objects (e.g., a git
-   * commit), as well as related objects (e.g., the commit's file tree, parents, etc.).
+   * Stream a self-contained Git pack containing the requested objects and related objects
+   * selected by `options`. The stream contains raw PACK bytes, not Git protocol framing, and
+   * must not require delta bases from an earlier fetch.
    *
    * The overseer will only ever pull objects that it knows the gatekeeper has, for one of the
    * following reasons:
@@ -917,20 +1287,29 @@ export interface Gatekeeper<Session> extends DurableObject {
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * The Gatekeeper must put() each of the given objects into the cache (or throw an exception),
-   * with one carve-out: a requested *blob* that the hints' own `filterBlobSize` suppressed is
-   * reported by returning successfully without it, not by throwing. The overseer surfaces that
-   * absence to the agent as an oversized-file read error.
+   * Each requested object must be included (unless it is reachable from `options.haves`) or the
+   * stream must fail. The returned RPC capability also reports the terminal status: Workers RPC
+   * can replace a stream's original exception with a generic disconnect, so consumers must check
+   * `status()` after ingestion fails to recover the producer's error. After draining the stream,
+   * require `complete` before accepting the transfer. Dispose the capability when finished. A
+   * filter may omit objects only beyond those requested: the overseer requests an exact blob with
+   * no `filterBlobSize`, and stores blobs of any size.
    *
-   * The Gatekeeper MAY also put other related objects into the cache. `hints` provides hints
-   * about what objects the caller would like to have prefetched into the cache, but the
-   * gatekeeper is not technically required to honor these hints. (Failing to prefetch related
-   * objects may lead to performance problems, however.)
+   * With no filters, the pack must contain the complete trees and blobs for the requested
+   * commits. This supports native Git as well as lazy cache population. Consumers own their
+   * storage/transfer limits.
+   *
+   * The workspace also pulls history it has never stored, to serve native Git in a container
+   * that has mounted a worktree (see `WorktreeReplicator.gitPull()`). Such pulls pass the
+   * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
+   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of a
+   * commit the gatekeeper is known to have, with a commit-only pull (`filterTreeDepth: 0`) of the
+   * commit whose `haves` are those known commits: an empty pack means it is an ancestor.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
+  gitPull?(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
@@ -968,6 +1347,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Indicates that an action was rejected by the user. The gatekeeper should clean up any
    * associated storage.
    *
+   * Rejecting withdraws the action and must succeed even when the provider outcome of an earlier
+   * `applyAction()` is uncertain: refusing would leave the user no way to clear it. The gatekeeper
+   * stops tracking the action; an effect that already landed at the provider stays.
+   *
    * If the returned `restart` flag is true, rejecting this action requires restarting the Gadget.
    * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
    * the session may be in a state that is difficult to roll back without confusing the Gadget.
@@ -978,16 +1361,22 @@ export interface Gatekeeper<Session> extends DurableObject {
   /**
    * For a gatekeeper from GatekeeperVendor.createResource(): a user approved its creation, so
    * create the resource at the provider through the account they chose, whose verifier is
-   * `creator`. Returns the class to use from then on, imbued with the real resource as that
-   * account's getGatekeeperClassFor() would return it, and the resource's URL. The Overseer
-   * restarts this facet on that class before anything else reaches it; storage carries over, so
-   * actions queued against the simulated resource apply through the new class. Should be
-   * idempotent, for the same reason as applyAction().
+   * `creator`, configured as `configuration` says: what the approver chose in that account's
+   * GatekeeperUser.startCreationConfigurator(), or null for no choice, meaning the vendor's
+   * default. It comes from the approver's client, so treat it as untrusted input. Returns the class
+   * to use from then on, imbued with the real resource as that account's getGatekeeperClassFor()
+   * would return it, and the resource's URL. The Overseer restarts this facet on that class before
+   * anything else reaches it; storage carries over, so actions queued against the simulated
+   * resource apply through the new class. Should be idempotent, for the same reason as
+   * applyAction(). If an earlier attempt may already have created the resource, keep that
+   * attempt's account, and bring the resource to `configuration` or throw: actions queued behind
+   * the creation apply as soon as this returns. Only that account's own approver may change it, so
+   * if `creator` is another account, throw unless it already is as `configuration` says.
    *
    * If the user rejects the creation instead, the Overseer removes this gatekeeper, rejecting
    * its queued actions without calling rejectAction(): its storage is deleted with it.
    */
-  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>)
+  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}>;
 
   /**
@@ -1026,6 +1415,9 @@ export interface ObservationAuthorizer extends RpcTarget {
    * remote service, so that the description can include details about the actual data. As long
    * as the operation is strictly read-only, and the call is made before actually returning any
    * data to the gadget, this is OK.
+   *
+   * When `description.subresources` is present, returning normally also means the Workshop
+   * recorded them and completed the checks required by `ObservationDescription.subresources`.
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
 
@@ -1039,6 +1431,39 @@ export interface ObservationAuthorizer extends RpcTarget {
    * of possession.
    */
   getGitCache(): Promise<GitCache>;
+
+  /**
+   * Throws unless this session can still act: for a session the agent's code opened, unless that
+   * code execution (an `executeCode` call) is still running and the user hasn't stopped its turn;
+   * for a hook firing, unless the hook is still enabled; for any session, unless its gatekeeper
+   * connection still exists. A broken stub (say, because the workspace restarted) throws too.
+   * Either way, the session is over.
+   */
+  requireLive(): Promise<void>;
+
+  /**
+   * Holds `watcher` until this session ends, then releases it, which runs its
+   * `[Symbol.dispose]()`. That happens however the session ends. Most importantly, if the
+   * workspace crashes or restarts, its stub is dropped, so the runtime disposes `watcher` without
+   * the workspace's help. It is also released when the session's execution finishes or times
+   * out, or the user stops its turn (even if the execution's code is still running, since running
+   * code can't be interrupted); when its hook is disabled or deleted; when its gatekeeper
+   * connection is removed; or when the gatekeeper releases this authorizer. Use it to stop work
+   * the session started, such as a container command. If the session has already ended,
+   * `watcher` is released at once.
+   *
+   * Dispose of the returned handle to stop watching; `watcher` is then released at once. A handle
+   * whose connection to the workspace breaks is disposed too, so `watcher` is released then.
+   */
+  watchSession(watcher: RpcStub<RpcTarget>): Promise<RpcStub<RpcTarget>>;
+
+  /**
+   * The ID of the agent's code execution (an `executeCode` call) that opened this session, the
+   * same for every session it opens, on any gatekeeper; undefined for a session with none (a
+   * user's, a gadget's, a hook firing's). It only identifies the execution: no API accepts it as
+   * proof of anything.
+   */
+  getExecutionId(): Promise<string | undefined>;
 }
 
 /**
@@ -1219,6 +1644,7 @@ export interface ApprovalQueue extends ObservationAuthorizer {
         description: HookDescription): Promise<void>;
 }
 
+/** What a gadget is about to read from an external service, for `authorizeObservation()`. */
 export type ObservationDescription = {
   /** Brief one-line summary of the observation, like an email subject line, to display in a list. */
   title: string;
@@ -1251,7 +1677,9 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
+   *   deployment admin trusts with such data (none by default) or, where the admin allows it, a
+   *   URL a user approves, and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
    *   action's full `description` and is responsible for checking it contains none of the
    *   restricted data. An action whose description is not complete
@@ -1297,6 +1725,35 @@ export type ObservationDescription = {
    * the observation.
    */
   excludeObservers?: string[];
+
+  /**
+   * The IDs of everything this disclosure depends on that might restrict who may see it, which the
+   * Workshop checks collaborators against through this gatekeeper's
+   * `Gatekeeper.verifyObserverAccess()`, so a gatekeeper reporting them must implement it. Before
+   * authorizing the read, the Workshop checks every collaborator who can see the chat or gadget
+   * that made it and holds a live session, refusing the read if any is denied; it then records the
+   * IDs and checks them again at each collaborator's admission, alongside
+   * `Gatekeeper.addObserver()`, which is where a collaborator without a live session is first
+   * checked against them.
+   *
+   * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
+   * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
+   * with a JavaScript `length` of 1–2048 (UTF-16 code units), and a single observation may report
+   * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
+   * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
+   * nothing restricts it. A binding-wide requirement every read relies on (such as tenant
+   * membership) belongs in `Gatekeeper.addObserver()`, which runs at every admission.
+   *
+   * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
+   * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user
+   * session with no known chat).
+   * Attribution stays with the original authorizer, including child sessions that reuse it;
+   * passing capabilities or data between contexts does not transfer requirements.
+   *
+   * Absent, the Workshop checks nothing for this read: the gatekeeper's own `addObserver()` and
+   * `excludeObservers` must cover it, as they did before this field existed.
+   */
+  subresources?: string[];
 }
 
 /** The language a `text` action field is written in, named so the approver knows how it is read. */
@@ -1450,7 +1907,8 @@ export type ActionDescription = {
    * Author's verdict that this specific action is safe to auto-apply without human review, IF the
    * user has opted in to auto-approving this action's kind (see `actionKind`). Only the gatekeeper
    * author knows whether a given edit is benign vs. destructive, so this gate is set per-action.
-   * Absent -> never auto-approvable, even if a matching rule exists.
+   * `true` is the norm; the `write-gatekeeper` skill lists when an action must be `false`, and
+   * prefers computing the verdict from the payload over a blanket `false`.
    *
    * TODO: A single opaque boolean isn't the ideal long-term shape. Eventually the gatekeeper should
    * describe the *nature* of the action -- e.g. destructive vs. additive, reversible vs. not,
@@ -1458,7 +1916,7 @@ export type ActionDescription = {
    * policy decide whether auto-approval is allowed, rather than the gatekeeper author hard-coding
    * that judgement here.
    */
-  autoApprovable?: boolean;
+  autoApprovable: boolean;
 
   // ----------------------------------------------------------------------------
   // Policy hints
@@ -1482,8 +1940,9 @@ export type ActionDescription = {
 
   /**
    * The action's kind (stable tag + display label), or absent for actions that can't be matched by
-   * any tag-keyed rule -- those always require manual approval. `actionKind.tag` is what auto-
-   * approval rules and the future policy engine key on; `actionKind.label` is shown in the UI.
+   * any tag-keyed rule -- those always require manual approval. Required when `autoApprovable` is
+   * true. `actionKind.tag` is what auto-approval rules and the future policy engine key on; users'
+   * rules are stored under it, so a tag is never renamed. `actionKind.label` is shown in the UI.
    */
   actionKind?: ActionKind;
 }
@@ -1573,6 +2032,18 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
+ * The size, in bytes, above which an RPC does not return a git object's (or file's) content
+ * whole. `GitCache.get()` returns a `Uint8Array` for an object of at most this many bytes, and a
+ * `ReadableStream` for a larger one. `Overseer.readFilesAtCommit()` (see
+ * `@gadgets/workshop-shared/api`) names a larger file by its blob, to read as a stream.
+ *
+ * This is a choice of representation, not a storage limit: no object is refused for its size.
+ * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
+ * row's worth.
+ */
+export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
+
+/**
  * Interface to the workspace's git object cache, as exposed to one gatekeeper.
  *
  * Each workspace maintains a cache of git objects, i.e. commits and their file trees. This cache
@@ -1617,7 +2088,12 @@ export interface GitCache extends RpcTarget {
    * gatekeeper's view (see the interface doc for the view rules).
    *
    * `content` is strictly the object payload. It does NOT include the `<type> <size>\0` header,
-   * even though that header is included in the hash.
+   * even though that header is included in the hash. It is a `Uint8Array` iff the object's size
+   * is at most `MAX_BUFFERED_BLOB_SIZE` (1 MiB); otherwise a byte stream of the payload, which the
+   * caller must consume or cancel. The rule is by size, not type: trees and commits are buffered
+   * in practice, but a tree of a very large directory can exceed the limit, so a caller narrows
+   * with `instanceof Uint8Array` whatever it fetches. A caller that has no use for a large object
+   * cancels the stream.
    *
    * An object that is pending push to this gatekeeper but not locally cached is pulled through
    * from its recorded source on demand, so a queued cross-remote push can be simulated as if it
@@ -1627,7 +2103,8 @@ export interface GitCache extends RpcTarget {
    * related objects up front rather than faulting once per `get()`. When omitted, the pull
    * requests exactly this object, with its type taken from recorded metadata.
    */
-  get(id: GitOid, hints?: GitPullHints): Promise<{type: GitObjectType, content: Uint8Array} | null>;
+  get(id: GitOid, hints?: GitPullHints)
+      : Promise<{type: GitObjectType, content: Uint8Array | ReadableStream<Uint8Array>} | null>;
 
   /** Return whether the given object exists, under the same scoped view as `get()`. */
   has(id: GitOid): Promise<boolean>;
@@ -1639,7 +2116,8 @@ export interface GitCache extends RpcTarget {
   stat(id: GitOid): Promise<{type: GitObjectType, size: number} | null>;
 
   /**
-   * Add an object to cache. Returns the computed oid.
+   * Add an object to cache. Returns the computed oid. There is no size limit, but the object
+   * travels whole in one RPC message.
    *
    * As with `get()`, the `content` must NOT include the `<type> <size>\0` header.
    *
@@ -1680,8 +2158,8 @@ export interface GitCache extends RpcTarget {
 
   /**
    * Consumes a standard git packfile, storing each object in it as `put()` would, and returns
-   * the oids of those now in the cache. An object too large to store is measured and left out of
-   * the result rather than thrown on, which is how a `gitPull()` notices it.
+   * the oids of those now in the cache: every object the pack carries, of any size. Large blobs
+   * are stored as they stream in, never held whole.
    *
    * The pack is decoded in one pass, so a delta must follow its base, as in every pack
    * `git upload-pack` sends. Objects are stored as the pack streams in, and its commits last,
@@ -1714,8 +2192,8 @@ export interface GitCache extends RpcTarget {
 /**
  * Hints provided to `Gatekeeper.gitPull()` which may help the gatekeeper decide how much to pull.
  *
- * Hints are advisory: honoring them well affects performance, not correctness (with one
- * exception -- see `Gatekeeper.gitPull()`'s carve-out for blobs suppressed by `filterBlobSize`).
+ * Filters may over-fetch, but must not omit objects when no filter is requested. See
+ * `Gatekeeper.gitPull()` for the complete-tree and self-contained-pack requirements.
  *
  * The options are designed with the details of the standard git protocol in mind.
  */
@@ -1740,7 +2218,25 @@ export type GitPullHints = {
   commitHistory:
     | { kind: "full" }
     | { kind: "depth", depth: number }
-    | { kind: "since", since: Date };
+    | { kind: "since", since: Date }
+    /** `depth` more commits beyond the requester's `shallow` commits (Git's `--deepen`). */
+    | { kind: "relative", depth: number };
+
+  /**
+   * Commits the requester already has, along with their history down to its `shallow` commits.
+   * The pack leaves out objects reachable from them, but stays self-contained: no object in it
+   * is a delta against one left out. The workspace's Git cache never sets this, because it may
+   * hold a commit without its trees (from a filtered pull). It is set when the workspace serves
+   * native Git, which negotiates what it has (see `Gatekeeper.gitPull()`).
+   */
+  haves?: GitOid[];
+
+  /**
+   * The requester's shallow boundary: commits it has without their parents, as in Git's
+   * `shallow` lines. The provider needs it to deepen the history (see `commitHistory`) and to
+   * interpret `haves`.
+   */
+  shallow?: GitOid[];
 
   /**
    * Omit blobs of at least this size. 0 = do not fetch blobs at all.

@@ -170,11 +170,10 @@ touches `workshop-backend` or `workshop-shared`: gatekeepers are discovered from
   submit, apply and reject invalidate caches but never edit them.
 
 - **One observer rule for all four bindings: public, or the owner's.** Public posts and profiles
-  are readable by any collaborator with their own X account, which observers must connect anyway.
-  Bookmarks, likes, mute state, private Lists and anything written by a protected account are
-  **owner-private**: only an observer connected as the *same* X user may see them — which is
-  exactly a team sharing a brand account. Strategy C over one synthetic collection, with a
-  per-binding baseline check (§7).
+  report no subresources, so the gatekeeper restricts no collaborator from them (the Workshop still
+  asks each for an X account). Bookmarks, likes, mute state, private Lists and anything written by
+  a protected account are **owner-private**: they report `user/<id>`, the pinned X user, which only
+  an observer connected as the *same* X user may see — exactly a team sharing a brand account (§7).
 
 - **Rate limits and exhausted credits are their own errors.** Neither is a credential failure and
   neither ever reaches `credentialsExpired`; both messages are display-safe and say when to retry,
@@ -212,8 +211,7 @@ touches `workshop-backend` or `workshop-shared`: gatekeepers are discovered from
 - **`gatekeeper-spotify`**: read-time overlays for library and follow state and provisional `~N`
   playlists (`spotify.ts:1493-1638`). Not its refresh path, which has no single-flight.
 - **Google Chat** (`gatekeeper-google/src/chat.ts`): posting with approvals — pending-message
-  identity, attempt markers, refusing rejection once a send was attempted, revert as delete,
-  per-kind `autoApprovable`.
+  identity, attempt markers, revert as delete, per-kind `autoApprovable`.
 - **`gatekeeper-confluence`**: agent-supplied bytes captured in an `ActionFileStore` and uploaded
   at apply (`confluence.ts:1176-1186`, `confluence-actions.ts:172-190`).
 - **Hooks**: `gatekeeper-github/src/github-hooks.ts` and `gatekeeper-gitlab/src/gitlab-hooks.ts` —
@@ -395,11 +393,13 @@ OpenAPI `2.170`'s `post.fields` enum lists `note_post` and omits `author_id` and
   reading. A first segment X reserves (`home`, `explore`, `search`, `notifications`, `messages`,
   `settings`, `compose`, `i`, …) is never a handle. Anything else throws. Nothing widens silently,
   unlike Spotify's "any other URL is the account".
-- **Descriptions.** Account: title `@username`, snippet the display name. Post: title
-  `Post by @author`, snippet its first 100 characters. Profile: title `@username`, snippet the
-  display name and follower count. List: its name, `List by @owner · N members`. Whatever a
-  description needs is fetched once and kept in the facet, since `describe()` must not cost on
-  every open.
+- **Descriptions.** Account: title `@username`, snippet the display name. Profile: title
+  `@username`, snippet the display name and follower count, fetched once and kept in the facet
+  because describing it costs a read. Post: title `X post <id>`; List: `X List <id>`, both with
+  canonical ID-based links and no snippet or X request. Descriptions are visible outside read
+  authorization, so they must not reveal post text or private List metadata. Legacy Post/List
+  descriptions are discarded on describe, including their old cached snippets; session reads
+  return the data only after authorizing its subresources (§7).
 - **Configurators.** *Account*: a static confirmation, like Spotify's, whose `resourceUrl()` is
   the constant `https://x.com/settings/account`. *Post*: a `TextInput` for the post URL, parsed and
   canonicalized in the frame with no RPC (a preview would cost a read);
@@ -697,8 +697,8 @@ returns `{restart: true}` when anything was simulated on top of it.
 `{attemptedAt, textDigest}` before `POST /2/tweets`. An attempt whose outcome is unknown is
 reconciled on the next apply with `GET /2/users/:id/tweets?start_time=<attemptedAt>&max_results=5`
 — a read for the gatekeeper's own purposes, so not an observation — binding an exact text match
-and otherwise posting. Rejecting an attempted create is refused as Chat does ("this may already be
-on X — approve it again, then delete it").
+and otherwise posting. Rejecting an attempted create withdraws it and forgets the attempt; a post X
+already made stays on the account.
 
 **Simulation** — overlays replayed in submission order over each read:
 
@@ -727,7 +727,6 @@ previous grant's rows; every TTL is far inside X's 24-hour deletion rule:
 | List metadata | 15 min |
 | A listing page, keyed by endpoint + params + token | 60 s — absorbs gadgets polling one first page |
 | Identity (account DO) | 24 h |
-| Observer verdicts, positive only (§7) | 1 h |
 
 **Media.** `ActionFileStore` with `maxFileBytes` 5 MiB and `maxTotalBytes` 64 MiB across pending
 posts, `pruneUnreferenced` before each capture, refs released when a record retires. Apply uploads
@@ -759,22 +758,50 @@ Each read is classified before it is authorized:
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
   their posts are hidden), public Lists, and an unprotected account's followers and following.
 
-Owner-private reads authorize against one synthetic collection, `owner`; public reads use the
-`baseline` scope; the kit's `trackedCollectionObservers` does the bookkeeping.
+Every read reports what restricts who may see it as kernel-checked `subresources`
+(`docs/observers.md` §10): an owner-private read reports `user/<id>`, the numeric ID X assigned
+the user the connection is pinned to (never a handle, which can change); a public read reports
+`[]`. Cursor pages, pages served from the cache and empty pages report one or the other too, each
+page judged when it is fetched. Only a walk over the session's own pending drafts, which discloses
+nothing from X, authorizes no observation.
 
-| Binding | Strategy | `verifyBaseline` (every open) | Access to `owner` |
+| Binding | Public read | Owner-private read | Who may see `user/<id>` |
 |---|---|---|---|
-| X Account | C | — (public data needs only the X account every observer must connect) | the observer's X user ID is the bound one |
-| X Post | C | the observer's X account can see the bound post | same |
-| X List | C | the observer's X account can see the bound List | same |
-| X Profile | C | — (a public profile needs only an X account) | same — for a protected user's posts |
+| X Account | `[]` | `user/<id>` | an observer whose own connection is pinned to that X user |
+| X Post | `[]` | `user/<id>` (a protected author's post) | same |
+| X List | `[]` | `user/<id>` (a private List) | same |
+| X Profile | `[]` | `user/<id>` (a protected user's posts) | same |
 
 `XVerifier` is a `WorkerEntrypoint` over the observer's own `UserAccount`. `getXUserId()` answers
-from the stored identity, once the connection's credentials prove usable — no call unless the
-access token needs refreshing, and null for a grant X refused for good. `canViewPost(id)` / `canViewList(id)` ask X with the
-observer's token through `probeAccess` (401/403/404 → `false`; anything else throws, so the open
-fails loudly). Each probe costs a read, so positive verdicts are cached per (observer, resource)
-for an hour; negatives never are.
+with the stored identity's ID, once the connection's credentials prove usable — no request to X
+beyond refreshing an expired access token, and never the daily identity re-read, since the pin
+never moves. It answers null for a grant X refused for good or a disconnect, which
+`verifyObserverAccess()` turns into a failed check, not a denial; any other failure fails the check
+too. Nothing is cached, since the comparison costs nothing.
+
+New bindings remove the gatekeeper's working-credential baseline and billed bound-Post/List
+visibility probes (`canViewPost` / `canViewList`). `[]` adds no provider-access requirement, but
+the Workshop still requires an X account/verifier choice for each in-scope vendor binding: this
+is not account-free admission. Owner-private reads still report `user/<id>`; private reads made
+before conversion retain the tracked `owner` collection, pending or observed, which admission
+checks as the same X user and `getHistoricalSubresources()` exports unchanged as `user/<id>`.
+
+Action descriptions cross a different, unguarded boundary: the kernel's action log. Previews
+redact provider-private or unknown-author post text and author metadata/URLs, including reply
+targets and protected quoted/reposted authors, and provider-private List names, which a pending
+privacy change does not declassify. What the workspace wrote -- drafts, changes, and the account's
+own pending posts and Lists -- stays visible, as does definitely public provider context.
+
+Sharing requirements follow data read from X, never actions or drafts the workspace wrote, so an
+action alone adds none and the action journal is never consulted. Newly minted bindings carry
+immutable `redactsActionPreviews: true` props. A Post or List binding minted before them has two
+copies of what X returned beyond the facet's reach: the description the kernel took at creation
+(`Post by @author`, a List's name), which it never refreshes, and its action previews. Either may
+name a protected author or a private List, so `addObserver()` admits only observers connected as
+its pinned X user and `getHistoricalSubresources()` exports `user/<id>`, until the kernel
+sanitizes both; a missing pin throws. This replaces the old bound-post/List probe, so it is a new
+restriction for collaborators on other X accounts. Older Account and Profile bindings export only
+a recorded `owner` read.
 
 Why not D, as Spotify is: X's likes have been private since 2024, bookmarks always were, and a
 protected account's posts exist to be seen only by approved followers — a shared gadget
@@ -889,8 +916,9 @@ the account's posts), `XPost.subscribeReplies(hook)` for the account's own posts
     failure; dependents of `~N`; the cascade and `{restart: true}`; reconciliation binding a match
     after an injected timeout; an auto-approval racing `submitAction`; media captured, uploaded
     only at apply, and pruned.
-  - *observers*: public-only workspaces admit any X observer; `owner` admits only the same X user;
-    the Post / List baselines; positive verdict caching.
+  - *observers*: public reads report `[]` and owner-private ones `user/<id>`; `verifyObserverAccess`
+    allows only the same X user, without a request to X; legacy `owner` records still guard
+    `addObserver` and are exported by `getHistoricalSubresources`.
 - **Release**: fixture bundle `scripts/release/testdata/fixture-bundles/gatekeeper-x/x.js`, then
   `UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`.
 
@@ -921,7 +949,7 @@ the account's posts), `XPost.subscribeReplies(hook)` for the account's own posts
 `MAX_IMAGE_BYTES` 5 MiB; `PENDING_MEDIA_BYTES` 64 MiB; `TEXT_LIMIT` 280 and
 `TEXT_LIMIT_PREMIUM` 25,000; `URL_WEIGHT` 23; `RECONCILE_LOOKBACK` 5 posts; `POST_TTL_MS` 5 min,
 `USER_TTL_MS` 1 h, `LIST_TTL_MS` 15 min, `PAGE_TTL_MS` 60 s, `IDENTITY_TTL_MS` 24 h,
-`VERDICT_TTL_MS` 1 h; `OWNED_LISTS_UI_TTL_MS` 5 min; `DEFAULT_DAILY_READ_LIMIT` 2,000 (overridden
+`OWNED_LISTS_UI_TTL_MS` 5 min; `DEFAULT_DAILY_READ_LIMIT` 2,000 (overridden
 by `X_DAILY_READ_LIMIT`); `PROFILE_TABS` and `RESERVED_FIRST_SEGMENTS` (§4); the field and
 expansion sets of §2.
 
@@ -1106,9 +1134,9 @@ departed from the design above:
   lookup X answers with errors in place of rows settles nothing, so it fails the apply and leaves
   the attempt for the next approval. A duplicate refusal says the send made nothing, so it is
   reconciled only against an earlier send X never confirmed, never against posts that were
-  already there; a first send refused that way fails. While a marker or thread progress exists,
-  `reject` is refused ("it may already be on X"). A terminal failure part-way through a
-  thread names the posts already published. `x.list.manage`'s creation is reconciled the same
+  already there; a first send refused that way fails. Rejecting withdraws the action and drops
+  its markers and thread progress, leaving whatever X already published. A terminal failure
+  part-way through a thread names the posts already published. `x.list.manage`'s creation is reconciled the same
   way, since `POST /2/lists` has no idempotency key either: against every page of the account's
   owned Lists (X cannot filter them by date), on name, description, privacy and a `created_at` in
   the window. Lists can share all of those, so the matching Lists already there are read before
@@ -1121,7 +1149,7 @@ departed from the design above:
 - **`x-credentials.ts`** holds what the account shares with the rest of the Worker -- the public
   grant, the pinned identity, the read reservation, `accountSource` and `withinReadLimit` -- so the
   facet and configurator modules use them without an import cycle through `x.ts`. Every read the
-  gatekeeper, the List picker and the observer probes make goes through `withinReadLimit`.
+  gatekeeper and the List picker make goes through `withinReadLimit`; observer checks make none.
 - **No 429 fail-fast map** (§8).
 - **The pins live in the facet.** `pinnedUserId` (first use; a connection that comes to name
   another user is refused, and it is the action fence) and a Profile binding's `profileUserId`

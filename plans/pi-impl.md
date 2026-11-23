@@ -1,5 +1,13 @@
 # Migrating from the Vercel AI SDK to pi-ai + pi-agent-core: implementation playbook
 
+Attachment follow-up: the original provider-input restrictions below no longer govern upload
+acceptance. [All uploaded files enter the chat's scratch worktree](../docs/chat-scratch-worktree.md)
+byte-for-byte, subject to the 4 MiB/file limit; source images are no longer resized to fit.
+Model requests inline only inputs supported by their adapter (including supported images with
+recognized dimensions no larger than 8000 pixels per edge) and valid text. Other uploads are
+identified by workspace path on both the initial request and subsequent replay, not rejected
+or decoded lossily. Binary worktree changes use ordinary Git blobs and whole-file OTs.
+
 *Companion to `plans/pi.md` (feasibility). This is a direct implementation guide for a coding
 agent: all design decisions are made; implement the whole thing in one pass. The project is in
 early alpha — minor behavioral regressions are acceptable and will be fixed as discovered. Do

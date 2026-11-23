@@ -88,7 +88,8 @@ After confirmation:
    is reached directly. The endpoint rejects fetches, frames, cross-origin requests, duplicate
    fields, malformed values, and wrong owners before it consumes anything.
 3. The endpoint atomically consumes the staged record and returns a `303` to the fixed claimed HTTPS
-   app link `https://os.cloudflare.app/oauthredirect?cfos_callback=install-connected&…`. The native
+   app link `https://os.cloudflare.app/oauthredirect?cfos_callback=install-connected&…` for mobile
+   (see below for desktop callback delivery). The native
    app verifies the state, decrypts the envelope with its per-attempt private key, and validates the
    credential before storing it in platform secure storage. A web page cannot claim this callback;
    the app-domain association controls which installed native app receives it.
@@ -119,6 +120,22 @@ Notification enrollment is an optional capability on the same object. The legacy
 globals remain temporarily as a fallback for the currently distributed TestFlight build; new
 navigation and login behavior uses only the versioned object. These native hooks are available in
 every installation and are not conditioned on Cloudflare Access mode.
+
+### Desktop callback delivery
+
+Desktop clients use the same encrypted device-session protocol and explicit browser confirmation.
+They bind a fresh IPv4 loopback listener before opening the system browser and use state of the
+form `desktop-v1.<port>.<43-character-base64url-nonce>`. The callback route recognizes only this
+reserved form, a port in 1024–65535, and the fixed destination
+`http://127.0.0.1:<port>/oauthredirect`; malformed desktop state fails before ticket consumption.
+All other state retains the claimed HTTPS mobile callback. No arbitrary redirect URL, host,
+scheme, or path is accepted. Only ciphertext crosses loopback, authenticated against the complete
+state and decryptable by that attempt's private key. Desktop listeners validate their exact Host,
+state, envelope and deadline, consume one response, and close on completion/cancellation/timeout.
+Like mobile shells, desktop clients commit the credential only after their origin-bound main-frame
+native bridge reports authenticated `loginReady`. App sign-in is separate from any local Computer
+Operator registration or permission grant. Access policies requiring an additional binding cookie
+still need that cookie; encrypted JWT transfer does not bypass those policies.
 
 ## Configuration
 

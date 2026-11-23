@@ -6,10 +6,12 @@
 // gatekeeper of the same vendor, which is what makes the cast in each `addObserver()` and in
 // `createFileOnce()` safe.
 //
-// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat) can name
-// the interface without importing the module that implements it, which also re-exports it.
+// It lives in its own module so that a gatekeeper implemented outside google.ts (Chat, Gmail,
+// Sheets, Slides) can use the interface, and the verifyObserverAccess() built on it, without
+// importing the module that implements it, which also re-exports the interface.
 
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import type { ObserverBatchResult } from "./observers";
 import type { DriveObservation } from "./drive-observers";
 
@@ -23,10 +25,23 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean>;
   hasPresentationAccess(presentationId: string): Promise<boolean>;
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
+  /** As `checkSubresourceAccess`, for one calendar. */
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
+  /**
+   * Whether the observer's Google account can read each subresource, in order, reusing recent
+   * answers (see `UserAccount.checkSubresourceAccess`). Throws for an ID it can't check, or when
+   * access can't be determined (expired credentials, a missing scope, a rate limit).
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
+  /** Whether the observer's own token can open one BigQuery dataset, asking BigQuery every time. */
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
   /** Whether the observer's own account can open one Google Chat space, and with `members`, list its members. */
   hasChatSpaceAccess(spaceName: string, options?: { members?: boolean }): Promise<boolean>;
+  /**
+   * Whether the observer holds a Drive grant, and whether their own token can see each file or
+   * list each folder, asking Drive every time, for the units addObserver still guards from before
+   * reads reported them.
+   */
   verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
   /**
    * The connected account this verifier stands for, so applyCreation() can create a file in it and
@@ -34,3 +49,14 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
    */
   getUserObjectId(): Promise<string>;
 }
+
+/**
+ * Google's verifyObserverAccess(): admits an observer only if their own account can read every
+ * subresource, as its UserAccount last learned (see UserAccount.checkSubresourceAccess for how long
+ * it reuses answers). The account checks every Google gatekeeper's subresources, so each gatekeeper
+ * first refuses those it doesn't report.
+ */
+export const verifyGoogleSubresourceAccess = observerAccessVerifier({
+  hasCollectionAccess: (verifier: Fetcher<GoogleVerifierApi>, subresources: readonly string[]) =>
+    verifier.checkSubresourceAccess([...subresources]),
+});

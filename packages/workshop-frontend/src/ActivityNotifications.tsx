@@ -9,18 +9,18 @@ import { ActionFields, entryFields, fieldCountLabel } from './components/ActionF
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
 import {
-  formatRelativeTime,
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
   type ActivityView,
 } from './Activity'
+import { formatRelativeTime } from './utils/formatRelativeTime'
 import { useActions } from './useActions'
 import { useResolveAction } from './useResolveAction'
 
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
   onViewActivity: (view: ActivityView) => void
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData):
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData):
   // the approver is the leak check, so each request is shown in full with a notice saying so.
   restricted?: boolean
 }

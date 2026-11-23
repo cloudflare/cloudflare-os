@@ -5,13 +5,17 @@ import { build } from "esbuild";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeOutputFile = resolve(packageDir, "src/generated/browser-export-runtime.txt");
+const capnwebOutputFile = resolve(packageDir, "src/generated/capnweb-module.txt");
 const sanitizerOutputFile = resolve(packageDir, "src/generated/html-sanitizer-runtime.txt");
 const pageOutputFile = resolve(packageDir, "src/generated/browser-export-page.js");
 
+// The runtime imports Cap'n Web through the export page's import map, which maps "capnweb" to the
+// module below, so Gadget code that imports "capnweb" shares the runtime's instance.
 const runtimeResult = await build({
   entryPoints: [resolve(packageDir, "browser/browser-export-runtime.ts")],
   bundle: true,
-  format: "iife",
+  external: ["capnweb"],
+  format: "esm",
   platform: "browser",
   target: "es2025",
   minify: true,
@@ -36,6 +40,8 @@ const sanitizerResult = await build({
 });
 
 writeIfChanged(runtimeOutputFile, runtimeResult.outputFiles[0].contents);
+// Cap'n Web's browser build, which has no imports of its own. The live iframe embeds the same file.
+writeIfChanged(capnwebOutputFile, readFileSync(fileURLToPath(import.meta.resolve("capnweb"))));
 writeIfChanged(sanitizerOutputFile, sanitizerResult.outputFiles[0].contents);
 writeIfChanged(pageOutputFile, pageResult.outputFiles[0].contents);
 

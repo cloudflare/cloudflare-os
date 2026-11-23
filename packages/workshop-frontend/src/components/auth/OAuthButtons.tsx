@@ -3,6 +3,8 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
 import { Button, Banner } from '@cloudflare/kumo'
 import { openDisownedPopup, uniquePopupName } from '../../connectHandoff'
+import type { AuthPopup } from '../../features/native-app/authPopup'
+import { nativeApp } from '../../features/native-app/nativeApp'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -27,6 +29,8 @@ const RECEIVE_POLL_MS = 1000
  * `attempt.receive()`, which releases the session token only once the ticket is confirmed and only
  * to the holder of the `attempt` capability; the popup never sees the token. On success the token
  * is stored and the app re-authenticates.
+ * In native apps the same helper opens the system browser and returns its one-time ticket here
+ * for confirmation with the retained nonce. The browser never receives that nonce or the token.
  *
  * A newer attempt waits for the previous one's in-flight `receive()` before tearing it down: the
  * server releases the token exactly once, so a call cancelled mid-flight could discard a token
@@ -35,6 +39,7 @@ const RECEIVE_POLL_MS = 1000
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  const [cancellable, setCancellable] = useState(false)
 
   // The attempt in flight, if any, as the function that tears it down: waits for a receive() still
   // in flight, then stops the poll and disposes the login RPC (Cap'n Web treats this as a
@@ -83,9 +88,10 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       // Disowned like connect popups: sign-in providers are admin-allowlisted, but the popup
       // traverses provider pages all the same, and none of them gets a handle on this tab. The
       // nonce rides along in the popup's own storage for the handoff page to present.
-      let popup: Window
+      let popup: AuthPopup
       try {
-        popup = openDisownedPopup(url, uniquePopupName('gatekeeper-login'), { kind: 'login', nonce })
+        popup = openDisownedPopup(url, uniquePopupName('gatekeeper-login'), { kind: 'login', nonce },
+          ticket => rpcStub.confirmLogin(ticket, nonce))
       } catch (err) {
         dispose()
         throw err
@@ -97,6 +103,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         // The receive() call in flight, if any, as a promise that settles once its outcome has been
         // handled here; never rejects.
         let inflight: Promise<void> | null = null
+        void popup.completion?.catch(err => finish(() => reject(err)))
         const poll = window.setInterval(() => {
           // Not necessarily a cancellation: the popup closes itself after confirming, and a
           // provider that swaps browsing context groups (COOP) reports it closed while the flow is
@@ -122,7 +129,9 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           if (settled) return
           settled = true
           attemptRef.current = null
+          setCancellable(false)
           clearInterval(poll)
+          try { popup.close() } catch { /* cross-origin or already gone */ }
           dispose()
           fn()
         }
@@ -131,9 +140,8 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           if (!settled) finish(() => reject(CANCELLED))
           return received
         }
+        setCancellable(true)
       })
-      // Best-effort: the page closes itself anyway, and a COOP swap leaves the handle dead.
-      try { popup.close() } catch { /* severed */ }
       if (!mountedRef.current) return  // user navigated away mid-flow; drop the result
       localStorage.setItem('authToken', token)
       if (onSuccess) onSuccess()
@@ -143,6 +151,11 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       setError(err instanceof Error ? err.message : 'Could not sign in')
       setPending(null)
     }
+  }
+
+  const cancel = async () => {
+    const received = await attemptRef.current?.()
+    if (mountedRef.current && !received) setPending(null)
   }
 
   return (
@@ -168,6 +181,9 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           Continue with {vendor.displayName}
         </Button>
       ))}
+      {pending !== null && cancellable && nativeApp()?.authentication && (
+        <Button variant="ghost" className="w-full" onClick={cancel}>Cancel sign-in</Button>
+      )}
     </div>
   )
 }

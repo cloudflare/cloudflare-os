@@ -4,8 +4,7 @@
 //
 // - The protocol v2 *fetch* client behind `Gatekeeper.gitPull()`: pkt-line framing, fetch-command
 //   composition from `GitPullHints`, and sideband demultiplexing of the packfile response. The
-//   raw pack body streams into `GitCache.consumePack()`, which decodes, hash-verifies, and
-//   stores every object overseer-side.
+//   raw pack body can feed the DO cache decoder or a separate native Git consumer.
 // - The *send-pack* client behind the `push` action: the ref-update command block, pack body
 //   composition (the pack bytes themselves come from `GitCache.buildPack()` -- no pack encoding
 //   here either), and report-status response parsing.
@@ -14,11 +13,13 @@
 //
 // Two locked transport decisions (plans/worktrees.md) shape every request this module composes:
 //
-// - **No `have`s, ever.** A `have` asserts full reachability, but every pull here is filtered or
-//   tree-limited, so possessing a commit never implies possessing its blobs and trees --
-//   advertising one would make upload-pack exclude exactly the omitted objects a later
-//   exact-object fault explicitly `want`s. Every fetch sends an empty have list and an immediate
-//   `done` (the same noop negotiation stance git itself takes for partial-clone lazy fetches).
+// - **No `have`s from the workspace's cache.** A `have` asserts full reachability, but the cache
+//   may hold a commit from a filtered or shallow pull, so possession alone does not imply full
+//   reachability -- advertising one would make upload-pack exclude exactly the omitted objects a
+//   later exact-object fault explicitly `want`s. Cache fills send an empty have list and an
+//   immediate `done` (the same noop negotiation stance git itself takes for partial-clone lazy
+//   fetches). `GitPullHints.haves` exists for the workspace serving native Git in a container,
+//   whose `have`s are that client's own claims; negotiation still ends in one round.
 // - **At most one `filter` line per fetch.** upload-pack accepts a single filter-spec (a second
 //   `filter` line is not merged; GitHub rejects the request outright), so combining hints is
 //   spelled in the filter-spec grammar or not at all -- see `filterSpecForHints()`.
@@ -31,15 +32,8 @@
 // This module deliberately has no runtime imports beyond other Node-safe kit leaves (in particular
 // no `cloudflare:workers`), so its logic runs under the kit's Node vitest project.
 
-import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitOid, GitPullHints, GitPullStatus, GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
 import { readBytesCapped, ResponseTooLargeError } from "./response-body";
-
-/**
- * Maximum raw HTTP body size accepted from one upload-pack fetch, enforced while streaming (the
- * transfer-size limiter pattern from gatekeeper-context's artifact-sync, same 64MB budget --
- * also matching the cap the overseer's `consumePack()` applies to the pack itself).
- */
-export const MAX_GIT_FETCH_BYTES = 64 << 20;
 
 /** The `agent` capability sent with every request, mirroring the REST layer's User-Agent. */
 const GIT_AGENT = "cloudflare-gadgets";
@@ -198,10 +192,10 @@ const OID_PATTERN = /^[0-9a-f]{40}$/;
  *   strictly stronger than any `blob:limit`.
  * - A fetch whose wants are themselves blobs (`hints.type === "blob"`) sends **no filter**: a
  *   blob want has no traversal for a filter to prune, and the filter would not suppress the
- *   wanted blob anyway -- an oversized blob arrives huge, the transfer limiter bounds the
- *   download, and the overseer's `put()`-equivalent size rejection measures and records its
- *   exact size (so later reads fail fast). This is the second of spike 1's two possible worlds;
- *   nothing is ever inferred from an absence.
+ *   wanted blob anyway. Consumers enforce their own limits: the DO cache decoder bounds pack
+ *   bytes and object allocations before ingestion, while a native consumer need not inherit
+ *   the DO cache's limits. Only a fully decoded oversized object can have its measured size
+ *   recorded for later fail-fast reads; a decoder-limit failure or absence records no size.
  * - Otherwise `filterBlobSize` maps directly: 0 (fetch no blobs) → `blob:none`, N → `blob:limit=N`
  *   (git's semantics -- omit blobs of size at least N -- match the hint's).
  */
@@ -219,28 +213,34 @@ export function filterSpecForHints(hints: GitPullHints): string | undefined {
 
 /**
  * Compose the protocol v2 `fetch` command request body for the given objects and hints: a `want`
- * per oid, shallow bounds from `commitHistory` (`deepen`/`deepen-since`; harmless alongside
- * non-commit wants, verified), at most one `filter` line (see `filterSpecForHints`), `ofs-delta`
- * (the overseer's pack decoder resolves both delta forms), and an immediate `done` with no
- * `have`s ever (the transport locked decision -- see the module doc).
+ * per oid, the requester's `shallow` commits, shallow bounds from `commitHistory`
+ * (`deepen`/`deepen-since`/`deepen-relative`; harmless alongside non-commit wants, verified), at
+ * most one `filter` line (see `filterSpecForHints`), `ofs-delta` (the overseer's pack decoder
+ * resolves both delta forms), the hints' `haves` (none for cache fills -- see the module doc),
+ * and an immediate `done`.
  */
 export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array {
   let wants = [...new Set(oids)];
   if (wants.length === 0) throw new Error("git fetch requested no objects");
-  for (let oid of wants) {
+  let shallow = [...new Set(hints.shallow ?? [])];
+  let haves = [...new Set(hints.haves ?? [])];
+  for (let oid of [...wants, ...shallow, ...haves]) {
     if (!OID_PATTERN.test(oid)) throw new Error(`invalid git oid: ${JSON.stringify(oid)}`);
   }
 
   let args = wants.map(oid => `want ${oid}`);
   args.push("ofs-delta", "no-progress");
+  args.push(...shallow.map(oid => `shallow ${oid}`));
   let history = hints.commitHistory;
-  if (history.kind === "depth") {
+  if (history.kind === "depth" || history.kind === "relative") {
     args.push(`deepen ${Math.max(1, Math.floor(history.depth))}`);
+    if (history.kind === "relative") args.push("deepen-relative");
   } else if (history.kind === "since") {
     args.push(`deepen-since ${Math.max(0, Math.floor(history.since.getTime() / 1000))}`);
   } // kind "full": no shallow bound.
   let filter = filterSpecForHints(hints);
   if (filter !== undefined) args.push(`filter ${filter}`);
+  args.push(...haves.map(oid => `have ${oid}`));
   args.push("done");
 
   let pieces = [
@@ -268,40 +268,78 @@ const BAND_ERROR = 3;
 /**
  * Strip a v2 fetch response's protocol framing, yielding the raw pack bytes: skip the sections
  * preceding `packfile` (`acknowledgments`/`shallow-info`/`wanted-refs` -- their content is
- * irrelevant here, since every fetch is independent and nothing tracks shallow boundaries),
- * then demultiplex the packfile section's sideband (band 1 = pack data, band 2 = progress,
- * discarded, band 3 = fatal server error). An `ERR` pkt or band-3 message fails the stream with
- * the server's message; `maxBytes` bounds the raw body (see MAX_GIT_FETCH_BYTES); a response
- * that ends without a flush-pkt, or without ever reaching a packfile section, is an error --
- * a truncated pack must never look like a short success. `onFailure` is told what the stream
- * failed with, which a reader across an RPC hop never learns.
+ * not part of PACK; see `openGitFetchResponse()` for the shallow-info), then demultiplex the
+ * packfile section's sideband (band 1 = pack data, band 2 = progress, discarded, band 3 = fatal
+ * server error). An `ERR` pkt or band-3 message fails the stream with the server's message;
+ * optional `maxBytes` bounds the raw body; a response that ends without a flush-pkt, or without
+ * ever reaching a packfile section, is an error -- a truncated pack must never look like a short
+ * success.
+ * `onTerminal` records completion, cancellation, or failure in the producer before signaling
+ * it through the stream, whose exceptions Workers RPC may replace with a generic disconnect.
  */
 export function demuxGitFetchResponse(
   body: ReadableStream<Uint8Array>,
-  maxBytes: number,
-  onFailure?: (error: unknown) => void,
+  maxBytes = Infinity,
+  onTerminal?: (status: GitPullStatus) => void,
 ): ReadableStream<Uint8Array> {
-  let iterator = demuxPackData(body, maxBytes);
-  return new ReadableStream({
-    async pull(controller) {
-      let next = await iterator.next().catch((error: unknown) => {
-        onFailure?.(error);
-        throw error;
-      });
-      if (next.done) controller.close();
-      else controller.enqueue(next.value);
-    },
-    async cancel() {
-      await iterator.return(undefined);
-    },
-  });
+  return openGitFetchResponse(body, maxBytes, onTerminal).pack;
 }
 
-async function* demuxPackData(
+/**
+ * Like `demuxGitFetchResponse()`, and also reads the response's `shallow-info` section.
+ * `shallowInfo()` reads the response up to the start of the pack, if `pack` hasn't already,
+ * without consuming any pack data; it rejects if the response fails before then.
+ */
+export function openGitFetchResponse(
   body: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): AsyncGenerator<Uint8Array, void, unknown> {
+  maxBytes = Infinity,
+  onTerminal?: (status: GitPullStatus) => void,
+): { pack: ReadableStream<Uint8Array>; shallowInfo(): Promise<GitShallowInfo> } {
   let reader = body.getReader();
+  let info: GitShallowInfo = {shallow: [], unshallow: []};
+  let iterator = demuxPackData(reader, maxBytes, info);
+  let fail = (error: unknown) => {
+    onTerminal?.({state: "failed", message: error instanceof Error ? error.message : String(error)});
+  };
+  // The first item is always the marker for the start of the packfile section.
+  let preamble: Promise<void> | undefined;
+  let shallowInfo = () => preamble ??= iterator.next().then(() => {}, error => {
+    fail(error);
+    throw error;
+  });
+  let pack = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await shallowInfo();
+      try {
+        let next = await iterator.next();
+        if (next.done) {
+          onTerminal?.({state: "complete"});
+          controller.close();
+        } else {
+          controller.enqueue(next.value!);
+        }
+      } catch (error) {
+        fail(error);
+        throw error;
+      }
+    },
+    async cancel() {
+      onTerminal?.({state: "canceled"});
+      // Interrupt an in-flight read before asking the generator to return.
+      await reader.cancel().catch(() => {});
+      await iterator.return(undefined);
+    },
+  }, {highWaterMark: 0});
+  return {pack, shallowInfo: () => shallowInfo().then(() => info)};
+}
+
+// Yields null once, on reaching the packfile section, having recorded `info` by then; then
+// the pack's bytes.
+async function* demuxPackData(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maxBytes: number,
+  info: GitShallowInfo,
+): AsyncGenerator<Uint8Array | null, void, unknown> {
   try {
     let parser = new PktLineParser();
     let received = 0;
@@ -332,7 +370,13 @@ async function* demuxPackData(
           if (line.startsWith("ERR ")) {
             throw new Error(`git fetch failed: ${line.slice(4)}`);
           }
-          if (line === "packfile") inPackfile = true;
+          // Only the shallow-info section has lines of these forms.
+          let shallow = /^(shallow|unshallow) ([0-9a-f]{40})$/.exec(line);
+          if (shallow) info[shallow[1] as "shallow" | "unshallow"].push(shallow[2]);
+          if (line === "packfile") {
+            inPackfile = true;
+            yield null;
+          }
           // Anything else is an earlier section's header or content line; skip it.
           continue;
         }
@@ -358,31 +402,27 @@ async function* demuxPackData(
 // Pull driver
 
 /**
- * The one method of `GitCache` this module needs; structural so both an `RpcStub<GitCache>` and
- * a test fake satisfy it.
- */
-export type GitPackSink = {
-  consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]>;
-};
-
-/**
- * The whole of a `gitPull()`: compose the fetch command, POST it via the caller-supplied
+ * Compose the fetch command, POST it via the caller-supplied
  * transport (which owns the URL, auth, and HTTP-level error handling), strip the response's
- * protocol framing, stream the raw pack into `cache.consumePack()`, and verify every requested
- * oid is among the stored objects.
- *
- * One deliberate carve-out, mirroring the `Gatekeeper.gitPull()` contract: when the request was
- * a blob fetch bounded by the hints' own `filterBlobSize`, a requested blob missing from the
- * stored list is reported by returning successfully without it -- `consumePack()` measures,
- * records, and skips an object over the storable size cap (so later reads fail fast on the
- * recorded size), and the overseer surfaces the absence as its oversized-file read error.
+ * protocol framing and return a backpressured raw pack stream. Consumers enforce their own
+ * storage limits and verify the requested objects; full native checkouts bypass the DO cache.
  */
-export async function pullGitObjectsIntoCache(
+export async function pullGitPack(
   fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
   oids: GitOid[],
   hints: GitPullHints,
-  cache: GitPackSink,
-): Promise<void> {
+  onTerminal?: (status: GitPullStatus) => void,
+): Promise<ReadableStream<Uint8Array>> {
+  return (await openGitPull(fetchUploadPack, oids, hints, onTerminal)).pack;
+}
+
+/** Like `pullGitPack()`, and also reads the response's shallow-info (see `openGitFetchResponse()`). */
+export async function openGitPull(
+  fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[],
+  hints: GitPullHints,
+  onTerminal?: (status: GitPullStatus) => void,
+): Promise<ReturnType<typeof openGitFetchResponse>> {
   let response = await fetchUploadPack(buildGitFetchRequest(oids, hints));
   if (!response.ok) {
     // The caller's transport normally throws its own richer error first (e.g. GitHubApi's
@@ -393,20 +433,7 @@ export async function pullGitObjectsIntoCache(
   if (response.body === null) {
     throw new Error("git fetch failed: response had no body");
   }
-  // A failed pack stream reaches consumePack() across RPC only as a premature disconnect, so
-  // that is what it rejects with; the stream's own failure says why.
-  let failure: unknown;
-  let pack = demuxGitFetchResponse(response.body, MAX_GIT_FETCH_BYTES, error => {
-    failure = error;
-  });
-  let stored = new Set(await cache.consumePack(pack).catch((error: unknown) => {
-    throw failure ?? error;
-  }));
-  let missing = oids.filter(oid => !stored.has(oid));
-  if (missing.length > 0 && !(hints.type === "blob" && hints.filterBlobSize !== undefined)) {
-    throw new Error(`git fetch did not provide the requested object${
-        missing.length === 1 ? "" : "s"} ${missing.join(", ")}`);
-  }
+  return openGitFetchResponse(response.body, Infinity, onTerminal);
 }
 
 // =======================================================================================
@@ -586,7 +613,7 @@ export async function pushGitRefUpdate(
 
   let response = await fetchReceivePack(body);
   if (!response.ok) {
-    // Defensive backstop, as in pullGitObjectsIntoCache: the transport normally throws first.
+    // Defensive backstop, as in pullGitPack: the transport normally throws first.
     await response.body?.cancel().catch(() => {});
     throw new Error(`git push failed: HTTP ${response.status}`);
   }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Check, Plus, UserCircle } from '@phosphor-icons/react'
-import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { AccountDescription, SupportedResource, VendorDescription, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper'
 
 /**
  * Account info as consumed by the chooser. Matches the shape used by GatekeeperModal and the
@@ -38,7 +38,7 @@ export function AccountChooser({
   resourceTitle,
   connecting,
   reconnectingAccountId,
-  requiredResourceUrlPatterns,
+  requiredResourceTypeIds,
   grantingAccountId = null,
   onSelect,
   onConnect,
@@ -52,7 +52,7 @@ export function AccountChooser({
   resourceTitle?: string
   connecting: boolean
   reconnectingAccountId: number | null
-  requiredResourceUrlPatterns?: string[]
+  requiredResourceTypeIds?: string[] | ((account: AccountOption) => string[])
   grantingAccountId?: number | null
   onSelect: (id: number) => void
   onConnect: () => void
@@ -77,13 +77,16 @@ export function AccountChooser({
           const name = account.description.uniqueName || account.description.displayName || 'Connected account'
           const expired = !account.credentialsValid
           const reconnecting = reconnectingAccountId === account.id
-          const granted = account.description.grantedResourceUrlPatterns
+          const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
+          const required = typeof requiredResourceTypeIds === 'function'
+            ? requiredResourceTypeIds(account) : requiredResourceTypeIds
           const accountMissing =
-            requiredResourceUrlPatterns && granted !== undefined
-              ? requiredResourceUrlPatterns.filter(p => !granted.includes(p))
+            required && granted !== undefined
+              ? required.filter(p => !granted.includes(p))
               : []
           const needsAccess = !expired && accountMissing.length > 0
           const granting = grantingAccountId === account.id
+          const grantInProgress = grantingAccountId !== null
           return (
             <div
               key={account.id}
@@ -128,7 +131,7 @@ export function AccountChooser({
                 <button
                   type="button"
                   onClick={() => onGrantAccess?.(account.id)}
-                  disabled={granting}
+                  disabled={grantInProgress}
                   className="shrink-0 cursor-pointer rounded-md border border-kumo-line px-2 py-1 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-default transition-colors hover:bg-kumo-elevated disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {granting ? 'Opening...' : 'Grant access'}

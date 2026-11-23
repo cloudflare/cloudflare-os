@@ -2,7 +2,7 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AuthenticatedApi,
-  GadgetMetadata, Overseer, PublicApi, WorkpieceId,
+  WorkspaceMetadata, Overseer, PublicApi, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   applyCodeChange, diffFiles, type CodeChange, type CodeContent,
@@ -83,7 +83,7 @@ function withOwner<T>(
   const username = nextUsernames("owner")[0]!;
   return withClient(api => signUp(api, username), async api => {
     if (model !== undefined) await api.addModel(model.userModel.profile, model.userModel.config);
-    return api.newGadget();
+    return api.newWorkspace();
   }, (client, api) => fn(client, api, username));
 }
 
@@ -92,10 +92,10 @@ function reopen<T>(
     username: string, fn: (client: Client, api: RpcStub<AuthenticatedApi>) => Promise<T>): Promise<T> {
   return withClient(api => logIn(api, username), async api => {
     const [workspace] = await waitFor("the session's workspace", async () => {
-      const workspaces = await api.listGadgets();
+      const workspaces = await api.listWorkspaces();
       return workspaces.length > 0 ? workspaces : null;
     });
-    return api.openGadget(workspace.id);
+    return api.openWorkspace(workspace.id);
   }, fn);
 }
 
@@ -289,7 +289,10 @@ it.concurrent.for([
       change: edit(gadgetId, "client.js", row.base, row.theirs),
     });
     const codeBaseOfB = async () => (await ws.listChats()).find(chat => chat.id === chatB)?.codeBase;
-    const preview = async () => (await gadget.getUiBundle(chatB))?.jsCode;
+    const preview = async () => {
+      const bundle = await gadget.getUiBundle(chatB);
+      return bundle && "jsCode" in bundle ? bundle.jsCode : undefined;
+    };
 
     expect(await ws.mergeChanges(chatA)).toEqual({ outcome: "merged" });
     const mainline = await headOf(workpieces, gadgetId, head);
@@ -381,8 +384,8 @@ it.concurrent("two simultaneous chat merges choose one complete version", async 
 it.concurrent("a second session follows renames, drafts, merges and reverts", async () => {
   await withOwner(async (writer, _api, username) => {
     const { id } = await writer.ws.getMetadata();
-    await withClient(api => logIn(api, username), api => api.openGadget(id), async reader => {
-      const metadataEvents: GadgetMetadata[] = [];
+    await withClient(api => logIn(api, username), api => api.openWorkspace(id), async reader => {
+      const metadataEvents: WorkspaceMetadata[] = [];
       using _metadata = await reader.ws.subscribeToMetadata(metadata => {
         metadataEvents.push(metadata);
       });
@@ -482,16 +485,19 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
   await withClient(api => signUp(api, nextUsernames("chatdelete")[0]!), async api => {
     await api.provisionAmbientAccount(TEST_VENDOR_ID);
     accountId = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)?.id;
-    return api.newGadget();
+    return api.newWorkspace();
   }, async ({ ws, workpieces }) => {
     if (accountId === undefined) throw new Error("The test account was not provisioned");
     using data = await ws.newGatekeeper(accountId, "https://gadgets-test.example/things/chat-delete");
     if (data === null) throw new Error("The test connection was not created");
     const dataId = await data.getId();
     using app = await ws.createGadget("App", undefined, "APP");
-    const upload = await ws.uploadChatAttachment(
-        { mimeType: "text/plain", content: new TextEncoder().encode("chat A notes"), name: "notes.txt" }, null);
-    const chatA = await ws.newChat("A", null, undefined, [upload]);
+    const upload = {oid: await ws.uploadBlob(new TextEncoder().encode("chat A notes")),
+      mimeType: "text/plain", name: "notes.txt"};
+    const chatA = await ws.newChat("A", null, {attachments: [upload]});
+    const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
+    if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
+    const attachmentId = message.attachments[0].id;
     const chatB = await ws.newChat("B", null);
     using draft = await ws.createGadget("Draft", chatA, "DRAFT");
     const draftId = await draft.getId();
@@ -501,13 +507,13 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
         .rejects.toThrow('The gadget name "DRAFT" is claimed by a gadget still pending in another chat');
     await expect(app.bind("DATA", dataId, chatB))
         .rejects.toThrow('The binding name "DATA" is already proposed by another chat.');
-    expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, upload.id))).toBe("chat A notes");
+    expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, attachmentId))).toBe("chat A notes");
 
     await ws.deleteChat(chatA);
 
     await waitFor("the provisional gadget's removal", async () =>
       workpieces.summaries.has(draftId) ? null : true);
-    await expect(ws.getChatAttachmentContent(chatA, upload.id)).rejects.toThrow("Chat attachment not found.");
+    await expect(ws.getChatAttachmentContent(chatA, attachmentId)).rejects.toThrow("Chat attachment not found.");
     using _replacement = await ws.createGadget("Draft", chatB, "DRAFT");
     await app.bind("DATA", dataId, chatB);
     expect(await app.listBindings(chatB))
@@ -522,8 +528,8 @@ it.concurrent("two editors of one chat draft converge, and retries are idempoten
     const { id } = await owner.ws.getMetadata();
     const [name] = nextUsernames("collaborator");
     await withClient(api => signUp(api, name), async api => {
-      await owner.ws.addCollaborator(name, "build");
-      return api.openGadget(id);
+      await owner.ws.addCollaborator(name, "workspace");
+      return api.openWorkspace(id);
     }, async collaborator => {
       const chatId = await owner.ws.newChat("Let's edit together", null);
       const pins = [{ gadgetId, baseCommit: head }];
@@ -663,6 +669,25 @@ it.concurrent("draft and mainline code run separately across merge and revert", 
   });
 });
 
+it.concurrent("a server.js that imports a module of its own runs", async () => {
+  await withOwner(async client => {
+    const { ws } = client;
+    const { gadgetId, head } = await seedGadget(client, "lib/util.js",
+        `export const version = () => "util";\n`);
+    const chatId = await ws.newChat("Split", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
+      change: edit(gadgetId, "server.js", undefined, `import { DurableObject } from "cloudflare:workers";\n` +
+          `import { version } from "./lib/util.js";\n` +
+          `export class Gadget extends DurableObject {\n  version() { return version(); }\n}\n`),
+    });
+    await ws.finalizeChatDraft(chatId);
+    using gadget = await ws.getGadget(gadgetId);
+    using facet = await gadget.connectToGadget(chatId) as VersionedGadget;
+    expect(await facet.version()).toBe("util");
+  });
+});
+
 type StatefulGadget = RpcStub<{
   version(): string;
   put(key: string, value: string): void;
@@ -729,7 +754,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
 
     using source = await ws.getGadget(gadgetId);
     const blueprint = await source.createBlueprint("Stateful app", "V2 without its state");
-    using installed = await api.newGadgetFromBlueprint(blueprint.id, {});
+    using installed = await api.newWorkspaceFromBlueprint(blueprint.id, {});
     const { defaultGadgetId } = await installed.getMetadata();
     if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
     expect(await gadgetState(installed, defaultGadgetId))
@@ -745,7 +770,7 @@ it.concurrent("agent code runs the gadget edits made in earlier steps of its tur
   } });
   const run = (id: string): ChatCompletionStep => ({ toolCall: {
     id, name: "executeCode",
-    arguments: { code: "export default async function(self, env) { return await env.APP.version(); }" },
+    arguments: { code: "export default async function(self, env) { return await env.APP.rpc.version(); }" },
   } });
   const model = models.script([
     toolCall("createGadget", { title: "App", bindingName: "APP" }),
@@ -760,4 +785,36 @@ it.concurrent("agent code runs the gadget edits made in earlier steps of its tur
   expect(history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
       .flatMap(call => call.toolName === "executeCode" ? [call.output] : []))
       .toEqual([expect.stringContaining("v1"), expect.stringContaining("v2")]);
+});
+
+it.concurrent("agent code exports a gadget it is building through its binding's exports", async () => {
+  // The export reads the gadget's server, so its content proves which code ran: the draft this
+  // turn wrote, not mainline (where the gadget doesn't exist yet).
+  const exportingServer = `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";\n` +
+      `export class Gadget extends DurableObject {\n  rows() { return "a,b\\n1,2\\n"; }\n}\n` +
+      `export class ExportHandler extends WorkerEntrypoint {\n` +
+      `  async getExportFormats(_gadget) {\n` +
+      `    return [{ id: "csv", label: "CSV", mode: "server", contentType: "text/csv", fileExtension: ".csv" }];\n` +
+      `  }\n` +
+      `  async export(gadget, _id) { return new Response(await gadget.rows()).body; }\n` +
+      `}\n`;
+  const model = models.script([
+    toolCall("createGadget", { title: "App", bindingName: "APP" }),
+    toolCall("writeFile", { workpiece: "APP", filename: "server.js", content: exportingServer }),
+    toolCall("executeCode", { code: `export default async function(self, env) {
+  let formats = await env.APP.exports.getFormats();
+  console.log("formats:", formats.map(format => format.id).join(","));
+  console.log("csv:", JSON.stringify(await new Response(await env.APP.exports.export("csv")).text()));
+}` }),
+    { text: "Done." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel,
+  });
+  const { outcome, history } = await session.runTurn("Build an app and export it as CSV.");
+  expect(outcome).toEqual({ status: "completed" });
+  const [output] = history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
+      .flatMap(call => call.toolName === "executeCode" ? [call.output] : []);
+  expect(output).toContain("formats: csv");
+  expect(output).toContain(`csv: "a,b\\n1,2\\n"`);
 });

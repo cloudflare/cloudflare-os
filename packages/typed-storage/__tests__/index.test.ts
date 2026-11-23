@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, it, describe } from "vitest"
-import { createTypedStorage, collection, singleton, Singleton, SingletonSchema, UniqueIndex,
-         NonUniqueIndex }
+import { createTypedStorage, collection, singleton, keyString, Singleton, SingletonSchema,
+         UniqueIndex, NonUniqueIndex }
     from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
@@ -866,6 +866,10 @@ describe("non-unique index by number", () => {
     expect([...index.list({limit: 2, reverse: true})]).toStrictEqual([CAROL, ALICE, BOB]);
   });
 
+  it("lists integer keys as keyString() encodes them", () => {
+    expect([...index.listKeys()]).toStrictEqual([keyString(1), keyString(4), keyString(8)]);
+  });
+
   it("supports delete", () => {
     expect(index.delete(8)).toStrictEqual(2);
     expect(index.delete(8)).toStrictEqual(0);
@@ -920,12 +924,39 @@ describe("non-unique index by array", () => {
         [DAVE, DAVE, CAROL, BOB, ALICE]);
   });
 
+  it("supports listKeys", () => {
+    expect([...index.listKeys()]).toStrictEqual(["admin", "everyone", "interns"]);
+    expect([...index.listKeys({reverse: true})]).toStrictEqual(["interns", "everyone", "admin"]);
+    expect([...index.listKeys({prefix: "e"})]).toStrictEqual(["everyone"]);
+    expect([...index.listKeys({startAfter: "admin", limit: 1})]).toStrictEqual(["everyone"]);
+  });
+
+  it("supports reading each group while iterating its keys", () => {
+    let storage = createTypedStorage(makeMockStorage(), GROUP_SCHEMA);
+    for (let user of [BOB, DAVE, CAROL, ALICE]) {
+      storage.users.put(user);
+    }
+
+    let groups: [string, User[]][] = [];
+    for (let key of storage.users.byGroup.listKeys()) {
+      groups.push([key, [...storage.users.byGroup.get(key)]]);
+    }
+
+    expect(groups).toStrictEqual([
+      ["admin", [ALICE, CAROL]],
+      ["everyone", [ALICE, BOB, CAROL, DAVE]],
+      ["interns", [DAVE]],
+    ]);
+  });
+
   it("supports delete", () => {
     expect(index.delete("admin")).toStrictEqual(2);
     expect(index.delete("admin")).toStrictEqual(0);
     expect(index.delete("nobody")).toStrictEqual(0);
 
     expect([...index.list()]).toStrictEqual([BOB, DAVE, DAVE]);
+    // A key goes once its last record does.
+    expect([...index.listKeys()]).toStrictEqual(["everyone", "interns"]);
   });
 });
 

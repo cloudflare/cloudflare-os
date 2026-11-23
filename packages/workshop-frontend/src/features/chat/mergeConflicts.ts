@@ -1,4 +1,5 @@
-import type { AiChatMessage, FileAtCommit, WorkpieceId } from '@gadgets/workshop-shared/api'
+import type { AiChatMessage, WorkpieceId } from '@gadgets/workshop-shared/api'
+import type { CommitFile } from '../code/commitFileStore'
 import type { ChatContentSnapshot } from '../code/otClient'
 
 // Accepting a chat's changes takes whatever its files hold, conflict markers included (see
@@ -93,13 +94,13 @@ export const findUnresolvedConflicts = async (
   content: ChatContentSnapshot,
   baseOf: (workpieceId: WorkpieceId) => string | undefined,
   readFiles: (commitId: string, paths: readonly string[]) =>
-    Promise<ReadonlyMap<string, FileAtCommit>>,
+    Promise<ReadonlyMap<string, CommitFile>>,
 ): Promise<UnresolvedConflict[]> => {
   const texts = new Map<ConflictedFile, string | null | undefined>()
   const untouched = new Map<string, ConflictedFile[]>()
   for (const file of files) {
     const text = content(file.workpieceId, file.path)
-    texts.set(file, text)
+    texts.set(file, typeof text === 'object' && text !== null ? null : text)
     const base = text === undefined ? baseOf(file.workpieceId) : undefined
     if (base !== undefined) untouched.set(base, [...untouched.get(base) ?? [], file])
   }

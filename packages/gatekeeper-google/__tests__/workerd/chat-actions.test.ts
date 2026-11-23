@@ -76,8 +76,10 @@ function chatBackend() {
     membersFailure: 0,
     /** Whose token Chat refuses the member list to, as a space restricted to managers would. */
     membersRejectedToken: undefined as string | undefined,
-    /** How Chat stores submitted text, such as rendering `<users/…>` mentions as `@Name`. */
+    /** How Chat stores submitted markup as `formattedText`, such as naming a mentioned email by user id. */
     storeText: (text: string) => text,
+    /** How Chat renders stored markup as plain `text`: a link reads as its label. */
+    renderText: (formatted: string) => formatted.replace(/<(?!users\/)[^|>]+\|([^>]*)>/g, "$1"),
     /** People API profile names by numeric user id. */
     profiles: {} as Record<string, string>,
     spaceLists: 0,
@@ -103,6 +105,8 @@ function chatBackend() {
     namedMessages: new Map<string, string>(),
     /** Apply edits but lose their responses with this status until cleared. */
     editFailure: 0,
+    /** Answer edits with the plain `text` only, leaving `formattedText` to a later read. */
+    editsOmitFormattedText: false,
     /** Apply reaction writes but lose their responses with this status until cleared. */
     reactionFailure: 0,
     /** Post replies as new top-level threads, as Google would by ignoring the reply option. */
@@ -133,6 +137,7 @@ function chatBackend() {
     /** Create setup conversations but lose their responses with this status until cleared. */
     setupFailure: 0,
   };
+  const storedText = (formattedText: string) => ({formattedText, text: state.renderText(formattedText)});
   /** A page of `items` no longer than asked for, nor than `state.pageSize`, as Google may return. */
   const pageOf = <T>(items: T[], url: URL) => {
     const start = Number(url.searchParams.get("pageToken") ?? 0);
@@ -260,7 +265,7 @@ function chatBackend() {
       const thread = state.misplaceReplies ? undefined : body.thread;
       const created = {
         name: `${SPACE_NAME}/messages/M${state.creates.length}`,
-        text: state.storeText(body.text),
+        ...storedText(state.storeText(body.text)),
         createTime: new Date().toISOString(),
         sender: {name: "users/subject-a", type: "HUMAN"},
         thread: thread ?? {name: `${SPACE_NAME}/threads/T${state.creates.length}`},
@@ -317,10 +322,11 @@ function chatBackend() {
       if (method === "PATCH") {
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
-        state.messages[index].text = state.storeText(text);
+        Object.assign(state.messages[index], storedText(state.storeText(text)));
         state.messages[index].lastUpdateTime = new Date().toISOString();
         if (state.editFailure) return json({}, state.editFailure);
-        return json(state.messages[index]);
+        const {formattedText: _omitted, ...plain} = state.messages[index];
+        return json(state.editsOmitFormattedText ? plain : state.messages[index]);
       }
       if (method === "DELETE") {
         if (state.repliesOn.has(name)) {
@@ -972,25 +978,51 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(2);
   });
 
-  it("refuses to reject a send that may have posted until a retry settles it", async () => {
+  it("settles a send that may have posted on a retry, whatever a later refusal says", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
     using _posted = (await space.post("hello")).message;
     backend.state.createFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     await chat.restart();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     // A later refusal says nothing about the earlier attempt that may have posted.
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.createFailure = 0;
     await chat.applyAction(1);
     expect(backend.state.creates).toHaveLength(1);
     await chat.revertAction(1);
     expect(backend.state.deletes).toHaveLength(1);
+  });
+
+  it("tells a message capability whose send was denied after an attempt that it may have posted", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using attempted = (await space.post("hello")).message;
+    using unattempted = (await space.post("world")).message;
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await chat.rejectAction(1);
+    await chat.rejectAction(2);
+    await expect(Promise.resolve(attempted.edit("again"))).rejects.toThrow(
+      /denied, but an earlier attempt may already have posted it/);
+    await expect(Promise.resolve(unattempted.edit("again"))).rejects.toThrow(/never created/);
+  });
+
+  it("withdraws a send that may have posted when it is rejected, leaving any post in Google Chat", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _posted = (await space.post("hello")).message;
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await chat.restart();
+    await chat.rejectAction(1);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+    expect(backend.state.creates).toHaveLength(1);
+    expect(backend.state.deletes).toHaveLength(0);
   });
 
   it("keeps a send rejectable when Chat definitively refuses its first write", async () => {
@@ -1006,48 +1038,92 @@ describe("Google Chat gatekeeper behaviors", () => {
 
   it("rebases queued edits onto the text Chat stored for the send and edits before them", async () => {
     const backend = chatBackend();
-    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    backend.state.storeText = text => text.replace("<users/alice@example.com>", "<users/123>");
     const chat = chatHarness(backend);
     using space = await chat.session();
-    using message = (await space.post("Hi <users/123>")).message;
-    await message.edit("Hi <users/123>, done");
+    using message = (await space.post("Hi <users/alice@example.com>")).message;
+    await message.edit("Hi <users/alice@example.com>, done");
     await message.edit("All done");
     await chat.applyAction(1);
     await chat.applyAction(2);
     await chat.applyAction(3);
-    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done", "All done"]);
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/alice@example.com>, done", "All done"]);
   });
 
   it("rebases queued edits onto the stored text when a retried send gets its request echoed", async () => {
     const backend = chatBackend();
-    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    backend.state.storeText = text => text.replace("<users/alice@example.com>", "<users/123>");
     const chat = chatHarness(backend);
     using space = await chat.session();
-    using message = (await space.post("Hi <users/123>")).message;
-    await message.edit("Hi <users/123>, done");
+    using message = (await space.post("Hi <users/alice@example.com>")).message;
+    await message.edit("Hi <users/alice@example.com>, done");
     backend.state.createFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
     backend.state.createFailure = 0;
     await chat.applyAction(1);
     await chat.applyAction(2);
-    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done"]);
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/alice@example.com>, done"]);
   });
 
-  it("finishes a retried edit whose lost write Chat stored in rendered form", async () => {
+  it("finishes a retried edit whose lost write Chat stored in normalized form", async () => {
     const backend = chatBackend();
-    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    backend.state.storeText = text => text.replace("<users/alice@example.com>", "<users/123>");
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
     const chat = chatHarness(backend);
     using space = await chat.session();
     using message = (await space.getMessage(messageName("root"))).message;
-    await message.edit("Hi <users/123>");
+    await message.edit("Hi <users/alice@example.com>");
     backend.state.editFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
     backend.state.editFailure = 0;
     await chat.applyAction(1);
-    expect(backend.state.messages[0].text).toBe("Hi @Alice");
+    expect(backend.state.messages[0].formattedText).toBe("Hi <users/123>");
     await expect(chat.revertAction(1)).resolves.toBeUndefined();
     expect(backend.state.messages[0].text).toBe("root");
+  });
+
+  it("edits and undoes from the message's markup, keeping its links", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("root", "A", "2024-01-01T00:00:00Z"),
+      text: "Review logfwdr please",
+      formattedText: "Review <https://gitlab.example/mr/1|logfwdr> please",
+    });
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    expect(await message.getMetadata()).toMatchObject({
+      text: "Review logfwdr please",
+      formattedText: "Review <https://gitlab.example/mr/1|logfwdr> please",
+    });
+    await message.edit("Merged <https://gitlab.example/mr/1|logfwdr>");
+    const [edit] = (await chat.readQueue()).submissions.map(entry => entry.description);
+    expect(edit).toMatchObject({fields: [
+      {label: "Current", kind: "text", value: "Review <https://gitlab.example/mr/1|logfwdr> please"},
+      {label: "New", kind: "text", value: "Merged <https://gitlab.example/mr/1|logfwdr>"},
+    ]});
+    await chat.applyAction(1);
+    expect(backend.state.messages[0].text).toBe("Merged logfwdr");
+    await chat.revertAction(1);
+    expect(backend.state.edits.at(-1)?.text).toBe("Review <https://gitlab.example/mr/1|logfwdr> please");
+    expect(backend.state.messages[0].text).toBe("Review logfwdr please");
+  });
+
+  it("follows Chat's stored markup when an edit's response carries only plain text", async () => {
+    const backend = chatBackend();
+    // Chat ends the markup with a newline the plain text lacks, as it does for some messages.
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Merged <https://gitlab.example/mr/1|logfwdr>");
+    await message.edit("Shipped <https://gitlab.example/mr/1|logfwdr>");
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    await expect(chat.revertAction(2)).resolves.toBeUndefined();
+    expect(backend.state.messages[0].formattedText).toBe("Merged <https://gitlab.example/mr/1|logfwdr>\n");
   });
 
   it("lets an uncertain edit be rejected once its message is deleted", async () => {
@@ -1059,7 +1135,6 @@ describe("Google Chat gatekeeper behaviors", () => {
     await message.edit("Resolved");
     backend.state.editFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.messages = [];
     await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
     await chat.rejectAction(1);
@@ -1085,7 +1160,7 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(1);
   });
 
-  it("keeps a misplaced reply unrejectable while taking it back fails, until it is deleted by hand", async () => {
+  it("lets a misplaced reply be rejected while taking it back fails, leaving it in Google Chat", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
     const chat = chatHarness(backend, undefined, "thread");
@@ -1094,10 +1169,9 @@ describe("Google Chat gatekeeper behaviors", () => {
     backend.state.misplaceReplies = true;
     backend.state.repliesOn.add(`${SPACE_NAME}/messages/M1`);
     await expect(chat.applyAction(1)).rejects.toThrow(/removing it failed/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
-    backend.state.messages = backend.state.messages.filter(message => message.name !== `${SPACE_NAME}/messages/M1`);
-    await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
     await chat.rejectAction(1);
+    expect(backend.state.messages.some(message => message.name === `${SPACE_NAME}/messages/M1`)).toBe(true);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
@@ -1176,6 +1250,74 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(Promise.resolve(later.getMetadata())).rejects.toThrow(/has been deleted/);
     await expect(Promise.resolve(space.getMessage("spaces/OTHER/messages/1")))
       .rejects.toThrow(/different conversation/);
+  });
+
+  it("returns a Chat app's card and button content from every read without following its links", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("alert", "A", "2024-01-01T00:00:00Z"),
+      sender: {name: "users/app", type: "BOT"},
+      text: "firing: example alert",
+      cardsV2: [{cardId: "c", card: {
+        header: {title: "example alert is firing"},
+        sections: [{widgets: [
+          {textParagraph: {text: "<b>cluster:</b> test"}},
+          {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
+        ]}],
+      }}],
+      accessoryWidgets: [
+        {buttonList: {buttons: [{text: "Dashboard", onClick: {openLink: {url: "https://runbook.example/d"}}}]}},
+      ],
+    });
+    const expected = [{
+      title: "example alert is firing",
+      text: "<b>cluster:</b> test",
+      links: [{label: "Runbook", url: "https://runbook.example/r"}],
+    }];
+    const buttons = [{label: "Dashboard", url: "https://runbook.example/d"}];
+    const chat = chatHarness(backend);
+    using requests = vi.spyOn(globalThis, "fetch");
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info).toMatchObject({text: "firing: example alert", cards: expected, buttons});
+    using entry = await space.getMessage(messageName("alert"));
+    expect(entry.info.cards).toEqual(expected);
+    expect(entry.info.buttons).toEqual(buttons);
+    expect((await entry.message.getMetadata()).cards).toEqual(expected);
+    expect((await entry.message.getMetadata()).buttons).toEqual(buttons);
+    const hosts = requests.mock.calls.map(([input]) =>
+      new URL(typeof input === "string" || input instanceof URL ? input : input.url).hostname);
+    expect(hosts).not.toContain("runbook.example");
+    expect(JSON.stringify((await chat.readQueue()).observations)).toContain("cards, buttons");
+  });
+
+  it("returns what a message quotes from every read, and never the quoted message itself", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("forward", "A", "2024-01-01T00:00:00Z"),
+      text: "",
+      quotedMessageMetadata: {
+        name: "spaces/OTHER/messages/source",
+        quoteType: "FORWARD",
+        quotedMessageSnapshot: {sender: "Grace Hopper", text: "The build is green"},
+      },
+    });
+    const expected = {
+      id: "spaces/OTHER/messages/source", senderName: "Grace Hopper", text: "The build is green", forwarded: true,
+    };
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info.quotedMessage).toEqual(expected);
+    using entry = await space.getMessage(messageName("forward"));
+    expect(entry.info.quotedMessage).toEqual(expected);
+    expect((await entry.message.getMetadata()).quotedMessage).toEqual(expected);
+    await expect(Promise.resolve(space.getMessage(expected.id))).rejects.toThrow(/different conversation/);
+    // Opening the conversation, then the three reads: each read tells the user it covered the quote.
+    const quoting = expect.objectContaining({description: expect.stringContaining("quoted message")});
+    expect((await chat.readQueue()).observations).toEqual([expect.anything(), quoting, quoting, quoting]);
   });
 
   it("refuses to queue an edit of someone else's message", async () => {
@@ -1651,7 +1793,7 @@ describe("Starting Google Chat conversations", () => {
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     backend.state.members.push(member);
-    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* Reject this message/);
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* Deny this message to clear it/);
     expect(backend.state.creates).toEqual([]);
     await chat.rejectAction(1);
   });
@@ -1710,13 +1852,30 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.deletes).toEqual([messageName("M1")]);
   });
 
+  it("creates a direct message from a known same-organization Chat user ID", async () => {
+    const {backend, chat} = accountChat();
+    backend.state.directory = [];
+    using account = await chat.account();
+
+    using _message = (await account.sendDirectMessage(["users/200"], "hello")).message;
+    expect((await chat.readQueue()).submissions[0].description).toMatchObject({
+      title: "Start a Google Chat conversation with users/200",
+      fields: [
+        {label: "People", kind: "list", items: ["users/200"]},
+        {label: "Message", kind: "text", value: "hello"},
+      ],
+    });
+
+    await chat.applyAction(1);
+    expect(backend.state.setups).toMatchObject([{spaceType: "DIRECT_MESSAGE", members: ["users/200"]}]);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hello"]);
+  });
+
   it("refuses to start a conversation with anyone outside the directory, or with yourself", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     await expect(Promise.resolve(account.sendDirectMessage(["eve@elsewhere.test"], "hi")))
       .rejects.toThrow(/eve@elsewhere\.test.*directory/);
-    await expect(Promise.resolve(account.sendDirectMessage(["users/200"], "hi")))
-      .rejects.toThrow(/email address/);
     await expect(Promise.resolve(account.sendDirectMessage([BOB.email, "ada@example.com"], "hi")))
       .rejects.toThrow(/yourself/);
     expect((await chat.readQueue()).submissions).toEqual([]);
@@ -1782,7 +1941,6 @@ describe("Starting Google Chat conversations", () => {
     using _second = (await account.sendDirectMessage([CAROL.email, BOB.email], "two")).message;
     backend.state.setupFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.setupFailure = 0;
     await chat.applyAction(next);
     await chat.applyAction(last);
@@ -1836,7 +1994,7 @@ describe("Starting Google Chat conversations", () => {
     expect((await cursor.next())?.map(({info}) => [info.text, info.spaceId])).toEqual([["hi all", SPACE_NAME]]);
   });
 
-  it("keeps a send that may have posted in the conversation it set up from being rejected", async () => {
+  it("lets a send that may have posted in the conversation it set up be rejected", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
@@ -1846,7 +2004,8 @@ describe("Starting Google Chat conversations", () => {
     // A later refusal says nothing about the earlier attempt that may have posted.
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.rejectAction(1);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
   });
 
   it("lets a send be rejected once the post it landed is deleted, whoever has joined since", async () => {
@@ -1862,7 +2021,7 @@ describe("Starting Google Chat conversations", () => {
     await chat.rejectAction(1);
   });
 
-  it("posts nothing, and stays unrejectable, once someone joins after a post that may not have landed", async () => {
+  it("posts nothing, and stays rejectable, once someone joins after a post that may not have landed", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
@@ -1871,9 +2030,9 @@ describe("Starting Google Chat conversations", () => {
     await expect(chat.applyAction(1)).rejects.toThrow();
     backend.state.createFailure = 0;
     backend.state.members.push(joined("400"));
-    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly/);
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* may already have posted it/);
     expect(backend.state.creates).toEqual([]);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.rejectAction(1);
   });
 
   it("posts nothing once someone joins the conversation it set up before a refused post", async () => {

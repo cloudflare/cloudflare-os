@@ -7,34 +7,36 @@
 // `encodeURIComponent`, a normalization one side does and the other does not -- shows up here
 // rather than as a resource the backend rejects after the user has filled the form.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@gadgets/configurator-ui", () => ({
   h: (component: unknown, props: unknown, ...children: unknown[]) => ({
     component, props, children,
   }),
   Autocomplete: "Autocomplete",
+  Button: "Button",
   Field: "Field",
+  Fragment: "Fragment",
+  Notice: "Notice",
   RadioCards: "RadioCards",
+  HierarchyPicker: "HierarchyPicker",
   Section: "Section",
   TextInput: "TextInput",
 }));
-import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
-import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
+import bigQueryConfigurator from "../src/configurator/bigquery-configurator-ui";
+import driveConfigurator from "../src/configurator/drive-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
-import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
+import googleGroupConfigurator from "../src/configurator/google-group-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
-import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SLIDES_RESOURCE,
-  parseResourceUrl,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE,
+  groupResourceUrl, parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -55,21 +57,6 @@ const configurableUrl = (
   configurator: { resourceUrl?: (context: { values: Record<string, unknown>; ui: never }) => string },
   values: Record<string, unknown>,
 ) => configurator.resourceUrl!({ values, ui: noUi });
-
-// Drive value keys match the urlPattern named groups, so the sandbox runtime's
-// `defaultValuesFromResourceUrl` (not a per-module hook) is the prefill path. This is that fallback:
-// URLPattern groups plus decodeURIComponent, ignoring numeric/wildcard names.
-function valuesFromUrlPattern(resourceUrl: string, resourceUrlPattern: string) {
-  const match = new URLPattern(resourceUrlPattern).exec(resourceUrl);
-  const groups = match?.pathname.groups ?? {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(groups)) {
-    if (typeof value === "string" && value.length > 0 && !/^[0-9]+$/.test(key)) {
-      out[key] = decodeURIComponent(value);
-    }
-  }
-  return out;
-}
 
 const renderedCopy = (configurator: { render?: (context: never) => unknown }) =>
   JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui: noUi } as never));
@@ -129,6 +116,45 @@ describe("Gmail configurator URLs", () => {
   });
 });
 
+describe("Google Group configurator URLs", () => {
+  const groupUrl = (group: string) => configurableUrl(googleGroupConfigurator, { group });
+  const groupValues = (resourceUrl: string) => googleGroupConfigurator.initialValuesFromResourceUrl!({
+    resourceUrl, resourceUrlPattern: GOOGLE_GROUP_RESOURCE.urlPattern, ui: noUi,
+  });
+
+  it.for(["team@example.com", "team+launch@example.com", "o'brien-team@example.com", "a%b@example.com"])(
+    "mints the server's own URL for %s, which reads back to the same group", group => {
+      const url = groupUrl(group);
+      expect(url).toBe(groupResourceUrl(group));
+      expect(parseResourceUrl(url)).toEqual({ kind: "group", groupAddress: group });
+      expect(groupValues(url)).toEqual({ group });
+    });
+
+  it("mints and reads back a group that takes outside mail as the server does", () => {
+    const url = configurableUrl(googleGroupConfigurator, { group: "team@example.com", senders: "anyone" });
+    expect(url).toBe(groupResourceUrl("team@example.com", true));
+    expect(parseResourceUrl(url)).toEqual({ kind: "group", groupAddress: "team@example.com", outsideSenders: true });
+    expect(groupValues(url)).toEqual({ group: "team@example.com", senders: "anyone" });
+  });
+
+  it("reads a pasted Google Groups page case-insensitively, as the server does", () => {
+    const pasted = "https://groups.google.com/a/Example.com/g/Team/";
+
+    expect(groupValues(pasted)).toEqual({ group: "team@example.com" });
+    expect(parseResourceUrl(pasted)).toEqual({ kind: "group", groupAddress: "team@example.com" });
+  });
+
+  it("refuses a group address the server would refuse", () => {
+    for (const group of ["", "team", "team@example.com, other@example.com", "Team <team@example.com>"]) {
+      expect(() => groupUrl(group), group).toThrow("Choose a group.");
+    }
+  });
+
+  it("prefills nothing from a Google Groups URL that isn't one group's page", () => {
+    expect(groupValues("https://groups.google.com/g/team")).toEqual({});
+  });
+});
+
 describe("Calendar configurator URLs", () => {
   it("resolves an account-relative primary prefill to a stable calendar ID", async () => {
     const ui = {
@@ -154,6 +180,67 @@ describe("Calendar configurator URLs", () => {
       availabilityMode: "allVisible",
     });
   });
+
+  it("leaves a suggested calendar unselected when the recipient cannot write it", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => false),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/creator%40example.com/?availability=thisCalendar",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({ availabilityMode: "thisCalendar" });
+    expect(calendarConfigurator.isReady!({ values })).toBe(false);
+    expect(ui.canWriteCalendar).toHaveBeenCalledExactlyOnceWith("creator@example.com");
+  });
+
+  // The runtime discards every seeded value when the initializer throws, which silently turned a
+  // requested all-visible connection into a this-calendar one.
+  it("keeps the requested availability mode when the calendar lookup fails", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => { throw new Error("[http=503]"); }),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/shared%40example.com/?availability=allVisible",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({ availabilityMode: "allVisible" });
+    expect(calendarConfigurator.isReady!({ values })).toBe(false);
+  });
+
+  it("keeps a suggested calendar when the recipient can write it", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => true),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/shared%40example.com/?availability=allVisible",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({
+      calendarId: "shared@example.com",
+      availabilityMode: "allVisible",
+    });
+    expect(calendarConfigurator.isReady!({ values })).toBe(true);
+    expect(ui.canWriteCalendar).toHaveBeenCalledExactlyOnceWith("shared@example.com");
+  });
 });
 
 describe("Google Chat configurator URLs", () => {
@@ -177,6 +264,14 @@ describe("Google Chat configurator URLs", () => {
   it("round-trips its own URL back to the same values", () => {
     const values = { spaceId: "AAAA1234" };
     expect(chatValues(configurableUrl(chatSpaceConfigurator, values))).toEqual(values);
+  });
+
+  it.for([
+    "https://chat.google.com/room/AAAA1234?cls=7",
+    "https://chat.google.com/dm/AAAA1234?cls=7",
+  ])("prefills the conversation from a link Chat gave out, %s", link => {
+    expect(parseResourceUrl(link)).toEqual({ kind: "chatSpace", spaceId: "AAAA1234" });
+    expect(chatValues(link)).toEqual({ spaceId: "AAAA1234" });
   });
 
   it("prefills nothing from a URL that names no conversation", () => {
@@ -232,57 +327,130 @@ describe("Google Chat thread configurator URLs", () => {
 });
 
 describe("Drive configurator URLs", () => {
-  it("mints the whole-account resource", () => {
-    let url = configurableUrl(driveAccountConfigurator, { scope: "account" });
-    expect(url).toBe(GOOGLE_DRIVE_RESOURCE.urlPattern);
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
+  const driveValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: noUi,
   });
 
-  it("round-trips an encoded file ID", () => {
-    let values = { fileId: "file/id with spaces" };
-    let url = configurableUrl(driveFileConfigurator, values);
-    expect(url).toBe(
-      GOOGLE_DRIVE_FILE_RESOURCE.urlPattern.replace(":fileId", encodeURIComponent(values.fileId)),
-    );
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
+  // Reading a read and write URL back asks whether the deployment offers that level and whether
+  // the account allows changes, which `noUi` refuses.
+  const allowed = {
+    offersWriteAccess: async () => true,
+    getWriteAccess: async () => ({ grant: "g", held: true }),
+  } as never;
+  const writeValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: allowed,
   });
 
-  it("round-trips an encoded folder ID", () => {
-    let values = { folderId: "folder/id with spaces" };
-    let url = configurableUrl(driveFolderConfigurator, values);
-    expect(url).toBe(
-      GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern.replace(
-        ":folderId", encodeURIComponent(values.folderId)),
-    );
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: values.folderId });
+  // The module mints the parameter only once it has heard that the deployment offers read and
+  // write, and a mint cannot ask: its `ui` refuses every call. Reading a URL back asks, and the
+  // module keeps the answer for every case below.
+  beforeAll(async () => {
+    await expect(writeValues("https://drive.google.com/drive/my-drive?access=write"))
+      .resolves.toEqual({ target: "drive", access: "write" });
+  });
+
+  it.for([
+    ["the whole account", "drive", { kind: "driveAccount" }],
+    ["a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" }],
+    ["a file", "file:file/id with spaces", { kind: "driveFile", fileId: "file/id with spaces" }],
+  ] as const)("mints %s, and reads the URL back into the same choice", async ([, target, parsed]) => {
+    let url = configurableUrl(driveConfigurator, { target });
+    expect(parseResourceUrl(url)).toEqual(parsed);
+    // A URL that does not ask for Read and write reads back as Read only, over the dialog's default.
+    await expect(driveValues(url)).resolves.toEqual({ target, access: null });
   });
 
   it("mints the natural Drive folder URL", () => {
-    let url = configurableUrl(driveFolderConfigurator, { folderId: "FOLDER123" });
-    expect(url).toBe("https://drive.google.com/drive/folders/FOLDER123");
-    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: "FOLDER123" });
+    expect(configurableUrl(driveConfigurator, { target: "folder:FOLDER123" }))
+      .toBe("https://drive.google.com/drive/folders/FOLDER123");
   });
 
-  // Prefill after deleting the hand-written hooks: the sandbox fallback extracts named groups and
-  // decodeURIComponent's them. A missing decode would leave `%2F`/`%20` in the form values.
-  it("prefills encoded IDs from urlPattern named groups", () => {
-    let fileValues = { fileId: "file/id with spaces" };
-    let fileUrl = configurableUrl(driveFileConfigurator, fileValues);
-    expect(valuesFromUrlPattern(fileUrl, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern))
-      .toEqual(fileValues);
+  it("reads a pasted sharing link", async () => {
+    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1", access: null });
+    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1", access: null });
+  });
 
-    let folderValues = { folderId: "folder/id with spaces" };
-    let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
-    expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
-      .toEqual(folderValues);
+  it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
+    expect(() => configurableUrl(driveConfigurator, { target: null })).toThrow("Choose what to connect.");
+    expect(() => configurableUrl(driveConfigurator, { target: "shared-with-me" })).toThrow();
+  });
+
+  it.for([
+    ["the whole account", "drive", { kind: "driveAccount" }, GOOGLE_DRIVE_RESOURCE],
+    [
+      "a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" },
+      GOOGLE_DRIVE_FOLDER_RESOURCE,
+    ],
+    [
+      "a file", "file:file/id with spaces", { kind: "driveFile", fileId: "file/id with spaces" },
+      GOOGLE_DRIVE_FILE_RESOURCE,
+    ],
+  ] as const)("mints Read and write as ?access=write for %s, and reads the URL back into the same choice", async ([, target, parsed, resource]) => {
+    let url = configurableUrl(driveConfigurator, { target, access: "write" });
+    expect(url).toMatch(/\?access=write$/);
+    expect(parseResourceUrl(url)).toEqual({ ...parsed, access: "write" });
+    expect(new URLPattern(resource.urlPattern).test(url), url).toBe(true);
+    await expect(writeValues(url)).resolves.toEqual({ target, access: "write" });
+  });
+
+  it("mints no parameter for Read only", () => {
+    for (let access of [undefined, null, "read", "WRITE"]) {
+      let url = configurableUrl(driveConfigurator, { target: "folder:F1", ...(access === undefined ? {} : { access }) });
+      expect(url, String(access)).toBe("https://drive.google.com/drive/folders/F1");
+      expect("access" in parseResourceUrl(url), String(access)).toBe(false);
+    }
+  });
+
+  it("reads the parameter exactly as the server does", async () => {
+    for (let query of [
+      "?access=write", "?access=WRITE", "?access=", "?access=read&access=write", "?access=write&access=read",
+      "?usp=sharing&access=write",
+    ]) {
+      let url = `https://drive.google.com/drive/folders/F1${query}`;
+      let parsed = parseResourceUrl(url);
+      expect((await writeValues(url) as { access?: unknown }).access === "write", query).toBe("access" in parsed && parsed.access === "write");
+    }
+  });
+
+  it("never puts the parameter on an editable type's URL", () => {
+    expect(configurableUrl(driveConfigurator, { target: "doc:D1", checked: "doc:D1", access: "write" }))
+      .toBe("https://docs.google.com/document/d/D1/edit");
+  });
+
+  // The picker offers the whole account, folders and files, but the Workshop may ask for only one of
+  // them, as a blueprint's folder binding does. The configurator copies each pattern, so each is
+  // checked against its resource.
+  it("is ready only for a type the Workshop accepts, or any type when it does not say", () => {
+    let ready = (target: string, accepted?: string[]) =>
+      driveConfigurator.isReady({ values: { target }, acceptedResourceUrlPatterns: accepted });
+    let folderOnly = [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern];
+    expect(ready("folder:D1", folderOnly)).toBe(true);
+    expect(ready("file:F1", folderOnly)).toBe(false);
+    expect(ready("drive", folderOnly)).toBe(false);
+    expect(ready("drive", [GOOGLE_DRIVE_RESOURCE.urlPattern])).toBe(true);
+    expect(ready("file:F1", [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern])).toBe(true);
+    expect(ready("file:F1")).toBe(true);
+    expect(ready("shared-drives")).toBe(false);
   });
 });
 
-describe("Google Slides configurator URLs", () => {
-  it("mints a presentation URL the server parses and the prefill reads back", () => {
-    let values = { presentationId: "1AbC-dEf_9xYz" };
-    let url = configurableUrl(googleSlidesConfigurator, values);
-    expect(parseResourceUrl(url)).toEqual({ kind: "slides", presentationId: values.presentationId });
-    expect(valuesFromUrlPattern(url, GOOGLE_SLIDES_RESOURCE.urlPattern)).toEqual(values);
+describe("BigQuery configurator URLs", () => {
+  const url = (values: Record<string, unknown>) => bigQueryConfigurator.resourceUrl({ values, ui: noUi });
+  const values = (resourceUrl: string) => bigQueryConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: BIGQUERY_RESOURCE.urlPattern, ui: noUi,
+  });
+
+  type Target = { projectId: string; datasetId?: string; tableId?: string; queryProjectId?: string };
+  it.each<[{ target: string; queryProject?: string }, Target]>([
+    [{ target: "project:example.com:warehouse" }, { projectId: "example.com:warehouse" }],
+    [{ target: "dataset:mine/sales" }, { projectId: "mine", datasetId: "sales" }],
+    [{ target: "table:mine/sales/orders", queryProject: "mine" }, { projectId: "mine", datasetId: "sales", tableId: "orders" }],
+    [{ target: "dataset:theirs/events", queryProject: "mine" }, { projectId: "theirs", datasetId: "events", queryProjectId: "mine" }],
+  ])("mints %o as the capability the backend reads, and reads it back", (chosen, target) => {
+    const minted = url(chosen);
+    expect(parseResourceUrl(minted)).toEqual({ kind: "bigquery", datasetId: undefined, tableId: undefined, queryProjectId: undefined, ...target });
+    // The data project itself is the default, so naming it as the query project leaves no mark.
+    expect(values(minted)).toEqual({ target: chosen.target, queryProject: target.queryProjectId ?? null });
+    expect(new URLPattern(BIGQUERY_RESOURCE.urlPattern).test(minted)).toBe(true);
   });
 });

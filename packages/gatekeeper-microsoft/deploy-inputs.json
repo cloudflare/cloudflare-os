@@ -1,0 +1,29 @@
+[
+  {
+    "name": "CLIENT_ID",
+    "kind": "secret",
+    "label": "Application (client) ID",
+    "help": "Agents reach SharePoint, OneDrive, Outlook and Outlook Calendar as the user who connected, through this app registration's delegated permissions, so they can never open more than that user can.",
+    "consoleUrl": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+    "setupSteps": [
+      "In the Microsoft Entra admin center, open App registrations and select New registration.",
+      "Choose Accounts in this organizational directory only (the package README describes a multitenant setup, which needs settings this wizard doesn't collect), add a Web redirect URI with the value below, and register.",
+      "Under API permissions, add Microsoft Graph delegated permissions: openid, profile, email, offline_access and User.Read; for SharePoint, Sites.ReadWrite.All and Files.ReadWrite.All; for Outlook, Mail.ReadWrite, Mail.ReadWrite.Shared, Mail.Send, Mail.Send.Shared, MailboxSettings.ReadWrite, People.Read and User.ReadBasic.All; for Calendar, Calendars.ReadWrite, Calendars.ReadWrite.Shared, MailboxSettings.Read, People.Read and User.ReadBasic.All. A wizard install asks users for this full set, so granting less makes connecting fail; a deployment that wants read-only access or only selected sites sets the environment variables the package README describes.",
+      "Select Grant admin consent, so users aren't asked to approve each permission themselves.",
+      "Under Certificates & secrets, create a client secret, and note when it expires: connections stop refreshing once it does.",
+      "Copy the Application (client) ID and Directory (tenant) ID from the Overview page, and the secret's Value (not its ID), here."
+    ],
+    "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/microsoft/oauth"
+  },
+  {
+    "name": "CLIENT_SECRET",
+    "kind": "secret",
+    "label": "Client secret value"
+  },
+  {
+    "name": "MICROSOFT_TENANT_ID",
+    "kind": "secret",
+    "label": "Directory (tenant) ID",
+    "help": "Only accounts in this Microsoft 365 organization can connect. The tenant ID is on the app registration's Overview page."
+  }
+]

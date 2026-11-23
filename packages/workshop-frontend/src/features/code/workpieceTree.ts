@@ -1,4 +1,6 @@
-import type { FileAtCommit, TreeNode } from '@gadgets/workshop-shared/api'
+import type { TreeNode } from '@gadgets/workshop-shared/api'
+import type { CommitFile } from './commitFileStore'
+import type { FileContent } from '@gadgets/workshop-shared/code-change'
 
 // The displayed shape of a workpiece's files: the content base's tree (Overseer.listTree(), see
 // TreeNode) with the chat's overlay folded in. Pure derivations, kept apart from the view so the
@@ -178,12 +180,12 @@ export function resolveRenamePath(path: string, name: string): string | null {
  * review base at all (a pending gadget), where every displayed file is an addition.
  *
  * A removal of a path the review base lacks (added, then deleted, within the chat) is nothing to
- * review and reads as unchanged; an unreadable original (a binary the chat overwrote) can only be
- * reported as modified.
+ * review and reads as unchanged; an unreadable original (a symlink or submodule the chat
+ * overwrote) can only be reported as modified.
  */
 export function fileChangeStatus(
-  displayed: string | null,
-  original: FileAtCommit | undefined,
+  displayed: FileContent | null,
+  original: CommitFile | undefined,
   hasReviewBase: boolean,
 ): FileChangeStatus | undefined {
   if (original === undefined) {
@@ -192,8 +194,10 @@ export function fileChangeStatus(
   }
   if (original.kind === 'absent') return displayed !== null ? 'added' : 'unchanged'
   if (displayed === null) return 'deleted'
-  if (original.kind === 'unreadable' || original.text !== displayed) return 'modified'
-  return 'unchanged'
+  if (original.kind === 'text') return original.text === displayed ? 'unchanged' : 'modified'
+  if (original.kind === 'blob' && typeof displayed !== 'string' &&
+      displayed.oid === original.blob.oid) return 'unchanged'
+  return 'modified'
 }
 
 /**
@@ -245,8 +249,8 @@ function hasTreeLeaf(nodes: readonly TreeNode[], path: string): boolean {
  */
 export function deriveChanges(
   touchedPaths: readonly string[],
-  displayed: (path: string) => string | null | undefined,
-  originals: ReadonlyMap<string, FileAtCommit>,
+  displayed: (path: string) => FileContent | null | undefined,
+  originals: ReadonlyMap<string, CommitFile>,
   hasReviewBase: boolean,
   merged: ReadonlyMap<string, FileChangeStatus> = new Map(),
 ): { statuses: Map<string, FileChangeStatus>; changes: ChangedFile[] } {

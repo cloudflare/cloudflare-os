@@ -1075,12 +1075,21 @@ export class NotionApi {
 
   // --- Observations ---
 
-  async getBotUser(): Promise<NotionUser & { workspaceName?: string }> {
-    const me = await this.#request<NotionUserResponse & { bot?: { workspace_name?: string } }>(
+  /**
+   * The token's bot user, with its workspace's name and id. `workspaceId` is absent when Notion's
+   * answer names none.
+   */
+  async getBotUser(): Promise<NotionUser & { workspaceName?: string; workspaceId?: string }> {
+    const me = await this.#request<
+      NotionUserResponse & { bot?: { workspace_name?: string; workspace_id?: string } }>(
       "GET",
       "/v1/users/me",
     );
-    return { ...userResponseToUser(me), workspaceName: me.bot?.workspace_name };
+    return {
+      ...userResponseToUser(me),
+      workspaceName: me.bot?.workspace_name,
+      workspaceId: me.bot?.workspace_id || undefined,
+    };
   }
 
   async retrievePage(id: string): Promise<NotionPageResponse> {

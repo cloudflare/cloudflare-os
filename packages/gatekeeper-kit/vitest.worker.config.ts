@@ -1,4 +1,4 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 /** These suites require workerd-only APIs and persistent verifier-stub storage. */
@@ -10,6 +10,7 @@ export default defineConfig({
       compatibilityFlags: ["allow_irrevocable_stub_storage"],
       durableObjects: {
         TRACKER_HOST: { className: "TrackerHost", useSQLite: true },
+        HOOK_HOST: { className: "HookHost", useSQLite: true },
         CONFORMANCE_ACCOUNT: { className: "ConformanceAccount", useSQLite: true },
         CONFORMANCE_RESOURCE: { className: "ConformanceResource", useSQLite: true },
       },

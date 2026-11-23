@@ -4,13 +4,25 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
-  BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES,
-  recordedResourceUrlPatterns,
+  BIGQUERY_RESOURCE, DRIVE_WRITES_GRANT, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES, recordedResourceUrlPatterns,
 } from "../src/resources";
 import { FakeKv } from "./fake-kv";
 
 const TEN_MINUTES = 10 * 60 * 1000;
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.example.workers.dev/oauth";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+
+/**
+ * A reconnect begun for `requested`: the scopes its consent asks Google for, with the grants of
+ * `withheld` left out, and the storage it is kept in.
+ */
+function begun(requested: string[], withheld?: string[]) {
+  let kv = new FakeKv();
+  prepareOAuthFlow(kv, "init", requested, "reconnect", 0);
+  let scopes = beginStoredOAuthFlow(kv, "init", "oauth", OAUTH_REDIRECT_URI, 1, withheld)?.scopes;
+  return { kv, scopes };
+}
 
 describe("stored OAuth flow", () => {
   it("keeps a claimed attempt immutable while a later consent flow starts", () => {
@@ -52,6 +64,35 @@ describe("stored OAuth flow", () => {
       GOOGLE_DOC_RESOURCE.urlPattern,
       BIGQUERY_RESOURCE.urlPattern,
     ]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["document", "bigquery"]);
+  });
+
+  it("migrates exact legacy grants without reviving patterns excluded by an ID record", () => {
+    const kv = new FakeKv();
+    kv.put("grantedResources", [GOOGLE_DOC_RESOURCE.urlPattern, "https://retired.example/*"]);
+    mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["document", "bigquery"]);
+    kv.put("grantedResourceTypeIds", []);
+    mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual(["bigquery"]);
+  });
+
+  it("preserves explicitly renamed Chat grants when first recording stable IDs", () => {
+    const kv = new FakeKv();
+    kv.put("grantedResources", [
+      "https://chat.google.com/room/:spaceId",
+      "https://chat.google.com/room/:spaceId/:threadId",
+    ]);
+    mergeGrantedResources(kv, [GOOGLE_DOC_RESOURCE.urlPattern]);
+    expect(kv.get<string[]>("grantedResourceTypeIds")).toEqual([
+      "chat-space", "chat-thread", "document",
+    ]);
+    expect(recordedResourceUrlPatterns({
+      resourceTypeIds: kv.get<string[]>("grantedResourceTypeIds"),
+    })).toEqual([
+      GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
+      GOOGLE_DOC_RESOURCE.urlPattern,
+    ]);
   });
 
   // Regression: the shared-drive resource's urlPattern was retired, and a reconnect feeds the
@@ -69,11 +110,46 @@ describe("stored OAuth flow", () => {
 
     expect(beginStoredOAuthFlow(kv, "init", "oauth", OAUTH_REDIRECT_URI, 1)?.scopes).toEqual([
       ...IDENTITY_SCOPES,
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
+      DRIVE_SCOPE,
+    ]);
+  });
+
+  it("asks for the Drive writes grant with any Google Drive resource, once", () => {
+    const FOLDER = GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern;
+    for (let requested of [[FOLDER], [FOLDER, DRIVE_WRITES_GRANT], [DRIVE_WRITES_GRANT, FOLDER]]) {
+      let { kv, scopes } = begun(requested);
+      expect(scopes, String(requested)).toContain(DRIVE_SCOPE);
+      let recorded = claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources;
+      expect(recorded?.filter(pattern => pattern === DRIVE_WRITES_GRANT), String(requested)).toHaveLength(1);
+      expect(recorded, String(requested)).toContain(FOLDER);
+    }
+
+    // A Doc on its own, BigQuery, and a sign-in that asks for no resource: no Drive writes.
+    for (let requested of [[GOOGLE_DOC_RESOURCE.urlPattern], [BIGQUERY_RESOURCE.urlPattern], []]) {
+      let { kv, scopes } = begun(requested);
+      expect(scopes, String(requested)).not.toContain(DRIVE_SCOPE);
+      expect(claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources, String(requested)).toEqual(requested);
+    }
+  });
+
+  it("leaves a withheld grant's scopes out of what a consent asks for, and keeps the grant in the attempt", () => {
+    const FOLDER = GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern;
+    let { kv, scopes } = begun([FOLDER], [DRIVE_WRITES_GRANT]);
+    expect(scopes).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]);
+    expect(scopes).not.toContain(DRIVE_SCOPE);
+    // The grant is still what completing the consent records.
+    expect(claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources)
+      .toEqual([FOLDER, DRIVE_WRITES_GRANT]);
   });
 
   it("binds the OAuth redirect URI to the claimed attempt", () => {

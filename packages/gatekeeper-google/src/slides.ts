@@ -1,7 +1,6 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
-import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -9,10 +8,13 @@ import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
   boundProps, createFileOnce, isSimulated, UNCREATED_FILE_ID, type SimulatedFileProps,
 } from "./creation";
+import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
-import type { GoogleVerifierApi } from "./google-verifier-types";
+import { requireFileSubresources } from "./file-subresources";
+import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
-import { ReadGate } from "./read-gate";
+import { explainUnopenedFile } from "./office-conversion";
+import { QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
@@ -48,8 +50,6 @@ const THUMBNAIL_SIZES = {
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
 // A move or skip names each of its slides to the approver.
 const MAX_SLIDES_PER_CHANGE = 100;
-// A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
-const MAX_CHANGE_BYTES = 100 * 1024;
 
 type Env = Cloudflare.Env;
 
@@ -98,12 +98,16 @@ export class GoogleSlidesGatekeeperImpl
   });
 
   #api = new GoogleSlidesApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
+  #drive = new DriveApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
   #presentationId = isSimulated(this.ctx.props) ? UNCREATED_FILE_ID : this.ctx.props.presentationId;
   #journal = new ActionJournal<SlidesAction>(this.ctx.storage.kv, { namespace: "slides" });
   #actions = SLIDES_ACTIONS.bind(this.#journal, { api: this.#api, presentationId: this.#presentationId });
-  #reads = new ReadGate();
-  #preparing = new SerialTaskQueue();
-  #inPreparation = 0;
+  #changes = new QueuedChanges<SlidesAction>({
+    journal: this.#journal,
+    select: action => action,
+    outOfOrder: earlier => "Google Slides changes apply in the order they were queued. Approve or " +
+      `reject change ${earlier} first.`,
+  });
 
   /** The account and presentation this binding reaches, which one not yet created has not. */
   get #bound(): { userObjectId: string; presentationId: string } {
@@ -122,8 +126,11 @@ export class GoogleSlidesGatekeeperImpl
         tsType: "GooglePresentationSession",
       };
     }
-    let title = await this.#api.getPresentationTitle(props.presentationId) ??
-      "Untitled presentation";
+    let title = await this.#api.getPresentationTitle(props.presentationId)
+      .catch(async (error: unknown) => {
+        throw await explainUnopenedFile(
+          "slides", error, async () => (await this.#drive.getFile(props.presentationId)).mimeType);
+      }) ?? "Untitled presentation";
     return {
       url: nativeFileUrl("slides", props.presentationId),
       title,
@@ -145,32 +152,26 @@ export class GoogleSlidesGatekeeperImpl
     let props = this.ctx.props;
     let queue = approvalQueue.dup();
     // A presentation binding's scope is the one presentation, so there is nothing to revalidate.
+    // Every read reports it, except one not created yet, which holds only what the caller wrote.
     return new GooglePresentationSessionImpl(
       isSimulated(props) ? new BlankPresentation(props.creation.title) : this.#api,
       this.#presentationId,
       queue,
-      unguardedNativeRead(description => queue.authorizeObservation(description)),
+      unguardedNativeRead(description => queue.authorizeObservation(description),
+        isSimulated(props) ? [] : [{ kind: "presentation", fileId: props.presentationId }]),
       {
-        snapshot: read => this.#reads.read(() => read(this.#journal.listUndecided())),
-        queue: (kind, prepare) => this.#prepareExclusively(async () => {
-          let { payload, result } = await prepare();
-          // Storage serializes a string holding any non-Latin-1 character at two bytes a unit.
-          let bytes = JSON.stringify(payload).length * 2;
-          if (bytes > MAX_CHANGE_BYTES) {
-            throw new Error(`This change is too large to queue (${bytes} bytes, limit ` +
-              `${MAX_CHANGE_BYTES}). Split it up.`);
-          }
-          await this.#actions.submit(queue, kind, payload);
-          return result;
-        }),
+        snapshot: read => this.#changes.snapshot(read),
+        queue: (kind, prepare) =>
+          this.#changes.queue(prepare, payload => this.#actions.submit(queue, kind, payload)),
       },
     );
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     return this.#creating.run(async () => {
-      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "slides",
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(
+          this.ctx, creator, "slides", configuration,
           (title, tokens) => new GoogleSlidesApi(tokens).createPresentation(title));
       return {
         class: this.ctx.exports.GoogleSlidesGatekeeperImpl({props: {userObjectId, presentationId: fileId}}),
@@ -179,37 +180,12 @@ export class GoogleSlidesGatekeeperImpl
     });
   }
 
-  #prepareExclusively<T>(body: () => Promise<T>): Promise<T> {
-    this.#inPreparation++;
-    return this.#preparing.run(body).finally(() => this.#inPreparation--);
-  }
-
   applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    return this.#reads.resolve(async () => {
-      // Each change was checked against those queued before it, so they apply in that order. A
-      // decided or failed change is left to the action set, which answers it without a write.
-      let state = this.#journal.get(actionId)?.state;
-      let earlier = (state === "staged" || state === "pending") &&
-        this.#journal.listPending().find(({ id }) => id < actionId);
-      if (earlier) {
-        throw new Error(
-          `Google Slides changes apply in the order they were queued. Approve or reject change ` +
-          `${earlier.id} first.`);
-      }
-      await this.#actions.apply(actionId);
-    });
+    return this.#changes.apply(actionId, () => this.#actions.apply(actionId));
   }
 
   rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    return this.#reads.resolve(async () => {
-      let pending = this.#journal.listPending();
-      let shown = pending.some(({ id }) => id === actionId);
-      // Changes queued or being prepared after it were checked against it, and the gadget has
-      // read them on top of it.
-      let builtOn = pending.at(-1)?.id !== actionId || this.#inPreparation > 0;
-      await this.#actions.reject(actionId);
-      if (shown && builtOn) return { restart: true };
-    });
+    return this.#changes.reject(actionId, () => this.#actions.reject(actionId));
   }
 
   revertAction(_action: number): Promise<void> {
@@ -220,6 +196,10 @@ export class GoogleSlidesGatekeeperImpl
    * Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
    * presentation granularity, so an observer must be able to open this presentation with their
    * own account. The overseer re-runs this check on every open, catching revoked access.
+   *
+   * Reads now also report the presentation as a `slides/presentation/<presentationId>`
+   * subresource, which verifyObserverAccess checks; this check stays for the reads made before
+   * they did.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
@@ -232,6 +212,19 @@ export class GoogleSlidesGatekeeperImpl
   }
 
   async removeObserver(_id: string): Promise<void> {}
+
+  /**
+   * Checks the presentation subresource every read reports, failing the whole call for any other
+   * ID. Each observer's UserAccount answers whether the Slides API opens the presentation for their
+   * own account, reusing recent answers (see UserAccount.checkSubresourceAccess).
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    requireFileSubresources(subresources, ["presentation"]);
+    return verifyGoogleSubresourceAccess(observers, subresources);
+  }
 }
 
 /** A read with queued changes applied, and the first that no longer applies. */

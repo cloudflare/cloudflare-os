@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
@@ -76,7 +76,7 @@ function addChat(impl: any, id: number): void {
 
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",
@@ -182,6 +182,19 @@ describe("submitCodeChange", () => {
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins[0].baseCommit).toBe(c2);
   }));
 
+  it("rejects a pin at a commit the workspace does not hold, as not the head",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await expect(submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli-a", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: "0".repeat(40) }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+    })).rejects.toThrow(/does not match the gadget's current head/);
+  }));
+
   it("rejects a pin at a blueprint release the head merged, which was never the head",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
@@ -261,6 +274,18 @@ describe("submitCodeChange", () => {
       pins: [{ gadgetId: 1, baseCommit: c1 }],
       change: { 1: [["a.txt", { edit: [2, [2, "x"], 96] }]] },  // expects a 100-unit file
     })).rejects.toThrow(/length mismatch/);
+  }));
+
+  it("rejects a change that would put a NUL into a gadget file", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await expect(submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "c1", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "o\0ne\n" }),
+    })).rejects.toThrow(/a\.txt would contain a NUL character/);
   }));
 
   it("transforms a late submission over retired rows (materialization stales nobody)",
@@ -438,9 +463,9 @@ describe("mergeChanges", () => {
 
     let head = impl.storage.gadgets.get(1)!.commitId!;
     expect(head).not.toBe(c1);
-    expect(await impl.gitStore.readCommitFiles(head))
+    expect(impl.gitCache.readCommitFiles(head))
         .toEqual(new Map([["a.txt", "one\nedited\n"]]));
-    expect((await impl.gitStore.readCommitLog(head, { depth: 1 }))[0].parents).toEqual([c1]);
+    expect(impl.gitCache.readCommitLog(head, { depth: 1 })[0].parents).toEqual([c1]);
 
     let merges = chatMessages(impl, 1).filter(msg => msg.type === "merge");
     expect(merges).toHaveLength(1);
@@ -483,9 +508,9 @@ describe("mergeChanges", () => {
     // pre-reset generation (no lock, no log append), so the accept must neither discard it with
     // the epoch reset nor silently sweep the mid-keystroke state -- it gives up, leaving the
     // chat untouched.
-    let origWrite = impl.gitStore.writeFilesAsCommit.bind(impl.gitStore);
+    let origWrite = impl.gitCache.writeFilesAsCommit.bind(impl.gitCache);
     let injected = false;
-    impl.gitStore.writeFilesAsCommit = async (...args: unknown[]) => {
+    impl.gitCache.writeFilesAsCommit = async (...args: unknown[]) => {
       if (!injected) {
         injected = true;
         await submit(impl, 1, {
@@ -506,7 +531,7 @@ describe("mergeChanges", () => {
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
     let head = impl.storage.gadgets.get(1)!.commitId!;
-    expect(await impl.gitStore.readCommitFiles(head))
+    expect(impl.gitCache.readCommitFiles(head))
         .toEqual(new Map([["a.txt", "late\none\nfirst\n"]]));
   }));
 });
@@ -550,7 +575,7 @@ describe("straggler bridge", () => {
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
     let newHead = impl.storage.gadgets.get(1)!.commitId!;
-    expect((await impl.gitStore.readCommitLog(newHead, { depth: 1 }))[0].parents)
+    expect(impl.gitCache.readCommitLog(newHead, { depth: 1 })[0].parents)
         .toEqual([head]);
   }));
 
@@ -729,6 +754,35 @@ describe("revert and draft discard", () => {
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
   }));
 
+  // Replay hides the results of reads of reverted content, so the next turn's request no longer
+  // starts with the one being kept warm.
+  it("stops keeping the chat's prompt cached", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+    });
+    let materialized = impl.materializeChatChanges(1)!;
+
+    impl.cacheWarmer.view(1);
+    let resend = vi.fn(() => Promise.reject(new Error("Not resent in this test.")));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      impl.cacheWarmer.start(1,
+          { sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 1, resend },
+          "model");
+      expect(vi.getTimerCount()).toBe(1);
+      await impl.revertChanges(1, materialized.sequence, USER);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(resend).not.toHaveBeenCalled();
+  }));
+
   it("discardChatDraftChanges drops unlogged pins but keeps declared ones",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
@@ -902,11 +956,11 @@ function mainlineMerges(impl: any, chatId: number): any[] {
 }
 
 async function commitObject(impl: any, commitId: string) {
-  return await impl.gitStore.readCommitObject(commitId);
+  return impl.gitCache.readCommitObject(commitId);
 }
 
 async function filesAt(impl: any, commitId: string): Promise<Record<string, string>> {
-  return Object.fromEntries(await impl.gitStore.readCommitFiles(commitId));
+  return Object.fromEntries(impl.gitCache.readCommitFiles(commitId));
 }
 
 // A gadget at c1 and a chat that edited it, pinned there, with mainline since moved on to c2.
@@ -981,12 +1035,12 @@ describe("updateChatFromMainline", () => {
     // result, on mainline and then `S`.
     expect(await filesAt(impl, snapshot)).toEqual(CHAT);
     expect(await commitObject(impl, snapshot)).toMatchObject({
-      parent: [c1], message: "Chat before update: Chat\n",
+      parents: [c1], message: "Chat before update: Chat\n",
       author: { name: "Alice", email: "alice@example.com" },
     });
     expect(await filesAt(impl, merge)).toEqual(MERGED);
     expect(await commitObject(impl, merge)).toMatchObject({
-      parent: [c2, snapshot], message: "Merge latest changes into chat: Chat\n",
+      parents: [c2, snapshot], message: "Merge latest changes into chat: Chat\n",
       author: { name: "Alice", email: "alice@example.com" },
     });
 
@@ -1060,8 +1114,8 @@ describe("updateChatFromMainline", () => {
     let { c2 } = await staleChat(impl, C1, CHAT, CHAT);
     await impl.updateChatFromMainline(1, USER);
     let merge = pinOf(impl, 1, 1).baseCommit;
-    expect((await commitObject(impl, merge)).parent[0]).toBe(c2);
-    expect(await impl.gitStore.commitTree(merge)).toBe(await impl.gitStore.commitTree(c2));
+    expect((await commitObject(impl, merge)).parents[0]).toBe(c2);
+    expect(impl.gitCache.commitTree(merge)).toBe(impl.gitCache.commitTree(c2));
     // The chat's files are then mainline's, so accepting has nothing to do.
     expect(await impl.mergeChanges(1, USER_META, "user-do-id")).toEqual({ outcome: "merged" });
     expect(impl.storage.gadgets.get(1)!.commitId).toBe(c2);
@@ -1084,10 +1138,10 @@ describe("updateChatFromMainline", () => {
     let [, message] = mainlineMerges(impl, 1);
     let [{ baseCommit, chatCommit }] = message.mainlineMerge.gadgets;
     expect(baseCommit).toBe(c2);
-    expect((await commitObject(impl, chatCommit)).parent).toEqual([first]);
+    expect((await commitObject(impl, chatCommit)).parents).toEqual([first]);
     expect(await filesAt(impl, chatCommit)).toEqual(edited);
     let second = pinOf(impl, 1, 1).baseCommit;
-    expect((await commitObject(impl, second)).parent).toEqual([c3, chatCommit]);
+    expect((await commitObject(impl, second)).parents).toEqual([c3, chatCommit]);
     expect(await filesAt(impl, second)).toEqual({ ...edited, "c.txt": "sea\n" });
   }));
 
@@ -1195,7 +1249,7 @@ describe("updateChatFromMainline", () => {
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
     expect(impl.storage.gadgets.get(1)!.commitId).toBe(merge);
-    expect((await commitObject(impl, merge)).parent[0]).toBe(c1);
+    expect((await commitObject(impl, merge)).parents[0]).toBe(c1);
   }));
 
   describe("enforces no file size of its own", () => {
@@ -1225,43 +1279,42 @@ describe("updateChatFromMainline", () => {
       expect(merged).toContain(wide);
       expect(await impl.gitCache.readFileAtCommit(head, "big.txt")).toBe(merged);
     }));
+
+    it("merging a 9 MB file, stored chunked, whole", () => withImpl(async impl => {
+      let huge = "0123456789abcdef".repeat(9_000_000 / 16) + "\n";
+      await staleChat(impl, { "big.txt": huge, "a.txt": "one\n" },
+                      { "big.txt": huge, "a.txt": "chat\n" },
+                      { "big.txt": `${huge}main\n`, "a.txt": "one\n" });
+      expect(await impl.updateChatFromMainline(1, USER)).toEqual({ conflictPaths: [] });
+      expect(await impl.mergeChanges(1, USER_META, "user-do-id")).toEqual({ outcome: "merged" });
+      let head = impl.storage.gadgets.get(1)!.commitId!;
+      let files = await filesAt(impl, head);
+      expect(files["big.txt"] === `${huge}main\n`).toBe(true);
+      expect(files["a.txt"]).toBe("chat\n");
+    }), 30_000);
   });
 
-  it("refuses an accept whose file storage cannot hold, naming it and changing nothing",
+  it("refuses an accept of a NUL stored before ingestion refused one, changing nothing",
       () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "server.js": "one\n" });
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
-    // Incompressible, so that its stored object is as large as the text.
-    let big = Array.from({ length: 200 * 1024 }, () => Math.random().toString(36)[2]).join("");
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: { 1: [["server.js", { set: big }]] },
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "oXne\n" }),
     });
-    impl.materializeChatChanges(1);
-    let before = { meta: impl.storage.chatMeta.get(1), messages: chatMessages(impl, 1) };
-
-    // The limit is storage's own, on the stored (deflated) object. This one stands in for the
-    // record cap, so the test needn't write past the real cap, which may yet be raised.
-    let objects = impl.storage.gitObjects;
-    let put = objects.put;
-    objects.put = (record: { data: Uint8Array }) => {
-      if (record.data.byteLength > 1024) {
-        throw new Error("string or blob too big: SQLITE_TOOBIG");
-      }
-      put.call(objects, record);
-    };
-    try {
-      await expect(impl.mergeChanges(1, USER_META, "user-do-id")).rejects.toThrow(
-          /^Cannot accept changes to APP: server\.js is too large to store\. Split it into/);
-    } finally {
-      objects.put = put;
+    // Stand in for a row stored before ingestion refused NUL.
+    for (let row of Array.from(impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` }))) {
+      row.change = editChange(1, { "a.txt": "one\n" }, { "a.txt": "o\0ne\n" });
+      impl.storage.chatChanges.put(row);
     }
+    impl.invalidateChatContent(1);
+
+    await expect(impl.mergeChanges(1, USER_META, "user-do-id")).rejects.toThrow(
+        /^Cannot accept changes to APP: a\.txt would contain a NUL character/);
     expect(impl.storage.gadgets.get(1)!.commitId).toBe(c1);
-    expect(impl.storage.chatMeta.get(1)).toEqual(before.meta);
-    expect(chatMessages(impl, 1)).toEqual(before.messages);
-    expect(await gadgetContent(impl, 1, 1)).toEqual({ "server.js": big });
+    expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "o\0ne\n" });
   }));
 });
 

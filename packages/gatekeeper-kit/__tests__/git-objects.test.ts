@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   advertiseCommits,
   advertisePages,
+  bufferedGitObject,
   commitDetailsFromGitObject,
   commitIdsOfSummary,
+  gitObjectBytes,
   isCommitOid,
   parseGitCommitPayload,
 } from "../src/git-objects";
@@ -210,5 +212,47 @@ describe("commitDetailsFromGitObject", () => {
       parents: [oid(1)],
       url: `https://gitlab.example.com/acme/widgets/-/commit/${oid(7)}`,
     });
+  });
+});
+
+function streamOf(pieces: Uint8Array[], onCancel?: () => void): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    pull: controller => {
+      const piece = pieces.shift();
+      if (piece === undefined) controller.close(); else controller.enqueue(piece);
+    },
+    cancel: onCancel,
+  });
+}
+
+describe("GitCache.get() content", () => {
+  it("reads an object of the expected type whole, buffered or streamed", async () => {
+    const buffered = new Uint8Array([1, 2, 3]);
+    expect(await gitObjectBytes({ type: "tree", content: buffered }, "tree")).toBe(buffered);
+    const content = streamOf([new Uint8Array([1, 2]), new Uint8Array([3])]);
+    expect([...(await gitObjectBytes({ type: "tree", content }, "tree"))!]).toEqual([1, 2, 3]);
+    expect(await gitObjectBytes(null, "tree")).toBeNull();
+  });
+
+  it("cancels a streamed object of another type than expected", async () => {
+    let cancelled = false;
+    const content = streamOf([new Uint8Array(8)], () => { cancelled = true; });
+    // A large blob's oid where a commit was expected.
+    expect(await gitObjectBytes({ type: "blob", content }, "commit")).toBeNull();
+    await Promise.resolve();
+    expect(cancelled).toBe(true);
+  });
+
+  it("keeps a buffered object, and cancels a stream of either type", async () => {
+    const buffered = new Uint8Array([1]);
+    expect(bufferedGitObject({ type: "blob", content: buffered }, "blob")).toBe(buffered);
+    expect(bufferedGitObject({ type: "tree", content: buffered }, "blob")).toBeNull();
+    expect(bufferedGitObject(null, "blob")).toBeNull();
+    let cancels = 0;
+    const stream = () => streamOf([new Uint8Array(8)], () => { cancels++; });
+    expect(bufferedGitObject({ type: "blob", content: stream() }, "blob")).toBe("streamed");
+    expect(bufferedGitObject({ type: "tree", content: stream() }, "blob")).toBeNull();
+    await Promise.resolve();
+    expect(cancels).toBe(2);
   });
 });

@@ -1,10 +1,23 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { RpcStub } from "capnweb";
 import {
   openAgentSession, type AgentSessionOptions, type WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
-import { startHarness, type Harness, type WorkerConfig } from "@gadgets/integration-tests/harness";
+import {
+  ADMIN_USERNAME, startHarness, type Harness, type WorkerConfig,
+} from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
-import { HTTPS_ONLY_PROVIDERS, type AiModelProvider } from "@gadgets/workshop-shared/api";
+import { connect, signUp } from "@gadgets/integration-tests/rpc-client";
+import type { AiModelProvider, GatewayModelSettings } from "@gadgets/workshop-shared/api";
+import type { ContextApi } from "../../gatekeeper-context/src/context-types.js";
 import type { EvalModel } from "./config.js";
+import type { EvalSkill } from "./task.js";
+
+// The Skills library, the real Context gatekeeper, which a turn's `skills` write to. It is optional
+// and lists no connectable resources, so a user who never turns it on doesn't see it.
+const SKILLS_VENDOR_ID = "context";
+const SKILLS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../gatekeeper-context");
 
 /**
  * Gateway access uses one of the backend's two AiGatewayConfig transports. With
@@ -113,25 +126,15 @@ export function resolveModelAccess(
 }
 
 /**
- * Reject a model the configured access cannot serve, mirroring the backend's AiGatewayConfig
- * constructor and getModelViaGateway checks so a misconfigured matrix fails before inference.
+ * Reject a model the configured access cannot serve, so a misconfigured matrix
+ * fails before inference.
  */
 export function assertModelAccess(access: LocalModelAccess, model: EvalModel): void {
-  if (access.kind === "direct") {
-    if (model.provider !== "cloudflare") {
-      throw new Error(
-        `Direct Workers AI credentials only run cloudflare models, not ${model.provider} ` +
-        `(${model.model}). Configure an AI Gateway that serves it, or set WORKSHOP_EVAL_MODELS ` +
-        "to a Workers AI model; those results are not comparable to published baselines.",
-      );
-    }
-    return;
-  }
-  if (access.transport === "binding" && HTTPS_ONLY_PROVIDERS.has(model.provider) &&
-      access.apiToken === undefined) {
+  if (access.kind === "direct" && model.provider !== "cloudflare") {
     throw new Error(
-      `${model.provider} inference cannot ride the Workers AI binding transport, so running a ` +
-      `${model.provider} model requires CF_AI_GATEWAY_API_TOKEN.`,
+      `Direct Workers AI credentials only run cloudflare models, not ${model.provider} ` +
+      `(${model.model}). Configure an AI Gateway that serves it, or set WORKSHOP_EVAL_MODELS ` +
+      "to a Workers AI model; those results are not comparable to published baselines.",
     );
   }
 }
@@ -158,20 +161,15 @@ function allowsModelEgress(
     access: LocalModelAccess, model: EvalModel, url: URL, method: string): boolean {
   const account = encodeURIComponent(access.accountId);
   if (access.kind === "gateway") {
+    // Inference and cost-log reads ride the binding unless HTTPS was chosen.
+    if (access.transport !== "https") return false;
     const gateway = encodeURIComponent(access.gateway);
     if (method === "POST") {
-      // Inference rides HTTPS when the binding is opted out, or for providers whose adapter
-      // cannot ride the binding at all (the backend's AiGatewayConfig.bindingFor).
       const route = GATEWAY_ROUTES[model.provider];
-      const ridesHttps =
-          access.transport === "https" || HTTPS_ONLY_PROVIDERS.has(model.provider);
-      return route !== undefined && ridesHttps &&
+      return route !== undefined &&
         url.origin === "https://gateway.ai.cloudflare.com" &&
         url.pathname.startsWith(`/v1/${account}/${gateway}/${route}/`);
     }
-    // Cost-log reads are same-account, so the backend reads them through the binding whenever
-    // the binding transport is active, even for HTTPS-only inference providers.
-    if (access.transport !== "https") return false;
     const logPrefix =
         `/client/v4/accounts/${account}/ai-gateway/gateways/${gateway}/logs/`;
     const logId = url.pathname.slice(logPrefix.length);
@@ -199,8 +197,9 @@ export function evalNetworkInterceptor(
   });
 }
 
-// One Workshop per model per test process, shared by that eval file's concurrent trials; each trial
-// still signs up its own user with its own workspace. On one 16 GB runner, 40 trials on four
+// One Workshop per model and model settings per test process, shared by that eval file's
+// concurrent trials; each trial still signs up its own user with its own workspace. On one 16 GB
+// runner, 40 trials on four
 // Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. The price is that a workerd
 // crash drops every trial's socket on the Workshop: turns reconnect, and a check that fails in
 // flight makes the trial a run error (EvalVerifier.collect), which is never stored as the agent's
@@ -208,18 +207,41 @@ export function evalNetworkInterceptor(
 // when its DO aborts, so WorkshopAgentSession.close() stays connected until that abort.
 const workshops = new Map<string, Promise<Harness>>();
 
-function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harness> {
-  const key = `${model.provider}/${model.model}`;
+// Settings are applied before the Workshop is handed to any trial, so none runs without them.
+async function startWorkshop(
+    access: LocalModelAccess, model: EvalModel,
+    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
+  const workshop = await startHarness({
+    gatekeepers: [
+      { binding: "CONTEXT", dir: SKILLS_DIR, patch: config => { delete config.build; } },
+    ],
+    enableGadgetExecution: true,
+    ...(access.kind === "gateway"
+      ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
+      : {}),
+  });
+  if (modelSettings === undefined) return workshop;
+  try {
+    using publicApi = connect(workshop.url);
+    using user = await signUp(publicApi, ADMIN_USERNAME);
+    using admin = await user.getAdminApi();
+    if (admin === null) throw new Error("The eval Workshop's admin API was unavailable");
+    await admin.setGatewayModelSettings(model.model, modelSettings);
+    return workshop;
+  } catch (error) {
+    await workshop.server.close();
+    throw error;
+  }
+}
+
+function workshopFor(
+    access: LocalModelAccess, model: EvalModel,
+    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
+  const key = `${model.provider}/${model.model}/${JSON.stringify(modelSettings ?? null)}`;
   let workshop = workshops.get(key);
   if (workshop === undefined) {
     unconfirmedRuntimes++;
-    workshop = startHarness({
-      gatekeepers: [],
-      enableGadgetExecution: true,
-      ...(access.kind === "gateway"
-        ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
-        : {}),
-    });
+    workshop = startWorkshop(access, model, modelSettings);
     workshops.set(key, workshop);
   }
   return workshop;
@@ -245,8 +267,9 @@ export async function closeLocalEvalRuntimes(): Promise<void> {
 
 /** Open one fresh agent session, as its own user, on this process's Workshop for `model`. */
 export async function openLocalEvalTarget(
-    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number): Promise<LocalEvalTarget> {
-  const workshop = await workshopFor(access, model);
+    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number,
+    modelSettings?: GatewayModelSettings): Promise<LocalEvalTarget> {
+  const workshop = await workshopFor(access, model, modelSettings);
   const options: AgentSessionOptions = {
     modelId: model.model,
     turnTimeoutMs,
@@ -265,4 +288,22 @@ export async function openLocalEvalTarget(
   };
   const session = await openAgentSession(workshop.url, options);
   return { session, [Symbol.asyncDispose]: () => session.close() };
+}
+
+/** Turn on Skills for the session's user and add `skills` to a new private collection there. */
+export async function addSkills(
+    session: WorkshopAgentSession, skills: readonly EvalSkill[]): Promise<void> {
+  await session.enableAmbientGatekeeper(SKILLS_VENDOR_ID);
+  const app = await session.openGatekeeperApp(SKILLS_VENDOR_ID);
+  // The Workshop hands over a management app untyped; this one is the Context Library's.
+  using library = app.ui as unknown as RpcStub<ContextApi>;
+  const collection =
+      await library.createContextCollection("My skills", "Skills I wrote.", "private");
+  for (const skill of skills) {
+    await library.createContextSkill(collection.id, `${skill.name}/SKILL.md`, {
+      description: skill.description,
+      body: `---\nname: ${JSON.stringify(skill.name)}\n` +
+        `description: ${JSON.stringify(skill.description)}\n---\n\n${skill.instructions}\n`,
+    });
+  }
 }

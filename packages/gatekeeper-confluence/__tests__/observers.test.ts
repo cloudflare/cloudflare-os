@@ -3,13 +3,12 @@ import { ConfluenceApiError, type AccessibleResource } from "../src/confluence-a
 import {
   ConfluenceAccessChecker,
   ConfluenceObserverTracker,
-  contentSets,
   type ConfluenceVerifierApi,
 } from "../src/confluence-observers";
 
 type TrackerKv = ConstructorParameters<typeof ConfluenceObserverTracker>[0];
 
-function makeKv(): TrackerKv {
+function makeKv(): TrackerKv & { get<T>(key: string): T | undefined } {
   const map = new Map<string, unknown>();
   return {
     get: <T>(key: string) => map.get(key) as T | undefined,
@@ -41,15 +40,6 @@ function verifier(options?: {
     },
   } as unknown as Fetcher<ConfluenceVerifierApi>;
   return { api, calls };
-}
-
-async function observe(
-  tracker: ConfluenceObserverTracker,
-  sets: Parameters<ConfluenceObserverTracker["prepareObservation"]>[0],
-) {
-  const check = await tracker.prepareObservation(sets);
-  check.commit();
-  return check.excludeObservers;
 }
 
 describe("ConfluenceAccessChecker", () => {
@@ -112,113 +102,63 @@ describe("ConfluenceAccessChecker", () => {
   });
 });
 
+// Reads no longer record sets; these markers stand for history recorded before they reported
+// subresources, or by a read still running that code.
 describe("ConfluenceObserverTracker", () => {
   it("checks all past observations before storing an observer", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
-    await observe(tracker, ["space:10", "content:20"]);
+    const kv = makeKv();
+    kv.put("observed:space:10", "observed");
+    kv.put("observed:content:20", "observed");
+    const tracker = new ConfluenceObserverTracker(kv, "cloud");
     const denied = verifier({ spaces: [], content: ["20"] });
 
     await expect(tracker.addObserver("observer-1", denied.api)).rejects.toThrow(/does not have access/);
     expect(denied.calls.spaces).toEqual(["10"]);
     expect(denied.calls.content).toEqual(["20"]);
-
-    await observe(tracker, ["content:21"]);
-    expect(denied.calls.content).toEqual(["20"]);
+    expect(kv.get("observer:observer-1")).toBeUndefined();
   });
 
-  it("excludes stored observers from newly observed sets and removes them idempotently", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
-    const allowed = verifier({ content: ["first", "second", "third"] });
-    const limited = verifier({ content: ["first"] });
+  it("stores an admitted observer's verifier and removes it idempotently", async () => {
+    const kv = makeKv();
+    kv.put("observed:content:first", "observed");
+    const tracker = new ConfluenceObserverTracker(kv, "cloud");
+    const allowed = verifier({ content: ["first"] });
+
     await tracker.addObserver("allowed", allowed.api);
-    await tracker.addObserver("limited", limited.api);
+    expect(kv.get("observer:allowed")).toBe(allowed.api);
 
-    expect(await observe(tracker, ["content:first"])).toBeUndefined();
-    expect(await observe(tracker, ["content:second"])).toEqual(["limited"]);
-    expect(await observe(tracker, ["content:second"])).toBeUndefined();
-
-    tracker.removeObserver("limited");
-    tracker.removeObserver("limited");
-    expect(await observe(tracker, ["content:third"])).toBeUndefined();
-    expect(limited.calls.content).toEqual(["first", "second"]);
+    tracker.removeObserver("allowed");
+    tracker.removeObserver("allowed");
+    expect(kv.get("observer:allowed")).toBeUndefined();
   });
 
-  it("attributes each pagination batch independently", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
-    const limited = verifier({ content: ["page-1"] });
-    await tracker.addObserver("limited", limited.api);
+  it("checks sets an old read left pending, and legacy boolean markers", async () => {
+    const kv = makeKv();
+    kv.put("observed:content:pending", "pending");
+    kv.put("observed:content:legacy", true);
+    const tracker = new ConfluenceObserverTracker(kv, "cloud");
+    const denied = verifier({ content: ["pending"] });
 
-    expect(await observe(tracker, contentSets(["page-1"]))).toBeUndefined();
-    expect(await observe(tracker, contentSets(["page-2"]))).toEqual(["limited"]);
-    expect(limited.calls.content).toEqual(["page-1", "page-2"]);
-  });
-
-  it("tracks a child listing's parent and real children but not provisional content", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
-    const access = verifier({ content: ["parent", "child"] });
-    await tracker.addObserver("observer", access.api);
-
-    const sets = contentSets(["parent", "child", "~1"]);
-    expect(sets).toEqual(["content:parent", "content:child"]);
-    expect(await observe(tracker, sets)).toBeUndefined();
-    expect(access.calls.content).toEqual(["parent", "child"]);
+    await expect(tracker.addObserver("candidate", denied.api)).rejects.toThrow(/does not have access/);
+    expect(denied.calls.content).toEqual(["pending", "legacy"]);
   });
 
   it("dispatches typed space and content sets to their matching verifier methods", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
+    const kv = makeKv();
+    kv.put("observed:space:10", "observed");
+    kv.put("observed:content:20", "observed");
+    const tracker = new ConfluenceObserverTracker(kv, "cloud");
     const access = verifier();
     await tracker.addObserver("observer", access.api);
-    await observe(tracker, ["space:10", "content:20"]);
 
     expect(access.calls.spaces).toEqual(["10"]);
     expect(access.calls.content).toEqual(["20"]);
   });
 
-  it("rechecks a blocked pending set until an observation commits it", async () => {
+  it("rechecks sets recorded while observer admission is awaiting", async () => {
     const kv = makeKv();
+    kv.put("observed:content:old", "observed");
     const tracker = new ConfluenceObserverTracker(kv, "cloud");
-    const limited = verifier({ content: [] });
-    await tracker.addObserver("limited", limited.api);
-
-    const first = await tracker.prepareObservation(["content:secret"]);
-    expect(first.excludeObservers).toEqual(["limited"]);
-    expect(kv.get("observed:content:secret")).toBe("pending");
-
-    const retry = await tracker.prepareObservation(["content:secret"]);
-    expect(retry.excludeObservers).toEqual(["limited"]);
-    expect(limited.calls.content).toEqual(["secret", "secret"]);
-
-    tracker.removeObserver("limited");
-    const allowedRetry = await tracker.prepareObservation(["content:secret"]);
-    expect(allowedRetry.excludeObservers).toBeUndefined();
-    allowedRetry.commit();
-    expect(kv.get("observed:content:secret")).toBe("observed");
-    expect((await tracker.prepareObservation(["content:secret"])).excludeObservers).toBeUndefined();
-  });
-
-  it("checks an observer admitted while a new set is pending", async () => {
-    const kv = makeKv();
-    const tracker = new ConfluenceObserverTracker(kv, "cloud");
-    let release!: () => void;
-    const waiting = new Promise<void>(resolve => { release = resolve; });
-    const current = {
-      hasContentAccess: async () => { await waiting; return true; },
-      hasSpaceAccess: async () => true,
-    } as unknown as Fetcher<ConfluenceVerifierApi>;
-    await tracker.addObserver("current", current);
-
-    const preparing = tracker.prepareObservation(["content:new"]);
-    expect(kv.get("observed:content:new")).toBe("pending");
-    const denied = verifier({ content: [] });
-    await expect(tracker.addObserver("new", denied.api)).rejects.toThrow(/does not have access/);
-    release();
-    (await preparing).commit();
-    expect(denied.calls.content).toEqual(["new"]);
-  });
-
-  it("rechecks sets that become pending while observer admission is awaiting", async () => {
-    const tracker = new ConfluenceObserverTracker(makeKv(), "cloud");
-    await observe(tracker, ["content:old"]);
     let release!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });
     const calls: string[] = [];
@@ -232,42 +172,11 @@ describe("ConfluenceObserverTracker", () => {
     } as unknown as Fetcher<ConfluenceVerifierApi>;
 
     const admission = tracker.addObserver("candidate", candidate);
-    await tracker.prepareObservation(["content:new"]);
+    // A read still running the legacy code marks a set while the check above is in flight.
+    kv.put("observed:content:new", "pending");
     release();
     await expect(admission).rejects.toThrow(/does not have access/);
     expect(calls).toEqual(["old", "new"]);
-  });
-
-  it("handles concurrent and mixed observations without bypassing pending sets", async () => {
-    const kv = makeKv();
-    const tracker = new ConfluenceObserverTracker(kv, "cloud");
-    const limited = verifier({ content: ["old"] });
-    await tracker.addObserver("limited", limited.api);
-    await observe(tracker, ["content:old"]);
-
-    const first = tracker.prepareObservation(["content:pending"]);
-    const concurrent = tracker.prepareObservation(["content:pending"]);
-    expect((await first).excludeObservers).toEqual(["limited"]);
-    expect((await concurrent).excludeObservers).toEqual(["limited"]);
-
-    const mixed = await tracker.prepareObservation([
-      "content:old", "content:pending", "content:new", "content:new",
-    ]);
-    expect(mixed.pendingSets).toEqual(["content:pending", "content:new"]);
-    expect(mixed.excludeObservers).toEqual(["limited"]);
-    mixed.commit();
-    expect((await tracker.prepareObservation(["content:pending", "content:new"]))
-      .excludeObservers).toBeUndefined();
-  });
-
-  it("treats legacy boolean markers as observed", async () => {
-    const kv = makeKv();
-    kv.put("observed:content:legacy", true);
-    const tracker = new ConfluenceObserverTracker(kv, "cloud");
-    const denied = verifier({ content: [] });
-
-    await expect(tracker.addObserver("candidate", denied.api)).rejects.toThrow(/does not have access/);
-    expect(denied.calls.content).toEqual(["legacy"]);
-    expect((await tracker.prepareObservation(["content:legacy"])).pendingSets).toEqual([]);
+    expect(kv.get("observer:candidate")).toBeUndefined();
   });
 });

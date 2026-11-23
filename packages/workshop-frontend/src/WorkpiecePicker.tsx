@@ -7,6 +7,7 @@ import { Tooltip } from '@cloudflare/kumo'
 import type { GadgetSummary, WorkpieceId, WorktreeSummary } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { isImeComposing } from './keyboardEvent'
 
 export const WORKPIECE_RAIL_COLLAPSED_WIDTH = 48
@@ -28,6 +29,8 @@ interface WorkpiecePickerProps {
   onExpandedChange: (expanded: boolean) => void
   onSelect: (id: WorkpieceId) => void
   onRename: (id: WorkpieceId, title: string) => void
+  // Asks to delete a gadget, from its right-click menu; the caller confirms it.
+  onDelete: (gadget: GadgetSummary) => void
   pendingActivityCount: number
   onOpenActivity: () => void
 }
@@ -42,6 +45,7 @@ export default function WorkpiecePicker({
   onExpandedChange,
   onSelect,
   onRename,
+  onDelete,
   pendingActivityCount,
   onOpenActivity,
 }: WorkpiecePickerProps) {
@@ -121,15 +125,14 @@ export default function WorkpiecePicker({
             )
           }
 
-          return (
+          const row = (
             <div
-              key={gadget.id}
               className={`group/workpiece flex items-center rounded-lg text-[13px] leading-[18px] tracking-[-0.25px] transition-colors ${
                 expanded ? 'h-8 gap-1 pl-2 pr-1' : 'h-9 w-9 justify-center self-center'
               } ${
                 isSelected
                   ? 'bg-kumo-fill font-medium text-kumo-strong'
-                  : 'text-kumo-default hover:bg-kumo-tint'
+                  : 'text-kumo-default hover:bg-kumo-tint data-[popup-open]:bg-kumo-tint'
               }`}
             >
               <Tooltip content={`${gadget.title}${!expanded && isPending ? ' (Draft)' : ''}${hasHook ? ' · Hooks enabled' : ''}`} asChild>
@@ -188,6 +191,10 @@ export default function WorkpiecePicker({
                 </WorkshopIconButton>
               )}
             </div>
+          )
+
+          return (
+            <GadgetContextMenu key={gadget.id} trigger={row} onDelete={() => onDelete(gadget)} />
           )
         })}
 

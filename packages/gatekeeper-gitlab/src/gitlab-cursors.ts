@@ -1,11 +1,12 @@
-// The streaming RPC cursor shared by the GitLab gatekeeper's sessions, the same shape as
-// gatekeeper-github's: it overlays simulation onto remote pages and merges provisional rows at
-// their sort positions. In-memory listings use the kit's `ArrayCursor`, and each session's
-// commit advertising the kit's `SessionGitCache`.
+// The RPC cursors shared by the GitLab gatekeeper's sessions, the same shapes as
+// gatekeeper-github's: a streaming cursor that overlays simulation onto remote pages and merges
+// provisional rows at their sort positions, and the wrapper that authorizes each page a session
+// returns. In-memory listings use the kit's `ArrayCursor`.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type { GitLabPage } from "./gitlab-api";
 
 /** A page with each row mapped, keeping where the listing continues. */
@@ -139,5 +140,76 @@ export class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
       this.#buffer.push({ item, injected: true });
       this.#injectedIndex++;
     }
+  }
+}
+
+/**
+ * A listing's cursor that authorizes each page before returning it (see observedListing in
+ * gitlab-sessions.ts), so that what a page discloses is checked against the audience of the moment
+ * it leaves, however long after the listing began. Every answer is authorized, an empty page and a
+ * walk's first `null` included, since "nothing here" is an answer from the project too; only a
+ * `null` after an answered page is not. With `advertise`, the page's commit ids are then
+ * advertised, only once it is authorized; a page whose advertisement fails is held for the retry,
+ * as SessionGitCache.wrap holds one.
+ *
+ * A refused page ends the listing: every later call fails as it did. The listing has already
+ * consumed the page and overlaid its rows with the actions pending then, so offering it again
+ * could show the effects of actions rejected since; a listing made afresh shows the current ones.
+ */
+@validateRpc()
+export class ObservedCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
+  readonly #inner: Cursor<T>;
+  readonly #authorize: (page: number) => Promise<void>;
+  readonly #advertise: ((items: readonly T[]) => Promise<void>) | undefined;
+  readonly #release: () => void;
+  readonly #queue = new SerialTaskQueue();
+  #answered = 0;
+  /** An authorized page whose advertisement failed. */
+  #held?: { items: T[] | null };
+  #refusal: unknown;
+  #disposed = false;
+
+  constructor(inner: Cursor<T>, options: {
+    /** Authorizes the `page`th answer (1-based) before it is returned. */
+    authorize: (page: number) => Promise<void>;
+    advertise?: (items: readonly T[]) => Promise<void>;
+    /** Releases the stubs the hooks hold, when the cursor is disposed. */
+    release: () => void;
+  }) {
+    super();
+    this.#inner = inner;
+    this.#authorize = options.authorize;
+    this.#advertise = options.advertise;
+    this.#release = options.release;
+  }
+
+  /** @returns The next page, or `null` at the end. Concurrent calls are serialized. */
+  next(): Promise<T[] | null> {
+    return this.#queue.run(async () => {
+      if (this.#refusal !== undefined) throw this.#refusal;
+      if (this.#held === undefined) {
+        const items = await this.#inner.next();
+        if (items === null && this.#answered > 0) return null;
+        try {
+          await this.#authorize(this.#answered + 1);
+        } catch (error) {
+          this.#refusal = error;
+          throw error;
+        }
+        this.#answered++;
+        this.#held = { items };
+      }
+      const { items } = this.#held;
+      if (items !== null) await this.#advertise?.(items);
+      this.#held = undefined;
+      return items;
+    });
+  }
+
+  /** Releases the hooks' stubs. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#release();
   }
 }

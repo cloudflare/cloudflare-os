@@ -5,6 +5,16 @@
 // Registration creates a disabled hook. The user must enable it in Connections before it can run or
 // appear in `list()`. Keep the returned schedule ID as the immediate registration receipt.
 //
+// Where the user finds a schedule in the Workshop, to tell them exactly (describe no other place):
+//
+// - The chat shows the registration as a "Hook: <title>" card with an Enabled/Disabled toggle;
+//   turning it on there enables the schedule.
+// - The gadget whose `[restore]()` receives the callback lists it in its Connections tab, under
+//   Hooks, with the same toggle and a Delete button.
+// - Once enabled, it appears on the Scheduled page in the Workshop's sidebar, which lists the
+//   account's schedules across all workspaces under All, Active, Needs attention, and Finished.
+//   That page is read-only: enabling, disabling, and deleting happen on the hook itself.
+//
 // Choose the entry point by how the user described the cadence:
 //
 // - `every()` uses elapsed UTC time, preserves its registration-time phase, and is appropriate for
@@ -267,12 +277,12 @@ export interface ScheduledTaskHook {
  * Workspace-scoped Scheduled Tasks capability.
  *
  * Define the callback in the Gadget's `[restore]()` method, then pass a persistent stub for it to a
- * registration method. From `executeCode`, create the stub with `env.MY_GADGET[restore](params)`
- * on the Gadget's binding (`ctx.restore()` there targets the executeCode worker, not the Gadget);
- * inside the Gadget, use `this.ctx.restore(params)`. The params must be serializable; the system
- * passes them to `[restore]()` whenever it restores the callback. The restored `RpcTarget` is a
- * separate object and does not inherit the Gadget's `ctx`; pass any required dependencies, such as
- * `this.ctx.storage`, to it from `[restore]()`.
+ * registration method. Inside the Gadget, create the stub with `this.ctx.restore(params)`; from
+ * `executeCode`, through the Gadget's binding, as "Persistent Stubs and `ctx.restore()`" in your
+ * instructions describes (`ctx.restore()` there targets the executeCode worker, not the Gadget).
+ * The params must be serializable; the system passes them to `[restore]()` whenever it restores
+ * the callback. The restored `RpcTarget` is a separate object and does not inherit the Gadget's
+ * `ctx`; pass any required dependencies, such as `this.ctx.storage`, to it from `[restore]()`.
  *
  * Use the Scheduler binding shown in the agent environment directly; it does not need to be saved as
  * a Gadget binding. Registration returns a stable schedule ID immediately, but the schedule remains
@@ -298,17 +308,13 @@ export interface ScheduledTaskHook {
  *   async onSchedule(firing) { /* ... *\/ }
  * }
  *
- * // executeCode
- * import { restore } from "cloudflare:workers";
- * export default async function(self, env) {
- *   const callback = await env.MY_GADGET[restore]({ type: "dailyBrief" });
- *   const scheduleId = await env.SCHEDULER.calendarAt(
- *     { timeZone: "America/Chicago", freq: "daily", hour: 7, minute: 0 },
- *     callback,
- *     { title: "Daily brief", description: "Prepare the morning activity summary." },
- *   );
- *   console.log("Schedule registered:", scheduleId);
- * }
+ * // executeCode, where `callback` is a persistent stub for the params `{ type: "dailyBrief" }`
+ * const scheduleId = await env.SCHEDULER.calendarAt(
+ *   { timeZone: "America/Chicago", freq: "daily", hour: 7, minute: 0 },
+ *   callback,
+ *   { title: "Daily brief", description: "Prepare the morning activity summary." },
+ * );
+ * console.log("Schedule registered:", scheduleId);
  */
 export interface ScheduleSession {
   /**

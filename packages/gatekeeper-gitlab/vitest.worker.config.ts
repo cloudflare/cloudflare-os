@@ -1,4 +1,4 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
@@ -23,6 +23,8 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITLAB_GATEKEEPER: { className: "GitLabGatekeeperImpl", useSQLite: true },
+          // A facet class only: the gatekeeper with storage a test can seed (worker.ts).
+          SEEDED_GATEKEEPER: { className: "SeededGatekeeper", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
         },
         bindings: {

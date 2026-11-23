@@ -5,9 +5,10 @@
 
 import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
-import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
-import type { ActionRecord, AutoApproveTagRecord } from "./storage-schema/overseer-storage.js";
+import type {
+  ActionRecord, AutoApproveTagRecord, StoredActionDescription,
+} from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
 
@@ -23,10 +24,11 @@ export interface AutoApprovalStorage {
 /**
  * The single authority on whether an action may be applied without a human: the enabling rule if
  * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
- * this gatekeeper, and the workspace has not latched restricted mode; else undefined.
+ * this gatekeeper, and the workspace has not latched restricted mode; else undefined. A stored
+ * description may lack the verdict, which counts as no.
  */
 export function autoApprovalRule(
-    storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)
+    storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription)
     : AutoApproveTagRecord | undefined {
   if (description.autoApprovable !== true) return undefined;
   let tag = description.actionKind?.tag;
@@ -36,8 +38,9 @@ export function autoApprovalRule(
 }
 
 /**
- * Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist. The
- * caller has already validated that the record is still pending.
+ * Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist.
+ * Refuses an action that is no longer pending or whose decision is in flight; the drain checks
+ * both first, so neither reaches it as a failure.
  */
 export type ApplyPendingActionFn = (
     record: ActionRecord & {type: "action"},
@@ -53,7 +56,11 @@ export class AutoApprovalDrainer {
 
   constructor(
       private storage: AutoApprovalStorage,
-      private applyPendingAction: ApplyPendingActionFn) {}
+      private applyPendingAction: ApplyPendingActionFn,
+      // Whether an action has a decision in flight (see OverseerImpl.claimDecision). The apply
+      // would refuse one anyway, and the catch below would stop there just the same; asking
+      // first keeps that ordinary race out of the failure log.
+      private isDeciding: (id: number) => boolean) {}
 
   drain(gatekeeperId: number): Promise<void> {
     let running = this.#draining.get(gatekeeperId);
@@ -105,6 +112,11 @@ export class AutoApprovalDrainer {
       if (!fresh || fresh.type !== "action" || fresh.state !== "pending") {
         continue;
       }
+      // Someone is already deciding this one by hand. Stop rather than skip ahead, as at a manual
+      // gate. A decision that lands drains again; one that fails does not, and leaves the action
+      // for a person, as a failed apply here does -- draining after a failed rejection would
+      // apply what someone just tried to reject.
+      if (this.isDeciding(fresh.id)) return;
 
       try {
         // Attribute the auto-approval to the user who enabled the rule -- it runs under their

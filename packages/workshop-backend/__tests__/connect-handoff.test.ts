@@ -352,6 +352,38 @@ describe("connect handoff", () => {
     });
   });
 
+  it("refreshes a stored description that lags the grant when there is nothing left to grant", async () => {
+    // A caller asks only for grants the stored description lacks. The gatekeeper holding them anyway
+    // (under a urlPattern renamed since, say) means that copy is stale, and would keep offering a
+    // grant that does nothing.
+    const { stub, inDo } = freshUser();
+    await inDo(async user => {
+      user.storage.connectedAccounts.put({
+        id: 0, account: fakeAccount(user, "already-granted").account, vendorId: "github",
+        description: { displayName: "old", grantedResourceUrlPatterns: [] },
+      });
+    });
+
+    expect(await stub.ensureAccountResources(0, [])).toBeNull();
+    await inDo(async user => {
+      expect(user.storage.connectedAccounts.get(0)?.description)
+        .toEqual({ displayName: "already-granted", uniqueName: "already-granted" });
+    });
+  });
+
+  it("still reports nothing to grant when the description cannot be refreshed", async () => {
+    // The observer setup reads null as access confirmed and continues without a consent flow.
+    const { stub, inDo } = freshUser();
+    await inDo(async user => {
+      user.storage.connectedAccounts.put({
+        id: 0, account: fakeAccount(user, "granted-undescribable", { failDescribe: true }).account,
+        vendorId: "github", description: { displayName: "old" },
+      });
+    });
+
+    expect(await stub.ensureAccountResources(0, [])).toBeNull();
+  });
+
   it("stages through the gatekeeper-facing callback exactly as a connector calls it", async () => {
     const { stub, inDo } = freshUser();
     const handoff = await inDo(async user => {

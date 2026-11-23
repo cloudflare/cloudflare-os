@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -47,7 +47,7 @@ async function renderReview(restricted: boolean) {
     entries: [entry(1, {
       description: {
         title: 'Send email', description: 'Send an email.', implementsRevert: false,
-        descriptionIsComplete: true, fields,
+        autoApprovable: false, descriptionIsComplete: true, fields,
       },
     })],
   })
@@ -100,7 +100,9 @@ describe('Activity creation approval', () => {
       async () => {
     auth.authenticatedApi = {
       listGatekeeperVendors: async () =>
-        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [] }],
+        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [{
+          id: 'thing', urlPattern: 'https://test.example/*', creatable: true,
+        }] }],
       subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
         const accounts = [[1, 'test', 'work'], [2, 'test', 'home'], [3, 'other', 'elsewhere']] as const
         for (const [id, vendorId, uniqueName] of accounts) {
@@ -112,7 +114,7 @@ describe('Activity creation approval', () => {
       },
     }
     const server = makeOverseer()
-    const approveAction = vi.fn<(id: number, accountId?: number) => Promise<void>>(async () => {})
+    const approveAction = vi.fn<Overseer['approveAction']>(async () => {})
     Object.assign(server.overseer, {
       approveAction,
       getGatekeeperById: async () => ({
@@ -138,7 +140,27 @@ describe('Activity creation approval', () => {
     await act(async () =>
       [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
 
-    expect(approveAction).toHaveBeenCalledWith(1, 2)
+    expect(approveAction).toHaveBeenCalledWith(1, { accountId: 2 })
+  })
+
+  it("tells the approver why an approval failed, since the gatekeeper's message says what to do",
+      async () => {
+    const message = 'The previous Gmail send outcome is still unknown. Deny this request to clear it.'
+    const server = makeOverseer()
+    Object.assign(server.overseer, {
+      approveAction: vi.fn<Overseer['approveAction']>(async () => { throw new Error(message) }),
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await view.render(<Activity overseer={server.overseer} view="review" onViewChange={() => {}} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    flushFrames()
+
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+
+    expect(addToast).toHaveBeenCalledWith(
+      { title: 'Failed to approve action', description: message, variant: 'error' })
   })
 })
 

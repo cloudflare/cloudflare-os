@@ -94,7 +94,7 @@ export const WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
  * The default set: the vitest scratch paths plus the whole of `.wrangler`.
  *
  * `.wrangler/validate/**` is the capnweb-validate build tree, regenerated and then loaded by any
- * suite that starts a worker under `@cloudflare/vitest-pool-workers`. For these packages it is
+ * suite that starts a worker under `@cloudflare/vitest-plugin`. For these packages it is
  * derived from sources the same task already tracks, so dropping it from the fingerprint loses no
  * invalidation -- and it must be dropped, because a task that reads a path it also wrote never
  * caches. `build:app` excludes the same tree, for the same reason.
@@ -128,7 +128,7 @@ export type TestCommand = string | { command: string; idleSeconds: number }
 const IDLE_TIMEOUT_SECONDS = 60
 
 /** Wall-clock backstop, for a command that stays chatty while looping forever. */
-const TOTAL_TIMEOUT_SECONDS = 600
+const TOTAL_TIMEOUT_SECONDS = 900
 
 /**
  * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker
@@ -167,6 +167,13 @@ export const TESTS_WITH_TIMEOUT_ENV: string[] = [
 ]
 
 /**
+ * Pins the cases the property suites generate (`property-runs.ts`). Every generated test task
+ * passes and fingerprints it, so a suite that adopts fast-check needs no wiring of its own, and a
+ * different seed is a cache miss rather than a replayed result.
+ */
+const PROPERTY_SEED_ENV = 'FAST_CHECK_SEED'
+
+/**
  * The worker budget `scripts/vp/run.ts` sets (see `scripts/vp/concurrency.ts`). Defined here
  * because every package's task graph loads this module, which must not pull in that one.
  */
@@ -196,11 +203,24 @@ const pinsWorkerCount = (command: TestCommand): boolean =>
  * pick its `agent` reporter, which prints nothing until the run ends, and the idle watchdog would
  * kill any suite that outlasts `IDLE_TIMEOUT_SECONDS`.
  */
-const withProgressReporter = (command: TestCommand): TestCommand => {
+const withProgressReporter = (command: TestCommand): TestCommand =>
+  withVitestFlag(command, '--reporter=default', /(^|\s)--reporters?(=|\s)/)
+
+/**
+ * Turns off Vitest 5's `fsModuleCache` unless the command sets it. vp already caches the whole task,
+ * and every package's vitest shares the one cache under the workspace root's `node_modules`, so
+ * parallel tasks race on it: a run that invalidates the cache deletes the directory while another
+ * is writing into it, and that run fails to start with ENOTEMPTY.
+ */
+const withoutModuleCache = (command: TestCommand): TestCommand =>
+  withVitestFlag(command, '--no-fsModuleCache', /(^|\s)--(no-)?fs-?module-?cache(=|\s|$)/i)
+
+/** Appends `flag` to a vitest command whose arguments don't already match `alreadySet`. */
+const withVitestFlag = (command: TestCommand, flag: string, alreadySet: RegExp): TestCommand => {
   const argv = typeof command === 'string' ? command : command.command
-  if (!/^vitest(\s|$)/.test(argv) || /(^|\s)--reporters?(=|\s)/.test(argv)) return command
-  const pinned = `${argv} --reporter=default`
-  return typeof command === 'string' ? pinned : { ...command, command: pinned }
+  if (!/^vitest(\s|$)/.test(argv) || alreadySet.test(argv)) return command
+  const flagged = `${argv} ${flag}`
+  return typeof command === 'string' ? flagged : { ...command, command: flagged }
 }
 
 /**
@@ -237,13 +257,14 @@ export function vitestTaskWithExclusions(
   // One `cache` covers every command in the task, so a single pinned command forgoes the budget for
   // its siblings too.
   const pinned = [command].flat().some(pinsWorkerCount)
-  const wrap = (one: TestCommand): string => withTestTimeout(withProgressReporter(one))
+  const wrap = (one: TestCommand): string =>
+    withTestTimeout(withoutModuleCache(withProgressReporter(one)))
   return {
     command: Array.isArray(command) ? command.map(wrap) : wrap(command),
     cache: {
       input: [{ auto: true }, ...exclusions],
       output: [{ auto: true }, ...exclusions],
-      env: TESTS_WITH_TIMEOUT_ENV,
+      env: [...TESTS_WITH_TIMEOUT_ENV, PROPERTY_SEED_ENV],
       untrackedEnv: pinned ? [] : VITEST_WORKERS_ENV,
     },
   }

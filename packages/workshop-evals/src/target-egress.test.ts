@@ -108,23 +108,22 @@ it("allows the direct Workers AI route", async () => {
 it("allows AI Gateway inference and cost-log routes over HTTPS", async () => {
   expect(await egress(HTTPS, [WORKERS_AI_MODEL], [WORKERS_AI_INFERENCE_URL, COST_LOG_URL]))
     .toEqual([204, 204]);
+  expect(await egress(HTTPS, [GEMINI], [GEMINI_INFERENCE_URL, COST_LOG_URL]))
+    .toEqual([204, 204]);
 });
 
 it("keeps HTTPS model routes closed in binding mode, with or without a token", async () => {
-  const urls = [WORKERS_AI_INFERENCE_URL, COST_LOG_URL];
-  expect(await egress(BINDING, [WORKERS_AI_MODEL], urls)).toEqual([403, 403]);
-  expect(await egress(BINDING_WITH_TOKEN, [WORKERS_AI_MODEL], urls)).toEqual([403, 403]);
-});
-
-it("opens only the HTTPS inference route for an HTTPS-only provider in binding mode", async () => {
-  expect(await egress(BINDING_WITH_TOKEN, [GEMINI],
-      [GEMINI_INFERENCE_URL, WORKERS_AI_INFERENCE_URL, COST_LOG_URL])).toEqual([204, 403, 403]);
+  const urls = [GEMINI_INFERENCE_URL, WORKERS_AI_INFERENCE_URL, COST_LOG_URL];
+  expect(await egress(BINDING, [GEMINI, WORKERS_AI_MODEL], urls)).toEqual([403, 403, 403]);
+  expect(await egress(BINDING_WITH_TOKEN, [GEMINI, WORKERS_AI_MODEL], urls))
+    .toEqual([403, 403, 403]);
 });
 
 it("scopes HTTPS inference to the gateway routes of the models in the matrix", async () => {
   const urls = [CLAUDE_INFERENCE_URL, WORKERS_AI_INFERENCE_URL, GEMINI_INFERENCE_URL];
   expect(await egress(HTTPS, [CLAUDE], urls)).toEqual([204, 403, 403]);
   expect(await egress(HTTPS, [CLAUDE, WORKERS_AI_MODEL], urls)).toEqual([204, 204, 403]);
+  expect(await egress(HTTPS, [CLAUDE, WORKERS_AI_MODEL, GEMINI], urls)).toEqual([204, 204, 204]);
 });
 
 it("returns a deterministic denial for every other route, loopback included", async () => {

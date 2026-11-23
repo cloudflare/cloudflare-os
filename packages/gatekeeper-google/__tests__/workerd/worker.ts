@@ -2,27 +2,57 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cl
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
-import { GoogleVerifier, UserAccount as GoogleUserAccount, type HookDriverRef } from "../../src/google";
+import {
+  BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl,
+  GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
+  type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps,
+  type GoogleDriveGatekeeperImplProps, type HookDriverRef,
+} from "../../src/google";
+import type { GoogleDocGatekeeperImplProps } from "../../src/docs";
+import type { BigQuerySession } from "../../src/bigquery-types";
+import type { GoogleDocSession } from "../../src/docs-types";
+import type { GoogleDriveSession } from "../../src/drive-types";
+import type { GoogleSheetsGatekeeperImplProps } from "../../src/sheets";
+import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
+import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
+import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
   ActionKind, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
-  GmailAttachmentInput, GmailComposeOptions, GmailDraftAttachment, GmailDraftAttachmentEntry,
+  GmailAttachmentEntry, GmailAttachmentInput, GmailComposeOptions, GmailDraftAttachment, GmailDraftAttachmentEntry,
   GmailDraftInput, GmailDraftPatch, GmailMessage, GmailMessageEntry,
-  GmailMessageInfo, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
+  GmailMessageInfo, GmailPdfText, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
 } from "../../src/types";
+import type { GoogleCalendarSession } from "../../src/calendar-types";
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatNewMessageEntry, ChatSession, ChatSpace, ChatThread,
+  ChatListMessagesOptions, ChatMessageInfo, ChatNewMessageEntry, ChatSession, ChatSpace, ChatSubscribeOptions,
+  ChatThread,
 } from "../../src/chat-types";
 import type { ChatMessageRaw } from "../../src/chat-api";
 import { ChatHookDriver as GoogleChatHookDriver, type ChatHookParams } from "../../src/chat-hooks";
-import { GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams } from "../../src/gmail-hooks";
+import {
+  GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams, type GmailScreenedHookDelivery,
+} from "../../src/gmail-hooks";
 
 export { default } from "../../src/google";
 export { ChatHookController } from "../../src/chat-hooks";
 export { GmailHookController } from "../../src/gmail-hooks";
-export { GmailGatekeeperImpl, GoogleChatGatekeeperImpl, GoogleVerifier };
+// The PDF renderer's entrypoint, which the pool binds as a deployment binds the renderer Worker.
+export { PdfRenderer } from "@gadgets/pdf-renderer";
+export {
+  BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl,
+  GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl,
+  GoogleVerifier,
+};
+
+/** A Google Drive, Docs, Sheets or Slides binding: which gatekeeper, and its props. */
+export type WorkspaceBinding =
+  | { kind: "doc"; props: GoogleDocGatekeeperImplProps }
+  | { kind: "sheets"; props: GoogleSheetsGatekeeperImplProps }
+  | { kind: "slides"; props: GoogleSlidesGatekeeperImplProps }
+  | { kind: "drive"; props: GoogleDriveGatekeeperImplProps };
 
 const UNREACHABLE = "The test hook driver can't be reached.";
 
@@ -71,6 +101,7 @@ type TestGmail = GmailGatekeeperImpl & {
   captureTestSnapshot(bytes: Uint8Array): Promise<unknown>;
   runTestOperation(queue: unknown, operation: string, args: unknown[]): Promise<unknown>;
   testGmailDeliver(params: GmailHookParams, callback: unknown, queue: unknown, messageId: string): Promise<void>;
+  testGmailScreen(messageId: string): Promise<boolean>;
   testGmailRestoreThrough(hooks: string, facet: GmailFacet): void;
 };
 
@@ -105,6 +136,20 @@ function disposeRpc(value: unknown): void {
   (value as { [Symbol.dispose]?: () => void })[Symbol.dispose]?.();
 }
 
+/**
+ * The PDF text of the `index`th of `entries`, unread. Every capability among them is disposed
+ * as this returns, so what the text reads later it reads on its own hold of the approval queue.
+ */
+async function readPdfOf(entries: GmailAttachmentEntry[], index: number): Promise<GmailPdfText> {
+  try {
+    const entry = entries[index];
+    if (!entry) throw new Error("No such attachment index.");
+    return await entry.attachment.readPdf();
+  } finally {
+    for (const entry of entries) disposeRpc(entry.attachment);
+  }
+}
+
 class TestApprovalQueue extends RpcTarget {
   #submissions: Array<{actionId: number; description: unknown}> = [];
   #observations: unknown[] = [];
@@ -121,6 +166,8 @@ class TestApprovalQueue extends RpcTarget {
 
   #failTitle?: string;
   #activeObservers = new Set<string>();
+  /** How often a stub of this queue, with every copy made of it, has been let go. */
+  #disposals = 0;
 
   constructor(rejection?: string) {
     super();
@@ -170,7 +217,10 @@ class TestApprovalQueue extends RpcTarget {
   }
 
   read() {
-    return {submissions: [...this.#submissions], observations: [...this.#observations]};
+    return {
+      submissions: [...this.#submissions], observations: [...this.#observations],
+      disposals: this.#disposals,
+    };
   }
 
   async bindHook(_controller: unknown): Promise<void> {
@@ -218,7 +268,20 @@ class TestApprovalQueue extends RpcTarget {
     this.#releasePausedSubmission();
   }
 
-  [Symbol.dispose](): void {}
+  [Symbol.dispose](): void {
+    this.#disposals++;
+  }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */
@@ -292,6 +355,27 @@ class GmailRecordingHook extends RpcTarget {
   }
 }
 
+/** A gadget's Gmail hook that reads the first attachment of the message it is given as a PDF. */
+class GmailPdfReadingHook extends RpcTarget {
+  constructor(private readonly read: { text?: string }) {
+    super();
+  }
+
+  async receiveMessage(entry: GmailMessageEntry): Promise<void> {
+    try {
+      const entries = await entry.message.attachments();
+      try {
+        const pdf = await entries[0]!.attachment.readPdf();
+        this.read.text = await new Response(pdf.text).text();
+      } finally {
+        for (const each of entries) disposeRpc(each.attachment);
+      }
+    } finally {
+      disposeRpc(entry.message);
+    }
+  }
+}
+
 type ChatFacet = { facetName: string; id: string; props: GoogleChatGatekeeperImplProps };
 type TestHookDeliveryProps = { hooks: string; facet: ChatFacet; params: ChatHookParams };
 type GmailFacet = { facetName: string; id: string; props: GmailGatekeeperImplProps };
@@ -308,6 +392,31 @@ type TestExports = {
 function testHooks(exports: Cloudflare.Exports, id: string) {
   const { TestHooks } = exports as unknown as TestExports;
   return TestHooks.get(TestHooks.idFromString(id));
+}
+
+/**
+ * Stands for the Workers AI binding, which answers a `fetch`: it reads the same two words on
+ * every image, and finds no text in a PDF it is asked to convert unless the PDF says what it
+ * converts to, in an object `<< /FakeAiMarkdown <…> >>` that holds the Markdown's characters in
+ * hexadecimal.
+ */
+export class FakeAi extends WorkerEntrypoint<Cloudflare.Env> {
+  async fetch(request: Request): Promise<Response> {
+    // The request is read whole before it is answered, as the service reads it.
+    if (request.url.includes("/markdown/")) {
+      const { files } = await request.json<{ files: { data: string }[] }>();
+      const said = /\/FakeAiMarkdown <([0-9a-f]*)>/.exec(atob(files[0]!.data))?.[1];
+      return Response.json({
+        result: [{ id: "conversion-1", name: "file.pdf", mimeType: "application/pdf", format: "markdown",
+          tokens: 9, data: said?.replace(/../g, code => String.fromCharCode(parseInt(code, 16)))
+            ?? "# file.pdf\n## Contents\n### Page 1\n\n\n" }],
+        success: true,
+      });
+    }
+    await request.arrayBuffer();
+    return new Response('data: {"response":"Harbour Ledger"}\n\ndata: [DONE]\n\n',
+      { headers: { "Content-Type": "text/event-stream" } });
+  }
 }
 
 /** The Overseer's HookInitiator: each firing reaches the TestHooks object that enabled the hook. */
@@ -334,6 +443,11 @@ export class TestGmailHookDelivery extends WorkerEntrypoint<Cloudflare.Env, Test
   deliver(callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, messageId: string) {
     const { hooks, facet, params } = this.ctx.props;
     return testHooks(this.ctx.exports, hooks).gmailDeliver(facet, params, callback, approvalQueue, messageId);
+  }
+
+  screen(messageId: string) {
+    return testHooks(this.ctx.exports, this.ctx.props.hooks).gmailScreen(
+      this.ctx.props.facet.facetName, this.ctx.props.facet.id, this.ctx.props.facet.props, messageId);
   }
 }
 
@@ -421,9 +535,52 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  /** The facet's verifyObserverAccess(), with each observer's verifier minted for its account. */
+  async gmailVerifyObserverAccess(
+      facetName: string, id: string, props: GmailGatekeeperImplProps,
+      observers: Array<{id: string; userObjectId: string}>, subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}> {
+    return this.#gatekeeper(facetName, id, props).verifyObserverAccess(
+      observers.map(({id: observerId, userObjectId}) => ({
+        id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
+      })),
+      subresources);
+  }
+
+  /** Opens a Gmail session the way the overseer does, for a test to drive over RPC. */
+  async openGmailSession(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, queueId: string,
+  ): Promise<unknown> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#gatekeeper(facetName, id, props).startSession(queueStub);
+  }
+
+  /** Delivers one message through the facet's hook target, as a firing would, returning what arrived. */
+  async gmailDeliverOnce(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, queueId: string, messageId: string,
+  ): Promise<GmailMessageInfo[]> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    const state: GmailHookState = { received: [], failures: 0 };
+    using callback = new RpcStub(new GmailRecordingHook(state));
+    using queueStub = new RpcStub(queue);
+    await (this.#gatekeeper(facetName, id, props) as unknown as TestGmail)
+      .testGmailDeliver({}, callback, queueStub, messageId);
+    return state.received;
+  }
+
+  async gmailScreen(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, messageId: string,
+  ): Promise<boolean> {
+    return (this.#gatekeeper(facetName, id, props) as unknown as TestGmail).testGmailScreen(messageId);
+  }
+
   async readQueue(queueId: string): Promise<{
     submissions: Array<{actionId: number; description: unknown}>;
     observations: unknown[];
+    disposals: number;
   }> {
     const queue = this.#queues.get(queueId);
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
@@ -564,6 +721,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     this.#queues.get(queueId)!.addObserver(observerId);
   }
 
+  /** The facet's verifyObserverAccess(), with each observer's verifier minted for its account. */
+  async chatVerifyObserverAccess(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
+      observers: Array<{id: string; userObjectId: string}>, subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}> {
+    return this.#chat(facetName, id, props).verifyObserverAccess(
+      observers.map(({id: observerId, userObjectId}) => ({
+        id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
+      })),
+      subresources);
+  }
+
   async chatRejectAction(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
   ): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]> {
@@ -598,21 +767,226 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     queue.failNextObservation(title);
   }
 
+  // ── Google Calendar ─────────────────────────────────────────────────
+
+  #calendar(facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps) {
+    const exports = this.ctx.exports as unknown as {
+      GoogleCalendarGatekeeperImpl(options: {props: GoogleCalendarGatekeeperImplProps}):
+        DurableObjectClass<GoogleCalendarGatekeeperImpl>;
+    };
+    return this.ctx.facets.get<GoogleCalendarGatekeeperImpl>(facetName, () => ({
+      id, class: exports.GoogleCalendarGatekeeperImpl({props}),
+    }));
+  }
+
+  async calendarStartSession(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps, queueId: string,
+  ): Promise<void> {
+    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#calendar(facetName, id, props);
+  }
+
+  async openCalendarSession(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleCalendarSession> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#calendar(facetName, id, props).startSession(queueStub);
+  }
+
+  async calendarAddObserver(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#calendar(facetName, id, props).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+  }
+
+  /** The facet's verifyObserverAccess(), with each observer's verifier minted for its account. */
+  async calendarVerifyObserverAccess(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
+      observers: Array<{id: string; userObjectId: string}>, subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}> {
+    return this.#calendar(facetName, id, props).verifyObserverAccess(
+      observers.map(({id: observerId, userObjectId}) => ({
+        id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
+      })),
+      subresources);
+  }
+
+  async calendarApplyStorage(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
+      operations: StorageOperation[],
+  ): Promise<void> {
+    // Installed on the prototype below; the facet's own type lacks it.
+    const calendar = this.#calendar(facetName, id, props) as unknown as TestCalendar;
+    await calendar.applyTestStorage(operations);
+  }
+
+  // ── BigQuery ────────────────────────────────────────────────────────
+
+  #bigQuery(facetName: string, id: string, props: BigQueryGatekeeperImplProps) {
+    const exports = this.ctx.exports as unknown as {
+      BigQueryGatekeeperImpl(options: {props: BigQueryGatekeeperImplProps}):
+        DurableObjectClass<BigQueryGatekeeperImpl>;
+    };
+    return this.ctx.facets.get<BigQueryGatekeeperImpl>(facetName, () => ({
+      id, class: exports.BigQueryGatekeeperImpl({props}),
+    }));
+  }
+
+  async bigQueryStartSession(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+  ): Promise<void> {
+    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#bigQuery(facetName, id, props);
+  }
+
+  /** The test approval queue a binding's sessions and observers share, made on first use. */
+  #sharedQueue(queueId: string): TestApprovalQueue {
+    let queue = this.#queues.get(queueId);
+    if (!queue) this.#queues.set(queueId, queue = new TestApprovalQueue());
+    return queue;
+  }
+
+  async bigQueryDescribe(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+  ): Promise<ResourceDescription> {
+    return await this.#bigQuery(facetName, id, props).describe();
+  }
+
+  async openBigQuerySession(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+  ): Promise<BigQuerySession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#bigQuery(facetName, id, props).startSession(queueStub);
+  }
+
+  /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */
+  async bigQueryAddObserver(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#bigQuery(facetName, id, props).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#sharedQueue(queueId).addObserver(observerId);
+  }
+
+  async bigQueryVerifyObserverAccess(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+      observers: Array<{ id: string; userObjectId: string }>, subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return this.#bigQuery(facetName, id, props).verifyObserverAccess(
+      observers.map(({ id: observerId, userObjectId }) =>
+        ({ id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }) })),
+      subresources);
+  }
+
+  async bigQueryApplyStorage(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+      operations: StorageOperation[],
+  ): Promise<void> {
+    // Installed on the prototype below; the facet's own type lacks it.
+    const bigQuery = this.#bigQuery(facetName, id, props) as unknown as TestBigQuery;
+    await bigQuery.applyTestStorage(operations);
+  }
+
+  // ── Google Drive, Docs, Sheets and Slides ───────────────────────────
+
+  #googleFile<T extends Rpc.DurableObjectBranded>(
+      className: string, facetName: string, id: string, props: object,
+  ): Fetcher<T> {
+    const exports = this.ctx.exports as unknown as
+      Record<string, (options: {props: object}) => DurableObjectClass<T>>;
+    return this.ctx.facets.get<T>(facetName, () => ({id, class: exports[className]({props})}));
+  }
+
+  #workspace(facetName: string, id: string, binding: WorkspaceBinding) {
+    switch (binding.kind) {
+      case "doc":
+        return this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, binding.props);
+      case "sheets":
+        return this.#googleFile<GoogleSheetsGatekeeperImpl>(
+          "GoogleSheetsGatekeeperImpl", facetName, id, binding.props);
+      case "slides":
+        return this.#googleFile<GoogleSlidesGatekeeperImpl>(
+          "GoogleSlidesGatekeeperImpl", facetName, id, binding.props);
+      case "drive":
+        return this.#googleFile<GoogleDriveGatekeeperImpl>(
+          "GoogleDriveGatekeeperImpl", facetName, id, binding.props);
+    }
+  }
+
+  async openDocSession(
+      facetName: string, id: string, props: GoogleDocGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleDocSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openSheetsSession(
+      facetName: string, id: string, props: GoogleSheetsGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleSpreadsheetSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleSheetsGatekeeperImpl>("GoogleSheetsGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openSlidesSession(
+      facetName: string, id: string, props: GoogleSlidesGatekeeperImplProps, queueId: string,
+  ): Promise<GooglePresentationSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    return await this.#googleFile<GoogleSlidesGatekeeperImpl>("GoogleSlidesGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub);
+  }
+
+  async openDriveSession(
+      facetName: string, id: string, props: GoogleDriveGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleDriveSession> {
+    using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    // The class serves every access level; a read and write binding's agent type is this one.
+    return await this.#googleFile<GoogleDriveGatekeeperImpl>("GoogleDriveGatekeeperImpl", facetName, id, props)
+      .startSession(queueStub) as unknown as GoogleDriveSession;
+  }
+
+  /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */
+  async workspaceAddObserver(
+      facetName: string, id: string, binding: WorkspaceBinding, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#workspace(facetName, id, binding).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#sharedQueue(queueId).addObserver(observerId);
+  }
+
+  async workspaceVerifyObserverAccess(
+      facetName: string, id: string, binding: WorkspaceBinding,
+      observers: Array<{ id: string; userObjectId: string }>, subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return this.#workspace(facetName, id, binding).verifyObserverAccess(
+      observers.map(({ id: observerId, userObjectId }) =>
+        ({ id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }) })),
+      subresources);
+  }
+
   // ── Google Chat and Gmail hooks, with these hooks standing in for the Overseer ──
 
   #hookQueue = new TestApprovalQueue();
   #hook: HookState = { received: [], failures: 0 };
   #gmailHook: GmailHookState = { received: [], failures: 0 };
+  #firings = 0;
   /** Which gatekeeper bound the hook, and so which recording hook its firings get. */
   #hookKind: "chat" | "gmail" = "chat";
 
   /** Subscribe through the facet's own subscribeNewMessages(), keeping the controller it binds. */
-  async chatSubscribe(facet: ChatFacet): Promise<void> {
+  async chatSubscribe(facet: ChatFacet, options?: ChatSubscribeOptions): Promise<void> {
     const chat = this.#chat(facet.facetName, facet.id, facet.props) as unknown as TestChat;
     await chat.testRestoreThrough(this.ctx.id.toString(), facet);
     using queue = new RpcStub(new HookBindingQueue(this.ctx.storage));
     using capability = await chat.startSession(queue as never) as (ChatSpace | ChatThread) & Disposable;
-    await capability.subscribeNewMessages(new RpcStub(new RecordingHook(this.#hook)));
+    await capability.subscribeNewMessages(new RpcStub(new RecordingHook(this.#hook)), options);
     this.#hookKind = "chat";
   }
 
@@ -640,6 +1014,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       .testGmailDeliver(params, callback, approvalQueue, messageId);
   }
 
+  /**
+   * Delivers `messageId` as a hook's firing does, to a hook that reads the message's first
+   * attachment as a PDF, and returns the text it read.
+   */
+  async gmailDeliverPdf(facet: GmailFacet, messageId: string): Promise<string | undefined> {
+    const read: { text?: string } = {};
+    using callback = new RpcStub(new GmailPdfReadingHook(read));
+    using approvalQueue = new RpcStub(this.#hookQueue);
+    await this.gmailDeliver(facet, {}, callback, approvalQueue, messageId);
+    return read.text;
+  }
+
   async chatDeliver(
       { facetName, id, props }: ChatFacet, params: ChatHookParams,
       callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, message: ChatMessageRaw,
@@ -665,6 +1051,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   startHook() {
+    this.#firings++;
     if (this.#hook.admissionFailures) {
       this.#hook.admissionFailures--;
       throw new Error("The test Workshop failed to start the firing.");
@@ -679,24 +1066,32 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     Object.assign(this.#hook, behavior);
   }
 
-  /** What the hook received, how many of its failures remain, and what it queued. */
-  readHook(): { received: ChatMessageInfo[]; failures: number; submissions: Array<{ actionId: number }> } {
-    return { received: this.#hook.received, failures: this.#hook.failures, ...this.#hookQueue.read() };
+  /** What the hook received, how many of its failures remain, and what it queued and observed. */
+  readHook(): {
+    received: ChatMessageInfo[]; failures: number; submissions: Array<{ actionId: number }>;
+    observations: Array<{ title: string; subresources?: string[] }>;
+  } {
+    const { submissions, observations } = this.#hookQueue.read();
+    return {
+      received: this.#hook.received, failures: this.#hook.failures, submissions,
+      observations: observations as Array<{ title: string; subresources?: string[] }>,
+    };
   }
 
   setGmailHookBehavior(behavior: Partial<Omit<GmailHookState, "received">>): void {
     Object.assign(this.#gmailHook, behavior);
   }
 
-  /** What the Gmail hook received, how many of its failures remain, and what it queued. */
+  /** What the Gmail hook received, how many of its failures remain, what it queued, and how many firings started. */
   readGmailHook(): {
     received: GmailMessageInfo[]; failures: number; submissions: Array<{ actionId: number }>;
-    observations: Array<{ title: string }>; holding: boolean;
+    observations: Array<{ title: string }>; holding: boolean; firings: number;
   } {
     const { submissions, observations } = this.#hookQueue.read();
     return {
       received: this.#gmailHook.received, failures: this.#gmailHook.failures, submissions,
       observations: observations as Array<{ title: string }>, holding: this.#gmailHook.holding === true,
+      firings: this.#firings,
     };
   }
 }
@@ -727,9 +1122,30 @@ testGmailPrototype.captureTestSnapshot = function(bytes: Uint8Array) {
   return new GmailForwardSnapshotStore(testStorage(this)).capture(bytes);
 };
 
+type TestCalendar = GoogleCalendarGatekeeperImpl & {
+  applyTestStorage(operations: StorageOperation[]): void;
+};
+
+const testCalendarPrototype = GoogleCalendarGatekeeperImpl.prototype as TestCalendar;
+
+/** The same storage writes, for a Calendar facet, to seed what an earlier version recorded. */
+testCalendarPrototype.applyTestStorage = testGmailPrototype.applyTestStorage;
+
+type TestBigQuery = BigQueryGatekeeperImpl & {
+  applyTestStorage(operations: StorageOperation[]): void;
+};
+
+/** The same storage writes, for a BigQuery facet. */
+(BigQueryGatekeeperImpl.prototype as TestBigQuery).applyTestStorage = testGmailPrototype.applyTestStorage;
+
 /** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
 testGmailPrototype.testGmailDeliver = function(params, callback, queue, messageId) {
   return this[restore](params).deliver(callback as never, queue as never, messageId);
+};
+
+/** Screen through that same target, as the driver does before starting a screened hook's firing. */
+testGmailPrototype.testGmailScreen = function(messageId) {
+  return (this[restore]({}) as GmailScreenedHookDelivery).screen(messageId);
 };
 
 /** As testChatPrototype.testRestoreThrough, for a Gmail facet. */
@@ -747,9 +1163,8 @@ testGmailPrototype.runTestOperation = async function(
   const [id, value, extra, options] = args;
   try {
     switch (operation) {
-  case "session.hasMailboxMethods":
-    return ["send", "createDraft", "listLabels", "createLabel", "renameLabel", "deleteLabel"]
-      .every(method => method in session);
+  case "session.listLabels":
+    return await session.listLabels();
   case "session.getMailboxAddress":
     return await session.getMailboxAddress();
   case "session.send":
@@ -928,6 +1343,18 @@ testGmailPrototype.runTestOperation = async function(
       } finally {
         for (const entry of entries) disposeRpc(entry.attachment);
       }
+    });
+  case "message.readPdf":
+    return await withMessage(session, id as string, async message =>
+      readPdfOf(await message.attachments(), value as number));
+  case "message.cancelPdf":
+    // Cancelled here, and not by the test: the cancel of a stream sent over RPC does not reach
+    // the text while a piece of it is being waited for.
+    return await withMessage(session, id as string, async message => {
+      const reader = (await readPdfOf(await message.attachments(), value as number)).text.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      await reader.cancel();
+      return first;
     });
   case "message.readAcrossDecision":
     // One message capability, read before and after the action that sends it is decided.
@@ -1173,6 +1600,35 @@ testGmailPrototype.runTestOperation = async function(
       }
     } finally {
       if (added) disposeRpc(added);
+      for (const entry of entries) disposeRpc(entry.attachment);
+      disposeRpc(draft);
+    }
+  }
+  case "draft.readPdf": {
+    const draft = await session.getDraft(id as string);
+    try {
+      return await readPdfOf(await draft.attachments(), value as number);
+    } finally {
+      disposeRpc(draft);
+    }
+  }
+  case "draft.readPdfAcrossRemoval": {
+    // A draft's attachment is removed from it before its PDF text is asked for, or, with `extra`,
+    // between asking for the text and reading it. The answer is what reading it failed with.
+    const draft = await session.getDraft(id as string);
+    let entries: GmailDraftAttachmentEntry[] = [];
+    try {
+      entries = await draft.attachments();
+      const attachment = entries[value as number]?.attachment;
+      if (!attachment) throw new Error("No such draft attachment index.");
+      const asked = extra ? await attachment.readPdf() : undefined;
+      await attachment.remove();
+      try {
+        return await new Response((asked ?? await attachment.readPdf()).text).text();
+      } catch (error) {
+        return {error: error instanceof Error ? error.message : String(error)};
+      }
+    } finally {
       for (const entry of entries) disposeRpc(entry.attachment);
       disposeRpc(draft);
     }

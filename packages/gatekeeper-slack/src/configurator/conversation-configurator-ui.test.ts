@@ -37,7 +37,7 @@ function render(values: ConversationConfiguratorValues) {
   let setValues = vi.fn((patch: Partial<ConversationConfiguratorValues>) => void patches.push(patch));
   let ui = { listWorkspaces: vi.fn(async () => []), listConversations: vi.fn(async () => []) };
   let tree = conversation.render({
-    values, setValues, clearFields, ui,
+    values, setValues, clearFields, ui, ensureResources: vi.fn(async () => true),
   });
   return { tree, patches, clearFields, setValues, ui };
 }

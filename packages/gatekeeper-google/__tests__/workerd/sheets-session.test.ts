@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
@@ -9,6 +10,7 @@ import { GoogleSheetsApi } from "../../src/sheets-api";
 import {
   GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl, NO_CHANGES,
 } from "../../src/sheets";
+import { officeFileError } from "../../src/office-conversion";
 import { FORMAT_READ_FIELDS } from "../../src/sheets-format";
 import { parseRange } from "../../src/sheets-model";
 import type { PlannedChange, QueuedChange } from "../../src/sheets-simulation";
@@ -37,6 +39,17 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
     _description: HookDescription,
   ): Promise<void> {
     throw new Error("Unexpected hook binding");
+  }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
   }
 }
 
@@ -162,7 +175,10 @@ beforeEach(() => {
     });
   }));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 /** A queued batch writing `values` to `cells` of sheet `sheetId`. */
 function queued(id: number, sheetId: number, cells: ReturnType<typeof rect>, values: (string | number | null)[][]): QueuedChange {
@@ -191,12 +207,14 @@ function queuedBatch(id: number, changes: PlannedChange[]): QueuedChange {
   };
 }
 
+const SHEET_FILE = [{ kind: "spreadsheet", fileId: "sheet-1" }] as const;
+
 function newSession(pending: QueuedChange[] = []) {
   let queue = new TestApprovalQueue();
   let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
   let session = new RpcStub(new GoogleSpreadsheetSessionImpl(
     new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-    unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+    unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     { ...NO_CHANGES, snapshot: read => read(pending) },
   ));
   return { queue, session };
@@ -352,7 +370,7 @@ describe("Google Sheets spreadsheet session", () => {
     let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
     using session = new RpcStub(new GoogleSpreadsheetReadSessionImpl(
       new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-      unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+      unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     ));
 
     expect((await session.getSpreadsheet()).title).toBe("Budget");
@@ -473,6 +491,7 @@ describe("Google Sheets format reads", () => {
     expect(queue.observations).toEqual([{
       title: "Read Google Sheets formatting of Sales!A19:B20",
       description: "Read the formatting of 6 cell(s) in the connected spreadsheet.",
+      subresources: ["sheets/spreadsheet/sheet-1"],
     }]);
   });
 
@@ -571,11 +590,89 @@ describe("Google Sheets format reads", () => {
     let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
     using session = new RpcStub(new GoogleSpreadsheetReadSessionImpl(
       new GoogleSheetsApi(async () => "access-token"), "sheet-1", queueStub,
-      unguardedNativeRead(description => queueStub.authorizeObservation(description)),
+      unguardedNativeRead(description => queueStub.authorizeObservation(description), SHEET_FILE),
     ));
 
     expect((await session.readFormats("B2")).formats).toEqual([[{ fontSize: 101 }]]);
     expect(requested()).toEqual([["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS]]);
     expect(formatFilterReads).toEqual([]);
+  });
+});
+
+const SHEETS_PATTERN = "https://docs.google.com/spreadsheets/d/:spreadsheetId/*";
+/** Google's own words for refusing an Office file, which nothing of ours may repeat. */
+const OFFICE_REFUSAL =
+  "This operation is not supported for this document. The document must not be an Office file.";
+
+/**
+ * Stands in for Google while a spreadsheet is created and then described: Sheets opens it or
+ * refuses it as it refuses an Office file, and Drive reports `driveMimeType` or fails.
+ */
+function officeProvider(sheets: "opens" | "refuses", drive: { mimeType: string } | "fails") {
+  let driveRequests: URL[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    let request = new Request(input, init);
+    let url = new URL(request.url);
+    if (url.hostname === "sheets.googleapis.com" && request.method === "POST") {
+      return Response.json({ spreadsheetId: "office-sheet" });
+    }
+    if (url.hostname === "sheets.googleapis.com") {
+      if (sheets === "opens") {
+        return Response.json({ spreadsheetId: "office-sheet", properties: { title: "Budget" }, sheets: [] });
+      }
+      return Response.json(
+        { error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL } }, { status: 400 });
+    }
+    if (url.hostname === "www.googleapis.com") {
+      driveRequests.push(url);
+      if (drive === "fails") {
+        return Response.json({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+      }
+      return Response.json({ id: "office-sheet", name: "Budget.xlsx", mimeType: drive.mimeType });
+    }
+    throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
+  }));
+  return driveRequests;
+}
+
+/** A spreadsheet binding on the real Sheets gatekeeper, reached as the overseer reaches it. */
+async function boundSpreadsheet(facet: string) {
+  let hooks = env.TEST_HOOKS.getByName("hooks");
+  await hooks.createResource(facet, SHEETS_PATTERN, "Budget");
+  await hooks.applyCreation(facet);
+  await hooks.adoptCreated(facet);
+  return hooks;
+}
+
+describe("Google Sheets describe() of an Office file", () => {
+  it("explains a refusal of a file Drive reports as an Office spreadsheet", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let driveRequests = officeProvider("refuses", {
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    let hooks = await boundSpreadsheet("sheets-office");
+
+    let error = await Promise.resolve(hooks.describe("sheets-office")).catch((value: Error) => value);
+
+    expect((error as Error).message).toBe(officeFileError("sheets").message);
+    expect((error as Error).message).not.toContain(OFFICE_REFUSAL);
+    expect(driveRequests.map(url => url.pathname)).toEqual(["/drive/v3/files/office-sheet"]);
+  });
+
+  it("keeps Google's status when Drive cannot say what the file is", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    officeProvider("refuses", "fails");
+    let hooks = await boundSpreadsheet("sheets-office-no-drive");
+
+    await expect(Promise.resolve(hooks.describe("sheets-office-no-drive")))
+      .rejects.toThrow("Google Sheets get spreadsheet failed [http=400]");
+  });
+
+  it("describes a native spreadsheet without asking Drive", async () => {
+    let driveRequests = officeProvider("opens", { mimeType: "application/vnd.google-apps.spreadsheet" });
+    let hooks = await boundSpreadsheet("sheets-native");
+
+    expect(await hooks.describe("sheets-native")).toMatchObject({ title: "Budget" });
+    expect(driveRequests).toEqual([]);
   });
 });
