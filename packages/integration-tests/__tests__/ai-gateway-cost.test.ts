@@ -99,7 +99,7 @@ const ids = (models: readonly { id: string }[]) => models.map(candidate => candi
 const languageIds = (models: readonly AdminModel[]) => ids(models.filter(candidate =>
     candidate.mode === "enabled" && modelKind(candidate.provider, candidate.id) === "language"));
 // A provider the gateway serves, as the admin is shown it while it is off.
-const offProvider = (provider: string) => ({ provider, needsApiToken: false });
+const offProvider = (provider: string) => ({ provider });
 
 // The cases below share one deployment, whose admin signs up once and logs in after that.
 let adminSignedUp = false;
@@ -393,7 +393,7 @@ it("an admin turns on a provider beside the environment's, and tests what one an
   const before = await gatewayModels();
   expect(before.providerSettings).toEqual([
     offProvider("cloudflare-auto-router"),
-    { provider: "cloudflare", enabledBy: "environment", needsApiToken: false },
+    { provider: "cloudflare", enabledBy: "environment" },
     offProvider("anthropic"), offProvider("openai"), offProvider("google"),
   ]);
   expect(await api.getAiConfig()).toMatchObject({ enabledProviders: ["cloudflare"] });
@@ -410,7 +410,7 @@ it("an admin turns on a provider beside the environment's, and tests what one an
       providers: ["cloudflare", "anthropic"],
       providerSettings: [
         offProvider("cloudflare-auto-router"), before.providerSettings[1],
-        { provider: "anthropic", enabledBy: "admin", needsApiToken: false },
+        { provider: "anthropic", enabledBy: "admin" },
         offProvider("openai"), offProvider("google"),
       ],
       models: on.models,

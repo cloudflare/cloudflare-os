@@ -205,6 +205,8 @@ export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
   kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
+export function peekOAuth<Extra extends object>(
+  kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
 ```
 
 `advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the OAuth-stage
@@ -217,6 +219,18 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 `meta` and `advanceToOAuth`'s `extra` parameters, which both exclude them statically and reject them
 at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+
+`peekOAuth` is `claimOAuth` without the delete, for a pasted-key form: the account checks the
+form's nonce, asks the provider whether the key is good, and claims only then. A refused key
+spends nothing, so the form is shown again with the same nonce; without this a typo spends the
+nonce and the user starts again from the Workshop. Nothing is written until the claim, so whatever
+ends an attempt while the provider is asked — a newer link, a disconnect, its expiry — makes the
+claim fail with no state of the retry's own to keep in step, and the attempt's metadata and
+deadline are only ever read from storage. An earlier shape claimed first and gave the claim back
+on a refusal, which needed a third stage and a record of the claim, and three review rounds found
+a way for that record to disagree with the slot. The cost of checking first is exclusivity: two
+submissions of one form both reach the provider, though only one can claim. An OAuth callback has
+no use for `peekOAuth`: its provider calls back once.
 
 Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
 "reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
@@ -243,8 +257,9 @@ revoke removes it with the account.
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
 `htmlResponse(body, status = 200)`, `connectMutationError(req, options)`,
-`connectHandoffPageHtml(handoff)`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and
-`PAGE_STYLE`.
+`connectHandoffPageHtml(handoff)`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`,
+`PAGE_STYLE`, and the guarded form: `connectFormHtml(options)`, `formPageResponse(body, status)`,
+`readConnectForm(req, options)`, `CONNECT_FORM_NONCE_FIELD` and the `ConnectFormField` type.
 
 `connectHandoffPageHtml` rejects a `targetOrigin` that is not exactly an origin. It redirects the
 popup to `<targetOrigin>/connect/handoff#<encoded-ticket>` with `location.replace()`. The opaque
@@ -275,6 +290,30 @@ connect route, has none. A page served `Referrer-Policy: no-referrer`, as `htmlR
 submits its forms with `Origin: null` (checked in Chromium 154), so a guarded HTML form is served
 with `Referrer-Policy: same-origin`, which still keeps the bearer URL out of cross-origin `Referer`.
 `fetch()` posts keep their `Origin` under either policy, which is why Marketo's JSON flow works.
+
+The guarded form is the three pieces a pasted-credential flow would otherwise write by hand, and
+easily gets wrong: a form served through `htmlResponse` renders and can never be submitted. `connectFormHtml({ title, intro, action, nonce, fields,
+submitLabel? })` renders a `PAGE_STYLE` page whose form posts `application/x-www-form-urlencoded`
+to `action`, with the attempt's nonce in the hidden field `CONNECT_FORM_NONCE_FIELD` and one input
+per `{ name, label, secret?, placeholder? }`, and `error?` above them when the form is shown again
+after a refused submission (§4.2, `peekOAuth`); it escapes every value and throws on no fields, on a
+repeated or malformed field name, and on a field named `nonce`. `formPageResponse` is `htmlResponse` with
+`Referrer-Policy: same-origin` and `form-action 'self'` added to its policy, so the browser will
+not post the credential to another origin whatever `action` says. Browsers differ on applying
+that to a redirect, so the handler must not answer the POST with a cross-origin 307 or 308; the
+handoff page, which is HTML, forwards no body. `readConnectForm(req, { origin, maxBytes = 16 KiB })` refuses a
+non-POST (405), runs `connectMutationError` (403, 415), reads the body through `readTextCapped`
+(413 over the cap, 400 for a body that cannot be read) and returns the fields, or the refusal as an
+HTML `Response`. It does not check the nonce: the account does, in the same step that spends it.
+The origin compared is the deployment's, which the Workshop and every gatekeeper share, and the
+POST's `Referer` carries the form page's URL to that origin, so spend the link's nonce before the
+form is shown. These are leaves, with no opinion on the account.
+
+`readConnectForm` and `formPageResponse` fit any guarded form. `connectFormHtml` is narrower: it
+serves a single pasted key, its first use, and does not yet express what homeassistant's and
+gatekeeper-mcp's forms need — a `url` input, a hint under a
+field, rich help, and a nonce carried in the path rather than a hidden field. Those ports, and
+`tokenAuth` (§5.4), either widen it or keep their own page and take the other two.
 
 The expected `origin` is **required and explicit** rather than derived from `req.url` (the shape
 client-errors uses): the form's action URL is built from the configured base URL, so the legitimate
@@ -2735,7 +2774,8 @@ need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE` an
 `Referrer-Policy: same-origin` (under `htmlResponse`'s `no-referrer` the browser sends
 `Origin: null` and every submission 403s, §4.3), fields from
 `config.fields: { name, label, secret?: boolean }[]`, a hidden `state`, posting to
-`${baseUrl}/connect/${accountId}`; `routes` handles that POST, first calls
+`${baseUrl}/connect/${accountId}` (the shipped `connectFormHtml` names its hidden field `nonce`
+and takes any `action`, §4.3; reconcile the two when this is built); `routes` handles that POST, first calls
 `connectMutationError(req, { origin: baseUrl, contentType: "application/x-www-form-urlencoded" })`
 (the expected origin is the base URL's, never `req.url`'s — §4.3) and renders any refusal, then reads
 the form and calls `completeAuth(formFields, state)`. It renders a returned handoff with
@@ -3563,12 +3603,13 @@ recorded here because the pass found it. Each entry names why it waits and what 
   `complete()` today (§4.2). The guard would have to reserve the id synchronously, before
   `describe()` is awaited, or two concurrent calls both pass it. *Trigger:* a gatekeeper found able
   to call `complete()` twice.
-- **Connect-form reader** in `./connect-pages`. Homeassistant and gatekeeper-mcp read their forms
-  through `readTextCapped` (16 KiB): each route reads the body before the account checks the nonce,
-  so anyone holding one connect URL could otherwise buffer a request body as large as the plan
-  allows (5 GB on Enterprise) into a 128 MB isolate. Internal sentry and http still call
-  `formData()`. A kit reader would pair the cap with `connectMutationError`, but that guard does not
-  fit mcp's `htmlResponse` form (§4.3). *Trigger:* `tokenAuth` (§5.4), which owns the form read.
+- **Connect-form reader** in `./connect-pages`. *Shipped* as `readConnectForm` (§4.3), ahead of
+  `tokenAuth`, for a gatekeeper that connects with a pasted API key. What stays deferred is the ports:
+  homeassistant and gatekeeper-mcp read their forms through `readTextCapped` (16 KiB) with no
+  origin check, and internal sentry and http still call `formData()`, which has no cap, so anyone
+  holding one connect URL can buffer a request body as large as the plan allows (5 GB on
+  Enterprise) into a 128 MB isolate. A port serves its form through `formPageResponse`, without
+  which the guard refuses every submission. *Trigger:* `tokenAuth` (§5.4), or either port.
 - **Token memo** for `withAuthRetry`'s `getToken({ forceRefresh, staleToken })`. Zylo, the only
   production caller, ignores `staleToken` and does not coalesce: redundant mints, not wrong
   results, and `SingleFlight` fixes it locally. Google coalesces at the account (§4.13). *Trigger:*

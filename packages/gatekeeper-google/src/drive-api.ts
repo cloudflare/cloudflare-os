@@ -122,12 +122,17 @@ export type DriveScopeNode = {
   canAddChildren?: boolean;
   canMoveItemWithinDrive?: boolean;
   canEdit?: boolean;
+  /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
+  shortcutTargetId?: string;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
-const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed," +
+const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
   "canEdit)";
+
+/** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
+const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
 
 /** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
 const DRIVE_OBSERVATION_FIELDS =
@@ -661,6 +666,10 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   if (!isRecord(value) || value.id !== fileId) {
     throw new Error("Google Drive batch response did not echo the requested file ID");
   }
+  return scopeNodeFrom(value, fileId);
+}
+
+function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveScopeNode {
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
   let capabilities = optionalCapabilities(value.capabilities);
@@ -671,6 +680,11 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
+  let shortcutTargetId: string | undefined;
+  if (value.shortcutDetails !== undefined) {
+    if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
+    shortcutTargetId = optionalString(value.shortcutDetails.targetId, "shortcut targetId");
+  }
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
@@ -683,6 +697,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
     ...(canAddChildren === undefined ? {} : { canAddChildren }),
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
     ...(canEdit === undefined ? {} : { canEdit }),
+    ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
 }
 
@@ -1422,6 +1437,44 @@ export class DriveApi {
     return body.files.map(parseConvertedCopy).filter(copy =>
       copy.appProperties?.[CONVERTED_FROM_PROPERTY] === sourceId &&
       copy.mimeType === nativeMimeType && copy.trashed !== true && copy.canEdit === true);
+  }
+
+  /**
+   * A live shortcut to `targetId` directly in folder `folderId`, listed in `corpus`, the corpus
+   * that folder is listed in; `undefined` when there is none. Drive cannot search by a shortcut's
+   * target, so this pages through the folder's shortcuts alone. The caller proves what it answers.
+   */
+  async findShortcut(
+    folderId: string, targetId: string, corpus: DriveCorpus,
+  ): Promise<DriveScopeNode | undefined> {
+    let pageToken: string | undefined;
+    do {
+      let params = new URLSearchParams({
+        q: buildDriveQuery({ mimeType: SHORTCUT_MIME_TYPE, directParentIds: [folderId] }),
+        pageSize: "1000",
+        fields: `nextPageToken,files(${SHORTCUT_NODE_FIELDS})`,
+        spaces: "drive",
+        corpora: corpus.kind,
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true",
+      });
+      if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
+      if (pageToken) params.set("pageToken", pageToken);
+      let body = await this.#getUnknown("/files", params);
+      if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+      if (body.files !== undefined && !Array.isArray(body.files)) {
+        throw new Error("Invalid Google Drive file-list response");
+      }
+      for (let value of (body.files ?? []) as unknown[]) {
+        if (!isRecord(value) || typeof value.id !== "string") {
+          throw new Error("Invalid Google Drive file-list response");
+        }
+        let node = scopeNodeFrom(value, value.id);
+        if (node.shortcutTargetId === targetId) return node;
+      }
+      pageToken = optionalString(body.nextPageToken, "nextPageToken");
+    } while (pageToken);
+    return undefined;
   }
 
   /** Whether the connected account may add files to folder `folderId`, as Drive reports it. */

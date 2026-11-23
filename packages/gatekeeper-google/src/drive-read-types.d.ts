@@ -50,7 +50,13 @@ export type DriveOwner = {
   emailAddress?: string;
 };
 
-/** Metadata about a Drive shortcut's target. The shortcut is not followed. */
+/**
+ * Metadata about a Drive shortcut's target. A folder binding treats the target of a shortcut among
+ * the positioned folder's direct children as one of them for reading: pass `targetId` to
+ * `getEntry()`, a read or a native open, or to `openFolder()` for a folder. An account binding can
+ * read a target directly by ID. An exact-file binding to the shortcut cannot read the target, which
+ * needs its own connection.
+ */
 export type DriveShortcut = {
   /** Stable ID recorded for the shortcut target. */
   targetId: string;
@@ -369,7 +375,9 @@ export interface GoogleDriveReadSession {
 
 /**
  * Read-only navigation within the originally selected folder, with its direct children's content
- * and comments. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
+ * and comments. A shortcut among those children stands for its target, file or folder, wherever
+ * that lives: `getEntry`, the native opens, `readPdf`, `readFile` and `openFolder` take the
+ * target's ID as they take a direct child's; `listComments` does not. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
  * a binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
  */
 export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSession, "getScope"> {
@@ -383,40 +391,52 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
    */
   search(query: DriveFolderSearchQuery): Promise<Cursor<DriveEntry>>;
 
-  /** Return one live direct child. A nested descendant or a trashed entry is rejected. */
+  /**
+   * Return one live direct child, or the live target of a shortcut that is one. A nested
+   * descendant without such a shortcut, or any trashed entry, is rejected.
+   */
   getEntry(fileId: string): Promise<DriveEntry>;
 
-  /** Open a live direct-child native Google Doc as an independently disposable capability. */
+  /**
+   * Open a live direct-child native Google Doc, or a shortcut's target, as an independently
+   * disposable capability.
+   */
   openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
 
-  /** Open a live direct-child native Google Sheet as an independently disposable capability. */
+  /**
+   * Open a live direct-child native Google Sheet, or a shortcut's target, as an independently
+   * disposable capability.
+   */
   openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
 
   /**
-   * Open a live direct-child native Google Slides presentation as an independently disposable
-   * capability.
+   * Open a live direct-child native Google Slides presentation, or a shortcut's target, as an
+   * independently disposable capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /**
-   * Read a live direct-child PDF's text, converted to Markdown and streamed, as
+   * Read a live direct-child PDF's, or a shortcut target's, text, converted to Markdown and streamed, as
    * `GoogleDriveReadSession.readPdf()` does. Fails asking to reconnect when the Google account
    * was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
-   * Read a live direct child's own content as a stream of bytes, as
+   * Read a live direct child's, or a shortcut target's, own content as a stream of bytes, as
    * `GoogleDriveReadSession.readFile()` does.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 
   /**
    * List a live direct child's comments, as {@link GoogleDriveReadSession.listComments} does. A
-   * file moved out of this folder ends the listing.
+   * file moved out of this folder ends the listing. Shortcuts are not followed here.
    */
   listComments(fileId: string): Promise<Cursor<DriveComment>>;
 
-  /** Open a live direct child folder as an independently disposable capability. */
+  /**
+   * Open a live direct child folder, or the folder a shortcut among the direct children points to,
+   * as an independently disposable capability.
+   */
   openFolder(folderId: string): Promise<GoogleDriveFolderReadSession>;
 }

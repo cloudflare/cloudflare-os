@@ -27,20 +27,17 @@ function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
 
 describe("AiGatewayConfig transport selection", () => {
   const binding = { gateway: () => ({}) } as unknown as Ai;
-  // google needs the HTTPS+token transport, so token-less configs must not enable it.
+  // All providers can use the Workers AI binding, so a tokenless config works.
   const bindingOnly = env({
     CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
-    CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare",
+    CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
     WORKERS_AI: binding,
   });
 
-  it("uses the binding for every provider except google", () => {
+  it("uses the binding when present", () => {
     const config = new AiGatewayConfig(bindingOnly);
     expect(config.apiToken).toBeUndefined();
-    expect(config.bindingFor("anthropic")).toBe(binding);
-    expect(config.bindingFor("openai")).toBe(binding);
-    expect(config.bindingFor("cloudflare")).toBe(binding);
-    expect(config.bindingFor("google")).toBeUndefined();
+    expect(config.binding).toBe(binding);
   });
 
   it("falls back to HTTPS with the token when the binding is absent", () => {
@@ -50,7 +47,7 @@ describe("AiGatewayConfig transport selection", () => {
       WORKERS_AI: undefined,
     }));
     expect(config.apiToken).toBe("gateway-token");
-    expect(config.bindingFor("anthropic")).toBeUndefined();
+    expect(config.binding).toBeUndefined();
   });
 
   it("ignores the binding when CF_AI_GATEWAY_USE_BINDING=false opts out", () => {
@@ -65,8 +62,6 @@ describe("AiGatewayConfig transport selection", () => {
     }));
     expect(config.binding).toBeUndefined();
     expect(config.apiToken).toBe("gateway-token");
-    expect(config.bindingFor("anthropic")).toBeUndefined();
-    expect(config.bindingFor("openai")).toBeUndefined();
   });
 
   it("opts out on a padded, mixed-case CF_AI_GATEWAY_USE_BINDING", () => {
@@ -77,7 +72,6 @@ describe("AiGatewayConfig transport selection", () => {
       WORKERS_AI: binding,
     }));
     expect(config.binding).toBeUndefined();
-    expect(config.bindingFor("anthropic")).toBeUndefined();
   });
 
   it("still requires a transport when the opt-out leaves no token", () => {
@@ -108,11 +102,12 @@ describe("AiGatewayConfig transport selection", () => {
     }))).toThrow("AI Gateway mode needs a transport");
   });
 
-  it("requires the token when google is enabled", () => {
-    expect(() => new AiGatewayConfig(env({
-      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+  it("allows google with the binding and no token", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_PROVIDERS: "google",
       WORKERS_AI: binding,
-    }))).toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
+    }));
+    expect(config.binding).toBe(binding);
   });
 
   it("resolves the same-account gateway for binding-based callers (webFetch)", () => {
@@ -173,11 +168,6 @@ describe("GatewayModels", () => {
   };
   const gatewayModels = (config: Partial<Config> = {}, providers?: string) =>
       new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), { ...NO_CONFIG, ...config });
-  // The providers whose requests need a token that `deployment` lacks.
-  const needsToken = (deployment: Cloudflare.Env, addedProviders: AiModelProvider[] = []) =>
-      new GatewayModels(new AiGatewayConfig(deployment), { ...NO_CONFIG, addedProviders })
-          .providerSettings.filter(({ needsApiToken }) => needsApiToken)
-          .map(({ provider }) => provider);
 
   it("offers each catalog model in its default mode, on enabled providers only", () => {
     const models = gatewayModels();
@@ -653,8 +643,6 @@ describe("GatewayModels", () => {
   describe("providers", () => {
     const CATALOG_ORDER = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"];
     const GEMINI = "gemini-3.6-flash";
-    const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
-        "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
     it("enables the environment's, and the ones an admin added that the gateway serves", () => {
       expect([...gatewayModels({}, "anthropic").providers]).toEqual(["anthropic"]);
       // Neither ollama, which has no gateway route, nor a name that is no provider's.
@@ -696,11 +684,11 @@ describe("GatewayModels", () => {
     it("says who enabled each provider the gateway serves, in catalog order", () => {
       expect(gatewayModels({ addedProviders: ["google"] }, "anthropic,ollama").providerSettings)
           .toStrictEqual([
-            { provider: "cloudflare-auto-router", needsApiToken: false },
-            { provider: "cloudflare", needsApiToken: false },
-            { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
-            { provider: "openai", needsApiToken: false },
-            { provider: "google", enabledBy: "admin", needsApiToken: false },
+            { provider: "cloudflare-auto-router" },
+            { provider: "cloudflare" },
+            { provider: "anthropic", enabledBy: "environment" },
+            { provider: "openai" },
+            { provider: "google", enabledBy: "admin" },
           ]);
       // The environment's listing comes first, so a provider it lists can't be turned off.
       expect(gatewayModels({ addedProviders: ["anthropic", "cloudflare"] }, "anthropic")
@@ -708,59 +696,23 @@ describe("GatewayModels", () => {
           .toEqual([undefined, "admin", "environment", undefined, undefined]);
     });
 
-    it("reports a provider whose requests need a token the deployment lacks", () => {
-      // Whether the provider is on or off.
-      expect(needsToken(tokenless())).toEqual(["google"]);
-      expect(needsToken(tokenless(), ["google", "openai"])).toEqual(["google"]);
-      // With a token, over HTTPS alone or beside the binding, none does.
-      expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
-      expect(needsToken(env({
-        CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-        CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
-      }), ["google"])).toEqual([]);
-    });
-
-    // The environment enabling google without a token is a deployment that does not start. An
-    // admin doing so must not be: every gateway read builds this table.
     it("builds with google enabled by an admin on a deployment that has no token", async () => {
-      expect(() => new AiGatewayConfig(tokenless("anthropic,google")))
-          .toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
-
       const models = new GatewayModels(
-          new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] });
-      expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual(
-          { provider: "google", enabledBy: "admin", needsApiToken: true });
+        new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] },
+      );
+      expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual({
+        provider: "google", enabledBy: "admin",
+      });
       expect(ids(models.list("language"))).toContain(GEMINI);
       expect(ids(models.list("language"))).toContain("claude-opus-5-5");
-
       const read = await getGatewayModels({
         ...tokenless(),
         BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
       });
       expect(read!.providers.has("google")).toBe(true);
-
-      // Its models are refused request by request, and the other providers' run.
-      expect(() => getModel(tokenless(), read!.resolve(GEMINI)!.config, USER))
-          .toThrow(new Error(NO_TOKEN));
+      expect(getModel(tokenless(), read!.resolve(GEMINI)!.config, USER).model.id).toBe(GEMINI);
       expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
           .toBe("claude-opus-5-5");
-    });
-
-    // The table says which providers need a token by the rule getModel refuses a request on.
-    // This holds the two in step.
-    it.each([tokenless(), gatewayEnv()])(
-        "reports a token as needed exactly where a request is refused for one (%#)",
-        (deployment) => {
-      const models = new GatewayModels(new AiGatewayConfig(deployment), NO_CONFIG);
-      for (let { provider, needsApiToken } of models.providerSettings) {
-        const request = () => getModel(
-            deployment, { provider, model: "test-model", apiToken: "" }, USER);
-        if (needsApiToken) {
-          expect(request, provider).toThrow("cannot use the Workers AI binding transport");
-        } else {
-          expect(request, provider).not.toThrow();
-        }
-      }
     });
   });
 

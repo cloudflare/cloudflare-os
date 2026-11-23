@@ -261,15 +261,20 @@ test("no config names a resource belonging to another deployment", () => {
   }
 });
 
-test("the backend is told the router's origin, and nothing else", () => {
+test("the backend is told the router's origin and that admin writes are on, and no more", () => {
   const { configs } = buildAll();
   const vars = previewsOf(configs, "workshop-backend").vars;
   assert.ok(vars, "the backend preview declares no vars");
 
-  // The origin is the only value the backend needs that is safe to write into a config Wrangler
+  // These are the only values the backend needs that are safe to write into a config Wrangler
   // will print; its admins and Access pair are uploaded as secrets instead (below).
-  assert.deepEqual(Object.keys(vars), ["PUBLIC_BASE_URL"]);
+  assert.deepEqual(Object.keys(vars), ["PUBLIC_BASE_URL", "ADMIN_WORKSPACE_WRITES"]);
   assert.equal(vars.PUBLIC_BASE_URL, BASE_URL);
+  assert.equal(vars.ADMIN_WORKSPACE_WRITES, "on");
+  // The baseline every preview branches from is deployed from the top-level vars: writes stay off
+  // there, so they end with the preview.
+  const baseline = configs.get("workshop-backend")!.vars;
+  assert.deepEqual(Object.keys(baseline ?? {}), ["PUBLIC_BASE_URL"]);
   // Setting CF_ACCESS_AUD closes the password path on its own — login() and createAccount() both
   // throw once it is set — so this stays unset.
   assert.equal(vars.DISABLE_PASSWORD_AUTH, undefined);
@@ -310,16 +315,15 @@ test("the AI gateway is optional as a group, but not half-configured", () => {
 });
 
 test("a preview that cannot use the binding transport needs the gateway token", () => {
-  // Both mirror an AiGatewayConfig throw: opting out of the binding leaves only HTTPS, and the
-  // google SDK cannot take the binding's fetch. Each is a deploy failure rather than a chat one.
+  // Mirrors the AiGatewayConfig throw: opting out of the binding leaves HTTPS.
   assert.throws(
       () => resolveAiGateway({ gateway: "g", accountId: "a", useBinding: "false" }),
       /CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is false/);
-  assert.throws(
-      () => resolveAiGateway({ gateway: "g", accountId: "a", providers: "cloudflare,google" }),
-      /CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled/);
-
-  // With the token, both are configurations rather than errors.
+  assert.deepEqual(
+      resolveAiGateway({ gateway: "g", accountId: "a", providers: "cloudflare,google" }),
+      { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a",
+        CF_AI_GATEWAY_PROVIDERS: "cloudflare,google" });
+  // With the token, opting out of the binding is valid.
   assert.deepEqual(
       resolveAiGateway({ gateway: "g", accountId: "a", apiToken: "t", useBinding: "false" }),
       { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a", CF_AI_GATEWAY_API_TOKEN: "t",
