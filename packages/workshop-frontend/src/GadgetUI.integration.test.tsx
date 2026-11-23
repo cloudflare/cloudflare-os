@@ -700,6 +700,48 @@ describe('GadgetUI no-UI placeholder reporting', () => {
     await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
     expect(onNoUiChange).not.toHaveBeenCalled()
   })
+
+  it('never mounts a frame with the previous bundle while a reload loads', async () => {
+    const gadget = fakeGadget('live', 'document.body.textContent = "ui v1"')
+    const reload = deferred<UiBundle | null>()
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger} />,
+    )
+
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v1'))
+
+    // A frame mounted with the old page would handshake into the restarted gadget.
+    const mounted: string[] = []
+    const observer = new MutationObserver(records => {
+      for (const { addedNodes } of records) {
+        for (const node of addedNodes) {
+          if (!(node instanceof HTMLElement)) continue
+          const frames = node instanceof HTMLIFrameElement ? [node] : [...node.querySelectorAll('iframe')]
+          for (const frame of frames) {
+            const copy = document.createElement('div')
+            copy.append(frame.cloneNode())
+            mounted.push(loadedCode(copy))
+          }
+        }
+      }
+    })
+    observer.observe(container, { childList: true, subtree: true })
+    try {
+      gadget.getUiBundle.mockReturnValueOnce(reload.promise)
+      await act(async () => render(1))
+      expect(container.querySelector('iframe')).toBeNull()
+      await act(async () => {
+        reload.resolve({ jsCode: 'document.body.textContent = "ui v2"' })
+        await reload.promise
+      })
+      await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
+      expect(mounted).toHaveLength(1)
+      expect(mounted[0]).toContain('v2')
+    } finally {
+      observer.disconnect()
+    }
+  })
 })
 
 describe('GadgetUI bundle errors and modules', () => {

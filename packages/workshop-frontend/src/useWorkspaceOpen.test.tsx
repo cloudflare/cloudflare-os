@@ -68,7 +68,7 @@ const METADATA = {
 } as WorkspaceMetadata
 
 const need = (gatekeeperId: number): ObserverBindingNeed =>
-  ({ gatekeeperId, vendorId: 'google', resourceTitle: `Doc ${gatekeeperId}` })
+  ({ gatekeeperId, vendorId: 'google', resourceTitle: `Doc ${gatekeeperId}`, creationType: 'gatekeeper' })
 
 function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
   const state = useWorkspaceOpen({

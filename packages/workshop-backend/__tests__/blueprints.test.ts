@@ -1335,10 +1335,12 @@ describe("applying a blueprint to a gadget", () => {
         // The head moves on meanwhile, which a pinned proposal would have to catch up with.
         let head = await commitToGadget(impl, await headFiles(impl));
 
-        // Accepting changes which blueprint the gadget follows, and nothing else.
+        // Accepting changes which blueprint the gadget follows, and nothing else besides
+        // restarting it once.
+        let restarts = (theGadget(impl).restartVersion ?? 0) + 1;
         let after = await accept(workspace, chatId);
-        expect(after)
-            .toEqual({ ...before, commitId: head, upstream: { blueprintId, commitId: a2 } });
+        expect(after).toEqual({ ...before, commitId: head, upstream: { blueprintId, commitId: a2 },
+          restartVersion: restarts });
         expect(await apply(client, before.id, blueprintId)).toEqual({ outcome: "upToDate" });
       }
 

@@ -64,13 +64,13 @@ function workspace(enabled = false) {
 
 async function renderConnections(
   overseer: ReturnType<typeof workspace>['overseer'],
-  props: { gadget?: object; chatId?: number; onConnectionsChange?: () => void } = {},
+  props: { gadget?: object; chatId?: number; reloadKey?: string } = {},
 ) {
   const gadget = props.gadget ?? { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => [] }
   const authenticatedApi = { listGatekeeperVendors: async () => [] }
   await view.render(
     <Connections overseer={overseer as never} gadget={gadget as never} chatId={props.chatId}
-      authenticatedApi={authenticatedApi as never} onConnectionsChange={props.onConnectionsChange} />,
+      authenticatedApi={authenticatedApi as never} reloadKey={props.reloadKey} />,
   )
   await act(async () => {})
 }
@@ -95,6 +95,19 @@ it('turns a hook on and off', async () => {
   expect(overseer.disableHook).toHaveBeenCalledExactlyOnceWith(7)
   expect(isOn()).toBe(false)
   expect(addToast).not.toHaveBeenCalled()
+})
+
+it("drops a connection unbound elsewhere when the reload key changes", async () => {
+  const { overseer } = workspace()
+  let bound = [{ name: 'MAIL', resourceTitle: 'inbox@localhost', target: 4 }]
+  const gadget = { getId: async () => 'triage', getTitle: async () => 'Triage', listBindings: async () => bound }
+  await renderConnections(overseer, { gadget })
+  expect(document.body.textContent).toContain('inbox@localhost')
+
+  bound = []
+  await renderConnections(overseer, { gadget, reloadKey: '1:' })
+
+  expect(document.body.textContent).not.toContain('inbox@localhost')
 })
 
 it.each([
@@ -160,19 +173,17 @@ it.each([
   })
   const reconnected = gadgetStub(async () => 'KIBANA')
   const { overseer } = workspace()
-  const onConnectionsChange = vi.fn<() => void>()
 
-  await renderConnections(overseer, { gadget: dying, chatId: 1, onConnectionsChange })
+  await renderConnections(overseer, { gadget: dying, chatId: 1 })
   // Resolving is what closes the modal rather than leaving it to create a second connection.
   await act(() => expect(modal.props!.onCreated({ [Symbol.dispose]() {} } as never, 9)).resolves.toBeUndefined())
 
   // A chat switch while the old session goes down must not spend the retry on it.
-  await renderConnections(overseer, { gadget: dying, chatId: 2, onConnectionsChange })
+  await renderConnections(overseer, { gadget: dying, chatId: 2 })
   expect(dying.bindWithSuggestedName).toHaveBeenCalledOnce()
 
-  await renderConnections(overseer, { gadget: reconnected, chatId: 2, onConnectionsChange })
-  expect(reconnected.bindWithSuggestedName).toHaveBeenCalledWith(9, 1)
-  expect(onConnectionsChange).toHaveBeenCalledOnce()
+  await renderConnections(overseer, { gadget: reconnected, chatId: 2 })
+  expect(reconnected.bindWithSuggestedName).toHaveBeenCalledExactlyOnceWith(9, 1)
 })
 
 it.each([

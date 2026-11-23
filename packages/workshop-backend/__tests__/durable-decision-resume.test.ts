@@ -260,6 +260,64 @@ describe("awaitingDecision on a chat's metadata", () => {
     await s.visit(impl => impl.waitForAllAgentsToComplete());
     expect(requests()).toBe(1);
   });
+
+  it("is cleared when the action's connection is deleted, which rejects the action once", async () => {
+    const s = await scenario("action");
+    let analytics: {event_name: string}[] = [];
+    await s.visit(impl => {
+      fakeGatekeeper(impl);
+      vi.spyOn(impl, "recordGadgetAnalytics").mockImplementation(event => { analytics.push(event); });
+    });
+    // In the object: a GatekeeperClient is a Cap'n Web target, which Workers RPC can't carry.
+    await runInDurableObject(env.TEST_OVERSEER.get(s.stub.id), async instance => {
+      using client = await instance.open(s.user.id.toString(), USER.id, new RpcStub(() => {}));
+      using gatekeeper = await client.getGatekeeperById(31);
+      // The second call races the first, as a double-submitted delete would.
+      await Promise.all([gatekeeper.remove(), gatekeeper.remove()]);
+    });
+    await s.visit(impl => {
+      expect(impl.storage.actions.get(7)).toMatchObject({state: "rejected", resolvedBy: USER});
+      expect(delivered(impl).awaitingDecision).toBeUndefined();
+    });
+    expect(analytics.filter(event => event.event_name === "connection_removed")).toHaveLength(1);
+  });
+
+  it("survives a deletion attempted while an approval waits on the gatekeeper", async () => {
+    inference();
+    const s = await scenario("action");
+    const reached = Promise.withResolvers<void>(), applying = Promise.withResolvers<void>();
+    await runInDurableObject(env.TEST_OVERSEER.get(s.stub.id), async ({impl}) => {
+      fakeGatekeeper(impl, () => { reached.resolve(); return applying.promise; });
+    });
+    await runInDurableObject(env.TEST_OVERSEER.get(s.stub.id), async instance => {
+      using client = await instance.open(s.user.id.toString(), USER.id, new RpcStub(() => {}));
+      using gatekeeper = await client.getGatekeeperById(31);
+      const approval = client.approveAction(7);
+      await reached.promise;
+      // Refused before anything changes, so the approval records the only outcome.
+      await expect(gatekeeper.remove()).rejects.toThrow("still in progress");
+      expect(instance.impl.storage.gatekeepers.get(31)).toBeDefined();
+      applying.resolve();
+      await approval;
+      expect(instance.impl.storage.actions.get(7)).toMatchObject({state: "approved"});
+      // Once the decision lands, the deletion goes through with nothing left to reject.
+      await gatekeeper.remove();
+      expect(instance.impl.storage.gatekeepers.get(31)).toBeUndefined();
+      expect(instance.impl.storage.actions.get(7)).toMatchObject({state: "approved"});
+      await instance.impl.waitForAllAgentsToComplete();
+    });
+  });
+
+  it("is cleared when an action is denied after its connection was removed", async () => {
+    // Connection 31 is never recorded, as after a removal that left its queue pending.
+    const s = await scenario("action");
+    using client = await openClient(s);
+    await client.rejectAction(7);
+    await s.visit(impl => {
+      expect(impl.storage.actions.get(7)).toMatchObject({state: "rejected", resolvedBy: USER});
+      expect(delivered(impl).awaitingDecision).toBeUndefined();
+    });
+  });
 });
 
 describe("decision handoff using the existing execution row", () => {

@@ -14,7 +14,9 @@ import * as fc from "fast-check";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
-import type { AiChatAuthorInfo, Overseer, WorkpieceId } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatAuthorInfo, Overseer, WorkpieceId, WorkpieceSummary,
+} from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { SeedBindingInfo } from "../src/agent.js";
 import { openFakeOverseer } from "./fixtures.js";
@@ -1176,6 +1178,64 @@ describe("revocation restart ordering", () => {
       await Promise.all(background);
     }
   });
+});
+
+// A restart ends every handle into the running gadget, its UI frame's included, and the summary
+// is how a client showing that frame learns of one it didn't cause.
+describe("restart versions", () => {
+  it("count each gadget's own restarts, and only those", () => withImpl(async impl => {
+    seedGatekeeper(impl, 1);
+    seedGatekeeper(impl, 2);
+    seedVendorlessGatekeeper(impl, 3);
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    let versions = new Map<WorkpieceId, number | undefined>();
+    let shown = () => JSON.stringify([...versions].toSorted(([a], [b]) => a - b));
+    let awaited: { versions: string; reached: () => void } | undefined;
+    using subscriber = new NativeRpcStub({
+      entry: async (summary: WorkpieceSummary) => {
+        versions.set(summary.id, summary.type === "gadget" ? summary.restartVersion : undefined);
+        if (shown() === awaited?.versions) awaited.reached();
+      },
+      removed: async () => {},
+      ready: async () => {},
+      onRpcBroken: () => {},
+    });
+    // Resolves once the subscriber has been delivered exactly these versions.
+    let delivered = (expected: [WorkpieceId, number | undefined][]) => new Promise<void>(reached => {
+      awaited = { versions: JSON.stringify(expected), reached };
+      if (shown() === awaited.versions) reached();
+    });
+    using _subscription = impl.subscribeToWorkpieces(subscriber, false);
+    await delivered([[100, undefined], [101, undefined]]);
+
+    impl.bindWorkpiece(100, "DB", 1);
+    impl.bindWorkpiece(101, "DB", 2);
+    impl.renameBinding(101, "DB", "STORE");
+    await delivered([[100, 1], [101, 2]]);
+
+    // Deleting a connection restarts the gadgets binding it, and no other.
+    impl.removeGatekeeper(1);
+    await delivered([[100, 2], [101, 2]]);
+    impl.unbindWorkpiece(101, "STORE");
+    await delivered([[100, 2], [101, 3]]);
+
+    // Proposing a binding restarts only the gadget it is proposed in; accepting the chat's
+    // changes, which may span gadgets, restarts every one.
+    impl.bindWorkpiece(100, "MODEL", 3, 1);
+    await delivered([[100, 3], [101, 3]]);
+    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "bound a model" }], {
+      changes: [],
+      createdGadgets: [],
+      addedBindings: [{ gadgetId: 100, name: "MODEL", target: 3 }],
+      createdWorktrees: [],
+      worktreeCommits: [],
+    });
+    await impl.mergeChanges(1, USER_META, "owner-user-do");
+    await delivered([[100, 4], [101, 4]]);
+  }));
 });
 
 // Every client-reachable route to a connection blocked pending a scope-widening restart is gated:

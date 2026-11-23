@@ -32,7 +32,12 @@ const BEA = {
 } satisfies CollaboratorInfo
 
 const CRM_REQUIREMENT: ObserverBindingNeed = {
-  gatekeeperId: 8, vendorId: 'salesforce', resourceTitle: 'Pipeline dashboard',
+  gatekeeperId: 8, vendorId: 'salesforce', resourceTitle: 'Pipeline dashboard', creationType: 'gatekeeper',
+}
+const AMBIENT_CRM_REQUIREMENT: ObserverBindingNeed = { ...CRM_REQUIREMENT, creationType: 'ambient' }
+
+const DOC_REQUIREMENT: ObserverBindingNeed = {
+  gatekeeperId: 7, vendorId: 'google', resourceTitle: 'Q3 planning', creationType: 'gatekeeper',
 }
 
 let root: Root | undefined
@@ -66,7 +71,11 @@ afterEach(async () => {
 
 const renderModal = (
   link = FROZEN_LINK, initiallyOpen = true, metadata = {}, requirements: ObserverBindingNeed[] = [],
-  target: ShareTarget = { kind: 'workspace' }, snapshot?: object,
+  { target = { kind: 'workspace' }, snapshot, remove = async () => {} }: {
+    target?: ShareTarget
+    snapshot?: object
+    remove?: () => Promise<void>
+  } = {},
 ) => {
   const overseer = {
     listCollaborators: async () => [BEA],
@@ -76,6 +85,7 @@ const renderModal = (
     getGadgetSnapshot: () => Object.assign(
       snapshot ? Promise.resolve(snapshot) : Promise.withResolvers<never>().promise,
       { [Symbol.dispose]: () => {} }),
+    getGatekeeperById: () => ({ remove, [Symbol.dispose]() {} }),
   } as unknown as RpcStub<Overseer>
   const Harness = () => {
     const [open, setOpen] = useState(initiallyOpen)
@@ -148,7 +158,7 @@ it('moves focus into the snapshot page and back to its card', async () => {
   const viewLink: ShareLinkInfo = {
     linkId: 'link-view', created: new Date(), createdBy: OWNER, role: 'use', gadgetId: 0, mode: 'view',
   }
-  renderModal(viewLink, true, {}, [], { kind: 'gadget', gadgetId: 0, title: 'Packing list' })
+  renderModal(viewLink, true, {}, [], { target: { kind: 'gadget', gadgetId: 0, title: 'Packing list' } })
   const card = page.getByRole('button', { name: /Viewers can see a snapshot/ })
   await expect.element(card).toBeVisible()
   ;(card.element() as HTMLElement).focus()
@@ -172,7 +182,7 @@ it('covers the window with the full-screen preview, keeps focus inside it, and p
   // A desktop window, where the dialog is centred by a translate that would confine the overlay.
   previousViewport = { width: window.innerWidth, height: window.innerHeight }
   await page.viewport(1280, 800)
-  renderModal(viewLink, true, {}, [], { kind: 'gadget', gadgetId: 0, title: 'Packing list' }, snapshot)
+  renderModal(viewLink, true, {}, [], { target: { kind: 'gadget', gadgetId: 0, title: 'Packing list' }, snapshot })
   await userEvent.click(page.getByRole('button', { name: /Viewers can see a snapshot/ }))
   await userEvent.click(page.getByRole('button', { name: 'Enter full screen' }))
   const overlay = page.getByRole('dialog', { name: 'Snapshot full screen' })
@@ -189,6 +199,229 @@ it('covers the window with the full-screen preview, keeps focus inside it, and p
   await expect.element(page.getByRole('button', { name: 'Ask agent to fix' })).toBeVisible()
   const dialogBox = page.getByRole('dialog', { name: 'Snapshot' }).element().getBoundingClientRect()
   expect(dialogBox.left + dialogBox.width / 2).toBe(640)
+})
+
+it('keeps keyboard focus in the connection list through confirming and deleting', async () => {
+  renderModal(FROZEN_LINK, true, {}, [DOC_REQUIREMENT, CRM_REQUIREMENT])
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  ;(pill.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+
+  const deleteDoc = page.getByRole('button', { name: 'Delete Q3 planning from workspace' })
+  const cancel = page.getByRole('button', { name: 'Cancel' })
+  await expect.element(deleteDoc).toBeVisible()
+  ;(deleteDoc.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await expect.element(cancel).toHaveFocus()
+  await userEvent.keyboard('{Enter}')
+  await expect.element(deleteDoc).toHaveFocus()
+
+  // Deleting hands focus to the next row, and deleting the last row to the people field.
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  const confirmDoc = page.getByRole('button', { name: 'Delete Q3 planning', exact: true })
+  await expect.element(confirmDoc).toHaveFocus()
+  // The warning is read with the confirmation, which would otherwise not say what it risks.
+  await expect.element(confirmDoc).toHaveAccessibleDescription(/visible to everyone in the workspace/)
+  await userEvent.keyboard('{Enter}')
+  const deleteCrm = page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' })
+  await expect.element(deleteCrm).toHaveFocus()
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  await userEvent.keyboard('{Enter}')
+  await expect.element(page.getByRole('searchbox')).toHaveFocus()
+})
+
+it('keeps keyboard focus on the confirmation while a deletion is in flight', async () => {
+  const removal = Promise.withResolvers<void>()
+  let removals = 0
+  renderModal(FROZEN_LINK, true, {}, [DOC_REQUIREMENT, CRM_REQUIREMENT], { remove: () => {
+    removals++
+    return removal.promise
+  } })
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  ;(pill.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  const deleteDoc = page.getByRole('button', { name: 'Delete Q3 planning from workspace' })
+  await expect.element(deleteDoc).toBeVisible()
+  ;(deleteDoc.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  await userEvent.keyboard('{Enter}')
+
+  const confirmDoc = page.getByRole('button', { name: 'Delete Q3 planning', exact: true })
+  await expect.element(confirmDoc).toHaveAttribute('aria-disabled', 'true')
+  await expect.element(confirmDoc).toHaveFocus()
+  // Pressing it again while busy starts nothing.
+  await userEvent.keyboard('{Enter}')
+  removal.resolve()
+
+  await expect.element(page.getByText('Connection deleted.')).toBeVisible()
+  await expect.element(page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' })).toHaveFocus()
+  expect(removals).toBe(1)
+})
+
+it('leaves focus where the user moved it when a slow deletion finishes', async () => {
+  const removal = Promise.withResolvers<void>()
+  renderModal(FROZEN_LINK, true, {}, [CRM_REQUIREMENT], { remove: () => removal.promise })
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  ;(pill.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  const deleteCrm = page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' })
+  await expect.element(deleteCrm).toBeVisible()
+  ;(deleteCrm.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  await userEvent.keyboard('{Enter}')
+
+  const close = page.getByRole('button', { name: 'Close' })
+  ;(close.element() as HTMLElement).focus()
+  removal.resolve()
+
+  await expect.element(page.getByText('Connection deleted.')).toBeVisible()
+  await expect.element(close).toHaveFocus()
+})
+
+it('moves focus to the people field when the last deletion removes the control the user moved to', async () => {
+  const removal = Promise.withResolvers<void>()
+  renderModal(FROZEN_LINK, true, {}, [CRM_REQUIREMENT], { remove: () => removal.promise })
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  ;(pill.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  const deleteCrm = page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' })
+  await expect.element(deleteCrm).toBeVisible()
+  ;(deleteCrm.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  await userEvent.keyboard('{Enter}')
+
+  // Back hands focus to the pill, which goes with the last connection.
+  ;(page.getByRole('button', { name: 'Back to sharing' }).element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await expect.element(pill).toHaveFocus()
+  removal.resolve()
+
+  await expect.element(page.getByText('Connection deleted.')).toBeVisible()
+  await expect.element(page.getByRole('searchbox')).toHaveFocus()
+})
+
+it('stays on the sharing view when a refresh lists a connection after the last was deleted', async () => {
+  const requirements = [CRM_REQUIREMENT]
+  renderModal(FROZEN_LINK, true, {}, requirements)
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  await userEvent.click(pill)
+  await userEvent.click(page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' }))
+  await userEvent.click(page.getByRole('button', { name: 'Delete Pipeline dashboard', exact: true }))
+  const people = page.getByRole('searchbox')
+  await expect.element(people).toHaveFocus()
+  await userEvent.keyboard('be')
+
+  // Another view of the workspace adds a connection, which the next focus refresh lists.
+  requirements.splice(0, 1, DOC_REQUIREMENT)
+  window.dispatchEvent(new Event('focus'))
+
+  await expect.element(pill).toBeVisible()
+  await expect.element(people).toBeVisible()
+  await expect.element(people).toHaveFocus()
+  await expect.element(people).toHaveValue('be')
+})
+
+it('leaves focus on another row when a slow deletion finishes', async () => {
+  const removal = Promise.withResolvers<void>()
+  renderModal(FROZEN_LINK, true, {}, [DOC_REQUIREMENT, AMBIENT_CRM_REQUIREMENT], { remove: () => removal.promise })
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  ;(pill.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  const deleteDoc = page.getByRole('button', { name: 'Delete Q3 planning from workspace' })
+  await expect.element(deleteDoc).toBeVisible()
+  ;(deleteDoc.element() as HTMLElement).focus()
+  await userEvent.keyboard('{Enter}')
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+  await userEvent.keyboard('{Enter}')
+
+  const ambient = page.getByRole('button', { name: 'Pipeline dashboard can’t be deleted' })
+  ;(ambient.element() as HTMLElement).focus()
+  removal.resolve()
+
+  await expect.element(page.getByText('Connection deleted.')).toBeVisible()
+  await expect.element(ambient).toHaveFocus()
+})
+
+it('keeps a deletion pending when the page is left and reopened before it settles', async () => {
+  const removal = Promise.withResolvers<void>()
+  let removals = 0
+  renderModal(FROZEN_LINK, true, {}, [DOC_REQUIREMENT, CRM_REQUIREMENT], { remove: () => {
+    removals++
+    return removal.promise
+  } })
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  await userEvent.click(pill)
+  await userEvent.click(page.getByRole('button', { name: 'Delete Q3 planning from workspace' }))
+  await userEvent.click(page.getByRole('button', { name: 'Delete Q3 planning', exact: true }))
+
+  await userEvent.click(page.getByRole('button', { name: 'Back to sharing' }))
+  await userEvent.click(pill)
+  await expect.element(page.getByRole('button', { name: 'Delete Q3 planning from workspace' })).toBeDisabled()
+  removal.resolve()
+
+  await expect.element(page.getByText('Connection deleted.')).toBeVisible()
+  await expect.element(page.getByRole('button', { name: 'Delete Pipeline dashboard from workspace' })).toBeEnabled()
+  expect(removals).toBe(1)
+})
+
+it('scrolls a confirmation it focuses whole into the page’s panel', async () => {
+  previousViewport = { width: window.innerWidth, height: window.innerHeight }
+  await page.viewport(320, 640)
+  const requirements = Array.from({ length: 12 }, (_, index): ObserverBindingNeed =>
+    ({ ...CRM_REQUIREMENT, gatekeeperId: 100 + index, resourceTitle: `Dashboard ${index}` }))
+  renderModal(FROZEN_LINK, true, {}, requirements)
+  await userEvent.click(page.getByRole('button', { name: /Protected resources/ }))
+  await expect.element(page.getByRole('button', { name: 'Delete Dashboard 11 from workspace' })).toBeInTheDocument()
+
+  // The first row past the panel's bottom edge, scrolled to end exactly at it, so the warning
+  // grows it past that edge.
+  const list = page.getByRole('list').element()
+  const panel = list.parentElement!
+  const row = [...list.querySelectorAll('li')]
+    .find(candidate => candidate.getBoundingClientRect().bottom > panel.getBoundingClientRect().bottom)!
+  panel.scrollTop += row.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom
+  expect(row.getBoundingClientRect().bottom).toBeCloseTo(panel.getBoundingClientRect().bottom, 0)
+  const deleteButton = row.querySelector<HTMLElement>('[data-resource-control]')!
+  deleteButton.focus()
+  await userEvent.keyboard('{Enter}')
+
+  const cancel = page.getByRole('button', { name: 'Cancel' })
+  await expect.element(cancel).toHaveFocus()
+  const panelBox = panel.getBoundingClientRect()
+  const rowBox = cancel.element().closest('li')!.getBoundingClientRect()
+  expect(rowBox.top).toBeGreaterThanOrEqual(panelBox.top)
+  expect(rowBox.bottom).toBeLessThanOrEqual(panelBox.bottom)
+})
+
+it.each(['click', 'touch'] as const)('shows why an ambient connection can’t be deleted on %s', async (method) => {
+  renderModal(FROZEN_LINK, true, {}, [AMBIENT_CRM_REQUIREMENT])
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+  await userEvent.click(pill)
+  const ambient = page.getByRole('button', { name: 'Pipeline dashboard can’t be deleted' })
+  await expect.element(ambient).toBeVisible()
+  await userEvent.hover(page.getByRole('heading', { name: 'Protected resources' }))
+  const activate = (element: Element) => method === 'touch' ? touch(element) : userEvent.click(element)
+
+  await activate(ambient.element())
+  const status = page.getByText('Always included')
+  await expect.element(status).toBeVisible()
+  await expect.poll(() => isOnTop(status.element())).toBe(true)
+  await expect.element(ambient).toHaveAccessibleDescription('Always included')
+  await activate(ambient.element())
+  await expect.element(status).not.toBeInTheDocument()
 })
 
 const isOnTop = (element: Element) => {

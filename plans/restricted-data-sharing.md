@@ -61,11 +61,13 @@ commits.
   resolves the effective role and runs `ensureObserver`. Both `open()` and
   `receiveExternalMessage()` pass through it; the latter non-interactively, since there
   is no way to configure connected accounts from an inbound message.
-- **Removing the producing connection is not guarded.** `containsRestrictedData` stays set, but nothing
-  stops the removal even though the record is what collaborators are verified against.
-  There is no UI to remove a connection today; when one is built, it will require the
-  owner to certify that no sensitive data from the connection has been retained in the
-  workspace, for any connection.
+- **Removing the producing connection drops its observer check.** `containsRestrictedData` stays
+  set, but deleting a connection removes its check even if its data remains in the workspace.
+  Any `build` member may delete a connection without owner approval. The workspace share dialog
+  offers it to whoever may invite (every `build` member, or only the owner once
+  `ownerInvitesOnly` is set), behind a confirmation warning that recipients will no longer be
+  verified against the connection and that its retained data becomes visible to everyone in the
+  workspace.
 - **Fail closed everywhere.** An operational failure — provider outage, expired
   credential — is treated exactly like a refusal.
 

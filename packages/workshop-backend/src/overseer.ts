@@ -526,14 +526,18 @@ function observerBindingTitle(record: GatekeeperRecord): string {
   return record.resourceTitle || "Connection";
 }
 
+// Only for a record observerVendorId() names a vendor for. It throws first for a legacy record,
+// the only kind without a creation spec.
 function observerBindingNeed(record: GatekeeperRecord): ObserverBindingNeed {
+  let vendorId = observerVendorId(record)!;
+  let spec = record.creationSpec!;
   return {
     gatekeeperId: record.id,
-    vendorId: observerVendorId(record)!,
+    vendorId,
     resourceTitle: observerBindingTitle(record),
     resourceUrl: record.resourceUrl,
-    resourceTypeId: record.creationSpec?.type === "gatekeeper"
-      ? record.creationSpec.resourceTypeId : undefined,
+    resourceTypeId: spec.type === "gatekeeper" ? spec.resourceTypeId : undefined,
+    creationType: spec.type,
   };
 }
 
@@ -725,6 +729,9 @@ function workpieceSummary(record: WorkpieceRecord, includeUpstream: boolean): Wo
   }
   if (record.upstream && includeUpstream) {
     summary.upstream = record.upstream;
+  }
+  if (record.restartVersion !== undefined) {
+    summary.restartVersion = record.restartVersion;
   }
   if (record.pending) {
     summary.chatId = record.pending.chatId;
@@ -2392,8 +2399,11 @@ class OverseerImpl implements AgentHooks {
     }
     if (record.type !== "gadget") return undefined;  // worktrees have no binding edges
     return {id: record.id, bindings: record.bindings, save: reload => {
-      this.storage.gadgets.put(record);
-      if (reload) this.bumpVersion([record.id]);
+      if (reload) {
+        this.bumpVersion([record]);
+      } else {
+        this.storage.gadgets.put(record);
+      }
     }};
   }
 
@@ -2467,10 +2477,8 @@ class OverseerImpl implements AgentHooks {
     let reachesBefore = this.#gadgetReaches();
 
     gadget.bindings[name] = {target, ...(chatId !== undefined ? {pending: {chatId}} : {})};
-    this.storage.gadgets.put(gadget);
-
     // The gadget's env changed, so its code must reload.
-    this.bumpVersion([gadgetId]);
+    this.bumpVersion([gadget]);
 
     this.#restartIfGadgetScopesWidened(
         reachesBefore, "Gadget restarted because a connection was bound to a gadget.");
@@ -2487,8 +2495,7 @@ class OverseerImpl implements AgentHooks {
       throw new Error(`No such binding: ${name}`);
     }
     delete gadget.bindings[name];
-    this.storage.gadgets.put(gadget);
-    this.bumpVersion([gadgetId]);
+    this.bumpVersion([gadget]);
   }
 
   // Rename a binding edge atomically, preserving edge metadata and restarting the gadget once.
@@ -2509,8 +2516,7 @@ class OverseerImpl implements AgentHooks {
 
     delete gadget.bindings[oldName];
     gadget.bindings[newName] = edge;
-    this.storage.gadgets.put(gadget);
-    this.bumpVersion([gadgetId]);
+    this.bumpVersion([gadget]);
   }
 
   // Permanently delete a workpiece: its hooks, its registry entry (which for a gadget carries
@@ -6046,7 +6052,19 @@ class OverseerImpl implements AgentHooks {
   // no gadget's or agent spawner's env retains a dangling entry. (This is distinct from merely
   // unbinding it from one gadget -- GadgetClient.unbind() -- which leaves the gatekeeper alive,
   // possibly orphaned.)
-  removeGatekeeper(id: number) {
+  //
+  // Given `resolvedBy`, the removal is that user's decision on every action still queued against
+  // the connection, which none can apply now: each is rejected (see recordActionRejection). It
+  // is refused before anything changes while a decision on one of them is in flight, which would
+  // otherwise record its own outcome after this one (see claimDecision). Without `resolvedBy`
+  // (nobody chose the removal, as for ambient reconciliation), the actions are left pending.
+  removeGatekeeper(id: number, resolvedBy?: AiChatAuthorInfo) {
+    let queued = Array.from(this.storage.actions.pendingByGatekeeper.get(id));
+    if (resolvedBy && queued.some(action => this.#deciding.has(action.id))) {
+      throw new Error("A decision on one of this connection's requests is still in progress. " +
+          "Try again once it finishes.");
+    }
+
     // An agent spawner is proposed by the chats with edges pending on it.
     let affectedChats = this.#chatsProposing(id);
     for (let chatId of this.#deleteBindingEdges(edge => edge.target === id)) {
@@ -6054,10 +6072,11 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Pushes still queued against this gatekeeper can never apply once it is gone; clean up
-    // their pending-push marks like a rejection would. (The action records themselves remain,
-    // as the audit log; onRemote/pullableFrom metadata also remains -- a wrong entry only makes
-    // a future pull fail with its "reconnect" error.)
-    for (let action of Array.from(this.storage.actions.pendingByGatekeeper.get(id))) {
+    // their pending-push marks like a rejection would. (The action records themselves remain as
+    // the audit log, rejected below when someone chose the removal; onRemote/pullableFrom
+    // metadata also remains -- a wrong entry only makes a future pull fail with its "reconnect"
+    // error.)
+    for (let action of queued) {
       if (action.type === "action" && action.description.pushedCommits?.length) {
         this.gitCache.clearPushMarks(action.id);
       }
@@ -6088,6 +6107,32 @@ class OverseerImpl implements AgentHooks {
     this.storage.gatekeepers.delete(id);
     this.sessionWatchers.end(`gatekeeper:${id}`);
     this.#rebroadcastChatMeta(affectedChats);
+
+    if (resolvedBy) {
+      for (let action of queued) {
+        if (action.type === "action") this.recordActionRejection(action, resolvedBy);
+      }
+    }
+  }
+
+  // Record `record`, a pending action, as rejected by `resolvedBy`, and resume the agent turn it
+  // may hold. Asks no gatekeeper: a caller whose connection still exists tells it first. A push's
+  // pending-push marks are removed in the same durable step as the state change (nothing was
+  // transmitted, so nothing became proven); a no-op for pushless actions, and for one whose marks
+  // went with its connection.
+  recordActionRejection(record: ActionRecord & {type: "action"},
+                        resolvedBy: AiChatAuthorInfo): void {
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    this.storage.transaction(() => {
+      this.gitCache.clearPushMarks(record.id);
+      this.storage.actions.put(record);
+    });
+    this.traceAgentActionApproval(record, "denied");
+    if (record.caller.from === "agent") {
+      this.resumeAgentAfterDecision(record.caller.chatId, record.id);
+    }
   }
 
   // Open the session behind a binding loopback.
@@ -7314,22 +7359,23 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Increment the code version and restart the affected gadgets so they reload. If
-  // `affectedGadgetIds` is omitted, conservatively restarts every gadget (e.g. for code commits,
-  // which are whole-doc updates that may span gadget roots); binding changes pass the one gadget
-  // they touched so that renaming a binding on gadget A doesn't restart gadget B.
-  bumpVersion(affectedGadgetIds?: WorkpieceId[]): number {
-    let codeVersion = this.storage.codeVersion.get() + 1;
-    this.storage.codeVersion.put(codeVersion);
-    let ids = affectedGadgetIds ?? [...this.storage.gadgets.list()]
-        .filter(record => record.type === "gadget")  // worktrees have no facet to restart
-        .map(gadget => gadget.id);
-    for (let id of ids) {
-      this.ctx.facets.abort(this.gadgetFacetName(id),
+  // Increment the code version and restart the affected gadgets so they reload, advancing each
+  // one's own restartVersion (see GadgetSummary.restartVersion). If `affected` is omitted,
+  // conservatively restarts every gadget (e.g. for code commits, which are whole-doc updates that
+  // may span gadget roots); binding changes pass the one gadget they touched, with its edges
+  // changed and not yet saved, so that renaming a binding on gadget A doesn't restart gadget B.
+  bumpVersion(affected?: GadgetRecord[]): void {
+    this.storage.codeVersion.put(this.storage.codeVersion.get() + 1);
+    let gadgets = affected ?? [...this.storage.gadgets.list()]
+        .filter(record => record.type === "gadget");  // worktrees have no facet to restart
+    for (let gadget of gadgets) {
+      // Per gadget: a client seeing one gadget mustn't learn how often others restart.
+      gadget.restartVersion = (gadget.restartVersion ?? 0) + 1;
+      this.storage.gadgets.put(gadget);
+      this.ctx.facets.abort(this.gadgetFacetName(gadget.id),
           new Error("Gadget restarted due to code update."));
     }
     this.bumpLastActive();
-    return codeVersion;
   }
 
   // Force every client to disconnect and re-authenticate, so that no session outlives a change to
@@ -13207,26 +13253,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     if (action.action === "create") {
-      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
-      // pushes' marks), and rejects every action queued against the simulated resource: none can
-      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
-      // is called.
+      // Rejecting a creation removes its connection, as disconnecting would, which rejects every
+      // action queued against the simulated resource, this creation included -- refusing if a
+      // decision on any of them, this one's approval included, is in flight. Only one decided
+      // during the await is left to catch here.
+      let profile = await this.#getClientProfile();
+      if (this.impl.storage.actions.get(id)?.state !== "pending") {
+        throw new Error(`Action is not pending: ${id}`);
+      }
+      this.impl.removeGatekeeper(action.gatekeeperId, profile);
+      return;
+    }
+
+    if (!this.impl.storage.gatekeepers.get(action.gatekeeperId)) {
+      // Queued on a connection that was removed with no decision on its queue, as ambient
+      // reconciliation removes one: nothing is left to apply it or to tell.
       let profile = await this.#getClientProfile();
       using _decision = this.impl.claimDecision(id);
-      let queued = Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
-      this.impl.removeGatekeeper(action.gatekeeperId);
-      for (let record of queued) {
-        if (record.type !== "action") continue;
-        record.state = "rejected";
-        record.appliedAt = new Date();
-        record.resolvedBy = profile;
-        this.impl.storage.actions.put(record);
-        this.impl.traceAgentActionApproval(record, "denied");
-        if (record.caller.from === "agent") {
-          this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
-        }
-      }
+      this.impl.recordActionRejection(action, profile);
       return;
     }
 
@@ -13238,20 +13282,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     using _decision = this.impl.claimDecision(id);
     await gatekeeper.rejectAction(action.action);
-
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    // A rejected push's pending-push marks are removed in the same durable step as the state
-    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-    this.impl.storage.transaction(() => {
-      this.impl.gitCache.clearPushMarks(action.id);
-      this.impl.storage.actions.put(action);
-    });
-    this.impl.traceAgentActionApproval(action, "denied");
-    if (action.caller.from === "agent") {
-      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
-    }
+    this.impl.recordActionRejection(action, profile);
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
@@ -15331,7 +15362,8 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
   // See GadgetClientImpl: `joinedAs` counts a collaborator's retained capability toward
   // #hasCollaboratorSession; omitted for the owner's and for internal construction. Sessions it
   // opens count too (see openGatekeeperSession). `actorUserId` (hex user DO ID of the client
-  // holding this capability) feeds analytics only.
+  // holding this capability) names who removes the connection, for analytics and as the
+  // rejecter of the actions still queued on it.
   #leaveSession?: () => void;
 
   constructor(private impl: OverseerImpl, private id: number,
@@ -15347,14 +15379,19 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
   }
 
   async remove(): Promise<void> {
+    let resolvedBy = await retryOnDoReset(() => this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.actorUserId))).whoami(),
+        this.impl.logger);
     let record = this.impl.storage.gatekeepers.get(this.id);
-    this.impl.removeGatekeeper(this.id);
+    // Already removed, as by a second call that raced this one: nothing is left to do or record.
+    if (!record) return;
+    this.impl.removeGatekeeper(this.id, resolvedBy);
     this.impl.recordGadgetAnalytics({
       event_name: "connection_removed",
       user_id: this.actorUserId,
       gatekeeper_id: this.id,
-      connection_type: connectionTypeFromCreationSpec(record?.creationSpec?.type),
-      vendor_id: record?.creationSpec?.type === "gatekeeper" ? record.creationSpec.vendorId : undefined,
+      connection_type: connectionTypeFromCreationSpec(record.creationSpec?.type),
+      vendor_id: record.creationSpec?.type === "gatekeeper" ? record.creationSpec.vendorId : undefined,
     });
   }
 

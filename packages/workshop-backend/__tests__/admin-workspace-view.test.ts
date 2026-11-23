@@ -353,11 +353,11 @@ function seededBlueprint(): BlueprintGadgetSummary {
 // connection's creationSpec spells it.
 const REPO_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: GATEKEEPER_ID, vendorId: "TestVendor", resourceTitle: "Repo",
-  resourceUrl: "https://example.com/repo", resourceTypeId: undefined,
+  resourceUrl: "https://example.com/repo", resourceTypeId: undefined, creationType: "gatekeeper",
 };
 const LIBRARY_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: AMBIENT_GATEKEEPER_ID, vendorId: "library", resourceTitle: "Library",
-  resourceUrl: undefined, resourceTypeId: undefined,
+  resourceUrl: undefined, resourceTypeId: undefined, creationType: "ambient",
 };
 
 // Writes `files` as a commit by COMMITTER.

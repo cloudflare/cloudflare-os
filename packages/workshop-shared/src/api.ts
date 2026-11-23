@@ -512,6 +512,12 @@ export type ObserverBindingNeed = {
   /** Stable vendor-scoped type ID from the binding; authoritative over URL-based scope selection. */
   resourceTypeId?: string;
   /**
+   * How the connection was created (its GatekeeperCreationSpec's `type`). An "ambient" one is
+   * provisioned again from the owner's account on the workspace's next open, so removing it
+   * doesn't take it out of scope.
+   */
+  creationType: GatekeeperCreationSpec["type"];
+  /**
    * Set only when this binding was already configured but its chosen account failed verification on
    * this attempt (expired credentials, a revoked grant, an upstream outage, or a genuine denial).
    * Absent for a binding that has simply never been configured. Deliberately carries no
@@ -7003,6 +7009,14 @@ export type GadgetSummary = {
    * link to the blueprint's code, which a "use" collaborator cannot otherwise read.
    */
   upstream?: GadgetUpstream;
+
+  /**
+   * Counts this gadget's restarts to reload its code or bindings -- whoever made the change,
+   * including accepting a chat's changes or deleting a connection the gadget bound. A restart
+   * ends every RPC handle into the running gadget, its UI frame's included, so a client showing
+   * that UI reloads it when this changes. Absent until the first such restart.
+   */
+  restartVersion?: number;
 
   /**
    * If present, this workpiece exists only in the context of the given chat. The UI should display

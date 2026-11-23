@@ -2428,7 +2428,9 @@ export default function GadgetEditor() {
                   key={selectedGadgetId}
                   gadget={selectedGadgetStub}
                   height="100%"
-                  reloadTrigger={uiReloadTrigger}
+                  // A restart (a binding change or an accepted merge) ends the handles its frame
+                  // holds, whoever caused it. Both counts only grow, so their sum changes with either.
+                  reloadTrigger={uiReloadTrigger + (selectedGadgetSummary?.restartVersion ?? 0)}
                   isVisible={activeTab === 'app'}
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
@@ -2475,7 +2477,7 @@ export default function GadgetEditor() {
                   gadget={selectedGadgetStub}
                   chatId={paneChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
-                  onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
+                  reloadKey={`${selectedGadgetSummary?.restartVersion}:${hookSignature}`}
                   isVisible={activeTab === 'connections'}
                   onHasGatekeepersChange={setHasBindings}
                 />
