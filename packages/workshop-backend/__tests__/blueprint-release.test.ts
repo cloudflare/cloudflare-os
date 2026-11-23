@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { deflate } from "pako";
+import * as fc from "fast-check";
+import { deflateSync } from "node:zlib";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { MAX_FILE_PATH_LENGTH } from "@gadgets/workshop-shared/code-change";
 import {
   MAX_RELEASE_COMMITS,
@@ -24,9 +26,7 @@ import {
   type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
-import { GitStore } from "../src/git-store";
-import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
-import { makeMockStorage } from "./mock-storage";
+import { makeLocalGitCache } from "./local-git-cache";
 
 const ALICE = { name: "Alice Example", email: "alice@example.com" };
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -55,14 +55,14 @@ class Repo {
   lookup = (oid: string) => this.hidden.has(oid) ? undefined : this.objects.get(oid);
 
   async add(type: PackableObject["type"], payload: Uint8Array): Promise<string> {
-    let oid = await gitObjectOid(type, payload);
+    let oid = gitObjectOid(type, payload);
     this.objects.set(oid, { type, payload });
     return oid;
   }
 
   /** Adds the tree for a file map, and everything beneath it. */
   async tree(files: Iterable<[string, string]>): Promise<string> {
-    let { commitId, objects } = await buildSnapshotRelease(new Map(files));
+    let { commitId, objects } = buildSnapshotRelease(new Map(files));
     let tree = this.treeOf(objects.get(commitId)!);
     objects.delete(commitId);
     for (let [oid, object] of objects) this.objects.set(oid, object);
@@ -114,7 +114,7 @@ async function validRelease() {
     repo, objects, release, previous,
     tree: repo.treeOf(release),
     previousTree: repo.treeOf(previous),
-    clientBlob: await blobOid("// release\n"),
+    clientBlob: blobOid("// release\n"),
     libTree: await repo.tree([["util.js", "export const answer = 42;\n"]]),
   };
 }
@@ -132,13 +132,13 @@ async function read(objects: Iterable<PackableObject>, release: string | { tree:
 
 /** Reads a pack of a release whose tree has this payload, given whatever the tree refers to. */
 async function readTree(payload: Uint8Array, ...referents: PackableObject[]) {
-  let tree = await gitObjectOid("tree", payload);
+  let tree = gitObjectOid("tree", payload);
   return await read([{ type: "tree", payload }, ...referents], { tree });
 }
 
 /** Reads a pack of a release whose one file, `f`, is a blob with this payload. */
 async function readFile(payload: Uint8Array) {
-  let oid = await gitObjectOid("blob", payload);
+  let oid = gitObjectOid("blob", payload);
   return await readTree(
       encodeGitTree([{ mode: "100644", name: "f", oid }]), { type: "blob", payload });
 }
@@ -161,7 +161,7 @@ describe("release commits", () => {
       timestamp: new Date(1700000000_000),
     });
     expect(new TextDecoder().decode(payload)).toMatch(/\n\nRelease 3: Test Gadget\n$/);
-    expect(await gitObjectOid("commit", payload)).toBe("266b1913956214e72bb544b76d94d76a67100407");
+    expect(gitObjectOid("commit", payload)).toBe("266b1913956214e72bb544b76d94d76a67100407");
   });
 
   it("drops from the author what a signature cannot hold, as real git does", async () => {
@@ -174,7 +174,7 @@ describe("release commits", () => {
       version: 1,
       timestamp: new Date(1700000000_000),
     });
-    let commitId = await gitObjectOid("commit", payload);
+    let commitId = gitObjectOid("commit", payload);
     expect(commitId).toBe("d0ad880962e5d52af57e21ca611da200c5ef34de");
 
     // So a release by any publisher passes the check on what a pack may hold.
@@ -225,17 +225,17 @@ describe("merging releases", () => {
 
 describe("snapshot releases", () => {
   it("derives a fixed, known commit id from the files alone", async () => {
-    let { commitId, objects } = await buildSnapshotRelease(FILES);
+    let { commitId, objects } = buildSnapshotRelease(FILES);
     expect(commitId).toBe(FILES_SNAPSHOT);
     expect(parseGitCommitRefs(objects.get(commitId)!.payload))
         .toStrictEqual({ tree: FILES_TREE, parents: [] });
 
     // Neither the order the files are given in nor when or where this runs is part of it.
-    let reordered = await buildSnapshotRelease(new Map([...FILES].toReversed()));
+    let reordered = buildSnapshotRelease(new Map([...FILES].toReversed()));
     expect(reordered.commitId).toBe(FILES_SNAPSHOT);
   });
 
-  it("writes the tree GitStore writes for the same files, and lists them back", async () => {
+  it("writes the tree the git store writes for the same files, and lists them back", async () => {
     let files = new Map([
       ...FILES,
       ["foo/inner.js", "inner\n"],
@@ -246,24 +246,23 @@ describe("snapshot releases", () => {
       ["bom.txt", "\ufeffkept"],
       ["empty.txt", ""],
     ]);
-    let store = new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
+    let store = makeLocalGitCache();
     let viaStore = await store.writeFilesAsCommit(
         files, { parents: [], author: ALICE, message: "files", timestamp: new Date(0) });
 
-    let { commitId, objects } = await buildSnapshotRelease(files);
+    let { commitId, objects } = buildSnapshotRelease(files);
     expect(parseGitCommitRefs(objects.get(commitId)!.payload).tree)
-        .toBe(await store.commitTree(viaStore));
+        .toBe(store.commitTree(viaStore));
     validateReleaseObjects(objects, commitId);
     expect(listReleaseFiles(objects, commitId)).toStrictEqual(files);
   });
 
-  it("refuses paths git cannot represent", async () => {
+  it("refuses paths git cannot represent", () => {
     for (let path of ["", "/a", "a/", "a//b", "./a", "a/../b"]) {
-      await expect(buildSnapshotRelease(new Map([[path, ""]])))
-          .rejects.toThrow(/invalid entry name/);
+      expect(() => buildSnapshotRelease(new Map([[path, ""]]))).toThrow(/invalid entry name/);
     }
-    await expect(buildSnapshotRelease(new Map([["a", ""], ["a/b", ""]])))
-        .rejects.toThrow(/duplicate entry name "a"/);
+    expect(() => buildSnapshotRelease(new Map([["a", ""], ["a/b", ""]])))
+        .toThrow(/duplicate entry name "a"/);
   });
 });
 
@@ -328,7 +327,7 @@ describe("release packs", () => {
   it("carries each newest release of a lineage that forked", async () => {
     // Two blueprints republished from the same legacy content share its snapshot as their root.
     let repo = new Repo();
-    let snapshot = await buildSnapshotRelease(FILES);
+    let snapshot = buildSnapshotRelease(FILES);
     for (let [oid, object] of snapshot.objects) repo.objects.set(oid, object);
     let x1 = await repo.release(await repo.tree(version("x1")), [snapshot.commitId]);
     let y1 = await repo.release(await repo.tree(version("y1")), [snapshot.commitId]);
@@ -344,7 +343,7 @@ describe("release packs", () => {
     let repo = new Repo();
     let a1 = await repo.release(await repo.tree(version("a1")));
     let b1 = await repo.release(await repo.tree(version("b1")), [await repo.root(), a1]);
-    repo.hidden.add(await blobOid("// a1\n"));
+    repo.hidden.add(blobOid("// a1\n"));
 
     let objects = await readReleasePack(await buildReleasePack(repo.lookup, b1), b1);
     expect(objects.has(a1)).toBe(true);
@@ -359,7 +358,7 @@ describe("release packs", () => {
 
     repo.hidden = new Set([a1]);
     await expect(buildReleasePack(repo.lookup, a2)).rejects.toThrow(`commit ${a1} is not held`);
-    repo.hidden = new Set([await blobOid("// a2\n")]);
+    repo.hidden = new Set([blobOid("// a2\n")]);
     await expect(buildReleasePack(repo.lookup, a2)).rejects.toThrow(/not wholly held/);
     repo.hidden = new Set();
 
@@ -377,6 +376,98 @@ describe("release packs", () => {
     let release = await repo.release(await repo.tree(files));
     let objects = await readReleasePack(await buildReleasePack(repo.lookup, release), release);
     expect(listReleaseFiles(objects, release)).toStrictEqual(files);
+  });
+});
+
+// Property: publishing a gadget's files and installing them elsewhere. fast-check generates the
+// small file trees real gadgets have -- source under nested directories, a directory beside a
+// file of the same stem (`utils/` and `utils.ts`, which git sorts unlike a plain string compare),
+// identical and empty files, unicode and CRLF text -- and checks, for each, that:
+// - the snapshot release's tree is the one the workspace's git cache writes for the same files, so
+//   a workspace's own commit and the release agree on every tree id;
+// - building its pack, reading it back and listing it gives exactly those files;
+// - its commit id is a function of the files alone: the same in whatever order they are given,
+//   and different once any one file's text changes.
+// Malformed packs are the examples' business ("release pack validation"), not this property's.
+describe("release round trip, for generated gadget trees", () => {
+  type Entry = [path: string, text: string];
+
+  // Directory names and file stems overlap, as `utils/` and `utils.ts` do in real projects.
+  const directory = fc.constantFrom(
+      "src", "lib", "public", "components", "utils", "api", "assets", "styles", "server",
+      "docs", "na\u00efve");
+  const fileName = fc.oneof(
+      fc.tuple(
+          fc.constantFrom(
+              "index", "app", "main", "utils", "api", "api-client", "server", "lib", "components",
+              "styles", "README", "caf\u00e9"),
+          fc.constantFrom(".ts", ".tsx", ".js", ".html", ".css", ".json", ".md", ""))
+          .map(([stem, extension]) => stem + extension),
+      fc.constantFrom(".gitignore", ".env.example", "LICENSE"));
+  const path = fc.tuple(fc.array(directory, { maxLength: 3 }), fileName)
+      .map(([directories, name]) => [...directories, name].join("/"));
+  // Lines of printable text in either line ending, or one of a few texts that real gadgets
+  // repeat across files, so that one blob can sit under several paths.
+  const text = fc.oneof(
+      fc.tuple(
+          fc.array(fc.string({ unit: "grapheme", maxLength: 40 }), { maxLength: 8 }),
+          fc.constantFrom("\n", "\r\n"), fc.boolean())
+          .map(([lines, ending, final]) => lines.join(ending) + (final ? ending : "")),
+      fc.constantFrom("", "export {};\n", "MIT License\n"));
+  // A path cannot be both a file and a directory; a gadget holds whichever came deeper.
+  const files = fc.uniqueArray(fc.tuple(path, text), {
+    minLength: 1, maxLength: 15, selector: ([filePath]) => filePath,
+  }).map(entries => entries.filter(([filePath]) =>
+      !entries.some(([other]) => other.startsWith(`${filePath}/`))));
+  const scenario = files.chain(entries => fc.record({
+    entries: fc.constant(entries),
+    reordered: fc.shuffledSubarray(entries, {
+      minLength: entries.length, maxLength: entries.length,
+    }),
+    edit: fc.record({ index: fc.nat({ max: entries.length - 1 }), text })
+        .filter(edit => edit.text !== entries[edit.index][1]),
+  }));
+  type Scenario = { entries: Entry[], reordered: Entry[], edit: { index: number, text: string } };
+
+  // Each sort trap at once, beneath a nested directory, with shared and empty files: what a
+  // random seed reaches only now and then.
+  const sortTraps: Entry[] = [
+    ["src/utils.ts", "export * from \"./utils/format\";\n"],
+    ["src/utils/format.ts", "export const format = (s: string) => s.trim();\n"],
+    ["src/utils-v2.ts", "export {};\n"],
+    ["src/utils0.ts", "export {};\n"],
+    ["src/components/na\u00efve/caf\u00e9.tsx", "\ufeffexport default \"\u2615\";\r\n"],
+    ["public/index.html", "<!doctype html>\n<title>\u{1F600}</title>\n"],
+    [".gitignore", ""],
+  ];
+  const examples: [Scenario][] = [[{
+    entries: sortTraps,
+    reordered: sortTraps.toReversed(),
+    edit: { index: 1, text: "export const format = (s: string) => s;\n" },
+  }]];
+
+  it("installs exactly the published files, under an id they alone determine", async () => {
+    await fc.assert(fc.asyncProperty(scenario, async ({ entries, reordered, edit }) => {
+      let published = new Map(entries);
+      let { commitId, objects } = await buildSnapshotRelease(published);
+
+      let store = makeLocalGitCache();
+      let viaStore = await store.writeFilesAsCommit(
+          published, { parents: [], author: ALICE, message: "files", timestamp: new Date(0) });
+      expect(parseGitCommitRefs(objects.get(commitId)!.payload).tree,
+          "the release's tree is the one the git cache writes").toBe(store.commitTree(viaStore));
+
+      let pack = await buildReleasePack(oid => objects.get(oid), commitId);
+      let installed = listReleaseFiles(await readReleasePack(pack, commitId), commitId);
+      expect(installed, "the installed files are the published ones").toStrictEqual(published);
+
+      expect((await buildSnapshotRelease(new Map(reordered))).commitId,
+          "the same files in another order make the same release").toBe(commitId);
+
+      let edited = new Map(published).set(entries[edit.index][0], edit.text);
+      expect((await buildSnapshotRelease(edited)).commitId,
+          `editing ${entries[edit.index][0]} makes another release`).not.toBe(commitId);
+    }), { ...PROPERTY_RUN_OPTIONS, numRuns: 100, examples });
   });
 });
 
@@ -403,7 +494,7 @@ describe("release pack validation", () => {
     new DataView(header.buffer).setUint32(8, 1);
     let body = concatBytes([
       header, new Uint8Array([(7 << 4) | delta.length]),
-      Uint8Array.fromHex(await gitObjectOid("blob", base)), deflate(delta),
+      Uint8Array.fromHex(gitObjectOid("blob", base)), deflateSync(delta),
     ]);
     let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
     await expect(readReleasePack(pack, ABSENT)).rejects.toThrow(/delta base .* is unavailable/);
@@ -425,7 +516,7 @@ describe("release pack validation", () => {
     let objects: GitObjectMap = new Map();
     let signature = { ...ALICE, timestamp: new Date(0), utcOffsetMinutes: 0 };
     let add = async (type: PackableObject["type"], payload: Uint8Array) => {
-      let oid = await gitObjectOid(type, payload);
+      let oid = gitObjectOid(type, payload);
       objects.set(oid, { type, payload });
       return oid;
     };
@@ -453,7 +544,7 @@ describe("release pack validation", () => {
 
   it("refuses an ancestor's tree that is present but incomplete", async () => {
     let { repo, objects, release, previousTree } = await validRelease();
-    let missing = await blobOid("// previous\n");
+    let missing = blobOid("// previous\n");
     let withRoot = [...objects.values(), repo.objects.get(previousTree)!];
     await expect(read(withRoot, release)).rejects.toThrow(`blob ${missing} is missing`);
     // Whole, it is welcome: that is what a fork-point tree is.
@@ -462,7 +553,7 @@ describe("release pack validation", () => {
 
   it("refuses tree entries that are not plain files or directories", async () => {
     let blob: PackableObject = { type: "blob", payload: bytes("x\n") };
-    let oid = await gitObjectOid("blob", blob.payload);
+    let oid = gitObjectOid("blob", blob.payload);
     for (let mode of ["100755", "120000", "160000"] as const) {
       await expect(readTree(encodeGitTree([{ mode, name: "f", oid }]), blob))
           .rejects.toThrow(`unsupported mode ${mode}`);
@@ -472,7 +563,7 @@ describe("release pack validation", () => {
     let directory: PackableObject = {
       type: "tree", payload: encodeGitTree([{ mode: "100644", name: "f", oid }]),
     };
-    let directoryOid = await gitObjectOid("tree", directory.payload);
+    let directoryOid = gitObjectOid("tree", directory.payload);
     await expect(readTree(encodeGitTree([
       { mode: "40000", name: "d", oid: directoryOid },
       { mode: "100644", name: "e", oid: directoryOid },
@@ -519,7 +610,7 @@ describe("release pack validation", () => {
 
   it("refuses a tree that is not in canonical form", async () => {
     let blob: PackableObject = { type: "blob", payload: bytes("x\n") };
-    let oid = await gitObjectOid("blob", blob.payload);
+    let oid = gitObjectOid("blob", blob.payload);
     let file = (name: string): GitTreeEntry => ({ mode: "100644", name, oid });
     for (let entries of [
       [file("b"), file("a")],   // unsorted
@@ -532,7 +623,7 @@ describe("release pack validation", () => {
     }
   });
 
-  it("refuses exactly the names GitStore cannot read back", async () => {
+  it("refuses exactly the names the git store refuses to write", async () => {
     let names = [
       ".git", ".GIT", ".git. ", ".git:stream", ".git\u200d", "git~1", ".git~1", "GIT~2", "a\\b",
       ".\u200c", "..\ufeff",
@@ -540,14 +631,13 @@ describe("release pack validation", () => {
     ];
     for (let name of names) {
       let files = new Map([[`dir/${name}`, "x\n"]]);
-      let store = new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
-      let commit = await store.writeFilesAsCommit(
-          files, { parents: [], author: ALICE, message: "m", timestamp: new Date(0) });
-      let readable = await store.readCommitFiles(commit).then(() => true, () => false);
+      let writable = await makeLocalGitCache().writeFilesAsCommit(
+          files, { parents: [], author: ALICE, message: "m", timestamp: new Date(0) })
+          .then(() => true, () => false);
 
-      let snapshot = await buildSnapshotRelease(files);
+      let snapshot = buildSnapshotRelease(files);
       let validate = () => validateReleaseObjects(snapshot.objects, snapshot.commitId);
-      if (readable) {
+      if (writable) {
         expect(validate, name).not.toThrow();
       } else {
         expect(validate, name).toThrow(/holds the reserved name/);
@@ -570,7 +660,7 @@ describe("release pack validation", () => {
       tree, parents: [previous, upstream], author: signature, committer: signature,
       headers: [releaseMergeHeader(upstream)], message: "Release 2: Test Gadget",
     });
-    let marked = await gitObjectOid("commit", payload);
+    let marked = gitObjectOid("commit", payload);
     objects.delete(release);
     await expect(read([...objects.values(), { type: "commit", payload }], marked))
         .rejects.toThrow(new RegExp(`commit ${marked} is not in canonical form`));
@@ -582,7 +672,7 @@ describe("release pack validation", () => {
     objects.delete(release);
     let readWith = async (payload: Uint8Array) =>
         await read([...objects.values(), { type: "commit", payload }],
-            await gitObjectOid("commit", payload));
+            gitObjectOid("commit", payload));
     for (let [from, to] of [
       [/^committer .*\n/m, ""],
       [/\n\n/, "\nencoding ISO-8859-1\n\n"],

@@ -7,13 +7,15 @@
 // real OverseerImpl, and for the agent's fold the real runAgent with pi's faux provider standing
 // in for the model.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as fc from "fast-check";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
   createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Context,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { keyString } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMessageBody, ChatGadgetPinState,
@@ -48,7 +50,7 @@ async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
 let commitCounter = 0;
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: `test commit ${++commitCounter}`,
@@ -64,46 +66,57 @@ function head(impl: any): string {
   return impl.storage.gadgets.get(GADGET).commitId;
 }
 
-function chatMessages(impl: any): AiChatMessage[] {
-  return [...impl.storage.chats.list({ prefix: `${keyString(CHAT)}.` })];
+function chatMessages(impl: any, chatId = CHAT): AiChatMessage[] {
+  return [...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })];
 }
 
-function pin(impl: any): ChatGadgetPinState | undefined {
-  return impl.storage.chatMeta.get(CHAT).codeBase?.pins
+function pin(impl: any, chatId = CHAT): ChatGadgetPinState | undefined {
+  return impl.storage.chatMeta.get(chatId).codeBase?.pins
       .find((p: ChatGadgetPinState) => p.gadgetId === GADGET);
 }
 
-function putMessage(impl: any, body: AiChatMessageBody): number {
-  let sequence = impl.nextChatSequence(CHAT);
+function putMessage(impl: any, body: AiChatMessageBody, chatId = CHAT): number {
+  let sequence = impl.nextChatSequence(chatId);
   impl.storage.chats.put(
-      { chatId: CHAT, sequence, timestamp: impl.getChatTimestamp(), author: USER, ...body });
+      { chatId, sequence, timestamp: impl.getChatTimestamp(), author: USER, ...body });
   return sequence;
 }
 
 // The gadget's files as the chat holds them, rebuilt from the log rather than from the cache.
-async function chatFiles(impl: any): Promise<Record<string, string>> {
-  impl.invalidateChatContent(CHAT);
-  let content = await impl.getCurrentChatContent(CHAT, impl.storage.chatMeta.get(CHAT));
+async function chatFiles(impl: any, chatId = CHAT): Promise<Record<string, string>> {
+  impl.invalidateChatContent(chatId);
+  let content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId));
   return Object.fromEntries(content.get(GADGET) ?? new Map());
 }
 
 async function commitTree(impl: any, commitId: string): Promise<CodeContent> {
-  return new Map([[GADGET, await impl.gitStore.readCommitFiles(commitId)]]);
+  return new Map([[GADGET, impl.gitCache.readCommitFiles(commitId)]]);
 }
 
 // The user edits the chat's copy of the gadget from `before` to `after`, declaring the pin if
-// the gadget has none yet, and the edit is materialized into a message.
-async function edit(impl: any, before: Record<string, string>, after: Record<string, string>)
-    : Promise<number> {
-  let codeBase = impl.storage.chatMeta.get(CHAT).codeBase ?? { generation: 0, revision: 0 };
+// the gadget has none yet. A `late` edit was typed before the editor heard of the accept that
+// closed its stream: it is rooted where that stream ended (see ChatCodeBase.prior) and declares
+// nothing, the gadget having been pinned there.
+async function submitEdit(
+    impl: any, before: Record<string, string>, after: Record<string, string>, chatId = CHAT,
+    late = false): Promise<void> {
+  let codeBase = impl.storage.chatMeta.get(chatId).codeBase ?? { generation: 0, revision: 0 };
   let content = (files: Record<string, string>): CodeContent =>
       new Map([[GADGET, new Map(Object.entries(files))]]);
-  await impl.submitCodeChange(CHAT, {
-    generation: codeBase.generation, revision: codeBase.revision,
+  await impl.submitCodeChange(chatId, {
+    generation: late ? codeBase.prior.generation : codeBase.generation,
+    revision: late ? codeBase.prior.finalRevision : codeBase.revision,
     clientId: `cli-${codeBase.generation}`, seq: codeBase.revision + 1,
-    ...(pin(impl) === undefined ? { pins: [{ gadgetId: GADGET, baseCommit: head(impl) }] } : {}),
+    ...(!late && pin(impl, chatId) === undefined
+        ? { pins: [{ gadgetId: GADGET, baseCommit: head(impl) }] } : {}),
     change: diffFiles(content(before), content(after)),
   }, USER, "alice-user-do");
+}
+
+// The same, with the edit materialized into a message.
+async function edit(impl: any, before: Record<string, string>, after: Record<string, string>)
+    : Promise<number> {
+  await submitEdit(impl, before, after);
   return impl.materializeChatChanges(CHAT)!.sequence;
 }
 
@@ -167,9 +180,9 @@ function compact(impl: any, compactedTo: number) {
 
 // Runs one agent turn, prompted by a new user message, in which the model makes `calls` and
 // then stops. Returns the text of each call's result.
-async function agentTurn(impl: any, calls: ReturnType<typeof fauxToolCall>[])
+async function agentTurn(impl: any, calls: ReturnType<typeof fauxToolCall>[], chatId = CHAT)
     : Promise<string[]> {
-  putMessage(impl, { type: "message", message: "Go." });
+  putMessage(impl, { type: "message", message: "Go." }, chatId);
   let faux = createFauxCore({ models: [{ id: "faux-model" }] });
   let contexts: Context[] = [];
   faux.setResponses([
@@ -179,7 +192,7 @@ async function agentTurn(impl: any, calls: ReturnType<typeof fauxToolCall>[])
     contexts.push({ messages: structuredClone(context.messages) });
     return step;
   }));
-  await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, CHAT,
+  await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, chatId,
       { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, USER,
       { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
   return contexts[1].messages.flatMap(message => message.role === "toolResult"
@@ -188,41 +201,45 @@ async function agentTurn(impl: any, calls: ReturnType<typeof fauxToolCall>[])
 }
 
 // The gadget's files as the agent's replay of the log reads them.
-async function agentReads(impl: any, files: Record<string, string>)
+async function agentReads(impl: any, files: Record<string, string>, chatId = CHAT)
     : Promise<Record<string, string>> {
   let names = Object.keys(files);
   let texts = await agentTurn(impl, names.map(filename =>
-      fauxToolCall("readFile", { workpiece: "APP", filename })));
+      fauxToolCall("readFile", { workpiece: "APP", filename })), chatId);
   return Object.fromEntries(names.map((name, i) => [name, texts[i]]));
 }
 
-// Every fold of the chat's log, and its content cache, agree that the gadget holds `expected`.
-async function expectEveryFold(impl: any, expected: Record<string, string>): Promise<void> {
-  expect(Object.fromEntries((await impl.buildChatContent(CHAT)).get(GADGET))).toEqual(expected);
-  expect(await chatFiles(impl)).toEqual(expected);
+// Every fold of the chat's log agrees that the gadget holds `expected`.
+async function expectLogFolds(impl: any, expected: Record<string, string>, chatId = CHAT)
+    : Promise<void> {
+  expect(Object.fromEntries((await impl.buildChatContent(chatId)).get(GADGET))).toEqual(expected);
 
   // The epoch's composed change, as a client folds it, over the live pin's tree.
-  let messages = chatMessages(impl);
-  let epoch = impl.storage.chatMeta.get(CHAT).codeBase.epoch ?? -1;
+  let messages = chatMessages(impl, chatId);
+  let epoch = impl.storage.chatMeta.get(chatId).codeBase.epoch ?? -1;
   let reverted = new Set(messages.filter(msg => msg.type === "revert")
       .flatMap(revert => messages.filter(msg =>
           msg.sequence >= (revert as any).revertFrom && msg.sequence < revert.sequence))
       .map(msg => msg.sequence));
   let composed = composeEpochChanges(messages.filter(msg =>
       msg.type === "changes" && msg.sequence >= epoch && !reverted.has(msg.sequence)) as any);
-  let base = await commitTree(impl, pin(impl)!.baseCommit);
+  let base = await commitTree(impl, pin(impl, chatId)!.baseCommit);
   let folded = composed === undefined ? base : applyCodeChange(base, composed);
   expect(Object.fromEntries(folded.get(GADGET)!)).toEqual(expected);
 
   // A checkpoint of the whole log replays to it: its pins' trees, then its change.
   let state = buildCompactionState(messages, messages.at(-1)!.sequence + 1, [], undefined);
   let checkpointPin = state.pins!.find(p => p.gadgetId === GADGET)!;
-  expect(checkpointPin.baseCommit).toBe(pin(impl)!.baseCommit);
+  expect(checkpointPin.baseCommit).toBe(pin(impl, chatId)!.baseCommit);
   let replayed = await commitTree(impl, checkpointPin.baseCommit);
   if (state.proposedChange) replayed = applyCodeChange(replayed, state.proposedChange);
   expect(Object.fromEntries(replayed.get(GADGET)!)).toEqual(expected);
+}
 
-  // And the agent's replay reads it.
+// So do its content cache and the agent's replay.
+async function expectEveryFold(impl: any, expected: Record<string, string>): Promise<void> {
+  await expectLogFolds(impl, expected);
+  expect(await chatFiles(impl)).toEqual(expected);
   expect(await agentReads(impl, expected)).toEqual(expected);
 }
 
@@ -321,8 +338,8 @@ describe("accepting a re-rooted chat", () => {
     await edit(impl, MERGED, edited);
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
-    expect(Object.fromEntries(await impl.gitStore.readCommitFiles(head(impl)))).toEqual(edited);
-    expect((await impl.gitStore.readCommitObject(head(impl))).parent).toEqual([merge]);
+    expect(Object.fromEntries(impl.gitCache.readCommitFiles(head(impl)))).toEqual(edited);
+    expect(impl.gitCache.readCommitObject(head(impl)).parents).toEqual([merge]);
   }));
 
   it("moves the head to the merge commit though a checkpoint covers the re-root",
@@ -354,7 +371,7 @@ describe("accepting a re-rooted chat", () => {
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
     let accepted = head(impl);
-    expect((await impl.gitStore.readCommitObject(accepted)).parent).toEqual([merge, release]);
+    expect(impl.gitCache.readCommitObject(accepted).parents).toEqual([merge, release]);
     expect(releasesMergedBy(impl.gitCache.readLocalObject(accepted).payload, accepted))
         .toEqual([release]);
     expect(impl.storage.gadgets.get(GADGET).upstream)
@@ -373,7 +390,7 @@ describe("accepting a re-rooted chat", () => {
       }],
     });
     // The merge commit merges the release, as an applied blueprint's will.
-    let merge = await impl.gitStore.writeFilesAsCommit(
+    let merge = await impl.gitCache.writeFilesAsCommit(
         new Map(Object.entries(MAINLINE_EDIT)), {
           parents: [head(impl), release], headers: [releaseMergeHeader(release)],
           author: { name: "Alice", email: "alice@example.com" }, message: "Merge blueprint",
@@ -400,8 +417,8 @@ describe("accepting a re-rooted chat", () => {
     expect(pin(impl)!.mergedCommit).toBe(h1);
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
-    expect(Object.fromEntries(await impl.gitStore.readCommitFiles(head(impl)))).toEqual(MERGED);
-    expect((await impl.gitStore.readCommitObject(head(impl))).parent).toEqual([h1]);
+    expect(Object.fromEntries(impl.gitCache.readCommitFiles(head(impl)))).toEqual(MERGED);
+    expect(impl.gitCache.readCommitObject(head(impl)).parents).toEqual([h1]);
   }));
 });
 
@@ -652,4 +669,242 @@ describe("what the agent is told of an update from mainline", () => {
     await expect(impl.revertChanges(CHAT, old.sequence, USER))
         .rejects.toThrow(/update from mainline/);
   }));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property: two chats about one gadget. fast-check generates what their users do, in any order
+// -- edit, save the draft or discard it, ask the agent, accept, take the update that a stale
+// accept offers, revert to a saved batch or discard everything pending -- and replays it against
+// the real OverseerImpl. After every step each chat's files are read from its content cache and
+// from every fold of its log, and the gadget's head is read too; the agent's replay reads them
+// whenever it is asked. An edit silently lost, or one a revert brought back, shows as a read that
+// differs from the model.
+//
+// The model keeps mainline as the versions accepts made of it and, for a chat that has changed
+// something, a copy of the files with the version that copy last merged, plus what each pending
+// batch of changes replaced. Its rules are the documented ones. A chat with no copy reads the
+// head. A revert puts back what its batch replaced, with whatever that had merged. An accept is
+// stale when the copy changed something and the version it merged is no longer the head;
+// otherwise it commits the copy, if that changed anything, and the chat has no copy again. An
+// update keeps the chat's own changes on mainline's files: each chat edits only its own file, so
+// what the merge gives needs no oracle.
+//
+// Steps are ones the Workshop offers: saving or discarding needs a draft, accepting or discarding
+// everything needs pending changes, a revert names a batch still pending, and an update follows
+// the stale accept that offers it. Scenarios a seed might miss are pinned as `examples`.
+
+type Files = Record<string, string>;
+// A chat's copy of the gadget, and the mainline version (an index) it last merged.
+type Copy = { files: Files, merged: number };
+type ModelChat = {
+  id: number,
+  own: string,  // the one file it edits
+  copy?: Copy,
+  // What each pending batch replaced, oldest first. A draft is last, with no sequence yet.
+  pending: { sequence?: number, replaced?: Copy }[],
+  batches: number,  // the "changes" messages its log should hold
+};
+
+// `at` and `to` pick, modulo the count, a line of the chat's file and a revert target. A `late`
+// edit that directly follows its chat's accept is sent as typed before the accept landed.
+type Step =
+  | { kind: "edit", chat: number, at: number, remove: boolean, late: boolean }
+  | { kind: "save" | "discard" | "ask", chat: number }
+  | { kind: "accept", chat: number, update: boolean }
+  | { kind: "revert", chat: number, to: number };
+
+function replayChats(steps: Step[]): Promise<void> {
+  return withImpl(async impl => {
+    let mainline: { files: Files, commit: string }[] =
+        [{ files: H0_FILES, commit: await commitFiles(impl, H0_FILES) }];
+    impl.storage.gadgets.put({
+      type: "gadget", id: GADGET, title: "App", created: new Date(0), bindingName: "APP",
+      bindings: {}, commitId: mainline[0].commit,
+    });
+    let chats = Object.keys(H0_FILES)
+        .map((own, i): ModelChat => ({ id: CHAT + i, own, pending: [], batches: 0 }));
+    for (let { id } of chats) {
+      impl.storage.chatMeta.put(
+          { id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id) });
+    }
+    let latest = () => mainline.length - 1;
+    let draft = (chat: ModelChat) =>
+        chat.pending.at(-1)?.sequence === undefined ? chat.pending.at(-1) : undefined;
+    // The step just taken saved the chat's draft, if it had one, as its newest batch.
+    let saved = (chat: ModelChat) => {
+      let batch = draft(chat);
+      if (batch === undefined) return;
+      chat.batches++;
+      batch.sequence =
+          chatMessages(impl, chat.id).findLast(msg => msg.type === "changes")!.sequence;
+    };
+
+    // The chat whose accept, in the step before, closed its stream with the content carried over.
+    let carried: ModelChat | undefined;
+    for (let [index, step] of steps.entries()) {
+      let chat = chats[step.chat], label = `step ${index}, ${step.kind} in chat ${chat.id}`;
+      let handedOff = carried === chat;
+      carried = undefined;
+      switch (step.kind) {
+        case "edit": {
+          let files = chat.copy?.files ?? mainline[latest()].files;
+          let lines = files[chat.own].split("\n").slice(0, -1);
+          if (step.remove && lines.length > 1) lines.splice(step.at % lines.length, 1);
+          else lines.splice(step.at % (lines.length + 1), 0, `${chat.own} ${index}`);
+          let edited = { ...files, [chat.own]: lines.map(line => `${line}\n`).join("") };
+          await submitEdit(impl, files, edited, chat.id, step.late && handedOff);
+          if (draft(chat) === undefined) chat.pending.push({ replaced: chat.copy });
+          chat.copy = { files: edited, merged: chat.copy?.merged ?? latest() };
+          break;
+        }
+        case "save":
+          if (draft(chat) === undefined) break;
+          impl.materializeChatChanges(chat.id);
+          saved(chat);
+          break;
+        case "discard":
+          if (draft(chat) === undefined) break;
+          impl.discardChatDraftChanges(chat.id);
+          chat.copy = chat.pending.pop()!.replaced;
+          break;
+        case "ask": {
+          // Sending a message saves the draft; the agent then reads each file.
+          impl.materializeChatChanges(chat.id);
+          saved(chat);
+          let files = chat.copy?.files ?? mainline[latest()].files;
+          expect(await agentReads(impl, files, chat.id), `${label}: the agent's reads`)
+              .toEqual(files);
+          break;
+        }
+        case "accept": {
+          if (chat.copy === undefined) break;
+          let { files, merged } = chat.copy;
+          let changed = files[chat.own] !== mainline[merged].files[chat.own];
+          let stale = changed && merged !== latest();
+          expect(await impl.mergeChanges(chat.id, USER_META, "alice-user-do"), label)
+              .toEqual({ outcome: stale ? "stale" : "merged" });
+          saved(chat);
+          if (!stale) {
+            // A copy that changed nothing is dropped where it stood. If that was behind the
+            // head, the chat's content does not carry over, and its editors are told so.
+            let carries = changed || merged === latest();
+            expect(impl.storage.chatMeta.get(chat.id).codeBase.prior.discontinuousGadgets,
+                `${label}: what did not carry over`).toEqual(carries ? [] : [GADGET]);
+            if (carries) carried = chat;
+            if (changed) {
+              let before = mainline[latest()].commit;
+              expect(head(impl) !== before && impl.gitCache.isAncestor(before, head(impl)),
+                  `${label}: the head fast-forwards`).toBe(true);
+              mainline.push({ files, commit: head(impl) });
+            }
+            chat.copy = undefined;
+            chat.pending = [];
+          } else if (step.update) {
+            expect(await impl.updateChatFromMainline(chat.id, USER), `${label}: the update`)
+                .toEqual({ conflictPaths: [] });
+            chat.pending.push({ replaced: chat.copy });
+            saved(chat);
+            chat.copy = {
+              files: { ...mainline[latest()].files, [chat.own]: files[chat.own] },
+              merged: latest(),
+            };
+          }
+          break;
+        }
+        case "revert": {
+          if (chat.pending.length === 0) break;
+          // Sequence 0 is the banner's "discard pending changes"; the rest name a saved batch.
+          let targets = [0, ...chat.pending.flatMap(batch => batch.sequence ?? [])];
+          let to = step.to % targets.length;
+          await impl.revertChanges(chat.id, targets[to], USER);
+          let kept = Math.max(to - 1, 0);
+          chat.copy = chat.pending[kept].replaced;
+          chat.pending.length = kept;
+          break;
+        }
+      }
+
+      expect(head(impl), `${label}: the head`).toBe(mainline[latest()].commit);
+      expect(Object.fromEntries(impl.gitCache.readCommitFiles(head(impl))),
+          `${label}: the head's files`).toEqual(mainline[latest()].files);
+      for (let each of chats) {
+        let where = `${label}: chat ${each.id}`;
+        expect(chatMessages(impl, each.id).filter(msg => msg.type === "changes").length,
+            `${where}'s batches`).toBe(each.batches);
+        expect(pin(impl, each.id)?.mergedCommit, `${where}'s merged commit`)
+            .toBe(each.copy && mainline[each.copy.merged].commit);
+        // With its draft: the content cache as the step left it, and as rebuilt from the log.
+        let cached = (await impl.getCurrentChatContent(
+            each.id, impl.storage.chatMeta.get(each.id))).get(GADGET);
+        expect(Object.fromEntries(cached ?? []), `${where}'s cached files`)
+            .toEqual(each.copy?.files ?? {});
+        expect(await chatFiles(impl, each.id), `${where}'s files`)
+            .toEqual(each.copy?.files ?? {});
+        // Without it: every fold of the log.
+        let logged = draft(each) ? draft(each)!.replaced : each.copy;
+        if (logged) await expectLogFolds(impl, logged.files, each.id);
+        else expect((await impl.buildChatContent(each.id)).has(GADGET), where).toBe(false);
+      }
+    }
+  });
+}
+
+describe("two chats about one gadget", () => {
+  const chat = fc.constantFrom(0, 1);
+  const pick = fc.nat({ max: 7 });
+  const step: fc.Arbitrary<Step> = fc.oneof(
+    { arbitrary: fc.record({ kind: fc.constant("edit" as const), chat, at: pick,
+                             remove: fc.boolean(), late: fc.boolean() }), weight: 6 },
+    { arbitrary: fc.record({ kind: fc.constant("save" as const), chat }), weight: 3 },
+    { arbitrary: fc.record({ kind: fc.constantFrom("discard" as const, "ask" as const), chat }),
+      weight: 2 },
+    { arbitrary: fc.record({ kind: fc.constant("accept" as const), chat, update: fc.boolean() }),
+      weight: 3 },
+    { arbitrary: fc.record({ kind: fc.constant("revert" as const), chat, to: pick }), weight: 1 },
+  );
+
+  const edit = (chat: number, at = 0, remove = false, late = false): Step =>
+      ({ kind: "edit", chat, at, remove, late });
+  const save = (chat: number): Step => ({ kind: "save", chat });
+  const accept = (chat: number, update = true): Step => ({ kind: "accept", chat, update });
+  const revert = (chat: number, to: number): Step => ({ kind: "revert", chat, to });
+  // Chat 1 saved an edit and chat 2's accept then moved the head: a seed takes a while to get
+  // here, so two runs in three open with it, and half of those with chat 1 updated as well.
+  const overtaken = [edit(0), save(0), edit(1), accept(1)];
+  const opening = fc.constantFrom([], overtaken, [...overtaken, accept(0)]);
+
+  const examples: [Step[]][] = [
+    // Updated, chat 1 edits on and reverts the update: stale again, holding the edit from before
+    // it. It declines the next update, then takes it and accepts.
+    [[
+      ...overtaken, accept(0), edit(0, 1), { kind: "ask", chat: 0 }, revert(0, 2),
+      accept(0, false), accept(0), accept(0), { kind: "ask", chat: 1 },
+    ]],
+    // A chat that undid its only edit accepts though the head moved: nothing is committed, and
+    // it reads a head it never merged. Its next edit starts from there.
+    [[edit(0), edit(1), accept(1), edit(0, 0, true), accept(0), edit(0), accept(0)]],
+    // Typing through an accept: the edit lands on what was accepted, in the next epoch. The
+    // other chat, now two versions behind, is stale until it updates.
+    [[
+      edit(1), edit(0), accept(0), edit(0, 1, false, true), accept(0), accept(1), accept(1),
+      edit(1, 0, false, true), { kind: "discard", chat: 1 },
+    ]],
+    // A revert takes the draft with it, back past an update or to no copy at all, and the edit
+    // after that starts from the head as it then is.
+    [[
+      ...overtaken, accept(0), edit(0, 1), save(0), edit(0, 2), revert(0, 2), accept(0, false),
+      edit(0), revert(0, 0), edit(0), accept(0),
+    ]],
+  ];
+
+  it("each chat reads its own changes on what it last merged, and an accept commits them",
+      async () => {
+    // An agent turn logs a screenful, and hundreds would bury a failure's report.
+    using _debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    using _warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const steps = fc.tuple(opening, fc.array(step, { maxLength: 24, size: "max" }))
+        .map(([opened, rest]) => [...opened, ...rest]);
+    await fc.assert(fc.asyncProperty(steps, replayChats),
+        { ...PROPERTY_RUN_OPTIONS, numRuns: 100, examples });
+  }, 120_000);  // a failure's shrink may run to PROPERTY_RUN_OPTIONS' time limit
 });

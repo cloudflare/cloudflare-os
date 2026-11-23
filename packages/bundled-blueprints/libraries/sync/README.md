@@ -2,7 +2,8 @@
 
 Every collaborative gadget here has the same skeleton: one Durable Object owns the authoritative
 state and many browsers edit it live -- a mutation queue in the object, a set of subscriber stubs
-it broadcasts to, presence seeded on join and dropped on leave, per-item optimistic concurrency,
+it broadcasts to, presence seeded on join and dropped on leave (in a gadget that shows who is
+there; Docs doesn't), per-item optimistic concurrency,
 and in the browser a debounced save loop with retry, a throttled presence heartbeat and an
 `RpcTarget` for the callbacks. This library is that skeleton once, with none of the flesh: it knows
 nothing about blocks, cells or slides, and a gadget keeps its own model, protocol, DOM and export
@@ -14,7 +15,8 @@ formats on top of it.
   one stored, whatever order their RPCs interleave in; a rejection reaches its caller alone.
 - **`SubscriberRegistry<Callbacks, Info>`** -- `add(subscriber, info)` `dup()`s the stub the RPC
   layer delivered, registers `onRpcBroken` cleanup and returns the kept handle; `broadcast(send)`
-  delivers to everyone at once and never waits: a failing subscriber is dropped and disposed
+  (`send(subscriber, info)`, the info for a gadget whose subscribers hear an event in different
+  forms) delivers to everyone at once and never waits: a failing subscriber is dropped and disposed
   (never failing the mutation), a hung one holds up nothing but itself, and a callback may call back
   into the object -- read the document, queue a mutation -- without deadlocking on the mutation that
   is telling it about the last one; deliveries are issued synchronously in call order, so each
@@ -27,9 +29,12 @@ formats on top of it.
   `{ id, version }`: an upsert whose `baseVersion` is stale is rejected with the authoritative
   item, one for a deleted item is rejected as `missing` (the client may re-create it with
   `baseVersion` 0), an identical upsert is no change, deletions are version-checked, and accepted
-  items take the next version. Returns the new item map, `accepted`, `deletedIds`, `conflicts`,
-  `changed` and a `status`; `operationStatus(changed, conflicts)` recomputes the status for a
-  gadget whose batch also carries ordering or a title. `normalizeBaseVersion` reads a base version
+  items take the next version -- a created one `createdVersion`, 1 by default; a gadget where a
+  deleted id can come back passes one above every version the id has had (Docs passes the
+  revision the batch makes), so an id and a version always name one content. Returns the new item
+  map, `accepted`, `deletedIds`, `conflicts`, `changed` and a `status`;
+  `operationStatus(changed, conflicts)` recomputes the status for a gadget whose batch also
+  carries ordering or a title. `normalizeBaseVersion` reads a base version
   off the wire.
 - **`normalizeCollaborator`** bounds what a client says about itself before it is repeated.
 
@@ -56,8 +61,10 @@ disposer).
   gadget's tick (expire the roster, redraw), returning the stop function.
 - **`createSubscriber(RpcTarget, callbacks)`** -- an instance of the host's `RpcTarget` whose
   prototype carries each callback, since the RPC layer exposes prototype methods and never own
-  properties. The class comes from the gadget's bootstrap, which a library cannot import, so the
-  gadget passes it in the way it passes its `gadget` stub.
+  properties. A `[Symbol.dispose]` callback is kept as well: the RPC layer calls it when the server
+  drops the subscriber, which is when the gadget subscribes again or a broadcast to it fails. The
+  class comes from the gadget's bootstrap, which a library cannot import, so the gadget passes it
+  in the way it passes its `gadget` stub.
 - **`collaboratorFor(clientId)`** -- the guest identity a tab declares for itself.
 
 Nothing on the client side touches the DOM; every module runs in Node under its tests.
@@ -70,7 +77,10 @@ server, every mutation runs through `queue.run`, one registry with hooks that bu
 upsert/delete rule with the gadget's sanitizer in front and its ordering after. In the browser, a
 `SaveScheduler` whose `save()` is the gadget's payload builder drives saving, a roster holds the
 collaborators, a reporter sends presence and the heartbeat, and `createSubscriber` builds the
-callbacks class. Each part stands alone; a gadget may use any subset.
+callbacks class. Each part stands alone; a gadget may use any subset. Docs and Slides use only
+the server side, their browsers keeping save loops and subscribers of their own. Sheets uses both:
+in the browser the scheduler, the reporter (it draws no roster) and `createSubscriber`, and on the
+server it reads each subscriber's info in `broadcast` to tell editors from before paged loading apart.
 
 ## Tests
 

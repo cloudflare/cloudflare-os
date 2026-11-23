@@ -35,15 +35,18 @@ const resultColor = (result: GatewayModelTest) =>
   (result.ok ? 'text-kumo-success' : 'text-kumo-danger')
 
 // What one request found, in words. A provider's test asks one of the provider's models, which a
-// pass names.
+// pass names; a pass of the Auto Router model names the gateway model that answered.
 const resultWording = (result: GatewayModelTest, subject: 'provider' | 'model') => {
   if (!result.ok) {
     return <>Failed{result.status !== undefined && ` (${result.status})`}:{' '}{result.message}</>
   }
+  const via = result.routedModel !== undefined && (
+    <> via <span className="font-mono">{result.routedModel}</span></>
+  )
   return subject === 'provider' ? (
-    <><span className="font-mono">{result.model}</span> answered through the gateway.</>
+    <><span className="font-mono">{result.model}</span> answered through the gateway{via}.</>
   ) : (
-    'Answered through the gateway.'
+    <>Answered through the gateway{via}.</>
   )
 }
 

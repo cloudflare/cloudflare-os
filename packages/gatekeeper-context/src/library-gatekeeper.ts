@@ -16,8 +16,9 @@ import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import { ObservationGate } from "@gadgets/gatekeeper-kit/observers";
 import { LibraryReadSession } from "./library-read.js";
 import { ContextApiImpl } from "./context-api.js";
-import { contextObserverStrategy } from "./context-observers.js";
-import type { ContextVerifierApi } from "./context-observers.js";
+import {
+  contextObserverAccessVerifier, contextObserverStrategy, type ContextVerifierApi,
+} from "./context-observers.js";
 import { canReadCollection } from "./collection-access.js";
 import {
   buildAgentSkillCommands, buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
@@ -234,6 +235,7 @@ export class ContextGatekeeper
   // One strategy over the same storage object for the DO's lifetime: the kit coordinates in-flight
   // reads in memory keyed on it.
   readonly #observers = contextObserverStrategy(this.ctx.storage.kv, this.ctx.props.sharingDomain);
+  readonly #verifyObserverAccess = contextObserverAccessVerifier(this.ctx.props.sharingDomain);
 
   async #loadSkills(
       collections: EnabledCollectionInfo[]):
@@ -343,11 +345,19 @@ export class ContextGatekeeper
   }
 
   /**
-   * The Context singleton is a broad binding over public and shared collections. Track the
-   * collections actually revealed and verify every observer against each one.
+   * The Context singleton is a broad binding over public and shared collections. Reads report the
+   * collections they reveal as subresources, which the Workshop checks through
+   * verifyObserverAccess(); this still verifies the observer against each collection reads revealed
+   * before they reported them.
    */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user);
+  }
+
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    return this.#verifyObserverAccess(observers, subresources);
   }
 
   async removeObserver(id: string): Promise<void> {

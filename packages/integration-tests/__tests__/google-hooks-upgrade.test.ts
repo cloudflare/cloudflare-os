@@ -72,7 +72,7 @@ async function subscribedWorkspace(api: RpcStub<AuthenticatedApi>, accountId: nu
     { text: "Subscribed." },
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  const ws = await api.newGadget();
+  const ws = await api.newWorkspace();
   using gmail = await ws.newGatekeeper(accountId, "https://mail.google.com/mail/");
   using chat = await ws.newGatekeeper(accountId, `https://chat.google.com/room/${space.slice("spaces/".length)}`);
   if (!gmail || !chat) throw new Error("Failed to connect Gmail and Chat");
@@ -162,7 +162,7 @@ it("carries Gmail and Chat hooks, their deliveries and their Google state across
 
   // ── Under this tree's release ───────────────────────────────────────────────────────────────
   const api = stack.use(await logIn(stack.use(connect(harness.url)), username!));
-  const ws = stack.use(await api.openGadget(workspaceId));
+  const ws = stack.use(await api.openWorkspace(workspaceId));
 
   // The delivery the upgrade cut off resumes, from the alarm the old release left set.
   await waitFor("the cut-off delivery to resume", async () => (await delivered(ws)).gmail.includes("Second") || null);

@@ -51,12 +51,14 @@ export default {
           ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
         ]),
         // Real gatekeepers boot from prebuilt validated trees, tracked as inputs like the fixture,
-        // plus the release the Google upgrade suite starts from.
+        // plus the release the Google upgrade suite starts from, and `cli-admins-only.test.ts` runs
+        // `cf-os api`, whose command table is generated.
         dependsOn: [
           'build:test-gatekeeper', 'build:upgrade-base',
           '@gadgets/github-gatekeeper#build:integration-worker',
           '@gadgets/google-gatekeeper#build:integration-worker',
           '@gadgets/gatekeeper-context#build:integration-worker',
+          '@gadgets/api-schema#generate',
         ],
       },
     },

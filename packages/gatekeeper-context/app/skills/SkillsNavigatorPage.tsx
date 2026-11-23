@@ -119,7 +119,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
                   content="Add an editable collection before adding a skill."
                   render={(
                     <DropdownMenu.Item
-                      icon={<PlusIcon size={13} className="mr-2" />}
+                      icon={<PlusIcon className="size-3.25" />}
                       disabled
                     />
                   )}
@@ -128,21 +128,21 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
                 </Tooltip>
               ) : (
                 <DropdownMenu.Item
-                  icon={<PlusIcon size={13} className="mr-2" />}
+                  icon={<PlusIcon className="size-3.25" />}
                   onClick={startAddSkillFromMenu}
                 >
                   Add skill
                 </DropdownMenu.Item>
               )}
               <DropdownMenu.Item
-                icon={<FolderPlus size={13} className="mr-2" />}
+                icon={<FolderPlus className="size-3.25" />}
                 onClick={() => setPendingAddCollection(true)}
               >
                 Add collection
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 disabled={writableCollections.length === 0}
                 onClick={() => setPendingUpload({
                   collectionId: "",

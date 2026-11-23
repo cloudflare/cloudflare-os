@@ -415,7 +415,7 @@ describe("actions", () => {
       description: "Creates **Iota** in space space-1.",
       descriptionIsComplete: true,
       implementsRevert: false,
-      autoApprovable: false,
+      autoApprovable: true,
       actionKind: { tag: "create-project", label: "Create a project" },
     }]]);
   });

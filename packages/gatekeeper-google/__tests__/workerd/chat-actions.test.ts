@@ -1252,6 +1252,74 @@ describe("Google Chat gatekeeper behaviors", () => {
       .rejects.toThrow(/different conversation/);
   });
 
+  it("returns a Chat app's card and button content from every read without following its links", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("alert", "A", "2024-01-01T00:00:00Z"),
+      sender: {name: "users/app", type: "BOT"},
+      text: "firing: example alert",
+      cardsV2: [{cardId: "c", card: {
+        header: {title: "example alert is firing"},
+        sections: [{widgets: [
+          {textParagraph: {text: "<b>cluster:</b> test"}},
+          {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
+        ]}],
+      }}],
+      accessoryWidgets: [
+        {buttonList: {buttons: [{text: "Dashboard", onClick: {openLink: {url: "https://runbook.example/d"}}}]}},
+      ],
+    });
+    const expected = [{
+      title: "example alert is firing",
+      text: "<b>cluster:</b> test",
+      links: [{label: "Runbook", url: "https://runbook.example/r"}],
+    }];
+    const buttons = [{label: "Dashboard", url: "https://runbook.example/d"}];
+    const chat = chatHarness(backend);
+    using requests = vi.spyOn(globalThis, "fetch");
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info).toMatchObject({text: "firing: example alert", cards: expected, buttons});
+    using entry = await space.getMessage(messageName("alert"));
+    expect(entry.info.cards).toEqual(expected);
+    expect(entry.info.buttons).toEqual(buttons);
+    expect((await entry.message.getMetadata()).cards).toEqual(expected);
+    expect((await entry.message.getMetadata()).buttons).toEqual(buttons);
+    const hosts = requests.mock.calls.map(([input]) =>
+      new URL(typeof input === "string" || input instanceof URL ? input : input.url).hostname);
+    expect(hosts).not.toContain("runbook.example");
+    expect(JSON.stringify((await chat.readQueue()).observations)).toContain("cards, buttons");
+  });
+
+  it("returns what a message quotes from every read, and never the quoted message itself", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("forward", "A", "2024-01-01T00:00:00Z"),
+      text: "",
+      quotedMessageMetadata: {
+        name: "spaces/OTHER/messages/source",
+        quoteType: "FORWARD",
+        quotedMessageSnapshot: {sender: "Grace Hopper", text: "The build is green"},
+      },
+    });
+    const expected = {
+      id: "spaces/OTHER/messages/source", senderName: "Grace Hopper", text: "The build is green", forwarded: true,
+    };
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info.quotedMessage).toEqual(expected);
+    using entry = await space.getMessage(messageName("forward"));
+    expect(entry.info.quotedMessage).toEqual(expected);
+    expect((await entry.message.getMetadata()).quotedMessage).toEqual(expected);
+    await expect(Promise.resolve(space.getMessage(expected.id))).rejects.toThrow(/different conversation/);
+    // Opening the conversation, then the three reads: each read tells the user it covered the quote.
+    const quoting = expect.objectContaining({description: expect.stringContaining("quoted message")});
+    expect((await chat.readQueue()).observations).toEqual([expect.anything(), quoting, quoting, quoting]);
+  });
+
   it("refuses to queue an edit of someone else's message", async () => {
     const backend = chatBackend();
     backend.state.messages.push(

@@ -1,4 +1,5 @@
 import "cloudflare:workers";
+import { createLogger } from "@gadgets/observability/logger";
 import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,21 @@ const DEFAULT_API_BASE_URL = "https://api.zoominfo.com/gtm";
 const DEFAULT_AUTHORIZE_URL = "https://api.zoominfo.com/gtm/oauth/v1/authorize";
 const DEFAULT_TOKEN_URL = "https://api.zoominfo.com/gtm/oauth/v1/token";
 const REQUEST_TIMEOUT_MS = 30_000;
+
+type ZoomInfoTokenLogFields = {
+  vendorId: string;
+  grantType: string;
+  requestScopePresent: boolean;
+  requestedScopeCount: number;
+  requestedScopes: string[];
+  responseScopePresent: boolean;
+  grantedScopes: string[];
+  retainedScopes: string[];
+  status: number;
+  oauthError: string;
+};
+
+const logger = createLogger<ZoomInfoTokenLogFields>({ component: "gatekeeper.zoominfo", vendorId: "zoominfo" });
 
 /** OAuth endpoints, overridable via env in case ZoomInfo changes hosts for a deployment. */
 export type ZoomInfoOAuthConfig = {
@@ -67,6 +83,17 @@ export class ZoomInfoApiError extends Error {
     // 401 = expired/invalid token. (403 is usually an entitlement/scope problem, not auth.)
     this.isAuthError = status === 401;
   }
+}
+
+/**
+ * Whether a token-endpoint failure is ZoomInfo refusing the grant itself, which a reconnect alone
+ * recovers: RFC 6749's `invalid_grant` in a 4xx other than 429, as the kit's `isInvalidGrant`
+ * reads one. Keyed on the OAuth error code rather than the status, which a client misconfiguration
+ * (`invalid_client`) or a proxy's error page shares.
+ */
+export function isGrantRefused(error: unknown): boolean {
+  return error instanceof ZoomInfoApiError && error.status >= 400 && error.status < 500 && error.status !== 429
+    && (error.details as { error?: unknown } | null | undefined)?.error === "invalid_grant";
 }
 
 // ---------------------------------------------------------------------------
@@ -146,11 +173,25 @@ async function tokenRequest(
     throw new ZoomInfoApiError(400, "ZoomInfo token exchange did not return an access token.", parsed);
   }
 
+  const scopes = result.scope ? result.scope.split(" ").filter(Boolean) : [];
+  const requestedScopes = body.get("scope")?.split(" ").filter(Boolean) ?? [];
+  const grantType = body.get("grant_type") ?? undefined;
+  logger.info("ZoomInfo token scopes received", {
+    event: "zoominfo.token.scopes",
+    grantType,
+    requestScopePresent: body.has("scope"),
+    requestedScopeCount: requestedScopes.length,
+    requestedScopes,
+    responseScopePresent: result.scope !== undefined,
+    grantedScopes: scopes,
+    retainedScopes: grantType === "refresh_token" && scopes.length === 0 ? requestedScopes : undefined,
+  });
+
   return {
     accessToken: result.access_token,
     refreshToken: result.refresh_token ?? null,
     expiresIn: result.expires_in ?? 3600,
-    scopes: result.scope ? result.scope.split(" ").filter(Boolean) : [],
+    scopes,
     idToken: result.id_token ?? null,
   };
 }
@@ -177,22 +218,36 @@ export async function exchangeAuthCode(
   );
 }
 
-/** Exchange a refresh token for a fresh access token (and a rotated refresh token). */
+/** Exchange a refresh token, requesting only its recorded granted scopes when known. */
 export async function refreshAccessToken(
   refreshToken: string,
+  scopes: readonly string[],
   clientId: string,
   clientSecret: string,
   tokenUrl: string,
 ): Promise<ZoomInfoTokenGrant> {
-  return await tokenRequest(
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    }),
-    tokenUrl,
-    clientId,
-    clientSecret,
-  );
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
+  // An unknown scope list stays omitted; connect-time defaults could exceed an older grant.
+  if (scopes.length > 0) body.set("scope", scopes.join(" "));
+  try {
+    return await tokenRequest(body, tokenUrl, clientId, clientSecret);
+  } catch (error) {
+    const oauthError = error instanceof ZoomInfoApiError
+      ? (error.details as { error?: unknown } | null | undefined)?.error : undefined;
+    logger.error("ZoomInfo token refresh failed", {
+      event: "zoominfo.token.refresh.failed",
+      // Provider descriptions and transport messages may echo secrets; log only the error kind.
+      error: error instanceof Error ? error.name : typeof error,
+      status: error instanceof ZoomInfoApiError ? error.status : undefined,
+      oauthError: typeof oauthError === "string" ? oauthError : undefined,
+      requestScopePresent: body.has("scope"),
+      requestedScopeCount: scopes.length,
+    });
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

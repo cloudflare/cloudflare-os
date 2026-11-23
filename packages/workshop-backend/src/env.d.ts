@@ -10,6 +10,34 @@ declare global {
       // (which is what a secret binding, can carry).
       ADMINS?: string[] | string;
 
+      // The Models tab's admin settings a deployment has until an admin changes one: a JSON object
+      // of the AdminConfig fields ADMIN_CONFIG_SEED_FIELDS lists, or the same object as a JSON
+      // string (a secret's form). See effectiveAdminConfig() in admin-config.ts.
+      ADMIN_CONFIG_SEED?: object | string;
+
+      // Where this Workshop runs: "development" under `pnpm dev-server` (scripts/run-dev-server.ts),
+      // "test" in the integration harness. A deployment never sets it, and must not: an absent or
+      // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
+      // (see the /api route in server.ts).
+      WORKSHOP_ENVIRONMENT?: "development" | "test";
+      // The bounds on admin access to workspaces and to users' accounts (see admin-access.ts, and
+      // docs/admin-access.md, which also says where each kind of deployment sets them). Admins
+      // choose an access level and an audit retention within them in the admin panel. They are
+      // environment variables so that a compromised admin session cannot widen them.
+      //
+      // The most an admin may let AdminApi.inspectWorkspace() and AdminApi.inspectUser() show:
+      // "off" or "metadata". "metadata" when unset or blank, and "off" for any value that is not
+      // a level.
+      ADMIN_WORKSPACE_ACCESS_MAX?: string;
+      // The fewest days the admin audit log keeps a record, whatever admins choose: a positive
+      // whole number. 90 when unset, blank or invalid.
+      ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+      // Whether admins may change a workspace through AdminApi.writeWorkspace(): "on"
+      // enables it, and unset, blank, "off" or anything else leaves it off. An environment
+      // variable for the reason the two above are, and a bound of its own, which
+      // ADMIN_WORKSPACE_ACCESS_MAX does not limit.
+      ADMIN_WORKSPACE_WRITES?: string;
+
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
 
@@ -18,8 +46,8 @@ declare global {
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
-      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
-                                          // applies (still required for google)
+      // Run + Read token; optional when the WORKERS_AI binding carries traffic.
+      CF_AI_GATEWAY_API_TOKEN?: string;
       CF_AI_GATEWAY_USE_BINDING?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.

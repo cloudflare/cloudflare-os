@@ -1,5 +1,5 @@
 // The Workshop aborts an API session on purpose when it loses its workspace DO, expecting the
-// client to reconnect while the DO resumes the interrupted turn (server.ts #openGadgetInternal,
+// client to reconnect while the DO resumes the interrupted turn (server.ts #openWorkspaceInternal,
 // overseer.ts #resumeInterruptedAgents, main.tsx reconnect()). The agent session must do the same,
 // or a turn the product completed is reported as a failure after the whole turn budget has passed.
 import { createServer, connect as connectTcp, type Server, type Socket } from "node:net";

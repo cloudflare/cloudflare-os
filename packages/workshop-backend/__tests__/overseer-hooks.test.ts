@@ -3,8 +3,9 @@ import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { openFakeOverseer } from "./fixtures.js";
+import { SessionWatchers } from "../src/session-watchers";
 
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
+vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined }));
 
 function makeOverseer(
     getConfig: () => Promise<string | null>,
@@ -19,6 +20,7 @@ function makeOverseer(
       // The quarantine gate (see the dedicated pending-restart tests); no connection is blocked
       // in these fixtures.
       assertGatekeeperUsable: () => {},
+      sessionWatchers: new SessionWatchers(),
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },
         gatekeepers: {

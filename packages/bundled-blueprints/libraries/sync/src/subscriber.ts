@@ -16,13 +16,17 @@ export interface SyncHost {
 
 /**
  * An `RpcTarget` whose remotely callable methods are `callbacks`' functions, under their names.
- * `callbacks` is a plain object of functions (its own enumerable properties; a class instance's
- * prototype methods are not seen), and the result is what to pass to the server's `subscribe`.
+ * `callbacks` is a plain object of functions (its own properties; a class instance's prototype
+ * methods are not seen), and the result is what to pass to the server's `subscribe`. A
+ * `[Symbol.dispose]` among them is kept too: the RPC layer calls it when the server lets go of the
+ * subscriber (the connection broke), which is when a gadget subscribes again. Each runs with the
+ * subscriber as `this`.
  */
 export function createSubscriber<Callbacks extends object>(RpcTarget: SyncHost["RpcTarget"], callbacks: Callbacks): Callbacks {
   class Subscriber extends RpcTarget {}
-  for (const [name, callback] of Object.entries(callbacks)) {
-    if (typeof callback !== "function") throw new TypeError(`Subscriber callback "${name}" is not a function.`);
+  for (const name of Reflect.ownKeys(callbacks)) {
+    const callback: unknown = Reflect.get(callbacks, name);
+    if (typeof callback !== "function") throw new TypeError(`Subscriber callback "${String(name)}" is not a function.`);
     Object.defineProperty(Subscriber.prototype, name, { value: callback, writable: true, configurable: true });
   }
   return new Subscriber() as Callbacks;

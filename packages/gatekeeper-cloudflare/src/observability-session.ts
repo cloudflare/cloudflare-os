@@ -3,11 +3,12 @@
 // Every method funnels through `#observe`, which records the read on the approval queue before
 // returning it. That is the capability-audit guarantee for this gatekeeper: a read that reaches the
 // agent but not the queue would be an unaudited disclosure, so the wrapper is the invariant worth
-// testing rather than any individual method.
+// testing rather than any individual method. It also reports the binding's subresource on every
+// read, empty results included, since the Workshop checks collaborators only against those.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { CloudflareObservabilityApi } from "./observability-api.js";
 import type {
   CloudflareObservabilityCalculationQuery,
@@ -61,16 +62,23 @@ export class CloudflareObservabilitySessionImpl extends RpcTarget
   readonly #api: CloudflareObservabilityApi;
   readonly #queue: RpcStub<ApprovalQueue>;
   readonly #target: string;
+  readonly #subresource: string;
 
+  /**
+   * @param subresource What every read reports as its subresource: the bound account's (see
+   * observabilitySubresourceId), on a Worker binding too.
+   */
   constructor(
     api: CloudflareObservabilityApi,
     queue: RpcStub<ApprovalQueue>,
     target: string,
+    subresource: string,
   ) {
     super();
     this.#api = api;
     this.#queue = queue;
     this.#target = target.slice(0, MAX_TARGET_LENGTH);
+    this.#subresource = subresource;
   }
 
   [Symbol.dispose](): void { this.#queue[Symbol.dispose](); }
@@ -92,6 +100,14 @@ export class CloudflareObservabilitySessionImpl extends RpcTarget
       (statistics ? `; ${statistics.rowsRead} rows and ${statistics.bytesRead} bytes scanned` : "");
   }
 
+  // Every read authorizes through here, which makes `subresources` required: a read that omitted
+  // them would be checked by nothing but addObserver().
+  #authorizeObservation(
+    description: ObservationDescription & { subresources: string[] },
+  ): Promise<void> {
+    return this.#queue.authorizeObservation(description);
+  }
+
   async #observe<T>(
     title: string,
     options: CloudflareObservabilityDiscoveryOptions | undefined,
@@ -99,9 +115,10 @@ export class CloudflareObservabilitySessionImpl extends RpcTarget
     description: (result: T) => string,
   ): Promise<T> {
     const result = await read();
-    await this.#queue.authorizeObservation({
+    await this.#authorizeObservation({
       title,
       description: `${this.#queryDescription(options)}; ${description(result)}.`,
+      subresources: [this.#subresource],
     });
     return result;
   }

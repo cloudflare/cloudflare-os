@@ -6,18 +6,22 @@
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
-    "clean": "rm -rf dist src/generated"
+    "clean": "rm -rf dist src/generated",
+    "test:run": "vp run -F @gadgets/zoominfo-gatekeeper build:configurator && vitest run"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "catalog:"
   }
 }

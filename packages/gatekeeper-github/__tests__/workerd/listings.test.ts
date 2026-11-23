@@ -14,7 +14,8 @@ import type { GatekeeperProps, ListingMethod, Outcome } from "./worker";
 
 const OWNER = "acme";
 const REPO = "widgets";
-const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}`;
+/** The repository's path by name, read only to pin its id, 1, or by that id, as every other read is. */
+const REPO_PATH = new RegExp(`^/(repos/${OWNER}/${REPO}|repositories/1)(?=/|$)`);
 
 /** A REST response row, as JSON. */
 type Row = Record<string, unknown>;
@@ -80,15 +81,14 @@ class FakeGitHub {
   async #handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const page = Number(url.searchParams.get("page") ?? "1");
-    const path = url.pathname.startsWith("/repos/")
-      ? url.pathname.slice(new URL(API_BASE).pathname.length)
-      : url.pathname;
+    const path = url.pathname.replace(REPO_PATH, "");
     this.requests.push(`${request.method} ${path}${url.searchParams.has("page") ? ` p${page}` : ""}`);
 
     if (path === "") {
-      // Repo metadata, which also pins the repository id.
+      // The repository, by name to pin its id and by that id since.
       return Response.json({
-        id: 1, description: null, visibility: "public", private: false, default_branch: "main",
+        id: 1, name: REPO, owner: { login: OWNER }, description: null, visibility: "public",
+        private: false, default_branch: "main",
       });
     }
     if (path === "/user") return Response.json({ login: "ada" });

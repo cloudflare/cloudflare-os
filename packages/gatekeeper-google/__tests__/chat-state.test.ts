@@ -27,6 +27,8 @@ function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {
     createdAt: new Date("2024-01-01T00:00:00Z"),
     isReply: false,
     attachments: [],
+    cards: [],
+    buttons: [],
     reactions: [],
     ...extra,
   } satisfies ChatMessageInfo;

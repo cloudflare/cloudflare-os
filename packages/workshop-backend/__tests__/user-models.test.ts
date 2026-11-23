@@ -144,9 +144,14 @@ describe("UserDurableObject model editing", () => {
       expect(await user.listModels()).toEqual([PROFILE]);
       await user.setPreferredModel(PROFILE.id);
       expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toEqual(CONFIG);
-      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
+      expect(await user.getPreferredModel()).toBe(PROFILE.id);
       await user.deleteModel(PROFILE.id);
       expect(await user.listModels()).toEqual([]);
+      // The Auto Router model runs only through a gateway, so it can't be added without one.
+      const auto =
+          { provider: "cloudflare-auto-router" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow("The Auto Router model runs only through an AI Gateway.");
     });
   });
 });
@@ -209,18 +214,45 @@ describe("UserDurableObject gateway model modes", () => {
   }));
 
   it("keeps an existing chat on a hidden model", () => inGatewayUser(async user => {
-    const context = await user.getExternalMessageChatContext(HIDDEN_ID);
+    const context = await user.getChatContext(HIDDEN_ID);
     expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }));
 
-  it("starts a new conversation on the first offered model when the preference is hidden",
+  it("keeps a gateway model chosen as the quick model, falling back to the deployment's",
       () => inGatewayUser(async user => {
-    await user.setPreferredModel(HIDDEN_ID);
-    const [first] = await user.listModels();
-    expect(first.id).not.toBe(HIDDEN_ID);
-    const context = await user.getExternalMessageChatContext(null);
-    expect(context.aiModel?.profile.id).toBe(first.id);
+    const fallback = (await user.getChatContext(null)).quickModel;
+    expect(fallback?.provider).toBe("cloudflare");
+    expect(await user.getQuickModel()).toBeNull();
+
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBe(ENABLED_ID);
+    expect((await user.getChatContext(null)).quickModel)
+        .toMatchObject({ provider: "anthropic", model: ENABLED_ID });
+
+    // A choice that no longer resolves reads back as none, and quick tasks use the deployment's.
+    await user.setQuickModel("no-such-model");
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel).toEqual(fallback);
   }));
+
+  it("keeps quick tasks on the deployment's quick model where Cloudflare limits apply",
+      () => inGatewayUser(async user => {
+    await user.setQuickModel(ENABLED_ID);
+    const impl = user as unknown as { env: Cloudflare.Env };
+    impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
+    // Quick tasks count against no limit, so the choice made before limits applied is not used.
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
+    await expect(user.setQuickModel(ENABLED_ID)).rejects.toThrow("Cloudflare usage limits");
+    await user.setQuickModel(null);
+  }));
+
+  it("falls back to the deployment's quick model when the chosen one is disabled",
+      () => inGatewayUser(async user => {
+    await user.setQuickModel(ENABLED_ID);
+    expect(await user.getQuickModel()).toBeNull();
+    expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
+  }, DISABLED));
 
   it("gives a model the user added none of the deployment's default reasoning level",
       () => inGatewayUser(async user => {
@@ -250,7 +282,12 @@ describe("UserDurableObject gateway model modes", () => {
       // An admin's listing of a provider AI Gateway does not serve enables nothing.
       const ollama = { provider: "ollama" as const, model: "llama", apiToken: "" };
       await expect(user.addModel(PROFILE, ollama)).rejects.toThrow(providerUnavailable("ollama"));
-    }, { addedProviders: ["google", "ollama"] }));
+      // Nor is the Auto Router's, whose one model is the deployment's.
+      const auto =
+          { provider: "cloudflare-auto-router" as const, model: "cloudflare/auto", apiToken: "" };
+      await expect(user.addModel(PROFILE, auto))
+          .rejects.toThrow(providerUnavailable("cloudflare-auto-router"));
+    }, { addedProviders: ["google", "ollama", "cloudflare-auto-router"] }));
 
     // As when a provider leaves CF_AI_GATEWAY_PROVIDERS: the model stays and runs, uneditable.
     it("keeps a model whose provider an admin turned off again", () => {
@@ -277,9 +314,6 @@ describe("UserDurableObject gateway model modes", () => {
 
   it("lists a superseded model the admin enabled", () => inGatewayUser(async user => {
     expect(await listedIds(user)).toContain(HIDDEN_ID);
-    await user.setPreferredModel(HIDDEN_ID);
-    const context = await user.getExternalMessageChatContext(null);
-    expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }, { modelModes: { [HIDDEN_ID]: "enabled" } }));
 
   it("refuses a disabled model with the administrator's message", () => inGatewayUser(async user => {
@@ -323,17 +357,6 @@ describe("UserDurableObject gateway model modes", () => {
     ],
     modelModes: { [ENABLED_ID]: "disabled", "claude-test": "hidden" },
   }));
-
-  it("moves an existing chat off a disabled model", () => inGatewayUser(async user => {
-    const [first] = await user.listModels();
-    expect(first.id).not.toBe(ENABLED_ID);
-    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
-        .toBe(first.id);
-
-    await user.setPreferredModel("claude-haiku-4-5");
-    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
-        .toBe("claude-haiku-4-5");
-  }, DISABLED));
 
   describe("once users may not add their own models", () => {
     const MINE = { ...PROFILE, id: "mine", name: "Mine" };
@@ -389,16 +412,6 @@ describe("UserDurableObject gateway model modes", () => {
       expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
     }));
 
-    it("moves a conversation off a stored model",
-        () => withStoredModel(async (user, _, offered) => {
-      // The preference is the stored model too, so neither an existing chat nor a new one keeps it.
-      expect(await user.getPreferredModel()).toBe(MINE.id);
-      for (let chatModel of [MINE.id, null]) {
-        expect((await user.getExternalMessageChatContext(chatModel)).aiModel?.profile.id)
-            .toBe(offered[0]);
-      }
-    }));
-
     it("keeps a stored model, which still reads, until its user deletes it",
         () => withStoredModel(async user => {
       expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
@@ -420,7 +433,6 @@ describe("UserDurableObject gateway model modes", () => {
       expect((await user.getChatContext(MINE.id)).aiModel)
           .toEqual({ profile: MINE, config: MINE_CONFIG });
       expect(await user.getPreferredModel()).toBe(MINE.id);
-      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(MINE);
       await user.updateModel({ ...MINE, name: "Renamed" }, MINE_CONFIG);
       expect(storedModel(user, MINE.id)).toMatchObject({ profile: { name: "Renamed" } });
     }));
@@ -431,8 +443,7 @@ describe("UserDurableObject gateway model modes", () => {
       expect(offered).not.toContain(HIDDEN_ID);
       expect((await user.getChatContext(HIDDEN_ID)).aiModel?.profile.id).toBe(HIDDEN_ID);
       await user.setPreferredModel(HIDDEN_ID);
-      expect((await user.getExternalMessageChatContext(HIDDEN_ID)).aiModel?.profile.id)
-          .toBe(HIDDEN_ID);
+      expect(await user.getPreferredModel()).toBe(HIDDEN_ID);
 
       // A stored model that a gateway model shadows gets that model's answer, not its own.
       storeModel(user, ENABLED_ID);
@@ -443,8 +454,7 @@ describe("UserDurableObject gateway model modes", () => {
     }, DISABLED));
   });
 
-  // Chats, spawners and the external-message default all take the language models, which no
-  // decision model can serve.
+  // Chats and spawners take the language models, which no decision model can serve.
   it("lists decision models apart from language models", () => inGatewayUser(async user => {
     await user.addModel({ ...PROFILE, id: "my-clef" },
         { provider: "cloudflare", model: "@cf/cloudflare/clef", apiToken: "" });

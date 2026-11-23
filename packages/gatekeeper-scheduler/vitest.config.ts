@@ -16,6 +16,7 @@ export default defineConfig({
         compatibilityFlags,
         durableObjects: {
           SCHEDULE_DRIVER: { className: "ScheduleDriver", useSQLite: true },
+          SCHEDULER_GATEKEEPER: { className: "SchedulerGatekeeper", useSQLite: true },
           SCHEDULER_SCOPE_TEST_PARENT: {
             className: "SchedulerScopeTestParent",
             useSQLite: true,

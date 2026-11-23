@@ -3,9 +3,10 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { z } from "zod";
 import {
-  createFauxCore, fauxAssistantMessage, fauxText, Type, type AssistantMessage, type Context,
+  createFauxCore, fauxAssistantMessage, fauxText, type AssistantMessage, type Context,
   type Message,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { AiChatAuthorInfo, AiChatMessage, AiChatMetadata } from "@gadgets/workshop-shared/api";
 import { runAgent, type AgentHooks } from "../src/agent.js";
 import { AgentTurnError, zeroUsage } from "../src/ai-invoke.js";

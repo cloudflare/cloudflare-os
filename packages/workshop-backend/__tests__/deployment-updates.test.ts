@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
+import type { AdminSettingActor } from "../src/admin-access.js";
 import { AdminSettings } from "../src/admin-settings.js";
 import worker from "../src/server.js";
 import {
@@ -407,12 +408,22 @@ let counter = 0;
  */
 function adminSettingsStorage() {
   const stub = env.TEST_USER_DIRECTORY.getByName(`deployment-updates-${++counter}`);
+  // The audit log, which records each change and is not what this suite tests.
+  const audits = { getByName: () => ({ append: async () => {} }) };
   return <T>(vars: object, f: (admin: AdminSettings) => T | Promise<T>) => {
     const settingsEnv = { ...vars, BLUEPRINTS: { put: vi.fn(async () => {}), get: async () => null } };
-    return runInDurableObject(stub, (_host, state) =>
-        f(new AdminSettings(state, settingsEnv as unknown as Cloudflare.Env)));
+    return runInDurableObject(stub, (_host, state) => {
+      const admin = new AdminSettings(state, settingsEnv as unknown as Cloudflare.Env);
+      Object.assign(admin, { audits });
+      return f(admin);
+    });
   };
 }
+
+// Who makes every change in this suite, as the audit log records it.
+const ACTOR: AdminSettingActor = {
+  admin: "admin", sessionId: "deployment-updates", via: "api", method: "setUpdateChecksEnabled",
+};
 
 // The entries the logger wrote for the failed update check.
 function failures(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown>[] {
@@ -457,7 +468,7 @@ describe("AdminSettings.getUpdateStatus", () => {
     stubClock();
     const { requests } = stubFetch(() => release(NEWER));
     const inDo = adminSettingsStorage();
-    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(48 * 60));
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(48 * 60, ACTOR));
     await inDo(DEPLOYED, admin => admin.getUpdateStatus());
 
     now = T0 + 48 * HOUR - 1;
@@ -469,7 +480,7 @@ describe("AdminSettings.getUpdateStatus", () => {
     expect(requests).toHaveLength(2);
 
     // A shorter interval applies to the check already stored.
-    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1));
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1, ACTOR));
     now = T0 + 48 * HOUR + MINUTE;
     await inDo(DEPLOYED, admin => admin.getUpdateStatus());
     expect(requests).toHaveLength(3);
@@ -482,7 +493,7 @@ describe("AdminSettings.getUpdateStatus", () => {
       failing ? new Response("unavailable", { status: 503 }) : release(NEWER));
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const inDo = adminSettingsStorage();
-    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1));
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1, ACTOR));
     await inDo(DEPLOYED, admin => admin.getUpdateStatus());
 
     now = T0 + MINUTE - 1;
@@ -634,7 +645,7 @@ describe("AdminSettings update settings", () => {
   it.each(SETTERS)("stores a %s from 0 to the maximum", async (_name, setter, field) => {
     const inDo = adminSettingsStorage();
     for (const hours of [0, 7, MAX_UPDATE_HOURS]) {
-      await inDo({}, admin => admin[setter](hours));
+      await inDo({}, admin => admin[setter](hours, ACTOR));
       expect(await inDo({}, admin => admin.getAdminConfig()[field])).toBe(hours);
     }
   });
@@ -642,9 +653,9 @@ describe("AdminSettings update settings", () => {
   it.each(SETTERS)("refuses a %s that is not a whole number of hours in range",
       async (name, setter, field) => {
     const inDo = adminSettingsStorage();
-    await inDo({}, admin => admin[setter](5));
+    await inDo({}, admin => admin[setter](5, ACTOR));
     for (const hours of [-1, MAX_UPDATE_HOURS + 1, 1.5, NaN, Infinity, -Infinity]) {
-      await expect(inDo({}, admin => admin[setter](hours)), String(hours)).rejects.toThrow(
+      await expect(inDo({}, admin => admin[setter](hours, ACTOR)), String(hours)).rejects.toThrow(
           `The ${name} must be a whole number of hours from 0 to ${MAX_UPDATE_HOURS}.`);
     }
     expect(await inDo({}, admin => admin.getAdminConfig()[field])).toBe(5);
@@ -653,13 +664,13 @@ describe("AdminSettings update settings", () => {
   it("stores a check interval from 1 minute to the maximum, and refuses any other", async () => {
     const inDo = adminSettingsStorage();
     for (const minutes of [1, 90, MAX_UPDATE_CHECK_INTERVAL_MINUTES]) {
-      await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes));
+      await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes, ACTOR));
       expect(await inDo({}, admin => admin.getAdminConfig().updateCheckIntervalMinutes))
           .toBe(minutes);
     }
-    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(5));
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(5, ACTOR));
     for (const minutes of [0, -1, MAX_UPDATE_CHECK_INTERVAL_MINUTES + 1, 1.5, NaN, Infinity]) {
-      await expect(inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes)),
+      await expect(inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes, ACTOR)),
           String(minutes)).rejects.toThrow("The check interval must be a whole number of minutes " +
           `from 1 to ${MAX_UPDATE_CHECK_INTERVAL_MINUTES}.`);
     }
@@ -669,9 +680,9 @@ describe("AdminSettings update settings", () => {
   it("stores whether automatic checks are on", async () => {
     const inDo = adminSettingsStorage();
     expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(true);
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
     expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(false);
-    await inDo({}, admin => admin.setUpdateChecksEnabled(true));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(true, ACTOR));
     expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(true);
   });
 
@@ -681,16 +692,16 @@ describe("AdminSettings update settings", () => {
     const inDo = adminSettingsStorage();
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject(REPORTED);
     await inDo({}, async admin => {
-      await admin.setUpdateCheckIntervalMinutes(12);
-      await admin.setUpdateMinimumAgeHours(72);
-      await admin.setUpdateNoticeSnoozeHours(0);
+      await admin.setUpdateCheckIntervalMinutes(12, ACTOR);
+      await admin.setUpdateMinimumAgeHours(72, ACTOR);
+      await admin.setUpdateNoticeSnoozeHours(0, ACTOR);
     });
     // NEWER has been available for 48 hours, short of the new minimum age.
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject({
       updateAvailable: true, notify: false,
       checksEnabled: true, checkIntervalMinutes: 12, minimumAgeHours: 72, noticeSnoozeHours: 0,
     });
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject({
       checksEnabled: false, checkIntervalMinutes: 12, minimumAgeHours: 72, noticeSnoozeHours: 0,
     });
@@ -702,7 +713,7 @@ describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
     stubClock();
     const { spy } = stubFetch(() => release(NEWER));
     const inDo = adminSettingsStorage();
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
       ...REPORTED, checksEnabled: false, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
@@ -716,7 +727,7 @@ describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
     const inDo = adminSettingsStorage();
     const first = await inDo(DEPLOYED, admin => admin.getUpdateStatus());
     expect(first?.notify).toBe(true);
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
 
     now = T0 + 30 * 24 * HOUR;
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual({
@@ -730,7 +741,7 @@ describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
     const { requests } = stubFetch(() => release(NEWER));
     const inDo = adminSettingsStorage();
     await inDo(DEPLOYED, admin => admin.getUpdateStatus());
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
 
     now = T0 + HOUR;
     const upgraded = {
@@ -757,7 +768,7 @@ describe("AdminSettings.checkForUpdates", () => {
     stubClock();
     const { requests } = stubFetch(() => release(NEWER));
     const inDo = adminSettingsStorage();
-    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false, ACTOR));
     expect(await inDo(DEPLOYED, admin => admin.checkForUpdates())).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12-ccccccc", updateAvailable: true,
       availableSince: new Date(NEWER.availableSince), notify: false, ...REPORTED,

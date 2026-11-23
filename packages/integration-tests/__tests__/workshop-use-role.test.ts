@@ -56,8 +56,8 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
 const ui = (gadgetId: WorkpieceId, text?: string): CodeContent =>
   new Map([[gadgetId, new Map(text === undefined ? [] : [["client.js", text]])]]);
 
-const MAINLINE_UI = "export default 'mainline';\n";
-const DRAFT_UI = "export default 'draft';\n";
+const MAINLINE_UI = "document.title = 'mainline';\n";
+const DRAFT_UI = "document.title = 'draft';\n";
 const COMMIT = "0".repeat(40);
 const DENIED = "Unauthorized: this collaborator only has permission to use the gadget's UI.";
 
@@ -75,11 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert action/console reads. Everything else must be
-// classified below, so a new Overseer or GadgetClient method fails to compile until it is.
+// What renders the gadget UI (live, or as a snapshot), plus the inert action/console reads.
+// Everything else must be classified below, so a new Overseer or GadgetClient method fails to
+// compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
-    "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs";
+    "subscribeToWorkpieces" | "getGadget" | "isViewOnly" | "getGadgetSnapshot" |
+    "listActions" | "subscribeToActions" | "subscribeToConsoleLogs";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
@@ -89,6 +90,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listTree: ws => ws.listTree(COMMIT),
   listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),
   readFilesAtCommit: ws => ws.readFilesAtCommit(COMMIT, ["client.js"]),
+  readBlob: ws => ws.readBlob(COMMIT),
   getCommitLog: ws => ws.getCommitLog(COMMIT),
   submitCodeChange: ws => ws.submitCodeChange(1, {
     generation: 0, revision: 0, clientId: "use", seq: 1, change: diffFiles(new Map(), new Map()),
@@ -111,6 +113,11 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listPreApprovableActions: ws => ws.listPreApprovableActions(),
   acceptConnectionRequest: ws => ws.acceptConnectionRequest("request", { gatekeeperId: 1 }),
   denyConnectionRequest: ws => ws.denyConnectionRequest("request"),
+  markChatRead: ws => ws.markChatRead(1),
+  markChatUnread: ws => ws.markChatUnread(1),
+  setChatNotificationsEnabled: ws => ws.setChatNotificationsEnabled(1, true),
+  approveWebFetchRequest: ws => ws.approveWebFetchRequest("1:request"),
+  denyWebFetchRequest: ws => ws.denyWebFetchRequest("1:request"),
   listChats: ws => ws.listChats(),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),
@@ -134,16 +141,17 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   deleteChat: ws => ws.deleteChat(1),
   stopAgent: ws => ws.stopAgent(1),
   retryAgent: ws => ws.retryAgent(1, "model"),
+  waitForAgent: ws => ws.waitForAgent(1),
   listBlueprints: ws => ws.listBlueprints(),
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
   retryBlueprintPublish: ws => ws.retryBlueprintPublish("blueprint"),
-  listObserverRequirements: ws => ws.listObserverRequirements("build"),
+  listObserverRequirements: ws => ws.listObserverRequirements("workspace"),
   listCollaborators: ws => ws.listCollaborators(),
-  addCollaborator: ws => ws.addCollaborator("someone", "build"),
+  addCollaborator: ws => ws.addCollaborator("someone", "workspace"),
   removeCollaborator: ws => ws.removeCollaborator("someone", []),
   previewRemoveCollaborator: ws => ws.previewRemoveCollaborator("someone"),
-  createShareLink: ws => ws.createShareLink("build"),
+  createShareLink: ws => ws.createShareLink("workspace"),
   newShareLinkKey: ws => ws.newShareLinkKey("link"),
   listShareLinks: ws => ws.listShareLinks(),
   updateShareLink: ws => ws.updateShareLink("link"),
@@ -179,7 +187,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await ownerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(ownerApi)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -214,8 +222,10 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
-  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 
   expect(await outcomes(DENIED_OVERSEER, useWs)).toEqual(allDenied(DENIED_OVERSEER));
@@ -233,4 +243,55 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   // Anything the write delivered to the viewer's connection arrives before this reply.
   await useWs.getMetadata();
   expect(actions.entries).toEqual([]);
+});
+
+it("a use collaborator's UI bundle carries only what client.js reaches", async () => {
+  const [owner, viewer] = nextUsernames("bundleowner", "bundleviewer");
+  using ownerPublic = connect(harness.url);
+  using ownerApi = await signUp(ownerPublic, owner!);
+  using ws = await ownerApi.newWorkspace();
+  const workspaceId = (await ws.getMetadata()).id;
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using gadget = ws.createGadget("App", undefined, "APP");
+  const gadgetId = await gadget.getId();
+
+  const tree = (files: Record<string, string>): CodeContent =>
+    new Map([[gadgetId, new Map(Object.entries(files))]]);
+  const merge = async (baseCommit: string, before: Record<string, string>,
+                       after: Record<string, string>) => {
+    const chatId = await ws.newChat("Edit", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit }],
+      change: diffFiles(tree(before), tree(after)),
+    });
+    expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+    return headOf(workpieces, gadgetId, baseCommit);
+  };
+  const split = {
+    "client.js": `import { list } from "./ui/list.js";\nexport default { main(gadget) {} };\n`,
+    "ui/list.js": "export const list = [];\n",
+    "server.js": `import { key } from "./lib/secret.js";\n` +
+        `export class Gadget { secret = "SERVER-ONLY"; }\n`,
+    "lib/secret.js": `export const key = "LIB-ONLY";\n`,
+  };
+  const head = await merge(await headOf(workpieces, gadgetId), {}, split);
+
+  using viewerPublic = connect(harness.url);
+  using viewerApi = await signUp(viewerPublic, viewer!);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) throw new Error(`Failed to share with ${viewer}`);
+  using useWs = await viewerApi.openWorkspace(workspaceId);
+  using useGadget = await useWs.getGadget(gadgetId);
+  expect(await useGadget.getUiBundle()).toEqual({
+    modules: [
+      { path: "client.js",
+        code: `import { list } from "gadget:ui/list.js";\nexport default { main(gadget) {} };\n` },
+      { path: "ui/list.js", code: "export const list = [];\n" },
+    ],
+  });
+
+  await merge(head, split, { ...split, "client.js": `import { Gadget } from "./server.js";\n` });
+  await expect(useGadget.getUiBundle()).rejects.toThrow('client.js:1: "./server.js" resolves to server.js');
 });

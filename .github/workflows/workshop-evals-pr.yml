@@ -123,7 +123,7 @@ jobs:
           fetch-depth: 2
 
       - name: Set up Node.js
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           run-install: false
@@ -166,11 +166,16 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
           run-install: true
+
+      # Tasks that check an `<inline-html>` view run it in Chromium (src/view-host.ts). The frontend
+      # pins the same catalog `playwright` and has it on both revisions, so it does the install.
+      - name: Install Chromium for view checks
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
 
       - name: Run ${{ join(matrix.tasks, ', ') }}
         continue-on-error: true
@@ -296,7 +301,7 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
@@ -424,7 +429,7 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
@@ -465,7 +470,7 @@ jobs:
           # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
           # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
           # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
-          opencode_version: 1.18.24
+          opencode_version: 1.19.6
           prompt: |
             This is an advisory review of the eval runs, not a code review. Read
             artifacts/baseline/trajectories.md, artifacts/candidate/trajectories.md,

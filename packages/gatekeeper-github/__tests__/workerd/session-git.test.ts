@@ -1,8 +1,8 @@
 // Wiring coverage for session-side commit advertising: every commit id a session read returns
 // must be advertised to the workspace git cache, or a later attempt to mount it as a worktree
 // fails as unknown. The pure helpers are tested in Node (git-commits.test.ts here, git-objects.test.ts in the kit); only this suite can
-// catch a session method that forgets to wrap its cursor or advertise its shas -- removing any
-// `#gitCache.wrap()`/`#gitCache.advertise()` call in github.ts must fail this file.
+// catch a session method that forgets to advertise its listing's or its own shas -- dropping any
+// listing's `advertising` (see observedListing) or `#gitCache.advertise()` call in github.ts must fail this file.
 //
 // Sessions are instantiated directly against fake gatekeepers (the same shape as
 // gatekeeper-cloudflare's workerd session suite): the REST/caching layer below the session is not
@@ -102,10 +102,16 @@ function commitSummary(id: string, parents: string[]): GitHubCommitSummary {
 /**
  * The session only calls what the test drives, so each test supplies just those methods.
  * `isSimulatedCommitId` -- consulted by every advertising callback -- defaults to "nothing is
- * simulated"; tests exercising the withholding override it.
+ * simulated"; tests exercising the withholding override it. `authorizeRead`, through which every
+ * read authorizes, passes the observation straight to the queue.
  */
 function fakeGatekeeper(methods: Partial<Record<string, unknown>>): GitHubGatekeeperImpl {
-  return { isSimulatedCommitId: () => false, ...methods } as unknown as GitHubGatekeeperImpl;
+  return {
+    isSimulatedCommitId: () => false,
+    authorizeRead: (queue: RpcStub<ApprovalQueue>, observation: { title: string; description: string }) =>
+      queue.authorizeObservation(observation),
+    ...methods,
+  } as unknown as GitHubGatekeeperImpl;
 }
 
 function repoSession(queue: TestApprovalQueue, methods: Partial<Record<string, unknown>>) {
@@ -133,7 +139,8 @@ describe("GitHubRepoSessionImpl advertising", () => {
 
     expect(await cursor.next()).toHaveLength(1);
     expect(queue.cache.advertised.toSorted()).toEqual([oid(1), oid(2), oid(3)]);
-    expect(queue.observations).toEqual(["List pull requests"]);
+    // Each page is authorized as it leaves, not the listing once when it was opened.
+    expect(queue.observations).toEqual(["List pull requests", "List pull requests (page 2)"]);
   });
 
   it("advertises head and base shas from searchPullRequests, skipping empty provisional shas", async () => {

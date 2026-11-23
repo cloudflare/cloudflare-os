@@ -84,11 +84,19 @@ export abstract class McpFacetBase<
   /** Human-readable resource named when refusing an observer. */
   protected abstract get observerName(): string;
 
+  /** Who may open a workspace reading through this facet, as a refusal names them. */
+  protected get observerOpeners(): string {
+    return "its owner";
+  }
+
   /** Connector-owned account capability used for endpoint calls. */
   protected abstract account(): ConnectionAccount;
 
   /** Human-readable server label used in observations and action prompts. */
   abstract get serverName(): string;
+
+  /** See `McpSessionHost.observationSubresources`. */
+  abstract get observationSubresources(): readonly string[] | undefined;
 
   /** Describes the connector-specific resource represented by this facet. */
   abstract describe(): Promise<ResourceDescription>;
@@ -235,12 +243,15 @@ export abstract class McpFacetBase<
     return new SessionClass(this, approvalQueue.dup());
   }
 
-  /** Refuses observers so MCP bindings can only be opened by their owner. */
+  /**
+   * Refuses every observer, so a binding can only be opened by its owner unless the connector
+   * overrides this to admit someone.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    throw new Error(observerRefusalMessage(this.observerName));
+    throw new Error(observerRefusalMessage(this.observerName, this.observerOpeners));
   }
 
-  /** Removes no observer state because observers are never admitted. */
+  /** Removes nothing, since no observer state is kept. */
   async removeObserver(_id: string): Promise<void> {}
 
   /** Stages an MCP action for approval. */

@@ -71,7 +71,7 @@ describe("search", () => {
     expect(descriptions).toHaveLength(1);
   });
 
-  it("records the exact query", async () => {
+  it("records the exact query, restricted by nothing", async () => {
     const { audit, descriptions } = recorder();
 
     await search(env(respond([])), "`code` and **markdown**", audit);
@@ -79,6 +79,7 @@ describe("search", () => {
     expect(descriptions).toHaveLength(1);
     expect(descriptions[0]).toMatchObject({
       fields: [{ label: "Query", kind: "inline", value: "`code` and **markdown**" }],
+      subresources: [],
     });
   });
 

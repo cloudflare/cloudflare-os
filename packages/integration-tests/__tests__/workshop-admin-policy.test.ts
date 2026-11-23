@@ -52,7 +52,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
   const account = (await listConnectedAccounts(bob))
       .find(candidate => candidate.vendorId === TEST_VENDOR_ID);
   if (account === undefined) throw new Error("Bob's test account was not provisioned");
-  using workspace = await bob.newGadget();
+  using workspace = await bob.newWorkspace();
   using bound = await workspace.newGatekeeper(
       account.id, "https://gadgets-test.example/things/bound");
   if (bound === null) throw new Error("The existing test connection was not created");
@@ -92,7 +92,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
         'The "Test Thing" resource is disabled on this deployment by an administrator.');
     const model = models.script([
       { toolCall: { id: "create-thing", name: "createExternalResource", arguments: {
-        vendorId: TEST_VENDOR_ID, resourceUrlPattern: "https://gadgets-test.example/things/*",
+        vendorId: TEST_VENDOR_ID, resourceTypeId: "thing",
         title: "Blocked", bindingName: "BLOCKED",
       } } },
       { text: "The creation was refused." },

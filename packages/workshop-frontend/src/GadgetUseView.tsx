@@ -1,27 +1,29 @@
-import { Link } from '@tanstack/react-router'
-import { Hexagon } from '@phosphor-icons/react'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import { RpcStub } from 'capnweb'
 import {
   AuthenticatedApi,
   Overseer,
   GadgetClient,
-  GadgetMetadata,
+  GadgetSnapshotClient,
+  WorkspaceMetadata,
   WorkpieceId,
   GadgetSummary,
 } from '@gadgets/workshop-shared/api'
-import GadgetUI from './GadgetUI'
+import GadgetUI, { type GadgetUIFocus } from './GadgetUI'
+import { WorkshopButton } from './components/WorkshopControls'
 import UserMenu from './components/UserMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import TopBarNotice from './TopBarNotice'
-import SiteLogo from './components/SiteLogo'
 import GadgetExportMenu from './GadgetExportMenu'
+import { GadgetSnapshotStatus } from './GadgetSnapshotStatus'
+import { GadgetSnapshotCard } from './GadgetSnapshotCard'
+import { GadgetUseTitle } from './GadgetUseTitle'
 
 // The minimal, "use"-only experience: a shared top bar plus the gadget's deployed UI, and nothing
 // else. Collaborators with the "use" role may only render and interact with the gadget's mainline
 // UI (see UseOverseerInterface in the backend), so we deliberately omit the chat sidebar, the
 // Gadget/Code/Connections controls, workspace activity, and every editor-only control. The
-// overseer and gadget passed in here are the restricted capabilities returned by openGadget() for
+// overseer and gadget passed in here are the restricted capabilities returned by openWorkspace() for
 // "use" sessions; calling anything outside getMetadata()/subscribeToMetadata()/subscribeToPresence()/
 // subscribeToWorkpieces()/getGadget() (and, on the gadget, UI connection and export methods)
 // would throw.
@@ -31,13 +33,26 @@ import GadgetExportMenu from './GadgetExportMenu'
 // never listed: the restricted overseer's workpiece subscription withholds them.
 type Props = {
   overseer: RpcStub<Overseer>
-  // The selected gadget's client, or null if the workspace has no gadgets.
-  gadget: RpcStub<GadgetClient> | null
+  // Null while the selected gadget is being admitted, or while the workspace has no gadgets.
+  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient> | null
+  // Set while `gadget` is a static snapshot (see Overseer.getGadgetSnapshot) rather than the live
+  // gadget, which is all a collaborator given only the snapshot may open: when it was taken, and how
+  // to take a new one.
+  snapshot: {
+    refreshedAt: Date
+    onRefresh: () => Promise<void>
+  } | null
   selectedGadgetId: WorkpieceId | null
+  // The selected gadget's focus, kept in the URL by the parent.
+  gadgetFocus: GadgetUIFocus | undefined
+  // Why the selected gadget couldn't be opened, such as declining to choose connected accounts;
+  // the collaborator can retry it or pick another gadget.
+  gadgetOpenFailure: string | null
+  onRetryGadget: () => void
   // Use-role subscriptions receive gadgets only (worktrees, like pending gadgets, are withheld).
   gadgets: GadgetSummary[]
   onSelectGadget: (id: WorkpieceId) => void
-  metadata: GadgetMetadata
+  metadata: WorkspaceMetadata
   authenticatedApi: RpcStub<AuthenticatedApi>
   currentUserId: string | null
 }
@@ -48,8 +63,12 @@ const TOPBAR_H = 56
 export default function GadgetUseView({
   overseer,
   gadget,
+  snapshot,
   selectedGadgetId,
+  gadgetFocus,
   gadgets,
+  gadgetOpenFailure,
+  onRetryGadget,
   onSelectGadget,
   metadata,
   authenticatedApi,
@@ -64,25 +83,7 @@ export default function GadgetUseView({
       >
         <TopBarNotice />
         {/* Left: logo / title */}
-        <div className="flex items-center gap-2 min-w-0">
-          <Link to="/" aria-label="Home" className="flex-shrink-0 hover:opacity-80 transition-opacity">
-            <SiteLogo size={22}>
-              <Hexagon size={22} className="text-kumo-brand" weight="bold" />
-            </SiteLogo>
-          </Link>
-
-          <span className="text-kumo-inactive flex-shrink-0">/</span>
-
-          <span className="text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default truncate">
-            {metadata.title}
-          </span>
-
-          {metadata.owner && (
-            <span className="text-xs text-kumo-inactive flex-shrink-0">
-              by {metadata.owner.name}
-            </span>
-          )}
-        </div>
+        <GadgetUseTitle workspaceTitle={metadata.title} ownerName={metadata.owner?.name} withLogo />
 
         {/* Center: gadget picker (only when there's a real choice) */}
         {gadgets.length > 1 && (
@@ -108,11 +109,15 @@ export default function GadgetUseView({
           </div>
         )}
 
-        {/* Right: presence and user menu */}
+        {/* Right: snapshot status, presence and user menu */}
         <div className="flex items-center gap-2 flex-shrink-0">
+          {snapshot && gadgetOpenFailure === null && (
+            <GadgetSnapshotStatus {...snapshot} />
+          )}
           <GadgetExportMenu
-            gadget={gadget}
+            gadget={gadgetOpenFailure === null ? gadget : null}
             gadgetTitle={gadgets.find(g => g.id === selectedGadgetId)?.title ?? 'Gadget'}
+            label={snapshot ? 'Export snapshot' : undefined}
           />
           <span className="hidden md:inline-flex">
             <GadgetPresence
@@ -146,17 +151,40 @@ export default function GadgetUseView({
       )}
 
       {/* ═══ GADGET UI ══════════════════════════════════════════════════════════ */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {gadget ? (
-          <GadgetUI
-            key={selectedGadgetId}
-            gadget={gadget}
-            height="100%"
-            isVisible={true}
-          />
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        {gadgetOpenFailure !== null ? (
+          <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+            {/* Verification denials list one line per failed connection, so preserve newlines. */}
+            <p className="max-w-lg whitespace-pre-line text-sm text-kumo-danger">{gadgetOpenFailure}</p>
+            <WorkshopButton tone="primary" onClick={onRetryGadget}>
+              Try again
+            </WorkshopButton>
+          </div>
+        ) : gadget ? (
+          <>
+            <GadgetUI
+              // A refreshed snapshot is a new copy, running the gadget's code as of the refresh.
+              key={snapshot ? `${selectedGadgetId}@${snapshot.refreshedAt.getTime()}` : selectedGadgetId}
+              gadget={gadget}
+              renderMode={snapshot ? 'snapshot' : undefined}
+              height="100%"
+              isVisible={true}
+              focus={gadgetFocus}
+            />
+            {snapshot && (
+              <GadgetSnapshotCard
+                // Dismissing it hides it for this snapshot only.
+                key={`${selectedGadgetId}@${snapshot.refreshedAt.getTime()}`}
+                ownerName={metadata.owner?.name}
+                refreshedAt={snapshot.refreshedAt}
+              />
+            )}
+          </>
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">
-            <p className="text-sm text-kumo-subtle">This workspace has no gadgets yet.</p>
+            <p className="text-sm text-kumo-subtle">
+              {selectedGadgetId === null ? 'This workspace has no gadgets yet.' : 'Loading gadget…'}
+            </p>
           </div>
         )}
       </div>

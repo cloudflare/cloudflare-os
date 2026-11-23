@@ -2,7 +2,7 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AuthenticatedApi,
-  GadgetMetadata, Overseer, PublicApi, WorkpieceId,
+  WorkspaceMetadata, Overseer, PublicApi, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   applyCodeChange, diffFiles, type CodeChange, type CodeContent,
@@ -83,7 +83,7 @@ function withOwner<T>(
   const username = nextUsernames("owner")[0]!;
   return withClient(api => signUp(api, username), async api => {
     if (model !== undefined) await api.addModel(model.userModel.profile, model.userModel.config);
-    return api.newGadget();
+    return api.newWorkspace();
   }, (client, api) => fn(client, api, username));
 }
 
@@ -92,10 +92,10 @@ function reopen<T>(
     username: string, fn: (client: Client, api: RpcStub<AuthenticatedApi>) => Promise<T>): Promise<T> {
   return withClient(api => logIn(api, username), async api => {
     const [workspace] = await waitFor("the session's workspace", async () => {
-      const workspaces = await api.listGadgets();
+      const workspaces = await api.listWorkspaces();
       return workspaces.length > 0 ? workspaces : null;
     });
-    return api.openGadget(workspace.id);
+    return api.openWorkspace(workspace.id);
   }, fn);
 }
 
@@ -289,7 +289,10 @@ it.concurrent.for([
       change: edit(gadgetId, "client.js", row.base, row.theirs),
     });
     const codeBaseOfB = async () => (await ws.listChats()).find(chat => chat.id === chatB)?.codeBase;
-    const preview = async () => (await gadget.getUiBundle(chatB))?.jsCode;
+    const preview = async () => {
+      const bundle = await gadget.getUiBundle(chatB);
+      return bundle && "jsCode" in bundle ? bundle.jsCode : undefined;
+    };
 
     expect(await ws.mergeChanges(chatA)).toEqual({ outcome: "merged" });
     const mainline = await headOf(workpieces, gadgetId, head);
@@ -381,8 +384,8 @@ it.concurrent("two simultaneous chat merges choose one complete version", async 
 it.concurrent("a second session follows renames, drafts, merges and reverts", async () => {
   await withOwner(async (writer, _api, username) => {
     const { id } = await writer.ws.getMetadata();
-    await withClient(api => logIn(api, username), api => api.openGadget(id), async reader => {
-      const metadataEvents: GadgetMetadata[] = [];
+    await withClient(api => logIn(api, username), api => api.openWorkspace(id), async reader => {
+      const metadataEvents: WorkspaceMetadata[] = [];
       using _metadata = await reader.ws.subscribeToMetadata(metadata => {
         metadataEvents.push(metadata);
       });
@@ -482,7 +485,7 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
   await withClient(api => signUp(api, nextUsernames("chatdelete")[0]!), async api => {
     await api.provisionAmbientAccount(TEST_VENDOR_ID);
     accountId = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)?.id;
-    return api.newGadget();
+    return api.newWorkspace();
   }, async ({ ws, workpieces }) => {
     if (accountId === undefined) throw new Error("The test account was not provisioned");
     using data = await ws.newGatekeeper(accountId, "https://gadgets-test.example/things/chat-delete");
@@ -491,7 +494,7 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
     using app = await ws.createGadget("App", undefined, "APP");
     const upload = {oid: await ws.uploadBlob(new TextEncoder().encode("chat A notes")),
       mimeType: "text/plain", name: "notes.txt"};
-    const chatA = await ws.newChat("A", null, undefined, [upload]);
+    const chatA = await ws.newChat("A", null, {attachments: [upload]});
     const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
     if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
     const attachmentId = message.attachments[0].id;
@@ -525,8 +528,8 @@ it.concurrent("two editors of one chat draft converge, and retries are idempoten
     const { id } = await owner.ws.getMetadata();
     const [name] = nextUsernames("collaborator");
     await withClient(api => signUp(api, name), async api => {
-      await owner.ws.addCollaborator(name, "build");
-      return api.openGadget(id);
+      await owner.ws.addCollaborator(name, "workspace");
+      return api.openWorkspace(id);
     }, async collaborator => {
       const chatId = await owner.ws.newChat("Let's edit together", null);
       const pins = [{ gadgetId, baseCommit: head }];
@@ -666,6 +669,25 @@ it.concurrent("draft and mainline code run separately across merge and revert", 
   });
 });
 
+it.concurrent("a server.js that imports a module of its own runs", async () => {
+  await withOwner(async client => {
+    const { ws } = client;
+    const { gadgetId, head } = await seedGadget(client, "lib/util.js",
+        `export const version = () => "util";\n`);
+    const chatId = await ws.newChat("Split", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
+      change: edit(gadgetId, "server.js", undefined, `import { DurableObject } from "cloudflare:workers";\n` +
+          `import { version } from "./lib/util.js";\n` +
+          `export class Gadget extends DurableObject {\n  version() { return version(); }\n}\n`),
+    });
+    await ws.finalizeChatDraft(chatId);
+    using gadget = await ws.getGadget(gadgetId);
+    using facet = await gadget.connectToGadget(chatId) as VersionedGadget;
+    expect(await facet.version()).toBe("util");
+  });
+});
+
 type StatefulGadget = RpcStub<{
   version(): string;
   put(key: string, value: string): void;
@@ -732,7 +754,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
 
     using source = await ws.getGadget(gadgetId);
     const blueprint = await source.createBlueprint("Stateful app", "V2 without its state");
-    using installed = await api.newGadgetFromBlueprint(blueprint.id, {});
+    using installed = await api.newWorkspaceFromBlueprint(blueprint.id, {});
     const { defaultGadgetId } = await installed.getMetadata();
     if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
     expect(await gadgetState(installed, defaultGadgetId))

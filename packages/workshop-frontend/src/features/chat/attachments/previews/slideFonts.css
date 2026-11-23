@@ -1,0 +1,47 @@
+/*
+ * A stand-in for Calibri, PowerPoint's default font for a decade of decks, on machines that have
+ * neither it nor Carlito. Nothing is downloaded: this is a font already installed, scaled so its
+ * letters are as wide and as tall as Calibri's (Arial at 92% is close to its advance widths, x-height
+ * and cap height), with Calibri's ascent and descent so lines sit where they would. Text then
+ * wraps where it does in PowerPoint, which an unscaled fallback's wider letters would not.
+ * The overrides are relative to the adjusted size, hence Calibri's 0.952 and 0.269 over 0.92.
+ */
+@font-face {
+  font-family: "Slide Calibri Substitute";
+  src: local("Arial"), local("Liberation Sans"), local("Helvetica");
+  size-adjust: 92%;
+  ascent-override: 103.5%;
+  descent-override: 29.2%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Slide Calibri Substitute";
+  font-weight: 700;
+  src: local("Arial Bold"), local("Liberation Sans Bold"), local("Helvetica Bold");
+  size-adjust: 92%;
+  ascent-override: 103.5%;
+  descent-override: 29.2%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Slide Calibri Substitute";
+  font-style: italic;
+  src: local("Arial Italic"), local("Liberation Sans Italic"), local("Helvetica Oblique");
+  size-adjust: 92%;
+  ascent-override: 103.5%;
+  descent-override: 29.2%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Slide Calibri Substitute";
+  font-weight: 700;
+  font-style: italic;
+  src: local("Arial Bold Italic"), local("Liberation Sans Bold Italic"), local("Helvetica Bold Oblique");
+  size-adjust: 92%;
+  ascent-override: 103.5%;
+  descent-override: 29.2%;
+  line-gap-override: 0%;
+}

@@ -69,6 +69,12 @@ export function officeLabel(kind: OfficeKind, mimeType: string | undefined): str
     .find(([type]) => type.toLowerCase() === lower)?.[1];
 }
 
+/** The kind a file of `mimeType` connects as for editing: its own native kind, or the one it converts into. */
+export function editorKind(mimeType: string | undefined): OfficeKind | undefined {
+  return (Object.keys(OFFICE_KINDS) as OfficeKind[]).find(kind =>
+    OFFICE_KINDS[kind].nativeMimeType === mimeType || officeLabel(kind, mimeType) !== undefined);
+}
+
 /** `name` without a trailing Office extension of `kind`, as the copy is named. */
 export function nativeCopyName(kind: OfficeKind, name: string): string {
   let lower = name.toLowerCase();
@@ -125,9 +131,6 @@ export type OfficeFileInspection =
   | { type: "native" }
   | {
       type: "office";
-      title: string;
-      /** The extension the file is shown as, such as "xlsx". */
-      label: string;
       canCopy: boolean;
       /** A copy this deployment already made of the file, when one is found. */
       existingCopy?: { fileId: string; title: string; convertedAt: Date };
@@ -142,7 +145,7 @@ export type OfficeConversionResult =
   | { type: "converted"; fileId: string; title: string; location: DriveCopyLocation; reused: boolean };
 
 /**
- * Converts Drive Office files into native files of one kind, for that kind's configurator.
+ * Converts Drive Office files into native files of one kind, for the Drive picker.
  *
  * Constructed with the kind, a token provider for the configurator's account, and `hasAccess`,
  * which reports whether the account holds the Office import grant. `hasAccess` is asked afresh
@@ -168,22 +171,14 @@ export class OfficeConversion {
     if (!isDriveFileId(fileId)) return { type: "refused", message: NOT_A_FILE_ID };
     let source = await this.#drive.getConversionSource(fileId);
     if (source.mimeType === OFFICE_KINDS[this.#kind].nativeMimeType) return { type: "native" };
-    let label = officeLabel(this.#kind, source.mimeType);
-    if (label === undefined) return { type: "unsupported" };
+    if (officeLabel(this.#kind, source.mimeType) === undefined) return { type: "unsupported" };
     if (source.trashed === true) return { type: "refused", message: TRASHED };
     let existingCopy = await this.#findCopy(fileId);
     return {
       type: "office",
-      title: source.name,
-      label,
       canCopy: source.canCopy === true,
       ...(existingCopy ? { existingCopy } : {}),
     };
-  }
-
-  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
-  hasConversionAccess(): Promise<boolean> {
-    return this.#hasAccess();
   }
 
   /**

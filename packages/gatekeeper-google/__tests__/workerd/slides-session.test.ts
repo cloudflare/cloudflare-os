@@ -33,6 +33,17 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   ): Promise<void> {
     throw new Error("Unexpected hook binding");
   }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 const IMAGE_URL = "https://lh7-us.googleusercontent.com/slidesz/thumb-token";
@@ -98,7 +109,10 @@ function newSession(wrap: (read: NativeRead) => NativeRead = read => read, pendi
   let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
   let session = new RpcStub(new GooglePresentationSessionImpl(
     new GoogleSlidesApi(async () => "access-token"), "deck-1", queueStub,
-    wrap(unguardedNativeRead(description => queueStub.authorizeObservation(description))),
+    wrap(unguardedNativeRead(
+      description => queueStub.authorizeObservation(description),
+      [{ kind: "presentation", fileId: "deck-1" }],
+    )),
     { snapshot: read => read(pending), queue: () => Promise.reject(new Error("Unexpected change")) },
   ));
   return { queue, session };
@@ -113,7 +127,7 @@ describe("Google Slides presentation session", () => {
 
     expect(slides.map(s => [s.id, s.index, s.speakerNotes]))
       .toEqual([["s2", 1, "Say hello"], ["s1", 0, ""]]);
-    expect(queue.observations).toHaveLength(1);
+    expect(queue.observations.map(o => o.subresources)).toEqual([["slides/presentation/deck-1"]]);
     let [outline, ...pages] = providerFetches;
     expect(outline.searchParams.get("fields")).not.toContain("pageElements");
     expect(pages.map(url => url.pathname).toSorted()).toEqual(

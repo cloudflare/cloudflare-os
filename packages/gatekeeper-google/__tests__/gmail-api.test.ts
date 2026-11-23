@@ -6,7 +6,8 @@ import {
   MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
   normalizeAggregateRecipients, normalizeContentId, normalizeMessageIdHeader,
   normalizeReferencesHeader, normalizeTextBody, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
-  parseLegacyGmailDraft, parseMimeMessage, type GmailPayloadPart,
+  parseLegacyGmailDraft, parseMimeMessage, gmailAttachmentBytes,
+  type GmailAttachmentSnapshot, type GmailPayloadPart,
 } from "../src/google-api";
 import {containsBytes} from "./gmail-test-utils";
 
@@ -761,7 +762,7 @@ describe("Gmail recipient and MIME construction", () => {
       id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
     });
 
-    expect(parsed.text).toBe("Default text body\n");
+    expect(parsed.text).toBe("Default text body");
     expect(parsed.attachments[0].contentType).toBe(
       "application/octet-stream; x-format=opaque");
   });
@@ -1576,6 +1577,346 @@ describe("Gmail attachment snapshots", () => {
   });
 });
 
+describe("Gmail streamed attachment bytes", () => {
+  afterEach(() => vi.useRealTimers());
+
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+
+  // A stream that hands out one of `chunks` for each read of it, and records how it was used.
+  function body(chunks: Uint8Array[]) {
+    const use = {pulls: 0, cancelled: [] as unknown[]};
+    const queue = [...chunks];
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        use.pulls++;
+        const chunk = queue.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel(reason) {
+        use.cancelled.push(reason);
+      },
+    }, {highWaterMark: 0});
+    return {stream, use};
+  }
+
+  async function read(stream: ReadableStream<Uint8Array>): Promise<number[]> {
+    const reader = stream.getReader();
+    const bytes: number[] = [];
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) return bytes;
+      bytes.push(...chunk.value);
+    }
+  }
+
+  // The bytes of `answer`, given to the decoder `step` bytes at a time.
+  function decoded(answer: string, size: number, step = answer.length): Promise<number[]> {
+    const bytes = utf8(answer);
+    const chunks: Uint8Array[] = [];
+    for (let at = 0; at < bytes.length; at += step) chunks.push(bytes.slice(at, at + step));
+    return read(gmailAttachmentBytes(body(chunks).stream, size));
+  }
+
+  const detached = (size: number, readable = true): GmailAttachmentSnapshot => ({
+    key: "1",
+    messageId: "m1",
+    attachmentId: "a1",
+    info: {filename: "a.pdf", mimeType: "application/pdf", size, disposition: "attachment", readable},
+  });
+
+  it("decodes an answer split at any byte: in the key, in a quartet, at the closing quote", async () => {
+    const answer = utf8('{"data":"AQIDBAUGBw"}');
+    for (let split = 0; split <= answer.length; split++) {
+      const {stream} = body([answer.slice(0, split), answer.slice(split)]);
+      expect(await read(gmailAttachmentBytes(stream, 7)), `split at ${split}`)
+        .toEqual([1, 2, 3, 4, 5, 6, 7]);
+    }
+    expect(await decoded('{"data":"AQIDBAUGBw"}', 7, 1)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it.each([
+    ["a compact answer", '{"data":"AQID"}', [1, 2, 3]],
+    ["a pretty-printed answer", '{\r\n\t"data" : "AQID"\n}\n', [1, 2, 3]],
+    ["members before and after", '{"attachmentId":"a\\"data\\":\\"_w","size":3,"data":"AQID",' +
+      '"datum":"_w","n":-1.5e3,"ok":true,"none":null}', [1, 2, 3]],
+    ["the URL-safe alphabet", '{"data":"-_8"}', [0xfb, 0xff]],
+    ["the standard alphabet", '{"data":"+/8"}', [0xfb, 0xff]],
+    ["padding", '{"data":"/w=="}', [0xff]],
+    ["padding written as escapes", '{"data":"AQIDBA\\u003d\\u003d"}', [1, 2, 3, 4]],
+    ["an escaped slash", '{"data":"\\/w"}', [0xff]],
+    ["characters written as escapes, in either case of hex",
+      '{"data":"\\u0041Q\\u0049D\\u002b\\u002F8"}', [1, 2, 3, 0xfb, 0xff]],
+    ["no bytes", '{"data":""}', []],
+  ])("decodes %s", async (_name, answer, bytes) => {
+    expect(await decoded(answer, bytes.length)).toEqual(bytes);
+    expect(await decoded(answer, bytes.length, 1)).toEqual(bytes);
+  });
+
+  it("reads nothing before it is read, and one chunk of the answer for each of its own", async () => {
+    const {stream, use} = body(['{"data":"AQID', "BAUG", 'Bw"}'].map(utf8));
+    const reader = gmailAttachmentBytes(stream, 7).getReader();
+    await Promise.resolve();
+    expect(use.pulls).toBe(0);
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(1, 2, 3)});
+    expect(use.pulls).toBe(1);
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(4, 5, 6)});
+    expect(use.pulls).toBe(2);
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(7)});
+    expect(use.pulls).toBe(3);
+    expect(await reader.read()).toEqual({done: true, value: undefined});
+  });
+
+  it("errors as soon as more bytes are decoded than the snapshot's size, and lets the answer go", async () => {
+    const {stream, use} = body(['{"data":"AQIDBAUG', 'Bw"}'].map(utf8));
+    const reader = gmailAttachmentBytes(stream, 5).getReader();
+    await expect(reader.read()).rejects.toThrow(
+      "Attachment content no longer matches the authorized snapshot.");
+    expect(use.pulls).toBe(1);
+    expect(use.cancelled).toHaveLength(1);
+  });
+
+  it("errors at the string's end when fewer bytes were decoded than the snapshot's size", async () => {
+    const {stream, use} = body(['{"data":"AQID', '"}'].map(utf8));
+    const reader = gmailAttachmentBytes(stream, 4).getReader();
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(1, 2, 3)});
+    await expect(reader.read()).rejects.toThrow(
+      "Attachment content no longer matches the authorized snapshot.");
+    expect(use.cancelled).toHaveLength(1);
+  });
+
+  it.each([
+    ["ends inside the string", '{"data":"AQID', 3],
+    ["ends before the object does", '{"data":"AQID"', 3],
+    ["holds a character outside the alphabets", '{"data":"AQ*D"}', 3],
+    ["holds an escape of a character outside the alphabets", '{"data":"AQ\\u002aD"}', 3],
+    ["holds an escape of a character past the alphabets' table", '{"data":"AQ\\u0149D"}', 3],
+    ["holds an escaped quote", '{"data":"AQI\\""}', 3],
+    ["holds an escape that JSON has not", '{"data":"AQ\\ID"}', 3],
+    ["holds an escape whose digits are not hex", '{"data":"AQ\\u003zD"}', 3],
+    ["ends inside an escape", '{"data":"AQID\\u00', 3],
+    ["goes on after its padding", '{"data":"/w==AQID"}', 4],
+    ["is padded where nothing is missing", '{"data":"AQID="}', 3],
+    ["ends on a lone character", '{"data":"AQIDB"}', 3],
+    ["is not JSON", "<html>AQID</html>", 3],
+    ["is not an object", '["data","AQID"]', 3],
+    ["holds its data deeper", '{"body":{"data":"AQID"}}', 3],
+    ["holds data twice", '{"data":"AQID","data":"AQID"}', 3],
+    ["holds data that is not a string", '{"data":3}', 3],
+    ["goes on after the object", '{"data":"AQID"}{', 3],
+  ])("errors on an answer that %s, with none of its text", async (_name, answer, size) => {
+    for (const step of [answer.length, 1]) {
+      await expect(decoded(answer, size, step)).rejects.toThrow(
+        /^Gmail returned an invalid attachment response\.$/);
+    }
+  });
+
+  it("errors on an answer without data as the whole read does", async () => {
+    await expect(decoded('{"size":3}', 3)).rejects.toThrow(
+      /^Attachment content is no longer available\.$/);
+    await expect(decoded("{}", 0)).rejects.toThrow(/^Attachment content is no longer available\.$/);
+  });
+
+  it("errors with what the answer broke with", async () => {
+    const broken = new Error("connection lost");
+    const reader = gmailAttachmentBytes(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(broken);
+      },
+    }, {highWaterMark: 0}), 3).getReader();
+    await expect(reader.read()).rejects.toBe(broken);
+  });
+
+  it("cancels the answer when it is cancelled, a read of it in progress included", async () => {
+    const cancelled: unknown[] = [];
+    const reader = gmailAttachmentBytes(new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => {}),
+      cancel(reason) {
+        cancelled.push(reason);
+      },
+    }, {highWaterMark: 0}), 3).getReader();
+    const pending = reader.read();
+    await reader.cancel("stop");
+    expect(cancelled).toEqual(["stop"]);
+    expect(await pending).toEqual({done: true, value: undefined});
+  });
+
+  it("asks Gmail for the data alone and hands on its bytes as they arrive", async () => {
+    let release!: (chunk: Uint8Array) => void;
+    const rest = new Promise<Uint8Array>(resolve => {
+      release = resolve;
+    });
+    let pulls = 0;
+    const answer = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (pulls++ === 0) {
+          controller.enqueue(utf8('{"data":"AQID'));
+        } else {
+          controller.enqueue(await rest);
+          controller.close();
+        }
+      },
+    }, {highWaterMark: 0});
+    const calls = stubFetch([new Response(answer)]);
+    const reader = (await api().openAttachmentContent(detached(6))).getReader();
+    expect(calls.map(call => call.url.href)).toEqual([
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1/attachments/a1?fields=data",
+    ]);
+    // Opened with nothing of the body read, and the first bytes are there before it has ended.
+    expect(pulls).toBe(0);
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(1, 2, 3)});
+    release(utf8('BAUG"}'));
+    expect(await reader.read()).toEqual({done: false, value: Uint8Array.of(4, 5, 6)});
+    expect(await reader.read()).toEqual({done: true, value: undefined});
+  });
+
+  it("is held neither to the attachment limit nor to what the snapshot calls readable", async () => {
+    const size = MAX_GMAIL_ATTACHMENT_BYTES + 1;
+    stubFetch([new Response(`{"data":"${"AAAA".repeat((size - 2) / 3)}AAA"}`)]);
+    const reader = (await api().openAttachmentContent(detached(size, false))).getReader();
+    let total = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+    }
+    expect(total).toBe(size);
+  });
+
+  it("refuses an attachment Gmail does not give, and an ID that is not one, as the whole read does", async () => {
+    const calls = stubFetch([json({error: {message: "Requested entity was not found."}}, 404)]);
+    await expect(api().openAttachmentContent(detached(3))).rejects.toThrow(
+      /^Gmail API attachments\.get failed \[http=404\]$/);
+    expect(calls).toHaveLength(1);
+    await expect(api().openAttachmentContent({...detached(3), attachmentId: "a/../1"}))
+      .rejects.toThrow("Invalid attachment ID.");
+    await expect(api().openAttachmentContent({...detached(3), messageId: "m?1"}))
+      .rejects.toThrow("Invalid message ID.");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("gives up an open that Gmail never answers", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", (_input: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+    }));
+    const refused = expect(api().openAttachmentContent(detached(3))).rejects.toMatchObject(
+      {name: "TimeoutError", message: "Gmail did not answer in time."});
+    await vi.advanceTimersByTimeAsync(60_000);
+    await refused;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives up an open whose token never comes, or comes after the time is out", async () => {
+    vi.useFakeTimers();
+    const calls = stubFetch([]);
+    // The token provider asks Google who the token is for, and the account for the token: neither
+    // heeds the signal the request is made with.
+    const stalled = new GmailApi("me@example.com", () => new Promise<string>(() => {}));
+    const refused = expect(stalled.openAttachmentContent(detached(3))).rejects.toMatchObject(
+      {name: "TimeoutError", message: "Gmail did not answer in time."});
+    await vi.advanceTimersByTimeAsync(60_000);
+    await refused;
+    expect(calls).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A token that comes a moment after the time is out is used for no request that is sent:
+    // fetch is given a signal that has aborted already.
+    let give!: (token: string) => void;
+    const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
+    const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(60_000);
+    await late;
+    give("token");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls.map(({init}) => init.signal?.aborted)).toEqual([true]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets go of an answer that comes after the time is out, also when its body has failed by then", async () => {
+    vi.useFakeTimers();
+    const unheard: unknown[] = [];
+    const hear = (reason: unknown) => { unheard.push(reason); };
+    process.on("unhandledRejection", hear);
+    try {
+      // The answer a token reload held back: its body failed when the request was given up.
+      const failed = new ReadableStream<Uint8Array>({start: controller => controller.error(new Error("aborted"))});
+      let give!: (token: string) => void;
+      stubFetch([new Response(failed)]);
+      const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
+      const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
+      await vi.advanceTimersByTimeAsync(60_000);
+      await late;
+      give("token");
+      await vi.advanceTimersByTimeAsync(1000);
+      vi.useRealTimers();
+      // A rejection nothing handles is reported after the turn it was left unhandled in.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(unheard).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", hear);
+    }
+  });
+
+  it("does not time the body of an answer that has begun", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const waited = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    // As fetch does, the body breaks when the request's signal aborts.
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal!.addEventListener("abort", () => controller.error(init.signal!.reason));
+        },
+        async pull(controller) {
+          await waited;
+          controller.enqueue(utf8('{"data":"AQID"}'));
+          controller.close();
+        },
+      }, {highWaterMark: 0})));
+    const content = await api().openAttachmentContent(detached(3));
+    expect(vi.getTimerCount()).toBe(0);
+    const bytes = read(content);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    release();
+    expect(await bytes).toEqual([1, 2, 3]);
+  });
+
+  it("streams inline data in steps of at most 64 KiB, checked against the snapshot's size", async () => {
+    const bytes = Uint8Array.from({length: 100_000}, (_, index) => index % 251);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    const inline: GmailAttachmentSnapshot = {
+      ...detached(bytes.length, false),
+      attachmentId: undefined,
+      inlineData: btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""),
+    };
+    const calls = stubFetch([]);
+    const reader = (await api().openAttachmentContent(inline)).getReader();
+    const first = await reader.read();
+    const second = await reader.read();
+    expect([first.value?.byteLength, second.value?.byteLength]).toEqual([65_535, 34_465]);
+    expect([...first.value!, ...second.value!]).toEqual([...bytes]);
+    expect(await reader.read()).toEqual({done: true, value: undefined});
+
+    expect(await read(await api().openAttachmentContent(
+      {...inline, inlineData: "AQID", info: {...inline.info, size: 3}}))).toEqual([1, 2, 3]);
+    expect(await read(await api().openAttachmentContent(
+      {...inline, inlineData: "", info: {...inline.info, size: 0}}))).toEqual([]);
+    await expect(api().openAttachmentContent(
+      {...inline, inlineData: "AQID", info: {...inline.info, size: 4}})).rejects.toThrow(
+      "Attachment content no longer matches the authorized snapshot.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a snapshot with neither an attachment ID nor inline data", async () => {
+    await expect(api().openAttachmentContent({...detached(3), attachmentId: undefined}))
+      .rejects.toThrow("Attachment content is no longer available.");
+  });
+});
+
 describe("Gmail draft semantic headers", () => {
   const draftWithHeader = (header: string) => {
     const base = buildEncodedEmail({
@@ -1848,12 +2189,91 @@ describe("Gmail API request shapes", () => {
     expect(error.message).not.toContain("confidential");
   });
 
-  it("preserves Gmail API errors when response cancellation fails", async () => {
-    const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
-    stubFetch([new Response(new ReadableStream({cancel}), {status: 400})]);
+  it("gives up on an error body that never ends, cancelling it, and still reports Gmail's status", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
+      stubFetch([new Response(new ReadableStream({cancel}), {status: 400})]);
+      const failed = api().listMessages(20).catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      const error = await failed;
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(error).toBeInstanceOf(GmailApiError);
+      expect(error.status).toBe(400);
+      expect(error.reasons).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A 403 can be a usage limit, a missing permission or another refusal, and only Google's reason
+  // says which.
+  it("carries Google's reason codes, and says what to do about a rate limit", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch([json({error: {
+      code: 403, status: "PERMISSION_DENIED",
+      message: "User-rate limit exceeded for confidential@example.com",
+      errors: [{reason: "userRateLimitExceeded", message: "User-rate limit exceeded"}],
+    }}, 403)]);
     const error = await api().listMessages(20).catch(value => value);
-    expect(cancel).toHaveBeenCalledOnce();
     expect(error).toBeInstanceOf(GmailApiError);
-    expect(error.status).toBe(400);
+    expect(error.status).toBe(403);
+    expect(error.reasons).toEqual(["userRateLimitExceeded"]);
+    expect(error.message).toBe(
+      "Gmail API messages.list failed [http=403 reason=userRateLimitExceeded] Gmail is limiting " +
+      "requests. Try again later, with fewer or smaller requests: a short-term limit lifts within " +
+      "a minute or so, but a daily limit, such as the one on sending mail, can take hours.");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({
+      event: "google.api.request.failed", provider: "Gmail", operation: "messages.list",
+      httpStatus: 403, providerCode: 403, providerStatus: "PERMISSION_DENIED",
+      providerReasons: ["userRateLimitExceeded"],
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("confidential");
+    warn.mockRestore();
+  });
+
+  it("logs a 404, which callers expect and handle, as information and not as a warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    stubFetch([json({error: {code: 404, status: "NOT_FOUND", errors: [{reason: "notFound"}]}}, 404)]);
+    const error = await api().getThread("1a03a1e31ecc5e70").catch(value => value);
+    expect(error).toBeInstanceOf(GmailApiError);
+    expect(error.status).toBe(404);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info.mock.calls.map(([entry]) => entry)).toEqual([expect.objectContaining({
+      event: "google.api.request.failed", provider: "Gmail", operation: "threads.get", httpStatus: 404,
+    })]);
+    vi.restoreAllMocks();
+  });
+
+  it("says to reconnect when the token lacks a scope, and treats any 429 as a rate limit", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch([
+      json({error: {code: 403, errors: [{reason: "insufficientPermissions"}], details: [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"},
+      ]}}, 403),
+      json({error: {code: 403, errors: [{reason: "forbidden"}]}}, 403),
+    ]);
+    const scope = await api().listMessages(20).catch(value => value);
+    expect(scope.reasons).toEqual(["insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"]);
+    expect(scope.message).toBe(
+      "Gmail API messages.list failed [http=403 reason=insufficientPermissions,ACCESS_TOKEN_SCOPE_INSUFFICIENT] " +
+      "The Google connection lacks a permission this needs: reconnect the Google account and allow " +
+      "the access it asks for.");
+    // A 429 that outlasts its retries names no reason of its own. It is also how a daily limit
+    // shows, which a minute's wait does not lift.
+    expect(new GmailApiError(429, "messages.send").message).toBe(
+      "Gmail API messages.send failed [http=429] Gmail is limiting requests. Try again later, " +
+      "with fewer or smaller requests: a short-term limit lifts within a minute or so, but a daily " +
+      "limit, such as the one on sending mail, can take hours.");
+    // The Google Cloud project's own quota is a limit too, so it gets the same advice.
+    expect(new GmailApiError(403, "messages.list", ["dailyLimitExceeded"]).message).toBe(
+      "Gmail API messages.list failed [http=403 reason=dailyLimitExceeded] Gmail is limiting " +
+      "requests. Try again later, with fewer or smaller requests: a short-term limit lifts within " +
+      "a minute or so, but a daily limit, such as the one on sending mail, can take hours.");
+    const refused = await api().listMessages(20).catch(value => value);
+    expect(refused.message).toBe("Gmail API messages.list failed [http=403 reason=forbidden]");
+    vi.restoreAllMocks();
   });
 });

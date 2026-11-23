@@ -4,7 +4,7 @@ import { useKumoToastManager } from '@cloudflare/kumo'
 import { Plus, CaretRight, Warning } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
-import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { AccountDescription, SupportedResource, VendorDescription, getResourceTypeId, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper'
 import { extractHostname, extractBaseUrl, matchesResourceText, classifyMatch, completeUrl, getPlaceholderRanges } from './resourceMatching'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import {
@@ -32,10 +32,10 @@ export type SelectableItem = {
   vendorId: string
   vendorDescription: VendorDescription
   /**
-   * If the resource being connected is independently grantable, its `urlPattern`, so a new account
+   * If the resource being connected is independently grantable, its type ID, so a new account
    * requests just that resource's authorization. Undefined means request everything.
    */
-  resourceUrlPatterns?: string[]
+  resourceTypeIds?: string[]
 } | {
   type: 'refine'
   resource: SupportedResource
@@ -75,6 +75,7 @@ export interface ResourcePickerProps {
 type AccountEntry = {
   description: AccountDescription
   vendor: VendorDescription
+  vendorId: string
   supportedResources: SupportedResource[]
   credentialsValid: boolean
 }
@@ -86,12 +87,17 @@ const sessionSnapshots = new WeakMap<RpcStub<AuthenticatedApi>, {
   accounts: Map<number, AccountEntry>
 }>()
 
+function accountSupportsResource(account: AccountEntry, resource: SupportedResource): boolean {
+  return account.supportedResources.some(candidate =>
+    getResourceTypeId(candidate) === getResourceTypeId(resource) && candidate.connectable !== false)
+}
+
 function missingResourceGrants(account: AccountDescription, resource: SupportedResource): string[] {
   if (!resource.grantable) return []
-  const granted = account.grantedResourceUrlPatterns
+  const granted = getGrantedResourceTypeIds(account, [resource])
   // Undefined means legacy/full grant.
   if (granted === undefined) return []
-  return granted.includes(resource.urlPattern) ? [] : [resource.urlPattern]
+  return granted.includes(getResourceTypeId(resource)) ? [] : [getResourceTypeId(resource)]
 }
 
 export default function ResourcePicker({
@@ -123,10 +129,10 @@ export default function ResourcePicker({
     let cancelled = false
 
     const subscriber = new AccountsSubscriberAdapter({
-      add({ id, description, vendor, supportedResources, credentialsValid }) {
+      add({ id, description, vendor, vendorId, supportedResources, credentialsValid }) {
         setAllAccounts(prev => {
           const next = new Map(prev)
-          next.set(id, { description, vendor, supportedResources, credentialsValid })
+          next.set(id, { description, vendor, vendorId, supportedResources, credentialsValid })
           return next
         })
         // Clear reconnecting state if this account was being reconnected and is now valid.
@@ -193,7 +199,7 @@ export default function ResourcePicker({
   const lowerSearch = trimmedSearch.toLowerCase()
 
   const allResourceItems = allVendors.flatMap(v =>
-    v.supportedResources.map(r => ({ resource: r, vendor: v }))
+    v.supportedResources.filter(r => r.connectable !== false).map(r => ({ resource: r, vendor: v }))
   )
 
   // The first placeholder (:name or *) still in the search URL, which blocks choosing an account.
@@ -271,9 +277,10 @@ export default function ResourcePicker({
   if (lowerSearch && httpItem && hasSpecificMatches) {
     matchedResources = matchedResources.filter(({ resource }) => resource.urlPattern !== 'https://*')
 
-    const httpVendorName = httpItem.vendor.description.displayName
+    const httpVendorId = httpItem.vendor.id
     const httpAccounts = [...allAccounts.entries()]
-      .filter(([_, { vendor: v }]) => v.displayName === httpVendorName)
+      .filter(([_, account]) => account.vendorId === httpVendorId &&
+        accountSupportsResource(account, httpItem.resource))
 
     const hasMatchingAccounts = lowerSearch
       ? httpAccounts.some(([_, { description }]) => {
@@ -306,7 +313,8 @@ export default function ResourcePicker({
       }
 
       let vendorAccounts = [...allAccounts.entries()]
-        .filter(([_, { vendor: v }]) => v.displayName === vendor.description.displayName)
+        .filter(([_, account]) => account.vendorId === vendor.id &&
+          accountSupportsResource(account, resource))
         .map(([id, data]) => ({ id, ...data }))
 
       if (accountsOnly && lowerSearch) {
@@ -335,7 +343,7 @@ export default function ResourcePicker({
           type: 'connect',
           vendorId: vendor.id,
           vendorDescription: vendor.description,
-          resourceUrlPatterns: resource.grantable ? [resource.urlPattern] : undefined,
+          resourceTypeIds: resource.grantable ? [getResourceTypeId(resource)] : undefined,
         })
       }
     }
@@ -383,7 +391,7 @@ export default function ResourcePicker({
             }
           }
         } else {
-          handleConnectNew(item.vendorId, item.resourceUrlPatterns)
+          handleConnectNew(item.vendorId, item.resourceTypeIds)
         }
       }
       return () => { activateRef.current = null }
@@ -392,10 +400,10 @@ export default function ResourcePicker({
 
   // --- Connect new account handler ---
 
-  const handleConnectNew = async (vendorId: string, resourceUrlPatterns?: string[]) => {
+  const handleConnectNew = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
     } catch (error) {
       if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', error)
@@ -407,11 +415,11 @@ export default function ResourcePicker({
 
   // --- Grant additional resource access handler ---
 
-  const handleGrantResourceAccess = useCallback(async (accountId: number, resourceUrlPatterns: string[]) => {
-    if (resourceUrlPatterns.length === 0) return
+  const handleGrantResourceAccess = useCallback(async (accountId: number, resourceTypeIds: string[]) => {
+    if (resourceTypeIds.length === 0) return
     setGrantingAccount(accountId)
     try {
-      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceTypeIds)
       if (flow) {
         const outcome = await openConnectWindow(flow, authenticatedApi)
         toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
@@ -492,7 +500,8 @@ export default function ResourcePicker({
 
             // --- Full match or no-refine prefix: render with accounts ---
             let vendorAccounts = [...allAccounts.entries()]
-              .filter(([_, { vendor: v }]) => v.displayName === vendor.description.displayName)
+              .filter(([_, account]) => account.vendorId === vendor.id &&
+                accountSupportsResource(account, resource))
               .map(([id, data]) => ({ id, ...data }))
 
             // In accounts-only mode (HTTP alongside specific matches), only show
@@ -596,7 +605,7 @@ export default function ResourcePicker({
                   itemIdx++
                   return (
                   <div
-                    onClick={() => !connectingVendor && handleConnectNew(vendor.id, resource.grantable ? [resource.urlPattern] : undefined)}
+                    onClick={() => !connectingVendor && handleConnectNew(vendor.id, resource.grantable ? [getResourceTypeId(resource)] : undefined)}
                     className={`${PICKER_ROW} ${isActive ? PICKER_ROW_ACTIVE : ''}`}
                     style={{
                       cursor: connectingVendor === vendor.id ? 'wait' : 'pointer',
