@@ -87,14 +87,14 @@ styleSheet.textContent = `
   #rail { position: relative; border-left: 1px solid var(--line); }
   #thumb { position: absolute; top: 0; left: -2px; width: 3px; border-radius: 3px;
     background: var(--link); transition: transform .2s ease-out, height .2s ease-out; }
-  /* Clear of the panel's header when the outline scrolls to the heading being read. */
-  #rail .row { display: flex; align-items: center; scroll-margin: 46px 0 8px; }
+  /* Clear of the list's edges when the outline scrolls to the heading being read. */
+  #rail .row { display: flex; align-items: center; scroll-margin: 8px 0; }
   .entry { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; padding: 5px 8px 5px 4px;
     border: 0; border-radius: 6px; background: none; color: var(--dim); line-height: 1.4;
     text-align: left; transition: background .12s, color .12s; }
   .entry.top { color: var(--ink); font-weight: 700; }
   .entry:hover { background: var(--chip); color: var(--ink); }
-  .entry[aria-current="true"] { color: var(--link); }
+  .entry[aria-current="true"] { background: color-mix(in srgb, var(--link) 12%, transparent); color: var(--link); }
   .entry:focus-visible { outline-offset: -2px; }
   .entry > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 `;
@@ -425,8 +425,9 @@ function fit() {
   sheets.style.width = `${sheetWidth}px`;
   sheets.style.transform = scale < 1 ? `scale(${scale})` : '';
   page.style.height = `${sheets.offsetHeight * scale}px`;
-  // The outline stands at the edge of the page as it is drawn.
-  document.documentElement.style.setProperty('--width', `${sheetWidth * scale}px`);
+  // The page gives way to the outline by its width as it is set, which scaling it to the room
+  // that leaves does not change.
+  document.documentElement.style.setProperty('--width', `${sheetWidth}px`);
   markPage();
 }
 new ResizeObserver(fit).observe(page);
@@ -679,7 +680,7 @@ function markHeading() {
   thumb.style.height = `${row.offsetHeight}px`;
   // The outline follows the reading, so the heading being read stays in it. At the first
   // heading that is the top of the outline, where the tabs are.
-  if (current === 0) outline.scrollTop = 0;
+  if (current === 0) outlineList.scrollTop = 0;
   else if (current !== reading) row.scrollIntoView({ block: 'nearest' });
   reading = current;
 }

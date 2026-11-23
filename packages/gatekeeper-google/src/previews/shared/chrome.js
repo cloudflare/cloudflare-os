@@ -89,22 +89,43 @@ styleSheet.textContent = `
   /* In a narrow frame the Workshop's card for a change waiting lies across the foot. */
   @media (max-width: 900px) { #pager.lifted { bottom: 134px; } }
 
-  /* The outline stands beside the page where there is room, and over it where there is not. */
+  /* The outline stands beside the page where there is room, and over it where there is not. Its
+     button keeps its place: closed it floats as the other buttons do, and open it is the corner
+     of the sheet, which unfolds from it and folds back into it. */
+  :root { --outline: 240px; --top: 16px; --swift: .2s cubic-bezier(.2, 0, 0, 1);
+    --folded: inset(6px calc(100% - 38px) calc(100% - 34px) 10px round 14px); }
   #outline-toggle { position: fixed; z-index: 3; top: 6px; left: 10px; display: grid;
-    place-items: center; width: 28px; height: 28px; border: 0; border-radius: 50%; background: none;
-    color: var(--dim); transition: background .15s, color .15s; }
-  #outline-toggle:hover, #outline-toggle[aria-expanded="true"] { background: var(--chip); color: var(--ink); }
-  #outline { position: fixed; z-index: 2; inset: 0 auto 0 0; box-sizing: border-box; width: 240px;
-    padding: 0 10px 24px 14px; overflow-y: auto; scrollbar-width: thin;
-    scrollbar-color: var(--line) transparent; background: var(--desk);
-    font-size: 12px; animation: slide .2s ease-out; }
-  #outline h2 { position: sticky; z-index: 1; top: 0; margin: 0 -10px 6px -14px; padding: 0 0 0 48px;
-    background: inherit; font-size: 11px; font-weight: 700; line-height: 40px; letter-spacing: .08em;
-    text-transform: uppercase; color: var(--dim); }
+    place-items: center; width: 28px; height: 28px; border: 0; border-radius: 50%; background: var(--page);
+    box-shadow: var(--float); color: var(--dim);
+    transition: background var(--swift), box-shadow var(--swift), color .15s; }
+  #outline-toggle:hover { color: var(--ink); }
+  #outline-toggle[aria-expanded="true"] { background: none; box-shadow: none; }
+  #outline-toggle[aria-expanded="true"]:hover { background: var(--chip); }
+  #outline { position: fixed; z-index: 2; inset: 0 auto 0 0; display: flex; flex-direction: column;
+    width: 240px; font-size: 12px; --round: 0 12px 12px 0;
+    --cast: var(--float), 8px 0 32px rgb(0 0 0 / .18); }
+  /* Hidden, it is still laid out, so that it folds away before it goes. */
+  #outline[hidden] { display: flex !important; visibility: hidden; transition: visibility 0s .2s; }
+  /* The shadow is a layer of its own, which what clips the sheet as it folds does not clip. */
+  #outline::before { content: ''; position: absolute; z-index: -1; inset: 0; border-radius: var(--round);
+    box-shadow: var(--cast); transition: opacity var(--swift); }
+  #outline[hidden]::before { opacity: 0; }
+  #outline > div { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden;
+    border-radius: var(--round); background: var(--page); animation: unfold var(--swift); }
+  #outline[hidden] > div { animation: fold var(--swift) forwards; }
+  @keyframes unfold { from { clip-path: var(--folded); } to { clip-path: inset(0 round var(--round)); } }
+  @keyframes fold { from { clip-path: inset(0 round var(--round)); } to { clip-path: var(--folded); } }
+  #outline h2 { flex: none; margin: 0; padding: 0 0 0 48px; border-bottom: 1px solid transparent;
+    font-size: 11px; font-weight: 700; line-height: 39px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--dim); transition: border-color .15s; }
+  #outline.scrolled h2 { border-color: var(--line); }
+  /* What is listed scrolls under its title, and its scrollbar stops short of the sheet's round corners. */
+  #outline h2 + div { flex: 1 1 auto; min-height: 0; margin: 0 2px 8px 0; padding: 5px 8px 4px 14px;
+    overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
   /* The parts a resource is divided into, such as a document's tabs: the one shown is marked. */
   #outline .tab { display: flex; align-items: center; margin: 2px 0; padding: 0 6px 0 4px;
     border-radius: 999px; color: var(--dim); transition: background .12s, color .12s;
-    scroll-margin: 46px 0 8px; }
+    scroll-margin: 8px 0; }
   #outline .tab:hover { background: var(--chip); color: var(--ink); }
   #outline .tab.on { background: color-mix(in srgb, var(--link) 14%, transparent); color: var(--ink); }
   .tab .name { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 7px 4px;
@@ -122,22 +143,17 @@ styleSheet.textContent = `
   .fold:hover { background: var(--shine); color: var(--ink); opacity: 1; }
   .fold > svg { transition: transform .15s ease-out; }
   .fold[aria-expanded="false"] > svg { transform: rotate(-90deg); }
-  @keyframes slide { from { opacity: 0; transform: translateX(-12px); } }
-  body { transition: padding-left .2s ease-out; }
-  /* Where there is room the outline is a sheet of its own beside the page: level with it, and
-     kept to its edge rather than the frame's. Its button stays where that sheet's corner is. */
-  :root { --outline: 240px; --top: 16px; }
+  body { transition: padding-left var(--swift); }
+  /* Where there is room the outline is a sheet of its own at the frame's edge: level with the
+     page, and no longer than what it lists. */
   @media (min-width: 1400px) { :root { --outline: 296px; } }
   @media (min-width: 1000px) {
-    body { --dock: calc(8px + max(0px, (100% - var(--outline) - 20px - var(--width)) / 2)); }
-    .outlined { padding-left: calc(var(--outline) + 20px); }
-    #outline { inset: var(--top) auto 16px var(--dock); width: var(--outline); border-radius: 8px;
-      background: var(--page); box-shadow: var(--paper); }
-    #outline-toggle { top: calc(var(--top) + 6px); left: calc(var(--dock) + 10px); }
-  }
-  @media (max-width: 999px) {
-    #outline { background: var(--page); border-radius: 0 12px 12px 0;
-      box-shadow: var(--float), 8px 0 32px rgb(0 0 0 / .18); }
+    /* The page keeps to the middle of the frame, and gives way only as far as the outline needs:
+       as the outline unfolds, so the two are never over one another. */
+    .outlined { padding-left: clamp(0px, 2 * (var(--outline) + 28px) - (100% - var(--width)), var(--outline) + 20px); }
+    #outline { inset: var(--top) auto auto 8px; width: var(--outline);
+      max-height: calc(100% - var(--top) - 16px); --round: 8px; --cast: var(--paper); }
+    #outline-toggle { top: calc(var(--top) + 6px); left: 18px; }
   }
 
   #error { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 420px;
@@ -214,8 +230,13 @@ outlineToggle.hidden = true;
 export const outline = document.body.appendChild(make('nav'));
 outline.id = 'outline';
 outline.hidden = true;
-const outlineTitle = outline.appendChild(make('h2'));
-export const outlineList = outline.appendChild(make('div'));
+// The sheet itself, which folds into the button and out of it over the outline's shadow.
+const outlineSheet = outline.appendChild(make('div'));
+const outlineTitle = outlineSheet.appendChild(make('h2'));
+/** What the outline lists, which scrolls under its title. */
+export const outlineList = outlineSheet.appendChild(make('div'));
+// A line under the title while what is listed is scrolled under it.
+outlineList.addEventListener('scroll', () => outline.classList.toggle('scrolled', outlineList.scrollTop > 0), { passive: true });
 
 const wide = matchMedia('(min-width: 1000px)');
 const roomForOutline = () => wide.matches;
@@ -237,8 +258,8 @@ wide.addEventListener('change', () => outlineToggle.hidden || showOutline(outlin
 export function setOutline(title, any) {
   outlineTitle.textContent = title;
   for (const part of [outlineToggle, outline]) part.setAttribute('aria-label', title);
-  // Level with the page, which a note above it moves.
-  document.documentElement.style.setProperty('--top', `${page.offsetTop}px`);
+  // Level with the page, which a note above it moves, and clear of the frame's own edge.
+  document.documentElement.style.setProperty('--top', `${Math.max(page.offsetTop, 12)}px`);
   outlineToggle.hidden = !any;
   showOutline(any && (outlineChosen ?? roomForOutline()));
 }
