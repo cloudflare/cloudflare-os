@@ -163,6 +163,16 @@ function requestError(status: number): Error {
   });
 }
 
+/**
+ * A failed request whose message changed after its stack's text was made, which V8 does when the
+ * stack is first read. The message no longer says where the body ends in the stack.
+ */
+function reworded(): Error {
+  const error = requestError(502);
+  assert.ok(error.stack?.includes(UPSTREAM.body));
+  return Object.assign(error, { message: "Server" });
+}
+
 /** A refused GraphQL request as Octokit throws it: GitHub's own words, with the response headers. */
 function graphqlError(): Error {
   return Object.assign(new Error(`Request failed due to following response errors:\n - ${UPSTREAM.body}`), {
@@ -205,6 +215,8 @@ interface HarnessOptions {
   runs?: ProducerRun[];
   /** Requests GitHub answers with a server error. */
   failing?: GitHubCall[];
+  /** The error a failing request throws; a 502 as Octokit throws it when not given. */
+  failWith?: () => Error;
   /** Makes GitHub refuse the enqueue, as it does while required checks are running. */
   enqueueRefused?: true;
   /** The pull request already sits in the merge queue. */
@@ -267,7 +279,7 @@ function harness(options: HarnessOptions = {}) {
   }
   const calls: Calls = { checks: [], updates: [], summaries: [], approvals: [], dismissals: [], enqueued: [] };
   const refuse = (call: GitHubCall) => {
-    if (options.failing?.includes(call)) throw requestError(502);
+    if (options.failing?.includes(call)) throw (options.failWith ?? (() => requestError(502)))();
   };
 
   const github: GitHubClient = {
@@ -1390,6 +1402,17 @@ describe("runRiskReview failure", () => {
       assertNothingUpstream(await loggedRejection(evaluate("workflow_run", producerCompleted())));
       assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), completed, JSON.stringify(options));
     }
+  });
+
+  // The stack's frames are the only way to find a bug in the gate from a public log.
+  it("rejects with the frames of what was thrown, and drops them when it cannot cut the message off exactly", async () => {
+    const failing: GitHubCall[] = ["pulls.listFiles"];
+    const logged = await loggedRejection(harness({ failing }).evaluate("workflow_run", producerCompleted()));
+    assert.match(logged, /\n {4}at requestError \(/);
+    assertNothingUpstream(logged);
+
+    const shortened = await loggedRejection(harness({ failing, failWith: reworded }).evaluate("workflow_run", producerCompleted()));
+    assert.doesNotMatch(shortened, /authenticate|at requestError/);
   });
 });
 
