@@ -16,11 +16,11 @@ const GatekeeperDownloadDialog = ({ onDecision }: { onDecision: (accepted: boole
   if (!container) return null
   return (
     <Dialog.Root open onOpenChange={(open) => { if (!open) onDecision(false) }}>
-      <Dialog container={container} className="responsive-dialog !z-10 p-5" size="base" aria-describedby="gatekeeper-download-description">
+      <Dialog container={container} className="responsive-dialog !z-10 p-5" size="base">
         <Dialog.Title>Download file?</Dialog.Title>
-        <p id="gatekeeper-download-description" className="my-4 text-kumo-subtle">
+        <Dialog.Description id="gatekeeper-download-description" className="my-4 text-kumo-subtle">
           This service wants to download a file to your device.
-        </p>
+        </Dialog.Description>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={() => onDecision(false)}>Cancel</Button>
           <Button variant="primary" onClick={() => onDecision(true)}>Download</Button>

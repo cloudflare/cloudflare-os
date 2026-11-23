@@ -62,13 +62,13 @@ vi.mock("./features/gatekeeper-sharing/GatekeeperUserPickerDialog", async (impor
 });
 
 // The mock factory is hoisted; defer JSX until rendering, after its imports are initialized.
-function DialogPart({ children }: { children?: ReactNode }) {
-  return <>{children}</>;
+function DialogPart({ children, id }: { children?: ReactNode; id?: string }) {
+  return id ? <div id={id}>{children}</div> : <>{children}</>;
 }
 
 vi.mock("@cloudflare/kumo", async (importOriginal) => {
   const actual = await importOriginal<typeof Kumo>();
-  return { ...actual, Dialog: Object.assign(DialogPart, { Root: DialogPart, Title: DialogPart }) };
+  return { ...actual, Dialog: Object.assign(DialogPart, { Root: DialogPart, Title: DialogPart, Description: DialogPart }) };
 });
 
 vi.mock("./ThemeContext", () => ({
@@ -390,6 +390,10 @@ describe("SandboxedGatekeeperApp navigation", () => {
     ["attachment; filename*=UTF-8'en'Cloudflare%20OS.cfosoperator", 'Cloudflare-OS.cfosoperator'],
     ["attachment; filename*=UTF-8''%broken; filename=ordinary.txt", 'ordinary.txt'],
     ['attachment', 'download'],
+    ["attachment ; filename*= UTF-8''Cloudflare%20OS.cfosoperator", 'Cloudflare-OS.cfosoperator'],
+    ['attachment ; filename = "setup.cfosoperator"', 'setup.cfosoperator'],
+    ['attachment; filename="a; filename=wrong.cfosoperator"', 'a-filename-wrong.cfosoperator'],
+    ['attachment; other="; filename=wrong"; filename=setup.cfosoperator', 'setup.cfosoperator'],
     ['attachment; filename="../../local-file"', '..-..-local-file'],
   ])("uses a safe response filename with no ticket fallback: %s", async (disposition, filename) => {
     await mountApp();
@@ -403,6 +407,37 @@ describe("SandboxedGatekeeperApp navigation", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('<html>SPA</html>', {headers: {'Content-Type': 'text/html'}}));
     await expect(approvedDownload(`${window.location.origin}/gatekeeper/scheduler/file`)).rejects.toThrow('not a download');
     expect(saveBlob).not.toHaveBeenCalled();
+  });
+
+  it.each([200, 404])("cancels unread streaming responses before another download: HTTP %s", async status => {
+    await mountApp();
+    let active = 0;
+    const server = createServer((_request: unknown, response: {
+      writeHead(status: number, headers: Record<string, string>): void;
+      write(data: string): void; on(event: string, callback: () => void): void;
+    }) => {
+      ++active;
+      response.on('close', () => { --active; });
+      response.writeHead(status, {'Content-Type': 'text/html'});
+      response.write('<html>stream stays open');
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected HTTP test server');
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, options) =>
+      realFetch(`http://127.0.0.1:${address.port}${new URL(String(input)).pathname}`, options));
+    try {
+      for (let attempt = 0; attempt < 2; ++attempt) {
+        await expect(approvedDownload(`${window.location.origin}/gatekeeper/scheduler/stream`))
+          .rejects.toThrow(status === 200 ? 'not a download' : 'Gatekeeper download failed');
+        await vi.waitFor(() => expect(active).toBe(0));
+      }
+      expect(saveBlob).not.toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error?: Error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("removes the old vendor's frame while the replacement vendor is loading", async () => {

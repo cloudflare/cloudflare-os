@@ -109,6 +109,33 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
   }
 }
 
+// Parse one parameter at a time so quoted semicolons cannot introduce another filename.
+function downloadFilename(disposition: string): string | undefined {
+  const kind = /^\s*attachment\s*(?=;|$)/i.exec(disposition)
+  if (!kind) throw new Error('Gatekeeper response is not a download.')
+  const parameter = /;\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;\s]*)\s*/y
+  let offset = kind[0].length
+  let filename: string | undefined
+  let extended: string | undefined
+  while (offset < disposition.length) {
+    parameter.lastIndex = offset
+    const match = parameter.exec(disposition)
+    if (!match) break
+    offset = parameter.lastIndex
+    const name = match[1].toLowerCase()
+    const raw = match[2]
+    const value = raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw
+    if (name === 'filename') filename = value
+    if (name === 'filename*') {
+      const encoded = /^UTF-8'[^']*'(.*)$/i.exec(value)?.[1]
+      if (encoded !== undefined) {
+        try { extended = decodeURIComponent(encoded) } catch { /* Keep an ordinary filename. */ }
+      }
+    }
+  }
+  return extended ?? filename
+}
+
 // The host capability exposed to the sandboxed app (the gatekeeper's iframe UI) over the MessagePort
 // RPC session. The app uses `ui` to reach the gatekeeper's own capability, which Workshop relays and
 // rate-limits. `setPresenting` stays in Workshop and only grows/restores the iframe's layout.
@@ -120,7 +147,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   readonly #downloadPrefix: string
   readonly #confirmDownload: () => Promise<boolean>
   readonly #cancelDownload: () => void
-  readonly #downloadAbort = new AbortController()
+  #downloadAbort: AbortController | null = null
+  #disposed = false
   #downloading = false
   readonly #disposeRateLimiter: () => void
   readonly #present: PresentController
@@ -216,31 +244,29 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     }
     // Single-flight includes the prompt and body read. A frame cannot fan out credentialed
     // requests or trigger automatic downloads without a click in trusted Workshop UI.
-    if (this.#downloading || this.#downloadAbort.signal.aborted) {
+    if (this.#downloading || this.#disposed) {
       throw new Error('A download is already pending or this app has closed.')
     }
     this.#downloading = true
+    const controller = new AbortController()
+    this.#downloadAbort = controller
     try {
       if (!await this.#confirmDownload()) throw new Error('Download cancelled.')
-      this.#downloadAbort.signal.throwIfAborted()
+      controller.signal.throwIfAborted()
       const response = await fetch(target.href, {
         credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store',
-        signal: this.#downloadAbort.signal,
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error('Gatekeeper download failed.')
       const disposition = response.headers.get('Content-Disposition') ?? ''
-      if (!/^attachment(?:;|$)/i.test(disposition.trim())) throw new Error('Gatekeeper response is not a download.')
-      let filename: string | undefined
-      const encoded = /(?:^|;)\s*filename\*=UTF-8'[^']*'([^;]+)/i.exec(disposition)?.[1]
-      if (encoded) {
-        try { filename = decodeURIComponent(encoded.trim()) } catch { /* Fall back to filename. */ }
-      }
-      filename ??= /(?:^|;)\s*filename="([^"]+)"/i.exec(disposition)?.[1]
-        ?? /(?:^|;)\s*filename=([^;]+)/i.exec(disposition)?.[1]
+      const filename = downloadFilename(disposition)
       const blob = await response.blob()
-      this.#downloadAbort.signal.throwIfAborted()
+      controller.signal.throwIfAborted()
       saveBlobToFile(blob, makeExportFilename('download', '', filename))
     } finally {
+      // Abort even rejected headers: an unread streaming body must not outlive its slot.
+      controller.abort()
+      this.#downloadAbort = null
       this.#downloading = false
     }
   }
@@ -381,7 +407,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   // Cancel the rate limiter's pending resume timer once this host is no longer in use.
   #dispose() {
     this.#disposeRateLimiter()
-    this.#downloadAbort.abort()
+    this.#disposed = true
+    this.#downloadAbort?.abort()
     this.#cancelDownload()
     this.#cancelUserPicker()
     this.#themeReceiver?.[Symbol.dispose]?.()
