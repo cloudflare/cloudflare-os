@@ -57,6 +57,12 @@ export function sameDeploymentAdmin(a: string, b: string): boolean {
   return asciiLowerCase(a) === asciiLowerCase(b);
 }
 
+/** What GatekeeperVendor.getSupportedResources() is told of the user it is asked for. */
+export function supportedResourcesHint(env: Cloudflare.Env, userId: string)
+    : { userId: string, isAdmin: boolean } {
+  return { userId, isAdmin: isDeploymentAdmin(env, userId) };
+}
+
 // Only ASCII letters are folded: toLowerCase() also folds some other characters onto ASCII ones,
 // such as the Kelvin sign onto "k", which would let a look-alike name match an admin's.
 const asciiLowerCase = (text: string) => text.replace(/[A-Z]/g, letter => letter.toLowerCase());

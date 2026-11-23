@@ -407,6 +407,13 @@ const SLUG_RE = /^[a-z][a-z0-9]*$/;
 const MAX_SLUG_LEN = 20;
 
 /**
+ * Install slugs only one package may fold to, by slug. A deployment admin's connect flow hands
+ * their Admin API to whatever Worker is bound as GATEKEEPER_ADMIN (the backend's
+ * ADMIN_GATEKEEPER_VENDOR_ID), so no other gatekeeper may take that binding.
+ */
+const RESERVED_SLUGS = new Map([["admin", "gatekeeper-admin"]]);
+
+/**
  * The release manifest's shortName. Deployed instances bind gatekeepers as GATEKEEPER_<SLUG> and
  * the router recovers the path from that binding name, so a slug must survive `toUpperCase()` and
  * back — the deploy wizard restricts it to SLUG_RE and sends the manifest shortName as the install
@@ -422,6 +429,12 @@ const MAX_SLUG_LEN = 20;
  */
 export function releaseShortName(pkgName: string): string {
   const shortName = gatekeeperShortName(pkgName).replace(/[^a-z0-9]/g, "");
+  const owner = RESERVED_SLUGS.get(shortName);
+  if (owner !== undefined && owner !== pkgName) {
+    throw new Error(`${pkgName} folds to "${shortName}", which is reserved for ${owner}: a ` +
+        `deployment admin's connect flow hands their Admin API to whatever is bound as ` +
+        `GATEKEEPER_${shortName.toUpperCase()}. Rename the package.`);
+  }
   if (!SLUG_RE.test(shortName) || shortName.length > MAX_SLUG_LEN) {
     throw new Error(`${pkgName} folds to "${shortName}", which is not a legal install slug: ` +
         `it must be 1-${MAX_SLUG_LEN} lowercase letters and digits starting with a letter ` +

@@ -71,6 +71,8 @@ export class TestLoginCallback extends LoginConnectCallbackImpl {}
  * `ctx.exports` by the name startAccountAppUi mints it under.
  */
 export { GatekeeperUserSelectionExchangeImpl } from "../src/user.js";
+/** What a deployment admin's connect flow hands the admin gatekeeper, minted the same way. */
+export { AdminApiGrantImpl } from "../src/user.js";
 
 /**
  * Test identity capability returned by a fake connected account. `identify` stands in for the
