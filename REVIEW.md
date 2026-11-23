@@ -17,7 +17,9 @@ highest.
 
 End the review summary with a standalone line `MERGE-CONFIDENCE: <0-10>`: how sure you are that a
 careful maintainer on this team would merge this PR as it is. Score the change, not the author. With
-no such line, or a score outside 0 to 10, the PR goes to a person.
+no such line, or a score outside 0 to 10, the PR goes to a person. The auto-merge gate's two
+reviewers also get an exact report layout in their prompt, and a report in another layout sends the
+PR to a person.
 
 - **[P0]**: data loss, a security hole, or a broken build or deploy. Blocks an automatic merge.
 - **[P1]**: a failure that can occur, which breaks a feature, loses or corrupts stored state, or

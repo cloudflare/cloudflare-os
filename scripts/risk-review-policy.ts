@@ -102,7 +102,7 @@ const PATH_FLOORS: (PathRule & { band: Band; reason: string })[] = [
   },
 ];
 
-/** Skills, which coding agents read; edits here are AI-scored. */
+/** Skills, which coding agents read. A skill's own files are not on the always-a-person list. */
 const SKILLS_DIR = ".agents/skills/";
 
 /** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
@@ -111,10 +111,12 @@ export function isSkillPath(filename: string): boolean {
 }
 
 /**
- * Whether a person must review a change to this path because AI reviewers follow it: every
- * instruction path but a skill's own files. Skills are scored like code: the reviewers read the
- * base version of every instruction file, so a skill edit cannot steer its own review. A symlink
- * there can, and so can an instruction file or directory of its own inside a skill.
+ * Whether a change to this path is on the always-a-person list because AI reviewers follow it:
+ * every instruction path but a skill's own files, and an instruction file or directory of its own
+ * inside a skill. A skill's own files keep the medium floor of every instruction path, so rung 2,
+ * which takes only low risk, takes none; leaving them off the list keeps that a matter of risk
+ * level. The reviewers read the base version of every instruction path, so a skill edit cannot
+ * steer its own review; a symlink there can, and `skillSymlinks` sends it to a person.
  */
 function isReviewerInstruction(path: string): boolean {
   return isInstructionPath(isSkillPath(path) ? path.slice(SKILLS_DIR.length) : path);

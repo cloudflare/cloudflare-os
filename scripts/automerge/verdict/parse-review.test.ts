@@ -13,7 +13,6 @@ function parsed(text: string) {
   return result.review;
 }
 
-/** Asserts that the parser rejects `text`. */
 function rejected(text: string, message = text): void {
   assert.equal(parseReview(text).ok, false, message);
 }

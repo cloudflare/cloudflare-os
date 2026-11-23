@@ -13,7 +13,7 @@
   <!-- Column labels -->
   <g font-size="12" font-weight="600" fill="#64748B">
     <text x="40" y="104">Pull request</text>
-    <text x="240" y="104">Producers: JSON artifacts only, they post nothing</text>
+    <text x="240" y="104">Producers: JSON artifacts; none publishes risk-review</text>
     <text x="600" y="104">The gate</text>
   </g>
 
@@ -94,12 +94,12 @@
   </g>
 
   <rect x="765" y="492" width="155" height="104" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
-  <text x="842" y="516" font-size="13" font-weight="600" fill="#64748B" text-anchor="middle">Later: a rung on</text>
+  <text x="842" y="516" font-size="13" font-weight="600" fill="#64748B" text-anchor="middle">Later: enforce</text>
   <g font-size="12" fill="#64748B" text-anchor="middle">
-    <text x="842" y="538">The App approves and</text>
-    <text x="842" y="555">queues the PR; the</text>
-    <text x="842" y="572">merge queue decides</text>
-    <text x="842" y="589">again before merging.</text>
+    <text x="842" y="538">When a rung takes a PR,</text>
+    <text x="842" y="555">the App approves and</text>
+    <text x="842" y="572">queues it; the gate decides</text>
+    <text x="842" y="589">again in the merge queue.</text>
   </g>
 
   <!-- Footer -->

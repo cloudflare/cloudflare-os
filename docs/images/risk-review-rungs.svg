@@ -57,7 +57,7 @@
 
     <rect x="40" y="330" width="12" height="12" rx="2" fill="#93C5FD"/>
     <text x="60" y="341" font-weight="600">Medium or high risk</text>
-    <text x="250" y="341">A person: not low risk, and none changes only tests, which rung 1 could prove</text>
+    <text x="250" y="341">A person: rung 2 takes only low risk, and none changes only tests (rung 1)</text>
     <text x="840" y="341" text-anchor="end">53</text>
     <text x="920" y="341" text-anchor="end">60%</text>
     <line x1="24" y1="356" x2="936" y2="356" stroke="#F1F5F9" stroke-width="1.5"/>

@@ -84,9 +84,13 @@ describe("bonk-pr.yml", () => {
   // module the copy leaves out is missing only there.
   it("copies every module bonk.ts imports to where it runs it", () => {
     const scripts = stepsOf(workflow).flatMap(({ run }) => (typeof run === "string" ? [run] : []));
-    const [copy, ...otherCopies] = scripts.filter((script) => script.includes("git archive"));
-    const started = new Set(scripts.flatMap((script) => /^node (\$RUNNER_TEMP\/\S+)/.exec(script)?.[1] ?? []));
-    assert.ok(copy !== undefined && otherCopies.length === 0 && started.size > 0, "one step copies the scripts, and later steps run them");
+    const inTemp = (script: string) => [...script.matchAll(/\$\{?RUNNER_TEMP\}?\/([\w./-]+)/g)].map((match) => match[1] ?? "");
+    const directory = (path: string) => path.split("/", 1).join("");
+    const started = new Set(scripts.flatMap(inTemp).filter((path) => path.endsWith(".ts")));
+    const directories = new Set([...started].map(directory));
+    // The steps that fill the directory the started scripts sit in.
+    const copies = scripts.filter((script) => inTemp(script).some((path) => !path.endsWith(".ts") && directories.has(directory(path))));
+    assert.ok(started.size > 0 && copies.length > 0, "steps copy the scripts, and later steps run them");
 
     const temp = mkdtempSync(join(tmpdir(), "automerge-judge-"));
     try {
@@ -100,9 +104,9 @@ describe("bonk-pr.yml", () => {
       mkdirSync(env.GIT_OBJECT_DIRECTORY);
       execFileSync("git", ["add", "--all", "--", "scripts/automerge"], { cwd: root, env });
       const tree = execFileSync("git", ["write-tree"], { cwd: root, env, encoding: "utf8" }).trim();
-      execFileSync("bash", ["-e", "-c", copy], { cwd: root, env: { ...env, BASE_SHA: tree, RUNNER_TEMP: temp } });
+      for (const copy of copies) execFileSync("bash", ["-e", "-c", copy], { cwd: root, env: { ...env, BASE_SHA: tree, RUNNER_TEMP: temp } });
       for (const script of started) {
-        const url = pathToFileURL(script.replace("$RUNNER_TEMP", temp)).href;
+        const url = pathToFileURL(join(temp, script)).href;
         // Imported rather than run: that loads every module the script imports and starts nothing.
         execFileSync(process.execPath, ["--input-type=module", "--eval", `await import(${JSON.stringify(url)});`], { stdio: "pipe" });
       }
