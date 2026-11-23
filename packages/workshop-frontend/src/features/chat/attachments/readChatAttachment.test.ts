@@ -28,6 +28,20 @@ describe("readChatAttachment", () => {
       .resolves.toEqual(Uint8Array.of(1, 2, 3, 4));
   });
 
+  // It is read into a buffer of the recorded size, so a stream that disagrees can't fit.
+  it("refuses a blob that streams more bytes than the attachment's size", async () => {
+    const cancel = vi.fn<(reason: unknown) => void>();
+    const overseer = {
+      readBlob: async () => new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(Uint8Array.of(1, 2, 3, 4, 5)); },
+        cancel,
+      }),
+    } as unknown as RpcStub<Overseer>;
+    await expect(readChatAttachment(overseer, 3, attachment("f".repeat(40)), new AbortController().signal))
+      .rejects.toThrow("larger than its recorded size");
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it("cancels the stream when the signal aborts", async () => {
     const cancel = vi.fn<(reason: unknown) => void>();
     const overseer = {

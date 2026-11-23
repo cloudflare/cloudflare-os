@@ -25,4 +25,12 @@ export type AttachmentContents = {
   hold: (id: string) => () => void;
   /** Forgets the reads that failed, so the next to ask reads again. */
   forgetFailures: () => void;
+  /**
+   * Reads a file, again if its last read failed, and hands its bytes to `save`, holding the read
+   * until then: closing the viewer lets the download finish. Undefined, doing nothing, while the
+   * file is already being downloaded; else settles as the read and `save` do.
+   */
+  download: (id: string, save: (bytes: Uint8Array) => void) => Promise<void> | undefined;
+  /** The files being downloaded. */
+  downloading: ReadonlySet<string>;
 };

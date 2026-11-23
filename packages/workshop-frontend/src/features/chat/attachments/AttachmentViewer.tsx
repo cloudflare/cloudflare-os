@@ -1,4 +1,4 @@
-import { Suspense, use, useEffect, useRef, useState } from "react";
+import { Suspense, use, useEffect, useRef } from "react";
 import { Dialog, Loader, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import { CaretLeftIcon, CaretRightIcon, DownloadSimpleIcon, XIcon } from "@phosphor-icons/react";
 import { WorkshopButton, WorkshopIconButton } from "../../../components/WorkshopControls";
@@ -111,11 +111,10 @@ export const AttachmentViewer = ({
   const index = Math.max(0, attachments.findIndex((attachment) => attachment.id === openId));
   const attachment = attachments[index];
   const shownId = attachment?.id;
+  const { hold } = contents;
   // The file shown is read only while it is shown: closing the viewer, or moving on, stops a
   // large file's fetch and drops its bytes, unless its card keeps them or a download holds them.
-  useEffect(() => (shownId === undefined ? undefined : contents.hold(shownId)), [contents, shownId]);
-  // The files being downloaded: pressing Download again does nothing until each is saved.
-  const [downloading, setDownloading] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => (shownId === undefined ? undefined : hold(shownId)), [hold, shownId]);
 
   const navigationRef = useRef<HTMLDivElement>(null);
   /** The button to focus once the step is drawn, when the one used gets disabled by it. */
@@ -156,33 +155,18 @@ export const AttachmentViewer = ({
 
   if (!attachment) return null;
 
-  const isDownloading = downloading.has(attachment.id);
+  const isDownloading = contents.downloading.has(attachment.id);
   const download = () => {
-    const { id, name, mimeType } = attachment;
-    if (downloading.has(id)) return;
-    setDownloading((ids) => new Set(ids).add(id));
-    // Forgets a failed fetch, so the download a person asks for fetches again. The hold keeps the
-    // read until the file is saved, should the viewer close or move on first.
-    contents.forgetFailures();
-    const release = contents.hold(id);
-    contents.read(id)
-      .then((bytes) => saveAttachment(bytes, name, mimeType))
+    const { name, mimeType } = attachment;
+    contents.download(attachment.id, (bytes) => saveAttachment(bytes, name, mimeType))
       // A failed save as well as a failed fetch.
-      .catch((error: unknown) => {
+      ?.catch((error: unknown) => {
         console.error("Failed to download chat attachment:", error);
         toasts.add({
           title: error instanceof Error && error.message
             ? error.message
             : "Failed to download attachment",
           variant: "error",
-        });
-      })
-      .finally(() => {
-        release();
-        setDownloading((ids) => {
-          const rest = new Set(ids);
-          rest.delete(id);
-          return rest;
         });
       });
   };

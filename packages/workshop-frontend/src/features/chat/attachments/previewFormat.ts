@@ -18,8 +18,10 @@ const BROWSER_IMAGE_TYPES = new Set([
 ]);
 
 /**
- * The largest file, other than an image, that is previewed or given a thumbnail: a previewer
- * fetches and parses the whole file in the page. A larger one can still be downloaded.
+ * The largest file given a thumbnail, or previewed unless it is an image: a thumbnail or a
+ * preview fetches the whole file into the page, and all but an image's parse it there too. The
+ * viewer still shows an image of any size, which the browser decodes. A larger file can still be
+ * downloaded.
  */
 export const MAX_PREVIEW_BYTES = 25 * 1024 * 1024;
 

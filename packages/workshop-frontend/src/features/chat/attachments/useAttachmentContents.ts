@@ -12,8 +12,8 @@ type Read = {
 /**
  * Reads each attachment's bytes once, as one promise, so a card's thumbnail and the viewer share a
  * single fetch and the viewer can read it with `use()`. A read a card asks for is kept while the
- * component is mounted. One only the viewer asks for is kept while it holds it, as it holds the
- * file it shows and each it is downloading, so moving on from a large file, or closing the
+ * component is mounted. One only the viewer asks for is kept while held: while the viewer shows
+ * the file, or until a download of it is saved. So moving on from a large file, or closing the
  * viewer, stops its fetch and drops its bytes. A failed read stays remembered, or each render of
  * the failure would read again, until `forgetFailures` is called: when a person opens the viewer,
  * which is how they retry. Only the attachments in `liveIds` are kept: a file removed from the
@@ -29,6 +29,10 @@ export const useAttachmentContents = (
   const reads = useRef(new Map<string, Read>());
   // By file, not by read: holding a file starts no read, and holds one started after.
   const holds = useRef(new Map<string, number>());
+  // Here rather than in the viewer, which a download outlives: reopened, it still shows the
+  // download under way, and pressing Download again does nothing until the file is saved.
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(() => new Set());
+  const downloads = useRef(new Set<string>());
   const drop = (id: string, read: Read) => {
     if (reads.current.get(id) !== read) return;
     reads.current.delete(id);
@@ -45,8 +49,8 @@ export const useAttachmentContents = (
     if (!liveIds.includes(id)) drop(id, read);
   }
 
-  // Stable, so the viewer's effects can depend on it; everything it reads is in refs.
-  const [contents] = useState<AttachmentContents>(() => {
+  // Stable, so the viewer's effects can depend on its functions; everything they read is in refs.
+  const [stable] = useState<Omit<AttachmentContents, "downloading">>(() => {
     const start = (id: string): Read => {
       const started = reads.current.get(id);
       if (started) return started;
@@ -58,6 +62,29 @@ export const useAttachmentContents = (
       reads.current.set(id, read);
       return read;
     };
+    const hold = (id: string) => {
+      holds.current.set(id, (holds.current.get(id) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const left = holds.current.get(id)! - 1;
+        if (left > 0) holds.current.set(id, left);
+        else holds.current.delete(id);
+        // Once the work at hand is done, so a hold let go and taken straight back, as
+        // StrictMode does with an effect, keeps the read.
+        queueMicrotask(() => {
+          const read = reads.current.get(id);
+          if (read && !read.kept && !holds.current.has(id)) drop(id, read);
+        });
+      };
+    };
+    const forgetFailures = () => {
+      for (const [id, read] of reads.current) {
+        if (read.failed) reads.current.delete(id);
+      }
+    };
+    const showDownloads = () => setDownloading(new Set(downloads.current));
     return {
       content: (id) => {
         const read = start(id);
@@ -65,29 +92,21 @@ export const useAttachmentContents = (
         return read.bytes;
       },
       read: (id) => start(id).bytes,
-      hold: (id) => {
-        holds.current.set(id, (holds.current.get(id) ?? 0) + 1);
-        let released = false;
-        return () => {
-          if (released) return;
-          released = true;
-          const left = holds.current.get(id)! - 1;
-          if (left > 0) holds.current.set(id, left);
-          else holds.current.delete(id);
-          // Once the work at hand is done, so a hold let go and taken straight back, as
-          // StrictMode does with an effect, keeps the read.
-          queueMicrotask(() => {
-            const read = reads.current.get(id);
-            if (read && !read.kept && !holds.current.has(id)) drop(id, read);
-          });
-        };
-      },
-      forgetFailures: () => {
-        for (const [id, read] of reads.current) {
-          if (read.failed) reads.current.delete(id);
-        }
+      hold,
+      forgetFailures,
+      download: (id, save) => {
+        if (downloads.current.has(id)) return undefined;
+        downloads.current.add(id);
+        showDownloads();
+        if (reads.current.get(id)?.failed) reads.current.delete(id);
+        const release = hold(id);
+        return start(id).bytes.then(save).finally(() => {
+          release();
+          downloads.current.delete(id);
+          showDownloads();
+        });
       },
     };
   });
-  return contents;
+  return { ...stable, downloading };
 };

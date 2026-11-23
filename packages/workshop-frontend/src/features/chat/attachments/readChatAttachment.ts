@@ -19,22 +19,27 @@ export const readChatAttachment = async (
   const cancel = () => void reader.cancel(signal.reason).catch(() => {});
   if (signal.aborted) cancel();
   signal.addEventListener("abort", cancel, { once: true });
-  const pieces: Uint8Array[] = [];
+  // Each piece is copied into place as it arrives, so the file is held once, not in pieces and
+  // then whole as well.
+  const bytes = new Uint8Array(attachment.size);
+  let length = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      pieces.push(value);
+      if (length + value.byteLength > bytes.byteLength) {
+        cancel();
+        throw new Error("The attachment's content is larger than its recorded size.");
+      }
+      bytes.set(value, length);
+      length += value.byteLength;
     }
   } finally {
     signal.removeEventListener("abort", cancel);
   }
   signal.throwIfAborted();
-  const bytes = new Uint8Array(pieces.reduce((length, piece) => length + piece.byteLength, 0));
-  let offset = 0;
-  for (const piece of pieces) {
-    bytes.set(piece, offset);
-    offset += piece.byteLength;
+  if (length < bytes.byteLength) {
+    throw new Error("The attachment's content is smaller than its recorded size.");
   }
   return bytes;
 };

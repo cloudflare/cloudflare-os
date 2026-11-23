@@ -294,7 +294,7 @@ it("stops reading a file the viewer moves on from or closes on", async () => {
   await expect.poll(() => second.aborted).toBe(true);
 });
 
-it("saves a file once however often Download is pressed while it loads, and after closing", async () => {
+it("saves a file once however often Download is pressed while it loads, even after reopening", async () => {
   let resolve!: (bytes: Uint8Array) => void;
   const loadContent = await mount(
     [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -313,12 +313,20 @@ it("saves a file once however often Download is pressed while it loads, and afte
     await userEvent.click(header, { force: true });
     await userEvent.click(body, { force: true });
 
-    // Closing the viewer leaves the download to finish.
+    // Closing the viewer leaves the download to finish, and reopened, it still shows it.
     await userEvent.keyboard("{Escape}");
-    expect(loadContent).toHaveBeenCalledOnce();
     expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(body, { force: true });
+    expect(loadContent).toHaveBeenCalledOnce();
+
     resolve(encoder.encode("workbook"));
     await expect.poll(() => saves.mock.calls.length).toBe(1);
+    await expect.element(header).toHaveAttribute("aria-busy", "false");
+    // Saved, so pressing Download again downloads it again.
+    await userEvent.click(header);
+    await expect.poll(() => saves.mock.calls.length).toBe(2);
   } finally {
     saves.mockRestore();
   }
