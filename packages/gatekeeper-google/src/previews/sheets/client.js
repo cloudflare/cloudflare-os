@@ -11,7 +11,7 @@
 
 import {
   flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, outlineList, page, setOutline, setStops, showError,
-  showLoading, showPage, showStale, status, touch,
+  showLoading, showPage, showStale, status, touch, ITSELF,
 } from './ui/chrome.js';
 
 // The session main() is handed, which every read below goes through.
@@ -43,7 +43,8 @@ styleSheet.textContent = `
 
   /* The strip the floating buttons lie over: the sheet shown, and the cell picked. */
   #strip { flex: none; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 180px 0 48px;
-    border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); white-space: nowrap; }
+    border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); white-space: nowrap;
+    transition: padding-left var(--swift); }
   #strip b { color: var(--ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
   #strip .at { flex: none; min-width: 34px; padding: 2px 8px; border-radius: 4px; background: var(--chip);
     color: var(--ink); text-align: center; font-variant-numeric: tabular-nums; }
@@ -142,6 +143,8 @@ styleSheet.textContent = `
   .ring { position: absolute; z-index: 2; box-sizing: border-box; border: 2px solid var(--mark-ink);
     border-radius: 3px; pointer-events: none; scroll-margin: 60px;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--mark-ink) 16%, transparent); transition: box-shadow .2s ease-out; }
+  .ring { --glow: var(--mark-ink); }
+  .ring:is(.cleared, .gone) { --glow: var(--gone-ink); }
   .ring.cleared { border-color: var(--gone-ink);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--gone-ink) 16%, transparent); }
   .ring.gone { border-color: var(--gone-ink); border-width: 2px 0 0 2px; border-radius: 0;
@@ -192,9 +195,14 @@ styleSheet.textContent = `
   #outline .tab .name[aria-disabled] { cursor: default; }
   #outline .tab.cut .name > span:first-of-type { text-decoration: line-through; }
   #outline .tab.away { opacity: .55; }
-  .said { flex: none !important; padding: 0 6px; border-radius: 999px; background: var(--edit);
-    color: var(--edit-ink); font-size: 10px; font-weight: 400; line-height: 16px; }
-  .tab.cut .said { background: var(--gone); color: var(--gone-ink); }
+  .name > .said { flex: none; }
+  .name > .dims { flex: none; color: var(--dim); font-size: 10px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  /* A name with two things said of it keeps the room for itself. */
+  .name:has(.said)[data-touched] > .dims { display: none; }
+  /* In a long list the sheets the changes touch come first, under a heading of their own. */
+  #outline h3 { margin: 12px 0 4px 8px; color: var(--dim); font-size: 10px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; }
+  #outline h3:first-child { margin-top: 2px; }
 `;
 document.head.append(styleSheet);
 // One rule for each format of the window drawn, which its cells are classed by.
@@ -822,6 +830,8 @@ grid.addEventListener('click', event => {
 // changes add, rename, move, delete or write to marked.
 
 const SHEET_ICON = 'M3.5 4.5h13v11h-13zM3.5 8.5h13M8.5 4.5v11';
+// More sheets than this are listed in two groups: the ones the changes touch, then the others.
+const GROUPED = 8;
 
 // The ids that keep their order between two lists of the same ids: the longest run that does.
 function steady(before, after) {
@@ -864,24 +874,25 @@ function renderOutline() {
   const tabs = tabsOf(info.sheets);
   // The sheet whose name holds the keyboard: the name drawn in its place is to hold it again.
   const held = document.activeElement?.dataset.sheet;
-  outlineList.replaceChildren(...tabs.map(({ sheet: listed, added, renamed, moved, deleted }) => {
+  const listing = ({ sheet: listed, added, renamed, moved, deleted }) => {
     const on = listed.id === sheet.id && !deleted;
     // A sheet that is a chart alone has no cells to draw.
     const drawn = listed.rowCount > 0;
     const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden || !drawn ? ' away' : ''}`);
     const name = row.appendChild(make('button', 'name'));
     name.dataset.sheet = listed.id;
-    name.append(lineIcon(SHEET_ICON), make('span', '', listed.title));
+    name.append(lineIcon(SHEET_ICON), make('span', '', listed.title),
+      make('span', 'dims', drawn ? `${listed.rowCount} × ${listed.columnCount}` : 'Chart'));
     // A sheet added or deleted is that whatever else is done to it; any other a change touches is edited.
     const kind = added ? 'added' : deleted ? 'removed' : listed.touched && 'changed';
-    const dot = touch(name, kind ? [kind] : []);
+    const dot = touch(name, kind ? [kind] : [], ITSELF);
     const says = [
       added && 'new, not yet added', renamed && `renamed from “${renamed}”`, moved && 'moved',
       deleted && 'deleted by a pending change', listed.hidden && 'hidden', kind === 'changed' && dot,
       !drawn && 'a chart, not drawn in this preview',
     ].filter(Boolean);
     name.title = says.length ? `${listed.title} (${says.join('; ')})` : listed.title;
-    for (const tag of [renamed && 'renamed', moved && 'moved', deleted && 'deleted']) {
+    for (const tag of [renamed && 'Renamed', moved && 'Moved']) {
       if (tag) name.append(make('span', 'said', tag));
     }
     name.setAttribute('aria-pressed', String(on));
@@ -893,7 +904,12 @@ function renderOutline() {
       });
     }
     return row;
-  }));
+  };
+  const changed = tabs.filter(tab => tab.added || tab.renamed || tab.moved || tab.deleted || tab.sheet.touched);
+  const others = tabs.filter(tab => !changed.includes(tab));
+  outlineList.replaceChildren(...tabs.length > GROUPED && changed.length && others.length
+    ? [make('h3', '', `${changed.length} changed`), ...changed.map(listing), make('h3', '', 'Unchanged'), ...others.map(listing)]
+    : tabs.map(listing));
   setOutline('Sheets', tabs.length > 1);
   if (held) outlineList.querySelector(`[data-sheet="${held}"]:not([aria-disabled])`)?.focus();
   outlineList.querySelector('.on')?.scrollIntoView({ block: 'nearest' });

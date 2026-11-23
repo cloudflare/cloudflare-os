@@ -493,6 +493,15 @@ it('lists the sheets as tabs, marking the ones added, renamed, moved and deleted
   expect(tabs().map(tab => tab.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false', 'false', 'true'])
 })
 
+it('lists the sheets the changes touch first, under a heading of their own, when there are many', async () => {
+  const sheets = Array.from({ length: 10 }, (_, n) => small(n + 1, `S${n + 1}`, n, n === 4 || n === 8 ? { touched: true } : {}))
+  const { doc, tabs } = await draw({ sheets }, 1100)
+
+  expect([...doc.querySelectorAll('#outline h3')].map(heading => heading.textContent)).toEqual(['2 changed', 'Unchanged'])
+  expect(tabs().map(tab => tab.title.split(' ')[0])).toEqual(['S5', 'S9', 'S1', 'S2', 'S3', 'S4', 'S6', 'S7', 'S8', 'S10'])
+  expect(tabs().slice(0, 3).map(tab => getComputedStyle(tab, '::after').content)).toEqual(['"Edited"', '"Edited"', 'none'])
+})
+
 it('opens on a sheet of cells, not a chart that comes first, and opens no chart', async () => {
   const chart = { id: 7, title: 'Chart', index: 0, rowCount: 0, columnCount: 0, touched: true as const }
   const { doc, reads, tabs } = await draw({ sheets: [chart, small(1, 'Sales', 1)] }, 1100)
@@ -808,6 +817,7 @@ it('keeps the grid under the outline and clear of the buttons in a narrow pane',
   const outline = doc.getElementById('outline')!
   expect(outline.hidden).toBe(false)
   const { left, top } = outline.querySelector('.tab')!.getBoundingClientRect()
-  expect(outline.contains(doc.elementFromPoint(left + 20, top + 10))).toBe(true)
+  // Once it has unfolded from its button.
+  await expect.poll(() => outline.contains(doc.elementFromPoint(left + 20, top + 10))).toBe(true)
   expect(outline.contains(doc.elementFromPoint(100, 300))).toBe(true)
 })
