@@ -21,8 +21,9 @@ export type RateLimitOptions = {
 }
 
 /**
- * Returns the rate-limited proxy plus a `dispose` that cancels any pending resume timer (otherwise it
- * could fire after the session is torn down). `dispose` is a no-op in `reject` mode (no timer).
+ * Returns the rate-limited proxy plus a `dispose` that ends it: it rejects the queued calls, refuses
+ * new ones, and cancels any pending resume timer, so nothing runs after the session is torn down. A
+ * call already in flight still settles, but drains nothing.
  */
 export function createRateLimitedCapability(
   capability: any,
@@ -39,6 +40,7 @@ export function createRateLimitedCapability(
   const queue: QueuedCall[] = []
   let inFlight = 0
   let resumeTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
 
   const pruneCallWindow = () => {
     const cutoff = Date.now() - 60_000
@@ -46,6 +48,7 @@ export function createRateLimitedCapability(
   }
 
   const drain = () => {
+    if (disposed) return
     pruneCallWindow()
     while (inFlight < options.maxConcurrency && queue.length > 0) {
       if (startedCalls.length >= options.maxCallsPerMinute) {
@@ -88,6 +91,10 @@ export function createRateLimitedCapability(
       if (property === Symbol.dispose) return undefined
       if (typeof property !== 'string' || property in stubMembers) return undefined
       return (...args: unknown[]) => new Promise((resolve, reject) => {
+        if (disposed) {
+          reject(new Error(`${options.label} has closed.`))
+          return
+        }
         if (queue.length + inFlight >= options.maxPendingCalls) {
           reject(new Error(`${options.label} has too many pending requests.`))
           return
@@ -101,10 +108,12 @@ export function createRateLimitedCapability(
   return {
     capability: proxy,
     dispose: () => {
+      disposed = true
       if (resumeTimer !== null) {
         clearTimeout(resumeTimer)
         resumeTimer = null
       }
+      for (const call of queue.splice(0)) call.reject(new Error(`${options.label} has closed.`))
     },
   }
 }
