@@ -38,6 +38,7 @@ Reviewing a pull request: follow `REVIEW.md` as well.
 * packages/configurator-ui: The authoring API, sandbox runtime and build for gatekeeper resource configurator UI frames.
 * packages/ui: Shared runtime React UI used across the Workshop and gatekeeper management apps.
 * packages/gatekeeper-*: Gatekeeper workers for external service integrations. Scheduled Tasks (`gatekeeper-scheduler`) and GitLab (`gatekeeper-gitlab`, design record `plans/gitlab-gatekeeper.md`) are described in their READMEs.
+* packages/create-gatekeeper: `pnpm create-gatekeeper <name>`, which writes a new gatekeeper package from its `template/`; the `write-gatekeeper` skill says how to finish one.
 * packages/mcp-shared: The library behind the two MCP gatekeepers, `gatekeeper-mcp` and `gatekeeper-mcp-portal`.
 * packages/office-content: Dependency-free readers for Word, PowerPoint and Excel files (ZIP, XML, Markdown conversion, cell values) that run in a Worker or a browser. The Microsoft gatekeeper reads files for agents with it, and the Workshop previews chat attachments with it.
 * packages/observability, packages/error-reporting: Server logging/issue reporting/metrics, and the opt-in frontend error-reporting contract.

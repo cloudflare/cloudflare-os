@@ -25,7 +25,8 @@
     "configs:generate": "node scripts/generate-worker-configs.ts",
     "configs:check": "node scripts/generate-worker-configs.ts --check",
     "types:generate": "node scripts/generate-worker-configs.ts && node scripts/generate-worker-types.ts",
-    "api-schema:generate": "node packages/api-schema/scripts/generate.ts"
+    "api-schema:generate": "node packages/api-schema/scripts/generate.ts",
+    "create-gatekeeper": "node packages/create-gatekeeper/bin/create-gatekeeper.ts"
   },
   "devDependencies": {
     "@gadgets/api-cli": "workspace:*",
