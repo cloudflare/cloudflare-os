@@ -60,10 +60,14 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
   if (showsOpened && !opened.shown) setOpened({ ...opened, shown: true })
   if (!showsOpened && opened?.shown) setOpened(null)
   // The anchor is the selected gadget's last report, which a frame reset leaves, so a new frame
-  // restored to the spot is the same offer.
+  // restored to the spot is the same offer. A chip opening another gadget's spot records it before
+  // the URL selects that gadget, so it is carried over here.
   const [offer, setOffer] = useState<{ id: number; gadgetId: WorkpieceId | undefined; anchor: string | undefined }>(
     () => ({ id: 0, gadgetId: gadget?.id, anchor: undefined }))
-  if (offer.gadgetId !== gadget?.id) setOffer({ id: offer.id + 1, gadgetId: gadget?.id, anchor: undefined })
+  if (offer.gadgetId !== gadget?.id) {
+    const anchor = opened?.gadgetId === gadget?.id ? opened?.spot.anchor : undefined
+    setOffer({ id: offer.id + 1, gadgetId: gadget?.id, anchor })
+  }
   const onFocusOpened = ({ gadgetId, spot }: MessageFocus) => {
     // A click that leaves `at` as it is sends the frame nowhere, so its report still stands.
     const opens = spot && !(gadgetId === gadget?.id && spot.anchor === uiFocus?.anchor) ? spot : undefined

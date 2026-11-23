@@ -338,6 +338,17 @@ describe('usePaneFocus', () => {
       expect(offerId()).not.toBe(last)
     })
 
+    it("not when another gadget first reports the spot a sent message's chip opened there", async () => {
+      await render({})
+      await report(q3)
+      await openChip({ gadgetId: 4, spot: lisbon })
+      await reset()
+      await reset()
+      const last = offerId()
+      await report(lisbon)
+      expect(offerId()).toBe(last)
+    })
+
     it('when the gadget is selected again after another', async () => {
       await render({})
       await report(q3)

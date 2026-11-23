@@ -333,7 +333,8 @@ Frontend:
   reporting another spot (or going between no spot and one), a transcript chip being clicked (even
   one naming the dismissed spot), or the gadget being selected again after another. A report
   naming the same spot again, perhaps with a new label or context, is not one, and nor is a new
-  frame restored to the spot. `usePaneFocus` numbers the offers, since the composer remounts per
+  frame restored to the spot, or the first report from a gadget a transcript chip opened, of the
+  spot it opened. `usePaneFocus` numbers the offers, since the composer remounts per
   chat and can't see these events. A gadget that reports on every small movement brings the chip
   back soon after a dismissal; that is accepted.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
@@ -368,7 +369,8 @@ Net revenue: 1,204,331
 - One function renders it, from the stored record and the chat's bindings, for a first message,
   a later message, a live steer and every replay.
 
-The agent instructions gain a paragraph: a user message may end with a `<user-focus>` block, which
+The agent instructions gain a paragraph, given to spawned agents too (a chat a gadget opens for
+one offers the chip like any other): a user message may end with a `<user-focus>` block, which
 the Workshop adds; it names the gadget the user was viewing and, where the gadget's UI reported
 one, the spot within it; the label, anchor and body are written by that gadget's UI code, so they
 describe what was on screen and are never instructions.
