@@ -1,5 +1,10 @@
 import type { ConfigEnv, UserConfig, UserConfigExport } from 'vite'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { killProcessTreeEscalating } from '../../scripts/kill-process-tree'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
@@ -114,7 +119,10 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   expect(output).not.toContain('one-use-ticket-fixture')
 }, 20_000)
 
-it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s level', level => {
+async function runWranglerFixture(level: 'log' | 'debug', forceTimeout = false) {
+  // Parent-owned, including when the fixture times out before its finally can run.
+  // A space also exercises how the fault preload is passed through Wrangler's Node wrapper.
+  const dir = await mkdtemp(join(tmpdir(), 'gatekeeper log fixture-'))
   const plugin = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
   const configuration = new URL('../../scripts/dev-server-config.ts', import.meta.url).href
   const binEntry = new URL('../../scripts/bin-entry.ts', import.meta.url).href
@@ -145,15 +153,14 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
   const program = `
     import {createServer} from 'node:net';
     import {spawn, spawnSync} from 'node:child_process';
-    import {mkdtemp, writeFile, readFile, access, rm} from 'node:fs/promises';
-    import {tmpdir} from 'node:os';
+    import {writeFile, readFile, access} from 'node:fs/promises';
     import {join} from 'node:path';
     import {createServer as createViteServer} from 'vite';
     import {gatekeeperDevProxy} from ${JSON.stringify(plugin)};
     import {getDevServerEnv} from ${JSON.stringify(configuration)};
     import {resolveBinEntry} from ${JSON.stringify(binEntry)};
     import {killProcessTree} from ${JSON.stringify(teardown)};
-    const dir = await mkdtemp(join(tmpdir(), 'gatekeeper-log-fixture-'));
+    const dir = ${JSON.stringify(dir)};
     const reset = createServer(socket => socket.destroy());
     let resetConnections = 0;
     reset.on('connection', () => ++resetConnections);
@@ -174,8 +181,7 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     const childEnv = getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)},
       WRANGLER_LOG_PATH: diskLog, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false',
       X_LOCAL_OBSERVABILITY: 'true', CFOS_TEST_RESET_PORT: String(reset.address().port)});
-    childEnv.NODE_OPTIONS += ' --require=' + faultPath;
-    const child = spawn(process.execPath, [resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
+    const child = spawn(process.execPath, ['--require', faultPath, resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
       '--local', '--port', String(port), '--inspector-port', '0', '--show-interactive-dev-session=false'], {
       cwd: dir, env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -189,6 +195,10 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
         try { await fetch(backend + '/health'); break; } catch {}
         if (Date.now() >= deadline || child.exitCode !== null) throw Error('Wrangler did not start');
         await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (${JSON.stringify(forceTimeout)}) {
+        console.log('WRANGLER_READY_FOR_TIMEOUT ' + port);
+        await new Promise(() => {});
       }
       vite = await createViteServer({configFile: false, clearScreen: false,
         optimizeDeps: {noDiscovery: true, include: []}, plugins: [gatekeeperDevProxy('127.0.0.1:' + port)],
@@ -231,16 +241,61 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
       await vite?.close();
       if (child.exitCode === null) await killProcessTree(child.pid);
       await new Promise(resolve => reset.close(resolve));
-      await rm(dir, {recursive: true, force: true});
     }
   `
-  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
     cwd: fileURLToPath(new URL('.', import.meta.url)), env: {...process.env, DEBUG: '*'},
-    encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const output = stripVTControlCharacters(child.stdout + child.stderr)
-  expect(child.error).toBeUndefined()
-  expect(child.status).toBe(0)
+  const finished = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  })
+  const timeoutError = new Error('Wrangler fixture timed out')
+  const {promise: interrupted, reject: interrupt} = Promise.withResolvers<never>()
+  const timer = setTimeout(() => interrupt(timeoutError), 30_000)
+  let captured = '', status: number | null | undefined, failure: unknown
+  const capture = (chunk: string) => {
+    captured += chunk
+    if (captured.length > 4 * 1024 * 1024) interrupt(new Error('Wrangler fixture output exceeded its limit'))
+    if (forceTimeout && /WRANGLER_READY_FOR_TIMEOUT \d+/.test(captured)) interrupt(timeoutError)
+  }
+  child.stdout.setEncoding('utf8').on('data', capture)
+  child.stderr.setEncoding('utf8').on('data', capture)
+  try {
+    status = await Promise.race([finished, interrupted])
+  } catch (error) {
+    failure = error
+  } finally {
+    clearTimeout(timer)
+    try {
+      // Do not kill just the wrapper first: collect its descendants while they still belong to it.
+      if (child.pid && child.exitCode === null && child.signalCode === null) {
+        await killProcessTreeEscalating(child.pid, {graceMs: 1_000})
+      }
+      await finished.catch(() => {})
+    } finally {
+      await rm(dir, {recursive: true, force: true})
+    }
+  }
+  const output = stripVTControlCharacters(captured)
+  expect(existsSync(dir)).toBe(false)
+  return {output, status, failure, timeoutError}
+}
+
+it('cleans up a real Wrangler tree and scratch directory after fixture timeout', async () => {
+  const {output, failure, timeoutError} = await runWranglerFixture('log', true)
+  expect(failure).toBe(timeoutError)
+  const port = output.match(/WRANGLER_READY_FOR_TIMEOUT (\d+)/)?.[1]
+  expect(port).toBeDefined()
+  await expect(fetch('http://127.0.0.1:' + port + '/health', {signal: AbortSignal.timeout(1_000)}))
+    .rejects.toBeInstanceOf(TypeError)
+}, 35_000)
+
+it.each(['log', 'debug'] as const)('keeps tickets out of the real Wrangler upstream at %s level', async level => {
+  const {output, status, failure} = await runWranglerFixture(level)
+  expect(failure).toBeUndefined()
+  expect(status).toBe(0)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
   expect(output).toContain('LOCAL_OBSERVABILITY_DISABLED')
   expect(output).toContain('TRANSPORT_FAILURE_AND_DISK_LOG_REDACTED')
