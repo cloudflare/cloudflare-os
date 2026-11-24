@@ -134,7 +134,7 @@ export function isImageDecodeError(message: string, status: number | undefined, 
     }
   } catch { /* Other adapters use plain error text. */ }
   return (status === 400 || status === 422) &&
-    /invalid image (?:data|content|format)\b|(?:could not|cannot|unable to|failed to) (?:decode|process) (?:the |an? )?(?:input )?image|image[^\n]{0,160}(?:could not be decoded|cannot be decoded|is corrupt)/i.test(message);
+    /image data you provided does not represent a valid image\b|invalid image (?:data|content|format)\b|(?:could not|cannot|unable to|failed to) (?:decode|process) (?:the |an? )?(?:input )?image|image[^\n]{0,160}(?:could not be decoded|cannot be decoded|is corrupt)/i.test(message);
 }
 
 /** Recognize supported images without loading or encoding the payload. */

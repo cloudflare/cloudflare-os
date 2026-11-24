@@ -995,6 +995,7 @@ describe("images read from a worktree", () => {
     ["openai", "invalid_image_mode", 200], ["openai", "invalid_base64_image", 200],
     ["openai", "unsupported_image_media_type", 200], ["openai", "empty_image_file", 200],
     ["openai", "invalid_image_format", 400], ["openai", "invalid_image_mode", 422],
+    ["openai", "invalid_value", 400],
     ["google", "Unable to process input image", 400],
     ["cloudflare-auto-router", "invalid_image_format", 400],
     ["cloudflare-auto-router", "invalid_image_mode", 422],
@@ -1023,7 +1024,9 @@ describe("images read from a worktree", () => {
       const response = realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
         body = await new Request(input, init).text();
         if ((provider === "openai" || provider === "cloudflare-auto-router") && status !== 200) return Response.json({error: {
-          code: errorCode, message: "You uploaded an unsupported image.", type: "invalid_request_error", param: null,
+          code: errorCode, message: errorCode === "invalid_value"
+            ? "The image data you provided does not represent a valid image. Please check your input and try again."
+            : "You uploaded an unsupported image.", type: "invalid_request_error", param: null,
         }}, {status});
         if (provider === "ollama") return Response.json({error: {message: errorCode}}, {status});
         return provider === "openai"
@@ -1224,6 +1227,10 @@ describe("images read from a worktree", () => {
 
   it.each([
     ["400 invalid image data", 400, true],
+    ['OpenAI API error (400): {"code":"invalid_value","message":"The image data you provided does not represent a valid image."}', 400, true],
+    ["The image data you provided does not represent a valid image.", 422, true],
+    ["The image data you provided does not represent a valid image.", 500, false],
+    ['OpenAI API error (400): {"code":"invalid_value","message":"Invalid value for input."}', 400, false],
     ["500 decode WebP image: webp: invalid format", 500, false],
     ["500 internal server error", 500, false],
     ["503 decode WebP image: webp: invalid format", 503, false],
