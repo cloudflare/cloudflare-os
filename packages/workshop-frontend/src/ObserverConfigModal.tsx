@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
-import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
+import { Collapsible, Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
+import { Warning, Plus, ArrowClockwise, CaretRight } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   AuthenticatedApi,
@@ -70,6 +70,87 @@ function missingResourceTypeIds(account: AccountInfo, required: string[]): strin
   return granted === undefined ? required : required.filter(typeId => !granted.includes(typeId))
 }
 
+// The text links under a vendor's account picker share one row layout: icon, gap, label.
+const LINK_ROW = 'flex items-center gap-1.5 self-start text-xs disabled:opacity-60'
+const LINK_SUBTLE = 'text-kumo-subtle hover:text-kumo-default'
+const LINK_WARNING = 'text-kumo-warning hover:underline'
+
+// One verification refusal: which resource (omitted inside that resource's own row), the account
+// refused, and the free-text reason.
+function FailureNotice({ title, account, reason }: { title?: string, account: string, reason: string }) {
+  return (
+    <div className="flex items-start gap-2 px-3 py-2 rounded-md text-xs text-kumo-warning bg-kumo-warning-tint border border-kumo-warning/20">
+      <Warning size={14} className="mt-0.5 shrink-0" />
+      <div className="min-w-0">
+        {title !== undefined && <><span className="font-medium">{title}</span>{' · '}</>}
+        <span className="font-medium">{account}</span>
+        {' — '}
+        {reason}
+      </div>
+    </div>
+  )
+}
+
+interface AccountFixesProps {
+  account: AccountInfo
+  // Names the account when the vendor's connections use more than one.
+  label?: string
+  resourceCount: number
+  missing: string[]
+  refused: boolean
+  granting: boolean
+  reconnecting: boolean
+  onGrant: () => void
+  onReconnect: () => void
+}
+
+// The fixes one chosen account offers for the connections it was chosen for.
+function AccountFixes({ account, label, resourceCount, missing, refused, granting, reconnecting, onGrant, onReconnect }: AccountFixesProps) {
+  const suffix = label ? ` (${label})` : ''
+  // Scope expansion also replaces expired credentials, so prefer it over plain re-authentication.
+  if (missing.length > 0) {
+    return (
+      <button
+        type="button"
+        onClick={onGrant}
+        disabled={granting}
+        className={`${LINK_ROW} ${LINK_WARNING}`}
+      >
+        {granting ? <ArrowClockwise size={12} className="animate-spin" /> : <Warning size={12} />}
+        {granting
+          ? 'Requesting access…'
+          : (resourceCount === 1
+            ? 'Grant the access needed to verify this resource'
+            : 'Grant the access needed to verify these resources') + suffix}
+      </button>
+    )
+  }
+  // Offer re-authentication for stale credentials, and for an account that just failed: a gatekeeper
+  // that rejects an observer on an auth error doesn't always tell the Workshop, so
+  // `credentialsValid` can still read true. Not styled as a warning in the second case, since a
+  // refusal of valid credentials usually means the account lacks access.
+  if (!account.credentialsValid || refused) {
+    return (
+      <button
+        type="button"
+        onClick={onReconnect}
+        disabled={reconnecting}
+        className={`${LINK_ROW} ${account.credentialsValid ? LINK_SUBTLE : LINK_WARNING}`}
+      >
+        {reconnecting
+          ? <ArrowClockwise size={12} className="animate-spin" />
+          : account.credentialsValid ? <ArrowClockwise size={12} /> : <Warning size={12} />}
+        {reconnecting
+          ? 'Re-authenticating…'
+          : (account.credentialsValid
+            ? 'Re-authenticate this account'
+            : 'This account has expired — click to re-authenticate') + suffix}
+      </button>
+    )
+  }
+  return null
+}
+
 interface ObserverConfigModalProps {
   needs: ObserverBindingNeed[]
   authenticatedApi: RpcStub<AuthenticatedApi>
@@ -90,8 +171,11 @@ export default function ObserverConfigModal({
 
   const [accounts, setAccounts] = useState<Map<number, AccountInfo>>(new Map())
   const [ready, setReady] = useState(false)
-  // vendorId -> chosen accountId (undefined = not yet chosen), used for all of that vendor's bindings.
-  const [choices, setChoices] = useState<Record<string, number | undefined>>({})
+  // gatekeeperId -> chosen accountId (undefined = not yet chosen). A vendor's picker sets every one
+  // of its connections at once; its expanded resource list can set one connection apart.
+  const [choices, setChoices] = useState<Record<number, number | undefined>>({})
+  // vendorId -> whether its resource list is open, once the user has toggled it (see `isExpanded`).
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // Vendor metadata keyed by vendorId, used both for display and to resolve the resource scopes each
   // observer binding needs.
   const [vendorsById, setVendorsById] = useState<Map<string, GatekeeperVendorInfo>>(new Map())
@@ -170,40 +254,41 @@ export default function ObserverConfigModal({
     return () => { cancelled = true }
   }, [authenticatedApi])
 
-  // Needs grouped by vendor, in the order the overseer listed their first connection: one account
-  // choice covers every connection of a vendor.
+  // Needs grouped by vendor, in the order the overseer listed their first connection: the vendor's
+  // picker covers every connection of a vendor, and its resource list can set one apart.
   const vendorGroups = new Map<string, ObserverBindingNeed[]>()
   for (const need of needs) {
     const group = vendorGroups.get(need.vendorId)
     if (group) group.push(need)
     else vendorGroups.set(need.vendorId, [need])
   }
-  // Every grantable resource type a vendor's connections need, so one grant request covers them all.
+  // Every grantable resource type a set of connections needs, so one grant request covers them all.
   const requiredForGroup = (group: ObserverBindingNeed[], account?: AccountInfo) => [
     ...new Set(group.flatMap(need => requiredResourceTypeIds(need, vendorsById.get(need.vendorId), account))),
   ]
 
   // ── keep choices in sync with the available accounts ──────────────────────────
-  // Default each vendor to its first matching account, and drop a choice whose account has
-  // disappeared (e.g. disconnected in another tab). When a vendor's connections are being
-  // re-prompted because they just failed, prefer the account that failed, so the reason shown is
-  // about the selected account and an expired one can be re-authenticated in place.
+  // Default each connection to its vendor's first matching account, and drop a choice whose account
+  // has disappeared (e.g. disconnected in another tab). A connection being re-prompted because it
+  // just failed prefers the account that failed, so the reason shown is about the selected account
+  // and an expired one can be re-authenticated in place; its vendor's other connections default to
+  // that account too, so the vendor's picker starts on one account.
   useEffect(() => {
     setChoices(prev => {
       let changed = false
       const next = { ...prev }
-      const vendorIds = new Set(needs.map(need => need.vendorId))
-      for (const vendorId of vendorIds) {
-        const matching = [...accounts.values()].filter(a => a.vendorId === vendorId)
-        const failed = needs.find(need =>
-          need.vendorId === vendorId && need.failure && accounts.has(need.failure.accountId))?.failure?.accountId
-        const preferred = failed ?? matching[0]?.id
-        const current = next[vendorId]
+      for (const need of needs) {
+        const matching = [...accounts.values()].filter(a => a.vendorId === need.vendorId)
+        const failedHere = need.failure && accounts.has(need.failure.accountId) ? need.failure.accountId : undefined
+        const failedInVendor = needs.find(other =>
+          other.vendorId === need.vendorId && other.failure && accounts.has(other.failure.accountId))?.failure?.accountId
+        const preferred = failedHere ?? failedInVendor ?? matching[0]?.id
+        const current = next[need.gatekeeperId]
         if (current !== undefined && !accounts.has(current)) {
-          next[vendorId] = preferred
+          next[need.gatekeeperId] = preferred
           changed = true
         } else if (current === undefined && preferred !== undefined) {
-          next[vendorId] = preferred
+          next[need.gatekeeperId] = preferred
           changed = true
         }
       }
@@ -286,20 +371,27 @@ export default function ObserverConfigModal({
     }
   }
 
-  // A vendor is satisfied only when its chosen account has valid credentials and every grantable
-  // resource type its connections need for observer verification.
-  const accountFor = (vendorId: string): AccountInfo | undefined => {
-    const id = choices[vendorId]
+  // A connection is satisfied only when its chosen account has valid credentials and every grantable
+  // resource type it needs for observer verification.
+  const accountFor = (need: ObserverBindingNeed): AccountInfo | undefined => {
+    const id = choices[need.gatekeeperId]
     return id === undefined ? undefined : accounts.get(id)
   }
   const accountSatisfies = (group: ObserverBindingNeed[], account: AccountInfo | undefined) =>
     !!account?.credentialsValid && missingResourceTypeIds(account, requiredForGroup(group, account)).length === 0
-  const allSatisfied = [...vendorGroups].every(([vendorId, group]) => accountSatisfies(group, accountFor(vendorId)))
+  const allSatisfied = needs.every(need => accountSatisfies([need], accountFor(need)))
+
+  // The vendor's picker sets every one of its connections to one account.
+  const chooseForVendor = (group: ObserverBindingNeed[], accountId: number) => setChoices(prev => {
+    const next = { ...prev }
+    for (const need of group) next[need.gatekeeperId] = accountId
+    return next
+  })
 
   const handleConfirm = () => {
     const result: ObserverAccountChoice[] = []
     for (const need of needs) {
-      const accountId = choices[need.vendorId]
+      const accountId = choices[need.gatekeeperId]
       if (accountId === undefined) return
       result.push({ gatekeeperId: need.gatekeeperId, accountId })
     }
@@ -347,14 +439,28 @@ export default function ObserverConfigModal({
                 const matching = [...accounts.values()].filter(a => a.vendorId === vendorId)
                 const vendor = matching[0]?.vendor ?? vendorsById.get(vendorId)?.description
                 const vendorName = vendor?.displayName || vendorId || 'service'
-                const chosen = accountFor(vendorId)
-                const missing = chosen ? missingResourceTypeIds(chosen, requiredForGroup(group, chosen)) : []
                 const failures = group.flatMap(need => need.failure ? [{ need, failure: need.failure }] : [])
-                const failedAccountIds = new Set(failures.map(({ failure }) => failure.accountId))
+                // The vendor's picker shows an account only while every connection uses it.
+                const chosenIds = group.map(need => choices[need.gatekeeperId])
+                const uniform = chosenIds.every(id => id === chosenIds[0]) ? chosenIds[0] : undefined
+                const mixed = uniform === undefined && chosenIds.some(id => id !== undefined)
+                // Connections by the account chosen for them, so each account's fixes cover its own.
+                const byAccount = new Map<number, ObserverBindingNeed[]>()
+                for (const need of group) {
+                  const id = choices[need.gatekeeperId]
+                  if (id === undefined) continue
+                  const assigned = byAccount.get(id)
+                  if (assigned) assigned.push(need)
+                  else byAccount.set(id, [need])
+                }
+                // Collapsed unless the user opened it, or a retry needs one connection's account
+                // changed apart from the rest: the overseer re-prompts once, so that choice must be
+                // in sight.
+                const open = expanded[vendorId] ?? (failures.length > 0 && matching.length > 1)
 
                 return (
                   <div key={vendorId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">
-                    <div className={`flex items-center gap-3${matching.length === 0 && failures.length === 0 ? '' : ' mb-3'}`}>
+                    <div className="mb-3 flex items-center gap-3">
                       <Avatar
                         src={vendor?.logo?.url}
                         background={vendor?.color}
@@ -378,24 +484,15 @@ export default function ObserverConfigModal({
                       )}
                     </div>
 
-                    {/* Name each refused resource, the account refused and why. The reason is free
-                        text, either from the gatekeeper or authored by the overseer, and must not be
-                        parsed. */}
-                    {failures.length > 0 && (
-                      <div className={`flex flex-col gap-2${matching.length === 0 ? '' : ' mb-3'}`}>
+                    {/* Collapsed, name each refused resource, the account refused and why; open, each
+                        resource's row says it. The reason is free text, either from the gatekeeper or
+                        authored by the overseer, and must not be parsed. */}
+                    {!open && failures.length > 0 && (
+                      <div className="mb-3 flex flex-col gap-2">
                         {failures.map(({ need, failure }) => (
-                          <div key={need.gatekeeperId} className="flex items-start gap-2 px-3 py-2 rounded-md text-xs text-kumo-warning bg-kumo-warning-tint border border-kumo-warning/20">
-                            <Warning size={14} className="mt-0.5 shrink-0" />
-                            <div className="min-w-0">
-                              <span className="font-medium">{need.resourceTitle}</span>
-                              {' · '}
-                              <span className="font-medium">
-                                {accountLabel(accounts.get(failure.accountId), failure.accountId)}
-                              </span>
-                              {' — '}
-                              {failure.reason}
-                            </div>
-                          </div>
+                          <FailureNotice key={need.gatekeeperId} title={need.resourceTitle}
+                            account={accountLabel(accounts.get(failure.accountId), failure.accountId)}
+                            reason={failure.reason} />
                         ))}
                       </div>
                     )}
@@ -410,19 +507,16 @@ export default function ObserverConfigModal({
                                 {accountLabel(matching[0], matching[0].id)}
                               </div>
                             </div>
-                            {/* Never for an account verification just refused, whatever it has been granted. */}
-                            {accountSatisfies(group, matching[0]) && !failedAccountIds.has(matching[0].id) && (
-                              <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-kumo-success">
-                                <CheckCircle size={15} weight="fill" /> Ready
-                              </span>
-                            )}
                           </div>
                         ) : (
                           <Select
                             className="w-full text-sm"
-                            value={choices[vendorId] !== undefined ? String(choices[vendorId]) : undefined}
-                            placeholder={`Choose a ${vendorName} account…`}
-                            onValueChange={v => setChoices(prev => ({ ...prev, [vendorId]: Number(v) }))}
+                            aria-label={`${vendorName} account for all resources`}
+                            /* null, not undefined: Base UI treats a Select mounted without a value as
+                               uncontrolled and ignores the default chosen once accounts arrive. */
+                            value={uniform !== undefined ? String(uniform) : null}
+                            placeholder={mixed ? 'Multiple accounts' : `Choose a ${vendorName} account…`}
+                            onValueChange={v => chooseForVendor(group, Number(v))}
                             renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
                           >
                             {matching.map(acct => (
@@ -434,73 +528,84 @@ export default function ObserverConfigModal({
                           </Select>
                         )}
 
-                        {/* Scope expansion also replaces expired credentials, so prefer this over the
-                            plain re-authentication path when both apply. */}
-                        {chosen && missing.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => handleGrantResourceAccess(group, chosen)}
-                            disabled={granting === chosen.id}
-                            className="flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60"
-                          >
-                            {granting === chosen.id ? (
-                              <ArrowClockwise size={12} className="animate-spin" />
-                            ) : (
-                              <Warning size={12} />
-                            )}
-                            {granting === chosen.id
-                              ? 'Requesting access…'
-                              : group.length === 1
-                                ? 'Grant the access needed to verify this resource'
-                                : 'Grant the access needed to verify these resources'}
-                          </button>
-                        )}
-
-                        {/* Offer re-authentication when we know the credentials are stale, and also
-                            when this is an account that just failed verification: a gatekeeper that
-                            rejects an observer on an auth error doesn't always tell the Workshop, so
-                            `credentialsValid` can still read true. reconnectAccount() is documented as
-                            safe for an account that merely *may* be expiring. The second case is not
-                            styled as a warning: a refusal of valid credentials usually means the
-                            account lacks access, which re-authenticating cannot fix. */}
-                        {chosen && missing.length === 0 &&
-                          (!chosen.credentialsValid || failedAccountIds.has(chosen.id)) && (
-                          <button
-                            type="button"
-                            onClick={() => handleReconnect(chosen.id)}
-                            disabled={reconnecting === chosen.id}
-                            className={chosen.credentialsValid
-                              ? 'flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start'
-                              : 'flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60'}
-                          >
-                            {reconnecting === chosen.id ? (
-                              <ArrowClockwise size={12} className="animate-spin" />
-                            ) : chosen.credentialsValid ? (
-                              <ArrowClockwise size={12} />
-                            ) : (
-                              <Warning size={12} />
-                            )}
-                            {reconnecting === chosen.id
-                              ? 'Re-authenticating…'
-                              : chosen.credentialsValid
-                                ? 'Re-authenticate this account'
-                                : 'This account has expired — click to re-authenticate'}
-                          </button>
-                        )}
+                        {[...byAccount].map(([accountId, assigned]) => {
+                          const account = accounts.get(accountId)
+                          return account && (
+                            <AccountFixes
+                              key={accountId}
+                              account={account}
+                              label={byAccount.size > 1 ? accountLabel(account, accountId) : undefined}
+                              resourceCount={assigned.length}
+                              missing={missingResourceTypeIds(account, requiredForGroup(assigned, account))}
+                              refused={assigned.some(need => need.failure?.accountId === accountId)}
+                              granting={granting === accountId}
+                              reconnecting={reconnecting === accountId}
+                              onGrant={() => handleGrantResourceAccess(assigned, account)}
+                              onReconnect={() => handleReconnect(accountId)}
+                            />
+                          )
+                        })}
 
                         {!vendor?.autoProvisionsAccount && (
                           <button
                             type="button"
                             onClick={() => handleConnect(vendorId, group)}
                             disabled={connecting === vendorId}
-                            className="flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start"
+                            className={`${LINK_ROW} ${LINK_SUBTLE}`}
                           >
-                            <Plus size={11} />
+                            <Plus size={12} />
                             {connecting === vendorId ? 'Connecting…' : 'Connect a different account'}
                           </button>
                         )}
                       </div>
                     )}
+
+                    <Collapsible.Root open={open} onOpenChange={next => setExpanded(prev => ({ ...prev, [vendorId]: next }))}>
+                      <Collapsible.Trigger className={`mt-2 ${LINK_ROW} ${LINK_SUBTLE}`}>
+                        <CaretRight size={12} className={open ? 'rotate-90' : undefined} />
+                        {matching.length > 1 ? 'Pick a different account for each resource' : 'Show resources'}
+                      </Collapsible.Trigger>
+                      <Collapsible.Panel>
+                        <ul role="list" aria-label={`${vendorName} resources`} className="mt-2 flex flex-col divide-y divide-kumo-line rounded-lg border border-kumo-line">
+                          {group.map(need => (
+                            <li key={need.gatekeeperId} className="flex flex-col gap-2 px-3 py-2">
+                              <div className="flex items-center gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-[13px] text-kumo-default">{need.resourceTitle}</div>
+                                  {need.resourceUrl && (
+                                    <div className="truncate font-mono text-xs text-kumo-subtle">
+                                      {need.resourceUrl.replace(/^https?:\/\//, '')}
+                                    </div>
+                                  )}
+                                </div>
+                                {matching.length > 1 && (
+                                  <Select
+                                    className="w-44 shrink-0 text-sm"
+                                    aria-label={`Account for ${need.resourceTitle}`}
+                                    value={choices[need.gatekeeperId] !== undefined ? String(choices[need.gatekeeperId]) : null}
+                                    placeholder="Choose an account…"
+                                    onValueChange={v => setChoices(prev => ({ ...prev, [need.gatekeeperId]: Number(v) }))}
+                                    renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
+                                  >
+                                    {matching.map(acct => (
+                                      <Select.Option key={acct.id} value={String(acct.id)}>
+                                        {accountLabel(acct, acct.id)}
+                                        {!acct.credentialsValid ? ' (expired)' : ''}
+                                      </Select.Option>
+                                    ))}
+                                  </Select>
+                                )}
+                              </div>
+                              {need.failure && (
+                                <FailureNotice
+                                  account={accountLabel(accounts.get(need.failure.accountId), need.failure.accountId)}
+                                  reason={need.failure.reason} />
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </Collapsible.Panel>
+                    </Collapsible.Root>
                   </div>
                 )
               })}
