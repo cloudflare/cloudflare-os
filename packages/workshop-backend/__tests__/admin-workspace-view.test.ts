@@ -355,6 +355,10 @@ const REPO_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: GATEKEEPER_ID, vendorId: "TestVendor", resourceTitle: "Repo",
   resourceUrl: "https://example.com/repo", resourceTypeId: undefined,
 };
+const REPO_GADGET_REQUIREMENT = {
+  ...REPO_REQUIREMENT,
+  paths: [[], [{type: "hook", id: 0, title: "On push"}]],
+};
 const LIBRARY_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: AMBIENT_GATEKEEPER_ID, vendorId: "library", resourceTitle: "Library",
   resourceUrl: undefined, resourceTypeId: undefined,
@@ -1716,7 +1720,7 @@ describe("sharing reads", () => {
     expect(await view.listObserverRequirements("workspace"))
         .toStrictEqual([REPO_REQUIREMENT, LIBRARY_REQUIREMENT]);
     expect(await view.listObserverRequirements({ gadgetId: ws.gadgetId }))
-        .toStrictEqual([REPO_REQUIREMENT]);
+        .toStrictEqual([REPO_GADGET_REQUIREMENT]);
     // Each link with its note, role and creator (the owner's profile, the collaborator's, and
     // one made of an id), under its id: a link's record holds no key.
     expect(await view.listShareLinks()).toStrictEqual(seededShareLinks(ws));
@@ -1821,7 +1825,7 @@ describe("sharing reads", () => {
     await expect(view.listObserverRequirements("workspace")).rejects.toThrow(LEGACY_CONNECTION);
     // The gadget does not reach it, so its grant answers.
     expect(await view.listObserverRequirements({ gadgetId: ws.gadgetId }))
-        .toStrictEqual([REPO_REQUIREMENT]);
+        .toStrictEqual([REPO_GADGET_REQUIREMENT]);
     // Once the gadget binds it, the gadget's grant fails as well.
     let gadget = impl.storage.gadgets.get(ws.gadgetId);
     impl.storage.gadgets.put(

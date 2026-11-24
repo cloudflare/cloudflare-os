@@ -114,8 +114,10 @@ export class FakeGitRepo {
         let failure = this.failNextLog;
         this.failNextLog = undefined;
         if (failure) throw failure;
-        let branch = opts?.ref?.replace(/^refs\/heads\//, "") ?? "main";
-        let tip = this.branches.get(branch);
+        // As in Artifacts, only a bare branch name or a commit hash resolves; a full ref name such as
+        // `refs/heads/main` finds no commits.
+        let ref = opts?.ref ?? "main";
+        let tip = this.branches.get(ref) ?? this.#commitsByHash.get(ref);
         return tip ? [tip] : [];
       },
       readTree: async (hash: string) => {

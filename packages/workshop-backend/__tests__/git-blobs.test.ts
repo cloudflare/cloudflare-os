@@ -176,14 +176,13 @@ it("asks for room before storing a blob over CHUNK_MAX_SIZE, and before each new
 // The readers replay and folding use still read it, to apply edits saved before the limit.
 it("refuses new whole-text reads of a file over MAX_WHOLE_TEXT_BYTES", async () => {
   const {git} = fixture();
-  const line = new TextEncoder().encode("a row of the spreadsheet\n");
-  let left = MAX_WHOLE_TEXT_BYTES + line.length;
-  const size = left;
+  // About 1 MB of rows a piece, so the stream is quick to write.
+  const rows = new TextEncoder().encode("a row of the spreadsheet\n".repeat(40_000));
+  let left = Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / rows.length);
+  const size = left * rows.length;
   const ref = await git.writeBlobStream(new ReadableStream({pull(controller) {
-    if (left === 0) return controller.close();
-    const piece = line.subarray(0, Math.min(left, line.length));
-    left -= piece.length;
-    controller.enqueue(piece);
+    if (left-- === 0) return controller.close();
+    controller.enqueue(rows);
   }}), size);
   const commit = await git.writeFilesAsCommit(new Map([["rows.csv", ref]]), options);
   const refusal = `rows.csv is ${size} bytes, too large to read or edit as whole text`;

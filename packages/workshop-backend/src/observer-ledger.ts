@@ -360,9 +360,12 @@ export class ObserverLedger {
   /**
    * The connections through which any of `gadgetIds` recorded requirements. A gadget's state may
    * hold what it read through one whether or not it still binds it, so whoever opens it is
-   * verified against these too.
+   * verified against these too. `onProducer`, if given, hears every (gadget, connection) pair
+   * found, at the cost of probing every gadget rather than stopping at a connection's first.
    */
-  gadgetProducers(gadgetIds: Iterable<WorkpieceId>): WorkpieceId[] {
+  gadgetProducers(gadgetIds: Iterable<WorkpieceId>,
+                  onProducer?: (gadgetId: WorkpieceId, gatekeeperId: WorkpieceId) => void)
+      : WorkpieceId[] {
     let index = this.#storage.actions.byObserverRequirement;
     let contexts = Array.from(gadgetIds, gadgetId => ({type: "gadget" as const, gadgetId}));
     let recorded = (prefix: string) => {
@@ -371,8 +374,19 @@ export class ObserverLedger {
     };
     // Listed up front: each probe lists the index, which would end this listing.
     return Array.from(this.#storage.gatekeepers.list())
-        .filter(connection => contexts.some(
-            context => recorded(observerRequirementPrefix(connection.id, context))))
+        .filter(connection => {
+          if (!onProducer) {
+            return contexts.some(
+                context => recorded(observerRequirementPrefix(connection.id, context)));
+          }
+          let found = false;
+          for (let context of contexts) {
+            if (!recorded(observerRequirementPrefix(connection.id, context))) continue;
+            onProducer(context.gadgetId, connection.id);
+            found = true;
+          }
+          return found;
+        })
         .map(connection => connection.id);
   }
 
@@ -387,8 +401,7 @@ export class ObserverLedger {
         connection, [{id: observerId, verifier}], subresources);
     if (denied.length > 0) {
       throw new Error(
-          "This account can't access some of the data this workspace read through this " +
-          "service.");
+          "Your account can't access some of the data read from this resource.");
     }
   }
 
