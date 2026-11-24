@@ -51,7 +51,7 @@ import {
 import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { type LineSource } from "./line-window";
-import { readFileImageMimeType, readFileResult } from "./read-file-result";
+import { readFileResult } from "./read-file-result";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -2438,6 +2438,10 @@ async function runAgentPass(
   // can't are the older ones named by path instead (`pastLimitParts`). Past
   // MAX_INLINE_REPLAY_BYTES, older ones are named by path unread (`unreadParts`), so the prompt
   // is no longer the one earlier requests sent.
+  //
+  // Images readFile showed (AiToolCall's `imageBytes`) count in their step's message alike, and
+  // are replaced by the same markers, so an agent that looks at image after image compacts too.
+  // The pass's own reads count toward the limits as they arrive (see `finishTurn`).
   const isInlineCandidate = (mimeType: string) => handle.model.input.includes("image") &&
       (isAllowedChatAttachmentImageMimeType(mimeType) ||
        (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api)));
@@ -2447,10 +2451,14 @@ async function runAgentPass(
   // request is put down to.
   const unansweredAttachmentIds: string[] = [];
   const unreadAttachmentIds = new Set<string>();
+  // The tool call IDs of the image reads past MAX_INLINE_REPLAY_BYTES.
+  const unreadImageReads = new Set<string>();
   let attachmentsFitFrom: number | undefined;
   // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
   let prompt: number | undefined;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
+  // What this pass's requests carry inline: those of the messages from `attachmentsFitFrom` on.
+  let sentInline = 0, sentInlineBytes = 0;
   for (let msg of chatMessages.toReversed()) {
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
@@ -2464,16 +2472,28 @@ async function runAgentPass(
         messageIds.push(attachment.id);
       }
     }
+    let imageReads = handle.model.input.includes("image") ? (msg.toolCalls ?? []).flatMap(call =>
+        call.toolName === "readFile" && !call.error && call.imageBytes !== undefined
+          ? [{id: call.toolCallId, bytes: call.imageBytes}] : []) : [];
+    for (let read of imageReads) messageBytes += read.bytes;
+    // Checked before the replay allowance: a step's image reads, unlike a message's attachments,
+    // have no per-message bound, so one can pass both limits at once, and must still compact.
+    if (attachmentsFitFrom === undefined &&
+        (keptAttachments + messageIds.length + imageReads.length > MAX_INLINE_ATTACHMENTS ||
+         keptAttachmentBytes + messageBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
+      attachmentsFitFrom = msg.sequence + 1;
+    }
     pastReplayBytes ||= keptAttachmentBytes + messageBytes > MAX_INLINE_REPLAY_BYTES;
     if (pastReplayBytes) {
       for (let id of messageIds) unreadAttachmentIds.add(id);
+      for (let read of imageReads) unreadImageReads.add(read.id);
       continue;
     }
-    keptAttachments += messageIds.length;
+    keptAttachments += messageIds.length + imageReads.length;
     keptAttachmentBytes += messageBytes;
-    if (attachmentsFitFrom === undefined && (keptAttachments > MAX_INLINE_ATTACHMENTS ||
-        keptAttachmentBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
-      attachmentsFitFrom = msg.sequence + 1;
+    if (attachmentsFitFrom === undefined) {
+      sentInline = keptAttachments;
+      sentInlineBytes = keptAttachmentBytes;
     }
     for (let id of messageIds) inlineAttachmentIds.add(id);
     if (!answered) unansweredAttachmentIds.push(...messageIds);
@@ -2483,6 +2503,10 @@ async function runAgentPass(
   const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
   // The markers of the attachments past MAX_INLINE_REPLAY_BYTES.
   const unreadParts = new Set<TextContent | ImageContent>();
+  // What an image read shows in place of the image when it is past the limits.
+  const imageReadNotShown = (filename: string): TextContent => ({type: "text", text:
+      `${filename}: image not shown to you: past the limits on the images and PDFs one request ` +
+      "can carry. Read the file again to see it."});
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2694,6 +2718,15 @@ async function runAgentPass(
                 // Note that if we get here, we know the tool succeeded originally, so for many
                 // branches below we can just return success unconditionally.
                 case "readFile": {
+                  // An image shown before `attachmentsFitFrom` is replaced by a marker if the
+                  // pass runs uncompacted past the limits, as an attachment is.
+                  let limitImageRead = (content: (TextContent | ImageContent)[]) => {
+                    if (content[1]?.type === "image" && attachmentsFitFrom !== undefined &&
+                        msg.sequence < attachmentsFitFrom) {
+                      pastLimitParts.set(content[0], imageReadNotShown(toolCall.input.filename));
+                    }
+                    return content;
+                  };
                   if (sawRevertedContent(msgIndex)) {
                     // It would be a total waste of tokens to actually include this file
                     // content in the chat history since it contains changes that were later
@@ -2717,6 +2750,11 @@ async function runAgentPass(
                           "current content.",
                       isError: true,
                     };
+                  } else if (unreadImageReads.has(toolCall.toolCallId)) {
+                    // Past MAX_INLINE_REPLAY_BYTES: the marker alone, without reading the image.
+                    let marker = imageReadNotShown(toolCall.input.filename);
+                    unreadParts.add(marker);
+                    toolOutput = {content: [marker]};
                   } else if (toolCall.observedOid !== undefined ||
                              toolCall.observedCommit !== undefined) {
                     // The read was served from committed code (the workpiece was unpinned, or
@@ -2736,9 +2774,9 @@ async function runAgentPass(
                     if (oid === undefined) {
                       throw new Error("File missing from its observed commit.");
                     }
-                    toolOutput = {content: readFileResult(
+                    toolOutput = {content: limitImageRead(readFileResult(
                         {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
-                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content)};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
@@ -2779,8 +2817,8 @@ async function runAgentPass(
                       source = {kind: "text", text: value};
                     }
 
-                    toolOutput = {content: readFileResult(source, toolCall.input,
-                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
+                    toolOutput = {content: limitImageRead(readFileResult(source, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content)};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
@@ -3691,9 +3729,13 @@ async function runAgentPass(
           if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let content = readFileResult(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
+          let {content, imageBytes} =
+              readFileResult(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
-          return {content, details: file.oid === undefined ? {} : {observedOid: file.oid}};
+          return {content, details: {
+            ...(file.oid === undefined ? {} : {observedOid: file.oid}),
+            ...(imageBytes === undefined ? {} : {imageBytes}),
+          }};
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -4791,7 +4833,8 @@ async function runAgentPass(
   // drop the thinking after the first of them, which that rewrite invalidates, as it does after
   // attachments left unread. The rewrite lasts only this pass, whose replies are stored without
   // their thinking.
-  let rewrittenFrom = modelMessages.findIndex(message => message.role === "user" &&
+  let rewrittenFrom = modelMessages.findIndex(message =>
+      (message.role === "user" || message.role === "toolResult") &&
       Array.isArray(message.content) &&
       message.content.some(part => pastLimitParts.has(part) || unreadParts.has(part)));
   if (rewrittenFrom >= 0) {
@@ -4802,7 +4845,11 @@ async function runAgentPass(
         let content = message.content.filter(block => block.type !== "thinking");
         return content.length ? [{...message, content}] : [];
       }
-      if (message.role !== "user" || !Array.isArray(message.content)) return [message];
+      // A user message's attachments, or a tool result's image read.
+      if ((message.role !== "user" && message.role !== "toolResult") ||
+          !Array.isArray(message.content)) {
+        return [message];
+      }
       let content: (TextContent | ImageContent)[] = [];
       for (let i = 0; i < message.content.length; ++i) {
         let marker = pastLimitParts.get(message.content[i]);
@@ -4869,6 +4916,17 @@ async function runAgentPass(
       let measured = message.usage.totalTokens;
       nextRequestFits = measured > 0 && !shouldCompactChat(measured + estimateProjectionTokens(
           toolResults.map(({details: _, ...message}) => ({message}))), inputBudget);
+      // Images the step's tools showed join what the next request carries inline (see the
+      // replay's limits). A vision model only: any other gets pi's placeholder instead.
+      if (handle.model.input.includes("image")) {
+        for (let part of toolResults.flatMap(result => result.content)) {
+          if (part.type !== "image") continue;
+          ++sentInline;
+          sentInlineBytes += Math.floor(part.data.length * 3 / 4);
+        }
+      }
+      let inlinePastLimits = sentInline > MAX_INLINE_ATTACHMENTS ||
+          sentInlineBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (
@@ -4885,9 +4943,10 @@ async function runAgentPass(
       }
       // The model stopped on its own; there is no next request to make room for.
       if (toolResults.length === 0) return;
-      // Otherwise reload when that request won't fit, or can't be measured: the turn-start check
-      // then estimates the whole prompt, as it does for that case there.
-      if (!nextRequestFits) {
+      // Otherwise reload when that request won't fit, or can't be measured, or carries more images
+      // than the limits: the turn-start check then estimates the whole prompt, as it does for that
+      // case there, and counts its images.
+      if (!nextRequestFits || inlinePastLimits) {
         reloadForCompaction = true;
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,
         // as a non-edit tool start would, so it doesn't outlive the run on the client.

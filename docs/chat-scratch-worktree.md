@@ -125,7 +125,10 @@ it, so the request reuses their cache and the thinking it keeps stays valid, and
 messages whose attachments fit. Only if compaction fails or can't cut are the older attachments
 named by workspace path instead, and the thinking after the first of them dropped; that turn's
 replies are stored without their thinking, which is signed over the rewritten prompt, so later
-turns replay and compact the prompt as first sent. A provider that
+turns replay and compact the prompt as first sent. Images the agent views with `readFile` count
+toward the same limits in the step that read them, and are replaced by the same kind of marker:
+a step whose reads take the next request past either limit ends the pass, so that the turn
+compacts before sending it. A provider that
 refuses a turn's first request, say for a PDF of more pages than it takes, has its message's inline
 attachments named by path from then on; the model has answered nothing after them. Replay reads no
 attachment's bytes unless it could inline them. Originals remain unchanged. New images are read from the same

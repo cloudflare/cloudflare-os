@@ -980,6 +980,85 @@ describe("attachment worktree ingress", () => {
       .toEqual(["Considering the first five."]);
   }));
 
+  // Images readFile shows count toward the same limits as attachments, as each step adds them: an
+  // agent that looks at image after image compacts before a request would carry too many.
+  it("compacts mid-turn once the images readFile showed pass the limit", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+      [{oid: blob.oid, mimeType: "image/png", name: "dot.png"}]});
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    const looks = (count: number) => Array.from({length: count}, () => fauxAssistantMessage(
+        [fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "dot.png"})],
+        {stopReason: "toolUse"}));
+
+    await turn(...looks(10), fauxAssistantMessage(fauxText("Seen ten times.")));
+    expect(imageParts(requests.at(-1)!)).toHaveLength(11);
+    const recorded = [...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.toolCalls ?? [] : []);
+    expect(recorded).toHaveLength(10);
+    expect(recorded.every(call => call.toolName === "readFile" && call.imageBytes === 24)).toBe(true);
+
+    // The tenth look of this turn would make the next request carry 21: the turn compacts first.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Ten more");
+    requests.length = 0;
+    await turn(...looks(10), fauxAssistantMessage(fauxText("Summary of the looks.")),
+      fauxAssistantMessage(fauxText("Seen ten more times.")));
+    expect(Math.max(...requests.map(request => imageParts(request).length))).toBe(20);
+    const compacted = requests.at(-1)!;
+    expect(JSON.stringify(compacted)).toContain("Summary of the looks.");
+    expect(imageParts(compacted).length).toBeLessThanOrEqual(20);
+    expect(JSON.stringify(compacted)).not.toContain("not shown to you");
+  }));
+
+  // A step's image reads have no per-message bound, unlike a message's attachments, so an older
+  // step can pass the replay allowance and the request's limits at once; it still compacts.
+  it("compacts when an older step's image reads pass the replay allowance", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at these", {attachments:
+      [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
+    const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
+    const MiB = 1024 * 1024;
+    await step(impl, chatId, {[worktreeId]: [
+      ["six.png", {setBytes: await impl.gitCache.writeBlob(pngOfSize(6 * MiB, 100))}],
+      ["seven.png", {setBytes: await impl.gitCache.writeBlob(pngOfSize(7 * MiB, 100))}]]});
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    const look = (filename: string, count: number) => fauxAssistantMessage(Array.from({length: count},
+        () => fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename})), {stopReason: "toolUse"});
+
+    // 18 MiB in one step, within the request's 20.
+    await turn(look("six.png", 3), fauxAssistantMessage(fauxText("Seen.")));
+    // 14 MiB more: the next request would carry 32 MiB, and the older step alone passes the
+    // replay allowance beside the newer.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And these");
+    requests.length = 0;
+    await turn(look("seven.png", 2), fauxAssistantMessage(fauxText("Summary of the looks.")),
+      fauxAssistantMessage(fauxText("Seen these too.")));
+    const compacted = requests.at(-1)!;
+    expect(JSON.stringify(compacted)).toContain("Summary of the looks.");
+    expect(JSON.stringify(compacted)).not.toContain("not shown to you");
+    expect(imageParts(compacted)).toHaveLength(2);
+  }));
+
   // The model has answered nothing after the messages it was refused with, so naming their
   // attachments by path changes nothing it has seen.
   it.each([

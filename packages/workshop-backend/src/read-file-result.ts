@@ -8,12 +8,11 @@ import { imageDimensions, MAX_INLINE_ATTACHMENT_BYTES } from "./chat-attachment-
 import { readFileWindow, type LineSource, type ReadFileWindow } from "./line-window";
 
 /**
- * The longest side, in pixels, of an image readFile shows. Anthropic accepts 8000 pixels, but only
- * 2000 in a request with more than 20 images; a fixed bound at the lower limit keeps a recorded
- * read valid however many images the chat later accumulates, so its replay never changes.
+ * The longest side, in pixels, of an image readFile shows: Anthropic's limit for requests of up to
+ * MAX_INLINE_ATTACHMENTS images, which replay counts image reads toward as it counts attachments.
  * https://platform.claude.com/docs/en/build-with-claude/vision#request-limits
  */
-export const MAX_READ_FILE_IMAGE_EDGE = 2000;
+export const MAX_READ_FILE_IMAGE_EDGE = 8000;
 
 // How much of a file too large to show is searched for an image header, to tell an oversized
 // image (an error saying so) from a mislabeled file (read as text).
@@ -38,12 +37,14 @@ export function readFileImageMimeType(path: string): string | undefined {
 /**
  * Renders a readFile result as the exact content the model sees. A stored file whose extension
  * names a supported image type, and whose header confirms it, is shown as that image (preceded
- * by a line giving its type and size) when no line window is asked for; one over the byte or
- * pixel bounds is an error. Every other read, including a windowed read of an image and a file
- * whose header does not match its extension, is the text window readFileWindow renders.
+ * by a line giving its type and size) when no line window is asked for, and `imageBytes` gives
+ * its size; one over the byte or pixel bounds is an error. Every other read, including a windowed
+ * read of an image and a file whose header does not match its extension, is the text window
+ * readFileWindow renders.
  */
 export function readFileResult(source: LineSource, window: ReadFileWindow, path: string,
-                               maxChars: number): (TextContent | ImageContent)[] {
+                               maxChars: number)
+    : { content: (TextContent | ImageContent)[], imageBytes?: number } {
   let mimeType = readFileImageMimeType(path);
   if (source.kind === "blob" && mimeType !== undefined &&
       window.startLine === undefined && window.lineCount === undefined) {
@@ -63,11 +64,14 @@ export function readFileResult(source: LineSource, window: ReadFileWindow, path:
         throw new Error(`${path} is a ${width}x${height} image, too large to view: readFile ` +
             `shows images up to ${MAX_READ_FILE_IMAGE_EDGE} pixels on each side.`);
       }
-      return [
-        { type: "text", text: `${path}: ${mimeType}, ${width}x${height} pixels` },
-        { type: "image", data: bytes.toBase64(), mimeType },
-      ];
+      return {
+        content: [
+          { type: "text", text: `${path}: ${mimeType}, ${width}x${height} pixels` },
+          { type: "image", data: bytes.toBase64(), mimeType },
+        ],
+        imageBytes: reader.size,
+      };
     }
   }
-  return [{ type: "text", text: readFileWindow(source, window, path, maxChars) }];
+  return { content: [{ type: "text", text: readFileWindow(source, window, path, maxChars) }] };
 }

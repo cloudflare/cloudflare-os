@@ -6447,6 +6447,12 @@ export type AiToolCall = {
    * blob from it by path.
    */
   observedCommit?: string;
+
+  /**
+   * Present when the read showed the model an image: the image's size in bytes. Replay counts it,
+   * without reading the image, toward the images and PDFs a model request carries inline.
+   */
+  imageBytes?: number;
 } | {
   /**
    * Search a workpiece's files for lines matching a regular expression, in `grep -n` form. The

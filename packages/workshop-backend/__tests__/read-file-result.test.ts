@@ -36,17 +36,21 @@ function png(width: number, height: number, size = 64): Uint8Array {
   return bytes;
 }
 
-const read = (source: Parameters<typeof readFileResult>[0], path: string,
-              window: ReadFileWindow = {}) =>
+const render = (source: Parameters<typeof readFileResult>[0], path: string,
+                window: ReadFileWindow = {}) =>
   readFileResult(source, window, path, MAX_TOOL_RESULT_CHARS);
+const read = (...args: Parameters<typeof render>) => render(...args).content;
 
 describe("readFileResult", () => {
   it("shows a stored image as itself, after a line giving its type and size", () => {
     let bytes = png(640, 480);
-    expect(read(blob(bytes), "out/chart.PNG")).toEqual([
-      { type: "text", text: "out/chart.PNG: image/png, 640x480 pixels" },
-      { type: "image", data: bytes.toBase64(), mimeType: "image/png" },
-    ]);
+    expect(render(blob(bytes), "out/chart.PNG")).toEqual({
+      content: [
+        { type: "text", text: "out/chart.PNG: image/png, 640x480 pixels" },
+        { type: "image", data: bytes.toBase64(), mimeType: "image/png" },
+      ],
+      imageBytes: 64,
+    });
   });
 
   it("shows a chunked image whole", () => {
@@ -61,7 +65,8 @@ describe("readFileResult", () => {
     expect(() => read(blob(bytes), "chart.bin")).toThrow("binary data");
     expect(() => read(blob(bytes), "chart.png", { startLine: 1 })).toThrow("binary data");
     let text = new TextEncoder().encode("not really a picture\n");
-    expect(read(blob(text), "fake.png")).toEqual([{ type: "text", text: "not really a picture\n" }]);
+    expect(render(blob(text), "fake.png"))
+        .toEqual({ content: [{ type: "text", text: "not really a picture\n" }] });
     // A PNG named as a JPEG matches no header it is checked against.
     expect(() => read(blob(bytes), "chart.jpg")).toThrow("binary data");
     expect(read({ kind: "text", text: "plain" }, "notes.png")).toEqual([{ type: "text", text: "plain" }]);
