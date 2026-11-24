@@ -2413,10 +2413,13 @@ async function runAgentPass(
   const unansweredAttachmentIds: string[] = [];
   const unreadAttachmentIds = new Set<string>();
   let attachmentsFitFrom: number | undefined;
+  // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
+  let prompt: number | undefined;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   for (let msg of chatMessages.toReversed()) {
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
+    else if (!answered) prompt ??= msg.sequence;
     let messageIds: string[] = [], messageBytes = 0;
     for (let attachment of msg.attachments ?? []) {
       if (isInlineCandidate(attachment.mimeType) && !refusedAttachmentIds.has(attachment.id) &&
@@ -4665,9 +4668,13 @@ async function runAgentPass(
     // Native compaction needs the prompt as earlier requests sent it, which unread attachments
     // change; the summary path reads only the transcript.
     let native = supportsAnthropicCompaction(handle.model) && unreadParts.size === 0;
-    let compactedTo = findCompactionBoundary(
-        projection, inputBudget, contextTokens, checkpoint?.compactedTo,
-        findProtectedFromSequence(chatMessages), attachmentsFitFrom, native);
+    // The prompt stays: summarized, the agent would see only a summary of what it is answering.
+    let protectedFrom = findProtectedFromSequence(chatMessages);
+    if (prompt !== undefined && !(protectedFrom !== undefined && protectedFrom <= prompt)) {
+      protectedFrom = prompt;
+    }
+    let compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,
+        checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom, native);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
