@@ -21,9 +21,9 @@ export type RateLimitOptions = {
 }
 
 /**
- * Returns the rate-limited proxy plus a `dispose` that ends it: it rejects the queued calls, refuses
- * new ones, and cancels any pending resume timer, so nothing runs after the session is torn down. A
- * call already in flight still settles, but drains nothing.
+ * Returns the rate-limited proxy plus a `dispose` that ends it: it rejects every call the capability
+ * has not received yet, refuses new ones, and cancels any pending resume timer, so nothing runs after
+ * the session is torn down. A call the capability already received still settles.
  */
 export function createRateLimitedCapability(
   capability: any,
@@ -41,6 +41,7 @@ export function createRateLimitedCapability(
   let inFlight = 0
   let resumeTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
+  const closed = () => new Error(`${options.label} has closed.`)
 
   const pruneCallWindow = () => {
     const cutoff = Date.now() - 60_000
@@ -48,7 +49,6 @@ export function createRateLimitedCapability(
   }
 
   const drain = () => {
-    if (disposed) return
     pruneCallWindow()
     while (inFlight < options.maxConcurrency && queue.length > 0) {
       if (startedCalls.length >= options.maxCallsPerMinute) {
@@ -72,7 +72,11 @@ export function createRateLimitedCapability(
       startedCalls.push(Date.now())
       inFlight++
       Promise.resolve()
-        .then(() => capability[call.method](...call.args))
+        // dispose() may have run since this call left the queue.
+        .then(() => {
+          if (disposed) throw closed()
+          return capability[call.method](...call.args)
+        })
         .then(call.resolve, call.reject)
         .finally(() => {
           inFlight--
@@ -92,7 +96,7 @@ export function createRateLimitedCapability(
       if (typeof property !== 'string' || property in stubMembers) return undefined
       return (...args: unknown[]) => new Promise((resolve, reject) => {
         if (disposed) {
-          reject(new Error(`${options.label} has closed.`))
+          reject(closed())
           return
         }
         if (queue.length + inFlight >= options.maxPendingCalls) {
@@ -113,7 +117,7 @@ export function createRateLimitedCapability(
         clearTimeout(resumeTimer)
         resumeTimer = null
       }
-      for (const call of queue.splice(0)) call.reject(new Error(`${options.label} has closed.`))
+      for (const call of queue.splice(0)) call.reject(closed())
     },
   }
 }
