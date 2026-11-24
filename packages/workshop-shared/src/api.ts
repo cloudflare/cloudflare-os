@@ -3910,7 +3910,8 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "google": {
-    "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
+    "gemini-4-neon": {name: "Gemini 4 Neon", contextWindow: 1048576},
+    "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576, hidden: true},
   },
   "ollama": {
   },
