@@ -7569,7 +7569,8 @@ class OverseerImpl implements AgentHooks {
   // openGatekeeperSession (the chokepoint every gatekeeper session passes through), the
   // slash-command invoke in #prepareChatMessage, GadgetClientImpl.bindWithSuggestedName (the
   // latter two take a client-supplied gatekeeper id and reach the connection outside
-  // openGatekeeperSession), startHook (the inbound delivery route, whose arming enable may itself
+  // openGatekeeperSession), #stampFocus (which reads the connection's title for a
+  // client-supplied id), startHook (the inbound delivery route, whose arming enable may itself
   // be the widening that scheduled the restart), and ObserverLedger.authorizeObservation.
   assertGatekeeperUsable(id: number): void {
     if (!this.gatekeeperUsable(id)) {
@@ -7982,28 +7983,34 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Checks a client-supplied focus (see ChatMessageOptions.focus) and stamps it with the gadget's
-  // current title. Like a capsule, it may name only a gadget of the workspace (not a worktree or
-  // a gatekeeper, nor a gadget still pending in another chat). capnweb-validate has checked its
-  // shape but not its lengths, and passes extra properties through, so the result is rebuilt
-  // from the declared fields.
+  // Checks a client-supplied focus (see ChatMessageOptions.focus) and stamps it with the current
+  // title of what it names. Like a capsule, it may name a gadget of the workspace or a connection,
+  // whose UI stands where a gadget's would (not a worktree, nor a gadget still pending in another
+  // chat). capnweb-validate has checked its shape but not its lengths, and passes extra properties
+  // through, so the result is rebuilt from the declared fields.
   #stampFocus(chatId: number, focus: MessageFocus | undefined)
       : StampedMessageFocus | undefined {
     if (!focus) return undefined;
     let {gadgetId, spot} = focus;
     let gadget = this.storage.gadgets.get(gadgetId);
-    if (!gadget || gadget.type === "worktree" ||
-        (gadget.pending && gadget.pending.chatId !== chatId)) {
-      throw new Error(`Chat message is focused on ${gadgetId}, which is not a gadget in this ` +
-          `workspace.`);
+    let connection = this.storage.gatekeepers.get(gadgetId);
+    // The id is client-supplied, and the title of a connection blocked pending a restart is not
+    // for a session the reset is about to sever.
+    if (connection) this.assertGatekeeperUsable(gadgetId);
+    let gadgetTitle = connection ? connection.resourceTitle || "(title unavailable)"
+        : gadget && gadget.type !== "worktree" &&
+          (!gadget.pending || gadget.pending.chatId === chatId) ? gadget.title : undefined;
+    if (gadgetTitle === undefined) {
+      throw new Error(`Chat message is focused on ${gadgetId}, which is not a gadget or a ` +
+          `connection in this workspace.`);
     }
-    if (!spot) return {gadgetId, gadgetTitle: gadget.title};
+    if (!spot) return {gadgetId, gadgetTitle};
     let {anchor, label, context} = spot;
     if (anchor.length > MAX_FOCUS_ANCHOR_LENGTH || label.length > MAX_FOCUS_LABEL_LENGTH ||
         (context?.length ?? 0) > MAX_FOCUS_CONTEXT_LENGTH) {
       throw new Error("Chat message's focus is longer than the GadgetFocus limits allow.");
     }
-    return {gadgetId, gadgetTitle: gadget.title,
+    return {gadgetId, gadgetTitle,
             spot: context === undefined ? {anchor, label} : {anchor, label, context}};
   }
 

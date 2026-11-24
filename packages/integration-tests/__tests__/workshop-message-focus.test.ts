@@ -8,12 +8,14 @@ import {
   MAX_FOCUS_LABEL_LENGTH, type AuthenticatedApi, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import { loadAllChatHistory } from "../src/agent-session.js";
-import { startTestGatekeeperHarness, type Harness } from "../src/harness.js";
+import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, nextUsernames, signUp, waitFor, waitForIdleChat } from "../src/rpc-client.js";
+import {
+  connect, listConnectedAccounts, nextUsernames, signUp, waitFor, waitForIdleChat,
+} from "../src/rpc-client.js";
 
 let harness: Harness;
 const models = scriptedModelRouter();
@@ -43,7 +45,7 @@ async function newWorkspace(usernamePrefix: string, script: readonly ChatComplet
   await api.addModel(model.userModel.profile, model.userModel.config);
   await api.setQuickModel(null);
   const ws = stack.use(await api.newWorkspace());
-  return Object.assign(stack.move(), { model, ws });
+  return Object.assign(stack.move(), { api, model, ws });
 }
 
 /** Wait until the model has received `requests` agent requests in all and the chat is idle. */
@@ -111,6 +113,38 @@ it.concurrent("a message carries the gadget, and the spot, the user was focused 
     { gadgetId, gadgetTitle: "Budget", spot: SPOT },
     { gadgetId, gadgetTitle: "Forecast" },
   ]);
+});
+
+it.concurrent("a message carries the connection whose own UI the user was viewing", async () => {
+  using owner = await newWorkspace("focusconnection", [{ text: "First." }, { text: "Second." }]);
+  const { api, model, ws } = owner;
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the test account to be provisioned", async () =>
+    (await listConnectedAccounts(api)).find(entry => entry.vendorId === TEST_VENDOR_ID) ?? null);
+  using report = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/report");
+  const gadgetId = await report!.getId();
+  const description = await report!.describe();
+  const focus = { gadgetId, spot: { anchor: "?tab=t.0#heading=h.costs", label: "Costs" } };
+
+  // With no binding for the connection, the agent is told of it by its title alone.
+  const chatId = await ws.newChat("What is this?", SCRIPTED_MODEL_ID, { focus });
+  await settle(ws, model, chatId, 1);
+  expect(userTexts(model.requests[0])).toEqual(["What is this?\n\n" +
+      `<user-focus title="${description.title}" label="Costs" anchor="?tab=t.0#heading=h.costs"/>`]);
+
+  // A pasted link binds it, and the focus then names that binding.
+  await ws.sendChatMessage(chatId, "Shorten [0] here.", SCRIPTED_MODEL_ID, {
+    focus,
+    capsules: [{ position: 8, length: 3, gatekeeperId: gadgetId, description,
+                 vendorId: TEST_VENDOR_ID }],
+  });
+  await settle(ws, model, chatId, 2);
+  expect(userTexts(model.requests[1]).at(-1)).toContain(
+      `<user-focus gadget="env.TEST_THING" title="${description.title}" label="Costs" `);
+  expect((await ws.getChatHistory(chatId)).messages.flatMap(message =>
+    message.type === "message" && message.author.type === "user" ? [message.focus] : []))
+      .toEqual([{ ...focus, gadgetTitle: description.title },
+                { ...focus, gadgetTitle: description.title }]);
 });
 
 it.concurrent("a focus grants no binding, and names the gadget only by title without one",

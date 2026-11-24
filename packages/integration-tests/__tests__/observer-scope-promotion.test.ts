@@ -195,8 +195,12 @@ it("merging an agent-proposed binding re-verifies a live gadget viewer against i
     await expect(held.gadget.getTitle()).resolves.toBe("App");
     const isRestartRefusal = restartRefusal(ws);
     expect(await ws.mergeChanges(card.chatId)).toEqual({ outcome: "merged" });
-    // The restart can land before this RPC; either way the old session must return no connection.
+    // The restart can land before these RPCs; either way the old session must return no
+    // connection, nor stamp its title on a message focused on it.
+    const focused = ws.newChat("What is this?", SCRIPTED_MODEL_ID, { focus: { gadgetId: sourceId } })
+        .then(() => "sent", (error: unknown) => error);
     await expect(ws.getGatekeeperById(sourceId)).rejects.toSatisfy(isRestartRefusal);
+    expect(await focused).toSatisfy(isRestartRefusal);
   });
 
   await waitFor("the viewer's session to be severed", () =>
