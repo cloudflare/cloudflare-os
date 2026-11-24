@@ -422,6 +422,35 @@ it.concurrent("a gadget's reported reads enforce use collaborator admission and 
   expect(await observerEvents(url)).toContainEqual(expect.objectContaining({ type: "add" }));
 });
 
+it.concurrent("drawing a connection records its reads against no gadget a use collaborator holds",
+    async () => {
+  using publicApi = connect(harness.url);
+  using ws = await newWorkspace(publicApi);
+  const url = freshThingUrl("drawn");
+  await reportSubresources(url);
+  using reporting = await ws.overseer.newGatekeeper(ws.account.id, url);
+  if (!reporting) throw new Error("Failed to create the reporting connection");
+  using gadget = await newReadingGadget(ws, await reporting.getId(), "Bound Gadget", "BOUND_GADGET");
+  const gadgetId = await gadget.getId();
+  using viewer = await addCollaborator(ws, { gadgetId });
+  await setSubresourceAccess(viewer.label, url, "drawn-secret", false);
+
+  // The connection draws itself: what it reads is its own, which the viewer's gadget never held.
+  using drawn = await reporting.connectToGadget() as RpcStub<TestSession>;
+  expect(await drawn.readValue(false, false, undefined, ["drawn-secret"])).toBe(42);
+  expect((await collaboratorOpens(viewer, ws.gadgetId, gadgetId)).error).toBeUndefined();
+  // It is recorded all the same, and someone building the workspace is checked against it.
+  using builder = await addCollaborator(ws);
+  await setSubresourceAccess(builder.label, url, "drawn-secret", false);
+  expect((await collaboratorOpens(builder, ws.gadgetId)).error?.message).toContain(DENIED);
+
+  // The same read through a session of the connection is the workspace's, which every gadget
+  // includes, and locks the viewer out of theirs.
+  using session = await reporting.openSession() as RpcStub<TestSession>;
+  expect(await session.readValue(false, false, undefined, ["drawn-secret"])).toBe(42);
+  expect((await collaboratorOpens(viewer, ws.gadgetId, gadgetId)).error?.message).toContain(DENIED);
+});
+
 it.concurrent("a collaborator granted one gadget is listed, verified, and revoked for it alone",
     async () => {
   using publicApi = connect(harness.url);

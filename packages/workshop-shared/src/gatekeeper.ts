@@ -286,6 +286,18 @@ export type AccountDescription = {
   providesUi?: { title: string; icon?: AvatarImage };
 }
 
+/**
+ * One source file of a UI. Files travel as a list, not as an object keyed by path: RPC drops keys
+ * that shadow an object's prototype, which a path may.
+ */
+export type UiFile = {
+  /** The file's path among the UI's files, such as `client.js` or `ui/list.js`. */
+  path: string;
+
+  /** The file's code as written, relative imports and all. */
+  code: string;
+};
+
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
   /**
@@ -325,6 +337,12 @@ export type ResourceDescription = {
 
   /** Indicates that getSlashCommandProvider() is available. */
   hasSlashCommands?: true;
+
+  /**
+   * Indicates that the connection can be drawn as a whole: getGadgetUi() is available, and its
+   * code draws this resource from a session of it.
+   */
+  hasGadgetUi?: true;
 
   /**
    * Some resources implement the ability for the client to subscribe to events. The application
@@ -1273,6 +1291,25 @@ export interface Gatekeeper<Session> extends DurableObject {
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
+
+  /**
+   * Returns client-side code that draws this connection for a person, as a gadget's UI draws a
+   * gadget: its files as a gadget's file tree holds its UI. `client.js` is the entry, and the
+   * import rules of a gadget's UI apply. Its default export's `main()` starts it, as
+   * `UiBundle.modules` says: a `client.js` with no default export, a gadget's legacy form, is
+   * refused, and one whose default export has no `main()` never starts.
+   *
+   * The connection is drawn as a gadget: a session from `startSession()` stands where a gadget's
+   * server would, as `main()`'s first argument. The code therefore holds no more than a gadget
+   * bound to this resource would, and its reads and actions go through the approval queue like any
+   * other. The Workshop records those reads against the connection's own workpiece, not against
+   * any gadget that binds it.
+   *
+   * Returns code only. The Workshop calls this with no session, so nothing here is an observation.
+   * The code may therefore not depend on anything read from the provider: what the resource holds
+   * is read by the code, through its session.
+   */
+  getGadgetUi?(): Promise<UiFile[]>;
 
   /**
    * Stream a self-contained Git pack containing the requested objects and related objects
