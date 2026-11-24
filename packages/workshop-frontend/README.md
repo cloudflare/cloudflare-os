@@ -49,7 +49,8 @@ or abandoned directory search is disposed as soon as it is no longer needed.
 Gatekeeper management apps can call the trusted host's `downloadFile(url)` capability to download
 a setup file authorized by their gatekeeper. Use an absolute URL on the Workshop origin under the
 calling vendor's
-`/gatekeeper/<vendor>/` route, without a query string or fragment. The host asks the user to confirm
+`/gatekeeper/<mount>/` route, without a query string or fragment. The router's mount name replaces
+underscores in the vendor ID with hyphens: `mcp_portal` downloads use `/gatekeeper/mcp-portal/`. The host asks the user to confirm
 in a Workshop dialog before fetching. The response must be a successful `Content-Disposition:
 attachment` response; redirects are rejected. Only one download may be pending per management app,
 including its confirmation and body read. Closing the app cancels the download. After confirmation,
