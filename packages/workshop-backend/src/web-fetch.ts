@@ -1,7 +1,8 @@
 // Built-in WebFetch capability for the agent.
 //
-// Provides an HTTP GET against public HTTPS URLs, or in a workspace that has observed restricted
-// data, against only the hosts an admin trusts (see WebFetchEnv.allowedHosts). There is
+// Provides an HTTP GET against public HTTPS URLs, sent through a FetchLoopback (see
+// fetch-loopback.ts), which applies the workspace's fetch policy to every hop: in a workspace that
+// has observed restricted data, only the hosts an admin trusts are reachable. There is
 // intentionally no support for POST/PUT/DELETE/PATCH or for forwarding credentials.
 //
 // Document-to-Markdown conversion is delegated to Cloudflare Workers AI's
@@ -28,12 +29,8 @@ import type { AiGatewayConfig } from "./ai-gateway";
 export type WebFetchEnv = {
   ai: Ai;
   gateway: AiGatewayConfig | null;
-  /**
-   * The only hosts the fetch may reach, redirects included, or undefined for any public host. Set
-   * in a workspace that has observed restricted data, where URLs with a query string or a
-   * `/cdn-cgi/` path are refused too.
-   */
-  allowedHosts?: ReadonlySet<string>;
+  /** Sends each request: a FetchLoopback for the chat, which decides what it may reach. */
+  fetcher: Fetcher;
 };
 
 export type WebFetchInput = {
@@ -60,10 +57,22 @@ export type WebFetchResult = {
 const HARD_MAX_BYTES = 5 * 1024 * 1024;     // 5 MiB after which we always truncate
 const DEFAULT_MAX_BYTES = 1 * 1024 * 1024;  // 1 MiB default cap when caller didn't specify
 const FETCH_TIMEOUT_MS = 30_000;
-const USER_AGENT = "GadgetsWebFetch/1.0";
 // The Fetch standard's limit, which `redirect: "follow"` applies too.
 const MAX_REDIRECTS = 20;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/**
+ * The `accept` header `webFetch` sends, and the only caller header a FetchLoopback sends in a
+ * workspace that has observed restricted data.
+ */
+export const WEB_FETCH_ACCEPT =
+    "text/markdown,text/html;q=0.9,text/plain;q=0.9,application/json;q=0.9,application/xhtml+xml;q=0.9,*/*;q=0.8";
+
+/** Marks a FetchLoopback's refusal, as `denied` or `approval-requested` (see fetch-loopback.ts). */
+export const FETCH_REFUSED_HEADER = "cloudflare-os-fetch-refused";
+
+/** Names the URL a FetchLoopback's response came from, when it followed redirects itself. */
+export const FETCH_URL_HEADER = "cloudflare-os-fetch-url";
+
 // A `cdn-cgi` segment anywhere in the path, since an origin may resolve `..` before routing it.
 const CDN_CGI_PATH = /(^|[/\\])cdn-cgi([/\\]|$)/i;
 
@@ -124,27 +133,23 @@ export function validateWebFetchUrl(input: string, allowedHosts?: ReadonlySet<st
   return parsed;
 }
 
-// GET `url`, following redirects by hand so that each one passes validateWebFetchUrl. Resolves to
-// the final response and the URL it came from.
-async function fetchFollowingRedirects(
+/** The `location` of a redirect a client follows, or null if `response` is not one. */
+export function redirectLocation(response: Response): string | null {
+  return REDIRECT_STATUSES.has(response.status) ? response.headers.get("location") : null;
+}
+
+/**
+ * Requests `url` with `send`, following redirects by hand so that each hop passes
+ * validateWebFetchUrl before it is sent. Resolves to the final response and the URL it came from.
+ */
+export async function fetchFollowingRedirects(
   url: URL,
-  allowedHosts: ReadonlySet<string> | undefined,
-  signal: AbortSignal,
+  send: (url: URL) => Promise<Response>,
 ): Promise<{ response: Response; url: URL }> {
   for (let redirects = 0; ; ++redirects) {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      redirect: "manual",
-      headers: {
-        "user-agent": USER_AGENT,
-        "accept": "text/markdown,text/html;q=0.9,text/plain;q=0.9,application/json;q=0.9,application/xhtml+xml;q=0.9,*/*;q=0.8",
-      },
-      signal,
-    });
-    const location = response.headers.get("location");
-    if (!REDIRECT_STATUSES.has(response.status) || location === null) {
-      return { response, url };
-    }
+    const response = await send(url);
+    const location = redirectLocation(response);
+    if (location === null) return { response, url };
 
     await response.body?.cancel();
     if (redirects === MAX_REDIRECTS) {
@@ -155,7 +160,7 @@ async function fetchFollowingRedirects(
       throw new Error(`The site redirected to an invalid URL: ${location}`);
     }
     try {
-      url = validateWebFetchUrl(next.href, allowedHosts);
+      url = validateWebFetchUrl(next.href);
     } catch (err) {
       throw new Error(`The site redirected to ${next.href}, which is not allowed: ` +
           (err instanceof Error ? err.message : String(err)), { cause: err });
@@ -310,20 +315,6 @@ async function convertToMarkdown(
 }
 
 
-
-// Parse the Content-Signal response header (https://contentsignals.org/) and check whether
-// a specific signal is present and set to "no". The header is a comma-separated list of
-// key=value pairs, e.g. `ai-train=yes, search=yes, ai-input=no`.
-function contentSignalDenies(response: Response, signal: string): boolean {
-  const header = response.headers.get("content-signal");
-  if (!header) return false;
-  for (const part of header.split(",")) {
-    const [key, value] = part.split("=").map((s) => s.trim().toLowerCase());
-    if (key === signal && value === "no") return true;
-  }
-  return false;
-}
-
 /**
  * Format a `WebFetchResult` as a single string for the agent: a small YAML frontmatter
  * header followed by `---` then the body. This is friendlier to LLMs than a JSON-wrapped
@@ -343,11 +334,15 @@ export function formatWebFetchResult(result: WebFetchResult): string {
   return lines.join("\n");
 }
 
+/**
+ * Fetches `input.url` through `env.fetcher`. Resolves to the page, or, where the fetcher asked the
+ * user to approve a URL, to the message telling the agent so; its turn then ends.
+ */
 export async function webFetch(
   env: WebFetchEnv,
   input: WebFetchInput,
-): Promise<WebFetchResult> {
-  const requested = validateWebFetchUrl(input.url, env.allowedHosts);
+): Promise<WebFetchResult | { approvalMessage: string }> {
+  const requested = validateWebFetchUrl(input.url);
 
   const requestedMax = input.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxBytes = Math.min(
@@ -361,8 +356,13 @@ export async function webFetch(
   let response: Response;
   let finalUrl: URL;
   try {
-    ({ response, url: finalUrl } =
-        await fetchFollowingRedirects(requested, env.allowedHosts, abortController.signal));
+    ({ response, url: finalUrl } = await fetchFollowingRedirects(requested, url =>
+        env.fetcher.fetch(url.href, {
+          method: "GET",
+          redirect: "manual",
+          headers: { "accept": WEB_FETCH_ACCEPT },
+          signal: abortController.signal,
+        })));
   } catch (err) {
     if (abortController.signal.aborted) {
       throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS}ms`, { cause: err });
@@ -372,21 +372,17 @@ export async function webFetch(
     clearTimeout(timeoutId);
   }
 
-  const contentType = response.headers.get("content-type") ?? "";
-
-  // Respect the Content-Signal header (https://contentsignals.org/). If the site
-  // explicitly sets `ai-input=no`, we must not feed its content to the AI agent.
-  if (contentSignalDenies(response, "ai-input")) {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // Ignore.
-    }
-    throw new Error(
-      `The site at ${finalUrl} sets Content-Signal: ai-input=no, indicating that ` +
-        `it does not permit its content to be used as AI input.`,
-    );
+  const refused = response.headers.get(FETCH_REFUSED_HEADER);
+  if (refused !== null) {
+    const message = await response.text();
+    if (refused === "approval-requested") return { approvalMessage: message };
+    throw new Error(finalUrl.href === requested.href ? message
+        : `The site redirected to ${finalUrl.href}, which is not allowed: ${message}`);
   }
+  // The fetcher follows an approved URL's redirects itself.
+  finalUrl = new URL(response.headers.get(FETCH_URL_HEADER) ?? finalUrl);
+
+  const contentType = response.headers.get("content-type") ?? "";
 
   const { bytes, truncated } = await readBodyCapped(response, maxBytes);
 
