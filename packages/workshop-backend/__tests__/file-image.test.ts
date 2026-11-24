@@ -536,6 +536,9 @@ describe("images read from a worktree", () => {
     ["claude-opus-4-7", 3840, 2160, "2576 x 1449"],
     ["claude-fable-5-2", 6400, 4800, "2212 x 1659"],
     ["claude-fable-5-1", 6400, 4800, "2212 x 1659"],
+    ["claude-mythos-5-2", 6400, 4800, "2212 x 1659"],
+    ["claude-mythos-5-1", 6400, 4800, "2212 x 1659"],
+    ["claude-mythos-5", 6400, 4800, "2212 x 1659"],
     ["claude-sonnet-4-5", 1075, 1520, "924 x 1307"],
     ["claude-haiku-4-5", 6272, 3138, "1568 x 784"],
     ["claude-haiku-4-5", 3138, 6272, "784 x 1568"],
@@ -559,6 +562,9 @@ describe("images read from a worktree", () => {
     ["anthropic", "claude-haiku-4-5", 45_000, 1564],
     ["anthropic", "claude-fable-5-2", 45_000, 4740],
     ["anthropic", "claude-fable-5-1", 45_000, 4740],
+    ["anthropic", "claude-mythos-5-2", 45_000, 4740],
+    ["anthropic", "claude-mythos-5-1", 45_000, 4740],
+    ["anthropic", "claude-mythos-5", 45_000, 4740],
     ["openai", "gpt-4.1-mini", 128_000, 4977],
     ["openai", "gpt-4.1-mini", 45_000, 4977],
     ["openai", "gpt-5.2", 45_000, 3687],
@@ -598,8 +604,8 @@ describe("images read from a worktree", () => {
       }
     }));
 
-  it("keeps conservative image accounting for unknown Claude aliases", () => {
-    const {model} = getModel({} as Cloudflare.Env, {provider: "anthropic", model: "claude-custom", apiToken: "fixture"}, USER);
+  it.each(["claude-custom", "claude-mythos-preview"])("keeps conservative image accounting for unknown Claude aliases: %s", id => {
+    const {model} = getModel({} as Cloudflare.Env, {provider: "anthropic", model: id, apiToken: "fixture"}, USER);
     const image = withImageDimensions({type: "image", mimeType: "image/png", data: ""}, [6400, 4800]);
     expect(estimateImageTokens({role: "user", content: [image], timestamp: 0}, model)).toBe(36_000);
   });
@@ -1017,6 +1023,49 @@ describe("images read from a worktree", () => {
     expect(results(replay.requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
   }));
 
+  it("recovers a valid file image rejected by an Ollama-compatible text-only endpoint without /api/show", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const {chatId} = await setup(impl);
+      const config: AiModelConfig = {provider: "ollama", model: `text-only-${crypto.randomUUID()}`, apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const realStream = handle.stream;
+      const faux = createFauxCore({models: [{id: "fixture"}]});
+      faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"})]);
+      const requests: Message[][] = [], bodies: string[] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        if (requests.length === 1) return faux.stream(model, context, options);
+        return realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+          bodies.push(await new Request(input, init).text());
+          if (bodies.at(-1)!.includes(PNG.toBase64())) return Response.json({error: {code: 500, type: "server_error",
+            message: "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj",
+          }}, {status: 500});
+          return new Response([
+            {id: "text-only", choices: [{index: 0, delta: {role: "assistant", content: "Recovered"}, finish_reason: null}]},
+            {id: "text-only", choices: [{index: 0, delta: {}, finish_reason: "stop"}]},
+          ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", {
+            headers: {"content-type": "text/event-stream"},
+          });
+        }});
+      };
+      const probe = vi.fn(async (_url: string) => new Response("Not found", {status: 404}));
+      vi.stubGlobal("fetch", probe);
+      try {
+        const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+        await run();
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue on an unrelated topic"}]);
+        await run();
+      } finally {vi.unstubAllGlobals();}
+      expect(probe).toHaveBeenCalledOnce();
+      expect(String(probe.mock.calls[0][0])).toContain("/api/show");
+      expect(bodies).toHaveLength(3);
+      expect(bodies[0]).toContain(PNG.toBase64());
+      expect(bodies.slice(1).every(body => !body.includes(PNG.toBase64()))).toBe(true);
+      expect(requests).toHaveLength(4);
+      for (const messages of requests.slice(2)) expect(results(messages)[0].content)
+        .toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+    }));
+
   it.each(["openai", "cloudflare-auto-router"] as const)("surfaces a %s image-policy refusal once and omits those pixels later", async provider => {
     const name = crypto.randomUUID();
     let chatId: number;
@@ -1176,6 +1225,13 @@ describe("images read from a worktree", () => {
     ["ollama", 500, true], ["ollama", 503, false], ["openai", 500, false], [undefined, 500, false],
   ] as const)("scopes the stable WebP decoder prefix to Ollama (%s, %s)", (provider, status, expected) => {
     expect(isImageDecodeError("decode WebP image: riff: list subchunk too long", status, provider)).toBe(expected);
+  });
+
+  it.each([
+    ["ollama", 500, true], ["ollama", 503, false], ["openai", 500, false], [undefined, 500, false],
+  ] as const)("scopes explicit unsupported-image input to Ollama (%s, %s)", (provider, status, expected) => {
+    expect(isImageDecodeError("image input is not supported - hint: provide the mmproj", status, provider)).toBe(expected);
+    expect(isImageDecodeError("audio input is not supported", status, provider)).toBe(false);
   });
 
   it.each(["png", "webp", "jpeg"])("rejects %s resolution from a real blob header without reading its body", format =>

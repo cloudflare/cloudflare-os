@@ -40,7 +40,8 @@ export function claudeImageFrame(dimensions: [number, number], model: Model<Api>
   // Claude documents its native resize rule. Other providers and routed/aliased models must
   // not inherit a guessed coordinate frame. Keep this aligned with:
   // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
-  const version = /claude[-.](?:opus|sonnet|haiku|fable)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
+  // Versioned Mythos IDs are Fable aliases with the same vision tier.
+  const version = /claude[-.](?:opus|sonnet|haiku|fable|mythos)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
   if (model.api !== "anthropic-messages" || !version) return undefined;
   const highResolution = Number(version[1]) > 4 ||
     (Number(version[1]) === 4 && Number(version[2] ?? 0) >= 7);
@@ -111,10 +112,10 @@ export function isImagePolicyError(message: string): boolean {
 
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
 export function isImageDecodeError(message: string, status: number | undefined, provider?: string): boolean {
-  // Ollama wraps WebP decoder errors with a stable prefix; PNG/JPEG use llama.cpp's
-  // multimodal loader error. Scope both HTTP 500 cases to Ollama, never generic server errors.
+  // Ollama/llama.cpp use HTTP 500 for definite decoder failures and a missing vision projector.
+  // Scope these explicit image rejections to Ollama, never generic server errors.
   if (provider === "ollama" && status === 500 &&
-      /\bdecode WebP image:|\bFailed to load image or audio file\b/i.test(message)) return true;
+      /\bdecode WebP image:|\bFailed to load image or audio file\b|\bimage input is not supported\b/i.test(message)) return true;
   // Responses can fail within an HTTP 200 SSE stream; its explicit error code is authoritative.
   const streamCode = /^(?:Error Code )?([a-z0-9_]+):/.exec(message)?.[1];
   if (ImageDataErrorCode.safeParse(streamCode).success) return true;
