@@ -214,7 +214,7 @@ If a provider truly cannot use the kit's journal, the gatekeeper must keep the s
 
 #### Action kinds and auto-approval
 
-Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. A chat in Auto mode, the default, accepts its changes at the end of a turn when every pending action's verdict is `true`, with no further opt-in, and one `false` leaves the whole chat for the user; the verdict says whether applying *this* action unseen is safe.
+Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. A chat its user put in Auto mode (Review is the default) accepts its changes at the end of a turn when every pending action's verdict is `true`, with no further opt-in, and one `false` leaves the whole chat for the user; the verdict says whether applying *this* action unseen is safe.
 
 **The default is `true`.** Use `false` only when the action:
 

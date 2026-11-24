@@ -489,8 +489,8 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
     return TYPES_CODE;
   }
 
-  // The kinds this binding can submit with `autoApprovable: true`, offered to the user to enable.
-  // Approves nothing by itself. With gatekeeper-kit, return `autoApprovableKinds()` filtered to
+  // The kinds this binding can submit with `autoApprovable: true`. Nothing consults the list: a
+  // chat's mode decides what applies unseen, not a rule per kind. With gatekeeper-kit, return `autoApprovableKinds()` filtered to
   // this binding; return [] if every action opts out.
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return [MY_EDIT_KIND];
