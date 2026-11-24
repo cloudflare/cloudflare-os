@@ -198,7 +198,6 @@ describe("a commit's CI", () => {
     const { props, name } = await setup(fake);
     const { details } = await unwrap(await hooks().getCommit(name, props, "main"));
     expect(details.ci).toMatchObject({ commitId: HEAD, phase: "active", pipeline: { id: "287", status: "running", phase: "active" } });
-    expect(details.ci!.pipeline!.project).toBeUndefined();
   });
 
   it("reads the pipeline afresh each time, reading the commit only once", async () => {
@@ -534,15 +533,15 @@ describe("a merge request's CI", () => {
     expect((await hooks().queueLog(withoutCi.name)).subresources).toEqual([mergeRequest]);
   });
 
-  it("shows a fork's pipeline as data that cannot be opened, naming the fork by its id alone", async () => {
+  it("shows no CI for a head pipeline that ran in a fork, which observers of this project may not see", async () => {
     const fake = mrFake(pipeline(400, { project_id: FORK_ID }), { source_project_id: FORK_ID });
     const { props, name } = await setup(fake);
-    expect((await details(name, props)).ci).toMatchObject({ pipeline: { id: "400", project: { path: `project-${FORK_ID}` } } });
-    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
-      .rejects.toThrow(new RegExp(`ran in project-${FORK_ID}, another project, so it cannot be opened`));
+    expect((await details(name, props)).ci).toMatchObject({ pipeline: null });
+    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline", args: ["400"] }))
+      .rejects.toThrow(/is not one of merge request !133's pipelines in this project/);
   });
 
-  it("never asks GitLab for a fork's path, which observers of this project may not be allowed to see", async () => {
+  it("lists only the pipelines that ran in this project, and never asks GitLab for a fork's path", async () => {
     const fake = mrFake(undefined, { source_project_id: FORK_ID });
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/pipelines\\?`), () => json([
       pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(6),
@@ -551,7 +550,7 @@ describe("a merge request's CI", () => {
     expect((await details(name, props)).source.project).toMatchObject({ path: `project-${FORK_ID}` });
     const listed = await session<GitLabPipelineSummary[]>(name, props,
       { method: "getMergeRequest", args: ["133"] }, { method: "listPipelines", args: [], drain: true });
-    expect(listed.map(row => row.project?.path ?? null)).toEqual([`project-${FORK_ID}`, `project-${FORK_ID}`, null]);
+    expect(listed.map(row => row.id)).toEqual(["6"]);
     expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(0);
   });
 
@@ -598,9 +597,10 @@ describe("what a binding may open", () => {
     const opened = await session<{ id: string }>(name, props, mr, { method: "getPipeline", args: ["6"] }, { method: "getDetails" });
     expect(opened.id).toBe("6");
     await expect(session(name, props, mr, { method: "getPipeline", args: ["9"] }))
-      .rejects.toThrow("Pipeline 9 is not one of merge request !133's pipelines.");
+      .rejects.toThrow("Pipeline 9 is not one of merge request !133's pipelines in this project.");
+    // One that ran in the source project (a fork) reads as not the merge request's.
     await expect(session(name, props, mr, { method: "getPipeline", args: ["50"] }))
-      .rejects.toThrow(/ran in another project/);
+      .rejects.toThrow("Pipeline 50 is not one of merge request !133's pipelines in this project.");
   });
 
   it("opens a job only through one of the merge request's pipelines", async () => {

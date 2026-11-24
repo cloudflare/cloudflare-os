@@ -83,8 +83,8 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   larger pipeline has some left out, even under a status filter, and one with more than 1000 jobs
   or trigger jobs lists no external statuses), opens a same-project child
   pipeline, and reads its unit test report: totals, and the failed and errored cases with about
-  4 KiB of output each. Pipelines of a fork's source project and downstream pipelines in other
-  projects are data only.
+  4 KiB of output each. Pipelines that ran in a fork's source project are left out (its observers may
+  not see the fork), and downstream pipelines in other projects are data only.
 - **Job logs.** `readLog()` returns numbered lines, the last 200 by default (up to 2000 per
   page), from a line onwards or filtered by `search`, with terminal colours removed and section
   headers as `▶` lines. A log over 128 MiB is refused; a very long one keeps only its tail
@@ -149,7 +149,7 @@ on its own and asked about with the collaborator's token (see [CI status](#ci-st
   are read afresh and may postdate the issue being made confidential),
   `project/<projectId>/issue/<iid>/note/<noteId>` or `.../mergeRequest/<iid>/note/<noteId>` for
   each internal note, `project/<projectId>/jobTrace/<jobId>` for a job log, and
-  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports a test report holds: the
+  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports the test report includes: the
   summary names them (`build_ids`), and the failed-tests read, whose report does not, lists the
   pipeline's jobs with a `junit` report after reading it, retried attempts and same-project child
   pipelines included, refusing the read if a listing is cut short. The
@@ -159,7 +159,7 @@ on its own and asked about with the collaborator's token (see [CI status](#ci-st
   its own token: 2xx allows, 403 or 404 (a project GitLab hides from them) denies, anything else
   fails the check rather than deny. Membership is not consulted. For
   `project/<projectId>/feature/<feature>`, it needs the project and one row of that feature's
-  listing -- `repository/branches`, `issues`, `merge_requests` or `pipelines` -- 2xx allowing and
+  listing -- `repository/branches`, `merge_requests` or `pipelines` -- 2xx allowing and
   403 or 404 (the feature restricted to members or above their role, such as a Guest's repository)
   denying. An item needs its project and its feature (a job builds, an issue issues, a note issues
   or mergeRequests), then: a confidential issue

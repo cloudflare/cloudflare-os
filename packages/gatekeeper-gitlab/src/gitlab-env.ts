@@ -169,11 +169,11 @@ const MAINTAINER_ACCESS_LEVEL = 40;
 
 /**
  * Where each project feature's data is listed (`per_page=1`), which GitLab refuses to an account
- * that may not read it: the repository's branches, the issues, the merge requests, the pipelines.
+ * that may not read it: the repository's branches, the merge requests, the pipelines. Issues are
+ * not among them: their listing answers `200 []` to such an account (see GitLabApi.issuesReadable).
  */
-const FEATURE_PATHS: Record<ProjectFeature, string> = {
+const FEATURE_PATHS: Record<Exclude<ProjectFeature, "issues">, string> = {
   repository: "repository/branches",
-  issues: "issues",
   mergeRequests: "merge_requests",
   builds: "pipelines",
 };
@@ -214,17 +214,19 @@ export async function canSeeProject(
 /**
  * Whether `account`'s GitLab user can read project feature `feature`'s data in the project with id
  * `projectId`, asked with the account's own token, member or not: its listing (see FEATURE_PATHS)
- * answers 2xx. A 403 or 404 denies: GitLab answers 403 for a feature turned off, restricted to
- * members, or above the user's role (a Guest's repository), and 404 for a project the token cannot
- * see. Anything else throws. What GitLab guards item by item -- a confidential issue, an internal
- * note, a job's log or artifacts -- is asked about on its own (see canReadProjectItem,
- * canReadJobData). Fenced to one connection (see askFenced).
+ * answers 2xx, or for issues GraphQL's `issuesEnabled` is true. A 403 or 404 denies: GitLab
+ * answers 403 for a feature turned off, restricted to members, or above the user's role (a Guest's
+ * repository), and 404 for a project the token cannot see. Anything else throws. What GitLab
+ * guards item by item -- a confidential issue, an internal note, a job's log or artifacts -- is
+ * asked about on its own (see canReadProjectItem, canReadJobData). Fenced to one connection (see
+ * askFenced).
  */
 export async function canReadProjectFeature(
   env: Env, account: MemberAccount, projectId: number, feature: ProjectFeature,
 ): Promise<boolean> {
-  return await askFenced(env, account, async api =>
-    await api.isReadable(`/projects/${projectId}/${FEATURE_PATHS[feature]}`, { per_page: 1 }));
+  return await askFenced(env, account, async api => feature === "issues"
+    ? await api.issuesReadable(projectId)
+    : await api.isReadable(`/projects/${projectId}/${FEATURE_PATHS[feature]}`, { per_page: 1 }));
 }
 
 /**

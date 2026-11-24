@@ -494,8 +494,7 @@ export function ciPhase(status: GitLabPipelineStatus): GitLabCiPhase {
   return status === "unknown" ? "blocked" : CI_PHASES[status];
 }
 
-/** `project` names the project the pipeline ran in when that is not the bound one (a fork's). */
-export function normalizePipelineSummary(response: GitLabPipelineBasicResponse, project?: GitLabProjectRef): GitLabPipelineSummary {
+export function normalizePipelineSummary(response: GitLabPipelineBasicResponse): GitLabPipelineSummary {
   const status = ciStatus(response.status);
   return {
     id: String(response.id),
@@ -507,7 +506,6 @@ export function normalizePipelineSummary(response: GitLabPipelineBasicResponse, 
     url: response.web_url,
     createdAt: new Date(response.created_at),
     updatedAt: new Date(response.updated_at),
-    ...(project === undefined ? {} : { project }),
   };
 }
 
@@ -716,8 +714,13 @@ export function discussionCommentFromNote(instanceUrl: string, noteableUrl: stri
   };
 }
 
-/** Whether a note is internal, by its `internal` flag or the deprecated `confidential` one. */
+/**
+ * Whether a note is internal, by its `internal` flag or the deprecated `confidential` one. A note
+ * with neither is taken as internal, as an issue with no `confidential` flag is taken as
+ * confidential: reported and checked rather than shared unchecked.
+ */
 export function isInternalNote(note: GitLabNoteResponse): boolean {
+  if (note.internal === undefined && note.confidential === undefined) return true;
   return note.internal === true || note.confidential === true;
 }
 

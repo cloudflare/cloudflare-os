@@ -91,16 +91,22 @@ describe("observer admission", () => {
   /** The bound project's numeric id, which a binding pins from its path and then reads it by. */
   const PROJECT_ID = 7;
   const PROJECT_SUBRESOURCE = `project/${PROJECT_ID}`;
-  /** Each project feature, and the listing an observer's token reads one row of to check it. */
-  const FEATURES = { repository: "repository/branches", issues: "issues", mergeRequests: "merge_requests", builds: "pipelines" };
-  const LISTINGS = Object.values(FEATURES);
+  /**
+   * Each project feature an observer's token lists one row of to check it. Issues are asked through
+   * GraphQL's `issuesEnabled` instead, since their listing answers `200 []` to a token they are
+   * closed to.
+   */
+  const FEATURES = { repository: "repository/branches", mergeRequests: "merge_requests", builds: "pipelines" };
+  const LISTINGS = [...Object.values(FEATURES), "issues"];
+  const ALL_FEATURES = [...Object.keys(FEATURES), "issues"];
   const userOf = (request: { headers: Headers }) => request.headers.get("authorization")!.replace("Bearer ", "");
 
   /**
    * A fake where the token names the user (`Bearer <username>`), `/user` answers with that
    * user's id, the project answers its path and its id with itself, or with the status `hidden`
    * gives it for that user, and each feature's listing answers 200, or the status `refused` gives
-   * it for that user.
+   * it for that user. A refused `issues` listing answers `200 []`, as GitLab's does, and GraphQL's
+   * `issuesEnabled` false.
    */
   function fakeProject(options: { hidden?: Record<string, number>; refused?: Record<string, Record<string, number>> } = {}): FakeGitLab {
     const gitlab = new FakeGitLab();
@@ -118,7 +124,12 @@ describe("observer admission", () => {
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/(${LISTINGS.join("|")})\\?`), request => {
       const listing = request.url.pathname.replace(`/api/v4/projects/${PROJECT_ID}/`, "");
       const status = options.refused?.[userOf(request)]?.[listing];
-      return status === undefined ? json([]) : json({ message: `${status}` }, { status });
+      return status === undefined || listing === "issues" ? json([]) : json({ message: `${status}` }, { status });
+    });
+    gitlab.on("POST", /^\/api\/graphql$/, request => {
+      const user = userOf(request);
+      const visible = options.hidden?.[user] === undefined;
+      return json({ data: { projects: { nodes: visible ? [{ issuesEnabled: options.refused?.[user]?.issues === undefined }] : [] } } });
     });
     return gitlab;
   }
@@ -204,16 +215,17 @@ describe("observer admission", () => {
       .rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
   });
 
-  it("allows a feature to whoever can list one row of its data, once GitLab shows them the project", async () => {
+  it("allows a feature to whoever can list one row of its data, or for issues whom GraphQL lets read them, once GitLab shows them the project", async () => {
     const gitlab = fakeProject();
     gitlab.install();
     const id = await seedAccount({ accessToken: "observer" });
-    const features = Object.keys(FEATURES).map(feature => `${PROJECT_SUBRESOURCE}/feature/${feature}`);
+    const features = ALL_FEATURES.map(feature => `${PROJECT_SUBRESOURCE}/feature/${feature}`);
     expect(await unwrap(await hooks().checkSubresourceAccess(id, features))).toEqual([true, true, true, true]);
     const asked = gitlab.requests.map(r => r.url.pathname + r.url.search);
     expect(asked.slice(0, 2)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`]);
-    expect(asked.slice(2).toSorted())
-      .toEqual(LISTINGS.map(listing => `/api/v4/projects/${PROJECT_ID}/${listing}?per_page=1`).toSorted());
+    expect(asked.slice(2).toSorted()).toEqual([
+      ...Object.values(FEATURES).map(listing => `/api/v4/projects/${PROJECT_ID}/${listing}?per_page=1`), "/api/graphql",
+    ].toSorted());
   });
 
   it.each(Object.entries(FEATURES).flatMap(([feature, listing]) => [403, 404].map(status => [feature, listing, status] as const)))(
@@ -222,10 +234,19 @@ describe("observer admission", () => {
       const gitlab = fakeProject({ refused: { observer: { [listing]: status } } });
       gitlab.install();
       const id = await seedAccount({ accessToken: "observer" });
-      const others = Object.keys(FEATURES).filter(other => other !== feature).map(other => `${PROJECT_SUBRESOURCE}/feature/${other}`);
+      const others = ALL_FEATURES.filter(other => other !== feature).map(other => `${PROJECT_SUBRESOURCE}/feature/${other}`);
       expect(await unwrap(await hooks().checkSubresourceAccess(id,
         [PROJECT_SUBRESOURCE, `${PROJECT_SUBRESOURCE}/feature/${feature}`, ...others]))).toEqual([true, false, true, true, true]);
     });
+
+  it("denies issues to an observer they are closed to, though GitLab's issue listing answers them 200 []", async () => {
+    const gitlab = fakeProject({ refused: { observer: { issues: 403 } } });
+    gitlab.install();
+    const id = await seedAccount({ accessToken: "observer" });
+    expect(await unwrap(await hooks().checkSubresourceAccess(id,
+      [PROJECT_SUBRESOURCE, `${PROJECT_SUBRESOURCE}/feature/issues`, `${PROJECT_SUBRESOURCE}/feature/repository`])))
+      .toEqual([true, false, true]);
+  });
 
   it("denies every feature of a project the token cannot see, without listing any", async () => {
     const gitlab = fakeProject({ hidden: { observer: 404 } });

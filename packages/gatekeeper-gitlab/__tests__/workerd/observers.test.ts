@@ -185,7 +185,8 @@ class ObserverGitLab extends FakeGitLab {
       const refusal = this.refusals.get(token);
       if (refusal) return refusal();
       const refused = this.featureRefusals.get(`${token} ${rest}`);
-      if (refused !== undefined) return json({ message: `${refused} Forbidden` }, { status: refused });
+      // GitLab's issue listing answers an account the issues are closed to `200 []`, not a refusal.
+      if (refused !== undefined) return rest === "/issues" ? json([]) : json({ message: `${refused} Forbidden` }, { status: refused });
       // A Guest of a private project cannot read its repository.
       if (rest === "/repository/branches" && level === GUEST && !this.internal.has(id)) {
         return json({ message: "403 Forbidden" }, { status: 403 });
@@ -278,14 +279,22 @@ class ObserverGitLab extends FakeGitLab {
     }
   }
 
-  /** The one GraphQL query the gatekeeper asks: whether a job's artifacts are readable. */
+  /**
+   * The GraphQL queries the gatekeeper asks: whether a job's artifacts are readable, or with no
+   * job, whether the project's issues are (`issuesEnabled`, false where `featureRefusals` refuses
+   * the issue listing).
+   */
   #graphql(request: FakeRequest): Response {
-    const user = this.users.get(tokenOf(request));
-    const { variables } = JSON.parse(request.body!) as { variables: { project: string[]; job: string } };
+    const token = tokenOf(request);
+    const user = this.users.get(token);
+    const { variables } = JSON.parse(request.body!) as { variables: { project: string[]; job?: string } };
     const projectId = Number(variables.project[0].replace("gid://gitlab/Project/", ""));
-    const jobId = Number(variables.job.replace("gid://gitlab/Ci::Build/", ""));
     // GitLab lists only projects the user can see.
     if (!(user?.levels.has(projectId) || this.internal.has(projectId))) return json({ data: { projects: { nodes: [] } } });
+    if (variables.job === undefined) {
+      return json({ data: { projects: { nodes: [{ issuesEnabled: !this.featureRefusals.has(`${token} /issues`) }] } } });
+    }
+    const jobId = Number(variables.job.replace("gid://gitlab/Ci::Build/", ""));
     const level = user?.levels.get(projectId) ?? 0;
     const job = this.deletedJobs.has(jobId) ? null : {
       erasedAt: this.erasedJobs.has(jobId) ? "2026-01-01T00:00:00Z" : null,
@@ -296,10 +305,10 @@ class ObserverGitLab extends FakeGitLab {
     return json({ data: { projects: { nodes: [{ job }] } } });
   }
 
-  /** `discussions` with each note in `internalNotes` marked internal, as GitLab lists them. */
+  /** `discussions` with each note's `internal` flag set by `internalNotes`, as GitLab lists them. */
   #markInternal<D extends { notes: Array<{ id: number }> }>(discussions: D[]) {
     return discussions.map(discussion => ({ ...discussion, notes: discussion.notes.map(note => this.internalNotes.has(note.id)
-      ? { ...note, internal: true, confidential: true } : note) }));
+      ? { ...note, internal: true, confidential: true } : { ...note, internal: false, confidential: false }) }));
   }
 
   #git(request: FakeRequest): Response {
@@ -776,12 +785,14 @@ describe("verifyObserverAccess", () => {
     expect(await gk.verify(everyone, [ISSUES])).toEqual({ ok: all.filter(id => id !== "noIssues") });
     expect(await gk.verify(everyone, [MERGE_REQUESTS])).toEqual({ ok: all.filter(id => id !== "noMrs") });
     expect(await gk.verify(everyone, [BUILDS])).toEqual({ ok: all.filter(id => id !== "noPipelines") });
-    // Then for one row of each feature's listing it needs, the project's answer reused, and never
-    // for their membership.
-    const listings = FEATURE_LISTINGS.map(listing => `/api/v4/projects/${PROJECT_ID}${listing}`);
-    expect(gitlab.requestsWith("outsider")).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`, ...listings]);
+    // Then for one row of each feature's listing it needs, or GraphQL for issues, whose listing
+    // can't refuse, the project's answer reused, and never for their membership.
+    const listings = FEATURE_LISTINGS.filter(listing => listing !== "/issues")
+      .map(listing => `/api/v4/projects/${PROJECT_ID}${listing}`);
+    expect(gitlab.requestsWith("outsider").toSorted())
+      .toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`, ...listings, "/api/graphql"].toSorted());
     expect(gitlab.requests.filter(request => tokenOf(request) === "outsider" && listings.includes(request.url.pathname))
-      .map(request => request.url.searchParams.get("per_page"))).toEqual(["1", "1", "1", "1"]);
+      .map(request => request.url.searchParams.get("per_page"))).toEqual(["1", "1", "1"]);
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
   });
 

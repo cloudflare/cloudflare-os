@@ -1509,12 +1509,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
   readonly #appliedPushes = new AppliedPushLog(this.ctx.storage.kv);
 
-  /** A pipeline as a summary, naming the project it ran in when that is not this one. */
-  #pipelineSummary(pipeline: GitLabPipelineBasicResponse, boundProjectId: number): GitLabPipelineSummary {
-    return normalizePipelineSummary(pipeline,
-      pipeline.project_id === boundProjectId ? undefined : this.#projectRefById(pipeline.project_id));
-  }
-
   /**
    * `read`'s answer, or undefined (logged as `event`) when GitLab fails it: CI rides on details
    * that must still be returned. A refused token is not GitLab failing and still propagates:
@@ -1616,8 +1610,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * account cannot see pipelines or the head is unknown. `mr` is a fresh read of the merge
    * request, or undefined while its creation is queued. GitLab's `head_pipeline` can briefly be
    * an earlier head's after a push, so it counts only when `pipelineIsForHead` says it ran for this
-   * one. A merge request still queued for creation, or a head a queued push will move it to, has
-   * no pipeline yet, and GitLab is not asked.
+   * one. A head pipeline that ran in another project (a fork's) counts as none, as in
+   * `mergeRequestPipelines`. A merge request still queued for creation, or a head a queued push
+   * will move it to, has no pipeline yet, and GitLab is not asked.
    */
   async #mergeRequestCi(details: GitLabMergeRequestDetails, mr: GitLabMergeRequestResponse | undefined):
       Promise<GitLabCommitCi | undefined> {
@@ -1632,9 +1627,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const realId = String(mr.iid);
     const head = mr.head_pipeline ?? null;
-    if (head !== null && await pipelineIsForHead(head, headSha, realId,
+    if (head !== null && head.project_id === mr.target_project_id && await pipelineIsForHead(head, headSha, realId,
       async sha => (await this.#getRawCommit(sha))?.parent_ids ?? null)) {
-      const summary = this.#pipelineSummary(head, mr.target_project_id);
+      const summary = normalizePipelineSummary(head);
       return { commitId: headSha, phase: summary.phase, pipeline: summary };
     }
     return await this.#ciWithoutPipeline(headSha, realId);
@@ -1749,6 +1744,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return jobId;
   }
 
+  /**
+   * The merge request's pipelines that ran in this project. GitLab also lists those of its source
+   * project that the binding account may read, a fork's, which observers of this project may not:
+   * they are left out, page by page.
+   */
   async mergeRequestPipelines(logicalId: string, pageSize: number): Promise<Cursor<GitLabPipelineSummary>> {
     const realId = this.#realIdOf(logicalId);
     if (!realId) return new ArrayCursor<GitLabPipelineSummary>([], pageSize);
@@ -1757,7 +1757,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return new StreamingCursor<GitLabPipelineSummary>({
       fetchPage: async (page, perPage) => {
         const rows = await this.#withApi(api => api.listMergeRequestPipelines(projectPath, Number(realId), page, perPage));
-        return { items: rows.items.map(row => this.#pipelineSummary(row, boundProjectId)), nextPage: rows.nextPage };
+        const own = rows.items.filter(row => row.project_id === boundProjectId);
+        return { items: own.map(row => normalizePipelineSummary(row)), nextPage: rows.nextPage };
       },
       pageSize,
     });
@@ -1765,7 +1766,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The pipeline `mr.getPipeline(id?)` opens: without `id`, the head commit's (`ci.pipeline`);
-   * with it, one of the merge request's pipelines. One that ran in another project is refused.
+   * with it, one of the merge request's pipelines that ran in this project.
    */
   async openMergeRequestPipeline(logicalId: string, id: string | undefined, gitCache?: RpcStub<GitCache>): Promise<number> {
     const boundProjectId = await this.#boundProjectId();
@@ -1783,17 +1784,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           ? "There is no pipeline yet for the head commit; it appears after the pushed commits reach GitLab."
           : "There is no pipeline yet for the head commit; read again shortly.");
       }
-      if (ci.pipeline.project !== undefined) {
-        throw new Error(`The head commit's pipeline ran in ${ci.pipeline.project.path}, another project, so it cannot be opened.`);
-      }
       return Number(ci.pipeline.id);
     }
     const pipelineId = this.#parseCiId(id, "Pipeline");
     const realId = this.#requireRealId(logicalId, "Merge request");
     const row = await this.#findInMergeRequestPipelines(realId, rows => rows.find(pipeline => pipeline.id === pipelineId));
-    if (row === undefined) throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines.`);
-    if (row.project_id !== boundProjectId) {
-      throw new Error(`Pipeline ${pipelineId} ran in another project (the merge request's source project), so it cannot be opened.`);
+    if (row === undefined || row.project_id !== boundProjectId) {
+      throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines in this project.`);
     }
     return pipelineId;
   }

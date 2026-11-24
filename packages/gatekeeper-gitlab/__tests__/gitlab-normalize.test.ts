@@ -194,14 +194,14 @@ describe("labels, tags, merge request summary", () => {
     expect(normalizeIssueSummary(INSTANCE, "group/project", unflagged as typeof fx.issueResponse.data).confidential).toBe(true);
   });
 
-  it("reads a note as internal by its flag or the deprecated name older instances send alone", () => {
+  it("reads a note as internal by its flag or the deprecated name older instances send alone, and by neither as internal", () => {
     const note = fx.issueNotesResponse.data[1];
     const comment = (flags: { internal?: boolean; confidential?: boolean }) =>
       discussionCommentFromNote(INSTANCE, `${INSTANCE}/group/project/-/issues/1`, { ...note, ...flags }).internal;
     expect(comment({})).toBe(false);
     expect(comment({ internal: true, confidential: true })).toBe(true);
     expect(comment({ internal: undefined, confidential: true })).toBe(true);
-    expect(comment({ internal: undefined, confidential: undefined })).toBe(false);
+    expect(comment({ internal: undefined, confidential: undefined })).toBe(true);
   });
 
   it("uses the returned project path for moved issue and merge request references, including fork targets", () => {

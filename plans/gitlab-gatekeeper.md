@@ -516,7 +516,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   | viewer | `GET /user` | `GET /user` |
   | verified email | `GET /user/emails` | `GET /user` (`email` when `confirmed_at` non-null; `userinfo` rejected — its `email` needs a *public* email) |
   | project metadata | `GET /repos/{o}/{r}` | `GET /projects/P` (`path_with_namespace`, `namespace.full_path`, `default_branch`, `visibility`, `description`, `web_url`, `permissions`) |
-  | project access probe | same | `GET /projects/P` for the project, then for each feature a read named `GET /projects/P/repository/branches`, `/issues`, `/merge_requests` or `/pipelines` with `per_page=1`, each with the observer's token, 2xx allowing (403/404 denies); a confidential issue or internal note by `GET /projects/P/issues/{iid}` or `…/notes/{id}`; a role, where one is needed, from `GET /projects/P/members/all?user_ids[]=` (effective membership at its highest level) — never `permissions`, which omits inherited access (§8) |
+  | project access probe | same | `GET /projects/P` for the project, then for each feature a read named `GET /projects/P/repository/branches`, `/merge_requests` or `/pipelines` with `per_page=1`, each with the observer's token, 2xx allowing (403/404 denies), or for issues GraphQL `projects(ids:) { issuesEnabled }` (`feature_available?(:issues, user)`), since `GET /projects/P/issues` answers `200 []` to a user the feature is closed to; a confidential issue or internal note by `GET /projects/P/issues/{iid}` or `…/notes/{id}`; a role, where one is needed, from `GET /projects/P/members/all?user_ids[]=` (effective membership at its highest level) — never `permissions`, which omits inherited access (§8) |
   | configurator: my projects | `GET /user/repos`, `GET /search/repositories` | `GET /projects?membership=true&search=&search_namespaces=true&order_by=last_activity_at&simple=true` |
   | issue | `GET …/issues/{n}` | `GET /projects/P/issues/{iid}?with_labels_details=true` |
   | list / search issues | `GET …/issues`, `GET /search/issues` | `GET /projects/P/issues?state&labels&author_username&assignee_username[]&order_by&sort&search&with_labels_details=true` (`search` covers title+description; the project endpoint has no `in`; `order_by` ∈ `created_at`, `updated_at`, `popularity`, …) |
@@ -950,8 +950,9 @@ role, or an instance admin is admitted. Every read reports it.
 General › Visibility, project features, permissions; API `*_access_level`), so reads also report
 `project/<projectId>/feature/<repository|issues|mergeRequests|builds>` for each feature their
 data came from, allowed iff the project is and the observer's token gets a 2xx from that
-feature's listing — `repository/branches`, `issues`, `merge_requests` or `pipelines`,
-`per_page=1` (`canReadProjectFeature`); 403 covers a feature restricted to members or above the
+feature's listing — `repository/branches`, `merge_requests` or `pipelines`, `per_page=1` —
+or, for issues, whose listing answers `200 []` to a user they are closed to, GraphQL's
+`issuesEnabled` (`canReadProjectFeature`); 403 covers a feature restricted to members or above the
 user's role (GitLab's Guest "cannot … access repository" on a private project). Reads name them
 from the data: `getMetadata` repository only when GitLab returned `default_branch`;
 branches, tags, `resolveRef`, commits and history repository (+builds when a commit's `ci` is

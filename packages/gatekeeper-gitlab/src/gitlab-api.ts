@@ -1019,8 +1019,8 @@ export class GitLabApi {
    * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
    * The highest is taken anyway, should a version return several.
    */
-  async getProjectMember(projectIdprojectId: number, userId: number): Promise<GitLabMemberResponse | null> {
-    const rows = await this.#get<GitLabMemberResponse[]>(`/projects/${projectIdprojectId}/members/all`,
+  async getProjectMember(projectId: number, userId: number): Promise<GitLabMemberResponse | null> {
+    const rows = await this.#get<GitLabMemberResponse[]>(`/projects/${projectId}/members/all`,
       { user_ids: [userId], per_page: 100 });
     let best: GitLabMemberResponse | null = null;
     for (const row of rows) {
@@ -1564,6 +1564,29 @@ export class GitLabApi {
     if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
     const job = data.data.projects.nodes[0]?.job;
     return job == null || job.erasedAt !== null ? null : job.userPermissions.readJobArtifacts;
+  }
+
+  /**
+   * Whether this account may read the issues of the project with id `projectId`: GraphQL's
+   * `issuesEnabled`, GitLab's `feature_available?(:issues, user)`. REST's issue listing can't tell:
+   * it answers `200 []` to an account the feature is closed to. `false` for a project this account
+   * can't see.
+   */
+  async issuesReadable(projectId: number): Promise<boolean> {
+    type Answer = {
+      data?: { projects?: { nodes: Array<{ issuesEnabled: boolean | null }> } };
+      errors?: Array<{ message?: string }>;
+    };
+    const { data } = await this.#request<Answer>("POST", "", {
+      root: "/api/graphql",
+      body: {
+        query: "query($project: [ID!]) { projects(ids: $project) { nodes { issuesEnabled } } }",
+        variables: { project: [`gid://gitlab/Project/${projectId}`] },
+      },
+    });
+    // GitLab's error text is a response body, kept out of errors that are logged and shown.
+    if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
+    return data.data.projects.nodes[0]?.issuesEnabled === true;
   }
 
   // -- git smart-HTTP
