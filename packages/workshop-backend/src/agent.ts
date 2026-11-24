@@ -3636,7 +3636,7 @@ async function runAgentPass(
     (sequence !== undefined && lastMeasuredSequence !== undefined &&
       (sequence < lastMeasuredSequence ||
         (sequence === lastMeasuredSequence && message.role !== "toolResult"))
-      ? estimateImageTokens(message) : 0), 0);
+      ? estimateImageTokens(message, handle.model) : 0), 0);
   // A model/pool switch can reveal old pixels that were only omission markers in the measured
   // request. Usage from another provider also prices pixels differently. Re-estimate the whole
   // prompt when its older media changes, including a router pool change with the same model ID.
@@ -3659,12 +3659,12 @@ async function runAgentPass(
   const addedTokens = estimateProjectionTokens(
       projection.filter(({message, sequence}) => sequence !== undefined && lastMeasuredSequence !== undefined &&
         (sequence > lastMeasuredSequence ||
-          (sequence === lastMeasuredSequence && message.role === "toolResult"))));
+          (sequence === lastMeasuredSequence && message.role === "toolResult"))), handle.model);
   let contextTokens: number;
   if (measuredTokens > 0 && lastMeasuredSequence !== undefined && mediaMatchesMeasurement) {
     contextTokens = measuredTokens + addedTokens;
   } else {
-    contextTokens = estimateProjectionTokens(projection) +
+    contextTokens = estimateProjectionTokens(projection, handle.model) +
         Math.ceil(getSystemMessageText(systemMessage).length / 4);
     if (measuredTokens > 0 && lastMeasuredSequence !== undefined &&
         sameMediaPricing && measuredImageTokens !== undefined && handle.model.input.includes("image")) {
@@ -4773,7 +4773,7 @@ async function runAgentPass(
   let inputImageTokens = 0;
   let stream: ModelHandle["stream"] = (model, context, options) => {
     inputImageTokens = context.messages.reduce((total, message) =>
-      total + estimateImageTokens(message), 0);
+      total + estimateImageTokens(message, model), 0);
     return underlyingStream(model, context, options);
   };
 
@@ -4783,7 +4783,7 @@ async function runAgentPass(
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
+        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages), handle.model);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
@@ -4904,7 +4904,7 @@ async function runAgentPass(
       // output). Without usage there is nothing to measure against.
       let measured = message.usage.totalTokens;
       nextRequestFits = measured > 0 && !shouldCompactChat(measured + estimateProjectionTokens(
-          toolResults.map(({details: _, ...message}) => ({message}))), inputBudget);
+          toolResults.map(({details: _, ...message}) => ({message})), handle.model), inputBudget);
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (

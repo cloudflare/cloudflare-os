@@ -163,10 +163,8 @@ async function fetchFollowingRedirects(
   }
 }
 
-// Read up to `maxBytes` from the body of a response. Returns the raw bytes (so callers can
-// hand them to either a text decoder or a Blob) and a flag indicating whether the stream
-// was truncated.
-async function readBodyCapped(
+/** Read up to `maxBytes`, returning raw bytes and whether the response stream was truncated. */
+export async function readBodyCapped(
   response: Response,
   maxBytes: number,
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {

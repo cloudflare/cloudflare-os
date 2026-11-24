@@ -19,6 +19,9 @@ const recordingHandler: Handler = (url, method, headers, request) => {
     authorization: headers.get("authorization"),
     providerSecret: headers.get("x-provider-secret"),
   });
+  if (url.pathname === "/api/show" && method === "POST") {
+    return Response.json({capabilities: ["completion", "tools"]});
+  }
   return model.handler(url, method, headers, request);
 };
 const network = new NetworkInterceptor({ handlers: [recordingHandler] });
@@ -76,6 +79,7 @@ it("editing a model keeps its secrets usable without returning them", async () =
   expect(history.filter(message => message.type === "message" && message.author.type === "agent"))
       .toEqual([expect.objectContaining({ message: "Secrets retained." })]);
   expect(model.requests).toHaveLength(1);
+  expect(providerRequests).toHaveLength(2); // Capability discovery and the chat both retain auth.
   for (const request of providerRequests) {
     expect(request).toEqual({ authorization: `Bearer ${TOKEN}`, providerSecret: HEADER_SECRET });
   }

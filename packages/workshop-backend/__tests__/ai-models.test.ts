@@ -813,6 +813,65 @@ describe("getModel direct routing (no gateway)", () => {
     } finally {clock?.mockRestore(); vi.unstubAllGlobals();}
   });
 
+  it.each(["unavailable", "invalid", "network", "missing"])(
+    "retains explicit Ollama capabilities through a %s refresh, then retries", async failure => {
+      const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
+        apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
+      let attempts = 0;
+      const metadata = vi.fn(async () => {
+        if (++attempts === 1) return Response.json({capabilities: ["completion", "tools"]});
+        if (attempts === 2) {
+          if (failure === "network") throw new TypeError("offline");
+          if (failure === "missing") return Response.json({});
+          return new Response(failure === "invalid" ? "not json" : "unavailable",
+            {status: failure === "invalid" ? 200 : 503});
+        }
+        return Response.json({capabilities: ["completion", "vision"]});
+      });
+      vi.stubGlobal("fetch", metadata);
+      const resolve = async () => {
+        const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+        await resolveModelInput(handle, config, new AbortController().signal);
+        return handle.model.input;
+      };
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        expect(await resolve()).toEqual(["text"]);
+        clock.mockReturnValue(now + 60_001);
+        expect(await resolve()).toEqual(["text"]);
+        expect(await resolve()).toEqual(["text"]);
+        expect(metadata).toHaveBeenCalledTimes(2);
+        clock.mockReturnValue(now + 120_002);
+        expect(await resolve()).toEqual(["text", "image"]);
+        expect(metadata).toHaveBeenCalledTimes(3);
+      } finally {clock.mockRestore(); vi.unstubAllGlobals();}
+    });
+
+  it("cancels oversized streamed Ollama metadata without buffering the unused model template", async () => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
+      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
+    let chunks = 0, cancelled = false;
+    const metadata = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (++chunks > 2048) {controller.close(); return;}
+        controller.enqueue(new Uint8Array(16 * 1024).fill(32));
+      },
+      cancel() {cancelled = true;},
+    })));
+    vi.stubGlobal("fetch", metadata);
+    try {
+      for (let turn = 0; turn < 2; ++turn) {
+        const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+        await resolveModelInput(handle, config, new AbortController().signal);
+        expect(handle.model.input).toEqual(["text", "image"]);
+      }
+      expect(cancelled).toBe(true);
+      expect(chunks).toBeLessThan(20);
+      expect(metadata).toHaveBeenCalledOnce();
+    } finally {vi.unstubAllGlobals();}
+  });
+
   it("preserves cancellation during Ollama metadata resolution", async () => {
     const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: ""};
     const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);

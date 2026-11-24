@@ -327,6 +327,47 @@ describe("images read from a worktree", () => {
       expect(checkpoints).not.toHaveBeenCalled();
     }));
 
+  it.each([false, true])("compacts tile-priced file images before sending them (replay=%s)", replay =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      new DataView(bytes.buffer).setUint32(16, 768);
+      new DataView(bytes.buffer).setUint32(20, 768);
+      const {chatId} = await setup(impl, bytes);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(27_500)}]);
+      if (replay) {
+        await turn(impl, chatId, [[read(), read(), read()]]);
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
+      }
+      const config: AiModelConfig = {provider: "openai", model: "gpt-4o-mini", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+        models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const commit = impl.commitAgentStep.bind(impl);
+      vi.spyOn(impl, "commitAgentStep").mockImplementation((...args) => {
+        // The prior request's measured usage excludes these newly returned pixels.
+        if (args[4] && args[2].some(message => message.type === "message" && message.toolCalls?.some(call =>
+          call.toolName === "readFile"))) args[4].totalTokens = 55_000;
+        return commit(...args);
+      });
+      const requests: Message[][] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      };
+      faux.setResponses([...(replay ? [] : [fauxAssistantMessage([read(), read(), read()], {stopReason: "toolUse"})]),
+        fauxAssistantMessage(fauxText("Earlier context summary")), fauxAssistantMessage(fauxText("Done"))]);
+      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      expect(checkpoints).toHaveBeenCalledOnce();
+      expect(faux.getPendingResponseCount()).toBe(0);
+      // Pixel-bearing requests follow compaction, so the 55K-token prefix is gone.
+      const withPixels = requests.filter(messages => messages.some(message =>
+        typeof message.content !== "string" && message.content.some(part => part.type === "image")));
+      expect(withPixels).toHaveLength(1);
+      expect(withPixels[0].reduce((sum, message) => sum + estimateImageTokens(message, handle.model), 0)).toBe(76_503);
+      expect(JSON.stringify(withPixels[0])).not.toContain("context ".repeat(27_500));
+    }));
+
   it.each(["model switch", "router pool switch", "unchanged vision model"] as const)(
     "checks newly visible history images before compaction after a %s", mode => inKernel(crypto.randomUUID(), async impl => {
       const bytes = PNG.slice();
@@ -608,14 +649,15 @@ describe("images read from a worktree", () => {
     ["google", "Unable to process input image", 400],
     ["cloudflare-auto-router", "invalid_image_format", 400],
     ["cloudflare-auto-router", "invalid_image_mode", 422],
+    ["ollama", "decode WebP image: webp: invalid format", 500],
   ] as const)("recovers through the real %s provider adapter: %s (%s)", (provider, errorCode, status) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
     const config: AiModelConfig = {provider, model: provider === "cloudflare-auto-router" ? "cloudflare/auto"
-      : provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture",
+      : provider === "openai" ? "gpt-6.1-sol" : provider === "ollama" ? "fixture-vision" : "gemini-2.5-flash", apiToken: "fixture",
       ...(provider === "cloudflare-auto-router" ? {autoRouterPool: {models: ["openai/gpt-6-astra"]}} : {})};
-    const handle = getModel({CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
-      CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare-auto-router"} as Cloudflare.Env, config, USER);
+    const handle = getModel((provider === "ollama" ? {} : {CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+      CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare-auto-router"}) as Cloudflare.Env, config, USER);
     const realStream = handle.stream;
     const faux = createFauxCore({models: [{id: "fixture"}]});
     faux.setResponses([
@@ -631,6 +673,7 @@ describe("images read from a worktree", () => {
         if ((provider === "openai" || provider === "cloudflare-auto-router") && status !== 200) return Response.json({error: {
           code: errorCode, message: "You uploaded an unsupported image.", type: "invalid_request_error", param: null,
         }}, {status});
+        if (provider === "ollama") return Response.json({error: {message: errorCode}}, {status});
         return provider === "openai"
           ? new Response([
             {type: "response.created", response: {id: "resp_fixture", status: "in_progress", output: []}},
@@ -642,7 +685,10 @@ describe("images read from a worktree", () => {
       void response.result().then(message => { providerError = message.errorMessage ?? ""; });
       return response;
     };
-    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    if (provider === "ollama") vi.stubGlobal("fetch", async () => Response.json({capabilities: ["completion", "vision"]}));
+    try {
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    } finally {if (provider === "ollama") vi.unstubAllGlobals();}
     expect(body).toContain(bytes.toBase64());
     expect(providerError).toContain(errorCode);
     if (provider === "openai") {
@@ -779,6 +825,9 @@ describe("images read from a worktree", () => {
 
   it.each([
     ["400 invalid image data", 400, true],
+    ["500 decode WebP image: webp: invalid format", 500, true],
+    ["500 internal server error", 500, false],
+    ["503 decode WebP image: webp: invalid format", 503, false],
     ["image_parse_error: Could not process image", 200, true],
     ["Error Code image_parse_error: Could not process image", 200, true],
     ["invalid_image_mode: Could not process image", 200, true],

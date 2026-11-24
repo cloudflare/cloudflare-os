@@ -3,7 +3,7 @@ import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
   buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
-  estimateProjectionTokens, foldProposedChanges, getModelTokenLimits, isCompactionTurn,
+  estimateImageTokens, estimateProjectionTokens, foldProposedChanges, getModelTokenLimits, isCompactionTurn,
   shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
 import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -251,6 +251,20 @@ describe("image context estimates", () => {
       expect(estimateProjectionTokens(projection)).toBeGreaterThanOrEqual(144_000);
       expect(shouldCompactChat(150_000 + estimateProjectionTokens(projection), limits.inputBudget)).toBe(true);
     }
+  });
+  it.each([
+    {id: "gpt-4o-mini", width: 768, height: 768, tokens: 25_501},
+    {id: "openai/gpt-4o-mini-2024-07-18", width: 768, height: 768, tokens: 25_501},
+    {id: "gpt-4o-mini", width: 4096, height: 1024, tokens: 25_501},
+    {id: "gpt-4.1-mini", width: 1024, height: 1024, tokens: 1659},
+    {id: "gpt-4.1-nano", width: 1024, height: 1024, tokens: 2520},
+  ])("accounts for known image pricing for $id ($width x $height)", ({id, width, height, tokens}) => {
+    const message: Message = {role: "user", content: [image(width, height)], timestamp: 0};
+    expect(estimateImageTokens(message, {...testModel, id})).toBe(tokens);
+    const four = Array.from({length: 4}, () => ({message}));
+    expect(estimateProjectionTokens(four, {...testModel, id})).toBeGreaterThanOrEqual(tokens * 4);
+    if (id.includes("4o-mini")) expect(shouldCompactChat(
+      55_000 + estimateProjectionTokens(four, {...testModel, id}), 128_000)).toBe(true);
   });
   it("uses dimensions and a small header allocation, independent of encoded pixel size", () => {
     const estimate = (part: ReturnType<typeof image>) => estimateProjectionTokens([

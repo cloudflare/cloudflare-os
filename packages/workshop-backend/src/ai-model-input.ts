@@ -1,5 +1,6 @@
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
 import type {ModelHandle} from "./ai-models";
+import {readBodyCapped} from "./web-fetch";
 
 // Bounded, isolate-local metadata only. Partition by endpoint/model/effective credentials without
 // retaining secrets in cache keys; cache unknown results too, for older servers and proxies.
@@ -21,16 +22,22 @@ export async function resolveModelInput(
   signal.throwIfAborted();
   let result = visionCache.get(key);
   if (!result || result.expires <= Date.now()) {
-    let vision: boolean | undefined;
+    // A transient refresh failure must not turn a known text-only model back into vision.
+    let vision = result?.vision;
     try {
       const response = await fetch(url, {
         method: "POST", headers, body: JSON.stringify({model: config.model}), redirect: "manual",
         signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
       });
       if (response.ok) {
-        const details = await response.json<{capabilities?: unknown}>();
-        if (Array.isArray(details.capabilities) && details.capabilities.every(value => typeof value === "string")) {
-          vision = details.capabilities.includes("vision");
+        // /api/show also contains templates/model details; optional discovery must not buffer
+        // an unbounded body before an ordinary text turn can start.
+        const {bytes, truncated} = await readBodyCapped(response, 256 * 1024);
+        if (!truncated) {
+          const details: {capabilities?: unknown} | null = JSON.parse(new TextDecoder().decode(bytes));
+          if (Array.isArray(details?.capabilities) && details.capabilities.every(value => typeof value === "string")) {
+            vision = details.capabilities.includes("vision");
+          }
         }
       } else await response.body?.cancel();
     } catch {

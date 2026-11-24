@@ -223,7 +223,7 @@ export type CompactionProjectionMessage = {
 };
 
 /** Image accounting for a request; persisted beside usage to detect a changed replay projection. */
-export function estimateImageTokens(message: Message): number {
+export function estimateImageTokens(message: Message, model?: Model<Api>): number {
   return typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
     if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
     // Image admission already parsed the complete header through byte ranges, including JPEG
@@ -233,26 +233,46 @@ export function estimateImageTokens(message: Message): number {
     if (!dimensions) try {
       dimensions = imageDimensions(part.mimeType, Uint8Array.fromBase64(part.data.slice(0, 87_380)));
     } catch { /* A malformed header must not break compaction. */ }
-    // Estimate original-detail 32px patches at 1.2 tokens/patch, as current OpenAI defaults do.
-    // Other providers may resize and use fewer tokens; measured usage replaces this estimate on
-    // the next step. Keep a floor for small images' per-image overhead.
-    // https://developers.openai.com/api/docs/guides/images-vision#patch-based-image-tokenization
+    // Original-resolution patches deliberately overestimate providers' downsampling. Known
+    // OpenAI multipliers and tile pricing can exceed that estimate, especially gpt-4o-mini.
+    // https://developers.openai.com/api/docs/guides/images-vision#tile-based-image-tokenization
+    const id = model?.id.split("/").at(-1) ?? "";
+    const multiplier = /^gpt-4\.1-nano(?:-|$)/.test(id) ? 2.46
+      : /^gpt-4\.1-mini(?:-|$)/.test(id) ? 1.62
+      : /^o4-mini(?:-|$)/.test(id) ? 1.72
+      : /^gpt-5-nano(?:-|$)/.test(id) ? 1.5 : 1.2;
     const patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
-    return sum + Math.max(1024, Math.ceil(patches * 1.2));
+    let tokens = Math.max(1024, Math.ceil(patches * multiplier));
+    const tileCost = /^gpt-4o-mini(?:-|$)/.test(id) ? [2833, 5667]
+      : /^gpt-(?:4o|4\.1)(?:-\d{4}|$)/.test(id) ? [85, 170]
+      : /^gpt-(?:5|5\.1)(?:-\d{4}|$)/.test(id) ? [70, 140]
+      : /^o(?:1|1-pro|3)(?:-\d{4}|$)/.test(id) ? [75, 150] : undefined;
+    if (tileCost) {
+      let tiles = 8; // Maximum after fitting inside 2048px and reducing the short side to 768px.
+      if (dimensions) {
+        const [width, height] = dimensions;
+        const scale = Math.min(1, 2048 / width, 2048 / height, 768 / Math.min(width, height));
+        tiles = Math.ceil(Math.max(1, Math.floor(width * scale)) / 512) *
+          Math.ceil(Math.max(1, Math.floor(height * scale)) / 512);
+      }
+      tokens = Math.max(tokens, tileCost[0] + tiles * tileCost[1]);
+    }
+    return sum + tokens;
   }, 0);
 }
 
-function projectionMessageWeight(message: Message): number {
+function projectionMessageWeight(message: Message, model?: Model<Api>): number {
   // A flat-color screenshot can be tiny on disk but expensive at original resolution.
   const text = JSON.stringify(message, (key, value) =>
     key === "data" && typeof value === "string" ? "[binary]" : value).length;
-  return text + estimateImageTokens(message) * 4;
+  return text + estimateImageTokens(message, model) * 4;
 }
 
 /** Estimate tokens for messages not included in provider usage, or when usage data is unavailable. */
-export function estimateProjectionTokens(projection: CompactionProjectionMessage[]): number {
+export function estimateProjectionTokens(
+    projection: CompactionProjectionMessage[], model?: Model<Api>): number {
   return Math.ceil(projection.reduce((total, {message}) =>
-    total + projectionMessageWeight(message), 0) / 4);
+    total + projectionMessageWeight(message, model), 0) / 4);
 }
 
 function flattenModelMessage(message: Message): string {
@@ -321,11 +341,11 @@ export function buildSummaryPrompt(
  */
 export function findCompactionBoundary(
     projection: CompactionProjectionMessage[], inputBudget: number, contextTokens: number,
-    compactedTo = 0, protectedFromSequence?: number): number | undefined {
+    compactedTo = 0, protectedFromSequence?: number, model?: Model<Api>): number | undefined {
   // Walk backward until the retained messages fill the target budget, then move the cut to a record
   // boundary. Provider tokenizers differ, so character weights divide the measured token count among
   // messages; the weights affect only where the cut lands.
-  let weights = projection.map(({message}) => projectionMessageWeight(message));
+  let weights = projection.map(({message}) => projectionMessageWeight(message, model));
   let tokensPerWeight = contextTokens / weights.reduce((sum, weight) => sum + weight, 0);
   let tailBudget = Math.min(inputBudget * COMPACTION_TARGET_RATIO, COMPACTION_TAIL_TOKEN_LIMIT);
   let keptTokens = 0;
