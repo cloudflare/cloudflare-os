@@ -32,6 +32,13 @@ export const MAX_INLINE_ATTACHMENTS_TOTAL_BYTES = 20 * 1024 * 1024;
 export const MAX_INLINE_MESSAGE_BYTES = MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2;
 
 /**
+ * The most image and PDF bytes one replay reads: a request's, and the new message's that takes
+ * the chat past them. More build up only from messages no turn has shown a vision model, such as
+ * ones sent with none chosen; replay names the older ones by path without reading them.
+ */
+export const MAX_INLINE_REPLAY_BYTES = MAX_INLINE_ATTACHMENTS_TOTAL_BYTES + MAX_INLINE_MESSAGE_BYTES;
+
+/**
  * The most images and PDFs one model request carries inline; a chat that passes it compacts
  * first. Past 20, Anthropic refuses images over a lower pixel limit than
  * canInlineChatAttachmentImage() allows, and Bedrock and Vertex count PDFs toward that too; well

@@ -10,6 +10,14 @@ import { UnreadableContentError, decodeBlobText, type WorkspaceGitCache } from "
 import type { BlobReader } from "./git-chunked-blob";
 import type { WorktreeTurnAccess } from "./agent";
 
+// ignoreBOM keeps a leading U+FEFF, which is part of the line.
+const encoder = new TextEncoder(), decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+
+// A copy of `text` that shares no memory with the string it was cut from. V8 may keep a
+// substring as a view of its parent, so a short match kept from a large file would otherwise
+// keep the whole of the text it was searched in.
+const detached = (text: string) => decoder.decode(encoder.encode(text));
+
 /**
  * A grep's result: the matching lines, in path order then line order, the files it could not
  * search, and whether it named exactly one file (so output can omit the path prefix, as
@@ -122,7 +130,8 @@ export async function scanWorkpieceForGrep(
   await gitCache.ensureBlobs(oids);
 
   // Each file is matched as it is read, so only one file's text is ever held at a time, and a
-  // large blob's not even that. Matches are kept while their `grep -n` lines fit `maxChars`;
+  // large blob's not even that; a kept match is copied out of it, so it keeps none of it alive.
+  // Matches are kept while their `grep -n` lines fit `maxChars`;
   // past that they are only counted, so a broad match over a large file holds no more than the
   // output can show. A file's own are added once it has been searched whole, since it may still
   // prove binary.
@@ -148,7 +157,7 @@ export async function scanWorkpieceForGrep(
           continue;
         }
         fileRoom -= length;
-        kept.push({ file: candidate.path, ...match });
+        kept.push({ file: candidate.path, line: match.line, text: detached(match.text) });
       }
       // One at a time: a file can keep more matches than a call can take as arguments.
       for (let match of kept) matches.push(match);

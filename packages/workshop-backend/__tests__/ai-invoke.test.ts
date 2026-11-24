@@ -16,10 +16,21 @@ describe("httpStatusFromError", () => {
     expect(httpStatusFromError("OpenAI API error (529): 529 overloaded", undefined)).toBe(529);
   });
 
+  // The Google SDK's message is the error's JSON body, mid-stream after its status name.
+  it("reads the status from the Google SDK's JSON error body", () => {
+    expect(httpStatusFromError('{"error":{"code":401,"message":"API key not valid."}}', undefined))
+        .toBe(401);
+    expect(httpStatusFromError('got status: INVALID_ARGUMENT. {"error":{"code":400,' +
+        '"message":"The document has more than 1000 pages.","status":"INVALID_ARGUMENT"}}', undefined))
+        .toBe(400);
+  });
+
   it("takes no digits from elsewhere in the message for a status", () => {
     for (let message of [
       "Request 123 failed with 500",
-      '{"error":{"code":401,"message":"API key not valid."}}',
+      '{"error":{"code":"401","message":"API key not valid."}}',
+      '{"error":{"message":"code 500"}}',
+      'The upstream said: {"error":{"code":500}}',
       "4010 tokens is over the limit",
       "The upstream said: OpenAI API error (500): overloaded",
       "OpenAI API error (5000): overloaded",

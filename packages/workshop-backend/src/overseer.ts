@@ -607,6 +607,10 @@ const storageUsage = (storedBytes: number) =>
 // The largest image whose bytes a chat message carries to clients (see
 // hydrateChatMessageForClient()), so that loading a chat never sends every large image in it.
 const MAX_CLIENT_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+// The most image bytes one history page carries inline, newest message first: a page is one RPC
+// reply, which is refused past 32 MiB, and base64 adds a third. The rest of its images are
+// fetched on demand, as larger ones are.
+const MAX_CLIENT_INLINE_PAGE_BYTES = 8 * 1024 * 1024;
 // The largest attachment getChatAttachmentData() reads whole, well beyond what replay inlines;
 // a larger upload would crowd the object's memory, so its readers stream its blob instead.
 const MAX_WHOLE_ATTACHMENT_READ_BYTES = 16 * 1024 * 1024;
@@ -6422,12 +6426,13 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Prepare a stored chat message for delivery to a client: strip private unread positions,
-  // inline the bytes of images up to MAX_CLIENT_INLINE_IMAGE_BYTES (other attachments are
-  // fetched on demand, by readBlob() or getChatAttachmentContent()), strip the
+  // inline the bytes of images up to MAX_CLIENT_INLINE_IMAGE_BYTES, while `inlineBytes` (a
+  // budget shared across a history page, and spent here) lasts (other attachments are fetched
+  // on demand, by readBlob() or getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
-  hydrateChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
+  hydrateChatMessageForClient(msg: StoredChatMessage, inlineBytes?: {left: number}): AiChatMessage {
     let {visibleThroughSequence: _, ...publicMessage} = msg;
     msg = publicMessage;
     if (msg.type === "changes" && "update" in msg) {
@@ -6436,16 +6441,16 @@ class OverseerImpl implements AgentHooks {
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
-      if (!isAllowedChatAttachmentImageMimeType(a.mimeType) || a.size > MAX_CLIENT_INLINE_IMAGE_BYTES) {
+      if (!isAllowedChatAttachmentImageMimeType(a.mimeType) || a.size > MAX_CLIENT_INLINE_IMAGE_BYTES ||
+          a.size > (inlineBytes?.left ?? Infinity)) {
         return a;
       }
       let content = this.storage.chatAttachmentContent.get(a.id);
-      if (content?.state.type === "committed" && content.state.chatId === msg.chatId &&
-          content.state.oid !== undefined) {
-        return {...a, content: this.gitCache.readBlob(content.state.oid)};
-      }
-      if (!content?.data) return a;
-      return {...a, content: content.data};
+      let bytes = content?.state.type === "committed" && content.state.chatId === msg.chatId &&
+          content.state.oid !== undefined ? this.gitCache.readBlob(content.state.oid) : content?.data;
+      if (!bytes) return a;
+      if (inlineBytes) inlineBytes.left -= bytes.byteLength;
+      return {...a, content: bytes};
     });
     return {...msg, attachments};
   }
@@ -13767,8 +13772,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
       end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
     })];
+    // Newest first, so the images in view when the chat opens are the ones that come inline.
+    let inlineBytes = {left: MAX_CLIENT_INLINE_PAGE_BYTES};
     return {
-      messages: result.map((msg) => this.#getChatMessageForClient(msg)),
+      messages: result.toReversed().map((msg) => this.#getChatMessageForClient(msg, inlineBytes))
+          .toReversed(),
       compacted: checkpoint && {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
@@ -13782,14 +13790,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
-  #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
+  #getChatMessageForClient(msg: StoredChatMessage, inlineBytes?: {left: number}): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
         msg.actionLog = actionRecordToLog(record);
       }
     }
-    return this.impl.hydrateChatMessageForClient(msg);
+    return this.impl.hydrateChatMessageForClient(msg, inlineBytes);
   }
 
   async subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date)

@@ -902,6 +902,33 @@ describe("attachment worktree ingress", () => {
     expect(imageParts(compacted)).toHaveLength(4);
   }));
 
+  // Messages no turn showed a vision model, such as ones sent with none chosen, can hold more than
+  // memory allows read at once: the oldest are named by path, unread, and the summary is written
+  // from the transcript, since the prompt is no longer the one earlier requests sent.
+  it("reads no more images and PDFs than a request and a new message carry", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const size = MAX_INLINE_MESSAGE_BYTES / 5;
+    const blob = impl.gitCache.writeBlob(pngOfSize(size, 100));
+    const batch = (from: number) =>
+      Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch(5 * i)});
+    const names = new Map([...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.attachments ?? [] : []).map(attachment => [attachment.id, attachment.name]));
+    const read = vi.spyOn(impl, "getChatAttachmentData");
+
+    const [summary, compacted] = await scriptedTurn(impl, chatId, [], "anthropic-messages", "Summary of the photos.");
+    const unread = ["0.png", "1.png", "2.png", "3.png", "4.png"];
+    expect(read.mock.calls.map(([, id]) => names.get(id)).filter(name => unread.includes(name!))).toEqual([]);
+    // The other fifteen once before compacting, and the ten it keeps again after.
+    expect(read).toHaveBeenCalledTimes(25);
+    expect(JSON.stringify(summary)).toContain("workspace file env.ATTACHMENTS/0.png; " +
+      `${size} bytes, not shown to you: past the limits on the images and PDFs one request can carry.]`);
+    expect(imageParts(summary)).toHaveLength(0);
+    expect(JSON.stringify(compacted)).toContain("Summary of the photos.");
+    expect(imageParts(compacted)).toHaveLength(10);
+  }));
+
   // Compaction summarizes the prompt as earlier requests sent it. Only if it fails does the turn
   // name the older attachments by path, and then without the thinking the rewrite invalidates.
   it("names older attachments by path, without the thinking after them, when compaction fails", () => inKernel(crypto.randomUUID(), async impl => {
@@ -955,7 +982,11 @@ describe("attachment worktree ingress", () => {
 
   // The model has answered nothing after the messages it was refused with, so naming their
   // attachments by path changes nothing it has seen.
-  it("names the attachments of a refused first request by path from then on", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([
+    ["anthropic-messages", '400 {"type":"error","error":{"type":"invalid_request_error","message":"too many PDF pages"}}'],
+    // The Google SDK's message is the JSON body alone.
+    ["google-generative-ai", '{"error":{"code":400,"message":"The document has more than 1000 pages.","status":"INVALID_ARGUMENT"}}'],
+  ] as const)("names the attachments of a refused first request by path from then on (%s)", (api, errorMessage) => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const pdf = impl.gitCache.writeBlob(new TextEncoder().encode("%PDF-1.7 601 pages"));
     const chatId = await impl.newChat(user, {profile: USER}, "Read this", {attachments:
@@ -964,14 +995,13 @@ describe("attachment worktree ingress", () => {
     const requests: Message[][] = [];
     const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
       faux.setResponses(responses);
-      return runAgent(impl, {model: {...faux.getModel(), api: "anthropic-messages"}, stream: (model, context, options) => {
+      return runAgent(impl, {model: {...faux.getModel(), api}, stream: (model, context, options) => {
         requests.push(structuredClone(context.messages));
         return faux.stream(model, context, options);
       }}, chatId, AUTHOR, new AbortController().signal, USER,
       {provider: "cloudflare", model: "faux-model", apiToken: ""});
     };
-    await expect(turn(fauxAssistantMessage([], {stopReason: "error",
-      errorMessage: '400 {"type":"error","error":{"type":"invalid_request_error","message":"too many PDF pages"}}'})))
+    await expect(turn(fauxAssistantMessage([], {stopReason: "error", errorMessage})))
       .rejects.toThrow("Retrying sends this message's images and PDFs as workspace files instead.");
     expect(imageParts(requests[0])).toHaveLength(1);
     await turn(fauxAssistantMessage(fauxText("Read it from the workspace.")));
