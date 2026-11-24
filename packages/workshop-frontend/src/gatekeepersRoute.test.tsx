@@ -126,7 +126,7 @@ describe('ambient gatekeepers with resources', () => {
   const ambient = {
     id: 'container',
     description: { displayName: 'Linux Container', url: 'https://example.com', autoProvisionsAccount: true },
-    supportedResources: [{ urlPattern: 'container://instance/*', title: 'Linux Container', connectable: false, creatable: true }],
+    supportedResources: [{ urlPattern: 'container://instance/*', title: 'Shell environment', connectable: false, creatable: true }],
   }
   const renderConnectors = async (addable: typeof ambient[]) => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
@@ -150,8 +150,13 @@ describe('ambient gatekeepers with resources', () => {
     expect(cardCount('Linux Container')).toBe(0)
   })
 
-  it('is offered once while it can still be added', async () => {
+  it('is offered once, with its resources, while it can still be added', async () => {
+    // listAddableGatekeepers carries no resources.
     await renderConnectors([{ ...ambient, supportedResources: [] }])
     expect(cardCount('Linux Container')).toBe(1)
+    const card = Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find(element => element.textContent?.includes('Linux Container'))!
+    await act(async () => card.click())
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Shell environment')
   })
 })
