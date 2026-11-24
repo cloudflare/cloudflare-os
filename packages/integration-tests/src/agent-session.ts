@@ -117,6 +117,8 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   /** Open the management app of the user's account with `vendorId`, as its Workshop page does. */
   openGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame>;
   openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
+  /** Read the Git blob `oid` as UTF-8 text, as a chat view reads a pinned file (Overseer.readBlob). */
+  readBlobText(oid: string): Promise<string>;
   acceptChanges(): Promise<void>;
   /** Rewind the chat's proposed changes from the given "changes" message on (see Overseer). */
   revertChanges(revertFrom: number): Promise<void>;
@@ -728,6 +730,11 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const chatId = this.#chatId;
     if (chatId === undefined) throw new Error("The session has no chat branch");
     return { client: await this.#workspace.getGadget(id), chatId };
+  }
+
+  async readBlobText(oid: string): Promise<string> {
+    await this.#ready();
+    return await new Response(await this.#workspace.readBlob(oid)).text();
   }
 
   async acceptChanges(): Promise<void> {

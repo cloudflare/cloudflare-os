@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AiChatMessage, AlwaysAvailableResource } from "@gadgets/workshop-shared/api";
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { createFauxCore, fauxAssistantMessage, fauxText, type Message } from "@earendil-works/pi-ai";
+import type {
+  AiChatAuthorInfo, AiChatMessage, AlwaysAvailableResource,
+} from "@gadgets/workshop-shared/api";
+import type { Gatekeeper } from "@gadgets/workshop-shared/gatekeeper";
 import {
   AGENT_CATALOG_MAX_DESCRIPTION_LENGTH, AGENT_CATALOG_MAX_ENTRIES, AGENT_CATALOG_MAX_ID_LENGTH,
   AGENT_CATALOG_MAX_TITLE_LENGTH, boundAgentCatalog,
@@ -8,6 +14,15 @@ import {
   findCatalogChanges, formatAgentCatalogPrompt, formatAlwaysAvailableResourcesPrompt,
   formatCatalogChange, normalizeAgentCatalog, seenAlwaysAvailableResources,
 } from "../src/agent-catalog";
+import { runAgent } from "../src/agent";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
+
+declare module "cloudflare:workers" {
+  interface ProvidedEnv {
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+  }
+}
 
 describe("normalizeAgentCatalog", () => {
   it("sorts entries, strips control characters, and truncates long fields to the max bounds", () => {
@@ -170,5 +185,57 @@ describe("catalog changes", () => {
 
     expect(seenAlwaysAvailableResources([skills("Tax")], messages, 7).get("CONTEXT"))
       .toEqual(skills("Tax", "Travel"));
+  });
+
+  it("tells the agent what changed since the change it was last told about", async () => {
+    let stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      // (Bracket access reaches the private field with its real type.)
+      let impl = instance["impl"];
+      let user: AiChatAuthorInfo = { type: "user", id: "owner@example.com", name: "Owner" };
+      let current = skills("Tax");
+      let facet = {
+        describe: async () => ({
+          title: current.title, url: "https://example.com", snippet: "",
+          suggestedBindingName: current.name, tsType: "Skills",
+        }),
+        getAgentCatalog: async () => ({ entries: current.catalog?.entries ?? [] }),
+      } satisfies Required<Pick<Gatekeeper<unknown>, "describe" | "getAgentCatalog">>;
+      // A gatekeeper class cannot be minted in a test: the record holds one the workspace never
+      // instantiates, and the facet supplies only the RPC methods a turn calls.
+      impl.getGatekeeperFacet =
+          (async () => facet) as unknown as OverseerDurableObject["impl"]["getGatekeeperFacet"];
+      impl.storage.gatekeepers.put({
+        id: 1, resourceTitle: current.title, class: {} as unknown as GatekeeperRecord["class"],
+        creationSpec: { type: "ambient", vendorId: "skills", accountId: 1 },
+      });
+      impl.storage.chatMeta.put(
+          { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+      // Each turn's catalog differs from the one before; returns what the turn's request held.
+      let turn = async (catalog: AlwaysAvailableResource): Promise<string[]> => {
+        current = catalog;
+        impl.addChatMessages(1, user, [{ type: "message", message: "Go on." }]);
+        let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+        faux.setResponses([fauxAssistantMessage(fauxText("Done."))]);
+        let requests: Message[][] = [];
+        await runAgent(impl, {
+          model: faux.getModel(),
+          stream: (model, context, options) => {
+            requests.push(structuredClone(context.messages));
+            return faux.stream(model, context, options);
+          },
+        }, 1, { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal,
+            user, { provider: "cloudflare", model: "faux-model", apiToken: "" });
+        return requests[0].flatMap(message => message.role === "toolResult"
+            ? [message.content.map(part => part.type === "text" ? part.text : "").join("")] : []);
+      };
+
+      expect(await turn(skills("Tax"))).toEqual([]);
+      let first = formatCatalogChange(skills("Tax", "Travel"), skills("Tax"));
+      expect(await turn(skills("Tax", "Travel"))).toEqual([first]);
+      expect(await turn(skills("Travel", "Visa"))).toEqual(
+          [first, formatCatalogChange(skills("Travel", "Visa"), skills("Tax", "Travel"))]);
+    });
   });
 });

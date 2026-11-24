@@ -97,7 +97,7 @@ it('renders only the message snapshot bytes through its narrow RPC reader', asyn
   const sent: string[] = []
   await openBlock(observedImage('first', source) + observedImage('second', source), {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: url => readSnapshotFile({ oids: { [source]: oid }, readBlob }, url),
+    readFile: url => readSnapshotFile({ oids: { [source]: oid }, readBlob }, url),
   })
   await expect.poll(() => sent.filter(message => /^(first|second):2:blob:/.test(message)).length).toBe(2)
   expect(readBlob.mock.calls.map(([value]) => value)).toEqual([oid, oid])
@@ -114,14 +114,14 @@ it.each([
 ])('reads the pinned DOM-decoded inline image URL for %s', async (attribute, path) => {
   const source = `worktree://REPO/${path}`, oid = 'a'.repeat(40)
   const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async () => byteStream(png('red')))
-  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(url =>
+  const readFile = vi.fn<NonNullable<UiBlockHostOptions['readFile']>>(url =>
     readSnapshotFile({ oids: { [source]: oid }, readBlob }, url))
   const sent: string[] = []
   await openBlock(observedImage('picture', `worktree://REPO/${attribute}`), {
-    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readImage,
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readFile,
   })
   await expect.poll(() => sent.some(message => message.startsWith('picture:2:blob:'))).toBe(true)
-  expect(readImage).toHaveBeenCalledExactlyOnceWith(source)
+  expect(readFile).toHaveBeenCalledExactlyOnceWith(source)
   expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
 })
 
@@ -159,7 +159,7 @@ it.each(['remove', 'replace', 'clear'])('cancels an in-progress image download w
       if (message === 'evicted' && cancel.mock.calls.length === 0) controller.enqueue(Uint8Array.of(1))
     },
     onResize: () => {}, onError: message => errors.push(message),
-    readImage: url => readSnapshotFile({ oids: { [source]: first, [trigger]: second, [replacement]: third }, readBlob }, url),
+    readFile: url => readSnapshotFile({ oids: { [source]: first, [trigger]: second, [replacement]: third }, readBlob }, url),
   })
   await expect.poll(() => sent.includes('evicted')).toBe(true)
   await expect.poll(() => cancel.mock.calls.length).toBe(1)
@@ -172,7 +172,7 @@ it.each(['remove', 'replace', 'clear'])('cancels an in-progress image download w
 it.each([false, true])('restores a detached image while respecting an explicit source change: %s', async changed => {
   const source = 'worktree://OUTPUTS/image.png', sent: string[] = []
   const replacement = changed ? 'worktree://OUTPUTS/replacement.png' : source
-  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(async () =>
+  const readFile = vi.fn<NonNullable<UiBlockHostOptions['readFile']>>(async () =>
     ({oid: 'a'.repeat(40), stream: byteStream(png('cyan'))}))
   await openBlock(`<img width="1600" src="${source}" onerror="agent.send('error')" onload="
     if (!this.dataset.detached) {
@@ -182,12 +182,12 @@ it.each([false, true])('restores a detached image while respecting an explicit s
       requestAnimationFrame(() => { ${changed ? `this.src = '${replacement}';` : ''} document.body.append(this); });
     } else agent.send(this.dataset.width + ':' + this.getBoundingClientRect().width);
   ">`, {
-    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readImage,
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readFile,
   })
-  await expect.poll(() => readImage.mock.calls.length).toBe(2)
+  await expect.poll(() => readFile.mock.calls.length).toBe(2)
   await expect.poll(() => sent.some(message => /^([0-9.]+):\1$/.test(message))).toBe(true)
   expect(sent).not.toContain('error')
-  expect(readImage.mock.calls.map(([url]) => url)).toEqual([source, replacement])
+  expect(readFile.mock.calls.map(([url]) => url)).toEqual([source, replacement])
 })
 
 it.each(['pending', 'loaded'])('preserves a %s image when the view resets its pinned source', async phase => {
@@ -195,7 +195,7 @@ it.each(['pending', 'loaded'])('preserves a %s image when the view resets its pi
   const reading = Promise.withResolvers<void>(), loaded = Promise.withResolvers<void>()
   const pending = Promise.withResolvers<void>()
   const sent: string[] = []
-  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(async url => {
+  const readFile = vi.fn<NonNullable<UiBlockHostOptions['readFile']>>(async url => {
     if (url === source) {
       reading.resolve()
       if (phase === 'pending') await pending.promise
@@ -209,14 +209,14 @@ it.each(['pending', 'loaded'])('preserves a %s image when the view resets its pi
       sent.push(message)
       if (message.startsWith('target:')) loaded.resolve()
     },
-    onResize: () => {}, onError: () => {}, readImage,
+    onResize: () => {}, onError: () => {}, readFile,
   })
   await expect.poll(() => sent.includes('reset')).toBe(true)
   pending.resolve()
   await expect.poll(() => sent.filter(message => message.startsWith('target:2:blob:')).length)
     .toBe(phase === 'pending' ? 1 : 2)
   expect(sent).not.toContain('fallback')
-  expect(readImage.mock.calls.filter(([url]) => url === source)).toHaveLength(1)
+  expect(readFile.mock.calls.filter(([url]) => url === source)).toHaveLength(1)
 })
 
 it('removes worktree sizing when the view switches an image to a data preview', async () => {
@@ -226,7 +226,7 @@ it('removes worktree sizing when the view switches an image to a data preview', 
     if (!this.dataset.preview) { this.dataset.preview = 'true'; this.src = '${preview}'; }
     else { const r = this.getBoundingClientRect(); agent.send(r.width + 'x' + r.height + ':' + this.hasAttribute('data-blob-oid')); }">`, {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: async () => ({ oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }),
+    readFile: async () => ({ oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }),
   })
   await expect.poll(() => sent).toEqual(['440x20:false'])
 })
@@ -241,7 +241,7 @@ it.each(['', '<?xml-stylesheet type="text/css" href="style.css"?>', '<!DOCTYPE s
   await openBlock(observedImage('vector', source) +
     '<img src="https://example.com/blocked.png" onerror="agent.send(\'blocked\')">', {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: url => readSnapshotFile({ oids: { [source]: 'a'.repeat(40) }, readBlob }, url),
+    readFile: url => readSnapshotFile({ oids: { [source]: 'a'.repeat(40) }, readBlob }, url),
   })
   await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
   await expect.poll(() => sent.includes('blocked')).toBe(true)
@@ -255,7 +255,7 @@ it('does not invoke the image fallback while pinned bytes are still being read',
   await openBlock('<img src="worktree://REPO/image.png" onerror="agent.send(\'fallback\'); this.remove()" ' +
     'onload="agent.send(\'loaded\')">', {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: async () => {
+    readFile: async () => {
       reading.resolve()
       await pending.promise
       return { oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }
@@ -342,7 +342,7 @@ it.each(['utf-16le', 'utf-16be', 'namespace'])('decodes a valid %s SVG in an inl
   const sent: string[] = []
   await openBlock(observedImage('vector', 'worktree://OUTPUTS/vector.svg'), {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
+    readFile: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
   })
   await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
 })
@@ -355,7 +355,7 @@ it.each(['data', 'worktree'])('preserves dimensions authored on %s images in exi
   const sent: string[] = []
   await openBlock(`<img src="${source}" width="60" height="20" onload="const r = this.getBoundingClientRect(); agent.send(r.width + 'x' + r.height)">`, {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
+    readFile: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
   })
   await expect.poll(() => sent).toEqual(['60x20'])
 })
@@ -366,7 +366,49 @@ it('lets a view override responsive image defaults with its own stylesheet', asy
   await openBlock('<style>.thumb { width: 60px; height: 20px; max-width: 40px; }</style>' +
     '<img class="thumb" src="worktree://OUTPUTS/image.png" onload="const r = this.getBoundingClientRect(); agent.send(r.width + \'x\' + r.height)">', {
     onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
-    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(png('cyan'))}),
+    readFile: async () => ({oid: 'a'.repeat(40), stream: byteStream(png('cyan'))}),
   })
   await expect.poll(() => sent).toEqual(['40x20'])
+})
+
+// Data files (plans/live-views.md, "Data files"): a module script reads a pinned file at the
+// block's close through the same readFile as images.
+const textFile = (text: string) => async () => ({ oid: 'a'.repeat(40), stream: byteStream(new TextEncoder().encode(text)) })
+
+it("gives a module script a file's JSON and text through embeds", async () => {
+  const sent: string[] = []
+  const readFile = vi.fn<NonNullable<UiBlockHostOptions['readFile']>>(async url =>
+    textFile(url.endsWith('.json') ? '{"Food":420}' : 'month,total\nJan,96\n')())
+  await openBlock(`<script type="module">
+    const totals = await embeds.json("worktree://OUTPUTS/totals.json");
+    const csv = await embeds.text("worktree://OUTPUTS/months.csv");
+    agent.send(totals.Food + "|" + csv.split("\\n")[1]);
+  </script>`, { onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readFile })
+  await expect.poll(() => sent).toEqual(['420|Jan,96'])
+  expect(readFile.mock.calls.map(([url]) => url)).toEqual(['worktree://OUTPUTS/totals.json', 'worktree://OUTPUTS/months.csv'])
+})
+
+it("rejects a refused read in the view's code, and shows it when the code leaves it unhandled", async () => {
+  const sent: string[] = [], errors: string[] = []
+  await openBlock(`<script type="module">
+    embeds.json("worktree://OUTPUTS/caught.json").catch(error => agent.send("caught: " + error.message));
+    await embeds.text("worktree://OUTPUTS/missing.txt");
+  </script>`, {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: message => errors.push(message),
+    readFile: async url => { throw new Error(`File unavailable: ${url}`) },
+  })
+  await expect.poll(() => sent).toEqual(['caught: File unavailable: worktree://OUTPUTS/caught.json'])
+  await expect.poll(() => errors.some(error => error.includes('worktree://OUTPUTS/missing.txt'))).toBe(true)
+})
+
+it('reads a file over 1 MiB whole', async () => {
+  const sent: string[] = []
+  const rows = Array.from({ length: 60_000 }, (_, i) => [`row ${i}`, i])
+  const json = JSON.stringify(rows)
+  expect(json.length).toBeGreaterThan(1024 * 1024)
+  await openBlock(`<script type="module">
+    const rows = await embeds.json("worktree://OUTPUTS/big.json");
+    agent.send(rows.length + ":" + rows.at(-1)[0]);
+  </script>`, { onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readFile: textFile(json) })
+  await expect.poll(() => sent).toEqual(['60000:row 59999'])
 })

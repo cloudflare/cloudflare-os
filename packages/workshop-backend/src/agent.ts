@@ -781,9 +781,9 @@ and wait for the command to return its
 files before referencing them. Ignored files and files outside mounts stay in the container.
 Do not put image bytes or base64 in your reply.
 The same URLs work in literal \`<img src="worktree://BINDING/path">\` tags in \`<inline-html>\`
-for custom layouts; construct the file references in the markup, not dynamically in a script.
+for custom layouts; write each file reference in quotes in the view's text, never build one in code.
 
-You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text. Write up to 20 values into a view's code; for more, write them to a file (see "Views of data from code").
 
 \`\`\`
 Spending on food rose 18% in October, mostly eating out.
@@ -806,13 +806,45 @@ Spending on food rose 18% in October, mostly eating out.
 \`\`\`
 
 * Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
-* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
-* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the globals \`agent\` and \`embeds\`.
+* A view has no \`env\` and no network: it shows what you write into it and the files it reads. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
 * The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
 * \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
 * For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
 * The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
 * A view keeps no state. Something that must remember things between visits belongs in a Gadget.
+
+## Views of data from code
+
+For more than 20 values, read or work out the data with \`executeCode\`, and write it to a file in a worktree (create one with \`createWorktree\`, no \`commitId\`, if the chat has none for generated files). Then, in your next response, read the file in the view, so the data never passes through your answer: never retype it into the view's code. Save the figures your answer states with the rows, so the view shows them too. The view reads the file as it was when you wrote the answer, so a view in the same response as the write would not see it: write first, then draw the view. Call the tool; never paste its code into your answer.
+
+\`\`\`
+export default async function(self, env) {
+  const months = await env.EXPENSES.rpc.monthlyTotals(); // [["Jan", 96], …]
+  const total = months.reduce((sum, [, amount]) => sum + amount, 0);
+  await env.OUTPUTS.writeBytes("spending.json", new TextEncoder().encode(JSON.stringify({ total, months })));
+}
+\`\`\`
+
+Then, in your answer:
+
+\`\`\`
+<inline-html>
+<title>Spending by month</title>
+<h3 id="total"></h3>
+<div id="months"></div>
+<script type="module">
+  const { total, months } = await embeds.json("worktree://OUTPUTS/spending.json");
+  document.getElementById("total").textContent = \`Total: \${total}\`;
+  const list = document.getElementById("months");
+  for (const [month, amount] of months) {
+    list.appendChild(document.createElement("p")).textContent = \`\${month}: \${amount}\`;
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* \`embeds.json(url)\` and \`embeds.text(url)\` read the whole file.
 
 # Writing Gadgets
 
@@ -4344,8 +4376,10 @@ async function runAgentPass(
         switch (ev.type) {
           case "text_delta": {
             answerText += ev.delta;
-            // Only syntax that can complete a file reference can add a pin. Ordinary prose
-            // must not reparse the accumulated answer; the final pass also handles EOF.
+            // Only syntax that can complete a file reference can add a pin, so a quoted URL pins
+            // with the next delta holding `)`, `]`, `>` or a newline, at the latest the block's
+            // closing tag. Ordinary prose must not reparse the accumulated answer; the final pass
+            // also handles EOF.
             const newEmbeds = /[)\]>\r\n]/.test(ev.delta)
                 ? await snapshotEmbeds(answerText, true) : undefined;
             emitStreamEvent({type: "textDelta", delta: ev.delta, embeds: newEmbeds});
@@ -4666,6 +4700,12 @@ async function runAgentPass(
     hooks.addChatMessages(chatId, author, [{type: "catalogChange", resources: catalogChanges}]);
     replayCatalogChange(sequence, catalogChanges, Date.now());
   }
+
+  // The model's context is built and nothing below reads the stored rows, so release them: they
+  // hold their own copy of the text of agent steps, which the context takes from stored
+  // snapshots. Emptied in place because runAgent holds the array too; it reads it again only to
+  // recognise a `/compact` turn, and such a pass has returned above.
+  chatMessages.length = 0;
 
   let context: AgentContext = {
     messages: [leadingSystemMessage, ...modelMessages],
