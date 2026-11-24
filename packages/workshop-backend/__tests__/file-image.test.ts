@@ -909,6 +909,8 @@ describe("images read from a worktree", () => {
     ["cloudflare-auto-router", "invalid_image_format", 400],
     ["cloudflare-auto-router", "invalid_image_mode", 422],
     ["ollama", "decode WebP image: webp: invalid format", 500],
+    ["ollama", "decode WebP image: riff: list subchunk too long", 500],
+    ["ollama", "decode WebP image: unexpected EOF", 500],
     ["ollama", "Failed to load image or audio file", 500],
   ] as const)("recovers through the real %s provider adapter: %s (%s)", (provider, errorCode, status) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
@@ -1088,7 +1090,7 @@ describe("images read from a worktree", () => {
 
   it.each([
     ["400 invalid image data", 400, true],
-    ["500 decode WebP image: webp: invalid format", 500, true],
+    ["500 decode WebP image: webp: invalid format", 500, false],
     ["500 internal server error", 500, false],
     ["503 decode WebP image: webp: invalid format", 503, false],
     ["image_parse_error: Could not process image", 200, true],
@@ -1114,6 +1116,12 @@ describe("images read from a worktree", () => {
     ["ollama", 500, true], ["ollama", 503, false], ["openai", 500, false], [undefined, 500, false],
   ] as const)("scopes llama.cpp decoder failure to Ollama (%s, %s)", (provider, status, expected) => {
     expect(isImageDecodeError("Failed to load image or audio file", status, provider)).toBe(expected);
+  });
+
+  it.each([
+    ["ollama", 500, true], ["ollama", 503, false], ["openai", 500, false], [undefined, 500, false],
+  ] as const)("scopes the stable WebP decoder prefix to Ollama (%s, %s)", (provider, status, expected) => {
+    expect(isImageDecodeError("decode WebP image: riff: list subchunk too long", status, provider)).toBe(expected);
   });
 
   it.each(["png", "webp", "jpeg"])("rejects %s resolution from a real blob header without reading its body", format =>

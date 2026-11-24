@@ -132,8 +132,9 @@ it("runs a hook from enabling, through a delivery and its approved write, to its
   expect(await ws.listHooks()).toEqual([]);
   await waitFor("the removed connection's webhook to be deleted", async () =>
     github.deletedWebhooks.includes(again!.id) || null);
-  expect(await github.deliver(harness, "issues", github.issueEvent("opened", repo.name, 44), { to: [again!] }))
-    .toEqual([404]);
+  // The fake records GitHub's DELETE before its response returns and the local route is cleared.
+  await waitFor("the removed connection's webhook route to be cleared", async () =>
+    (await github.deliver(harness, "issues", github.issueEvent("opened", repo.name, 44), { to: [again!] }))[0] === 404 || null);
   expect(await pendingTitles(ws)).toEqual([]);
 
   // Disconnecting the account revokes its token.
