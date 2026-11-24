@@ -3,9 +3,8 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import {
-  GadgetClient,
-  GadgetSnapshotClient,
   ConsoleLogEvent,
+  UiBundle,
   MAX_FOCUS_ANCHOR_LENGTH,
   MAX_FOCUS_CONTEXT_LENGTH,
   MAX_FOCUS_LABEL_LENGTH,
@@ -309,10 +308,22 @@ export type GadgetUIFocus = {
   onFocusReset?: () => void
 }
 
+/**
+ * What the frame runs: its code, and the stub that code calls as `gadget`. A gadget supplies both
+ * (GadgetClient, or GadgetSnapshotClient for a snapshot), and so does a connection
+ * (GatekeeperClient), whose session stands where a gadget's server would.
+ */
+export type GadgetUiSource = {
+  getUiBundle(chatId?: number): PromiseLike<UiBundle | null>
+  connectToGadget(chatId?: number): PromiseLike<RpcStub<any>>
+}
+
 interface GadgetUIProps {
-  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
+  gadget: GadgetUiSource
   height: string
   reloadTrigger?: number
+  // Each change posts `{type: 'refresh'}` into the frame, for code that redraws without reloading.
+  refreshSignal?: number
   isVisible?: boolean
   chatId?: number
   // Absent: the frame's reports are ignored and it is never navigated.
@@ -341,11 +352,11 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, focus, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, refreshSignal, isVisible = true, chatId, renderMode, focus, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
-  const [error, setError] = useState<{ message: string; stub?: GadgetUIProps['gadget'] } | null>(null)
+  const [error, setError] = useState<{ message: string; stub?: GadgetUiSource } | null>(null)
   const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)
@@ -763,6 +774,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     rpcSessionAbortRef.current?.abort(new Error('Gadget iframe was replaced.'))
     rpcSessionAbortRef.current = null
   }, [frameKey, sandboxedHtml])
+
+  useEffect(() => {
+    // The frame's origin is opaque, so no narrower target exists; the message carries no data.
+    if (refreshSignal) iframeRef.current?.contentWindow?.postMessage({ type: 'refresh' }, '*')
+  }, [refreshSignal])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
