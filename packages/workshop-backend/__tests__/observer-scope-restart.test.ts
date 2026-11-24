@@ -815,6 +815,8 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
     impl.bindWorkpiece(100, "LOOKUP_AGAIN", 11);
     impl.bindWorkpiece(101, "DOCUMENTS", 3);
     seedGadgetHistory(impl, 101, 4);
+    // History through a connection the gadget still binds adds no route: the binding lists it.
+    seedGadgetHistory(impl, 101, 3);
     for (let id of [5, 6]) {
       impl.storage.boundHooks.put({
         id, actionId: 999, gatekeeperId: id, gadgetId: 101, enabled: id === 5,

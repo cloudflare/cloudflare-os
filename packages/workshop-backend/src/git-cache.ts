@@ -42,8 +42,10 @@
 //   records (`headCommit`/`pinBase`/`baseCommit`), live chats' pinned commits, the pin
 //   declarations in chat logs and compaction checkpoints (closed epochs are reconstructed from
 //   them), and the `observedOid` blob stamps (and legacy `observedCommit` stamps) on chats'
-//   readFile tool calls, attachment originals, and whole-file `setBytes` references in live chat
-//   changes. A future GC must root read stamps or let agent replay tolerate a missing object by
+//   readFile tool calls, attachment originals, whole-file `setBytes` references in live chat
+//   changes, and the blob OIDs in chat messages' `embeds` (a pin of an unaccepted text file writes
+//   a blob that only its message names once the change is reverted). A future GC must root read
+//   stamps or let agent replay tolerate a missing object by
 //   eliding the read. Objects pulled from remotes are re-pullable through their metadata. A
 //   chunked blob's index row keeps its chunk rows alive: a chunk is live iff it is reachable
 //   as an object in its own right, or is named by a live index row.
@@ -1629,9 +1631,9 @@ export class WorkspaceGitCache {
       : Promise<string> {
     // Its callers are new reads (a binding's readFile, a diff, a replica's merge), never the
     // replay of a saved change, so it refuses a file too large to hold as text, as `limited`.
-    await this.#faultFileBlob(oid, referencedBy);
-    assertWholeTextFits(this.openLocalBlob(oid)!, path);
-    return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);
+    let reader = await this.openBlob(oid, referencedBy);
+    assertWholeTextFits(reader, path);
+    return decodeBlobText(reader.read(0, reader.size), path);
   }
 
   /**

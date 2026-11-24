@@ -1,5 +1,5 @@
 import { validateBindingName, type ChatEmbeds } from "@gadgets/workshop-shared/api";
-import { markdownFileUrls, parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
+import { markdownFileUrls, parseInlineHtmlBlocks, quotedFileUrls } from "@gadgets/workshop-shared/inline-html-blocks";
 import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 
 /** Pin emitted file references once, removing provisional pins absent from the final message. */
@@ -15,6 +15,8 @@ export async function snapshotChatEmbeds(
     if (part.kind === "text") {
       for (const url of markdownFileUrls(part.text, streaming)) sources.add(url);
     } else if (streaming || part.kind === "block") {
+      // The view's data files: the URLs its raw text quotes (any view reads any file this pins).
+      for (const url of quotedFileUrls(part.html)) sources.add(url);
       // HTMLRewriter preserves character references in attributes; decode once to match the
       // browser's getAttribute() before pinning the URL or resolving its path.
       try {

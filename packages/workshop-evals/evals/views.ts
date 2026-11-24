@@ -1,4 +1,4 @@
-import type { AiChatMessage } from "@gadgets/workshop-shared/api";
+import type { AiChatMessage, ChatEmbeds } from "@gadgets/workshop-shared/api";
 import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { asEvidence } from "../src/task.js";
 import type { EvalVerifier } from "../src/verifier.js";
@@ -9,7 +9,7 @@ import type { RenderedView, SeriesMark } from "../src/view-host.js";
 // rules there.
 
 /** A closed view the agent wrote this turn, and the sequence of the message it is in. */
-export type TurnView = { sequence: number; html: string };
+export type TurnView = { sequence: number; html: string; embeds?: ChatEmbeds };
 
 function agentMessages(messages: readonly AiChatMessage[]) {
   return messages.flatMap(message =>
@@ -26,7 +26,9 @@ function turnViews(verifier: EvalVerifier): { views: TurnView[]; open: string[] 
   const open: string[] = [];
   for (const message of agentMessages(verifier.messages)) {
     for (const segment of parseInlineHtmlBlocks(message.message)) {
-      if (segment.kind === "block") views.push({ sequence: message.sequence, html: segment.html });
+      if (segment.kind === "block") {
+        views.push({ sequence: message.sequence, html: segment.html, ...message.embeds && { embeds: message.embeds } });
+      }
       else if (segment.kind === "open") open.push(segment.text.slice(0, 200));
     }
   }
@@ -112,7 +114,7 @@ export async function checkView(
   const views = found.some(other => same(other, view)) ? found : [view];
   let bodyRan = false;
   for (const [index, each] of views.entries()) {
-    await using rendered = await verifier.openView(each.html);
+    await using rendered = await verifier.openView(each.html, each.embeds);
     if (!bodyRan && same(each, view)) {
       bodyRan = true;
       await body(rendered);
