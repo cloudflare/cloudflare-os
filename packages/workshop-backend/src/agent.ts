@@ -4692,16 +4692,17 @@ async function runAgentPass(
   let compactionTurn = isCompactionTurn(chatMessages.toReversed());
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget) ||
       attachmentsFitFrom !== undefined) {
+    // Native compaction needs the prompt as earlier requests sent it, which unread attachments
+    // change; the summary path reads only the transcript.
+    let native = supportsAnthropicCompaction(handle.model) && unreadParts.size === 0;
     let compactedTo = findCompactionBoundary(
-        projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages), attachmentsFitFrom);
+        projection, inputBudget, contextTokens, checkpoint?.compactedTo,
+        findProtectedFromSequence(chatMessages), attachmentsFitFrom, native);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
-        // Native compaction needs the prompt as earlier requests sent it, which unread
-        // attachments change; the summary path reads only the transcript.
-        if (supportsAnthropicCompaction(handle.model) && unreadParts.size === 0) {
+        if (native) {
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
           let keptFrom = projection.findIndex(({sequence}) =>
             sequence !== undefined && sequence >= compactedTo);

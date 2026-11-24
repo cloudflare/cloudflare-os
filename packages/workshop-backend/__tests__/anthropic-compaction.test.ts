@@ -354,8 +354,15 @@ describe("Anthropic compaction of a chat's attachments", () => {
     respond(...REPLY_EVENTS);
     await claudeTurn();
     expect(bodies[1]?.compaction).toBeDefined();
-    expect(images(bodies[1])).toBe(5);
+    // The cut that keeps the attachments that fit falls between the first two messages, both the
+    // user's, so it moves on to where the role changes: the API would merge the first kept message
+    // into the last summarized one, voiding the thinking it keeps.
+    expect(images(bodies[1])).toBe(10);
     expect(JSON.stringify(bodies[1])).not.toContain("not shown to you");
-    expect(images(bodies[2])).toBe(16);
+    expect(images(bodies[2])).toBe(11);
+    const roles = (body: Record<string, unknown> | undefined) =>
+        (body!.messages as { role: string }[]).map(message => message.role);
+    const lastSummarized = roles(bodies[1]).findLast(role => role !== "system");
+    expect(roles(bodies[2])[1]).not.toBe(lastSummarized);
   }));
 });

@@ -263,6 +263,21 @@ describe("compaction boundary", () => {
     expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 0)).toBe(1);
   });
 
+  // Anthropic merges a kept message into the summarized one before it when their roles match.
+  it("moves a native compaction's cut on to where the role changes, short of what must stay", () => {
+    let messages = [
+      message(0, user, "first photos"),
+      message(1, user, "more photos"),
+      message(2, agent, "seen them"),
+      message(3, user, "and now?"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1, true)).toBe(2);
+    // With message 1 protected, no cut both changes role and keeps it.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, 1, 1, true)).toBeUndefined();
+  });
+
   // The checkpoint records provisional creations, so unlike a pending connection request they need
   // no protection and the boundary may pass them.
   it("protects a pending connection request but not a provisional creation", () => {

@@ -593,6 +593,33 @@ describe("worktree commands", () => {
     expect(entry.mode).toBe("100755");
   }));
 
+  // Past the merge's line budget, but neither needs a text merge: identical rewrites take that
+  // content, and an edit against a deletion keeps the edit, as the text merge would.
+  it.each([
+    ["rewrite to the same content, with a chmod", (rows: string) => ({workspace: `${rows}same\n`,
+      command: {mode: "100755", text: `${rows}same\n`}, kept: "same\n", conflict: false})],
+    ["deletion of a file the workspace edits", (rows: string) => ({workspace: `${rows}edited\n`,
+      command: null, kept: "edited\n", conflict: true})],
+  ] as const)("merges a %s without reading it as text", (_, sides) => withCommands(async (impl, id) => {
+    const rows = "1\n".repeat(300_000);
+    const {workspace, command, kept, conflict} = sides(rows);
+    let tail!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        await repo.writeBytes("ones.csv", enc(rows));
+        const snapshot = await replicator.snapshot(queue);
+        await repo.writeBytes("ones.csv", enc(workspace));
+        const result = await commandResult(impl, snapshot.tree, {"ones.csv": command});
+        await replicator.submit(queue, snapshot.tree, result.tree, result.pack());
+        tail = await new Response(await repo.readBytes("ones.csv", {offset: rows.length, length: kept.length})).text();
+        return "ran";
+      },
+    });
+    const [output] = await turn(impl, [[execute("command")]]);
+    expect(tail).toBe(kept);
+    expect(output.includes("with conflicts in: ones.csv")).toBe(conflict);
+  }));
+
   // Too large to read as text, but binary, so it merges as binary files do.
   it("merges a binary file too large to read as text as binary", () => withCommands(async (impl, id) => {
     const big = new Uint8Array(MAX_WHOLE_TEXT_BYTES + 1);

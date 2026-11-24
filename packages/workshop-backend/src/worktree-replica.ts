@@ -176,36 +176,33 @@ export class WorktreeReplicas {
         continue;
       }
       if (theirs.to?.oid === ours.to?.oid && theirs.to?.mode === ours.to?.mode) continue;
-      let kept = theirs.to ?? ours.to!;
-      if ((theirs.to === undefined || ours.to === undefined) && kept.oid === ours.from?.oid) {
-        // One side deleted the file and the other changed only its mode, which the text merge
-        // can't see: keep the change, as against any deletion.
-        changes.set(path, fileEntry(kept));
+      if (theirs.to === undefined || ours.to === undefined) {
+        // One side deleted the file and the other changed it, if only its mode: keep the change,
+        // as against any deletion, as the text merge would, without reading it.
+        changes.set(path, fileEntry(theirs.to ?? ours.to!));
         conflicts.push(path);
         continue;
       }
       // A mode merges on its own: one side's change of it survives the other's edit.
-      let mode = theirs.to?.mode === ours.from?.mode ? ours.to?.mode ?? theirs.to?.mode
-          : theirs.to?.mode ?? ours.to!.mode;
-      // Content that only one side changed needs no text merge, whatever the file holds: that
-      // side's, with the merged mode.
-      if (ours.to && theirs.to &&
-          (theirs.to.oid === ours.from?.oid || ours.to.oid === ours.from?.oid)) {
-        changes.set(path, { mode: mode!,
-          oid: theirs.to.oid === ours.from?.oid ? ours.to.oid : theirs.to.oid });
+      let mode = theirs.to.mode === ours.from?.mode ? ours.to.mode : theirs.to.mode;
+      // Content that only one side changed, or both alike, needs no text merge, whatever the
+      // file holds: that content, with the merged mode.
+      if (theirs.to.oid === ours.from?.oid || ours.to.oid === ours.from?.oid ||
+          theirs.to.oid === ours.to.oid) {
+        changes.set(path, { mode, oid: theirs.to.oid === ours.from?.oid ? ours.to.oid : theirs.to.oid });
         continue;
       }
       let versions = await this.#readVersions(
           [ours.from, ours.to, theirs.to], path, MAX_MERGE_LINES - lines);
       if (versions === null) {
-        // Binary: the command's version, unless it deleted what the workspace changed.
-        changes.set(path, { mode: mode!, oid: (theirs.to ?? ours.to)!.oid });
+        // Binary: the command's version.
+        changes.set(path, { mode, oid: theirs.to.oid });
         conflicts.push(path);
         continue;
       }
       lines += versions.lines;
       versions.texts.forEach((text, side) => { if (text !== undefined) sides[side].set(path, text); });
-      texts.push({ path, mode: mode! });
+      texts.push({ path, mode });
     }
     let merged = threeWayMerge(sides[0], sides[1], sides[2],
                                { base: "base", ours: "workspace", theirs: "command" });
