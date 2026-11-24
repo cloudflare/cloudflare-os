@@ -79,7 +79,7 @@ it("pushes an output added or renamed in a workspace to a subscribed user", asyn
   await user.setWorkspaceNotificationMute(workspaceId, {indefinite: true});
 
   // The workspace renamed in the user's list: its outputs carry the new title.
-  await user.syncWorkspaceListing(workspaceId, {title: {title: "Renamed", titleRev: 1}});
+  await user.syncWorkspaceListing(workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, title: {title: "Renamed", titleRev: 1}});
   await vi.waitFor(() => expect(updates.updates.at(-1)).toMatchObject([workspaceId, [{workspaceTitle: "Renamed"}]]));
   expect(updates.updates.slice(before)).toEqual([[workspaceId, [expect.objectContaining({workspaceTitle: "Renamed"})]]]);
 });
@@ -89,11 +89,11 @@ it("drops a shared workspace's outputs when access is revoked", async () => {
   const reader = await newUser("Reader");
   const outputs = [{workpieceId: 10, title: "Dashboard", created: new Date(0)}];
   // Not listed until first opened.
-  await reader.syncWorkspaceListing(workspaceId, {outputs});
+  await reader.syncWorkspaceListing(workspaceId, {listingRev: 1, outputs});
   expect((await reader.listOutputs()).outputs).toEqual([]);
   await reader.recordSharedWorkspaceOpen(workspaceId, "Workspace", await owner.whoami(), "build", []);
   await reader.setWorkspaceLastActive(workspaceId, new Date(), undefined);
-  await reader.syncWorkspaceListing(workspaceId, {outputs});
+  await reader.syncWorkspaceListing(workspaceId, {listingRev: 1, outputs});
 
   const updates = new OutputUpdates();
   using callback = new RpcStub(updates);
@@ -102,6 +102,78 @@ it("drops a shared workspace's outputs when access is revoked", async () => {
 
   await reader.forgetSharedWorkspace(workspaceId);
   await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([workspaceId, []]));
+});
+
+it("retries from the alarm a push that failed, though the next change leaves the outputs as that push had them", async () => {
+  const {user, workspace} = await setup();
+  await withImpl(workspace, impl => putGadget(impl, 10, "Dashboard"));
+  await vi.waitFor(async () => expect(await listed(user)).toEqual([10]));
+
+  await withImpl(workspace, async impl => {
+    const users = impl.users;
+    const attempted = Promise.withResolvers<void>();
+    replaceUser(impl, user.id.toString(), () => ({
+      syncWorkspaceListing: async () => {
+        attempted.resolve();
+        throw new Error("User DO handoff timed out.");
+      },
+    }));
+    impl.storage.gadgets.delete(10);
+    await attempted.promise;
+    impl.users = users;
+    // Provisional to a chat, so no output.
+    impl.storage.gadgets.put({type: "gadget", id: 11, title: "Draft", created: new Date(0), bindingName: "G11",
+      bindings: {}, pending: {chatId: 1}});
+    await impl.deliverUserUpdates();
+  });
+  expect(await runDurableObjectAlarm(workspace)).toBe(true);
+  await vi.waitFor(async () => expect(await listed(user)).toEqual([]));
+});
+
+it("sends again a value its recipient took from a push that timed out", async () => {
+  const {user, workspace} = await setup();
+  await withImpl(workspace, impl => putGadget(impl, 10, "Dashboard"));
+  await vi.waitFor(async () => expect(await listed(user)).toEqual([10]));
+
+  await withImpl(workspace, async impl => {
+    const users = impl.users;
+    const applied = Promise.withResolvers<void>();
+    // The push of gadget 12 lands, but its sender gives up on it.
+    replaceUser(impl, user.id.toString(), owner => ({
+      syncWorkspaceListing: async (workspaceId: string, listing: WorkspaceListing) => {
+        await owner.syncWorkspaceListing(workspaceId, listing);
+        applied.resolve();
+        throw new Error("User DO handoff timed out.");
+      },
+    }));
+    putGadget(impl, 12, "Report");
+    await applied.promise;
+    await impl.deliverUserUpdates();
+    impl.users = users;
+    // Back to the outputs last acknowledged.
+    impl.storage.gadgets.delete(12);
+    await impl.deliverUserUpdates();
+  });
+  expect(await runDurableObjectAlarm(workspace)).toBe(true);
+  await vi.waitFor(async () => expect(await listed(user)).toEqual([10]));
+});
+
+it("delivers a change whose delivery a restart interrupted once the workspace wakes", async () => {
+  const {user, workspace} = await setup();
+  await withImpl(workspace, async impl => {
+    // The owner's User DO never takes the listing while this instance lasts.
+    const unanswered = Promise.withResolvers<void>().promise;
+    replaceUser(impl, user.id.toString(), owner => new Proxy(owner, {get: (target, key) =>
+      key === "syncWorkspaceListing" ? () => unanswered : Reflect.get(target, key)}));
+    putGadget(impl, 10, "Dashboard");
+    await impl.ctx.storage.sync();
+  });
+  await expect(runInDurableObject(workspace, (_instance, ctx) => ctx.abort("Reset before delivery")))
+    .rejects.toThrow("Reset before delivery");
+  expect(await listed(user)).toEqual([]);
+  // (The aborted stub is broken; a new one reaches the next instance.)
+  expect(await runDurableObjectAlarm(env.TEST_OVERSEER.get(workspace.id))).toBe(true);
+  expect(await listed(user)).toEqual([10]);
 });
 
 // A collaborator the owner gave `gadgetIds` of the workspace's gadgets 10 and 11 to use.
@@ -162,8 +234,8 @@ it("narrows a collaborator's outputs to the gadgets they keep, which no push fro
       updateSharedWorkspaceRole: (workspaceId: string, role: CollaboratorRole) =>
         user.updateSharedWorkspaceRole(workspaceId, role),
     }));
-    impl.joinOutputsFanout(readerId, {role: "use", gadgetIds: [10, 11]});
-    impl.resyncListingTo(readerId);
+    impl.joinOutputsFanout(readerId);
+    impl.resyncListingTo(readerId, profile.id);
   });
   await vi.waitFor(() => expect(slow?.outputs?.map(output => output.workpieceId)).toEqual([10, 11]));
 
@@ -181,7 +253,7 @@ it("narrows the outputs of a collaborator it could not reach once the workspace 
   const fixture = await setup();
   const {reader, profile, readerId, sharer} = await shareGadgets(fixture, [10, 11]);
   await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", await fixture.user.whoami(), "use", []);
-  await reader.syncWorkspaceListing(fixture.workspaceId, {outputs: [
+  await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: 1, outputs: [
     {workpieceId: 10, title: "Dashboard", created: new Date(0)},
     {workpieceId: 11, title: "Report", created: new Date(0)},
   ]});
@@ -202,6 +274,94 @@ it("narrows the outputs of a collaborator it could not reach once the workspace 
   await evictDurableObject(fixture.workspace);
   expect(await runDurableObjectAlarm(fixture.workspace)).toBe(true);
   expect(await listed(reader)).toEqual([10]);
+});
+
+it("never undoes a change made while a narrowing was in flight, even when the narrowing's push lands last", async () => {
+  const fixture = await setup();
+  const {reader, profile, readerId, sharer} = await shareGadgets(fixture, [10, 11]);
+  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", await fixture.user.whoami(), "use", []);
+  await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: 1, outputs: [
+    {workpieceId: 10, title: "Dashboard", created: new Date(0)},
+    {workpieceId: 11, title: "Report", created: new Date(0)},
+  ]});
+  const titles = async () => (await reader.listOutputs()).outputs.map(output => [output.workpieceId, output.title]);
+
+  // The narrowing's outputs, read before gadget 10 is renamed, time out and land after the rename.
+  let late: WorkspaceListing | undefined;
+  await withImpl(fixture.workspace, async impl => {
+    const roleSent = Promise.withResolvers<void>(), renamed = Promise.withResolvers<void>();
+    replaceUser(impl, readerId, user => ({
+      updateSharedWorkspaceRole: async (workspaceId: string, role: CollaboratorRole) => {
+        await user.updateSharedWorkspaceRole(workspaceId, role);
+        roleSent.resolve();
+        await renamed.promise;
+      },
+      syncWorkspaceListing: async (workspaceId: string, listing: WorkspaceListing) => {
+        if (late || !listing.outputs?.some(output => output.title === "Dashboard")) {
+          return user.syncWorkspaceListing(workspaceId, listing);
+        }
+        late = listing;
+        throw new Error("User DO handoff timed out.");
+      },
+    }));
+    impl.joinOutputsFanout(readerId);
+    const sharing = await impl.getSharingManager();
+    const refresh = impl.refreshAffectedCollaboratorListings(
+      sharing.removeCollaborator({profileId: sharer, isOwner: true}, profile.id, [], 11));
+    await roleSent.promise;
+    putGadget(impl, 10, "Board");
+    renamed.resolve();
+    await refresh;
+    // The narrowing's push failed, so the alarm sends what it was owed again.
+    await impl.runAlarmTasks();
+  });
+  expect(late?.outputs?.map(output => [output.workpieceId, output.title])).toEqual([[10, "Dashboard"]]);
+  await vi.waitFor(async () => expect(await titles()).toEqual([[10, "Board"]]));
+  await reader.syncWorkspaceListing(fixture.workspaceId, late!);
+  expect(await titles()).toEqual([[10, "Board"]]);
+});
+
+it("takes no push from before a collaborator's removal once they are re-admitted with less", async () => {
+  const fixture = await setup();
+  const {reader, profile, readerId, sharer} = await shareGadgets(fixture, [10, 11]);
+  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", await fixture.user.whoami(), "use", []);
+  // A push of both while they use them, delayed until just after the open that re-admits them.
+  let delayed: WorkspaceListing | undefined;
+  let readmitted: number[] | undefined;
+  await withImpl(fixture.workspace, async impl => {
+    replaceUser(impl, readerId, user => new Proxy(user, {get: (target, key) => {
+      if (key === "syncWorkspaceListing") {
+        return async (workspaceId: string, listing: WorkspaceListing) => {
+          if (delayed || !listing.outputs) return target.syncWorkspaceListing(workspaceId, listing);
+          delayed = listing;
+        };
+      }
+      if (key === "recordSharedWorkspaceOpen") {
+        return async (...args: Parameters<UserDurableObject["recordSharedWorkspaceOpen"]>) => {
+          await target.recordSharedWorkspaceOpen(...args);
+          await target.syncWorkspaceListing(fixture.workspaceId, delayed!);
+          readmitted = await listed(target);
+        };
+      }
+      return Reflect.get(target, key);
+    }}));
+    impl.resyncListingTo(readerId, profile.id);
+    await vi.waitFor(() => expect(delayed?.outputs?.map(output => output.workpieceId)).toEqual([10, 11]));
+
+    const sharing = await impl.getSharingManager();
+    await impl.refreshAffectedCollaboratorListings(
+      sharing.removeCollaborator({profileId: sharer, isOwner: true}, profile.id, []));
+    impl.storage.collaborators.put({profile, addedBy: [{type: "user", sharer, role: "use", gadgetId: 10, created: new Date(0)}]});
+  });
+  expect(await reader.getWorkspace(fixture.workspaceId)).toBeNull();
+
+  await runInDurableObject(env.TEST_OVERSEER.get(fixture.workspace.id), async (instance: OverseerDurableObject) => {
+    instance["impl"].ensureAmbientCapsules = async () => {};
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using _session = await instance.open(readerId, profile.id, notifyClosed);
+  });
+  await vi.waitFor(async () => expect(await listed(reader)).toEqual([10]));
+  expect(readmitted).toEqual([]);
 });
 
 it("never restores an output removed while the backfill was reading", async () => {

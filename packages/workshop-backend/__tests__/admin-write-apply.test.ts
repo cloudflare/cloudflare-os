@@ -126,7 +126,7 @@ function seed(ws: Workspace): void {
   impl.users = fakeUsers(ws);
   // The two side effects of opening a session that call out to the owner's account.
   impl.ensureAmbientCapsules = async () => {};
-  impl.markOutputsDirty = () => {};
+  impl.markListingDirty = () => {};
   impl.ownerId = OWNER_USER_ID;
   impl.ownerProfileId = OWNER.id;
   impl.storage.ownerId.put(OWNER_USER_ID);

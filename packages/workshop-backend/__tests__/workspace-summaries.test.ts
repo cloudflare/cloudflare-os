@@ -180,8 +180,18 @@ it("pushes changes to the owner and admitted builders, and drops a summary when 
   // Narrowed to using a gadget: theirs goes, and a later push is refused.
   await reader.updateSharedWorkspaceRole(fixture.workspaceId, "use");
   await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, null]));
-  await reader.syncWorkspaceListing(fixture.workspaceId, {summary: expected});
+  await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, summary: expected});
   expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+});
+
+it("ignores a summary read before one already taken", async () => {
+  const {user, workspaceId} = await setup();
+  const summary = (actions: number): WorkspaceSummary => ({workspaceId,
+    waiting: {runs: 0, chats: 0, gadgets: [{gadgetId: 10, actions}]}, waitingChats: [], workingChatIds: [], hooks: []});
+  const newer = Number.MAX_SAFE_INTEGER;
+  await user.syncWorkspaceListing(workspaceId, {listingRev: newer, summary: summary(2)});
+  await user.syncWorkspaceListing(workspaceId, {listingRev: newer - 1, summary: summary(1)});
+  expect(await storedSummary(user, workspaceId)).toEqual(summary(2));
 });
 
 it("gives a new subscriber the summaries kept", async () => {

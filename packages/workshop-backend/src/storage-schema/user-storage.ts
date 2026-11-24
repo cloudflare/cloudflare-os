@@ -129,9 +129,6 @@ export type GadgetRecord = WorkspaceMetadata & {
   lastActive?: Date;  // if missing, gadget is provisional
   /** The source workspace's title revision, present on versioned shared listings. */
   sharedTitleRev?: number;
-  /** On a shared listing, the source workspace's access revision its outputs were last scoped at
-   * (see UserDurableObject.syncWorkspaceListing()). */
-  sharedAccessRev?: number;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 };
@@ -315,6 +312,14 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // pushed by its Overseer to the owner and to "build" collaborators. Kept only while the
       // workspace is listed for building: the `gadgets` subscription drops it otherwise.
       workspaceSummaries: collection<WorkspaceSummary>()({
+        primaryKey: "workspaceId",
+      }),
+      // The newest listing revision taken from each listed workspace, owned or shared, or the floor
+      // its shared listing started from (see UserDurableObject.syncWorkspaceListing() and
+      // recordSharedWorkspaceOpen()). Kept only while the workspace is listed: the `gadgets`
+      // subscription drops it with the listing. New, so no version bump: a workspace listed before
+      // it existed takes the next listing sent, whatever its revision.
+      listingRevs: collection<{workspaceId: string; rev: number}>()({
         primaryKey: "workspaceId",
       }),
     },

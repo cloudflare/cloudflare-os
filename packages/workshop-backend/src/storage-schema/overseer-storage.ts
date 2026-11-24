@@ -33,6 +33,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
+import type { ListingPart } from "../workspace-listing";
 
 // =======================================================================================
 // Workpieces
@@ -1486,30 +1487,37 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
       directoryRev: -1,
 
-      // The revision of collaborators' access, bumped with every narrowing of anyone's (see
-      // OverseerImpl.refreshAffectedCollaboratorListings), in the transaction that journals it.
-      // Time-based, like titleRev. A collaborator's outputs are sent with the revision their access
-      // was read at, and their User DO takes none older than it has, so outputs read under wider
-      // access cannot land after a narrowing.
-      accessRev: 0,
+      // The parts of the workspace listing marked as possibly changed since the last delivery pass
+      // (OverseerImpl.markListingDirty()), written in the transaction of the change that marked
+      // them. The pass turns them into what each recipient owes (see pendingUserUpdates).
+      listingDirty: <ListingPart[]>[],
+
+      // The listing revision: bumped once by every delivery pass (OverseerImpl.deliverUserUpdates()),
+      // in the synchronous step that reads what the pass sends, and stamped on every listing it
+      // sends. Time-based, like titleRev. A User DO takes no part but a shared listing's title
+      // (ordered by titleRev) from a revision no newer than one it has taken, so a push that arrives
+      // late (one timed out but still in flight) cannot undo a newer one, and from none read before
+      // a collaborator's admission.
+      listingRev: 0,
+
+      // Whether the owner has been queued every part of the listing (see OverseerImpl.open()):
+      // once, since pendingUserUpdates delivers it, for workspaces from before the listing was
+      // sent. New, so no version bump: every workspace starts unseeded.
+      ownerListingSeeded: false,
     },
 
     collections: {
-      // Changes to a user's access to this workspace that still need to be sent to that user's
-      // User DO: a narrowing (`accessRev`), which also narrows their Outputs index, a new role
-      // (e.g. downgraded to use-only), or removal (`role: null`), which also clears their unread
-      // state and queued notifications for this workspace. When the workspace is deleted, every
-      // user gets a removal. Retried from the alarm until each User DO confirms. Before each
-      // attempt, the user's current access is checked again (via `profileId`), so an outdated
-      // entry is updated or dropped. Deletion entries have no `profileId`.
-      pendingUserUpdates: collection<{
-        /** The recipient's User DO ID. */
-        userId: string;
-        profileId?: string;
-        role: CollaboratorRole | null;
-        /** The accessRev of the narrowing, which a later one replaces. */
-        accessRev?: number;
-      }>()({primaryKey: "userId"}),
+      // What still needs to be sent to a user's User DO: a new role (e.g. downgraded to use-only),
+      // removal (`role: null`), which also clears their unread state and queued notifications for
+      // this workspace, and the parts of the workspace listing they are owed (see markListingDirty()
+      // and resyncListingTo() in OverseerImpl). When the workspace is deleted, every user gets a
+      // removal, which drops whatever else they were owed. Retried from the alarm until each User
+      // DO confirms. Before each attempt, the user's current access is checked again (via
+      // `profileId`), so an outdated role is updated or dropped, and each owed part is read as it
+      // stands, scoped by that access. The owner's entries and deletion entries have no `profileId`.
+      // `parts` and `seq` are optional fields added without a version bump: a row from before has
+      // neither.
+      pendingUserUpdates: collection<PendingUserUpdate>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
       // reached enrolled owners/build collaborators, or a one-off approval recipient.
       // Written in the same transaction as the change itself, so the update isn't
@@ -1902,6 +1910,24 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     }
   });
 }
+
+/** What a user's User DO is still owed of a workspace (see `pendingUserUpdates`). */
+export type PendingUserUpdate = {
+  /** The recipient's User DO ID. */
+  userId: string;
+  /** The recipient's profile ID, by which their access is checked again; absent for the owner and
+   * for deletion. */
+  profileId?: string;
+  /** Their new role to send, or `null` for removal. */
+  role?: CollaboratorRole | null;
+  /** The parts of the workspace listing they are owed, each sent as it stands when sent. */
+  parts?: ListingPart[];
+  /**
+   * Bumped by every write that queues something here, so that a delivery deletes the row only if
+   * nothing was queued during its send.
+   */
+  seq?: number;
+};
 
 /**
  * Where a chat's pending unread update starts: the earliest change that recipients haven't received

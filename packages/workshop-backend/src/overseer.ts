@@ -35,13 +35,15 @@ import {
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
-  type GadgetRecord, type GatekeeperCaller,
+  type GadgetRecord, type GatekeeperCaller, type PendingUserUpdate,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
   isChatParticipation, type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
-import type { ListedBlueprintChanges, WorkspaceListing } from "./workspace-listing.js";
+import {
+  LISTING_PARTS, type ListingPart, type WorkspaceListing,
+} from "./workspace-listing.js";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import {
   GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor, type WholeTextReadOptions,
@@ -702,21 +704,6 @@ const WAIT_FOR_AGENT_RESULT_TYPES =
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
-
-// The parts of the workspace listing (see OverseerImpl.markListingDirty()). Blueprint changes are
-// one part, however many blueprints there are.
-type ListingPart = "outputs" | "summary" | "blueprints" | "title" | "activity";
-const LISTING_PARTS: readonly ListingPart[] = ["outputs", "summary", "blueprints", "title", "activity"];
-
-// The whole workspace listing as last computed (see OverseerImpl.#refreshListing()): what each
-// recipient's parts are cut from.
-type CurrentListing = {
-  outputs: WorkspaceOutputEntry[];
-  summary?: WorkspaceSummary;
-  title?: {title: string, titleRev: number};
-  activity?: {lastActive: Date, totalCost: number};
-  blueprints: Map<string, ListedBlueprintChanges>;
-};
 
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
@@ -1401,7 +1388,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     let times: number[] = [];
-    if ([...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+    if (this.storage.listingDirty.get().length || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
       times.push(this.#userUpdatesRetryAt || Date.now() + 1_000);
     }
     if ([...this.storage.dirtyChats.list({limit: 1})].length) {
@@ -1508,78 +1495,283 @@ class OverseerImpl implements AgentHooks {
   #chatDeliveries = new Map<number, Promise<void>>();
   #chatDeliveryScheduled = false;
   #userUpdatesRetryAt = 0;
+  // The pass of deliverUserUpdates() reading the queue and starting sends, and what that call
+  // settles with: once the sends it started, and those in flight it left alone, have settled.
+  #userUpdatePass?: Promise<void>;
   #userUpdateDrain?: Promise<void>;
+  // Each user's send in flight, by User DO id. One at a time per user, so each user's updates
+  // arrive in order; a slow or unreachable User DO holds up no one else's.
+  #userSends = new Map<string, Promise<void>>();
+  // When a user whose send failed is due again, by User DO id, for passes some change starts; the
+  // alarm's passes try them regardless, as does one a caller waits on (see userUpdateAttempt()).
+  #userRetryAt = new Map<string, number>();
+  // Whether work was queued since the pass in flight read the queue (see #requestUserUpdates()).
+  #userUpdatesRequested = false;
+  // Callers of userUpdateAttempt(), by User DO id, waiting for the next pass to start.
+  #userUpdateWaiters = new Map<string, PromiseWithResolvers<void>>();
 
   // The tombstone fences every new open before callbacks cross an async boundary. Content is
   // retained only until all user listings/accepted notifications have been removed durably.
   beginDeletion(userIds: Set<string>): void {
     this.ctx.storage.transactionSync(() => {
       this.storage.deleting.put(true);
+      this.storage.listingDirty.put([]);
       for (let pending of this.storage.pendingUserUpdates.list()) userIds.add(pending.userId);
-      for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
+      for (let userId of userIds) {
+        // A new seq: a send in flight for the row this replaces must not delete it.
+        let seq = (this.storage.pendingUserUpdates.get(userId)?.seq ?? 0) + 1;
+        this.storage.pendingUserUpdates.put({userId, role: null, seq});
+      }
     });
+    this.#listingAcks.clear();
+    this.#userRetryAt.clear();
     this.ownerId = undefined;
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
   }
 
+  // Queue `parts` of the workspace listing for user `userId`, and a new `role` when given (null:
+  // removal, which drops what they were owed), bumping the row's `seq`. A new role, or removal,
+  // may take away what their account acknowledged, so it forgets that.
+  #queueUserUpdate(userId: string, profileId: string | undefined,
+      {parts = [], role}: {parts?: readonly ListingPart[], role?: CollaboratorRole | null}): void {
+    let row = this.storage.pendingUserUpdates.get(userId);
+    let update: PendingUserUpdate = {userId, seq: (row?.seq ?? 0) + 1};
+    let owed = role === null ? [] : [...new Set([...row?.parts ?? [], ...parts])];
+    role = role === undefined ? row?.role : role;
+    profileId ??= row?.profileId;
+    if (profileId !== undefined) update.profileId = profileId;
+    if (role !== undefined) update.role = role;
+    if (role !== undefined && role !== row?.role) this.#listingAcks.delete(userId);
+    if (owed.length) update.parts = owed;
+    this.storage.pendingUserUpdates.put(update);
+  }
+
+  // Have a pass of deliverUserUpdates() take work just queued: one in flight may have read the
+  // queue before it, so another follows that one. Started from a microtask, once the write calling
+  // this has landed (storage hooks call it before theirs does); the alarm armed here covers
+  // eviction before then.
+  #requestUserUpdates(): void {
+    this.#armAlarmSoon();
+    if (this.#userUpdatesRequested) return;
+    this.#userUpdatesRequested = true;
+    if (this.#userUpdatePass) return;
+    this.ctx.waitUntil(Promise.resolve().then(() => this.deliverUserUpdates()).catch(error => {
+      this.logger.warn("user updates deferred", {event: "user.updates.deferred", error});
+    }));
+  }
+
+  // Settles with the next attempt to deliver what is queued for `userId`: that of a pass of
+  // deliverUserUpdates() starting after this call or, while a send to them is in flight, of the
+  // pass after it settles. Rejects with the error the attempt failed with.
+  userUpdateAttempt(userId: string): Promise<void> {
+    let waiter = this.#userUpdateWaiters.get(userId);
+    if (!waiter) this.#userUpdateWaiters.set(userId, waiter = Promise.withResolvers());
+    this.#requestUserUpdates();
+    return waiter.promise;
+  }
+
+  // A pass over pendingUserUpdates, once it has turned the listing parts marked since the last
+  // pass into what each recipient is owed. One pass reads the queue at a time, and starts a send
+  // to each user owed something with none in flight, or due again after one failed: their new
+  // role, if any, then in one call what they are owed of the listing, each part as it stands and
+  // scoped by their access as it stands, both read in the step that takes the pass's listing
+  // revision. A row is deleted once sent unless queued again meanwhile; one whose send failed
+  // waits for the alarm. Settles once the sends it started, and those in flight, have settled.
   deliverUserUpdates(): Promise<void> {
-    if (this.#userUpdateDrain) return this.#userUpdateDrain;
-    if (!this.storage.deleting.get() && ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
-      return Promise.resolve();
+    if (this.#userUpdatePass) return this.#userUpdateDrain!;
+    this.#userUpdatesRequested = false;
+    let waiters = this.#userUpdateWaiters;
+    if (!waiters.size && !this.storage.deleting.get() && !this.storage.listingDirty.get().length &&
+        ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+      return Promise.allSettled(this.#userSends.values()).then(() => {});
     }
+    this.#userUpdateWaiters = new Map();
     this.#userUpdatesRetryAt = Date.now() + 30_000;
     this.#updateAlarm();
-    return this.#userUpdateDrain = (async () => {
+    // The sends this pass waits for, and the users it started one to.
+    let awaited: Promise<void>[] = [];
+    let started = new Set<string>();
+    let pass = this.#userUpdatePass = (async () => {
       let sharing = this.storage.deleting.get() ? undefined : await this.getSharingManager();
       let deleting = this.storage.deleting.get();
-      let updates = [...this.storage.pendingUserUpdates.list()];
-      await Promise.allSettled(updates.map(async update => {
-        try {
-          // Re-admission supersedes a pending revocation; never replay an old removal after it.
-          let access: CollaboratorAccess | undefined;
-          if (!deleting) {
-            access = sharing!.getEffectiveAccess(update.profileId!);
-            let role = access?.role ?? null;
-            if (role === "build") {
-              this.storage.pendingUserUpdates.delete(update.userId);
-              return;
-            }
-            if (role !== update.role) {
-              update = {...update, role};
-              this.storage.pendingUserUpdates.put(update);
-            }
-          }
-          // A narrowing leaves their outputs those their access now holds, sent with the accessRev
-          // read with it, so that no push of wider ones from before can land after.
-          let narrowed = access && update.accessRev !== undefined
-              ? {outputs: this.outputsSnapshot(access), accessRev: this.storage.accessRev.get()}
-              : undefined;
-          let user = this.users.get(this.users.idFromString(update.userId));
-          await boundedUserUpdate(deleting ? user.workspaceRemoved(this.ctx.id.toString()) :
-            update.role === null ? user.forgetSharedWorkspace(this.ctx.id.toString()) :
-              user.updateSharedWorkspaceRole(this.ctx.id.toString(), update.role));
-          if (narrowed) await boundedUserUpdate(user.syncWorkspaceListing(this.ctx.id.toString(), narrowed));
-          // Unless journaled again meanwhile, a later narrowing included.
-          let current = this.storage.pendingUserUpdates.get(update.userId);
-          if (current?.role === update.role && current.profileId === update.profileId &&
-              current.accessRev === update.accessRev) {
-            this.storage.pendingUserUpdates.delete(update.userId);
-          }
-        } catch (error) {
-          this.logger.warn("user workspace cleanup deferred", {
-            event: "shared.gadget.access.refresh.failed", gadgetId: this.ctx.id.toString(), error,
-          });
+      let workspaceId = this.ctx.id.toString();
+      let collaborators = deleting ? [] : sharing!.listCollaborators();
+      if (!deleting) this.#queueDirtyListingParts(collaborators);
+      let accesses = new Map(collaborators.map(({profile, access}) => [profile.id, access]));
+      let now = Date.now();
+      let fromAlarm = this.#inAlarmHandler;
+      let updates = [...this.storage.pendingUserUpdates.list()].filter(({userId}) => {
+        let inFlight = this.#userSends.get(userId);
+        if (inFlight) {
+          // Left for the pass that follows that send.
+          awaited.push(inFlight);
+          this.#carryWaiter(waiters, userId);
+          return false;
         }
-      }));
-      if (this.storage.deleting.get() && ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+        return fromAlarm || waiters.has(userId) || (this.#userRetryAt.get(userId) ?? 0) <= now;
+      });
+      let listingRev = Math.max(now, this.storage.listingRev.get() + 1);
+      if (updates.length) this.storage.listingRev.put(listingRev);
+      let whole = this.#readListing(new Set(deleting ? [] : updates.flatMap(update => update.parts ?? [])));
+      let sends = updates.flatMap(update => {
+        let {userId, profileId} = update;
+        let owner = !deleting && userId === this.ownerId;
+        let access = owner || deleting || profileId === undefined ? undefined : accesses.get(profileId);
+        if (!deleting && !owner && update.role !== undefined) {
+          // Re-admission supersedes a pending revocation; never replay an old removal after it. A
+          // return to "build" is not sent.
+          let role = access?.role === "build" ? undefined : access?.role ?? null;
+          if (role !== update.role) {
+            let {role: _old, ...rest} = update;
+            update = role === undefined ? rest : {...rest, role};
+            this.storage.pendingUserUpdates.put(update);
+          }
+        }
+        let listing: WorkspaceListing = {listingRev};
+        let sent = new Map<ListingPart, string>();
+        let acks = this.#listingAcks.get(userId) ?? new Map<ListingPart, string>();
+        if (owner || access) {
+          this.#listingAcks.set(userId, acks);
+          for (let part of update.parts ?? []) {
+            // A collaborator is sent neither blueprints nor activity, nor a summary unless "build".
+            if (access && (part === "blueprintChanges" || part === "activity" ||
+                (part === "summary" && access.role !== "build"))) continue;
+            let value = part === "outputs" && access
+                ? whole.outputs?.filter(output => accessIncludesGadget(access, output.workpieceId))
+                : whole[part];
+            if (value === undefined) continue;
+            let json = canonicalJson(value);
+            if (acks.get(part) === json) continue;
+            sent.set(part, json);
+            Object.assign(listing, {[part]: value});
+          }
+        }
+        if (!deleting && update.role === undefined && !sent.size) {
+          // Owed nothing they have not acknowledged.
+          this.storage.pendingUserUpdates.delete(userId);
+          this.#userRetryAt.delete(userId);
+          return [];
+        }
+        return [{update, listing, sent, acks}];
+      });
+      for (let send of sends) {
+        let {userId} = send.update;
+        started.add(userId);
+        let waiter = waiters.get(userId);
+        let promise = this.#sendUserUpdate(workspaceId, deleting, send).then(
+            () => waiter?.resolve(), error => waiter?.reject(error)).finally(() => {
+          this.#userSends.delete(userId);
+          // What was queued for them meanwhile, a caller waiting on them, or the deletion's end.
+          if (this.storage.deleting.get() || this.#userUpdateWaiters.has(userId) ||
+              (!this.#userRetryAt.has(userId) && this.storage.pendingUserUpdates.get(userId))) {
+            this.#requestUserUpdates();
+          } else {
+            this.#updateUserRetryAt();
+          }
+        });
+        this.#userSends.set(userId, promise);
+        this.ctx.waitUntil(promise);
+        awaited.push(promise);
+      }
+    })().then(() => {
+      // Those this pass owed nothing.
+      for (let [userId, waiter] of waiters) if (!started.has(userId)) waiter.resolve();
+    }, error => {
+      for (let [userId, waiter] of waiters) if (!started.has(userId)) waiter.reject(error);
+      throw error;
+    }).finally(() => {
+      this.#userUpdatePass = undefined;
+      if (this.#userUpdatesRequested) {
+        this.#userUpdatesRequested = false;
+        this.#requestUserUpdates();
+      }
+      this.#updateUserRetryAt();
+    });
+    return this.#userUpdateDrain = pass.then(async () => {
+      await Promise.allSettled(awaited);
+      if (this.storage.deleting.get() && !this.#userSends.size &&
+          ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
         await this.ctx.storage.deleteAll();
         this.#scheduledAlarm = undefined;
       }
-    })().finally(() => {
-      this.#userUpdateDrain = undefined;
-      this.#updateAlarm();
     });
+  }
+
+  // Hand a caller waiting on `userId` in `waiters` to the next pass.
+  #carryWaiter(waiters: Map<string, PromiseWithResolvers<void>>, userId: string): void {
+    let waiter = waiters.get(userId);
+    if (!waiter) return;
+    waiters.delete(userId);
+    let next = this.#userUpdateWaiters.get(userId);
+    if (next) next.promise.then(waiter.resolve, waiter.reject);
+    else this.#userUpdateWaiters.set(userId, waiter);
+  }
+
+  // When the alarm next delivers user updates: as a backstop while a send is in flight, in case
+  // this instance is evicted, and when the first user whose send failed is due again; with neither,
+  // as soon as anything is queued (see #updateAlarm()).
+  #updateUserRetryAt(): void {
+    let times = [...this.#userRetryAt.values()];
+    if (this.#userSends.size) times.push(Date.now() + 30_000);
+    this.#userUpdatesRetryAt = times.length ? Math.min(...times) : 0;
+    this.#updateAlarm();
+  }
+
+  // Send one user what a pass of deliverUserUpdates() read for them, deleting their row unless
+  // queued again meanwhile. A failed send is retried from the alarm, and forgets what it carried
+  // as acknowledged: it may still land, having timed out, so what it replaced is no longer known
+  // to be there.
+  async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks}: {
+    update: PendingUserUpdate, listing: WorkspaceListing, sent: Map<ListingPart, string>,
+    acks: Map<ListingPart, string>,
+  }): Promise<void> {
+    let event = "shared.gadget.access.refresh.failed";
+    try {
+      let user = this.users.get(this.users.idFromString(userId));
+      if (deleting) await boundedUserUpdate(user.workspaceRemoved(workspaceId));
+      else if (role === null) await boundedUserUpdate(user.forgetSharedWorkspace(workspaceId));
+      else if (role) await boundedUserUpdate(user.updateSharedWorkspaceRole(workspaceId, role));
+      event = "workspace.listing.push.failed";
+      // A collaborator's summary only while admitted (access to what this workspace reads
+      // confirmed): not admitted, theirs stays unknown.
+      if (sent.has("summary") && profileId !== undefined &&
+          !await this.mayReadChatState(userId, profileId).catch(() => false)) {
+        delete listing.summary;
+        sent.delete("summary");
+      }
+      if (sent.size) {
+        await boundedUserUpdate(user.syncWorkspaceListing(workspaceId, listing));
+        // Unless forgotten meanwhile.
+        if (this.#listingAcks.get(userId) === acks) {
+          for (let [part, json] of sent) acks.set(part, json);
+        }
+      }
+      this.#userRetryAt.delete(userId);
+      // Unless queued again meanwhile.
+      if (this.storage.pendingUserUpdates.get(userId)?.seq === seq) {
+        this.storage.pendingUserUpdates.delete(userId);
+      }
+    } catch (error) {
+      if (this.#listingAcks.get(userId) === acks) {
+        for (let part of sent.keys()) acks.delete(part);
+      }
+      this.#userRetryAt.set(userId, Date.now() + 30_000);
+      this.logger.warn("user update deferred", {event, gadgetId: workspaceId, error});
+      this.restartIfLoopLimited(error);
+      throw error;
+    }
+  }
+
+  // Arm the alarm to fire within a second, alongside a durable write of work for it and before any
+  // RPC or microtask. Enumerates no collection: a storage hook calling this may run inside a
+  // caller's live storage iterator.
+  #armAlarmSoon(): void {
+    let wake = Date.now() + 1_000;
+    if (!this.#inAlarmHandler && (this.#scheduledAlarm == null || this.#scheduledAlarm > wake)) {
+      this.#scheduledAlarm = wake;
+      this.ctx.storage.setAlarm(wake);
+    }
   }
 
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
@@ -1596,13 +1788,8 @@ class OverseerImpl implements AgentHooks {
       delete updated.retryOnly;
       this.storage.dirtyChats.put(updated);
     }
-    // Arm alongside the dirty write, before any RPC/microtask. Do not enumerate collections
-    // here: this hook may run inside a caller's live storage iterator.
-    let wake = Date.now() + 1_000;
-    if (!this.#inAlarmHandler && (this.#scheduledAlarm == null || this.#scheduledAlarm > wake)) {
-      this.#scheduledAlarm = wake;
-      this.ctx.storage.setAlarm(wake);
-    }
+    // Arm alongside the dirty write.
+    this.#armAlarmSoon();
     if (this.#chatDeliveryScheduled) return;
     this.#chatDeliveryScheduled = true;
     this.ctx.waitUntil(Promise.resolve().then(() => {
@@ -7301,31 +7488,21 @@ class OverseerImpl implements AgentHooks {
   //
   // Each non-provisional gadget here is an "output". The `gadgets` registry is authoritative, but
   // the Outputs page lists across all of a user's workspaces, so the registry is mirrored into an
-  // index in each interested user's DO, as part of the workspace listing (see #pushListings()).
+  // index in each interested user's DO, as part of the workspace listing (see
+  // deliverUserUpdates()).
 
-  // User DO ids whose outputs index this workspace is keeping live, one token per open session,
-  // and the access of the latest session to join, for those who hold some gadgets rather than
-  // "build". (An earlier session's access is never wider: narrowing anyone's access restarts the
-  // workspace, ending every session.)
-  //
-  // In memory, not persisted, which is what makes fanning out to collaborators safe: revoking
-  // access aborts the DO (see scheduleAccessRestart()), so this is destroyed with the sessions
-  // it describes and can only be rebuilt from the permission graph, by an open() that re-checks
-  // it. Until then, a narrowing narrows the access of the sessions it affects (see
-  // refreshAffectedCollaboratorListings()).
-  #connectedIndexes = new Map<string, {tokens: Set<object>, access?: CollaboratorAccess}>();
+  // User DO ids whose outputs index this workspace is keeping live, one token per open session.
+  // In memory, not persisted: what a session needs ends with it. What each is sent is scoped by
+  // their access as it stands when sent.
+  #connectedIndexes = new Map<string, Set<object>>();
 
-  // Keep `userId`'s outputs index up to date for the duration of one session, listing only the
-  // gadgets `access` includes when given. Returns a function that ends it, like joinPresence().
-  joinOutputsFanout(userId: string, access?: CollaboratorAccess): () => void {
+  // Keep `userId`'s outputs index up to date for the duration of one session. Returns a function
+  // that ends it, like joinPresence().
+  joinOutputsFanout(userId: string): () => void {
     let token = {};
     let sessions = this.#connectedIndexes.get(userId);
-    if (sessions) {
-      sessions.tokens.add(token);
-      sessions.access = access;
-    } else {
-      this.#connectedIndexes.set(userId, {tokens: new Set([token]), access});
-    }
+    if (sessions) sessions.add(token);
+    else this.#connectedIndexes.set(userId, new Set([token]));
 
     let left = false;
     return () => {
@@ -7333,22 +7510,21 @@ class OverseerImpl implements AgentHooks {
       left = true;
       let remaining = this.#connectedIndexes.get(userId);
       if (!remaining) return;
-      remaining.tokens.delete(token);
-      if (remaining.tokens.size === 0) this.#connectedIndexes.delete(userId);
+      remaining.delete(token);
+      if (remaining.size === 0) this.#connectedIndexes.delete(userId);
     };
   }
 
-  // This workspace's outputs, as pushed to a user's index: only the gadgets `access` includes,
-  // when given. Provisional gadgets are excluded: they are proposals inside a chat, not things the
-  // user has made yet.
+  // This workspace's outputs, as sent to a user's index before their access scopes them.
+  // Provisional gadgets are excluded: they are proposals inside a chat, not things the user has
+  // made yet.
   //
   // Whole-snapshot rather than a delta, so that a user's index can be brought into line with this
   // workspace in one call from anywhere, without either side reconciling per workpiece.
-  outputsSnapshot(access?: CollaboratorAccess): WorkspaceOutputEntry[] {
+  outputsSnapshot(): WorkspaceOutputEntry[] {
     let entries: WorkspaceOutputEntry[] = [];
     for (let gadget of this.storage.gadgets.list()) {
       if (gadget.type !== "gadget" || gadget.pending) continue;  // worktrees have no outputs
-      if (access && !accessIncludesGadget(access, gadget.id)) continue;
       entries.push({
         workpieceId: gadget.id,
         title: gadget.title,
@@ -7357,33 +7533,6 @@ class OverseerImpl implements AgentHooks {
       });
     }
     return entries;
-  }
-
-  // A push of this workspace's state into User DOs, scheduled by mark(): it runs after the write
-  // that marked it (storage subscribers run before the write lands), and again for whatever is
-  // marked while it runs, one push at a time so that pushes arrive in order. Best-effort: a push
-  // that throws is logged as `event`, and the next mark sends again.
-  #serialPush(push: () => Promise<void>, what: string, event: string): {mark(): void} {
-    let running: Promise<void> | undefined;
-    let dirty = false;
-    let mark = (): void => {
-      dirty = true;
-      if (running) return;
-      running = (async () => {
-        await scheduler.wait(0);
-        while (dirty) {
-          dirty = false;
-          await push();
-        }
-      })().catch(error => {
-        this.logger.warn(`failed to flush ${what}`, {event, gadgetId: this.ctx.id.toString(), error});
-      }).finally(() => {
-        running = undefined;
-        if (dirty) mark();
-      });
-      this.ctx.waitUntil(running);
-    };
-    return {mark};
   }
 
   // --- Workspace summaries -------------------------------------------------------------
@@ -7505,164 +7654,102 @@ class OverseerImpl implements AgentHooks {
   // WorkspaceListing and UserDurableObject.syncWorkspaceListing()):
   // - the owner: every output, the summary, each blueprint's unpublished changes, the title and
   //   the last-active time and cost;
-  // - a user with a session open here (see joinOutputsFanout()), and a collaborator once on
-  //   opening it (see resyncListingTo()): the outputs they may see;
+  // - a collaborator with a session open here (see joinOutputsFanout()), and one once on opening
+  //   it (see resyncListingTo()): the outputs their access holds;
   // - a "build" collaborator admitted to background reads (see mayReadChatState()): the summary;
   // - every collaborator: the title they list it under (see
   //   UserDurableObject.recordSharedWorkspaceOpen() for where a listing starts).
-  // A push sends each recipient the parts that changed since the last push; resyncListingTo()
-  // sends one recipient every part. Recipients take each part idempotently, so nothing tracks
-  // what each took. Best-effort: a push that fails, or a part its recipient ignores (as for a
-  // workspace it does not list yet), is corrected when the part next changes or when the
-  // recipient next opens the workspace.
+  // Durable, through pendingUserUpdates: a change marks the parts it may have changed in its own
+  // transaction (markListingDirty()), and deliverUserUpdates() turns them into what each recipient
+  // is owed, then sends each part as it stands when sent, retrying from the alarm until the
+  // recipient has taken it. A part whose value a recipient has acknowledged is not sent to them
+  // again (see #listingAcks).
 
-  #listingPush = this.#serialPush(() => this.#pushListings(), "workspace listing",
-      "workspace.listing.flush.failed");
+  // What each recipient last acknowledged of each part, as canonical JSON, by User DO id. Set once
+  // syncWorkspaceListing() resolves; forgotten for the parts a send that failed carried (it may
+  // still land), for a recipient queued a new role or removal (see #queueUserUpdate()), and for
+  // one whose copy may be gone (see resyncListingTo()). In memory only: after a restart, each part
+  // is sent once more.
+  #listingAcks = new Map<string, Map<ListingPart, string>>();
 
-  // The listing as last computed, and each computed part's canonical JSON, which tells a mark
-  // that changed nothing from one that did. A cold DO has computed nothing, and pushes nothing
-  // until a part is marked or a recipient resynced.
-  #listing: CurrentListing = {outputs: [], blueprints: new Map()};
-  #listingJson = new Map<ListingPart, string>();
-
-  // The parts marked since the last push, and the recipients to send every part, with the profile
-  // id of each collaborator among them.
-  #listingStale = new Set<ListingPart>();
-  #listingResyncs = new Map<string, string | undefined>();
-
-  // Note that `part` of the listing may have changed, scheduling a push.
+  // Note that `part` of the listing may have changed. Called by pre-write storage hooks, so the
+  // mark is written in the change's transaction, and only when the part was clean: a turn that
+  // changes a part repeatedly writes it once.
   markListingDirty(part: ListingPart): void {
-    this.#listingStale.add(part);
-    this.#listingPush.mark();
+    if (!this.ownerId) return;
+    let dirty = this.storage.listingDirty.get();
+    if (!dirty.includes(part)) this.storage.listingDirty.put([...dirty, part]);
+    this.#requestUserUpdates();
   }
 
-  // Push every part of the listing to one user whose copy may be missing or stale: one opening
-  // the workspace, which corrects a push that failed with nothing changing since. A collaborator
-  // (`profileId`) is sent the outputs their access holds when it is sent, whether or not a session
-  // of theirs is still open (one may end before their listing is recorded); after that, outputs
-  // reach them only while one is (see joinOutputsFanout()).
+  // Queue every part of the listing for one user whose copy may be missing or stale, forgetting
+  // what they acknowledged: the owner once (see seedOwnerListing()), and a collaborator
+  // (`profileId`) once their listing is recorded on opening. A collaborator is sent the outputs
+  // their access holds when sent, whether or not a session of theirs is still open; after that,
+  // outputs reach them only while one is.
   resyncListingTo(userId: string, profileId?: string): void {
-    this.#listingResyncs.set(userId, profileId);
-    this.#listingPush.mark();
+    if (!this.ownerId || this.storage.deleting.get()) return;
+    this.#listingAcks.delete(userId);
+    this.#queueUserUpdate(userId, profileId, {parts: LISTING_PARTS});
+    this.#requestUserUpdates();
   }
 
-  // Recompute the parts marked since the last push (and, given `all`, those never computed),
-  // returning the marked parts whose value changed.
-  #refreshListing(all: boolean): Set<ListingPart> {
-    let marked = this.#listingStale;
-    this.#listingStale = new Set();
-    let listing = this.#listing;
-    let changed = new Set<ListingPart>();
-    for (let part of LISTING_PARTS) {
-      if (!marked.has(part) && !(all && !this.#listingJson.has(part))) continue;
-      let value: unknown;
-      if (part === "outputs") {
-        value = listing.outputs = this.outputsSnapshot();
-      } else if (part === "summary") {
-        value = listing.summary = this.workspaceSummary();
-      } else if (part === "title") {
-        value = listing.title = {title: this.storage.title.get(), titleRev: this.storage.titleRev.get()};
-      } else if (part === "activity") {
-        let lastActive = this.#lastActiveListed;
-        value = listing.activity = lastActive && {lastActive, totalCost: this.storage.totalCost.get()};
-      } else {
-        let was = listing.blueprints;
-        listing.blueprints = new Map();
-        for (let record of Array.from(this.storage.blueprints.list())) {
-          // A release is written locally before it is public. Keep the last confirmed changes
-          // until propagation succeeds and the clean record marks this again.
-          let entry = record.dirty ? was.get(record.id) : {
+  // Send the owner every part of the listing, the first time they open this workspace: one from
+  // before the listing was sent never sent it. Once is enough, as pendingUserUpdates delivers it,
+  // and every change after it, until the owner's account takes them.
+  seedOwnerListing(): void {
+    if (!this.ownerId || this.storage.ownerListingSeeded.get()) return;
+    this.ctx.storage.transactionSync(() => {
+      this.resyncListingTo(this.ownerId!);
+      this.storage.ownerListingSeeded.put(true);
+    });
+  }
+
+  // Turn the parts marked since the last pass into what each recipient is owed, in one
+  // transaction: the owner every part, each collaborator the title, each "build" one the summary,
+  // and each with a session open here the outputs.
+  #queueDirtyListingParts(collaborators: readonly CollaboratorInfo[]): void {
+    let dirty = this.storage.listingDirty.get();
+    let ownerId = this.ownerId;
+    if (!dirty.length || !ownerId) return;
+    this.ctx.storage.transactionSync(() => {
+      this.#queueUserUpdate(ownerId, undefined, {parts: dirty});
+      for (let {profile, access} of collaborators) {
+        let userId = this.users.idFromName(profile.id).toString();
+        let parts = dirty.filter(part => part === "title" ||
+            (part === "summary" && access.role === "build") ||
+            (part === "outputs" && this.#connectedIndexes.has(userId)));
+        if (parts.length) this.#queueUserUpdate(userId, profile.id, {parts});
+      }
+      this.storage.listingDirty.put([]);
+    });
+  }
+
+  // The given parts of the listing as they stand, every output among them. Activity this instance
+  // has not seen, and an empty list of blueprints, are left out, so never sent.
+  #readListing(parts: ReadonlySet<ListingPart>): Omit<WorkspaceListing, "listingRev"> {
+    let listing: Omit<WorkspaceListing, "listingRev"> = {};
+    if (parts.has("outputs")) listing.outputs = this.outputsSnapshot();
+    if (parts.has("summary")) listing.summary = this.workspaceSummary();
+    if (parts.has("title")) {
+      listing.title = {title: this.storage.title.get(), titleRev: this.storage.titleRev.get()};
+    }
+    let lastActive = this.#lastActiveListed;
+    if (parts.has("activity") && lastActive) {
+      listing.activity = {lastActive, totalCost: this.storage.totalCost.get()};
+    }
+    if (parts.has("blueprintChanges")) {
+      // A release is written locally before it is public: its record is left out until
+      // propagation succeeds and the clean record marks this again.
+      let changes = Array.from(this.storage.blueprints.list()).filter(record => !record.dirty)
+          .map(record => ({
             blueprintId: record.id,
             changes: this.#unpublishedChanges(record) ?? null,
             gadgetId: (record.gadgetId ?? this.defaultGadgetId)!,
-          };
-          if (entry) listing.blueprints.set(record.id, entry);
-        }
-        value = [...listing.blueprints.values()];
-      }
-      let json = canonicalJson(value);
-      if (marked.has(part) && json !== this.#listingJson.get(part)) changed.add(part);
-      this.#listingJson.set(part, json);
+          }));
+      if (changes.length) listing.blueprintChanges = changes;
     }
-    return changed;
-  }
-
-  async #pushListings(): Promise<void> {
-    let ownerId = this.ownerId;
-    if (!ownerId || this.storage.deleting.get()) return;
-    let resyncs = this.#listingResyncs;
-    this.#listingResyncs = new Map();
-    let changed = this.#refreshListing(resyncs.size > 0);
-    if (!changed.size && !resyncs.size) return;
-    let listing = this.#listing;
-    let sharing = await this.getSharingManager();
-    // Read in the same synchronous step as every access below: each collaborator's outputs carry
-    // the revision their access was read at.
-    let accessRev = this.storage.accessRev.get();
-
-    // What each recipient is sent, by User DO id: each part they are entitled to that changed,
-    // or every one for a recipient being resynced. With the profile id of a collaborator whose
-    // summary depends on their admission.
-    let sends = new Map<string, {listing: WorkspaceListing, profileId?: string}>();
-    let sendTo = (userId: string, part: ListingPart) => {
-      if (!changed.has(part) && !resyncs.has(userId)) return undefined;
-      let entry = sends.get(userId) ?? {listing: {}};
-      sends.set(userId, entry);
-      return entry;
-    };
-    let entry;
-    if ((entry = sendTo(ownerId, "outputs"))) entry.listing.outputs = listing.outputs;
-    if ((entry = sendTo(ownerId, "summary"))) entry.listing.summary = listing.summary;
-    if ((entry = sendTo(ownerId, "title"))) entry.listing.title = listing.title;
-    if (listing.activity && (entry = sendTo(ownerId, "activity"))) entry.listing.activity = listing.activity;
-    if (listing.blueprints.size && (entry = sendTo(ownerId, "blueprints"))) {
-      entry.listing.blueprintChanges = [...listing.blueprints.values()];
-    }
-    // Each collaborator sent outputs, with the access scoping them (none: every output): each
-    // with a session open here, and each being resynced, as their access now stands.
-    let scopes = new Map<string, CollaboratorAccess | undefined>();
-    for (let [userId, {access}] of this.#connectedIndexes) scopes.set(userId, access);
-    for (let [userId, profileId] of resyncs) {
-      let access = profileId === undefined ? undefined : sharing.getEffectiveAccess(profileId);
-      if (access) scopes.set(userId, access);
-    }
-    for (let [userId, access] of scopes) {
-      if (userId === ownerId || !(entry = sendTo(userId, "outputs"))) continue;
-      // Filtered rather than rebuilt per recipient, which reads no storage.
-      entry.listing.outputs = access
-          ? listing.outputs.filter(output => accessIncludesGadget(access, output.workpieceId))
-          : listing.outputs;
-      entry.listing.accessRev = accessRev;
-    }
-    for (let {profile, access} of sharing.listCollaborators()) {
-      let userId = this.users.idFromName(profile.id).toString();
-      if ((entry = sendTo(userId, "title"))) entry.listing.title = listing.title;
-      if (access.role === "build" && (entry = sendTo(userId, "summary"))) {
-        entry.listing.summary = listing.summary;
-        entry.profileId = profile.id;
-      }
-    }
-    await Promise.all([...sends].map(([userId, {listing, profileId}]) =>
-        this.#pushListingTo(userId, listing, profileId)));
-  }
-
-  async #pushListingTo(userId: string, listing: WorkspaceListing, profileId?: string): Promise<void> {
-    // A collaborator's summary only while admitted (access to what this workspace reads
-    // confirmed): not admitted, theirs stays unknown.
-    if (listing.summary && profileId !== undefined &&
-        !await this.mayReadChatState(userId, profileId).catch(() => false)) {
-      delete listing.summary;
-    }
-    if (!Object.keys(listing).length) return;
-    try {
-      await boundedUserUpdate(this.users.get(this.users.idFromString(userId))
-          .syncWorkspaceListing(this.ctx.id.toString(), listing));
-    } catch (error) {
-      this.logger.warn("failed to push workspace listing", {
-        event: "workspace.listing.push.failed", gadgetId: this.ctx.id.toString(), error,
-      });
-      this.restartIfLoopLimited(error);
-    }
+    return listing;
   }
 
   // --- Deployment directory ----------------------------------------------------------
@@ -10429,7 +10516,7 @@ class OverseerImpl implements AgentHooks {
   // compared whole, so a rename, a rebinding and a new annotation all count; a push that would send
   // what was last taken is skipped, so a connection change that alters no blueprint costs no write.
   #initializeBlueprintChangesTracking(): void {
-    let dirty = () => this.markListingDirty("blueprints");
+    let dirty = () => this.markListingDirty("blueprintChanges");
     this.storage.gadgets.subscribe({
       add: () => {},
       update: (old, record) => {
@@ -11809,31 +11896,17 @@ class OverseerImpl implements AgentHooks {
   // Reconcile this workspace's cached listing for collaborators whose access changed: remove it
   // for those who lost access entirely, and for those who kept some, refresh the
   // presentation-only role and their Outputs index, which may list gadgets they no longer hold
-  // (see deliverUserUpdates()).
+  // (see deliverUserUpdates()). Settles once delivery to each has been attempted.
   async refreshAffectedCollaboratorListings(affected: AffectedCollaborator[]): Promise<void> {
     if (!affected.length || this.storage.deleting.get()) return;
     // Persist in the sharing mutation's synchronous continuation, before a session restart or
     // gatekeeper teardown can interrupt it. Retries use this same source alarm after eviction.
     // Journaled whether or not the role changes, as when one gadget of several is taken away.
-    this.ctx.storage.transactionSync(() => {
-      let accessRev = Math.max(Date.now(), this.storage.accessRev.get() + 1);
-      this.storage.accessRev.put(accessRev);
-      for (let {profile, newAccess} of affected) {
-        this.storage.pendingUserUpdates.put({userId: this.users.idFromName(profile.id).toString(),
-          profileId: profile.id, role: newAccess?.role ?? null, accessRev});
-      }
-    });
-    // Their sessions fan out only what they keep, until the restart that follows every narrowing
-    // ends this instance.
-    for (let {profile, newAccess} of affected) {
-      let sessions = this.#connectedIndexes.get(this.users.idFromName(profile.id).toString());
-      if (sessions && newAccess) sessions.access = newAccess;
-    }
+    let userIds = affected.map(({profile}) => this.users.idFromName(profile.id).toString());
+    this.ctx.storage.transactionSync(() => affected.forEach(({profile, newAccess}, i) =>
+      this.#queueUserUpdate(userIds[i], profile.id, {role: newAccess?.role ?? null, parts: ["outputs"]})));
     this.#userUpdatesRetryAt = 0;
-    this.#updateAlarm();
-    let work = this.deliverUserUpdates();
-    this.ctx.waitUntil(work);
-    await work;
+    await Promise.allSettled(userIds.map(userId => this.userUpdateAttempt(userId)));
   }
 
   // The authorization gate every non-owner entry point (open(), and resumed agent turns in
@@ -12568,9 +12641,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         ? owner
         : this.impl.users.get(this.impl.users.idFromString(userId));
 
-    // Push the owner's listing again. Pushes are best-effort, and workspaces predating the listing
-    // have never pushed at all, so re-syncing on open is what corrects them.
-    if (isOwner) this.impl.resyncListingTo(this.impl.ownerId!);
+    // Send the owner every part of the listing, once: workspaces predating the listing never sent
+    // one.
+    if (isOwner) this.impl.seedOwnerListing();
 
     // The caller's effective access. The owner always has "build".
     let access: CollaboratorAccess = {role: "build"};
@@ -12617,7 +12690,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           const ownerProfile = await owner.whoami();
           // Access may have been revoked or changed (or the workspace deleted) during the await;
           // re-check in the same synchronous step as the reads so a later title never reaches a
-          // non-member, and the starting points follow the role recorded.
+          // non-member, the starting points follow the role recorded, and their listing takes
+          // nothing read before this check.
           let sharing = await this.impl.getSharingManager();
           let current = sharing.getEffectiveAccess(profileId);
           if (!current || !this.impl.ownerId || this.impl.storage.deleting.get()) return;
@@ -12638,7 +12712,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
           })) : [];
           await clientUser.recordSharedWorkspaceOpen(gadgetId, this.impl.storage.title.get(), ownerProfile,
-              current.role, notificationBaselines, this.impl.storage.titleRev.get());
+              current.role, notificationBaselines, this.impl.storage.titleRev.get(),
+              this.impl.storage.listingRev.get());
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
@@ -13487,7 +13562,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async setTitle(title: string): Promise<void> {
+    let ownerId = this.impl.ownerId;
+    if (!ownerId) throw new Error("Workspace has been deleted.");
     this.impl.storage.title.put(title);
+    // The owner's listWorkspaces() reads the title from their listing, so await its delivery,
+    // failing with it; a failure is retried in the background, as is delivery to collaborators.
+    await this.impl.userUpdateAttempt(ownerId);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -14980,7 +15060,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "use",
         () => retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger));
-    this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId, this.access);
+    this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
   }
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.

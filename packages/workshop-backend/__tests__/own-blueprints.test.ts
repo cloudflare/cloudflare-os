@@ -66,6 +66,8 @@ const withPublisher = async (fn: (fixture: {
     const impl = instance.impl;
     impl.env = {...impl.env, BLUEPRINTS};
     impl.ensureAmbientCapsules = async () => {};
+    // As the owner lists it, so that the listing the owner's open sends keeps it.
+    impl.storage.title.put("Workspace");
     await commit(impl, {"client.js": "one\n"});
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(user.id.toString(), id, notifyClosed);

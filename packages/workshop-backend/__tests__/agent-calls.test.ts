@@ -54,13 +54,13 @@ function seedChat(impl: any): void {
       { id: CHAT_ID, title: "Callable agent", started: new Date(0), lastActive: new Date(0) });
 }
 
-// Replaces the user DO namespace with a fake that resolves the owner's profile and, when asked
-// for a model, the broken one above.
+// Replaces the user DO namespace with a fake that resolves the owner's profile, takes the
+// workspace listing and, when asked for a model, the broken one above.
 function fakeUsers(impl: any): void {
   impl.users = {
     idFromString: (id: string) => id,
     get: () => ({
-      messageArrived: async () => {}, whoami: async () => OWNER,
+      messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {},
       getChatContext: async (modelId: string | null) => ({
         profile: OWNER,
         ...(modelId ? { aiModel: { profile: MODEL, config: BROKEN_MODEL_CONFIG } } : {}),
@@ -78,7 +78,7 @@ function gatedFakeUsers(impl: any): () => void {
   let realGet = impl.users.get;
   impl.users.get = () => {
     let user = realGet();
-    return { messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
+    return { messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {}, getChatContext: async (modelId: string | null) => {
       await gate;
       return user.getChatContext(modelId);
     } };
@@ -276,7 +276,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {}, getChatContext: async (modelId: string | null) => {
         if (modelId) throw new Error(`No such model: ${modelId}`);
         return { profile: OWNER };
       } }),
@@ -299,7 +299,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {}, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
 
     await impl.deliverDirtyChats();
@@ -365,7 +365,7 @@ describe("durable agent calls", () => {
     let realGet = impl.users.get;
     impl.users.get = () => {
       let user = realGet();
-      return { messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
+      return { messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {}, getChatContext: async (modelId: string | null) => {
         if (++lookups === 2) await lookupGate;
         return user.getChatContext(modelId);
       } };
@@ -414,7 +414,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, syncWorkspaceListing: async () => {}, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
     await deliver(impl, "stillUnreachable", []);
     await new Promise(resolve => setTimeout(resolve, 20));

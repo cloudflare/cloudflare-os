@@ -256,9 +256,8 @@ describe("what a use session lists", () => {
       }),
     } as unknown as ObserverImpl["users"];
     let client = await openViewer(impl, { role: "use", gadgetIds: [101] }, {
-      joinOutputsFanout: (...args: Parameters<ObserverImpl["joinOutputsFanout"]>) =>
-          impl.joinOutputsFanout(...args),
-      resyncListingTo: (userId: string) => impl.resyncListingTo(userId),
+      joinOutputsFanout: (userId: string) => impl.joinOutputsFanout(userId),
+      resyncListingTo: (userId: string, profileId?: string) => impl.resyncListingTo(userId, profileId),
     });
 
     let listing = await pushed.promise;
@@ -272,19 +271,24 @@ describe("what a use session lists", () => {
   it("the Outputs fan-out filters each watcher by their access", () => withImpl(async impl => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
+    shareGadgets(impl, [100]);
+    impl.storage.collaborators.put({ profile: { id: "other-user", name: "Other" }, addedBy: [{
+      type: "user", sharer: OWNER, created: new Date(0), role: "use", gadgetId: 101,
+    }] });
     impl.ownerId = "owner-user";
     let pushes = new Map<string, PromiseWithResolvers<number[] | undefined>>(
         ["owner-user", VIEWER_USER, "other-user"].map(id => [id, Promise.withResolvers()]));
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: (name: string) => name === VIEWER ? VIEWER_USER : name,
       get: (id: string) => ({
         syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
           pushes.get(id)!.resolve(listing.outputs?.map(entry => entry.workpieceId));
         },
       }),
     } as unknown as ObserverImpl["users"];
-    let leaveViewer = impl.joinOutputsFanout(VIEWER_USER, { role: "use", gadgetIds: [100] });
-    let leaveOther = impl.joinOutputsFanout("other-user", { role: "use", gadgetIds: [101] });
+    let leaveViewer = impl.joinOutputsFanout(VIEWER_USER);
+    let leaveOther = impl.joinOutputsFanout("other-user");
 
     impl.markListingDirty("outputs");
 
@@ -295,35 +299,49 @@ describe("what a use session lists", () => {
     leaveOther();
   }));
 
-  it("sends a marked part only once it changes, and every part on a resync", () =>
+  it("sends a part until its recipient acknowledges its value, and every part on a resync", () =>
       withImpl(async impl => {
     seedGadget(impl, 100);
     impl.ownerId = "owner-user";
     let listings: WorkspaceListing[] = [];
+    let failing = false;
     impl.users = {
       idFromString: (id: string) => id,
       get: () => ({
-        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+        syncWorkspaceListing: async (_workspace: string, listing: WorkspaceListing) => {
           listings.push(listing);
+          if (failing) throw new Error("User unavailable");
         },
       }),
     } as unknown as ObserverImpl["users"];
-    let parts = () => listings.splice(0).map(listing => Object.keys(listing).toSorted());
+    let parts = () => listings.splice(0).map(listing =>
+        Object.keys(listing).filter(part => part !== "listingRev").toSorted());
 
     impl.resyncListingTo("owner-user");
     await vi.waitFor(() => expect(listings).toHaveLength(1));
     expect(parts()).toEqual([["outputs", "summary", "title"]]);
 
-    // Marked, but unchanged.
-    impl.markListingDirty("outputs");
-    impl.markListingDirty("summary");
-    await scheduler.wait(10);
+    // A commit that rebinds the gadget leaves the outputs as acknowledged.
+    seedGadget(impl, 100, { target: 7 });
+    await impl.deliverUserUpdates();
     expect(parts()).toEqual([]);
 
-    // A new gadget changes the outputs alone.
+    // A new gadget, whose send fails.
+    failing = true;
     seedGadget(impl, 101);
     await vi.waitFor(() => expect(listings).toHaveLength(1));
     expect(parts()).toEqual([["outputs"]]);
+    failing = false;
+
+    // Sent again by the alarm, though the next change leaves the outputs as the failed send had
+    // them.
+    seedGadget(impl, 100);
+    await impl.deliverUserUpdates();
+    expect(listings).toEqual([]);
+    await impl.runAlarmTasks();
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(listings.splice(0).map(listing => listing.outputs?.map(entry => entry.workpieceId)))
+        .toEqual([[100, 101]]);
 
     impl.resyncListingTo("owner-user");
     await vi.waitFor(() => expect(listings).toHaveLength(1));

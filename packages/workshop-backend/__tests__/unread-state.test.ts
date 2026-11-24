@@ -1855,13 +1855,15 @@ describe("source authorization and removal", () => {
         impl.storage.collaborators.delete(profile.id);
         await impl.refreshAffectedCollaboratorListings([{profile, addedBy: [], oldAccess: {role: "build"}, newAccess: null}]);
         expect([...impl.storage.pendingUserUpdates.list()]).toHaveLength(1);
+        const recipients: string[] = [];
+        const delivery = interceptDelivery(impl, async (user, ...args) => {
+          recipients.push(user.id.toString()); await user.messageArrived(...args);
+        });
+        try { write(impl, 1); await impl.deliverDirtyChats(); } finally { delivery(); }
+        expect(recipients).not.toContain(reader.id.toString());
+        // Whatever pass the write started fails the cleanup again.
+        await impl.deliverUserUpdates();
       } finally { restore(); }
-      const recipients: string[] = [];
-      const delivery = interceptDelivery(impl, async (user, ...args) => {
-        recipients.push(user.id.toString()); await user.messageArrived(...args);
-      });
-      try { write(impl, 1); await impl.deliverDirtyChats(); } finally { delivery(); }
-      expect(recipients).not.toContain(reader.id.toString());
     });
     expect(await outbox(readerFixture)).toHaveLength(1);
     await evictDurableObject(fixture.workspace);

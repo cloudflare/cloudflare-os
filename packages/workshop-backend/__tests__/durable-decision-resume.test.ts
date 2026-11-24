@@ -829,8 +829,10 @@ describe("decision handoff using the existing execution row", () => {
       impl.cancelAgent(CHAT);
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
-      // The shared alarm may still cover unread fanout, independently of the cancelled agent.
+      // The shared alarm may still cover unread fanout and the owner's listing, independently of
+      // the cancelled agent.
       await impl.deliverDirtyChats();
+      await impl.deliverUserUpdates();
       expect(await impl.ctx.storage.getAlarm()).toBeNull();
       await expect(impl.runAlarmTasks()).resolves.toBeUndefined();
     });

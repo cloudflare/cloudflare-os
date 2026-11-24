@@ -267,8 +267,8 @@ function isFullyCreated(g: GadgetRecord): g is GadgetRecord & {lastActive: Date}
 
 function workspaceListing(record: GadgetRecord): WorkspaceMetadataWithTimestamps | null {
   if (!isFullyCreated(record)) return null;
-  if (!("sharedTitleRev" in record) && !("sharedAccessRev" in record)) return record;
-  let {sharedTitleRev: _rev, sharedAccessRev: _accessRev, ...listing} = record;
+  if (!("sharedTitleRev" in record)) return record;
+  let {sharedTitleRev: _rev, ...listing} = record;
   return listing;
 }
 
@@ -414,6 +414,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.#unreadWorkspaces.get(listing.id)?.abort();
         this.#unreadWorkspaces.delete(listing.id);
         this.#dropWorkspaceSummary(listing.id);
+        this.storage.listingRevs.delete(listing.id);
         this.#workspaceOutputsChanged(listing.id);
       },
     });
@@ -1405,10 +1406,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * `role` is cached so listings built from this DO can offer the actions it permits without
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
+   *
+   * `listingRev` is the workspace's listing revision as of the access check that admitted them,
+   * which raises the floor of the revisions syncWorkspaceListing() takes outputs and summary from:
+   * one read before it may have been read under access since revoked or narrowed.
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: ChatAdmissionBaseline[], titleRev?: number
+      notificationBaselines: ChatAdmissionBaseline[], titleRev?: number, listingRev?: number
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
@@ -1437,6 +1442,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         created: now,
         lastActive: now,
       });
+    }
+    if (listingRev !== undefined) {
+      let taken = this.storage.listingRevs.get(workspaceId)?.rev ?? listingRev;
+      this.storage.listingRevs.put({workspaceId, rev: Math.max(taken, listingRev)});
     }
     if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
     else {
@@ -1833,34 +1842,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Take what a workspace's Overseer mirrors into the user's account (see WorkspaceListing), pushed
-   * as each part changes and whenever the user opens the workspace. Every part is safe to take
-   * again, and one this account ignores is sent again when it next changes.
+   * Take what a workspace's Overseer mirrors into the user's account (see WorkspaceListing), sent
+   * as each part changes and whenever the user opens the workspace, and retried until taken. Every
+   * part is safe to take again, and one this account ignores is sent again when it next changes.
+   *
+   * Every part is taken only from a `listingRev` newer than any taken from this workspace before,
+   * or than the floor recordSharedWorkspaceOpen() started a shared listing at, but the title of a
+   * shared listing (see below). A listing no newer was read no later than what this account holds,
+   * so it may hold what has gone since, or what a narrowing took away: a push that timed out can
+   * arrive after the next.
    *
    * - `outputs` replace those recorded for the workspace; one the user no longer tracks (deleted,
-   *   or a shared one they dismissed) has its entries dropped instead. A shared listing takes none
-   *   scoped at an older `accessRev` than the last it took: they may hold what a narrowing since
-   *   took away.
+   *   or a shared one they dismissed) has its entries dropped instead.
    * - `summary` is ignored for a workspace the user doesn't list, or only uses: the `gadgets`
    *   subscription drops the summary when either becomes true, so nothing here can outlive it.
    * - `blueprintChanges` are taken for blueprints recorded as published from this workspace; a
    *   push racing a first publication finds none. They also bring the gadget a blueprint is
    *   published from to records stored before updateBlueprint() was sent it.
-   * - `title` renames the workspace the user owns, and is mirrored into a shared listing, where a
-   *   delayed push cannot undo a newer rename: one no newer than the listing's is taken as already
-   *   there. Presentation only, like the cached role.
+   * - `title` renames the workspace the user owns, and is mirrored into a shared listing. There a
+   *   delayed push cannot undo a newer rename either: one no newer than the listing's is taken as
+   *   already there, ordered by `titleRev` (a rename's) rather than `listingRev` (a send's), which a
+   *   shared open's write of the title also carries. Presentation only, like the cached role.
    * - `activity` updates the last-active time and cost of a workspace the user owns.
    */
   syncWorkspaceListing(workspaceId: string, listing: WorkspaceListing): void {
     let record = this.storage.gadgets.get(workspaceId);
-    let accessRev = record?.owner && listing.outputs ? listing.accessRev : undefined;
-    let stale = accessRev !== undefined && accessRev < (record!.sharedAccessRev ?? accessRev);
-    if (listing.outputs && !stale) this.#putWorkspaceOutputs(workspaceId, listing.outputs);
-    if (listing.summary && this.#hasWorkspace(workspaceId)) {
+    let taken = this.storage.listingRevs.get(workspaceId)?.rev;
+    let newer = taken === undefined || listing.listingRev > taken;
+    if (listing.outputs && newer) this.#putWorkspaceOutputs(workspaceId, listing.outputs);
+    if (listing.summary && newer && this.#hasWorkspace(workspaceId)) {
       this.storage.workspaceSummaries.put(listing.summary);
       this.#workspaceSummaryChanged(workspaceId, listing.summary);
     }
-    for (let {blueprintId, changes, gadgetId} of listing.blueprintChanges ?? []) {
+    for (let {blueprintId, changes, gadgetId} of newer ? listing.blueprintChanges ?? [] : []) {
       let record = this.storage.blueprints.get(blueprintId);
       if (!record || record.gadgetId !== workspaceId) continue;
       let {unpublishedChanges: was, ...rest} = record;
@@ -1869,19 +1883,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     if (!record) return;
+    if (newer) this.storage.listingRevs.put({workspaceId, rev: listing.listingRev});
     let updated = record;
-    if (accessRev !== undefined && !stale && accessRev !== record.sharedAccessRev) {
-      updated = {...updated, sharedAccessRev: accessRev};
-    }
     if (listing.title) {
       let {title, titleRev} = listing.title;
       if (!record.owner) {
-        if (record.title !== title) updated = {...updated, title};
+        if (newer && record.title !== title) updated = {...updated, title};
       } else if (record.sharedTitleRev === undefined || titleRev > record.sharedTitleRev) {
         updated = {...updated, title, sharedTitleRev: titleRev};
       }
     }
-    if (listing.activity && !record.owner) {
+    if (listing.activity && newer && !record.owner) {
       let {lastActive, totalCost} = listing.activity;
       updated = {...updated, lastActive, ...(totalCost ? {totalCost} : {})};
     }

@@ -3,7 +3,7 @@
 // workspace is mirrored by its Overseer into each collaborator's listing.
 // Runs against real Overseer and User DOs.
 
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { expect, it, vi } from "vitest";
@@ -100,6 +100,23 @@ it("mirrors the workspace's rename and activity to its owner", async () => {
     .toMatchObject({title: "Roadmap", lastActive, totalCost: 2.5}));
 });
 
+it("ignores activity from a listing older than one already taken", async () => {
+  const {owner, workspaceId} = await setup();
+  const newer = new Date(Date.now() + 60_000), older = new Date(Date.now() + 30_000);
+  const rev = Number.MAX_SAFE_INTEGER;
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev, activity: {lastActive: newer, totalCost: 2}});
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev - 1, activity: {lastActive: older, totalCost: 1}});
+  expect(await owner.getWorkspace(workspaceId)).toMatchObject({lastActive: newer, totalCost: 2});
+});
+
+it("keeps the owner's newer title when an older listing's arrives late", async () => {
+  const {owner, workspaceId} = await setup();
+  const rev = Number.MAX_SAFE_INTEGER;
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev, title: {title: "Timeline", titleRev: 2}});
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev - 1, title: {title: "Roadmap", titleRev: 1}});
+  expect(await owner.listWorkspaces()).toMatchObject([{id: workspaceId, title: "Timeline"}]);
+});
+
 it("keeps a newer mirrored title when a shared-open write arrives late", async () => {
   const {owner, reader, workspace, workspaceId} = await setup();
   using readerFeed = await subscribed(reader);
@@ -110,11 +127,76 @@ it("keeps a newer mirrored title when a shared-open write arrives late", async (
 
   await reader.recordSharedWorkspaceOpen(workspaceId, "Plans", await owner.whoami(), "build", [], olderRevision);
   // A delayed push of the older title is taken as already there.
-  await reader.syncWorkspaceListing(workspaceId, {title: {title: "Plans", titleRev: olderRevision}});
+  await reader.syncWorkspaceListing(workspaceId, {listingRev: 1, title: {title: "Plans", titleRev: olderRevision}});
   const [listing] = await reader.listWorkspaces();
   expect(listing).toMatchObject({id: workspaceId, title: "Roadmap"});
   expect(listing).not.toHaveProperty("sharedTitleRev");
   expect(readerFeed.updates.updates.at(-1)?.[1]).not.toHaveProperty("sharedTitleRev");
+});
+
+it("returns from a rename once the owner's list has the new title", async () => {
+  const {owner, workspace} = await setup();
+  const ownerId = owner.id.toString(), ownerProfileId = (await owner.whoami()).id;
+  await runInDurableObject(env.TEST_OVERSEER.get(workspace.id), async (instance: OverseerDurableObject) => {
+    const impl = instance["impl"];
+    impl.ensureAmbientCapsules = async () => {};
+    impl.syncDirectory = () => {};
+    // The owner's User DO takes the new title only when let.
+    const offered = Promise.withResolvers<void>(), taken = Promise.withResolvers<void>();
+    const users = impl.users;
+    impl.users = {
+      idFromName: (name: string) => users.idFromName(name),
+      idFromString: (id: string) => users.idFromString(id),
+      get: (id: DurableObjectId) => id.toString() !== ownerId ? users.get(id) : new Proxy(users.get(id), {
+        get: (target, key) => key !== "syncWorkspaceListing" ? Reflect.get(target, key)
+          : async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
+            if (args[1].title?.title === "Roadmap") {
+              offered.resolve();
+              await taken.promise;
+            }
+            return target.syncWorkspaceListing(...args);
+          },
+      }),
+    } as unknown as typeof users;
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await instance.open(ownerId, ownerProfileId, notifyClosed);
+    let returned = false;
+    const renaming = client.setTitle("Roadmap").then(() => { returned = true; });
+    await offered.promise;
+    expect(returned).toBe(false);
+    taken.resolve();
+    await renaming;
+  });
+  expect(await owner.listWorkspaces()).toMatchObject([{title: "Roadmap"}]);
+});
+
+it("returns from a rename without waiting on a collaborator whose account never answers", async () => {
+  const {owner, reader, workspace} = await setup();
+  const ownerId = owner.id.toString(), ownerProfileId = (await owner.whoami()).id;
+  const readerId = reader.id.toString();
+  await runInDurableObject(env.TEST_OVERSEER.get(workspace.id), async (instance: OverseerDurableObject) => {
+    const impl = instance["impl"];
+    impl.ensureAmbientCapsules = async () => {};
+    impl.syncDirectory = () => {};
+    const asked = Promise.withResolvers<void>();
+    const users = impl.users;
+    impl.users = {
+      idFromName: (name: string) => users.idFromName(name),
+      idFromString: (id: string) => users.idFromString(id),
+      get: (id: DurableObjectId) => id.toString() !== readerId ? users.get(id) : new Proxy(users.get(id), {
+        get: (target, key) => key !== "syncWorkspaceListing" ? Reflect.get(target, key)
+          : () => { asked.resolve(); return new Promise(() => {}); },
+      }),
+    } as unknown as typeof users;
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await instance.open(ownerId, ownerProfileId, notifyClosed);
+    await client.setTitle("Roadmap");
+    await asked.promise;
+    // The collaborator's send of "Roadmap" is still waiting when the owner renames again.
+    const second = client.setTitle("Timeline").then(() => "returned");
+    expect(await Promise.race([second, scheduler.wait(1_000).then(() => "waiting")])).toBe("returned");
+  });
+  expect(await owner.listWorkspaces()).toMatchObject([{title: "Timeline"}]);
 });
 
 it("sends the user's own pin and mute to their feed alone", async () => {

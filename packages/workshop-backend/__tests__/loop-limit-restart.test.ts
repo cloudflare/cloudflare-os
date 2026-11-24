@@ -89,13 +89,17 @@ function settle(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-// Pushes the owner's listing again (see OverseerImpl.resyncListingTo()) and waits for the call it
-// makes, and for its rejection to be handled.
-async function pushListing(impl: { resyncListingTo(userId: string): void }, calls: string[]): Promise<void> {
+// Pushes the owner's listing again (see OverseerImpl.resyncListingTo()), waiting on the attempt as
+// a caller would (so that one after a failed push is not left for the alarm), and for the call it
+// makes and its rejection to be handled.
+async function pushListing(impl: {
+  resyncListingTo(userId: string): void, userUpdateAttempt(userId: string): Promise<void>,
+}, calls: string[]): Promise<void> {
   let pushes = () => calls.filter(call => call === "syncWorkspaceListing").length;
   let sent = pushes();
   impl.resyncListingTo(OWNER_ID);
-  await vi.waitFor(() => expect(pushes()).toBe(sent + 1));
+  await impl.userUpdateAttempt(OWNER_ID).catch(() => {});
+  expect(pushes()).toBe(sent + 1);
   await settle();
 }
 
@@ -234,6 +238,7 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
       expect(impl.ensureAmbientCapsules()).rejects.toThrow(/looped back/),
     ]);
     impl.bumpLastActive();
+    await impl.userUpdateAttempt(OWNER_ID).catch(() => {});
     await settle();
     await pushListing(impl, calls);
 
