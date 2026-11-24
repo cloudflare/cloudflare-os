@@ -221,12 +221,9 @@ export type CompactionProjectionMessage = {
   canCut?: boolean;
 };
 
-function projectionMessageWeight(message: Message): number {
-  // Text uses serialized characters. Image weight follows dimensions rather than compressed
-  // bytes: a flat-color screenshot can be tiny on disk but expensive at original resolution.
-  const text = JSON.stringify(message, (key, value) =>
-    key === "data" && typeof value === "string" ? "[binary]" : value).length;
-  const imageTokens = typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
+/** Image accounting for a request; persisted beside usage to detect a changed replay projection. */
+export function estimateImageTokens(message: Message): number {
+  return typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
     if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
     // Decode at most 64 KiB of header, never allocate another copy of a multi-MiB image here.
     // An unusually long JPEG header or unknown encoding gets the maximum admitted file estimate.
@@ -241,7 +238,13 @@ function projectionMessageWeight(message: Message): number {
     const patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
     return sum + Math.max(1024, Math.ceil(patches * 1.2));
   }, 0);
-  return text + imageTokens * 4;
+}
+
+function projectionMessageWeight(message: Message): number {
+  // A flat-color screenshot can be tiny on disk but expensive at original resolution.
+  const text = JSON.stringify(message, (key, value) =>
+    key === "data" && typeof value === "string" ? "[binary]" : value).length;
+  return text + estimateImageTokens(message) * 4;
 }
 
 /** Estimate tokens for messages not included in provider usage, or when usage data is unavailable. */

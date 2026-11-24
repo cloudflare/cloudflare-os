@@ -908,6 +908,8 @@ export type StoredToolCall = Omit<ToolCall, "arguments">;
  */
 export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
   content: (TextContent | ThinkingContent | StoredToolCall)[];
+  /** Estimated images in the measured request, before this step's tool results. Legacy: absent. */
+  inputImageTokens?: number;
 };
 
 // One agent step's model-facing snapshot (see StoredAssistantMessage), keyed by the

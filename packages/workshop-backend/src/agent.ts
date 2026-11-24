@@ -41,7 +41,7 @@ import type {
 } from "./storage-schema/overseer-storage";
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
-  estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
+  estimateImageTokens, estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
   foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
@@ -1638,7 +1638,8 @@ export function rehydrateStoredAssistantMessage(
     }
     content.push({...block, arguments: record.input as ToolCall["arguments"]});
   }
-  return {...stored, content};
+  let {inputImageTokens: _, ...message} = stored;
+  return {...message, content};
 }
 
 // Builds an assistant message reconstructed from the chat log, filling the bookkeeping fields pi
@@ -3626,10 +3627,25 @@ async function runAgentPass(
   }));
   let lastMeasuredSequence = chatMessages.findLast(message =>
     message.type === "message" && message.author.type === "agent")?.sequence;
+  let measuredModel = lastMeasuredSequence === undefined ? undefined
+    : hooks.getChatModelData(chatId, lastMeasuredSequence);
+  let historicalImageTokens = projection.reduce((total, {message, sequence}) => total +
+    (sequence !== undefined && lastMeasuredSequence !== undefined &&
+      (sequence < lastMeasuredSequence ||
+        (sequence === lastMeasuredSequence && message.role !== "toolResult"))
+      ? estimateImageTokens(message) : 0), 0);
+  // A model/pool switch can reveal old pixels that were only omission markers in the measured
+  // request. Usage from another provider also prices pixels differently. Re-estimate the whole
+  // prompt when its older media changes, including a router pool change with the same model ID.
+  // Snapshots predating image accounting take this conservative path once, then record it below.
+  let mediaMatchesMeasurement = historicalImageTokens === 0 || (
+    measuredModel?.inputImageTokens === historicalImageTokens &&
+    measuredModel.api === handle.model.api && measuredModel.provider === handle.model.provider &&
+    measuredModel.model === handle.model.id);
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined
+  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined && mediaMatchesMeasurement
     ? measuredTokens + estimateProjectionTokens(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||
@@ -4657,7 +4673,7 @@ async function runAgentPass(
 
           // The model-facing snapshot rides along for the overseer to persist beside the display
           // record.
-          msg.modelData = makeStoredAssistantMessage(message);
+          msg.modelData = {...makeStoredAssistantMessage(message), inputImageTokens};
           msgs.push(msg);
         }
 
@@ -4725,12 +4741,18 @@ async function runAgentPass(
   };
   // A checkpoint Anthropic wrote reaches a model that can read it as its block, and any other
   // model as the summary text.
-  let stream = priorConversation !== undefined &&
+  let underlyingStream = priorConversation !== undefined &&
       checkpoint?.anthropicCompactionBlock !== undefined &&
       supportsAnthropicCompaction(handle.model)
     ? withAnthropicCompactionBlock(
         handle.stream, checkpoint.anthropicCompactionBlock, priorConversation)
     : handle.stream;
+  let inputImageTokens = 0;
+  let stream: ModelHandle["stream"] = (model, context, options) => {
+    inputImageTokens = context.messages.reduce((total, message) =>
+      total + estimateImageTokens(message), 0);
+    return underlyingStream(model, context, options);
+  };
 
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.

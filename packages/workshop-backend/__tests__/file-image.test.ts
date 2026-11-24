@@ -276,6 +276,52 @@ describe("images read from a worktree", () => {
       expect(results(switched.requests[0])[0].content.some(part => part.type === "image")).toBe(true);
     }));
 
+  it.each(["model switch", "router pool switch", "unchanged vision model"] as const)(
+    "checks newly visible history images before compaction after a %s", mode => inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      const dimensions = new DataView(bytes.buffer);
+      dimensions.setUint32(16, 6400); dimensions.setUint32(20, 4800);
+      const {chatId} = await setup(impl, bytes);
+      // 150K text tokens plus four 36K image estimates crosses Astra's 272K input tier.
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(75_000)}]);
+      const gatewayEnv = {CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+        CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare,cloudflare-auto-router"} as Cloudflare.Env;
+      const vision: AiModelConfig = mode === "router pool switch" ? {
+        provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "fixture",
+        autoRouterPool: {models: ["openai/gpt-6-astra"]},
+      } : {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+      const first: AiModelConfig = mode === "unchanged vision model" ? vision
+        : mode === "router pool switch" ? {...vision, autoRouterPool: {models: ["@cf/openai/gpt-oss-20b"]}}
+        : {provider: "cloudflare", model: "@cf/zai-org/glm-5.2", apiToken: "fixture"};
+      const handle = getModel(gatewayEnv, first, USER);
+      const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+        models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const response = (text: string, model = handle.model) => ({...fauxAssistantMessage(fauxText(text)),
+        api: model.api, provider: model.provider, model: model.id});
+      const measured = response("Done");
+      faux.setResponses([{...fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+        api: handle.model.api, provider: handle.model.provider, model: handle.model.id}, measured]);
+      handle.stream = faux.stream;
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+        {...first, contextWindow: 8_000_000, compactionInputBudget: 8_000_000});
+      const history = impl.loadChatHistory(chatId);
+      expect(history.measuredTokens).toBeGreaterThan(150_000);
+      expect(history.measuredTokens).toBeLessThan(180_000);
+      const last = history.chatMessages.findLast(message => message.type === "message" && message.author.type === "agent")!;
+      expect(impl.getChatModelData(chatId, last.sequence)?.inputImageTokens)
+        .toBe(mode === "unchanged vision model" ? 144_000 : 0);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
+      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+      const next = getModel(gatewayEnv, vision, USER);
+      faux.setResponses([...(mode === "unchanged vision model" ? [] : [response("Earlier context summary", next.model)]),
+        response("Done", next.model)]);
+      next.stream = faux.stream;
+      await runAgent(impl, next, chatId, AUTHOR, new AbortController().signal, USER,
+        {...vision, contextWindow: 8_000_000, compactionInputBudget: 272_000});
+      expect(checkpoints).toHaveBeenCalledTimes(mode === "unchanged vision model" ? 0 : 1);
+      expect(faux.getPendingResponseCount()).toBe(0);
+    }));
+
   it("reads RIFF-like UTF-8 as text", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl, new TextEncoder().encode("RIFF....WEBP is the container header."));
     const {requests} = await turn(impl, chatId, [[read()]]);
