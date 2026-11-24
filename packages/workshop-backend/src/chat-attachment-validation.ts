@@ -76,9 +76,14 @@ export function isAllowedChatAttachmentImageMimeType(mimeType: string | undefine
   return IMAGE_SIGNATURES.has(sanitizeChatAttachmentMimeType(mimeType));
 }
 
+type ImageHeaderSource = Uint8Array | {
+  readonly size: number;
+  read(offset: number, length: number): Uint8Array;
+};
+
 /** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */
 export function canInlineChatAttachmentImage(
-    mimeType: string, bytes: Uint8Array, maxEdge = 8000, maxPatches = Infinity): boolean {
+    mimeType: string, bytes: ImageHeaderSource, maxEdge = 8000, maxPatches = Infinity): boolean {
   const dimensions = imageDimensions(sanitizeChatAttachmentMimeType(mimeType), bytes);
   // Anthropic permits 8000 pixels normally, but only 2000 in many-image requests. This is a
   // model-input guard, not an upload restriction: originals remain in the worktree/downloads.
@@ -88,7 +93,11 @@ export function canInlineChatAttachmentImage(
 }
 
 /** Read supported format headers without decoding pixels; unknown or truncated headers return undefined. */
-export function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
+export function imageDimensions(mimeType: string, source: ImageHeaderSource): [number, number] | undefined {
+  const size = source instanceof Uint8Array ? source.length : source.size;
+  const read = (offset: number, length: number) => source instanceof Uint8Array
+    ? source.subarray(offset, offset + length) : source.read(offset, length);
+  const bytes = read(0, Math.min(size, 30));
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (mimeType === "image/png" && bytes.length >= 24 &&
       view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a &&
@@ -118,18 +127,31 @@ export function imageDimensions(mimeType: string, bytes: Uint8Array): [number, n
     }
   }
   if (mimeType === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    for (let offset = 2; offset < bytes.length;) {
-      if (bytes[offset++] !== 0xff) return undefined;
-      while (bytes[offset] === 0xff) ++offset;
-      const marker = bytes[offset++];
+    let scanned = bytes, scannedAt = 0;
+    const byteAt = (offset: number) => {
+      if (offset >= size) return undefined;
+      if (source instanceof Uint8Array) return source[offset];
+      if (offset < scannedAt || offset >= scannedAt + scanned.length) {
+        scanned = read(offset, Math.min(1024, size - offset));
+        scannedAt = offset;
+      }
+      return scanned[offset - scannedAt];
+    };
+    for (let offset = 2; offset < size;) {
+      if (byteAt(offset++) !== 0xff) return undefined;
+      while (byteAt(offset) === 0xff) ++offset;
+      const marker = byteAt(offset++);
+      if (marker === undefined) return undefined;
       if (marker === 0xda || marker === 0xd9) return undefined; // Scan data/end before SOF.
       if (marker === 1 || (marker >= 0xd0 && marker <= 0xd8)) continue; // No segment length.
-      if (offset + 2 > bytes.length) return undefined;
-      const length = view.getUint16(offset);
-      if (length < 2 || offset + length > bytes.length) return undefined;
+      if (offset + 2 > size) return undefined;
+      const header = read(offset, Math.min(size - offset, 8));
+      const segment = new DataView(header.buffer, header.byteOffset, header.byteLength);
+      const length = segment.getUint16(0);
+      if (length < 2 || offset + length > size) return undefined;
       if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
         if (length < 8) return undefined;
-        return [view.getUint16(offset + 5), view.getUint16(offset + 3)];
+        return [segment.getUint16(5), segment.getUint16(3)];
       }
       offset += length;
     }

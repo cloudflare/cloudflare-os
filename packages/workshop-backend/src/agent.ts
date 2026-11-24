@@ -3647,19 +3647,30 @@ async function runAgentPass(
       message.toolCalls?.some(call => call.toolName === "readFile" && call.image && !call.error)))) {
     measuredImageTokens = 0;
   }
-  let mediaMatchesMeasurement = measuredImageTokens === historicalImageTokens && (
-    historicalImageTokens === 0 || (measuredModel?.api === handle.model.api &&
-      measuredModel.provider === handle.model.provider && measuredModel.model === handle.model.id));
+  const sameMediaPricing = measuredModel?.api === handle.model.api &&
+      measuredModel.provider === handle.model.provider && measuredModel.model === handle.model.id;
+  const mediaMatchesMeasurement = measuredImageTokens === historicalImageTokens &&
+      (historicalImageTokens === 0 || sameMediaPricing);
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
-  // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined && mediaMatchesMeasurement
-    ? measuredTokens + estimateProjectionTokens(
-        projection.filter(({message, sequence}) => sequence !== undefined &&
-          (sequence > lastMeasuredSequence ||
-           (sequence === lastMeasuredSequence && message.role === "toolResult"))))
-    : estimateProjectionTokens(projection) +
+  const addedTokens = estimateProjectionTokens(
+      projection.filter(({message, sequence}) => sequence !== undefined && lastMeasuredSequence !== undefined &&
+        (sequence > lastMeasuredSequence ||
+          (sequence === lastMeasuredSequence && message.role === "toolResult"))));
+  let contextTokens: number;
+  if (measuredTokens > 0 && lastMeasuredSequence !== undefined && mediaMatchesMeasurement) {
+    contextTokens = measuredTokens + addedTokens;
+  } else {
+    contextTokens = estimateProjectionTokens(projection) +
         Math.ceil(getSystemMessageText(systemMessage).length / 4);
+    if (measuredTokens > 0 && lastMeasuredSequence !== undefined &&
+        sameMediaPricing && measuredImageTokens !== undefined) {
+      // Window eviction must not erase measured text usage at a persistence-barrier reload.
+      // Adjust the media estimate on the same model, retaining the full estimate as a floor.
+      contextTokens = Math.max(contextTokens,
+          Math.max(0, measuredTokens - measuredImageTokens) + historicalImageTokens + addedTokens);
+    }
+  }
 
   // Wraps a plain-text tool result (the exact text the model sees) with optional recorded notes
   // (see AiToolCall: observedCodeVersion, recorded output) riding along as pi `details` for the

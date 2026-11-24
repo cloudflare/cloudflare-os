@@ -202,7 +202,7 @@ describe("images read from a worktree", () => {
       if (file) {
         const read = file.reader.read.bind(file.reader);
         vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
-          if (length > 12) bodyReads.push(length);
+          if (length > 30) bodyReads.push(length);
           return read(offset, length);
         });
       }
@@ -235,7 +235,7 @@ describe("images read from a worktree", () => {
         if (file) {
           const read = file.reader.read.bind(file.reader);
           vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
-            if (length > 12) bodyReads.push(length);
+            if (length > 30) bodyReads.push(length);
             return read(offset, length);
           });
         }
@@ -321,6 +321,42 @@ describe("images read from a worktree", () => {
       expect(checkpoints).toHaveBeenCalledTimes(mode === "unchanged vision model" ? 0 : 1);
       expect(faux.getPendingResponseCount()).toBe(0);
     }));
+
+  it("keeps measured text usage when image-window eviction reloads the same model", () => inKernel(crypto.randomUUID(), async impl => {
+    const thumbnail = PNG.slice(), large = PNG.slice();
+    new DataView(thumbnail.buffer).setUint32(16, 1024);
+    new DataView(thumbnail.buffer).setUint32(20, 1024);
+    new DataView(large.buffer).setUint32(16, 6400);
+    new DataView(large.buffer).setUint32(20, 4800);
+    const {chatId} = await setup(impl, thumbnail, [["large.png", large]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(65_000)}]);
+    const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+      models: [{id: "fixture", contextWindow: 8_000_000}]});
+    faux.setResponses([fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done"))]);
+    handle.stream = faux.stream;
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {...config, contextWindow: 8_000_000, compactionInputBudget: 8_000_000});
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 215_000});
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Read two large images"}]);
+    const commit = impl.commitAgentStep.bind(impl);
+    vi.spyOn(impl, "commitAgentStep").mockImplementation((...args) => {
+      // Faux's text-only tokenizer cannot represent the prior provider's 215K usage. Seed
+      // that actual measurement at the real persistence barrier before the live budget check.
+      if (args[4] && args[2].some(message => message.type === "message" && message.toolCalls?.some(call =>
+        call.toolName === "readFile" && call.input.filename === "large.png"))) args[4].totalTokens = 215_000;
+      return commit(...args);
+    });
+    faux.setResponses([fauxAssistantMessage([read({filename: "large.png"}), read({filename: "large.png"})], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done"))]);
+    const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {...config, contextWindow: 8_000_000, compactionInputBudget: 272_000});
+    expect(checkpoints).toHaveBeenCalledOnce();
+    expect(faux.getPendingResponseCount()).toBe(0);
+  }));
 
   it.each([false, true])("preserves legacy measured usage only without historical media (media=%s)", hasMedia =>
     inKernel(crypto.randomUUID(), async impl => {
@@ -691,6 +727,27 @@ describe("images read from a worktree", () => {
   ] as const)("recognizes only definite decode errors: %s", (message, status, expected) => {
     expect(isImageDecodeError(message, status)).toBe(expected);
   });
+
+  it.each(["png", "webp", "jpeg"])("rejects %s resolution from a real blob header without reading its body", format =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = new Uint8Array(2 * 1024 * 1024), view = new DataView(bytes.buffer);
+      if (format === "png") {
+        bytes.set(PNG); view.setUint32(16, 7680); view.setUint32(20, 4320);
+      } else if (format === "webp") {
+        bytes.set(new TextEncoder().encode("RIFF....WEBPVP8X")); view.setUint32(4, bytes.length - 8, true);
+        bytes.set([0xff, 0x1d, 0, 0xdf, 0x10, 0], 24); // 7680 x 4320.
+      } else {
+        bytes.set([0xff, 0xd8, 0xff, 0xe1, 0xff, 0xff]); // Seek across a large APP segment.
+        const sof = 4 + 65535;
+        bytes.set([0xff, 0xc0, 0, 8, 8, 0x10, 0xe0, 0x1e, 0, 1], sof);
+      }
+      const blob = impl.gitCache.writeBlob(bytes);
+      const reader = await impl.openBlob(blob.oid);
+      const ranges = vi.spyOn(reader, "read");
+      expect(() => readFileImage(reader)).toThrow("resolution exceeds");
+      expect(ranges.mock.calls.every(([, length]) => length <= 1024)).toBe(true);
+      expect(ranges).not.toHaveBeenCalledWith(0, bytes.length);
+    }));
 
   it("does not read a large image body before rejecting its size", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = new Uint8Array(5 * 1024 * 1024);
