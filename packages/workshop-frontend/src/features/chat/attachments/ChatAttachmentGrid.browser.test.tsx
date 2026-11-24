@@ -308,6 +308,37 @@ it("lets a download finish when the chat is left, and saves it once on coming ba
   }
 });
 
+// Only the download outlives the chat: a preview opened after coming back still stops on leaving.
+it("lets only a download's read finish when the chat is left", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  // Over 25 MB, so only the viewer reads it, and an image, so the viewer does.
+  const photo = [ref("photo.png", "image/png", undefined, 40 * 1024 * 1024)];
+  const first = await mount(photo, { "photo.png": new Promise<Uint8Array>((settle) => { resolve = settle; }) });
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview photo.png" }));
+    await userEvent.click(page.getByRole("button", { name: "Download" }));
+    await act(async () => root!.unmount());
+    host!.remove();
+    // The download shares the viewer's read, which goes on.
+    expect(first).toHaveBeenCalledOnce();
+    expect(first.mock.calls[0][1].aborted).toBe(false);
+
+    const again = await mount(photo, { "photo.png": new Promise<Uint8Array>(() => {}) });
+    await userEvent.click(page.getByRole("button", { name: "Preview photo.png" }));
+    await expect.poll(() => again.mock.calls.length).toBe(1);
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(again.mock.calls[0][1].aborted).toBe(true);
+    expect(first.mock.calls[0][1].aborted).toBe(false);
+
+    resolve(PNG);
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+  } finally {
+    saves.mockRestore();
+  }
+});
+
 it("aborts its fetches when it goes", async () => {
   const loadContent = await mount([ref("notes.txt", "text/plain")], { "notes.txt": new Promise(() => {}) });
   await expect.poll(() => loadContent.mock.calls.length).toBe(1);

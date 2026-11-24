@@ -23,6 +23,10 @@ type Read = {
   failed: boolean;
 };
 
+// The reads that feed those downloads. Leaving the chat lets these finish, and only these: a
+// preview of the same file, opened after coming back, still stops.
+const downloadReads = new WeakSet<Read>();
+
 /**
  * Reads each attachment's bytes once, as one promise, so a card's thumbnail and the viewer share a
  * fetch under way and the viewer can read it with `use()`. A read is kept only while held: while a
@@ -53,7 +57,7 @@ export const useAttachmentContents = (
     const current = reads.current;
     return () => {
       // A download asked for goes on to be saved.
-      for (const [id, read] of current) if (!downloads.has(id)) read.abort.abort();
+      for (const read of current.values()) if (!downloadReads.has(read)) read.abort.abort();
       current.clear();
     };
   }, []);
@@ -110,7 +114,9 @@ export const useAttachmentContents = (
         changeDownloads(() => downloads.add(id));
         if (reads.current.get(id)?.failed) reads.current.delete(id);
         const release = hold(id);
-        return start(id).bytes.then(save).finally(() => {
+        const read = start(id);
+        downloadReads.add(read);
+        return read.bytes.then(save).finally(() => {
           release();
           changeDownloads(() => downloads.delete(id));
         });
