@@ -305,9 +305,13 @@ same `host`, so it does the same, and the pane keeps what it says:
 
 - **A preview reports the reader's spot** as `{ anchor, label }`, each time it moves: the anchor
   is the preview's own and stable (an ID, not a title or a number that a change moves), the label
-  is what a person would call the place. Nothing is reported where there is only one place to be
-  (a spreadsheet of one sheet). `reportSpot()` in `previews/shared/chrome.js` tells the host only
-  of a spot that has moved, and keeps the label within the host's limit.
+  is what a person would call the place. Text the reader has selected is the spot's `context`,
+  which is what tells the agent what "this" is. Where there is only one place to be (a
+  spreadsheet of one sheet) the place has no label, and is reported only with text selected, as
+  "Selected text". Text selected with nothing picked is told with the slide it is on, or the
+  heading it is under, which need not be where the view is. `reportSpot()` in
+  `previews/shared/chrome.js` reads the selection for every preview, tells the host only of
+  what has changed, and keeps both within the host's limits.
 - **A preview registers `onNavigate()` before its first read**, and makes that read only if the
   host sends it nowhere: a preview sent to a spot opens on it, with one read instead of two. It
   answers false for a spot that is gone, having left the reader where they are, or opened where
@@ -317,7 +321,7 @@ same `host`, so it does the same, and the pane keeps what it says:
   `?tab=<id>#heading=<id>`, the form the document's own links have; Google Sheets, the sheet's
   ID; Google Slides, the slide's ID. A Doc's heading is named by the drawing's `headingId` and
   found again by it after each read, so the spot holds through a refresh and a change that moves
-  the heading. Nothing finer is told yet (a table, a cell).
+  the heading.
 - **A spot says only what Google has saved**, since a host shows the label and may tell an agent
   of it, and what a pending change writes is the agent's and not yet approved. A Doc's heading
   goes by its saved words and a sheet by its saved title, whatever a change makes of them. What
@@ -325,20 +329,126 @@ same `host`, so it does the same, and the pane keeps what it says:
   an added heading the last saved one passed is told, and on an added tab, sheet or slide
   nothing is, as where there is one place to be. A slide's label is its number as the preview
   lists the deck, changes applied, which is no text of anyone's.
+- **What the reader picks is a finer spot**, wherever the agent can name it: a click on a slide's
+  element gives `<slide>#<element>`, and the cell picked in a sheet `<sheet>!<A1>`, each with what
+  is in it as the spot's `context`. An element a pending change deletes is still Google's to ask
+  about, and its label ends ", being deleted". A press dragged across cells, which rings the range
+  as it grows, or a click with Shift held, which grows it from the cell first clicked, picks the
+  range between them, `<sheet>!<A1>:<B2>`, whose `context` is its cells as lines of tab-separated
+  text, each of its rows and columns, the empty ones too, when all of them are drawn. Where one is
+  hidden or lies outside the window drawn it is nothing: the agent reads the range by its name, not
+  the part of it that happened to be drawn. A cell of a document's table is named as the session's
+  table methods name one, after the heading it is under or, under none, the tab:
+  `table=<n>&row=<r>&column=<c>`, each counted from 0 and the table among the tab's as the pending
+  changes leave them, which is how `getContent()` shows them. Its label counts from 1, as a person
+  does ("Table 2 › row 1, column 3"), and the session's type docs say which is which. These are
+  places, not IDs, since nothing else names a cell: a change before one moves it, for the agent as
+  for the preview.
+- **A cell is named only where its place is certain.** The three numbers are read off the table as
+  it is drawn, so they are the session's exactly where the drawing is the session's table: any cell
+  in "With changes", which draws each table as the pending changes leave it, and in "As saved" and
+  "Inline" a cell of a table no pending change touches. A table a change touches is drawn in those
+  two copies with rows and columns the session's table does not have, or without ones it has, and
+  the preview does not guess which of its cells is which: a cell of it is told by its heading and
+  its text, under the label "Cell of a table being changed" ("Cell being deleted" where it goes),
+  and another copy of the tab lets it go. How the merge pairs a saved table with a pending one is
+  therefore not something the agent's cell depends on. No table is numbered while the drawing and
+  the pending edits are of the document as saved at different times, which is when the copy
+  the agent reads may count its tables from other blocks than the ones drawn.
+- **A pick lasts as long as the reading it was made on.** To find a thing told by its place again
+  in a document that has changed is to guess, and a wrong guess moves the pick to another thing
+  without a word. So none is made: each new drawing picks again what was picked by its identity
+  alone, never by what it says, and a refresh that reads the file or its pending changes as
+  anything else lets it go and tells the host so. What is ringed is always what was last told. A
+  slide's element has an ID, and is kept while an element of that ID is drawn on its slide. A
+  document names no paragraph, and a cell of its table is a place, so what they have is the merge
+  they are drawn from: its row, which of the elements that row is drawn as (a table of contents is
+  one row, drawn as a paragraph for each entry), and a cell's row and column in its table. That
+  holds through another copy of the tab, a font that arrives and pages set again, and takes in
+  every piece of the thing: a paragraph or a cell its pages cut in two is ringed on both and told
+  as one text, and a cell of a row its table repeats on each page is ringed on each and says its
+  words once. A copy that does not draw the thing (a paragraph a change adds, in "As saved") lets
+  it go, as does another copy of a row a change touches that is drawn as a table or as several
+  paragraphs, whose cells and entries there may be others. A refresh that finds the saving and
+  the edits as they were, as when a change is queued on another tab, draws nothing anew; any other
+  is another merge. Google names no saving to an account that may not edit, whose drawing is
+  compared whole instead. A paragraph is told by the heading it is under and by its text, which is
+  what an edit matches on. A sheet's cells have names, which are of the same cells only on the
+  sheet as it was read: a refresh that finds its rows, its columns and its pending changes as many
+  and as they were keeps them, as when a change is queued on another sheet, and any other lets
+  them go. They are told with no context where what they hold cannot be read, a line of them being
+  hidden or outside the window, and while only the window moves they keep what was last drawn of
+  them, so that scrolling away and back asks nothing anew. A refresh tells them as it draws them,
+  and so by name alone while they are outside its window. A chip of an older message goes to the
+  cell its anchor names, told as it reads now: that is what an anchor means, and is no pick found
+  again. `picking()` in `chrome.js` marks the pick for Docs and Slides, which is framed with a
+  dashed line in the shape of a change's ring, drawn over it so that it keeps its own look, and
+  lets it go once its reader scrolls it from in view to out of view, so that a preview is not sent
+  back to a place its reader left; a scroll the preview makes (to a new change, to a spot it is
+  sent to, to where the reading was once a refresh is laid out) is not its reader's and lets
+  nothing go, nor does their own while the pick is out of view already. Sheets had
+  its cell already, ringed as Google Sheets rings one. In Slides the frame is one of the slide's
+  marks, placed as a change's ring is, round what the element draws rather than its box, which text
+  spills out of and a turn moves. What a slide takes from its layout or its master is not the
+  slide's to edit and is not picked, and nothing is picked on a tab, a sheet or a slide that only a
+  pending change adds: the agent has no such place to act on until it is approved.
+- **What a pending change wrote is told as such.** The agent is told what the reader saw, and a
+  preview shows text that is not approved yet, so `reportSpot()` starts the `context` with the
+  line `(shown with changes not yet approved)` wherever the pick, or the text selected, takes in
+  something a pending change wrote. Each preview names what it draws of one: the text a change
+  writes and the blocks and cells it adds in a document, where a paragraph or a cell it edits is
+  also told so in the copies that show it edited, though the edit only took words away; the
+  values a change enters in a sheet; the elements a change adds or alters on a slide, a slide it
+  adds, and the words it adds to the notes. A pick and a selection are held to the one definition
+  (`takesIn()`). What a change removes is still in the file, and is told plainly; in "Inline",
+  where a paragraph shows the words that go beside the words that come, neither a pick nor a
+  selection takes the ones that go, so the two are never run together. Text selected counts only
+  where all of it is in the document as drawn: a Doc's sheets, a sheet's grid, a slide's stage
+  and its notes. What a preview writes around that (a slide's title, an outline, the bar with a
+  cell's value) shows what the changes make of it with no mark on it, so text selected there is
+  none to tell. Text selected inside a pick is told as not yet approved wherever the pick is, and
+  text selected anywhere else by what it takes in itself. A selection that ends at the very start
+  of what follows the document, as a triple click leaves one, is in the document still.
+  The label of such a pick says what it is ("Pending change", "Shape") in place of its words,
+  and the chip shows the context as it is sent, first line included. Nothing of a spot is an
+  address or is followed: the anchor is made of IDs the session listed and of numbers, the label
+  and the context are text, with the characters that turn text about or are not seen left out,
+  and each is cut to the host's limit, which the host and the kernel check again.
 - **An item's spot starts with the item**: `<previewOf.anchor> <spot>`. The Drive entry is sent the
   file's name, opens it, and starts the file's preview with a host of its own making, which puts
-  the name before each spot that preview reports and takes it off each it is sent to. The three
+  the name before each spot that preview reports and takes it off each it is sent to. It labels
+  each spot by the file's name first (`getEntry()`, asked with the open, so one more logged read
+  for each file opened), since the agent is told only the connection's title. The three
   previews do not know whether a connection or the Drive entry started them. A frame draws one
   file: sent to another it answers false, and the Workshop gives each file a frame of its own.
 - **The Workshop keeps each preview's last anchor** (`usePreviewFocus`), by connection and item,
   for a stay in a workspace, and `GadgetUI` sends a frame to it as the frame registers. So a
   preview closed and opened again, or left for another and returned to, opens where it was left.
-  The preview of an item that has reported nothing is sent to the item. Only the frame's own
-  reports move the spot: nothing navigates a preview that is running.
-- **Not built: the agent is not told.** A message's focus (`ChatMessageOptions.focus`) names a
-  gadget, and the kernel refuses any other workpiece, so the chat's focus chip and the agent's
-  `<user-focus>` block stay a gadget's. Letting a focus name a connection is a kernel change of
-  its own (see Punted).
+  The preview of an item that has reported nothing is sent to the item.
+- **The agent is told.** A connection with a UI stands where a gadget would, so a message's
+  focus (`ChatMessageOptions.focus`) may name one: the kernel checks and stamps it as a gadget's,
+  titled by the connection's resource, and the agent reads the same `<user-focus>` block, whose
+  `gadget` is its binding to the connection. The kernel does not record which connections have a
+  UI, so it takes a focus on any; a focus grants nothing. Each session's type docs say what its
+  anchors are made of, so the agent can read one, and that it acts on the anchor alone: a label
+  is for the reader and gives a tab, a worksheet or a heading by its saved title, while a range
+  names its worksheet by the title the pending changes leave it, which the agent finds by the
+  anchor's ID (`getSpreadsheet()`). A Doc's heading is the exception: `getContent()` marks no
+  heading with its ID, so the agent finds it by the label's title, and goes by the body or asks
+  where a pending edit has rewritten it or several share it.
+- **The pane offers its preview as a gadget is offered**: a second `usePaneFocus`, whose gadget
+  is the preview's connection, gives the composer's chip and keeps the label and context the
+  frame reports. The connection is the focus, not the item: the item is in the anchor. A
+  preview's reader picks things at a spot, so its pane (`picks`) takes a report with another
+  context under the same anchor as a new offer, which brings back a chip turned down; a pick let
+  go does not, nor does a gadget's context, which can change by itself.
+- **A sent message's chip opens its preview** at the spot (`previewAt()`): the one with changes
+  waiting or already open if there is one, and otherwise as the connection offers. A connection
+  with a preview of its own is drawn whole; one with none draws its items, and the item is the
+  anchor up to its first space. Such an item is drawn under the connection's title and with no
+  link out, since the message kept neither of the item's own. A preview whose last report was
+  that spot is sent nowhere: its frame would report nothing new, and the composer would lose
+  the spot. So a chip for cells still picked does not scroll back to them.
 
 ## Verification of the framework
 
@@ -1185,6 +1295,9 @@ differs is which file, which section 1a answers:
    stacked on the one before.
 5. **Where the reader is**, stacked on the fourth: section 5, and the item named by an anchor
    in place of a session the Workshop opened (section 1a).
+6. **Telling the agent**, stacked on the fifth: the kernel's `#stampFocus()` takes a connection
+   (one commit, with the agent's guidance), then the pane's offer and the chip, then the
+   selection, the file's name and the type docs.
 
 ## Punted / future work
 
@@ -1209,14 +1322,17 @@ differs is which file, which section 1a answers:
   gatekeeper naming the type of session the file is opened as, as `describe().tsType` does for
   a connection. Such a gadget is bound to the folder's connection, so it also opens the file
   itself, as the Drive entry does, by methods its types have.
-- **Telling the agent what the user is looking at in a preview.** A preview already reports it
-  (section 5). What is missing is in the kernel: `MessageFocus` names a gadget, and
-  `#stampFocus()` refuses any other workpiece. Accepting a connection there, titled by its
-  `resourceTitle`, is a few lines and leaves the stored shape and the `<user-focus>` block as
-  they are. The Workshop would then offer the pane's preview as a message's focus, and a chip's
-  click would open it. With that, a preview is worth giving a `context`: the text selected.
-- **A file's name in its spot's label.** A file reached through Drive is labelled by its kind
-  ("Document › Costs"): its session does not say its name, which the action that named it did.
+- **A sheet moved under a pick.** Google Sheets names no saving of a spreadsheet to the preview,
+  so a collaborator's edit that moves cells while leaving the sheet as many rows and columns (a
+  sort, a row put in and another taken out) is not seen: the cells picked keep their name, and
+  are told as they read now.
+- **More to pick.** A cell of a table on a slide, a table inside a cell of a document's table
+  and an image inside a paragraph are each told as the table, the cell or the paragraph they
+  are in. Whole rows and columns of a sheet are not picked from its headings, nor a document's
+  table as a whole.
+- **An item's own title on a chip opened later.** A message's focus keeps the connection's
+  title. Opening the chip of a file with no change waiting draws the file under that title; the
+  item's own would need the gatekeeper to describe an item by its ID.
 - **Change notification beyond the Workshop frame.** Either a live callback on the session (no
   precedent for a non-persistent callback; lost when the gatekeeper is evicted) or a hook through
   `bindHook()` (persistent stub, user approval, one logged read per delivery). Open: whether a
