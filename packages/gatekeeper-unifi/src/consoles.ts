@@ -97,6 +97,8 @@ export type DirectConsoleFacts = {
    * Network. They can differ, a gateway managing a separate NVR say, so each is pinned on its own.
    */
   appMacs: { network: string[]; protect: string[] };
+  /** Each site's gateways, by lowercase site ID: what a change to a site checks it's still served by. */
+  siteGateways: Record<string, string[]>;
   networkVersion: string | null;
   protectVersion: string | null;
 };
@@ -120,6 +122,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
   if (!network.ok && !protect.ok) throw new UnifiError(mostTelling(network.failure, protect.failure));
 
   const appMacs = { network: new Set<string>(), protect: new Set<string>() };
+  let siteGateways: Record<string, string[]> = {};
   let name: string | null = null;
   let protectVersion: string | null = null;
   let networkVersion: string | null = null;
@@ -133,6 +136,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
     networkVersion = parseNetworkInfo(jsonOf(network)).applicationVersion;
     const gateways = await networkIdentity(send);
     for (const mac of gateways.macs) appMacs.network.add(mac);
+    siteGateways = gateways.bySite;
     name ??= gateways.name;
   }
   return {
@@ -140,6 +144,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
     apps: { network: network.ok, protect: protect.ok },
     macs: [...new Set([...appMacs.protect, ...appMacs.network])],
     appMacs: { network: [...appMacs.network], protect: [...appMacs.protect] },
+    siteGateways,
     networkVersion,
     protectVersion,
   };
@@ -151,6 +156,9 @@ const MAX_IDENTITY_SITES = 50;
 /** What an application says its console's hardware is, and the name it gives it. */
 export type AppIdentity = { macs: string[]; name: string | null };
 
+/** Network's identity, with each site's gateways (by lowercase site ID) for site-scoped checks. */
+export type NetworkIdentity = AppIdentity & { bySite: Record<string, string[]> };
+
 /** Protect's identity: the NVR's MAC. Empty when the NVR can't be read or gives no usable address. */
 export async function protectIdentity(send: UnifiSend): Promise<AppIdentity> {
   const nvr = await send(probeRequest("protect", "/v1/nvrs"));
@@ -161,25 +169,34 @@ export async function protectIdentity(send: UnifiSend): Promise<AppIdentity> {
 
 /**
  * Network's identity: the MACs of the gateways on its sites, whichever site each is on -- the
- * first listed may have none -- reading up to `MAX_IDENTITY_SITES` sites. Empty when none can be read.
+ * first listed may have none -- reading up to `MAX_IDENTITY_SITES` sites, or only `onlySite`.
+ * Empty when none can be read.
  */
-export async function networkIdentity(send: UnifiSend): Promise<AppIdentity> {
-  const sites = await send({ ...probeRequest("network", "/v1/sites"), query: { limit: String(MAX_IDENTITY_SITES) } });
-  if (!sites.ok) return { macs: [], name: null };
+export async function networkIdentity(send: UnifiSend, onlySite?: string): Promise<NetworkIdentity> {
+  let siteIds: string[];
+  if (onlySite !== undefined) {
+    siteIds = [onlySite];
+  } else {
+    const sites = await send({ ...probeRequest("network", "/v1/sites"), query: { limit: String(MAX_IDENTITY_SITES) } });
+    if (!sites.ok) return { macs: [], name: null, bySite: {} };
+    siteIds = parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite).map(site => site.id);
+  }
   const macs = new Set<string>();
+  const bySite: Record<string, string[]> = {};
   let name: string | null = null;
-  for (const site of parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite)) {
+  for (const siteId of siteIds) {
     const devices = await send({
-      ...probeRequest("network", `/v1/sites/${encodeURIComponent(site.id)}/devices`), query: { limit: "200" },
+      ...probeRequest("network", `/v1/sites/${encodeURIComponent(siteId)}/devices`), query: { limit: "200" },
     });
     if (!devices.ok) continue;
     for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
       if (!device.roles.includes("gateway") || !isUsableMac(device.macAddress)) continue;
       macs.add(device.macAddress);
+      (bySite[siteId.toLowerCase()] ??= []).push(device.macAddress);
       name ??= device.name;
     }
   }
-  return { macs: [...macs], name };
+  return { macs: [...macs], name, bySite };
 }
 
 /** The more useful of two failures to show someone connecting: a key problem beats the rest. */

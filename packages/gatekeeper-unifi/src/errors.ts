@@ -22,7 +22,9 @@
  */
 export type UnifiErrorKind =
   | "auth" | "forbidden" | "notFound" | "badRequest" | "rateLimited" | "unreachable" | "timeout"
-  | "tls" | "redirect" | "server" | "protocol";
+  | "tls" | "redirect" | "server" | "protocol"
+  /** The console at a direct connection's address couldn't be confirmed as its own; nothing was sent. */
+  | "unconfirmed";
 
 /** A failed request, as a value that survives RPC. */
 export type UnifiFailure = {
@@ -66,7 +68,7 @@ export class UnifiError extends Error {
 export function refusedBeforeDispatch(error: unknown): boolean {
   return error instanceof UnifiError &&
     (error.kind === "auth" || error.kind === "forbidden" || error.kind === "rateLimited" ||
-     error.kind === "tls" || error.kind === "redirect");
+     error.kind === "tls" || error.kind === "redirect" || error.kind === "unconfirmed");
 }
 
 /** Whether a failure proves the request had no effect: the target is gone, or it was invalid. */

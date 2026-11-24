@@ -360,7 +360,7 @@ describe("checking collaborators", () => {
     const camera = binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId });
     const before = unifi.calls.length;
     expect(await verify(camera, sam)).toEqual(ALLOWED);
-    const probe = unifi.calls.slice(before).find(call => call.headers["x-api-key"] === SAM_KEY);
+    const probe = unifi.calls.slice(before).find(call => call.headers["x-api-key"] === SAM_KEY && call.url.includes("/cameras/"));
     expect(probe?.url).toBe(`${CONSOLE_URL}/proxy/protect/integration/v1/cameras/${HOME.doorbellId}`);
   });
 
@@ -438,7 +438,7 @@ describe("checking collaborators", () => {
     console.offline = true;
     const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
     const result = await verify(site, sam) as { error: string };
-    expect(result.error).toMatch(/reach|respond|offline/i);
+    expect(result.error).toMatch(/reach|respond|offline|confirm/i);
   });
 
   it("refuses a collaborator whose connection was removed", async () => {

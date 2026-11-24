@@ -55,6 +55,8 @@ export type UnifiIdentity =
     macs: string[];
     /** The MACs each application identified the console by (`DirectConsoleFacts.appMacs`). */
     appMacs: { network: string[]; protect: string[] };
+    /** Each site's gateways (`DirectConsoleFacts.siteGateways`). */
+    siteGateways: Record<string, string[]>;
     apps: { network: boolean; protect: boolean };
   };
 
@@ -82,6 +84,8 @@ export type AccountSummary = {
 };
 
 const CONNECTION_KEY = "connection";
+/** How long a read trusts a check that a direct console is still this connection's. */
+const CONFIRMED_TTL_MS = 30_000;
 const APPS = ["network", "protect"] as const;
 const CALLBACK_KEY = "callback";
 const CONSOLES_TTL_MS = 60_000;
@@ -92,6 +96,8 @@ const CACHE_BYTES = 8 * 1024 * 1024;
 /** One UniFi connection. */
 export class UnifiAccount extends DurableObject<UnifiEnv> {
   readonly #buckets = new Map<string, TokenBucket>();
+  /** When each application (and site) at a direct console was last confirmed to be this console's. */
+  readonly #confirmed = new Map<string, number>();
   readonly #cache = new ResponseCache<UnifiResponse>(Date.now, 500, {
     maxBytes: CACHE_BYTES, sizeOf: response => (response.ok && "json" in response ? response.size : 0),
   });
@@ -189,6 +195,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     kv.put(CONNECTION_KEY, staged);
     clearCredentialExpiryLatch(kv);
     this.#cache.clear();
+    this.#confirmed.clear();
     this.#buckets.clear();
   }
 
@@ -196,6 +203,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   async revoke(): Promise<void> {
     discardStagedCredentials(this.ctx.storage.kv);
     this.#cache.clear();
+    this.#confirmed.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
@@ -457,7 +465,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
    * Sends a request; a GET may be answered from the cache unless `ttlMs` is null.
    * @param connection The credentials to send with, if not the ones stored now.
    */
-  async #send(request: UnifiRequest, ttlMs: number | null, connection = this.#connection()): Promise<UnifiResponse> {
+  async #send(
+    request: UnifiRequest, ttlMs: number | null, connection = this.#connection(), skipIdentity = false,
+  ): Promise<UnifiResponse> {
     if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
     // A send pinned to credentials a reconnect has since replaced must not reach the cache, which
     // the new credentials share: an answer it loaded there would be served as theirs.
@@ -469,8 +479,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       return failure({ kind: "notFound", message: "This UniFi connection doesn't reach that console." });
     }
     const group = request.target.kind === "siteManager" ? "siteManager" : `console:${request.target.consoleId}`;
-    if (request.method !== "GET" && request.target.kind === "app" && identity.mode === "direct") {
-      const refusal = await this.#confirmServing(request.target.app, connection);
+    if (!skipIdentity && request.target.kind === "app" && identity.mode === "direct") {
+      const refusal = await this.#confirmServing(request.target.app, siteOf(request.path), connection, request.method !== "GET");
       if (refusal) return refusal;
     }
     if (request.method !== "GET") {
@@ -491,33 +501,55 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   }
 
   /**
-   * Before a change goes to a console reached directly, whether the application answering there
+   * Before a request goes to a console reached directly, whether the application answering there
    * still runs on the hardware it identified when the connection was made: a tunnel or proxy
-   * repointed at a replacement that takes the same key would otherwise have the change made there.
+   * repointed at a replacement that takes the same key would otherwise serve this connection's
+   * bindings, and its collaborator checks, as if it were this console. Network is checked by one
+   * site's gateway: the request's site where it had one, since another site's says nothing about
+   * it, and otherwise any site that did. A change is always checked afresh; a read trusts a check
+   * made in the last `CONFIRMED_TTL_MS`, which keeps reads to a request more at most.
    * @returns The refusal, or null when it matches.
    */
-  async #confirmServing(app: UnifiApp, connection: StoredConnection): Promise<UnifiResponse | null> {
+  async #confirmServing(app: UnifiApp, siteId: string | null, connection: StoredConnection, fresh: boolean): Promise<UnifiResponse | null> {
     const { identity } = connection;
     if (identity.mode !== "direct") return null;
+    const key = `${app}:${siteId ?? ""}`;
+    if (!fresh && (this.#confirmed.get(key) ?? 0) > Date.now()) return null;
     const send: UnifiSend = request => this.#send(
       request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId: identity.consoleId } } : request,
-      null, connection);
-    const serving = await (app === "protect" ? protectIdentity(send) : networkIdentity(send));
-    const pinned = identity.appMacs[app];
-    if (!pinned.some(isUsableMac) || serving.macs.length === 0) {
-      return failure({
-        kind: "forbidden",
-        message: "Couldn't confirm the console at this address is the one this connection was made to, so the change " +
-          "wasn't sent. Try again in a moment.",
-      });
+      null, connection, true);
+    const unconfirmed = failure({
+      kind: "unconfirmed",
+      message: "Couldn't confirm the console at this address is the one this connection was made to, so nothing was " +
+        "sent. Try again in a moment.",
+    });
+    let pinned: string[];
+    let serving: string[];
+    try {
+      if (app === "protect") {
+        pinned = identity.appMacs.protect;
+        serving = (await protectIdentity(send)).macs;
+      } else {
+        const hasGateway = (site: string) => (identity.siteGateways[site] ?? []).some(isUsableMac);
+        const site = siteId !== null && hasGateway(siteId) ? siteId : Object.keys(identity.siteGateways).find(hasGateway);
+        if (site === undefined) return unconfirmed;
+        pinned = identity.siteGateways[site]!;
+        serving = (await networkIdentity(send, site)).bySite[site] ?? [];
+      }
+    } catch (error) {
+      // An answer that isn't what the endpoint returns proves nothing, and nothing was sent.
+      if (error instanceof UnifiError) return unconfirmed;
+      throw error;
     }
-    if (!sameConsole(pinned, serving.macs)) {
+    if (!pinned.some(isUsableMac) || serving.length === 0) return unconfirmed;
+    if (!sameConsole(pinned, serving)) {
       return failure({
         kind: "forbidden",
-        message: "The console at this address isn't the one this connection was made to, so the change wasn't sent. " +
+        message: "The console at this address isn't the one this connection was made to, so nothing was sent. " +
           "Reconnect the console.",
       });
     }
+    this.#confirmed.set(key, Date.now() + CONFIRMED_TTL_MS);
     return null;
   }
 
@@ -660,14 +692,17 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       }
       return {
         credentials,
-        identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs },
+        identity: {
+          ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs,
+          siteGateways: facts.siteGateways,
+        },
       };
     }
     return {
       credentials,
       identity: {
         mode: "direct", consoleId: `local-${randomHex(8)}`, consoleName: facts.name,
-        macs: facts.macs, appMacs: facts.appMacs, apps: facts.apps,
+        macs: facts.macs, appMacs: facts.appMacs, siteGateways: facts.siteGateways, apps: facts.apps,
       },
     };
   }
@@ -675,6 +710,12 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
 
 /** A refusal whose message is written for the person connecting. */
 class ConnectRefusal extends Error {}
+
+/** The site a Network request is to, by lowercase ID, or null for one to the whole application. */
+function siteOf(path: string): string | null {
+  const site = /^\/v1\/sites\/([^/]+)\//.exec(path)?.[1];
+  return site === undefined ? null : decodeURIComponent(site).toLowerCase();
+}
 
 /** Whether `b` is the same key as `a`: what a request was sent with is still what's stored. */
 function sameCredentials(a: UnifiCredentials, b: UnifiCredentials | undefined): boolean {

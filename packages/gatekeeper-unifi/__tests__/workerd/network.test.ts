@@ -12,7 +12,7 @@ import {
 } from "./helpers.js";
 
 const NEW_CLOUD_KEY = "replacement-cloud-key-0123456789ab";
-import { HOME, rawClient, rawVoucher } from "../fake-unifi.js";
+import { HOME, homeConsole, rawClient, rawVoucher } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
@@ -189,6 +189,26 @@ describe("a device", () => {
     await account(accountId).revoke();
     expect(await waiting).toMatchObject({ ok: false, failure: { kind: "auth" } });
     expect(console.writes()).toEqual([]);
+  });
+
+  it("checks a change to a site against that site's gateway, not another site's", async () => {
+    // Two sites, each with its own gateway; the first site's is replaced, the second's isn't.
+    const { unifi, console } = installFake();
+    const second = homeConsole().network!.sites[0]!;
+    second.site = { ...second.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    second.devices[0]!.overview.macAddress = "02:aa:bb:cc:dd:ee";
+    console.network!.sites.push(second);
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const ap = binding(accountId, { kind: "device", consoleId: identity.consoleId, siteId: HOME.siteId, deviceId: HOME.apId, clients: false });
+    await ap.call("restart");
+    const { actionId } = lastSubmitted(await ap.queue());
+    const replaced = homeConsole();
+    replaced.network!.sites[0]!.devices[0]!.overview.macAddress = "00:11:22:33:44:55";
+    replaced.network!.sites.push(second);
+    unifi.addDirectConsole(CONSOLE_URL, replaced, LOCAL_KEY);
+    expect(await ap.applyOutcome(actionId)).toMatchObject({ error: expect.stringMatching(/isn't the one this connection was made to/) });
+    expect(replaced.writes()).toEqual([]);
   });
 
   it("reports an unknown outcome, never a retry, when the console stops answering mid-restart", async () => {

@@ -50,6 +50,7 @@ describe("probing a console directly", () => {
       name: "Dream Machine Pro", apps: { network: true, protect: true }, macs: ["70:a7:41:97:83:ed"],
       // Each application's own identity: the NVR for Protect, the gateway for Network.
       appMacs: { network: ["70:a7:41:97:83:ed"], protect: ["70:a7:41:97:83:ed"] },
+      siteGateways: { [HOME.siteId]: ["70:a7:41:97:83:ed"] },
       networkVersion: "10.6.106", protectVersion: "7.3.70",
     });
   });

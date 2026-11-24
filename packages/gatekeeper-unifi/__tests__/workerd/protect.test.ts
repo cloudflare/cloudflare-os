@@ -151,6 +151,35 @@ describe("a camera", () => {
     expect(replacement.writes()).toEqual([]);
   });
 
+  it("doesn't read from a different console now answering at a direct connection's address", async () => {
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+  });
+
+  it("keeps a change pending when the console's identity can't be read, to apply once it can", async () => {
+    const { console } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const handle = console.handle.bind(console);
+    console.handle = (app, method, path, query, body) => path === "/v1/nvrs"
+      ? new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })
+      : handle(app, method, path, query, body);
+    expect(await doorbell.applyOutcome(actionId)).toMatchObject({ error: expect.stringMatching(/Couldn't confirm/) });
+    expect(console.writes()).toEqual([]);
+    console.handle = handle;
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
+  });
+
   it("names a camera in approvals as UniFi has it, not as an earlier pending rename would", async () => {
     // Each change applies on its own, so the rename may be declined while this one is approved.
     installFake();
