@@ -23,8 +23,8 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
   await impl.commitAgentStep(chatId, AUTHOR, [], {changes: [{change}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
-async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api) {
-  const faux = createFauxCore({models: [{id: "faux-model"}]});
+async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api, contextWindow?: number) {
+  const faux = createFauxCore({models: [{id: "faux-model", contextWindow}]});
   const requests: Message[][] = [];
   faux.setResponses(calls.length
     ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
@@ -33,7 +33,7 @@ async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
   }}, chatId, AUTHOR, new AbortController().signal, USER,
-  {provider: "cloudflare", model: "faux-model", apiToken: ""});
+  {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow});
   return requests;
 }
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
@@ -780,7 +780,9 @@ describe("attachment worktree ingress", () => {
       for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch});
       const imageParts = (messages: Message[]) => messages.flatMap(message =>
         Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
-      const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
+      // Isolate attachment reprojection from compaction: these twenty large header fixtures now
+      // contribute visual tokens even though the faux provider reports no usage.
+      const before = await scriptedTurn(impl, chatId, [], "anthropic-messages", 1_000_000);
       expect(imageParts(before[0])).toHaveLength(20);
       const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
       const last = await impl.gitCache.writeBlob(lastBytes);

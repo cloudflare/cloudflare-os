@@ -335,6 +335,19 @@ describe("getModel AI Gateway routing", () => {
       expect(request.headers.get("cf-aig-session-id")).toBeNull();
     }, 15000);
 
+    it.each([
+      [["@cf/openai/gpt-oss-20b"], ["text"]],
+      [["@cf/zai-org/glm-5.2", "@cf/openai/gpt-oss-20b"], ["text"]],
+      [["@cf/openai/gpt-oss-20b", "openai/gpt-6-astra"], ["text", "image"]],
+      [["anthropic/*"], ["text", "image"]],
+      [["@cf/test/unknown"], ["text", "image"]],
+    ])("derives image input from a known allow-list: %j", async (models, input) => {
+      const handle = getModel(env(), {...AUTO, autoRouterPool: {models}}, INITIATOR);
+      expect(handle.model.input).toEqual(input);
+      const request = await captureRequest(handle);
+      expect(request.headers.get("cf-aig-allowed-models")).toBe(models.join(","));
+    }, 15000);
+
     // A provider test's config carries no pool: the gateway's own default pool answers.
     it("leaves the pool to the gateway for a config that carries none", async () => {
       const request = await captureRequest(getModel(env(), AUTO, INITIATOR));

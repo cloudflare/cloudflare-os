@@ -52,7 +52,7 @@ import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
-  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
+  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
   MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage,
 } from "./file-image";
 
@@ -2443,7 +2443,8 @@ async function runAgentPass(
             "original contents are currently unavailable.]"}];
         }
         let text = decodeChatAttachmentText(attachment.mimeType, data);
-        if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
+        if (handle.model.input.includes("image") &&
+            canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
           return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
             type: "image",
             data: data.toBase64(),
@@ -2494,7 +2495,8 @@ async function runAgentPass(
       attachmentImageBytes += part.data.length * 3 / 4 - (part.data.endsWith("==") ? 2 : part.data.endsWith("=") ? 1 : 0);
     }
   }
-  const maxFileImages = Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount));
+  const maxFileImages = handle.model.input.includes("image")
+    ? Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount)) : 0;
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
   const replayFileImages = new Set<AiToolCall>();
   const sentImageReads = new Map<number, Set<string>>();
@@ -2678,7 +2680,8 @@ async function runAgentPass(
                       reads.add(toolCall.toolCallId);
                     }
                     toolOutput = image ? {text: "Image file.", image} :
-                        {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
+                        {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE :
+                          !handle.model.input.includes("image") ? UNSUPPORTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
                       resolveToolWorkpieceId(toolCall.input.workpiece));
                     markFileRead(workpieceId, toolCall.input.filename, toolCall.observedOid);
@@ -3687,15 +3690,20 @@ async function runAgentPass(
                 throw new Error("Image files do not have line windows. Omit startLine and lineCount.");
               }
               const byteLength = file.source.reader.size;
+              const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
+              const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
+              if (oid === undefined) throw new Error("Image file has no immutable blob.");
+              const notes = {image: {oid, byteLength}, ...file.oid ? {observedOid: file.oid} : {}};
+              if (!handle.model.input.includes("image")) {
+                markFileRead(resolved.workpieceId, filename, file.oid);
+                return toolResult(UNSUPPORTED_FILE_IMAGE, notes);
+              }
               if (maxFileImages === 0 || byteLength > maxFileImageBytes) {
                 throw new Error("Image cannot fit alongside this conversation's attachments. Use a smaller image or a new chat.");
               }
               if (stepImageCount >= maxFileImages || stepImageBytes + byteLength > maxFileImageBytes) {
                 throw new Error("Read fewer images per step, then continue with another tool call.");
               }
-              const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
-              const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
-              if (oid === undefined) throw new Error("Image file has no immutable blob.");
               const image = readFileImage(file.source.reader, mimeType)!;
               liveImageReads.add(toolCallId);
               ++stepImageCount;
@@ -3705,7 +3713,7 @@ async function runAgentPass(
               markFileRead(resolved.workpieceId, filename, file.oid);
               return {
                 content: [{type: "text" as const, text: "Image file."}, image],
-                details: {image: {oid, byteLength}, ...file.oid ? {observedOid: file.oid} : {}},
+                details: notes,
               };
             }
           }

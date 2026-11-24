@@ -8,7 +8,7 @@ import type {UserDurableObject} from "../src/user";
 import {runAgent} from "../src/agent";
 import {getModel} from "../src/ai-models";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
-import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
+import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -212,6 +212,69 @@ describe("images read from a worktree", () => {
     expect(results(requests.at(-1)!).filter(result => !result.isError)).toHaveLength(3);
     expect(bodyReads).toEqual([bytes.length, bytes.length, bytes.length]);
   }));
+
+  it.each(["cloudflare", "cloudflare-auto-router"] as const)(
+    "keeps image references without loading pixels for text-only %s, then shows them after a model switch", provider => inKernel(crypto.randomUUID(), async impl => {
+      const bytes = new Uint8Array(4 * 1024 * 1024);
+      bytes.set(PNG);
+      const {chatId, blob} = await setup(impl, bytes);
+      const config: AiModelConfig = provider === "cloudflare" ? {
+        provider, model: "@cf/zai-org/glm-5.2", apiToken: "fixture",
+      } : {provider, model: "cloudflare/auto", apiToken: "fixture",
+        autoRouterPool: {models: ["@cf/openai/gpt-oss-20b"]}};
+      const handle = getModel({CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+        CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "cloudflare,cloudflare-auto-router"} as Cloudflare.Env, config, USER);
+      expect(handle.model.input).toEqual(["text"]);
+      const realStream = handle.stream;
+      const faux = createFauxCore({models: [{id: "fixture"}]});
+      faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"})]);
+      const originalOpen = impl.openFileAtCommit.bind(impl);
+      const bodyReads: number[] = [];
+      vi.spyOn(impl, "openFileAtCommit").mockImplementation(async (...args) => {
+        const file = await originalOpen(...args);
+        if (file) {
+          const read = file.reader.read.bind(file.reader);
+          vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
+            if (length > 12) bodyReads.push(length);
+            return read(offset, length);
+          });
+        }
+        return file;
+      });
+      let first = true;
+      const bodies: string[] = [], pools: (string | null)[] = [];
+      handle.stream = (model, context, options) => {
+        if (first) {first = false; return faux.stream(model, context, options);}
+        return realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+          const request = new Request(input, init);
+          bodies.push(await request.text());
+          pools.push(request.headers.get("cf-aig-allowed-models"));
+          return new Response(`data: ${JSON.stringify({id: "text", object: "chat.completion.chunk", created: 0,
+            model: config.model, choices: [{index: 0, delta: {content: "Done"}, finish_reason: "stop"}],
+          })}\n\ndata: [DONE]\n\n`, {headers: {"content-type": "text/event-stream"}});
+        }});
+      };
+      const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      await run();
+      expect(bodyReads).toEqual([]);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      const openBlob = vi.spyOn(impl, "openBlob");
+      await run();
+      expect(openBlob.mock.calls.filter(([oid]) => oid === blob.oid)).toHaveLength(0);
+      for (const body of bodies) {
+        expect(body).toContain(UNSUPPORTED_FILE_IMAGE);
+        expect(body).not.toContain('"image_url"');
+      }
+      if (provider === "cloudflare-auto-router") expect(pools).toEqual([
+        "@cf/openai/gpt-oss-20b", "@cf/openai/gpt-oss-20b",
+      ]);
+      const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(message =>
+        message.type === "message" ? message.toolCalls ?? [] : []);
+      expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.oid", blob.oid);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Use vision now"}]);
+      const switched = await turn(impl, chatId, []);
+      expect(results(switched.requests[0])[0].content.some(part => part.type === "image")).toBe(true);
+    }));
 
   it("reads RIFF-like UTF-8 as text", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl, new TextEncoder().encode("RIFF....WEBP is the container header."));

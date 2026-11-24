@@ -15,6 +15,9 @@ export const MAX_FILE_IMAGE_CONTEXT_COUNT = 4;
 /** Replacement for pixels discarded from model history. The immutable file is still readable. */
 export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history. Read the file again if needed.";
 
+/** A text-only model keeps the immutable reference for a later switch to a vision model. */
+export const UNSUPPORTED_FILE_IMAGE = "Image pixels omitted because the selected model does not support images. Switch to a vision model to inspect this file.";
+
 /** Pixels omitted after a provider rejected image data; the original file is unchanged. */
 export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider rejected an image in this request. The original file is unchanged.";
 

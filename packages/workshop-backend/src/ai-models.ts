@@ -34,7 +34,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
-  AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, getAiGatewayConfig, getGatewayModels,
+  AUTO_ROUTER_PROVIDER_NAMES, allowedModelProvider, AiGatewayConfig, getAiGatewayConfig, getGatewayModels,
   type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
@@ -302,6 +302,19 @@ function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCo
   };
 }
 
+// The router filters candidates by request inputs, but a known text-only allow-list cannot
+// serve any image request. Unknown names/wildcards and provider-wide pools remain router-owned.
+function autoRouterInput(config: AiModelConfig): ("text" | "image")[] {
+  const pool = config.autoRouterPool;
+  const textOnly = pool && "models" in pool && pool.models.every(name => {
+    const provider = allowedModelProvider(name);
+    if (!provider) return false;
+    const id = provider === "cloudflare" ? name : name.slice(name.indexOf("/") + 1);
+    return catalogModel(provider, id)?.input.includes("image") === false;
+  });
+  return textOnly ? ["text"] : ["text", "image"];
+}
+
 // Build the pi model descriptor for reaching a provider's own native API through an AI Gateway
 // (the platform's or a user's). `gatewayUrl` is a gateway root -- over HTTPS
 // (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}) or, for binding-routed requests,
@@ -388,8 +401,8 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
       };
     case "cloudflare-auto-router":
       // Auto Router answers on the gateway's /compat route in Chat Completions format whichever
-      // model it picks, so the descriptor claims only what every candidate has: text and image
-      // input, and no reasoning levels.
+      // model it picks. It can route image inputs unless the explicit pool is known text-only;
+      // reasoning levels remain unspecified.
       return {
         id: config.model,
         name: catalog?.name ?? config.model,
@@ -397,7 +410,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         provider: "cloudflare-auto-router",
         baseUrl: `${gatewayUrl}/compat`,
         reasoning: false,
-        input: ["text", "image"],
+        input: autoRouterInput(config),
         cost: AUTO_ROUTER_COST,
         ...window,
       };
