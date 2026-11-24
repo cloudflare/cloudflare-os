@@ -30,7 +30,6 @@ import {
 } from "@gadgets/gatekeeper-kit/ci";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
-import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -75,6 +74,10 @@ import {
   type GitLabProjectResponse,
   type GitLabSimpleUser,
   type PinnedProject,
+  type GitLabTestCaseResponse,
+  type GitLabTestReportResponse,
+  type GitLabTestSuitePage,
+  type GitLabTestReportSummaryResponse,
 } from "./gitlab-api";
 import {
   apiKind,
@@ -247,6 +250,8 @@ const MAX_PROTECTED_BRANCH_PAGES = 10;
 const MAX_REPLY_TARGET_HOPS = 50;
 /** Most rows a CI listing reads before paging: a merge request's pipelines, a pipeline's jobs. */
 const MAX_CI_ROWS = 1000;
+/** How many pages of a suite's test cases (100 each) failed tests read before refusing it as too large. */
+const MAX_TEST_CASE_PAGES = 100;
 /**
  * How many of the project's latest push events are searched for one that left a ref at a commit:
  * one page, GitLab's most. A push older than that many others is outside the window anyway on all
@@ -1205,10 +1210,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * An issue's or merge request's discussion, with the queued comments on it. Every page of a real
-   * issue's reports the issue, whatever its cached details say about its confidentiality: the
-   * comments are read afresh, so they may have been posted since it was made confidential (see
-   * issueSubresourceId). Each page reports the internal notes on it.
+   * An issue's or merge request's discussion, with the queued comments on it. Every page of a
+   * confidential issue's reports the issue, whose words its comments answer, and each page the
+   * internal notes on it. The issue is read afresh once the comments have been, never from the
+   * cache, so a page reports it unless it was still public after its comments were read: cached
+   * details may predate its being made confidential, and the comments since.
    */
   async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<GuardedListing<GitLabDiscussionEntry>> {
     const realId = this.#realIdOf(logicalId);
@@ -1237,7 +1243,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       this.#fetchRemoteDiscussionComments(kind, realId),
     ]);
     const iid = Number(realId);
-    const guarded = kind === "issue" ? [issueSubresourceId(projectId, iid)] : [];
+    let guarded: string[] = [];
+    if (kind === "issue") {
+      this.ctx.storage.kv.delete(this.#cacheKey("issue", realId));
+      guarded = this.#issueSubresources(projectId, [await this.#getRemoteIssueDetails(realId)]);
+    }
     return {
       cursor: new ArrayCursor([...comments, ...provisionals].toSorted(compare), pageSize),
       subresources: items => [...guarded, ...this.#noteSubresources(projectId, kind, iid, items)],
@@ -1871,56 +1881,79 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * The summary of pipeline `pipelineId`'s test reports, with the subresources it discloses (see
    * authorizeRead): the artifacts of each job whose reports it holds, which it names itself
-   * (`build_ids`). GitLab decides per job who may read them (`artifacts:access`), so the observer's
-   * own account is asked of each.
+   * (`build_ids`). GitLab decides per job who may read them: from 19.1.4 it leaves out of the
+   * summary and the report every job whose test report artifacts the reader may not read
+   * (`artifacts:access`), so the observer's own account is asked of each (see canReadJobData).
    */
   async pipelineTestReport(pipelineId: number): Promise<{ subresources: string[]; report: GitLabTestReportSummary }> {
     const { id } = await this.#pinnedProject();
     const summary = await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId));
-    const jobs = new Set(summary.test_suites.flatMap(suite => suite.build_ids));
-    return {
-      subresources: [...jobs].map(jobId => jobSubresourceId(id, "artifacts", jobId)),
-      report: normalizeTestReportSummary(summary),
-    };
+    return { subresources: this.#testReportSubresources(id, summary), report: normalizeTestReportSummary(summary) };
   }
 
   /**
-   * The failed cases of pipeline `pipelineId`'s test reports, with the subresources they disclose,
-   * as for pipelineTestReport. The whole report names no jobs, and the summary may not either: its
-   * rows are written by a worker after each job finishes, while the report reads the artifacts
-   * themselves and GitLab may answer it from a cache up to two minutes old. So the report is taken
-   * to have come from every job that could have made it (see #testReportJobIds), listed once it has
-   * been read: any job it holds a report of existed by then.
+   * The failed cases of pipeline `pipelineId`'s test reports, with the subresources they disclose:
+   * the artifacts of exactly the jobs read. Each suite of the summary this account is shown that
+   * has failed or errored cases is read through GraphQL's `testSuite(buildIds:)`, once for each
+   * pipeline of the tree its jobs ran in, asking for those jobs alone. GitLab reads of them only
+   * the pipeline's latest attempts (and from 19.1.4 only those whose reports this account may
+   * read), so what comes back came from the jobs asked for, which are the jobs named, on every
+   * version: a job retried since the summary, or one whose summary row GitLab's worker has yet to
+   * write, is neither read nor named.
    */
   async pipelineFailedTests(pipelineId: number, pageSize: number):
       Promise<{ subresources: string[]; cases: Cursor<GitLabTestCase> }> {
-    const { id } = await this.#pinnedProject();
-    const report = await this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId))
-      .catch((error: unknown) => {
-        // The client reports a body past its cap as a 502 caused by the cap.
-        if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
-        throw new Error(
-          `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
-          `and the failing jobs' logs for details.`, { cause: error });
-      });
-    const jobs = await this.#testReportJobIds(pipelineId);
+    const projectId = await this.#boundProjectId();
+    const summary = await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId));
+    const failing = summary.test_suites.filter(suite => suite.failed_count + suite.error_count > 0);
+    const pipelineOf = failing.length === 0 ? new Map<number, number>() : await this.#latestJobPipelines(pipelineId);
+    const read = new Set<number>();
+    const suites: GitLabTestReportResponse["test_suites"] = [];
+    for (const suite of failing) {
+      const jobsByPipeline = Map.groupBy(suite.build_ids.filter(jobId => pipelineOf.has(jobId)), jobId => pipelineOf.get(jobId)!);
+      const cases: GitLabTestCaseResponse[] = [];
+      for (const [pipelineIid, jobIds] of jobsByPipeline) {
+        for (const jobId of jobIds) read.add(jobId);
+        cases.push(...await this.#testSuiteCases(projectId, pipelineId, pipelineIid, jobIds));
+      }
+      suites.push({ name: suite.name, test_cases: cases });
+    }
     return {
-      subresources: jobs.map(jobId => jobSubresourceId(id, "artifacts", jobId)),
-      cases: new ArrayCursor(failedTestCases(report), pageSize),
+      subresources: [...read].map(jobId => jobSubresourceId(projectId, "artifacts", jobId)),
+      cases: new ArrayCursor(failedTestCases({ test_suites: suites }), pageSize),
     };
   }
 
+  /** Every test case of jobs `jobIds` in the pipeline numbered `pipelineIid`, page after page. */
+  async #testSuiteCases(projectId: number, pipelineId: number, pipelineIid: number, jobIds: number[]):
+      Promise<GitLabTestCaseResponse[]> {
+    const cases: GitLabTestCaseResponse[] = [];
+    let after: string | null = null;
+    for (let pages = 0; ; pages++) {
+      if (pages === MAX_TEST_CASE_PAGES) {
+        throw new Error(`Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its ` +
+          `totals, and the failing jobs' logs for details.`);
+      }
+      const cursor: string | null = after;
+      const page: GitLabTestSuitePage | null =
+        await this.#withApi(api => api.getPipelineTestSuitePage(projectId, pipelineIid, jobIds, cursor));
+      if (page === null) return cases;
+      cases.push(...page.cases);
+      if (page.endCursor === null) return cases;
+      after = page.endCursor;
+    }
+  }
+
   /**
-   * Every job a test report of pipeline `pipelineId` can hold reports of: GitLab's report gathers
-   * the latest jobs with a test report (`junit`) artifact in the pipeline and in its child pipelines
-   * in the same project, so this lists every such job of them, retried attempts included, since a
-   * cached report can predate a retry. Throws rather than leave any out when a listing is cut short.
+   * The pipeline number (`iid`) of each latest job of pipeline `pipelineId` and of its child
+   * pipelines in the project, the jobs GitLab's test report gathers. A listing cut short leaves
+   * jobs out, which are then not read.
    */
-  async #testReportJobIds(pipelineId: number): Promise<number[]> {
+  async #latestJobPipelines(pipelineId: number): Promise<Map<number, number>> {
     const projectId = await this.#boundProjectId();
     const projectPath = this.#projectPath();
     const route = supportsTriggerJobsRoute(await this.#getVersion()) ? "trigger_jobs" : "bridges";
-    const jobIds = new Set<number>();
+    const pipelineOf = new Map<number, number>();
     const listed = new Set<number>();
     for (const pending = [pipelineId]; pending.length > 0;) {
       const pipeline = pending.pop()!;
@@ -1928,22 +1961,24 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       listed.add(pipeline);
       const [jobs, triggers] = await Promise.all([
         this.#fetchAllPages((page, perPage) => this.#withApi(api =>
-          api.listPipelineJobs(projectPath, pipeline, page, perPage, { includeRetried: true })), MAX_CI_ROWS),
+          api.listPipelineJobs(projectPath, pipeline, page, perPage)), MAX_CI_ROWS),
         this.#fetchAllPages((page, perPage) => this.#withApi(api =>
-          api.listPipelineTriggerJobs(projectPath, pipeline, { route, page, perPage, includeRetried: true })), MAX_CI_ROWS),
+          api.listPipelineTriggerJobs(projectPath, pipeline, { route, page, perPage })), MAX_CI_ROWS),
       ]);
-      if (jobs.truncated || triggers.truncated) {
-        throw new Error(`Pipeline ${pipelineId} has too many jobs to tell which its test report came from. ` +
-          "Use getTestReport() for its totals, and the failing jobs' logs for details.");
-      }
       for (const job of jobs) {
-        if (job.artifacts?.some(artifact => artifact.file_type === "junit")) jobIds.add(job.id);
+        if (job.pipeline.iid !== undefined) pipelineOf.set(job.id, job.pipeline.iid);
       }
       for (const trigger of triggers) {
         if (trigger.downstream_pipeline?.project_id === projectId) pending.push(trigger.downstream_pipeline.id);
       }
     }
-    return [...jobIds];
+    return pipelineOf;
+  }
+
+  /** The artifacts of each job a test report summary holds reports of. */
+  #testReportSubresources(projectId: number, summary: GitLabTestReportSummaryResponse): string[] {
+    return [...new Set(summary.test_suites.flatMap(suite => suite.build_ids))]
+      .map(jobId => jobSubresourceId(projectId, "artifacts", jobId));
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {

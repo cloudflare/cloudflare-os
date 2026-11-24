@@ -58,7 +58,8 @@ import {
   getBasePath,
   getBaseUrl,
   getRedirectUri,
-  canReadJobData,
+  canReadJobLog,
+  canReadJobTestReport,
   canReadProjectFeature,
   canReadProjectItem,
   canSeeProject,
@@ -527,12 +528,13 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * Whether this account can read each project subresource (see project-subresources.ts), in order:
    * whether GitLab shows its GitLab user the project (see canSeeProject); for a project feature,
    * whether it can read that feature's data (see canReadProjectFeature); and for an item, whether
-   * GitLab lets it read that too, once it may read the item's feature -- a job's log or artifacts
-   * under CI/CD (see canReadJobData), a confidential issue under issues, an internal note under
-   * issues or merge requests (see canReadProjectItem). An ID whose project or feature is denied is
-   * denied without asking further. An allowed answer is reused for up to
-   * PROJECT_ACCESS_ALLOWED_TTL_MS, or a running job's for up to PROJECT_ACCESS_DENIED_TTL_MS like
-   * a denial, while this connection lasts; an item's ID reuses its project's and feature's answers.
+   * GitLab lets it read that too, once it may read the item's feature -- a job's log or test
+   * reports under CI/CD (see canReadJobLog, canReadJobTestReport), a confidential issue under
+   * issues, an internal note under issues or merge
+   * requests (see canReadProjectItem). An ID whose project or feature is denied is denied without
+   * asking further. An allowed answer is reused for up to PROJECT_ACCESS_ALLOWED_TTL_MS, or a
+   * running job's for up to PROJECT_ACCESS_DENIED_TTL_MS like a denial, while this connection
+   * lasts; an item's ID reuses its project's and feature's answers.
    * Throws for an ID it can't check, or when access can't be determined, which is never reused,
    * including when the connection moved during the check: its answers may then be two GitLab
    * users' combined. GitLab's own error text is kept out of what it throws, which the Workshop logs
@@ -550,8 +552,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     }));
     // GitLab answers for one project, feature or item per request, so each ID is cached on its own,
     // and a later failure keeps what earlier requests learned. Each project is asked once, first,
-    // then each feature an ID needs, then the items a few at a time: a test report can name
-    // hundreds of jobs.
+    // then each feature an ID needs, then the items a few at a time: a listing can name many.
     const generation = this.#creds.connectionGeneration();
     try {
       const projects = new Map<number, boolean>();
@@ -568,6 +569,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
         features.set(id, await this.#access.cached(id, projectAccessTtl,
           () => canReadProjectFeature(this.env, this, projectId, feature)));
       }
+      const summaries = new Map<number, Promise<Set<number>>>();
       const answers = await mapLimit(subresources.map((subresource, index) => ({ subresource, ...required[index] })),
         ITEM_CHECK_CONCURRENCY, async ({ subresource, projectId, item, feature }) => {
           if (!projects.get(projectId)) return false;
@@ -578,12 +580,14 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
             return await this.#access.cached(subresource, projectAccessTtl,
               () => canReadProjectItem(this.env, this, projectId, item));
           }
-          // A running job's log may yet become a debug trace, and its artifacts restricted, so an
-          // answer allowing it is kept no longer than a denial.
+          // A running job's log may yet become a debug trace, and it may yet upload a restricted
+          // test report, so an answer allowing it is kept no longer than a denial.
           return (await this.#access.cached(subresource,
             ({ readable, running }: JobDataAccess) =>
               readable && !running ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
-            () => canReadJobData(this.env, this, projectId, item.data, item.jobId))).readable;
+            () => item.data === "trace"
+              ? canReadJobLog(this.env, this, projectId, item.jobId)
+              : canReadJobTestReport(this.env, this, projectId, item.jobId, summaries))).readable;
         });
       if (this.#creds.connectionGeneration() !== generation) {
         throw new Error("GitLab credentials changed while access was being checked. Please try again.");
@@ -808,16 +812,17 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 // a confidential issue (its author, assignees and Planners up -- a public project can hold them)
 // and an internal note (Planners up) are reported by every read that returned one (see
 // issueSubresourceId, noteSubresourceId), and the observer's token reads that issue or note, GitLab
-// answering 404 to an account it hides it from (a note's `readable_by?`). CI job logs and test
-// reports are asked about per job too: a job run with `CI_DEBUG_TRACE` writes every CI/CD variable,
-// masked or not, into its log, which GitLab lets only Developers and above read
-// (https://docs.gitlab.com/ci/variables/variables_troubleshooting/), and a job can restrict its
-// artifacts, test reports included, to Developers or Maintainers
-// (https://docs.gitlab.com/ci/yaml/#artifactsaccess). Neither setting is visible to the reading
-// account, so such reads name the job (see jobSubresourceId) and the observer's token asks GitLab.
-// Every item needs its project and its feature as well (CI/CD for a job; issues or merge requests
-// for an issue or note): GitLab answers 404 for a job the token can't see at all, which reads as
-// gone.
+// answering 404 to an account it hides it from (a note's `readable_by?`). CI job logs are asked
+// about per job too: a job run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not,
+// into its log, which GitLab lets only Developers and above read
+// (https://docs.gitlab.com/ci/variables/variables_troubleshooting/). That setting is not visible
+// to the reading account, so a log read names the job (see jobSubresourceId) and the observer's
+// token asks GitLab. Test reports are asked about per job as well: from 19.1.4 GitLab leaves out of
+// a pipeline's test report and summary each job whose test report artifacts the reader may not
+// read (`artifacts:access`), so a read names the jobs its summary holds and the observer's token
+// asks whether its own summary of the job's pipeline holds the job. Every item needs its project and its
+// feature as well (CI/CD for a job; issues or merge requests for an issue or note): GitLab answers
+// 404 for a job the token can't see at all, which reads as gone.
 //
 // Over-denial is accepted, since erring toward denial never leaks: a feature turned off after a
 // read named it denies everyone, and so does a confidential issue or internal note deleted or

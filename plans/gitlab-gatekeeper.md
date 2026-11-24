@@ -160,8 +160,8 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   revoked rather than committed over the newer grant.
 - **An expired membership grants no role.** GitLab documents that from a member row's `expires_at`
   onward the user can no longer access the project, but the row is swept by a daily worker, so
-  `members/all` can still list it with the date passed. The role check (§8: Maintainer for an
-  archiveless test report, Developer for a cached log) reads the date (a day, taken as
+  `members/all` can still list it with the date passed. The role check (§8: Developer for a
+  cached log) reads the date (a day, taken as
   its UTC midnight) and denies on or after it; a date that does not parse denies too. The row
   `members/all` answers is the direct membership whenever there is one (one row per user,
   `MembersFinder#distinct_on`), so an expired or `awaiting` direct row denies a user whose
@@ -924,22 +924,26 @@ strategy-C tracker over per-project sets is not carried over (no group scope, §
 **What reads report.** `project/<projectId>`, the id the binding pins on first use, on every read
 (each listing page, an empty one — which reports no feature, disclosing none of its data — a cache hit, a simulated read), and beside it what GitLab guards
 item by item that the read returned: `project/<projectId>/issue/<iid>` for each confidential issue
-(an issue's discussion reports its issue on every page, confidential or not, since its comments are
-read afresh and may postdate the issue being made confidential),
+(an issue's discussion reports it on every page when the issue is confidential),
 `project/<projectId>/issue/<iid>/note/<noteId>` or `.../mergeRequest/<iid>/note/<noteId>` for each
 internal note, `project/<projectId>/jobTrace/<jobId>` for a job log, and
-`project/<projectId>/jobArtifacts/<jobId>` for each job a test report holds. GitLab's documentation
-is why the items are named: "you can create confidential issues in a public project", visible only
-to their author, assignees and Planner+; an *internal note* — public project or not — only to
-Planner+; a job run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log,
-which only Developer+ may read (docs.gitlab.com/ci/variables/variables_troubleshooting); and a job
-can restrict its artifacts, test reports included, with `artifacts:access`
-(docs.gitlab.com/ci/yaml/#artifactsaccess). None of these is decided by a role the reading
-account can see applied to the observer, and the job settings are not exposed at all (REST's job
-and artifact entities and GraphQL's `CiJobArtifact` carry neither). The summary names a report's
-jobs (`build_ids`); the whole report does not, and summaries can lag it, so its jobs are listed
-after it is read: every job with a `junit` report in the pipeline and its same-project children,
-retried attempts included, the read refused if a listing is cut short.
+`project/<projectId>/jobArtifacts/<jobId>` for each job a test report read holds. GitLab's
+documentation is why the items are named: "you can create confidential issues in a public
+project", visible only to their author, assignees and Planner+; an *internal note* — public
+project or not — only to Planner+; a job run with `CI_DEBUG_TRACE` writes every CI/CD variable,
+masked or not, into its log, which only Developer+ may read
+(docs.gitlab.com/ci/variables/variables_troubleshooting); and from 19.1.4 GitLab filters a
+pipeline's test report and summary to the jobs whose test report artifacts the reader may read
+(`Ci::Pipeline#accessible_test_reports`, `Build#test_report_readable_by?`, `artifacts:access`).
+None of these is decided by a role the reading account can see applied to the observer. The
+summary read names the jobs in its own `build_ids` (the latest attempts in the pipeline and its
+same-project children). Failed tests are not read from REST's `test_report`, which names no jobs
+and is cached per user for 2 minutes, so a summary read beside it could miss a job whose summary
+row had yet to be written or one retried in between: each failing suite of the summary is read
+through GraphQL `pipeline(iid:).testSuite(buildIds:)`, per pipeline of the tree its jobs ran in,
+asking for those jobs alone. The resolver reads only `latest_builds.id_in(build_ids)` (and from
+19.1.4 only the reports the reader may read), unchanged since 15.0, so what comes back came from
+the jobs named, on every version.
 
 **What `project/<projectId>` means: the project itself.** The observer's token must get a 2xx
 from `GET /projects/P` (`canSeeProject`); 403/404 denies and anything else fails the check.
@@ -969,18 +973,13 @@ confidential issue `GET /projects/P/issues/{iid}`, an internal note
 `note.readable_by?(user)`), 2xx allowing; a 403/404 denying everyone, whatever their role, since
 GitLab answers 404 both for a deleted item and for a hidden one, and `IssuePolicy`'s
 `hidden & ~admin` hides a banned user's issues from every non-administrator; a job's log, the job then its
-`/trace` (403 denies); its artifacts, GraphQL `job.userPermissions.readJobArtifacts`. A job that is
-erased or gone, or whose log or artifacts are, falls back to membership at the most its data
-could have required, Developer for a log and Maintainer for artifacts — and GitLab answers 404 for a job
-the token cannot see at all, which is why every item needs its project and feature first; a denied project or feature denies without asking further. GraphQL answers
-`readJobArtifacts` from the job's archive, and a job with no archive reads as public though its
-`junit` report may be restricted; that report's access is exposed nowhere, so such a job needs
-Maintainer, read from the observer's **effective membership** — `GET /user` for their id, then
-`GET /projects/P/members/all?user_ids[]=:id` ("including members inherited or invited through
-ancestor groups", "the effective permission of the user"), never the project's `permissions`
-object, which a spot check on the internal instance found `null`/`null` for the inherited access
-~90% of members hold. The list form's non-member answer is a documented shape (`[]`) that was
-verified live; an `awaiting` invitation or an arrived `expires_at` holds no role (§Locked).
+`/trace` (403 denies); its test reports, the job (for its pipeline) then that pipeline's
+`test_report_summary`, allowing iff it lists the job — GitLab's own filter, which before 19.1.4
+lists every job to whoever may read the jobs. A job that is erased or gone, whose log is, or that
+has no `junit` artifact left has nothing left to withhold, so it allows — and GitLab answers 404
+for a job the token cannot see at all, which is why every item needs its project and feature
+first; a denied project or feature denies without asking further. A job missing from the
+summary for want of its row denies until the row is written.
 
 **Accepted over-denial.** Erring toward denial never leaks. A feature turned off after a read named it
 denies everyone. A confidential issue or internal note deleted since it was read still denies
@@ -990,7 +989,7 @@ role, which the membership row doesn't show: GitLab's 404 can't tell gone from h
 
 **Reuse.** The observer's `UserAccount` caches each project, feature and item ID's answer under its own ID in a `KvTtlCache` partitioned by
 its connection generation: a grant for 15 minutes (a still-running job's for 15 seconds, since it
-may yet become a debug trace or upload a restricted archive), a denial for 15 seconds. A check
+may yet become a debug trace), a denial for 15 seconds. A check
 the connection moved during fails rather than combine two users' answers; GitLab's error text is
 kept out of what it throws.
 
@@ -1056,8 +1055,8 @@ with `capnwebValidate()`, `assert-workerd.ts`, a `TestHooks` DO reaching the gat
   committed,
   a stub-era grant still served, `ensureResources` answering an under-scoped grant with the
   reconnect URL, a disconnect racing the code exchange, identity), `resources.test.ts` (pattern
-  order incl. tab suffixes, URL parsing, stale props, the project, feature and item probes, the
-  Maintainer membership fallback for test reports, `permissions` never consulted),
+  order incl. tab suffixes, URL parsing, stale props, the project, feature and item probes),
+  `gitlab-env.test.ts` (an awaiting or expired membership grants no role),
   `reads.test.ts` (every read's shape, the Access headers on every request, the `diff_refs`
   inversion, a diff re-read when the target moves under the same head, approvals left out when
   unreadable, confidential issues and internal notes, a short page mid-listing, MR commit order,
@@ -1406,7 +1405,7 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   `…/commits/:sha/statuses`; a status row whose id or name a job listing holds is a job, since
   GitLab keeps one latest attempt per name in a pipeline, so a retry racing the listing is not
   taken for a status, and the status filter is applied locally over unfiltered listings),
-  same-project downstreams, `test_report_summary` and the failed cases of `test_report`;
+  same-project downstreams, `test_report_summary` and the failed cases of GraphQL's `testSuite(buildIds:)`;
   `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci` leaf (streamed
   whole, tail kept, refused past 128 MiB; finished logs cached in chunks and revalidated against
   `erased_at` and the account's Developer access). A log or a test report names the jobs it came
