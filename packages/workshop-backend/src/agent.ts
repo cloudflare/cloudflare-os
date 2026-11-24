@@ -33,6 +33,7 @@ import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
+import {resolveModelInput} from "./ai-model-input";
 import { blobOid } from "./git-codec";
 import { assertNoNul } from "./git-cache";
 import type {
@@ -1710,6 +1711,7 @@ export async function runAgent(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig): Promise<CachedRequest | undefined> {
+  await resolveModelInput(handle, modelConfig, abortSignal);
   // Provider retries and compaction reloads are passes of this execution, not new executions.
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),

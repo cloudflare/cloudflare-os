@@ -12,6 +12,7 @@ import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import { zeroUsage } from "../src/ai-invoke.js";
+import {resolveModelInput} from "../src/ai-model-input";
 import {
   DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
   getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
@@ -739,6 +740,57 @@ describe("getModel direct routing (no gateway)", () => {
     expect(() => getModel(env({ CF_AI_GATEWAY: undefined }),
         { ...WORKERS_AI_CONFIG, ...overrides }, INITIATOR))
         .toThrow("This Workers AI model has no Cloudflare credentials.");
+  });
+
+  it.each([
+    {capabilities: ["completion", "tools"], images: false},
+    {capabilities: ["completion", "vision"], images: true},
+    {capabilities: undefined, images: false},
+  ])("resolves Ollama vision from model metadata: $capabilities", async ({capabilities, images}) => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
+      apiUrl: "http://ollama.fixture:11434/v1", extraHeaders: {Authorization: "Bearer proxy", "X-Proxy": "fixture"}};
+    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+    let request: Request | undefined;
+    const metadata = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = new Request(input, init);
+      return Response.json({capabilities});
+    });
+    vi.stubGlobal("fetch", metadata);
+    try {
+      await resolveModelInput(handle, config, new AbortController().signal);
+      expect(metadata).toHaveBeenCalledOnce();
+      expect(request!.url).toBe("http://ollama.fixture:11434/api/show");
+      expect(request!.method).toBe("POST");
+      expect(await request!.json()).toEqual({model: "custom-model"});
+      expect(request!.headers.get("Authorization")).toBe("Bearer proxy");
+      expect(request!.headers.get("X-Proxy")).toBe("fixture");
+      expect(metadata.mock.calls[0][1]?.redirect).toBe("manual");
+      expect(handle.model.input).toEqual(images ? ["text", "image"] : ["text"]);
+    } finally {vi.unstubAllGlobals();}
+  });
+
+  it.each(["unavailable", "invalid", "network"])("keeps Ollama text usable when metadata is %s", async failure => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture"};
+    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+    vi.stubGlobal("fetch", async () => {
+      if (failure === "network") throw new TypeError("offline");
+      return new Response(failure === "invalid" ? "not json" : "missing", {status: failure === "invalid" ? 200 : 404});
+    });
+    try {
+      await resolveModelInput(handle, config, new AbortController().signal);
+      expect(handle.model.input).toEqual(["text"]);
+    } finally {vi.unstubAllGlobals();}
+  });
+
+  it("preserves cancellation during Ollama metadata resolution", async () => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: ""};
+    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+    const controller = new AbortController();
+    const stopped = new Error("stopped");
+    vi.stubGlobal("fetch", async () => {controller.abort(stopped); throw stopped;});
+    try {
+      await expect(resolveModelInput(handle, config, controller.signal)).rejects.toBe(stopped);
+    } finally {vi.unstubAllGlobals();}
   });
 
   it("appends /v1 to an Ollama server base URL", () => {

@@ -7,6 +7,7 @@ import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import {runAgent} from "../src/agent";
 import {getModel} from "../src/ai-models";
+import {estimateImageTokens} from "../src/agent-compaction";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
 import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
 
@@ -19,6 +20,8 @@ const AUTHOR = {type: "agent" as const, id: "test", name: "Test"};
 const USER = {type: "user" as const, id: "test-user", name: "Test"};
 // A genuine 1x1 PNG, also used to verify the exact bytes sent to the provider.
 const PNG = Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");
+// Genuine JPEG; extra COM segments below exercise the same pixels with a long metadata header.
+const JPEG = Uint8Array.fromBase64("/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A+L6KKK/lM/38P//Z");
 async function inKernel<T>(name: string, test: (impl: Impl) => Promise<T>): Promise<T> {
   return runInDurableObject(env.TEST_OVERSEER.getByName(name), instance => test(instance.impl));
 }
@@ -213,67 +216,111 @@ describe("images read from a worktree", () => {
     expect(bodyReads).toEqual([bytes.length, bytes.length, bytes.length]);
   }));
 
-  it.each(["cloudflare", "cloudflare-auto-router"] as const)(
+  it.each(["cloudflare", "cloudflare-auto-router", "ollama"] as const)(
     "keeps image references without loading pixels for text-only %s, then shows them after a model switch", provider => inKernel(crypto.randomUUID(), async impl => {
       const bytes = new Uint8Array(4 * 1024 * 1024);
       bytes.set(PNG);
       const {chatId, blob} = await setup(impl, bytes);
       const config: AiModelConfig = provider === "cloudflare" ? {
         provider, model: "@cf/zai-org/glm-5.2", apiToken: "fixture",
-      } : {provider, model: "cloudflare/auto", apiToken: "fixture",
+      } : provider === "ollama" ? {provider, model: "qwen3:8b", apiToken: "fixture",
+        apiUrl: "http://ollama.fixture:11434/api"} : {provider, model: "cloudflare/auto", apiToken: "fixture",
         autoRouterPool: {models: ["@cf/openai/gpt-oss-20b"]}};
-      const handle = getModel({CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
-        CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "cloudflare,cloudflare-auto-router"} as Cloudflare.Env, config, USER);
-      expect(handle.model.input).toEqual(["text"]);
-      const realStream = handle.stream;
-      const faux = createFauxCore({models: [{id: "fixture"}]});
-      faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"})]);
-      const originalOpen = impl.openFileAtCommit.bind(impl);
-      const bodyReads: number[] = [];
-      vi.spyOn(impl, "openFileAtCommit").mockImplementation(async (...args) => {
-        const file = await originalOpen(...args);
-        if (file) {
-          const read = file.reader.read.bind(file.reader);
-          vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
-            if (length > 30) bodyReads.push(length);
-            return read(offset, length);
-          });
-        }
-        return file;
+      const metadata = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        expect(request.url).toBe("http://ollama.fixture:11434/api/show");
+        expect(await request.json()).toEqual({model: "qwen3:8b"});
+        return Response.json({capabilities: ["completion", "tools"]});
       });
-      let first = true;
-      const bodies: string[] = [], pools: (string | null)[] = [];
+      if (provider === "ollama") vi.stubGlobal("fetch", metadata);
+      try {
+        const handle = getModel((provider === "ollama" ? {} : {CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+          CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "cloudflare,cloudflare-auto-router"}) as Cloudflare.Env, config, USER);
+        if (provider !== "ollama") expect(handle.model.input).toEqual(["text"]);
+        const realStream = handle.stream;
+        const faux = createFauxCore({models: [{id: "fixture"}]});
+        faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"})]);
+        const originalOpen = impl.openFileAtCommit.bind(impl);
+        const bodyReads: number[] = [];
+        vi.spyOn(impl, "openFileAtCommit").mockImplementation(async (...args) => {
+          const file = await originalOpen(...args);
+          if (file) {
+            const read = file.reader.read.bind(file.reader);
+            vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
+              if (length > 30) bodyReads.push(length);
+              return read(offset, length);
+            });
+          }
+          return file;
+        });
+        let first = true;
+        const bodies: string[] = [], pools: (string | null)[] = [];
+        handle.stream = (model, context, options) => {
+          if (first) {first = false; return faux.stream(model, context, options);}
+          return realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+            const request = new Request(input, init);
+            bodies.push(await request.text());
+            pools.push(request.headers.get("cf-aig-allowed-models"));
+            return new Response(`data: ${JSON.stringify({id: "text", object: "chat.completion.chunk", created: 0,
+              model: config.model, choices: [{index: 0, delta: {content: "Done"}, finish_reason: "stop"}],
+            })}\n\ndata: [DONE]\n\n`, {headers: {"content-type": "text/event-stream"}});
+          }});
+        };
+        const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+        await run();
+        expect(bodyReads).toEqual([]);
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+        const openBlob = vi.spyOn(impl, "openBlob");
+        await run();
+        expect(openBlob.mock.calls.filter(([oid]) => oid === blob.oid)).toHaveLength(0);
+        for (const body of bodies) {
+          expect(body).toContain(UNSUPPORTED_FILE_IMAGE);
+          expect(body).not.toContain('"image_url"');
+        }
+        if (provider === "cloudflare-auto-router") expect(pools).toEqual([
+          "@cf/openai/gpt-oss-20b", "@cf/openai/gpt-oss-20b",
+        ]);
+        const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(message =>
+          message.type === "message" ? message.toolCalls ?? [] : []);
+        expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.oid", blob.oid);
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Use vision now"}]);
+        const switched = await turn(impl, chatId, []);
+        expect(results(switched.requests[0])[0].content.some(part => part.type === "image")).toBe(true);
+        if (provider === "ollama") expect(metadata).toHaveBeenCalledTimes(2);
+      } finally {
+        if (provider === "ollama") vi.unstubAllGlobals();
+      }
+    }));
+
+  it.each([false, true])("accounts for identical JPEG pixels with long metadata on live reads and replay (metadata=%s)", longHeader =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = longHeader ? new Uint8Array(JPEG.length + 2 * 65537) : JPEG;
+      if (longHeader) {
+        bytes.set(JPEG.subarray(0, 2));
+        for (const offset of [2, 65539]) bytes.set([0xff, 0xfe, 0xff, 0xff], offset);
+        bytes.set(JPEG.subarray(2), 2 + 2 * 65537);
+      }
+      const {chatId} = await setup(impl, bytes);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(68_500)}]);
+      const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture",
+        contextWindow: 8_000_000, compactionInputBudget: 272_000};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const imageTokens: number[] = [];
       handle.stream = (model, context, options) => {
-        if (first) {first = false; return faux.stream(model, context, options);}
-        return realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
-          const request = new Request(input, init);
-          bodies.push(await request.text());
-          pools.push(request.headers.get("cf-aig-allowed-models"));
-          return new Response(`data: ${JSON.stringify({id: "text", object: "chat.completion.chunk", created: 0,
-            model: config.model, choices: [{index: 0, delta: {content: "Done"}, finish_reason: "stop"}],
-          })}\n\ndata: [DONE]\n\n`, {headers: {"content-type": "text/event-stream"}});
-        }});
+        imageTokens.push(context.messages.reduce((sum, message) => sum + estimateImageTokens(message), 0));
+        return faux.stream(model, context, options);
       };
+      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+      faux.setResponses([fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+        fauxAssistantMessage(fauxText("Done"))]);
       const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
       await run();
-      expect(bodyReads).toEqual([]);
       impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
-      const openBlob = vi.spyOn(impl, "openBlob");
+      faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
       await run();
-      expect(openBlob.mock.calls.filter(([oid]) => oid === blob.oid)).toHaveLength(0);
-      for (const body of bodies) {
-        expect(body).toContain(UNSUPPORTED_FILE_IMAGE);
-        expect(body).not.toContain('"image_url"');
-      }
-      if (provider === "cloudflare-auto-router") expect(pools).toEqual([
-        "@cf/openai/gpt-oss-20b", "@cf/openai/gpt-oss-20b",
-      ]);
-      const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(message =>
-        message.type === "message" ? message.toolCalls ?? [] : []);
-      expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.oid", blob.oid);
-      impl.addChatMessages(chatId, USER, [{type: "message", message: "Use vision now"}]);
-      const switched = await turn(impl, chatId, []);
-      expect(results(switched.requests[0])[0].content.some(part => part.type === "image")).toBe(true);
+      expect(imageTokens).toEqual([0, 4096, 4096]);
+      expect(checkpoints).not.toHaveBeenCalled();
     }));
 
   it.each(["model switch", "router pool switch", "unchanged vision model"] as const)(

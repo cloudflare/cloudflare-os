@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { canInlineChatAttachmentImage } from "./chat-attachment-validation";
+import { inlineChatAttachmentImageDimensions } from "./chat-attachment-validation";
 import type { BlobReader } from "./git-chunked-blob";
 
 /** Maximum bytes read into one model image, matching the chat attachment limit. */
@@ -20,6 +20,12 @@ export const UNSUPPORTED_FILE_IMAGE = "Image pixels omitted because the selected
 
 /** Pixels omitted after a provider rejected image data; the original file is unchanged. */
 export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider rejected an image in this request. The original file is unchanged.";
+
+// Request-local metadata, rebuilt on replay. Keep it off the model payload and durable chat.
+const admittedDimensions = new WeakMap<ImageContent, [number, number]>();
+export function fileImageDimensions(image: ImageContent): [number, number] | undefined {
+  return admittedDimensions.get(image);
+}
 
 const ImageDataErrorCode = z.enum([
   "image_parse_error", "invalid_image", "invalid_image_format", "invalid_image_mode", "invalid_base64_image",
@@ -95,8 +101,11 @@ export function readFileImage(reader: BlobReader, mimeType = fileImageMimeType(r
   // OpenAI's original/auto detail rejects images above 30,000 32px patches rather than
   // resizing them. Bound resolution before persisting a successful read, preserving coordinates
   // and fine detail for accepted images instead of silently selecting a downsampled detail level.
-  if (!canInlineChatAttachmentImage(mimeType, reader, 8000, 30_000)) {
+  const dimensions = inlineChatAttachmentImageDimensions(mimeType, reader, 8000, 30_000);
+  if (!dimensions) {
     throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
   }
-  return { type: "image", data: reader.read(0, reader.size).toBase64(), mimeType };
+  const image: ImageContent = { type: "image", data: reader.read(0, reader.size).toBase64(), mimeType };
+  admittedDimensions.set(image, dimensions);
+  return image;
 }

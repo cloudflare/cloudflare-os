@@ -7,6 +7,7 @@ import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
 import {imageDimensions} from "./chat-attachment-validation";
+import {fileImageDimensions} from "./file-image";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -225,10 +226,11 @@ export type CompactionProjectionMessage = {
 export function estimateImageTokens(message: Message): number {
   return typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
     if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
-    // Decode at most 64 KiB of header, never allocate another copy of a multi-MiB image here.
-    // An unusually long JPEG header or unknown encoding gets the maximum admitted file estimate.
-    let dimensions: [number, number] | undefined;
-    try {
+    // File admission already parsed the complete header through byte ranges, including JPEG
+    // metadata beyond 64 KiB. Reuse it without decoding base64 again. Other image sources keep
+    // the bounded header fallback rather than allocating another multi-MiB payload copy.
+    let dimensions = fileImageDimensions(part);
+    if (!dimensions) try {
       dimensions = imageDimensions(part.mimeType, Uint8Array.fromBase64(part.data.slice(0, 87_380)));
     } catch { /* A malformed header must not break compaction. */ }
     // Estimate original-detail 32px patches at 1.2 tokens/patch, as current OpenAI defaults do.

@@ -84,12 +84,20 @@ type ImageHeaderSource = Uint8Array | {
 /** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */
 export function canInlineChatAttachmentImage(
     mimeType: string, bytes: ImageHeaderSource, maxEdge = 8000, maxPatches = Infinity): boolean {
+  return inlineChatAttachmentImageDimensions(mimeType, bytes, maxEdge, maxPatches) !== undefined;
+}
+
+/** The admitted dimensions, reusable by callers that also need image token accounting. */
+export function inlineChatAttachmentImageDimensions(
+    mimeType: string, bytes: ImageHeaderSource, maxEdge = 8000,
+    maxPatches = Infinity): [number, number] | undefined {
   const dimensions = imageDimensions(sanitizeChatAttachmentMimeType(mimeType), bytes);
   // Anthropic permits 8000 pixels normally, but only 2000 in many-image requests. This is a
   // model-input guard, not an upload restriction: originals remain in the worktree/downloads.
   // https://platform.claude.com/docs/en/build-with-claude/vision#request-limits
   return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= maxEdge) &&
-      Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) <= maxPatches;
+      Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) <= maxPatches
+      ? dimensions : undefined;
 }
 
 /** Read supported format headers without decoding pixels; unknown or truncated headers return undefined. */
