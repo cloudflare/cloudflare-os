@@ -322,6 +322,33 @@ describe("images read from a worktree", () => {
       expect(faux.getPendingResponseCount()).toBe(0);
     }));
 
+  it.each([false, true])("preserves legacy measured usage only without historical media (media=%s)", hasMedia =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const {chatId} = await setup(impl);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(20_000)}]);
+      await turn(impl, chatId, hasMedia ? [[read()]] : []);
+      const last = impl.loadChatHistory(chatId).chatMessages.findLast(message =>
+        message.type === "message" && message.author.type === "agent")!;
+      const {inputImageTokens: _legacyMissing, ...legacy} = impl.getChatModelData(chatId, last.sequence)!;
+      impl.storage.chatModelData.put({chatId, sequence: last.sequence, message: legacy});
+      // Older provider usage remains authoritative for text-only history, even when the
+      // character estimate is much smaller. An ambiguous old media projection is re-estimated.
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 250_000});
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+        models: [{id: "fixture", contextWindow: 8_000_000}]});
+      faux.setResponses([...(hasMedia ? [] : [fauxAssistantMessage(fauxText("Summary"))]),
+        fauxAssistantMessage(fauxText("Done"))]);
+      handle.stream = faux.stream;
+      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+        {...config, contextWindow: 8_000_000, compactionInputBudget: 272_000});
+      expect(checkpoints).toHaveBeenCalledTimes(hasMedia ? 0 : 1);
+      expect(faux.getPendingResponseCount()).toBe(0);
+    }));
+
   it.each(["model", "router pool"] as const)("keeps history when a %s switch removes all pixels", mode => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice();
     const dimensions = new DataView(bytes.buffer);
@@ -564,6 +591,52 @@ describe("images read from a worktree", () => {
       expect(results(requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
     });
   });
+
+  it("surfaces a second automatic compaction image rejection without sending stale pixels", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = PNG.slice();
+    const dimensions = new DataView(bytes.buffer);
+    dimensions.setUint32(16, 6400); dimensions.setUint32(20, 4800);
+    const second = new Uint8Array([...bytes, 1]);
+    const {chatId} = await setup(impl, bytes, [["second.png", second]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(200_000)}]);
+    const config: AiModelConfig = {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+      models: [{id: "fixture", contextWindow: 8_000_000}]});
+    faux.setResponses([
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([read({filename: "second.png"})], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const realStream = handle.stream;
+    handle.stream = faux.stream;
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {...config, contextWindow: 8_000_000, compactionInputBudget: 8_000_000});
+    // The measured usage retains the second read. After the first rejection invalidates that
+    // measurement, the larger character estimate moves the summary boundary past both reads.
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 250_000});
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "tail ".repeat(20_000)}]);
+    const bodies: string[] = [];
+    handle.stream = (model, context, options) => realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+      bodies.push(await new Request(input, init).text());
+      return Response.json({type: "error", error: {
+        type: "invalid_request_error", message: "Could not process image",
+      }}, {status: 400});
+    }});
+    await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {...config, contextWindow: 8_000_000, compactionInputBudget: 272_000})).rejects.toThrow("Could not process image");
+    expect(bodies).toHaveLength(2);
+    expect(bodies.every(body => body.includes('"compaction"'))).toBe(true);
+    expect(bodies[0]).toContain(bytes.toBase64());
+    expect(bodies[0]).not.toContain(second.toBase64());
+    expect(bodies[1]).toContain(second.toBase64());
+    expect(bodies[1]).not.toContain(bytes.toBase64());
+    const reads = impl.loadChatHistory(chatId).chatMessages.flatMap(message => message.type === "message"
+      ? (message.toolCalls ?? []).filter(call => call.toolName === "readFile") : []);
+    expect(reads).toHaveLength(2);
+    expect(reads.every(call => call.toolName === "readFile" && call.image?.rejected)).toBe(true);
+    expect(impl.loadChatHistory(chatId).checkpoint).toBeUndefined();
+  }));
 
   it("reruns explicit native /compact without rejected pixels through the real Anthropic adapter", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);

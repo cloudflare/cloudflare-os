@@ -2523,9 +2523,9 @@ async function runAgentPass(
     // The provider may not name the bad part. Omit only the included read observations, never
     // other reads of the same blob: reverting a newer batch must preserve an earlier good read.
     hooks.rejectChatFileImages(chatId, rejected);
-    // Record the omission for future turns, but preserve this refusal and never retry it.
-    if (policyRefusal) throw error;
-    if (progress.fileImagesAfterRecovery) return false;
+    // Persist the omission even when recovery is exhausted. Surface the error so automatic
+    // compaction cannot fall through to a normal request with its stale, rejected pixels.
+    if (policyRefusal || progress.fileImagesAfterRecovery) throw error;
     // Removing rejected pixels must not promote older, previously elided images into the one
     // recovery request. Preserve the chosen window, including unsummarized compaction images.
     progress.fileImagesAfterRecovery = {
@@ -3637,9 +3637,18 @@ async function runAgentPass(
   // A model/pool switch can reveal old pixels that were only omission markers in the measured
   // request. Usage from another provider also prices pixels differently. Re-estimate the whole
   // prompt when its older media changes, including a router pool change with the same model ID.
-  // Snapshots predating image accounting take this conservative path once, then record it below.
-  let mediaMatchesMeasurement = measuredModel?.inputImageTokens === historicalImageTokens && (
-    historicalImageTokens === 0 || (measuredModel.api === handle.model.api &&
+  // Legacy text-only histories still have useful measured usage. Inspect durable media sources,
+  // since the current model may hide images that were present in the measured request.
+  let measuredImageTokens = measuredModel?.inputImageTokens;
+  if (measuredImageTokens === undefined && lastMeasuredSequence !== undefined && !chatMessages.some(message =>
+    message.sequence < lastMeasuredSequence && message.type === "message" && (
+      message.attachments?.some(attachment => attachment.mimeType.startsWith("image/") ||
+        attachment.mimeType === PDF_MIME_TYPE) ||
+      message.toolCalls?.some(call => call.toolName === "readFile" && call.image && !call.error)))) {
+    measuredImageTokens = 0;
+  }
+  let mediaMatchesMeasurement = measuredImageTokens === historicalImageTokens && (
+    historicalImageTokens === 0 || (measuredModel?.api === handle.model.api &&
       measuredModel.provider === handle.model.provider && measuredModel.model === handle.model.id));
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
