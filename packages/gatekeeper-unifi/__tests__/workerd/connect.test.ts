@@ -258,6 +258,38 @@ describe("reconnecting", () => {
     expect(await account(accountId).identity()).toEqual(before);
   });
 
+  it("refuses a reconnect where one site's gateway changed, though another site's didn't", async () => {
+    // Requests to a site are checked by its own gateway, so each one's must still be the same.
+    const { unifi, console } = installFake();
+    const barn = homeConsole().network!.sites[0]!;
+    barn.site = { ...barn.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    barn.devices[0]!.overview.macAddress = "02:aa:bb:cc:dd:ee";
+    console.network!.sites.push(barn);
+    const accountId = await connectDirect();
+    const before = await account(accountId).identity();
+    const { url } = unwrap(await hooks().user(accountId, "reconnect")) as { url: string };
+    const path = new URL(url).pathname.replace("/gatekeeper/unifi", "");
+    const replaced = homeConsole();
+    replaced.network!.sites[0]!.devices[0]!.overview.macAddress = "00:11:22:33:44:55";
+    replaced.network!.sites.push(barn);
+    unifi.addDirectConsole(CONSOLE_URL, replaced, "new-local-key-0123456789abcdef");
+    const refused = await postForm(path, { mode: "direct", localApiKey: "new-local-key-0123456789abcdef" });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("reaches a different console");
+
+    // A site whose devices can't be read now keeps its gateway, which its requests are still checked by.
+    const original = homeConsole();
+    original.network!.sites.push(barn);
+    original.unavailable.add(`/v1/sites/${HOME.siteId}/devices`);
+    unifi.addDirectConsole(CONSOLE_URL, original, "new-local-key-0123456789abcdef");
+    expect((await postForm(path, { mode: "direct", localApiKey: "new-local-key-0123456789abcdef" })).status).toBe(200);
+    const [stageId] = (await hooks().callbackLog(accountId)).stages;
+    await account(accountId).commitReconnect(stageId!);
+    expect(await account(accountId).identity()).toMatchObject({
+      siteGateways: (before as { siteGateways: Record<string, string[]> }).siteGateways,
+    });
+  });
+
   it("refuses a reconnect to a different NVR behind the same gateway", async () => {
     // The gateway's MAC matches, but Protect now answers from other hardware.
     const { unifi } = installFake();

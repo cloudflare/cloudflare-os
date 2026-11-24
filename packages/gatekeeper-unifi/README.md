@@ -37,8 +37,13 @@ sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` with every request.
 - The gatekeeper probes Network and Protect with the key, and learns the console's name and MAC
   addresses. The console is then known as `local-` plus 16 hex digits, which is kept across
   reconnects.
-- The URL can't change on reconnect, and a reconnect must reach the same console, matched by MAC.
-  A console that didn't report a MAC address when it connected can't be reconnected in place.
+- The URL can't change on reconnect, and a reconnect must reach the same console: each
+  application on the hardware it identified when connecting (the NVR for Protect, the gateway for
+  Network), and each site behind the same gateway. A console that didn't report a MAC address when
+  it connected can't be reconnected in place.
+- Every request that isn't answered from the cache is preceded by a check that the application at
+  the URL still runs on that hardware (for a site, its own gateway), so a tunnel or proxy repointed
+  at another console is refused rather than read, and its cached answers are dropped.
 - `http://` URLs are accepted for loopback addresses only.
 - **Reachability.** On a Cloudflare-hosted deployment, `global_fetch_strictly_public` means the
   console must be reachable at a public address; private and LAN addresses are refused. Use a
@@ -134,7 +139,8 @@ information, such as the version a site's or Protect's `describe()` returns. The
 Checks:
 
 - A collaborator's direct connection passes only for a binding its owner also connected directly,
-  at the same console URL. What a direct connection knows about its console came from whatever
+  at the same console URL, with the same hardware for the application, and for a site's data the
+  same gateway for that site. What a direct connection knows about its console came from whatever
   answered at the URL its owner typed, so it can't vouch for a console reached any other way: a
   server the collaborator runs could claim any MAC address. It then calls, with its own key, the
   endpoint each requirement names, and for a site's details also needs the site in its own site

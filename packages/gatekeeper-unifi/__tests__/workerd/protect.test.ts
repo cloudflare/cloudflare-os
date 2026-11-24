@@ -162,6 +162,34 @@ describe("a camera", () => {
     expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
   });
 
+  it("checks the console before every read it sends, not trusting one it just checked", async () => {
+    // The application's information is read, and the console confirmed, just before the swap.
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    await protect.call("describe");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+    expect(replacement.calls.some(call => call.path === "/v1/cameras")).toBe(false);
+  });
+
+  it("drops what it cached from a console once a check finds a replacement there", async () => {
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    await protect.call("listCameras");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listSensors")).toMatch(/isn't the one this connection was made to/);
+    // The camera list was read from the original moments ago, but it's no longer served as current.
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+  });
+
   it("keeps a change pending when the console's identity can't be read, to apply once it can", async () => {
     const { console } = installFake();
     const accountId = await connectDirect();

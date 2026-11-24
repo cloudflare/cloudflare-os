@@ -404,6 +404,27 @@ describe("checking collaborators", () => {
     expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), newcomer)).toEqual(ALLOWED);
   });
 
+  it("refuses a direct collaborator a site whose gateway isn't the owner's, though another site's is", async () => {
+    // What the owner read from a site came from whatever served it, which is known by that site's gateway.
+    const { unifi, console } = installFake();
+    const barn = homeConsole().network!.sites[0]!;
+    barn.site = { ...barn.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    barn.devices[0]!.overview.macAddress = "02:aa:bb:cc:dd:ee";
+    console.network!.sites.push(barn);
+    const { owner, consoleId } = await ownerAndSamDirect(unifi);
+    const replacement = homeConsole();
+    replacement.network!.sites[0]!.devices[0]!.overview.macAddress = "00:11:22:33:44:55";
+    replacement.network!.sites.push(barn);
+    unifi.addDirectConsole(CONSOLE_URL, replacement, SAM_KEY);
+    const newcomer = await connectDirect({ localApiKey: SAM_KEY });
+    const home = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
+    expect(await verify(home, newcomer, [`${appSubresource(home.props.resource)}/clients/${HOME.siteId}`])).toEqual(DENIED);
+    expect(await verify(home, newcomer)).toEqual(DENIED);
+    // The barn's gateway is the owner's, so its data is checked as usual.
+    const barnSite = binding(owner, { kind: "site", consoleId, siteId: "88f7af54-0000-4000-8000-000000000002" });
+    expect(await verify(barnSite, newcomer)).toEqual(ALLOWED);
+  });
+
   it("refuses a direct collaborator to a binding made through the cloud, which no URL ties it to", async () => {
     installFake();
     const owner = await connectCloud();

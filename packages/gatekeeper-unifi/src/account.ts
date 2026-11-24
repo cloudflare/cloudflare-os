@@ -84,8 +84,6 @@ export type AccountSummary = {
 };
 
 const CONNECTION_KEY = "connection";
-/** How long a read trusts a check that a direct console is still this connection's. */
-const CONFIRMED_TTL_MS = 30_000;
 const APPS = ["network", "protect"] as const;
 const CALLBACK_KEY = "callback";
 const CONSOLES_TTL_MS = 60_000;
@@ -96,8 +94,6 @@ const CACHE_BYTES = 8 * 1024 * 1024;
 /** One UniFi connection. */
 export class UnifiAccount extends DurableObject<UnifiEnv> {
   readonly #buckets = new Map<string, TokenBucket>();
-  /** When each application (and site) at a direct console was last confirmed to be this console's. */
-  readonly #confirmed = new Map<string, number>();
   readonly #cache = new ResponseCache<UnifiResponse>(Date.now, 500, {
     maxBytes: CACHE_BYTES, sizeOf: response => (response.ok && "json" in response ? response.size : 0),
   });
@@ -195,7 +191,6 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     kv.put(CONNECTION_KEY, staged);
     clearCredentialExpiryLatch(kv);
     this.#cache.clear();
-    this.#confirmed.clear();
     this.#buckets.clear();
   }
 
@@ -203,7 +198,6 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   async revoke(): Promise<void> {
     discardStagedCredentials(this.ctx.storage.kv);
     this.#cache.clear();
-    this.#confirmed.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
@@ -269,7 +263,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     return {
       app, consoleId, macs: bound.macs,
       ...(credentials.mode === "direct" && { baseUrl: credentials.baseUrl }),
-      ...(identity.mode === "direct" && { appMacs: identity.appMacs[app] }),
+      ...(identity.mode === "direct" && {
+        appMacs: identity.appMacs[app], ...(app === "network" && { siteGateways: identity.siteGateways }),
+      }),
     };
   }
 
@@ -362,11 +358,21 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       consoleId = match.reachable ? match.id : null;
     }
     if (consoleId === null) return none;
-    const codes = await this.#voucherCodes(consoleId, requirements, connection);
+    // A site's data comes from whatever serves that site, which the owner's connection pinned by the
+    // site's gateway: a direct collaborator's must have pinned the same one, or its probes, which
+    // its own pin confirms, could reach a replacement site in its place.
+    const sameSite = (requirement: UnifiRequirement): boolean => {
+      if (identity.mode !== "direct" || !("siteId" in requirement)) return true;
+      const site = requirement.siteId.toLowerCase();
+      const theirs = target.siteGateways?.[site] ?? [];
+      return !theirs.some(isUsableMac) || sameConsole(theirs, identity.siteGateways[site] ?? []);
+    };
+    const codes = await this.#voucherCodes(consoleId, requirements.filter(sameSite), connection);
     const answers: boolean[] = [];
     // A few at a time: each is a request on this connection's own budget for the console.
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
+        if (!sameSite(requirement)) return false;
         if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
         if (requirement.kind === "device") return await this.#opensDevice(consoleId, requirement.siteId, requirement.deviceId, connection);
         if (requirement.kind === "voucherCode") return codes.has(`${requirement.siteId}/${requirement.voucherId}`.toLowerCase());
@@ -479,25 +485,30 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       return failure({ kind: "notFound", message: "This UniFi connection doesn't reach that console." });
     }
     const group = request.target.kind === "siteManager" ? "siteManager" : `console:${request.target.consoleId}`;
-    if (!skipIdentity && request.target.kind === "app" && identity.mode === "direct") {
-      const refusal = await this.#confirmServing(request.target.app, siteOf(request.path), connection, request.method !== "GET");
-      if (refusal) return refusal;
-    }
+    const { target } = request;
+    // Every request that reaches the console, but not an answer already cached, which was checked
+    // when it was fetched.
+    const load = async (): Promise<UnifiResponse> => {
+      if (!skipIdentity && target.kind === "app" && identity.mode === "direct") {
+        const refusal = await this.#confirmServing(target.app, siteOf(request.path), connection);
+        if (refusal) return refusal;
+      }
+      return await this.#dispatch(credentials, request, group);
+    };
     if (request.method !== "GET") {
       this.#cache.invalidate(group);
       try {
-        return await this.#dispatch(credentials, request, group);
+        return await load();
       } finally {
         // Answers cached while the write was in flight may predate it.
         this.#cache.invalidate(group);
       }
     }
-    if (ttlMs === null) return await this.#dispatch(credentials, request, group);
+    if (ttlMs === null) return await load();
     const key = JSON.stringify([group, request.target, request.path, request.query ?? {}, request.accept ?? "json"]);
     // Images aren't kept: they're large, and a snapshot is asked for to see the camera now.
     // Concurrent requests for one still share a single load.
-    return this.#cache.get(group, key, ttlMs, () => this.#dispatch(credentials, request, group),
-      response => response.ok && "json" in response);
+    return this.#cache.get(group, key, ttlMs, load, response => response.ok && "json" in response);
   }
 
   /**
@@ -506,15 +517,12 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
    * repointed at a replacement that takes the same key would otherwise serve this connection's
    * bindings, and its collaborator checks, as if it were this console. Network is checked by one
    * site's gateway: the request's site where it had one, since another site's says nothing about
-   * it, and otherwise any site that did. A change is always checked afresh; a read trusts a check
-   * made in the last `CONFIRMED_TTL_MS`, which keeps reads to a request more at most.
+   * it, and otherwise any site that did. A replacement found drops every cached answer from it.
    * @returns The refusal, or null when it matches.
    */
-  async #confirmServing(app: UnifiApp, siteId: string | null, connection: StoredConnection, fresh: boolean): Promise<UnifiResponse | null> {
+  async #confirmServing(app: UnifiApp, siteId: string | null, connection: StoredConnection): Promise<UnifiResponse | null> {
     const { identity } = connection;
     if (identity.mode !== "direct") return null;
-    const key = `${app}:${siteId ?? ""}`;
-    if (!fresh && (this.#confirmed.get(key) ?? 0) > Date.now()) return null;
     const send: UnifiSend = request => this.#send(
       request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId: identity.consoleId } } : request,
       null, connection, true);
@@ -543,13 +551,13 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     }
     if (!pinned.some(isUsableMac) || serving.length === 0) return unconfirmed;
     if (!sameConsole(pinned, serving)) {
+      this.#cache.invalidate(`console:${identity.consoleId}`);
       return failure({
         kind: "forbidden",
         message: "The console at this address isn't the one this connection was made to, so nothing was sent. " +
           "Reconnect the console.",
       });
     }
-    this.#confirmed.set(key, Date.now() + CONFIRMED_TTL_MS);
     return null;
   }
 
@@ -690,11 +698,20 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
           throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
         }
       }
+      // And each site by its own gateway, since requests to a site are checked by it: a gateway
+      // in common on another site doesn't make this one the same. A site not read now keeps its
+      // pin, so its requests stay refused unless its own gateway answers again.
+      for (const [site, macs] of Object.entries(before.siteGateways)) {
+        const now = facts.siteGateways[site];
+        if (now !== undefined && macs.some(isUsableMac) && !sameConsole(macs, now)) {
+          throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
+        }
+      }
       return {
         credentials,
         identity: {
           ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs,
-          siteGateways: facts.siteGateways,
+          siteGateways: { ...before.siteGateways, ...facts.siteGateways },
         },
       };
     }

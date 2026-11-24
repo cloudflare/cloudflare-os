@@ -46,6 +46,11 @@ export type ObserveTarget = {
   baseUrl?: string;
   /** The MACs the owner's direct connection pinned for `app`'s console, which a direct collaborator's must match. */
   appMacs?: string[];
+  /**
+   * The gateways the owner's direct connection pinned for each site, by lowercase site ID, which a
+   * direct collaborator's pin for the site a requirement names must match.
+   */
+  siteGateways?: Record<string, string[]>;
 };
 
 /** The successful JSON body of a response, or the failure thrown as a `UnifiError`. */
