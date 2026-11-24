@@ -580,8 +580,8 @@ export interface GoogleDocSession extends GoogleDocEditSession {
 
   /**
    * Return the declarations of the reads that these types leave out, as TypeScript: what it
-   * takes to render a tab as Google Docs draws it, with its pages, headers, footers and wrapped
-   * images, and with its pending changes in place. Call it before writing or changing code that
+   * takes to render a tab as Google Docs draws it, with its pages, headers, footers, wrapped
+   * images and fonts, and with its pending changes in place. Call it before writing or changing code that
    * renders the document.
    */
   getRenderingTypes(): Promise<string>;

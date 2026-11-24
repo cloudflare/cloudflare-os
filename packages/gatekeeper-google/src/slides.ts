@@ -19,8 +19,17 @@ import { QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
-  BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
+  BlankPresentation, GoogleSlidesApi, type PresentationReader, type RestPresentation,
+  type ThumbnailSize,
 } from "./slides-api";
+import { drawSlide, fontsOf, type DrawnPage, type ElementChanges } from "./slides-drawing";
+import {
+  exportFor, logLoss, needsExport, releaseExport, resolveGeometry, type ShapeGeometry,
+} from "./slides-export";
+import { DRAWN_SLIDE_FIELDS } from "./slides-fields";
+import { emu, points } from "./slides-geometry";
+import { chunkedStream } from "./byte-stream";
+import { downloadFont, downloadPicture, isFontRequest, picturePixels } from "./slides-media";
 import {
   layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
 } from "./slides-model";
@@ -30,16 +39,25 @@ import type {
 import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
-  newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange, type SlideLabel,
-  type SlidesAction, type SlidesActions, type ThemeLabel,
+  batchSlides, conflictReason, createReplay, instantiatedPlaceholders, isDesignBatch, mintObjectId,
+  movedOrder, newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange,
+  type SlideLabel, type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 import type { GooglePresentationReadSession } from "./slides-read-types";
-import type { GooglePresentationSession, SlideChange } from "./slides-types";
-import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
+import type {
+  DrawnElement, DrawnSlide, GooglePresentationRenderingReads, SlideDrawing, SlideDrawings, SlideFont,
+  SlidePictureBytes,
+} from "./slides-rendering-types";
+import type {
+  GooglePresentationSession, PresentationPendingChange, PresentationPendingChanges, SlideChange,
+} from "./slides-types";
+import {
+  SLIDES_RENDERING_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+} from "./type-bundle";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
+import SLIDES_RENDERING_TYPES_CODE from "./slides-rendering-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
 
 const MAX_SLIDES_PER_READ = 20;
@@ -51,6 +69,9 @@ const THUMBNAIL_SIZES = {
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
 // A move or skip names each of its slides to the approver.
 const MAX_SLIDES_PER_CHANGE = 100;
+// As many as a preview asks for at once, which keeps an answer well inside what one call returns.
+// Each is fetched on its own, like the slides of any other read.
+const MAX_DRAWINGS_PER_READ = 10;
 
 type Env = Cloudflare.Env;
 
@@ -228,6 +249,71 @@ export class GoogleSlidesGatekeeperImpl
   }
 }
 
+/** A queued change as `getPendingChanges()` lists it, over `deck`, the read with them applied. */
+function pendingChange(
+  { id, action }: QueuedChange, stale: boolean, deck: Deck,
+): PresentationPendingChange {
+  let base = { id, ...(stale ? { stale: true as const } : {}) };
+  switch (action.kind) {
+    case "duplicateSlide": {
+      let { slideId, newSlideId } = action.payload;
+      return { ...base, type: action.kind, slideIds: [newSlideId], slideId, newSlideId };
+    }
+    case "deleteSlide":
+      return { ...base, type: action.kind, slideIds: [action.payload.slideId], slideId: action.payload.slideId };
+    case "moveSlides":
+      return { ...base, type: action.kind, slideIds: action.payload.slideIds, after: action.payload.after };
+    case "createSlide": {
+      let { layoutId, after, newSlideId } = action.payload;
+      return {
+        ...base, type: action.kind, slideIds: [newSlideId], layoutId,
+        ...(after === undefined ? {} : { after }), newSlideId,
+      };
+    }
+    case "skipSlides":
+      return { ...base, type: "setSlidesSkipped", slideIds: action.payload.slideIds, skipped: action.payload.skipped };
+    default: {
+      // A layout's or master's change shows on every slide made from it.
+      let made = (page: string) => deck.order.filter(slide => deck.masters.get(slide) === page ||
+        deck.slides.get(slide)?.slideProperties?.layoutObjectId === page);
+      let touched = action.payload.changes.flatMap(change => {
+        let { pageType, id: page } = pageOf(change);
+        return pageType === "SLIDE" ? [page] : made(page);
+      });
+      return {
+        ...base, type: "updateSlides", slideIds: [...new Set(touched)],
+        changes: action.payload.changes.map(({ before: _, ...change }) => change),
+      };
+    }
+  }
+}
+
+/** Which of `changes` touched an element, by its ID or the ID of a group holding it. */
+function elementChanges(changes: readonly QueuedChange[]): ElementChanges {
+  let touched = new Map<string, { id: number; op: string }[]>();
+  for (let { id, action } of changes) {
+    if (!isDesignBatch(action)) continue;
+    for (let change of action.payload.changes) {
+      let element = "elementId" in change ? change.elementId : "id" in change ? change.id : undefined;
+      if (element === undefined) continue;
+      let list = touched.get(element) ?? [];
+      if (!list.some(made => made.id === id && made.op === change.op)) list.push({ id, op: change.op });
+      touched.set(element, list);
+    }
+  }
+  return ids => ids.flatMap(id => touched.get(id) ?? []);
+}
+
+/** A picture a drawing named: where Google serves it, and how long to fetch its longer side. */
+type NamedPicture = { contentUrl: string; pixels: number };
+
+// How long a viewer's session keeps the masters and layouts, having no revision to tell a change by.
+const THEME_KEPT_MS = 60_000;
+
+/** A drawn slide without what marks its elements as changed, to compare it with the saved one. */
+const unmarked = (slide: DrawnSlide) =>
+  JSON.stringify(slide, (key, value) => key === "changes" ? undefined : value);
+
 function asError(error: unknown): never {
   if (error instanceof ChangeConflict) {
     throw new Error(`${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`);
@@ -252,7 +338,8 @@ function themeLabelOf(deck: Deck, id: string): ThemeLabel {
 }
 
 @validateRpc()
-export class GooglePresentationSessionImpl extends RpcTarget implements GooglePresentationSession {
+export class GooglePresentationSessionImpl extends RpcTarget
+    implements GooglePresentationSession, GooglePresentationRenderingReads {
   #api: PresentationReader;
   #presentationId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
@@ -262,6 +349,17 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   // ID. It keeps nothing between reads: each folds every queued change again, on a deck of the
   // fold's own, and leaves the deck it fetched as it was.
   #replay = createReplay();
+  /** The masters and layouts whole, as last read, and when and at which revision they were. */
+  #theme?: { revisionId?: string; at: number; theme: RestPresentation };
+  /**
+   * The pictures drawings have named, by picture ID, which is one element's or page's across the
+   * presentation: a master's logo is one picture however many slides show it.
+   */
+  #pictures = new Map<string, NamedPicture>();
+  /** The slides a read of whose pictures has been reported. */
+  #pictured = new Set<string>();
+  /** The font families `listFonts()` last returned. */
+  #fonts?: Set<string>;
 
   constructor(
     api: PresentationReader,
@@ -279,15 +377,24 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   [Symbol.dispose](): void {
+    releaseExport(this);
     this.#approvalQueue[Symbol.dispose]();
   }
 
-  /** A read with queued changes applied, and the first that no longer applies. */
-  #replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
+  /**
+   * A read with queued changes applied, and the first that no longer applies. `stale` are that one
+   * and those queued after it, which the read leaves out.
+   */
+  #replayed(
+    base: Deck, changes: readonly QueuedChange[],
+  ): { deck: Deck; conflict?: string; stale: readonly QueuedChange[] } {
     let { entity, stopped } = this.#replay.fold(this.#presentationId, base, changes);
     // The fold of a fetched deck always holds one: no queued change deletes the deck.
     let deck = entity!;
-    return stopped ? { deck, conflict: conflictReason(stopped.record, stopped.reason) } : { deck };
+    return stopped ? {
+      deck, conflict: conflictReason(stopped.record, stopped.reason),
+      stale: changes.slice(changes.indexOf(stopped.record)),
+    } : { deck, stale: [] };
   }
 
   /**
@@ -337,28 +444,34 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       }));
   }
 
+  /** The presentation's summary as saved, and with `changes` applied. */
+  async #summarized(changes: readonly QueuedChange[]) {
+    let rest = await this.#api.getPresentation(this.#presentationId);
+    let order = slideIds(rest);
+    // A summary holds no tables or grouped shapes, so slides queued edits address are read in
+    // full, and every edit is checked as it would be when approved.
+    let edited = changes.flatMap(({ action }) => batchSlides(action));
+    let slides = new Map([
+      ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
+      ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
+    ]);
+    let { deck, conflict, stale } = this.#replayed(
+      { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
+    return {
+      rest, deck, stale,
+      info: {
+        // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
+        // removes them.
+        ...presentationInfo(
+          { ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }, deck.themePages),
+        ...(conflict ? { queuedChangeConflict: conflict } : {}),
+      },
+    };
+  }
+
   async getPresentation(): Promise<PresentationInfo> {
     return this.#read(
-      () => this.#changes.snapshot(async changes => {
-        let rest = await this.#api.getPresentation(this.#presentationId);
-        let order = slideIds(rest);
-        // A summary holds no tables or grouped shapes, so slides queued edits address are read in
-        // full, and every edit is checked as it would be when approved.
-        let edited = changes.flatMap(({ action }) => batchSlides(action));
-        let slides = new Map([
-          ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
-          ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
-        ]);
-        let { deck, conflict } = this.#replayed(
-          { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
-        return {
-          // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
-          // removes them.
-          ...presentationInfo(
-            { ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }, deck.themePages),
-          ...(conflict ? { queuedChangeConflict: conflict } : {}),
-        };
-      }),
+      () => this.#changes.snapshot(async changes => (await this.#summarized(changes)).info),
       info => ({
         title: "Read Google Slides presentation outline",
         description:
@@ -422,6 +535,245 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         "awaiting approval, so it cannot be rendered until it exists.");
     }
     throw noSlide(slideId, title);
+  }
+
+  async getPendingChanges(): Promise<PresentationPendingChanges> {
+    return this.#read(
+      () => this.#changes.snapshot(async changes => {
+        let { rest, deck, stale, info } = await this.#summarized(changes);
+        return {
+          changes: changes.map(change => pendingChange(change, stale.includes(change), deck)),
+          savedPresentation: presentationInfo(rest),
+          presentation: info,
+        };
+      }),
+      ({ presentation }) => ({
+        title: "Read Google Slides pending changes",
+        description:
+          `Read the outline of "${presentation.title}" as saved and with its pending changes, ` +
+          "and those changes.",
+      }));
+  }
+
+  /**
+   * Every master and layout whole. They are some hundreds of KiB and change rarely, so they are
+   * kept until the presentation's revision moves. Google reports that only to an editor, so for a
+   * viewer they are kept a minute: the reads that draw one deck share them.
+   */
+  async #themeAt(revisionId: string | undefined): Promise<RestPresentation> {
+    let kept = this.#theme;
+    let current = kept && (revisionId === undefined
+      ? Date.now() - kept.at < THEME_KEPT_MS : kept.revisionId === revisionId);
+    if (kept && current) return kept.theme;
+    let theme = await this.#api.getTheme(this.#presentationId);
+    this.#theme = { revisionId, at: Date.now(), theme };
+    return theme;
+  }
+
+  /**
+   * The outlines Google's export holds for the shapes `saved` and `pending` draw: `saved`'s slides,
+   * and the layouts and masters under the slides of either. A shape that `changes` copy takes its
+   * source's. None when no shape is drawn from the export, which is then not asked for, or when
+   * there is none; `waiting` are the pages whose shapes' outlines are still being fetched.
+   */
+  async #geometry(
+    outline: RestPresentation, saved: Deck, pending: Deck, changes: readonly QueuedChange[],
+  ): Promise<{ geometry: ReadonlyMap<string, ShapeGeometry>; waiting: ReadonlySet<string | undefined> }> {
+    let under = new Set([saved, pending].flatMap(deck => [...deck.slides.values()].flatMap(slide =>
+      [slide.slideProperties?.layoutObjectId, deck.masters.get(slide.objectId ?? "")])));
+    let pages = [...under].flatMap(id => saved.themePages.get(id ?? "") ?? []);
+    let wanting = [...saved.slides.values(), ...pages].filter(page => needsExport(page.pageElements));
+    let none = { geometry: new Map<string, ShapeGeometry>(), waiting: new Set<string | undefined>() };
+    if (wanting.length === 0) return none;
+    let deck = await exportFor(this, outline.revisionId, () => this.#api.exportPptx(this.#presentationId));
+    if (deck === "pending") {
+      let waiting = new Set<string | undefined>(wanting.map(page => page.objectId));
+      // A queued copy of a slide waits as the slide does, and a copy of that copy.
+      for (let { action } of changes) {
+        if (action.kind === "duplicateSlide" && waiting.has(action.payload.slideId)) waiting.add(action.payload.newSlideId);
+      }
+      return { ...none, waiting };
+    }
+    let geometry = deck && resolveGeometry(deck, (outline.slides ?? []).map(slide => ({
+      id: slide.objectId ?? "", layout: slide.slideProperties?.layoutObjectId,
+      master: slide.slideProperties?.masterObjectId, skipped: slide.slideProperties?.isSkipped,
+    })), saved.slides.values(), pages);
+    if (deck && !geometry) logLoss(this, "slide-count");
+    if (!geometry) return none;
+    for (let { action } of changes) {
+      if (action.kind !== "duplicateSlide") continue;
+      for (let [source, copy] of Object.entries(action.payload.objectIds)) {
+        let copied = geometry.get(source);
+        if (copied) geometry.set(copy, copied);
+      }
+    }
+    return { ...none, geometry };
+  }
+
+  /**
+   * `ids` as they are drawn, saved and with queued changes applied: undefined in a copy that does
+   * not hold the slide. Also the pictures those drawings name, for `readPicture()`.
+   */
+  async #drawn(ids: readonly string[]) {
+    return this.#changes.snapshot(async changes => {
+      let outline = await this.#api.getOutline(this.#presentationId);
+      let theme = await this.#themeAt(outline.revisionId);
+      let whole = new Map([...theme.masters ?? [], ...theme.layouts ?? []].map(page => [page.objectId, page]));
+      let order = slideIds(outline);
+      // With every slide a queued edit addresses, as the listing reads them, so that a change it
+      // calls stale is left out of these drawings too.
+      let edited = changes.flatMap(({ action }) => batchSlides(action));
+      let base: Deck = {
+        order,
+        slides: await this.#api.getSlides(
+          this.#presentationId, slidesToFetch([...ids, ...edited], changes), order, undefined, DRAWN_SLIDE_FIELDS),
+        ...mastersOf(outline),
+        // The outline's pages, which replay changes, with their elements and picture backgrounds.
+        themePages: new Map([...themePagesOf(outline)].map(([id, page]) => [id, {
+          ...page, ...whole.get(id), pageProperties: { ...page.pageProperties, ...whole.get(id)?.pageProperties },
+        }])),
+      };
+      let { deck, stale } = this.#replayed(base, changes);
+      let touched = elementChanges(changes.filter(change => !stale.includes(change)));
+      let { geometry, waiting } = await this.#geometry(outline, base, deck, changes);
+      // A slide waits for what it shows of those: its own shapes, its layout's and its master's.
+      let waits = (id: string) => [base, deck].some(from => {
+        let slide = from.slides.get(id);
+        return slide && [id, slide.slideProperties?.layoutObjectId, from.masters.get(id)].some(page => waiting.has(page));
+      });
+      let slideWidth = points(emu(theme.pageSize?.width));
+      let pictures = new Map<string, NamedPicture>();
+      let draw = (from: Deck, id: string, changesOf?: ElementChanges) => {
+        let page = from.order.includes(id) ? drawSlide(from, id, changesOf, geometry) : undefined;
+        for (let [picture, { contentUrl, side }] of page?.pictures ?? []) {
+          // As large as the largest it is drawn.
+          let pixels = Math.max(picturePixels(side, slideWidth), pictures.get(picture)?.pixels ?? 0);
+          pictures.set(picture, { contentUrl, pixels });
+        }
+        return page;
+      };
+      return {
+        title: outline.title ?? "Untitled presentation",
+        drawings: ids.map(id => ({ id, saved: draw(base, id), pending: draw(deck, id, touched), waits: waits(id) })),
+        pictures,
+      };
+    });
+  }
+
+  /** Keeps the pictures a reported read of `ids` named. */
+  #name(ids: readonly string[], pictures: Map<string, NamedPicture>): void {
+    for (let id of ids) this.#pictured.add(id);
+    for (let [id, picture] of pictures) this.#pictures.set(id, picture);
+  }
+
+  async getRenderingTypes(): Promise<string> {
+    // The same text for every presentation, saying nothing of this one, so no read of it is reported.
+    return stripTypeModulePrefix(SLIDES_RENDERING_TYPES_CODE, SLIDES_RENDERING_TYPES_MODULE_PREFIX);
+  }
+
+  async readSlideDrawings(ids: string[]): Promise<SlideDrawings> {
+    if (ids.length === 0 || ids.length > MAX_DRAWINGS_PER_READ) {
+      throw new Error(`Request between 1 and ${MAX_DRAWINGS_PER_READ} slides at a time.`);
+    }
+    // As for getSlides(), an unknown ID is reported only after authorization.
+    let { title, drawings, pictures } = await this.#read(() => this.#drawn(ids), ({ title }) => ({
+      title: ids.length === 1 ? "Read one Google Slides slide as drawn" : `Read ${ids.length} Google Slides slides as drawn`,
+      description: `Read how ${ids.length} slide(s) in "${title}" are drawn, with their layouts and masters.`,
+    }));
+    let missing = drawings.find(({ saved, pending }) => !saved && !pending);
+    if (missing) throw noSlide(missing.id, title);
+    this.#name(ids, pictures);
+    // What a master or a layout puts behind its slides is returned once, however many show it.
+    let shared: DrawnElement[][] = [];
+    let places = new Map<string, number>();
+    let whole = (page: DrawnPage | undefined): DrawnSlide | undefined => page && {
+      ...page.slide,
+      ...(page.behind.length > 0 ? { behind: page.behind.map(elements => {
+        let key = JSON.stringify(elements);
+        if (!places.has(key)) places.set(key, shared.push(elements) - 1);
+        return places.get(key)!;
+      }) } : {}),
+    };
+    let read: SlideDrawings = {
+      slides: drawings.map(({ id, saved: savedPage, pending: pendingPage, waits }): SlideDrawing => {
+        let [saved, pending] = [whole(savedPage), whole(pendingPage)];
+        return {
+          slideId: id,
+          drawing: pending ?? null,
+          ...(saved && pending && JSON.stringify(saved) === unmarked(pending) ? {} : { saved: saved ?? null }),
+          ...(waits ? { outlinesPending: true as const } : {}),
+        };
+      }),
+      shared,
+    };
+    if (jsonLength(read) > MAX_SLIDES_READ_LENGTH) {
+      throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
+    }
+    return read;
+  }
+
+  async readPicture(pictureId: string, slideId: string): Promise<SlidePictureBytes> {
+    // A drawing told of the picture, not its bytes: each read of them is authorized as its own,
+    // without asking Google for a slide already drawn. One never drawn is read here, and so is
+    // one whose address has lapsed, for a current one. The bytes are fetched inside the read, so
+    // a scope check bracketing it covers them too.
+    for (let reread of this.#pictured.has(slideId) ? [false, true] : [true]) {
+      let opened: SlidePictureBytes | undefined;
+      let { slide, shown, named, picture } = await this.#read(async () => {
+        let slide = reread ? await this.#drawn([slideId]) : undefined;
+        let shown = !slide || !!(slide.drawings[0].saved || slide.drawings[0].pending);
+        let named = shown ? slide?.pictures.get(pictureId) ?? this.#pictures.get(pictureId) : undefined;
+        // What Google answers for the bytes is told once the read is reported, as the rest is.
+        let picture = named && await downloadPicture(named.contentUrl, named.pixels)
+          .then(bytes => opened = bytes, (error: unknown) => ({ error }));
+        return { slide, shown, named, picture };
+      }, ({ slide }) => ({
+        title: "Read Google Slides pictures",
+        description: slide
+          ? `Read the pictures on one slide in "${slide.title}".`
+          : "Read a picture on one slide of the presentation.",
+      })).catch(async (error: unknown) => {
+        // A read refused after Google began its answer still holds the download open.
+        await opened?.content.cancel().catch(() => undefined);
+        throw error;
+      });
+      if (!shown) throw noSlide(slideId, slide!.title);
+      if (slide) this.#name([slideId], slide.pictures);
+      if (!named) {
+        throw new Error(`readPicture: no drawing of slide "${slideId}" names a picture "${pictureId}". ` +
+          "Pass the `pictureId` of an element readSlideDrawings() returned for the slide.");
+      }
+      if (picture && "error" in picture) throw picture.error;
+      if (picture) return picture;
+    }
+    throw new Error("readPicture: Google Slides no longer serves this picture.");
+  }
+
+  async listFonts(): Promise<SlideFont[]> {
+    // Only what is saved: a font a queued change sets is its author's choice, and readFont()
+    // fetches what is listed here without a report of its own.
+    let { fonts } = await this.#read(
+      async () => {
+        let deck = await this.#api.getFonts(this.#presentationId);
+        return { title: deck.title ?? "Untitled presentation", fonts: fontsOf(deck) };
+      },
+      ({ title }) => ({
+        title: "Read Google Slides fonts",
+        description: `Read which fonts the text of "${title}" is set in.`,
+      }));
+    this.#fonts = new Set(fonts.map(font => font.family));
+    return fonts;
+  }
+
+  async readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
+    // A font is public, and says nothing of the presentation but that it names the family, which
+    // the listing reports. Only a family it names is fetched, so nothing else reaches Google Fonts.
+    let listed = this.#fonts ?? new Set((await this.listFonts()).map(font => font.family));
+    if (!listed.has(family) || !isFontRequest(family, weight)) {
+      throw new Error(`readFont: the presentation names no font "${family}" that Google Fonts ` +
+        "could serve at that weight. Call listFonts() to see its fonts.");
+    }
+    return chunkedStream(await downloadFont(family, weight, italic));
   }
 
   async updateSlides(changes: SlideChange[]): Promise<Record<string, string>> {

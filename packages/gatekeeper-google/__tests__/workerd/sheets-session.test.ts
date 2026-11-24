@@ -22,8 +22,11 @@ import {
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
+  /** Set to refuse every observation. */
+  refuses = false;
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (this.refuses) throw new Error("Observation refused");
     this.observations.push(description);
   }
 
@@ -64,7 +67,13 @@ const METADATA = spreadsheetMetadata("sheet-1", "Budget", [
   sheet(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
 ]);
 
+const FONT_URL = "https://fonts.gstatic.com/s/oxygen/v15/regular.ttf";
+/** How a TrueType file starts. */
+const FONT = new Uint8Array([0, 1, 0, 0, 0, 12]);
+
 let providerFetches: URL[];
+/** The `family` of each request to Google Fonts, in order. */
+let fontRequests: string[];
 /** The body of each data-filter read of values, in order. */
 let dataFilterReads: {
   dataFilters: { gridRange: Required<FixtureGridRange> }[];
@@ -89,6 +98,29 @@ let formatFilterMasks: string[];
 let formatFilterForbidden: boolean;
 /** The sheet IDs each read of merges named, in order. */
 let mergeReads: number[][];
+/** Whether Google refuses a drawing read by grid range, as for a grant that may only read. */
+let drawingFilterForbidden: boolean;
+
+/**
+ * What Google holds in `ranges` as entered, a block per range under its sheet: each cell the text
+ * naming it, with `look`.
+ */
+function enteredSheets(ranges: Required<FixtureGridRange>[], look: object) {
+  let sheetIds = [...new Set(ranges.map(range => range.sheetId))].toSorted((a, b) => a - b);
+  return {
+    sheets: sheetIds.map(sheetId => ({
+      properties: { sheetId },
+      data: ranges.filter(range => range.sheetId === sheetId).map(range => ({
+        startRow: range.startRowIndex,
+        startColumn: range.startColumnIndex,
+        rowData: named(range).map(row => ({ values: row.map(stringValue => ({ userEnteredValue: { stringValue }, ...look })) })),
+      })),
+    })),
+  };
+}
+
+// How every cell a drawing read asks of looks: all are set in one font.
+const DRAWN_LOOK = { effectiveFormat: { textFormat: { fontFamily: "Oxygen,sans-serif" } } };
 
 /**
  * The formats Google holds in `cells` of sheet `sheetId`: each cell's font size names its sheet,
@@ -102,15 +134,22 @@ function positionedFormats(sheetId: number, cells: ReturnType<typeof rect>) {
 
 beforeEach(() => {
   providerFetches = [];
+  fontRequests = [];
   dataFilterReads = [];
   enteredReads = [];
   formatFilterReads = [];
   formatFilterMasks = [];
   formatFilterForbidden = false;
   mergeReads = [];
+  drawingFilterForbidden = false;
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
     let url = new URL(request.url);
+    if (url.hostname === "fonts.googleapis.com") {
+      fontRequests.push(url.searchParams.get("family")!);
+      return new Response(`@font-face { font-family: 'Oxygen'; src: url(${FONT_URL}) format('truetype'); }`);
+    }
+    if (url.href === FONT_URL) return new Response(FONT);
     providerFetches.push(url);
     if (url.hostname !== "sheets.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
@@ -137,20 +176,19 @@ beforeEach(() => {
         return Response.json({ sheets: body.dataFilters.map(({ gridRange: { sheetId } }) => ({ properties: { sheetId } })) });
       }
       if (url.searchParams.get("fields")?.includes("userEnteredValue")) {
-        let { dataFilters } = body;
-        enteredReads.push(dataFilters.map(({ gridRange }) => gridRange));
-        // Each cell holds the text naming it; a sheet's entry lists a block per range on it.
-        let sheetIds = [...new Set(dataFilters.map(({ gridRange }) => gridRange.sheetId))].toSorted((a, b) => a - b);
-        return Response.json({
-          sheets: sheetIds.map(sheetId => ({
-            properties: { sheetId },
-            data: dataFilters.filter(({ gridRange }) => gridRange.sheetId === sheetId).map(({ gridRange }) => ({
-              startRow: gridRange.startRowIndex,
-              startColumn: gridRange.startColumnIndex,
-              rowData: named(gridRange).map(row => ({ values: row.map(stringValue => ({ userEnteredValue: { stringValue } })) })),
-            })),
-          })),
-        });
+        let ranges = body.dataFilters.map(({ gridRange }) => gridRange);
+        // A drawing read asks how each cell looks as well.
+        let drawing = url.searchParams.get("fields")!.includes("fontFamily");
+        if (drawing && drawingFilterForbidden) {
+          return Response.json({
+            error: {
+              code: 403, message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED",
+              details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }],
+            },
+          }, { status: 403 });
+        }
+        enteredReads.push(ranges);
+        return Response.json(enteredSheets(ranges, drawing ? DRAWN_LOOK : {}));
       }
       formatFilterReads.push(body.dataFilters.map(({ gridRange }) => gridRange));
       // The replay read the merges already: a format read by grid range asks for none, and for
@@ -175,6 +213,17 @@ beforeEach(() => {
           }]);
         }),
       });
+    }
+    // A drawing read by A1 range, which a grant that may only read is answered.
+    if (url.searchParams.get("fields")?.includes("fontFamily")) {
+      return Response.json(enteredSheets(url.searchParams.getAll("ranges").map(range => {
+        let { sheet: name, rect: cells } = parseRange(range);
+        let { sheetId } = METADATA.sheets.find(({ properties }) => properties.title === name)!.properties;
+        return {
+          sheetId, startRowIndex: cells.startRow, endRowIndex: cells.endRow,
+          startColumnIndex: cells.startColumn, endColumnIndex: cells.endColumn,
+        };
+      }), DRAWN_LOOK));
     }
     if (url.searchParams.has("ranges")) {
       let { sheet: name, rect: cells } = parseRange(url.searchParams.get("ranges")!);
@@ -602,7 +651,7 @@ describe("Google Sheets entered values", () => {
     answering({
       sheets: [
         { properties: {}, data: [{ rowData: [textRow("a1")] }] },
-        { properties: { sheetId: 9 }, data: [{ startRow: 40, rowData: [{ values: [{ userEnteredValue: {} }] }] }] },
+        { properties: { sheetId: 9 }, data: [{ startRow: 40, rowData: [{ values: [{ userEnteredValue: { errorValue: {} } }] }] }] },
       ],
     });
 
@@ -821,6 +870,67 @@ async function boundSpreadsheet(facet: string) {
   await hooks.adoptCreated(facet);
   return hooks;
 }
+
+describe("Google Sheets fonts", () => {
+  it("reads a font the cells drawn are set in from Google Fonts by its name alone, with no report of its own", async () => {
+    let { queue, session } = newSession();
+    using _session = session;
+
+    let { formats } = await session.readDrawing("Sales!A1:B2");
+    let font = await session.readFont("Oxygen", 700, false);
+
+    expect(formats).toEqual([{ fontFamily: "Oxygen,sans-serif" }]);
+    expect([...await new Response(font).bytes()]).toEqual([...FONT]);
+    expect(fontRequests).toEqual(["Oxygen:ital,wght@0,700"]);
+    expect(queue.observations.map(({ title }) => title)).toEqual(["Read a Google Sheets drawing of Sales!A1:B2"]);
+  });
+
+  it("reads a font named by a drawing Google answers only by A1 range, the grant being one that may only read", async () => {
+    let { session } = newSession();
+    using _session = session;
+    drawingFilterForbidden = true;
+
+    let { formats } = await session.readDrawing("'Q3 Plan'!B2:C2");
+    let font = await session.readFont("Oxygen", 400, false);
+
+    expect(formats).toEqual([{ fontFamily: "Oxygen,sans-serif" }]);
+    expect([...await new Response(font).bytes()]).toEqual([...FONT]);
+    // Asked by grid range, then by A1 range, the sheet's title quoted.
+    let reads = providerFetches.filter(url => url.searchParams.get("fields")?.includes("fontFamily"));
+    expect(reads.map(url => [url.pathname, url.searchParams.getAll("ranges")])).toEqual([
+      ["/v4/spreadsheets/sheet-1:getByDataFilter", []], ["/v4/spreadsheets/sheet-1", ["'Q3 Plan'!B2:C2"]],
+    ]);
+  });
+
+  it("refuses a font no drawing read names, or that is no font's name, without asking Google Fonts", async () => {
+    let { session } = newSession();
+    using _session = session;
+    let refusals: string[] = [];
+    let ask = (family: string, weight: number) =>
+      Promise.resolve(session.readFont(family, weight, false)).then(() => {}, (error: Error) => refusals.push(error.message));
+
+    // Before any drawing is read, the session knows of no font.
+    await ask("Oxygen", 400);
+    await session.readDrawing("Sales!A1:B2");
+    await ask("Lobster", 400);
+    await ask("Oxygen", 450);
+
+    expect(refusals).toEqual(["Oxygen", "Lobster", "Oxygen"].map(family =>
+      expect.stringContaining(`no drawing read names a font "${family}" that Google Fonts could serve at that weight`)));
+    expect(fontRequests).toEqual([]);
+  });
+
+  it("knows of no font from a drawing it was not let read", async () => {
+    let { queue, session } = newSession();
+    using _session = session;
+    queue.refuses = true;
+    let refusal = (call: PromiseLike<unknown>) => Promise.resolve(call).then(() => undefined, (error: Error) => error.message);
+
+    expect(await refusal(session.readDrawing("Sales!A1:B2"))).toContain("Observation refused");
+    expect(await refusal(session.readFont("Oxygen", 400, false))).toContain('no drawing read names a font "Oxygen"');
+    expect(fontRequests).toEqual([]);
+  });
+});
 
 describe("Google Sheets describe() of an Office file", () => {
   it("explains a refusal of a file Drive reports as an Office spreadsheet", async () => {

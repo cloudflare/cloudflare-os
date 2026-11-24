@@ -1,13 +1,16 @@
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
+import { EXPORT_TIMEOUT_MS, MAX_EXPORT_BYTES, PPTX_MIME_TYPE, type ExportLoss } from "./slides-export";
 import {
-  LABEL_FIELDS, LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+  FONT_FIELDS, LABEL_FIELDS, LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+  THEME_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
 import { slideLabel } from "./slides-model";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
+const DRIVE_FILES = "https://www.googleapis.com/drive/v3/files";
 // 10 MiB matches the Docs bound for a document body.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 // A slide is read on its own; a live slide of a title, a body and a table is about 30 KiB of
@@ -91,15 +94,41 @@ export type RestSolidFill = { color?: RestOpaqueColor; alpha?: number };
 /** A fill or outline Google renders, does not render, or inherits from a placeholder. */
 export type RestPropertyState = "RENDERED" | "NOT_RENDERED" | "INHERIT";
 
+/** An `Outline`, of a shape or a picture. */
+export type RestOutline = {
+  propertyState?: RestPropertyState;
+  outlineFill?: { solidFill?: RestSolidFill };
+  weight?: RestDimension;
+  dashStyle?: string;
+};
+
+/** A `Shadow`, of a shape or a picture. */
+export type RestShadow = {
+  propertyState?: RestPropertyState;
+  transform?: RestTransform;
+  blurRadius?: RestDimension;
+  color?: RestOpaqueColor;
+  alpha?: number;
+};
+
+/** A picture's `ImageProperties`. Offsets are fractions of the picture, the angle in radians. */
+export type RestImageProperties = {
+  cropProperties?: {
+    leftOffset?: number; rightOffset?: number; topOffset?: number; bottomOffset?: number;
+    angle?: number;
+  };
+  transparency?: number;
+  brightness?: number;
+  contrast?: number;
+  outline?: RestOutline;
+  shadow?: RestShadow;
+};
+
 /** A shape's `ShapeProperties`, as far as the gatekeeper reads them. */
 export type RestShapeProperties = {
   shapeBackgroundFill?: { propertyState?: RestPropertyState; solidFill?: RestSolidFill };
-  outline?: {
-    propertyState?: RestPropertyState;
-    outlineFill?: { solidFill?: RestSolidFill };
-    weight?: RestDimension;
-    dashStyle?: string;
-  };
+  outline?: RestOutline;
+  shadow?: RestShadow;
   contentAlignment?: string;
   autofit?: { autofitType?: string; fontScale?: number; lineSpacingReduction?: number };
 };
@@ -169,11 +198,17 @@ export type RestPageElement = {
     verticalBorderRows?: RestBorderRow[];
   };
   elementGroup?: { children?: RestPageElement[] };
-  /** `contentUrl`, on images and charts, is a bearer URL, so it is never read. */
-  image?: { sourceUrl?: string };
+  /**
+   * `contentUrl`, on images and charts, is a bearer URL: it is read only to download the picture
+   * for a drawing (see `slides-media.ts`), and never returned or logged.
+   */
+  image?: { sourceUrl?: string; contentUrl?: string; imageProperties?: RestImageProperties };
   video?: { source?: string; id?: string; url?: string };
-  line?: { lineCategory?: string; lineProperties?: RestLineProperties };
-  sheetsChart?: { spreadsheetId?: string; chartId?: number };
+  line?: { lineCategory?: string; lineType?: string; lineProperties?: RestLineProperties };
+  sheetsChart?: {
+    spreadsheetId?: string; chartId?: number; contentUrl?: string;
+    sheetsChartProperties?: { chartImageProperties?: RestImageProperties };
+  };
   wordArt?: { renderedText?: string };
   speakerSpotlight?: unknown;
 };
@@ -182,8 +217,8 @@ export type RestPageElement = {
 export type RestPage = { objectId?: string; pageElements?: RestPageElement[] };
 
 /**
- * A page's `pageBackgroundFill`. A read never carries `contentUrl`, which only a request sets: the
- * picture Google downloads.
+ * A page's `pageBackgroundFill`. Only a read for a drawing carries `contentUrl`, as a bearer URL of
+ * Google's copy of the picture; in a request it is the picture Google downloads.
  */
 export type RestPageBackgroundFill = {
   propertyState?: RestPropertyState;
@@ -346,6 +381,19 @@ export class GoogleSlidesApi {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }
 
+  /**
+   * Fetch every master and layout whole, with the page size: what a slide is drawn over. A live
+   * deck of 20 layouts is some hundreds of KiB.
+   */
+  getTheme(presentationId: string): Promise<RestPresentation> {
+    return this.#presentation(presentationId, THEME_FIELDS, "get theme");
+  }
+
+  /** Fetch the font every text style in the presentation names, and its title. */
+  getFonts(presentationId: string): Promise<RestPresentation> {
+    return this.#presentation(presentationId, FONT_FIELDS, "get fonts");
+  }
+
   /** Fetch one slide's content, whatever the size of the rest of the presentation: `fields` of it. */
   async getSlide(presentationId: string, slideId: string, fields: string = SLIDE_FIELDS): Promise<RestSlide> {
     let slide = await this.#get<RestSlide>(
@@ -364,7 +412,7 @@ export class GoogleSlidesApi {
 
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
-   * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
+   * `ids`: `fields` of each, a full page unless given, but of each in `labelOnly` only what `slideLabel` keeps of what
    * `LABEL_FIELDS` names, cut as it comes. Every request starts at once, each bounded by a page's
    * 2 MiB; the slides one read or change may name bound what it names, not how many pages it
    * fetches, since queued batches add the other slides they touch. The read fails with the first
@@ -372,12 +420,12 @@ export class GoogleSlidesApi {
    */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
-    labelOnly: ReadonlySet<string> = new Set(),
+    labelOnly: ReadonlySet<string> = new Set(), fields = SLIDE_FIELDS,
   ): Promise<Map<string, RestSlide>> {
     let wanted = [...ids].filter(id => order.includes(id));
     let slides = await Promise.all(wanted.map(id => labelOnly.has(id)
       ? this.getSlide(presentationId, id, LABEL_FIELDS).then(slideLabel)
-      : this.getSlide(presentationId, id, SLIDE_FIELDS)));
+      : this.getSlide(presentationId, id, fields)));
     return new Map(wanted.map((id, index) => [id, slides[index]]));
   }
 
@@ -404,6 +452,31 @@ export class GoogleSlidesApi {
     });
     // readBytesCapped allocates an array of exactly the body's size, never a shared buffer.
     return { ...pngDimensions(content), content: content.buffer as ArrayBuffer };
+  }
+
+  /**
+   * Google's PowerPoint export of the presentation, which holds the outlines of shapes the Slides
+   * API does not report (see `slides-export.ts`), or why Drive sent none: the account granted no
+   * scope that covers Drive's exports, say, or the file is larger than Drive exports. Asked once,
+   * and not for long: a drawing does without it.
+   */
+  async exportPptx(presentationId: string): Promise<Uint8Array | ExportLoss> {
+    let url = new URL(`${DRIVE_FILES}/${encodeURIComponent(presentationId)}/export`);
+    url.searchParams.set("mimeType", PPTX_MIME_TYPE);
+    // A 403 here is a grant with no scope for Drive's files, which stays as it is: the token is
+    // not read again for it, as it would be on every drawing of such an account's presentation.
+    let token: string | undefined;
+    let getToken: AccessTokenProvider = async request =>
+      request?.reloadStored && token !== undefined ? token : (token = await this.getAccessToken(request));
+    let response = await fetchWithAuthRetry(url.toString(), {}, getToken, { timeoutMs: EXPORT_TIMEOUT_MS, retries: 1 });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return response.status < 500 ? "http-4xx" : "http-5xx";
+    }
+    return readBytesCapped(response, MAX_EXPORT_BYTES).catch((error: unknown) => {
+      if (error instanceof ResponseTooLargeError) return "too-large" as const;
+      throw error;
+    });
   }
 
   /**
@@ -438,7 +511,9 @@ export class GoogleSlidesApi {
 
 /** The reads a presentation session makes. */
 export type PresentationReader = Pick<
-  GoogleSlidesApi, "getPresentation" | "getOutline" | "getSlides" | "getLayout" | "getThumbnail">;
+  GoogleSlidesApi,
+  "getPresentation" | "getOutline" | "getTheme" | "getFonts" | "getSlides" | "getLayout"
+  | "getThumbnail" | "exportPptx">;
 
 /**
  * What a presentation session reads of a new presentation, as `scripts/record-blank-presentation.ts`
@@ -476,6 +551,26 @@ export class BlankPresentation implements PresentationReader {
     };
   }
 
+  /**
+   * The masters without their elements and the layouts with their placeholders' geometry, which is
+   * all the recording holds: text on a slide made from one is drawn in the default style.
+   */
+  async getTheme(presentationId: string): Promise<RestPresentation> {
+    let { pageSize } = BLANK.presentation;
+    let { masters, layouts } = structuredClone(BLANK.outline);
+    return {
+      presentationId, pageSize, masters,
+      layouts: layouts?.map(layout => ({
+        ...layout, pageElements: BLANK.layouts[layout.objectId ?? ""]?.pageElements,
+      })),
+    };
+  }
+
+  /** A new presentation's text names no font: it is drawn in the default one. */
+  async getFonts(presentationId: string): Promise<RestPresentation> {
+    return { presentationId, title: this.title };
+  }
+
   async getSlides(
     _presentationId: string, ids: Iterable<string>, order: readonly string[],
   ): Promise<Map<string, RestSlide>> {
@@ -491,5 +586,10 @@ export class BlankPresentation implements PresentationReader {
   async getThumbnail(): Promise<PageThumbnail> {
     throw new Error("This Google Slides presentation doesn't exist yet, so its slides can't be " +
       "rendered until a user approves its creation.");
+  }
+
+  /** A presentation Google does not have yet has no export. */
+  async exportPptx(): Promise<ExportLoss> {
+    return "http-4xx";
   }
 }

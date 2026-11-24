@@ -11,7 +11,7 @@
  */
 
 import { editorCost } from "./editor-cost";
-import type { RestPageBackgroundFill, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
+import type { RestPageBackgroundFill, RestPageElement, RestShapeProperties, RestSlide, RestThemePage } from "./slides-api";
 import {
   paragraphStyleChange, pointsDimension, reshaped, restBackgroundOf, restFillOf,
   restThemeColorsOf, shapePropertiesChange, textStyleChange, restyled, THEME_COLOR_TYPES,
@@ -362,7 +362,7 @@ function formatParagraphs(
       createParagraphBullets: { ...slot.location, textRange, bulletPreset: BULLET_PRESETS[change.bullets] },
     });
     // Its own ID, so replay never takes it for a list the paragraph left, whose items may remain.
-    next = bulleted(next, first, last, newListId(next, `${slot.location.objectId}.${first}`));
+    next = bulleted(next, first, last, newListId(next, `${slot.location.objectId}.${first}`), change.bullets);
   }
   slot.write(restTextOf(next));
   return { requests, previous: text, text: projectedText(next.segments) };
@@ -382,15 +382,20 @@ function newListId(rich: RichText, stem: string): string {
 
 /**
  * Makes paragraphs `first` to `last` items of a new list, as `createParagraphBullets` does: each is
- * nested by the tabs it starts with, which are removed.
+ * nested by the tabs it starts with, which are removed. The list keeps its `preset`, which says
+ * how its items are marked wherever later edits leave them (slides-drawing.ts).
  */
-function bulleted(rich: RichText, first: number, last: number, listId: string): RichText {
-  // Last to first, so removing a paragraph's tabs leaves the offsets of those before it in `text`.
+function bulleted(
+  rich: RichText, first: number, last: number, listId: string, preset: keyof typeof BULLET_PRESETS,
+): RichText {
   let text = projectedText(rich.segments);
-  let next = rich;
+  let ranges = Array.from({ length: last - first + 1 }, (_, n) => paragraphRange(text, first + n));
+  let levels = ranges.map(([from, to]) => text.slice(from, to).match(/^\t*/)![0].length);
+  // Last to first, so removing a paragraph's tabs leaves the offsets of those before it in `text`.
+  let next: RichText = { ...rich, lists: { ...rich.lists, [listId]: { preset } } };
   for (let i = last; i >= first; i--) {
-    let [from, to] = paragraphRange(text, i);
-    let tabs = text.slice(from, to).match(/^\t*/)![0].length;
+    let [from] = ranges[i - first]!;
+    let tabs = levels[i - first]!;
     if (tabs > MAX_NESTING_LEVEL) {
       throw new ChangeConflict(
         `a paragraph starts with ${tabs} tabs; lists nest at most ${MAX_NESTING_LEVEL + 1} deep`);
@@ -420,12 +425,28 @@ function placed(bounds: SlideBounds): Pick<RestPageElement, "size" | "transform"
   };
 }
 
+/**
+ * The look Google gives a new shape that is not a text box, which has none: its theme's second
+ * light colour, outlined in its second dark one. Read back from scratch presentations of four
+ * themes.
+ */
+const NEW_SHAPE: RestShapeProperties = {
+  shapeBackgroundFill: { solidFill: { color: { themeColor: "LIGHT2" }, alpha: 1 } },
+  outline: {
+    outlineFill: { solidFill: { color: { themeColor: "DARK2" }, alpha: 1 } },
+    weight: { magnitude: 9525, unit: "EMU" }, dashStyle: "SOLID",
+  },
+};
+
 function createShape(
   slide: RestSlide, change: Extract<DesignChange, { op: "createShape" }>,
 ): DesignStep {
   let { slideId, id, shapeType, bounds, text, format, fill, outline } = change;
   requireNewElement(slide, id);
-  let element: RestPageElement = { objectId: id, ...placed(bounds), shape: { shapeType } };
+  let element: RestPageElement = {
+    objectId: id, ...placed(bounds),
+    shape: { shapeType, ...(shapeType === "TEXT_BOX" ? {} : { shapeProperties: structuredClone(NEW_SHAPE) }) },
+  };
   // Google adds an element in front of the slide's others.
   (slide.pageElements ??= []).push(element);
   let requests: unknown[] = [{

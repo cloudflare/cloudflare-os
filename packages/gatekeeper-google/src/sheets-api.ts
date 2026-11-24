@@ -5,8 +5,9 @@ import type {
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { GoogleApiError, readGoogleJson } from "./google-response";
+import { combinedDrawing, DRAWING_FIELDS, THEME_FIELDS, type RestDrawing } from "./sheets-drawing";
 import {
-  baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_AREAS_READ_FIELDS,
+  baseFormats, baseSizes, colorStyle, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_AREAS_READ_FIELDS,
   FORMAT_LINES_READ_FIELDS, FORMAT_READ_FIELDS,
   type BaseFormats, type BaseSizes, type RestFormatSheet, type RestGridRange,
 } from "./sheets-format";
@@ -14,6 +15,7 @@ import {
   a1Of, byPosition, cellCount, findSheet, intersection, parseRange, rectName, validateRange, type EnteredValue,
   type Rect, type ValidatedRange,
 } from "./sheets-model";
+import { gridRange } from "./sheets-plan";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_RANGES = 20;
@@ -21,6 +23,13 @@ const MAX_TOTAL_CELLS = 50_000;
 const MAX_FORMAT_CELLS = 10_000;
 // Bound the encoded JSON before decoding and parsing.
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+// A drawing read asks for every cell's format in effect, which no cell leaves out.
+const MAX_DRAWING_BYTES = 16 * 1024 * 1024;
+/**
+ * The longest URL a drawing is read by A1 range with: Google answers one of some 16,500
+ * characters with a 400 that is no JSON, as a scratch spreadsheet showed.
+ */
+const MAX_DRAWING_URL_LENGTH = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 const SPREADSHEET_FIELDS = "spreadsheetId,properties(title,locale,timeZone)";
@@ -239,10 +248,14 @@ function echoes(echoed: RestGridRange | undefined, { sheetId, rect }: SheetArea)
     (echoed?.endColumnIndex ?? 0) === rect.endColumn;
 }
 
-// What a cell holds, from its `userEnteredValue`. A kind of value not known here is refused, so
-// the guard cannot mistake it for another.
-function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
+/**
+ * What a cell holds, from its `userEnteredValue`. A kind of value not known here is refused, so
+ * the guard cannot mistake it for another.
+ */
+export function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
   if (value === undefined) return null;
+  // Google returns empty text entered in a cell as a value of no kind.
+  if (Object.keys(value).length === 0) return "";
   let { formulaValue, stringValue, numberValue, boolValue, errorValue } = value;
   if (typeof formulaValue === "string") return { formula: formulaValue };
   if (typeof stringValue === "string") return stringValue;
@@ -255,6 +268,13 @@ function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
 /** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
 const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
 
+// The colours of the theme Google Sheets gives a new spreadsheet.
+const NEW_THEME = [
+  ["TEXT", "#000000"], ["BACKGROUND", "#ffffff"], ["ACCENT1", "#4285f4"], ["ACCENT2", "#ea4335"],
+  ["ACCENT3", "#fbbc04"], ["ACCENT4", "#34a853"], ["ACCENT5", "#ff6d01"], ["ACCENT6", "#46bdc6"],
+  ["LINK", "#1155cc"],
+] as const;
+
 /** The side, in rows and in columns, of the tiles `readEntered` finds a cell's ranges by. */
 const TILE = 32;
 /** More tiles than a sheet's columns make: Google allows 18,278 columns. */
@@ -265,6 +285,22 @@ const tileOf = (line: number): number => Math.floor(line / TILE);
 
 /** One number for the tile at `row` and `column`, counted in tiles. */
 const tileKey = (row: number, column: number): number => row * TILE_COLUMNS + column;
+
+/**
+ * `url` with each of `values` under `name`, in order, in as many URLs as keep each within
+ * `length` characters; a value too long for that has one to itself.
+ */
+function urlsWithin(url: URL, name: string, values: readonly string[], length: number): URL[] {
+  let grown = (from: URL, value: string) => {
+    let next = new URL(from);
+    next.searchParams.append(name, value);
+    return next;
+  };
+  return values.reduce<URL[]>((urls, value) => {
+    let last = urls.length > 0 ? grown(urls.at(-1)!, value) : undefined;
+    return last && last.toString().length <= length ? [...urls.slice(0, -1), last] : [...urls, grown(url, value)];
+  }, []);
+}
 
 /** The Google Sheets API, as far as the gatekeeper uses it. */
 export class GoogleSheetsApi {
@@ -678,6 +714,68 @@ export class GoogleSheetsApi {
     return { formats: baseFormats(sheets), sizes: baseSizes(sheets) };
   }
 
+  /**
+   * What it takes to draw the cells of `areas`, which are all of one sheet and lie within its
+   * grid, with that sheet's layout; with none, the theme alone. Read by grid range with
+   * `spreadsheets:getByDataFilter`, as `readFormatAreas` reads; where Google refuses that for the
+   * grant (403), as it does one that may only read, the same is read with `spreadsheets.get` by
+   * A1 range, the sheet named by the title it has in `sheets`, in as many requests as their URLs
+   * take. Those are answered apart, so an edit landing between them can show in one and not
+   * another. Throws `Error` when the title no longer names the sheet. Callers bound how many
+   * cells they ask for.
+   */
+  async readDrawing(
+    spreadsheetId: string, areas: readonly SheetArea[], sheets: readonly { id: number; title: string }[],
+  ): Promise<RestDrawing> {
+    let url = (fields: string, path = "") => {
+      let made = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}${path}`);
+      made.searchParams.set("fields", fields);
+      made.searchParams.set("prettyPrint", "false");
+      return made;
+    };
+    // With no range Google would return every sheet whole: then only the theme is asked for.
+    if (areas.length === 0) return this.#drawingRead(url(THEME_FIELDS));
+    if (areas.some(({ sheetId }) => sheetId !== areas[0].sheetId)) throw new Error("A drawing is read of one sheet.");
+    try {
+      return await this.#drawingRead(url(DRAWING_FIELDS, ":getByDataFilter"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataFilters: areas.map(({ sheetId, rect }) => ({ gridRange: gridRange(sheetId, rect) })),
+          includeGridData: true,
+        }),
+      });
+    } catch (error) {
+      if (!(error instanceof GoogleApiError && error.httpStatus === 403)) throw error;
+    }
+    let get = url(DRAWING_FIELDS);
+    get.searchParams.set("includeGridData", "true");
+    let ranges = areas.map(({ sheetId, rect }) => a1Of(sheets.find(sheet => sheet.id === sheetId)!.title, rect));
+    let changed = (cause?: unknown) =>
+      new Error("The spreadsheet changed while it was read. Try again.", { cause });
+    let drawing = combinedDrawing(await Promise.all(urlsWithin(get, "ranges", ranges, MAX_DRAWING_URL_LENGTH).map(
+      some => this.#drawingRead(some).catch(error => {
+        // A range Google cannot find names a sheet renamed, or cut short, since its title was read.
+        throw error instanceof GoogleApiError && error.providerStatus === "INVALID_ARGUMENT" ? changed(error) : error;
+      }))));
+    // A title names whichever sheet has it now: each range is answered when the sheet asked for
+    // holds data starting where it does.
+    let answered = areas.every(({ sheetId, rect }) => drawing.sheets?.some(sheet =>
+      (sheet.properties?.sheetId ?? 0) === sheetId && sheet.data?.some(data =>
+        (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
+    if (!answered) throw changed();
+    return drawing;
+  }
+
+  // One request of a drawing read, which is a read however it is sent.
+  async #drawingRead(url: URL, init: RequestInit = {}): Promise<RestDrawing> {
+    let response = await fetchWithAuthRetry(
+      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true });
+    return readGoogleJson<RestDrawing>(response, {
+      provider: "Google Sheets", operation: "read drawing", maxBytes: MAX_DRAWING_BYTES,
+    });
+  }
+
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */
   async getDeveloperMetadata(
     spreadsheetId: string, metadataId: number,
@@ -741,8 +839,9 @@ export function lineSizes(
   };
 }
 
-/** The reads a spreadsheet session makes with no change queued. */
-export type SpreadsheetReader = Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges" | "readFormats">;
+/** The reads a spreadsheet session makes with no change queued, and those a drawing is made from. */
+export type SpreadsheetReader =
+  Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges" | "readFormats" | "getMetadata" | "readDrawing">;
 
 /**
  * A spreadsheet not yet created, read as the one createSpreadsheet() makes: one empty sheet. Makes
@@ -758,6 +857,17 @@ export class BlankSpreadsheet implements SpreadsheetReader {
       title: this.title,
       sheets: [{ id: sheetId, title, index: 0, rowCount, columnCount }],
     };
+  }
+
+  async getMetadata(spreadsheetId: string): Promise<SpreadsheetMetadata> {
+    return { ...await this.getSpreadsheet(spreadsheetId), protectedRanges: [] };
+  }
+
+  /** Nothing is there to draw, and colour names are those of the theme a new spreadsheet starts with. */
+  async readDrawing(): Promise<RestDrawing> {
+    return { properties: { spreadsheetTheme: { themeColors: NEW_THEME.map(([colorType, color]) => ({
+      colorType, color: colorStyle(color),
+    })) } } };
   }
 
   /** Every requested cell is empty. */

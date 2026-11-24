@@ -26,6 +26,12 @@ export interface GoogleDocRenderingReads {
    * object is not readable or is larger than 10 MB.
    */
   readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
+
+  /**
+   * Read the file of one font of `family`, a `fontFamily` the tab's drawing returned, from Google
+   * Fonts: `weight` from 100 to 900, upright or `italic`. Throws when Google Fonts has no such font.
+   */
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
 }
 
 /** One tab as Google Docs draws it. Lengths are in points and colors are `#rrggbb`. */

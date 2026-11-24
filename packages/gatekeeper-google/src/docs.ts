@@ -60,7 +60,6 @@ import type {
   GoogleDocDrawing, GoogleDocImageBytes, GoogleDocPendingDrawing, GoogleDocRenderingReads,
 } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
-import { cappedStream } from "./byte-stream";
 import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
 import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
 import DOCS_PREVIEW_MERGE from "./previews/docs/merge.txt";
@@ -69,6 +68,8 @@ import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
+import { cappedStream, chunkedStream } from "./byte-stream";
+import { downloadFont, isFontRequest } from "./slides-media";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
 import { officeFileError, officeLabel } from "./office-conversion";
@@ -1022,6 +1023,8 @@ export class GoogleDocSessionImpl extends RpcTarget
    * each address is a bearer of its image for minutes, so they are kept here and stored nowhere.
    */
   #imageUris = new Map<string, Map<string, string>>();
+  /** The font families readDrawing() has returned. */
+  #fonts = new Set<string>();
 
   constructor(options: GoogleDocSessionOptions) {
     super();
@@ -1442,6 +1445,8 @@ export class GoogleDocSessionImpl extends RpcTarget
     // the pending drawing then comes to name the revision drawn here, and its edits to be
     // ranges of these blocks.
     if (moved) this.#source.recheck();
+    // What readFont() may then fetch: the families the saved tab is set in.
+    for (let look of drawing.textLooks) this.#fonts.add(look.fontFamily);
     return drawing;
   }
 
@@ -1461,6 +1466,16 @@ export class GoogleDocSessionImpl extends RpcTarget
       description: `Read what the pending changes of tab ${googleDocTabLabel(tab)} draw in it.`,
     }), DOC_PENDING_OBSERVATION);
     return drawing;
+  }
+
+  async readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
+    // A font is public, and says nothing of the document but that it names the family, which
+    // readDrawing() reports. Only a family so named is fetched, so nothing else reaches Google Fonts.
+    if (!this.#fonts.has(family) || !isFontRequest(family, weight)) {
+      throw new Error(`readFont: no drawing read names a font "${family}" that Google Fonts ` +
+        "could serve at that weight. Pass a `fontFamily` readDrawing() returned.");
+    }
+    return chunkedStream(await downloadFont(family, weight, italic));
   }
 
   async readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {

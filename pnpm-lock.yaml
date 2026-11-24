@@ -589,6 +589,9 @@ importers:
       '@gadgets/observability':
         specifier: workspace:*
         version: link:../observability
+      '@gadgets/office-content':
+        specifier: workspace:*
+        version: link:../office-content
       '@gadgets/pdf-renderer':
         specifier: workspace:*
         version: link:../pdf-renderer
