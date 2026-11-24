@@ -1305,6 +1305,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * other. The Workshop records those reads against the connection's own workpiece, not against
    * any gadget that binds it.
    *
+   * describe().hasGadgetUi says the code draws the resource as a whole. A gatekeeper whose actions
+   * name the item they change (`ActionDescription.previewOf`) returns code that draws such an
+   * item, and leaves `hasGadgetUi` unset when that is all its code draws.
+   *
    * Returns code only. The Workshop calls this with no session, so nothing here is an observation.
    * The code may therefore not depend on anything read from the provider: what the resource holds
    * is read by the code, through its session.
@@ -1875,6 +1879,31 @@ export type ActionKind = {
 };
 
 /**
+ * An item of a resource that its gatekeeper can draw by itself. See `ActionDescription.previewOf`.
+ *
+ * It is stored and sent with its action's description, to everyone who sees the workspace's
+ * action log and before any read of the item is authorized. It therefore holds nothing that
+ * description may not show them.
+ */
+export type PreviewItem = {
+  /**
+   * Where the item is: a focus anchor (`GadgetFocus.anchor`) of the connection's code
+   * (`Gatekeeper.getGadgetUi()`), in the gatekeeper's own words and opaque to everyone else. The
+   * Workshop hands it back only to that code, by sending it there (`GadgetHost.onNavigate()`),
+   * and the code draws the item through the connection's session. The anchor the code is sent is
+   * whatever a client gave, so it only chooses what to draw. One longer than
+   * `MAX_FOCUS_ANCHOR_LENGTH` is still drawn, but the code cannot report it as its focus.
+   */
+  anchor: string;
+
+  /** The item's name, shown to people. */
+  title: string;
+
+  /** Where a person opens the item itself. */
+  url?: string;
+};
+
+/**
  * Describes an action submitted to the action approval queue. This contains all the information
  * needed to:
  * - Decide whether the action needs to be approved and who can approve it.
@@ -1899,6 +1928,13 @@ export type ActionDescription = {
    * rendered as Markdown, so a value needs no escaping to display as exactly itself.
    */
   fields?: ActionField[];
+
+  /**
+   * The one item of the resource this action changes, when the gatekeeper can draw that item by
+   * itself: a file in a folder. Display only: it grants and checks nothing, and is unrelated to
+   * `ObservationDescription.subresources`.
+   */
+  previewOf?: PreviewItem;
 
   /**
    * The gatekeeper's assertion that `description` and `fields` together reproduce, verbatim, every

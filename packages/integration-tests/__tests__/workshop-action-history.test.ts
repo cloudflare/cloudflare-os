@@ -258,4 +258,10 @@ it("hands a client the preview its connection's gatekeeper supplies, built from 
       `export default { main() { document.body.textContent = text; } };\n` },
     { path: "ui/text.js", code: `export const text = "test preview";\n` },
   ] });
+
+  // An action names the item it changes, for the client to open from the connection's session.
+  using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+  await session.writeValue(7, { previewOf: "part" });
+  const { entries: [write] } = await ws.listActions({ filter: "pending" });
+  expect(write.description).toMatchObject({ previewOf: { anchor: "part", title: "Item part" } });
 });

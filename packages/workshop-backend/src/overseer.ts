@@ -15683,7 +15683,7 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
   // The gatekeeper's code is the same in every chat.
   async getUiBundle(_chatId?: number): Promise<UiBundle> {
     // getGadgetUi is optional on Gatekeeper; a caller is offered a preview first, by
-    // describe().hasGadgetUi.
+    // describe().hasGadgetUi or by an action's previewOf.
     this.impl.assertGatekeeperUsable(this.id);
     let files = await (this.facet as Fetcher<Gatekeeper<Session> &
         Required<Pick<Gatekeeper<Session>, "getGadgetUi">>>).getGadgetUi();

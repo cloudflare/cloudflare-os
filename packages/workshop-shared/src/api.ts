@@ -7757,7 +7757,8 @@ export interface WorkpieceClient extends RpcTarget {
    * For a gatekeeper, this is the code its gatekeeper supplies to draw the connection
    * (`Gatekeeper.getGadgetUi()`), bundled under the same rules. It is the same in every chat, so
    * `chatId` changes nothing. Throws where a gadget would return null: a caller is offered the
-   * code first, by `describe()` reporting `hasGadgetUi`.
+   * code first, by `describe()` reporting `hasGadgetUi` or by an action's
+   * `description.previewOf`.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
@@ -7776,7 +7777,8 @@ export interface WorkpieceClient extends RpcTarget {
    * chat.
    *
    * For a gatekeeper, this is a session to the connection, which stands where a gadget's server
-   * would. Its UI code is handed that session. `chatId` changes nothing yet: a connection's
+   * would. Its UI code is handed that session, and draws an item an action names when its host
+   * sends it there (see `PreviewItem.anchor`). `chatId` changes nothing yet: a connection's
    * pending actions are one queue, which a session opened for any chat reads. What the session
    * reads is recorded against the connection's own workpiece ID, as a gadget's reads are against
    * the gadget's. No gadget has that ID, so those reads are checked against "build" collaborators
