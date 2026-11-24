@@ -214,7 +214,10 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
     expect(error).not.toBeInstanceOf(PromptBlockedError);
   }));
 
-  it("does not quote a withheld edit in the diff of a later one", () => withImpl(async impl => {
+  it.each([
+    { name: "a later one", compacted: false },
+    { name: "one made after the chat compacted", compacted: true },
+  ])("does not quote a withheld edit in the diff of $name", ({ compacted }) => withImpl(async impl => {
     seedChat(impl);
     await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
 
@@ -228,11 +231,23 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
       type: "error", message: "blocked", code: "prompt_blocked", blockedInput: blocked.blockedInput,
     }]);
 
+    if (compacted) {
+      // `/compact` after one more exchange leaves neither the edit nor the block for replay.
+      impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: "Hi again" }]);
+      await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello again."))]);
+      impl.addChatMessages(CHAT_ID, OWNER, [{
+        type: "slashCommand", request: { id: { builtin: true, commandId: "compact" }, args: "" },
+      }]);
+      await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("A summary."))]);
+      expect(impl.loadChatHistory(CHAT_ID).chatMessages.map(msg => msg.type))
+          .toEqual(["message", "slashCommand"]);
+    }
+
     // An edit to the next line would quote the withheld one as context.
     impl.addChatMessages(CHAT_ID, OWNER, [{
       type: "changes",
       change: { 100: [["notes.txt", { set: "first\nthe injection\nlast, edited\n" }]] },
-    }]);
+    }, { type: "message", message: "Go on." }]);
     let sent = "";
     let faux = createFauxCore({ models: [{ id: "faux-model" }] });
     faux.setResponses([fauxAssistantMessage(fauxText("Done."))]);

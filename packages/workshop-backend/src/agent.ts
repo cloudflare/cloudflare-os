@@ -2012,10 +2012,11 @@ async function runAgentPass(
     files.set(filename, oid);
   };
 
-  // The files a withheld change wrote to (see blockedInput, below), as `<workpiece>:<filename>`.
-  // A diff of one, the withheld change's own or a later one's, would quote what the model must
-  // not be shown again, so it is replaced by a note and the model's knowledge of the file dropped.
-  let withheldFiles = new Set<string>();
+  // The files a withheld change or upload wrote (see blockedInput, below), as
+  // `<workpiece>:<filename>`. A diff of one, the withheld change's own or a later one's, would
+  // quote what the model must not be shown again, so it is replaced by a note and the model's
+  // knowledge of the file dropped. The checkpoint carries them across a compaction.
+  let withheldFiles = new Set(checkpoint?.withheldFiles);
 
   // A gadget pin is where its file knowledge stops being checked against committed code (from
   // here on reads are session-served and editFile skips the oid gate), so the stamped entries it
@@ -2392,8 +2393,16 @@ async function runAgentPass(
           parts.push(content.slice(pos));
           content = parts.join("");
         }
-        // A withheld message keeps its pasted resources bound, above, and loads no attachments.
-        if (withheld && msg.author.type !== "agent") break;
+        if (withheld && msg.author.type !== "agent") {
+          // A withheld message keeps its pasted resources bound, above, and loads no attachments.
+          // Its uploads are in the scratch worktree, the first of them with no change to record it.
+          for (let {workspacePath} of msg.attachments ?? []) {
+            if (agentContext.scratch && workspacePath !== undefined) {
+              withheldFiles.add(`${agentContext.scratch.worktreeId}:${workspacePath}`);
+            }
+          }
+          break;
+        }
 
         // The step's persisted model-facing snapshot, if it has one (agent steps persisted since
         // snapshots existed). Fetched before the empty-message check below: a step whose only
@@ -4615,6 +4624,7 @@ async function runAgentPass(
           compactedTo,
           ...written,
           workspacePrompt: systemPromptWorkspace,
+          ...(withheldFiles.size > 0 ? {withheldFiles: [...withheldFiles]} : {}),
           alwaysAvailableResources: [
             ...seenAlwaysAvailableResources(listedResources, chatMessages, compactedTo).values(),
           ],

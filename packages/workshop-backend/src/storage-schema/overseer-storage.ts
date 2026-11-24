@@ -818,6 +818,13 @@ export type CompactionCheckpoint = {
   nextChangeId: number;
 
   /**
+   * The files that withheld changes and uploads have written, as `<workpiece>:<filename>` (see
+   * AiChatMessageBody.blockedInput). Replay shows a later edit to one as a note, without the
+   * file's text. Absent when there are none.
+   */
+  withheldFiles?: string[];
+
+  /**
    * Historical (pre-git-storage): the workspace-wide code version the chat's retired Yjs replay
    * base was anchored to. Survives only as stored data on checkpoints written before the
    * git-storage conversion (the migration's conversion anchor reads it); new checkpoints never
