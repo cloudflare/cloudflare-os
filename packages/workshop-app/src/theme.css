@@ -18,6 +18,14 @@
      a light is on a dark surface. */
   --color-live: light-dark(oklch(73% 0.21 147), oklch(78% 0.22 147));
 
+  /* What a pill among words is filled with (`components/Chip`): light, thinned, so that what is
+     under it shows through. It is a lighter shade of whatever it is on, never a darker one,
+     which on a light surface reads as grey and heavy. A light surface takes a lot of it to show
+     at all, and a dark one a little; `-on-dark` is for a surface that is dark in either theme,
+     such as the bubble of the viewer's own message. */
+  --color-chip: light-dark(rgb(255 255 255 / 0.75), rgb(255 255 255 / 0.08));
+  --color-chip-on-dark: rgb(255 255 255 / 0.1);
+
   /* What a workspace's icon can be drawn in instead of `contrast`, and its letters then. The same
      in dark, as the brand is: an icon is told by its colour. Each is deep enough for the letters. */
   --color-workspace-red: oklch(58% 0.2 25);

@@ -28,12 +28,15 @@ describe('composerOffers', () => {
   it('starts the next message with the format chosen, and with a template as one', () => {
     const onStartWith = vi.fn<(start: StartFormat) => void>()
     const [template] = exampleTemplates()
-    const offers = composerOffers({ ...NOTHING, formats: [format('slides', 'Slides')], templates: [template!], onStartWith })
+    const offers = composerOffers({ ...NOTHING, formats: [format('slides', 'Slides'), { ...format('report', 'Report'), description: ' A written summary. ' }], templates: [template!], onStartWith })
     offers[0]!.onChoose()
     offers[1]!.onChoose()
+    offers[2]!.onChoose()
+    // With what each is for, where it says, which is said of it in the draft.
     expect(onStartWith.mock.calls).toEqual([
       [{ noun: 'Slides', icon: 'fileText' }],
-      [{ noun: template!.metadata.title, icon: expect.any(String), template: true }],
+      [{ noun: 'Report', icon: 'fileText', description: 'A written summary.' }],
+      [{ noun: template!.metadata.title, icon: expect.any(String), template: true, description: template!.metadata.description }],
     ])
   })
 

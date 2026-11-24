@@ -1,6 +1,6 @@
 import type { RpcPromise } from 'capnweb'
 import type { GatekeeperClient, MessageFormatRef, Overseer } from '@gadgets/workshop-shared/api'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerCommand } from '@/blocks/composerCommand'
 import type { AddedConnection, ConnectionSource } from '@/connections/AddConnection'
 import { withCapsules } from './capsules'
 import { missingCommand, slashRequestFor } from './slashCommands'

@@ -33,7 +33,7 @@ const formatOffers = (formats: readonly OutputFormatOffer[], onStartWith: (start
     keywords: [plural, description, 'create', 'make', 'start'],
     icon: <FormatIcon name={icon} />,
     suggested: index < SUGGESTED_FORMATS,
-    onChoose: () => onStartWith({ noun, icon }),
+    onChoose: () => onStartWith({ noun, icon, description: description.trim() || undefined }),
   }))
 
 // Whose a template is, which tells it from a format or a skill of its name.
@@ -61,7 +61,7 @@ const templateOffers = (templates: readonly Template[], stars: readonly string[]
         detail: templateDetail(template),
         keywords: [templateSearchText(template), 'template', 'blueprint'],
         icon: <FormatIcon name={icon} />,
-        onChoose: () => onStartWith({ noun, icon, template: true }),
+        onChoose: () => onStartWith({ noun, icon, template: true, description: template.metadata.description.trim() || undefined }),
       }
     })
 }

@@ -2,9 +2,10 @@ import type { MessageFormatRef, OutputIcon } from '@gadgets/workshop-shared/api'
 
 /**
  * What a message asks for something as: a format, by the name the deployment offers it under, or
- * a template (`template`), by its title.
+ * a template (`template`), by its title; with what it is for, where that is known, which is only
+ * said of it, never sent.
  */
-export type StartFormat = { noun: string; icon: OutputIcon; template?: true }
+export type StartFormat = { noun: string; icon: OutputIcon; template?: true; description?: string }
 
 /**
  * The message that asks for `format`, with whatever `text` says of it: the format's name, then the

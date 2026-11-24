@@ -1,19 +1,11 @@
 import type { SlashCommandChoice, SlashCommandId, SlashCommandRequest } from '@gadgets/workshop-shared/api'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import { commandTitle, type ComposerCommand } from '@/blocks/composerCommand'
 
 /**
  * What a command is known by in the composer: a gatekeeper's by its command id, which that
  * gatekeeper gives it in every workspace, and a built-in by its own.
  */
 const keyOf = (id: Pick<SlashCommandId, 'commandId'> & { builtin?: boolean }) => (id.builtin ? `builtin:${id.commandId}` : `command:${id.commandId}`)
-
-// A command's name after the `/` (`meeting-brief`) in plain words (`Meeting Brief`).
-const titleOf = (name: string) =>
-  name
-    .split('-')
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
 
 // Words for the built-ins, which the server names in its own.
 const BUILTINS: Record<string, Pick<ComposerCommand, 'title' | 'description'>> = {
@@ -30,8 +22,8 @@ export const composerCommandOf = ({ selection, name, description, providerLabel,
   key: keyOf(selection),
   name,
   ...(selection.builtin
-    ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: titleOf(name), description }) }
-    : { kind: 'skill', title: titleOf(name), description, source: resourceLabel?.split(' · ')[0]?.trim() || providerLabel }),
+    ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: commandTitle(name), description }) }
+    : { kind: 'skill', title: commandTitle(name), description, source: resourceLabel?.split(' · ')[0]?.trim() || providerLabel }),
 })
 
 /**

@@ -46,14 +46,17 @@ export const MessageBlocksPreview = () => {
           <UserMessage
             parts={[
               { type: 'text', text: 'Turn ' },
-              { type: 'capsule', title: 'PLAT-212 Chart shows 4 weeks', url: 'https://jira.example.com/browse/PLAT-212' },
+              { type: 'capsule', title: 'PLAT-212 Chart shows 4 weeks', url: 'https://jira.example.com/browse/PLAT-212', snippet: 'The dashboard’s ticket chart stops at four weeks, though the filter above it says twelve.' },
               { type: 'text', text: ' into a ' },
               { type: 'format', noun: 'Document', icon: 'fileText' },
               { type: 'text', text: ' and a ' },
               { type: 'format', noun: 'Spreadsheet', icon: 'gridNine' },
             ]}
           />
-          <UserMessage parts={[{ type: 'command', name: 'release-notes' }, { type: 'text', text: ' for the dashboard, since Monday' }]} />
+          <UserMessage
+            parts={[{ type: 'command', name: 'release-notes' }, { type: 'text', text: ' for the dashboard, since Monday' }]}
+            describe={(part) => (part.type === 'command' ? { description: 'Draft release notes from what was merged.', facts: ['Skill', 'Engineering'] } : undefined)}
+          />
           <UserMessage
             parts={[{ type: 'text', text: 'Here are the files' }]}
             attachments={[

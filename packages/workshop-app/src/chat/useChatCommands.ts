@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SlashCommandChoice } from '@gadgets/workshop-shared/api'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerCommand } from '@/blocks/composerCommand'
 import { composerCommandOf, orderCommands } from './slashCommands'
 import type { ChatActions } from './useChatSession'
 

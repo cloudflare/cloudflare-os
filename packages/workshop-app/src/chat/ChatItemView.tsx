@@ -14,13 +14,18 @@ import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, UserItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, MessagePart, NoticeItem, OutputItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
   /** A message as the server sent it, written out in full, where it can be. */
   rawMessage: (sequence: number) => string | undefined
+  /**
+   * What is known of something a message mentions beyond its name, for the card over its chip:
+   * what a skill is for, where the workspace still offers it. Asked as the card is about to show.
+   */
+  describeMention?: (part: MessagePart) => { description?: string; facts?: readonly string[] } | undefined
   /** Start a reply to a message. */
   onReply: (item: UserItem | AssistantItem) => void
   /** Marks the chat unread from a message on. Left out where that is not the viewer's to do. */
@@ -89,6 +94,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       return (
         <UserMessage
           parts={item.parts}
+          describe={handlers.describeMention}
           quote={item.quote}
           onShowQuoted={() => handlers.onShowQuoted(item)}
           attachments={item.attachments}

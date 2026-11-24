@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
 import {
@@ -6,8 +6,10 @@ import {
   Search01Icon, TableIcon,
 } from '@/components/icons'
 import { WORKSPACE_ICON_COLORS, WORKSPACE_ICON_SHAPES, type WorkspaceLook } from '@/prefs/preferenceFields'
-import { Composer } from '@/blocks/Composer'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { DraftFormat } from '@/blocks/composerDraft'
+import type { ComposerCommand } from '@/blocks/composerCommand'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
@@ -537,14 +539,43 @@ const BubblesPage = () => (
   </>
 )
 
+// What a connection of each made-up service is called, for the pill it is in a draft.
+const CONNECTED: Record<string, string> = {
+  Google: 'Q3 forecast',
+  GitHub: 'cloudflare/gadgets',
+  Email: 'Support inbox',
+  Jira: 'Platform board',
+  Slack: '#launch-week',
+  Notion: 'Product roadmap',
+  Salesforce: 'Pipeline report',
+}
+
 // The composer in each of the ways it is written in, and the home page around it.
 const ComposerPage = () => {
   const [menuAction, setMenuAction] = useState('Open + to preview files, formats, connections, skills and templates.')
+  // The first composer does what its + menu offers: a format or a template starts the draft, and
+  // a service gives it a connection at once, with no dialog to choose one in.
+  const first = useRef<ComposerHandle>(null)
+  const [firstStartsWith, setFirstStartsWith] = useState<DraftFormat>()
+  const connected = useRef(0)
+  const [firstActions] = useState(() => ({
+    offers: previewComposerOffers(setMenuAction, {
+      onStartWith: setFirstStartsWith,
+      onConnect: ({ service, kinds }) => first.current?.addConnection({
+        key: `preview:${(connected.current += 1)}`,
+        title: CONNECTED[service.name] ?? service.name,
+        kind: kinds[0]?.title,
+        service,
+      }),
+      onDraft: (text) => first.current?.appendToDraft(text),
+    }),
+  }))
   const [addActions] = useState(() => ({ offers: previewComposerOffers(setMenuAction) }))
-  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
+  const previewSend = (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
+    const given = connections?.length ? `, given ${connections.map(({ title }) => title).join(' and ')}` : ''
     setMenuAction(command
       ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
-      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}${given}.`)
     return true
   }
   const [replying, setReplying] = useState(true)
@@ -561,10 +592,16 @@ const ComposerPage = () => {
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
-            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft. Backspace at the start or Escape takes it off.
+            What the + menu gives the draft is a pill at its start, ahead of the words, in the order they are added: a skill or command takes the place of any the draft had, and so does a format or a template; connections are as many as are added. The cursor stays in the words, never ahead of a pill or between two, and a pill is only taken off: by Backspace at the start of the words, the last one first, or selected with the words. A slash or an at sign typed at the start of a word opens the + menu as its button does, with the focus in its field: choosing something takes the one typed out of the draft. It never takes what is being written, though: a space straight away, words that find nothing, an arrow key or Escape put it away with what was typed written in the draft, and Backspace takes the slash back, so “3 / 4”, “/usr/bin” and “@zoe” can be typed straight through. A command typed out in full after such a slash is sent as that command too.
             The + menu has everything the draft can be given or started with, a line each with what choosing it does, or what tells it apart, at its end: uploading, the formats, Automation and Agent, a handful of services, then See all skills… and See all connections…, which go on to all of them, over a field that finds any of them, and the templates, by typing.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
+          <Composer
+            ref={first}
+            onSend={previewSend}
+            addActions={firstActions}
+            commands={previewCommands}
+            format={{ value: firstStartsWith, onChange: setFirstStartsWith }}
+          />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
@@ -601,14 +638,14 @@ const ComposerPage = () => {
           <div><Button disabled={replying} onClick={() => setReplying(true)}>Reply to a message</Button></div>
         </div>
       </Section>
-      <Section title="Composer (starting with a format, as from the library’s New menu: what the message asks for something as sits above the draft, which can then be sent with no words; the cross makes it an ordinary message again)">
+      <Section title="Composer (starting with a format, as from the library’s New menu: what the message asks for something as is a pill at the start of the draft, which can then be sent with no words; deleting it makes it an ordinary message again, and undoing that has it back)">
         <div className="flex w-full flex-col gap-3">
           <Composer
             onSend={(text, files) => {
               setMenuAction(`Preview: sent “${startsWithFormat ? ['Document', text].filter(Boolean).join(' ') : text}”, with ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}.`)
               return true
             }}
-            format={startsWithFormat ? { noun: 'Document', icon: 'fileText', onRemove: () => setStartsWithFormat(false) } : undefined}
+            format={{ value: startsWithFormat ? { noun: 'Document', icon: 'fileText' } : undefined, onChange: (next) => setStartsWithFormat(next !== undefined) }}
           />
           <div><Button disabled={startsWithFormat} onClick={() => setStartsWithFormat(true)}>Start with a document</Button></div>
         </div>

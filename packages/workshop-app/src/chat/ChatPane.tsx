@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerCommand } from '@/blocks/composerCommand'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import type { AddableService } from '@/connections/connectionChoices'
@@ -30,7 +30,7 @@ import { useAvailableToChat } from './useAvailableToChat'
 import { useContextOpen } from './useContextOpen'
 import { useNarrowScreen } from '@gadgets/ui'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type MessagePart, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
@@ -204,7 +204,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const [creditsShown, setCreditsShown] = useState<{ open: boolean; seen?: string }>({ open: false })
   const outOfCredits = creditsShown.open || (ranOut !== undefined && ranOut !== creditsShown.seen)
   // The service a connection is being added of, from the + menu; and the connections made for the draft,
-  // by their line's key.
+  // by their pill's key.
   const [adding, setAdding] = useState<AddableService>()
   const changeAdding = useHandler((open: boolean) => {
     if (!open) setAdding(undefined)
@@ -215,7 +215,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const [onAdded] = useState(() => async (made: AddedConnection) => {
     const key = `gatekeeper:${made.gatekeeperId}`
     added.current.set(key, made)
-    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service, snippet: made.description.snippet })
   })
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
@@ -227,6 +227,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const wantOffers = useHandler(() => setOffersWanted(true))
   const offers = useComposerOffers({ wanted: offersWanted, builds, onConnect: setAdding, onStartWith: setStartsWith, onDraft: (text) => composer.current?.appendToDraft(text) })
   const addActions = useMemo(() => ({ offers }), [offers])
+  const startsWithFormat = useMemo(() => ({ value: startsWith, onChange: setStartsWith }), [startsWith])
   const draftLinks = links?.draft
   const linkForm = links?.form
   // Left once, whether the workspace says it was deleted first or the call returns first.
@@ -277,10 +278,19 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     return actions.send(message, model.id)
   })
 
+  // What the workspace says of a skill or command a message was sent with, while it still offers
+  // it: what it is for, and where it is kept. Of anything else a message mentions, no more than
+  // the message says itself.
+  const describeMention = useHandler((part: MessagePart) => {
+    const known = part.type === 'command' ? commands.commands.find(({ name }) => name === part.name) : undefined
+    return known && { description: known.description, facts: [known.kind === 'skill' ? 'Skill' : 'Command', ...(known.source ? [known.source] : [])] }
+  })
+
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
       rawMessage: actions.rawMessage,
+      describeMention,
       onMarkUnread: builds ? (item) => {
         setNotice(undefined)
         if (connection?.blocked()) return
@@ -314,7 +324,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }
-  }, [actions, builds, connection, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
+  }, [actions, describeMention, builds, connection, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
 
 
   const messages = useMemo(() => {
@@ -508,14 +518,14 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onCommandsWanted={wantOffers}
       links={draftLinks}
       addActions={addActions}
-      format={startsWith && { ...startsWith, onRemove: () => setStartsWith(undefined) }}
+      format={startsWithFormat}
       stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
       problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
       reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
     />
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWith, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier

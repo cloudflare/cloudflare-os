@@ -126,7 +126,8 @@ export const AddConnectionPreview = () => {
     step(url, 'connecting')
     setTimeout(() => {
       step(url, url.includes('missing') ? 'failed' : 'made')
-      if (!url.includes('missing')) composer.current?.replaceInDraft(url, 'Q3 plan')
+      const github = url.includes('github.com')
+      if (!url.includes('missing')) composer.current?.addConnection({ key: `link:${url}`, title: github ? 'cloudflare/gadgets' : 'Q3 plan', kind: github ? 'Repository' : url.includes('notion.so') ? 'Page' : 'Google Doc', service: { name: github ? 'GitHub' : url.includes('notion.so') ? 'Notion' : 'Google', logoUrl: github ? GITHUB.logoUrl : undefined } }, url)
     }, 900)
   }
   const found = (urls: string[]) => {
@@ -152,7 +153,7 @@ export const AddConnectionPreview = () => {
   }
 
   return (
-    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s services, found by typing, yours first, each opening at which of its kinds, or at the form of its one, with Back to the list, which the button opens at with every service’s, the one dialog going from page to page, its surface taking each one’s size; then it sits above the draft, to go with the message, and is refused beside a skill; a link pasted, or typed and ended with a space, is a line of its own: a Google Doc’s connects by itself, connecting, then named in the words, or says why not, with “missing” in it, offering the form; GitHub’s waits for Connect; Notion’s for which account; taking a line off puts nothing in the words here; past three, those made fold into one)">
+    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s services, found by typing, yours first, each opening at which of its kinds, or at the form of its one, with Back to the list, which the button opens at with every service’s, the one dialog going from page to page, its surface taking each one’s size; then it is a pill at the start of the draft, to go with the message, and is refused beside a skill; a link pasted, or typed and ended with a space, is a line over the draft while it waits on something: a Google Doc’s connects by itself, connecting, then a pill at the start of the draft, the link gone from the words, or says why not, with “missing” in it, offering the form; GitHub’s waits for Connect; Notion’s for which account; taking a line off leaves the link as it was written)">
       <Button onClick={() => { setLoading(false); close(true) }}>Add a connection</Button>
       <Button onClick={() => { setLoading(true); close(true) }}>While services are read</Button>
       <div className="w-full">

@@ -7,7 +7,7 @@
 @property --composer-field-height {
   syntax: '<length>';
   inherits: true;
-  initial-value: 20px;
+  initial-value: 24px;
 }
 
 /* `--composer-slot` is the room the end slot takes, with the gap before the buttons: set from its
@@ -16,7 +16,7 @@
 /* One clock drives the shell, text reveal and curved path. The horizontal cubic
    and vertical arc steer the visible field around the buttons in both directions. */
 .composer {
-  --composer-line-height: 20px;
+  --composer-line-height: 24px;
   /* Everything is placed around the buttons (`--composer-button`: 30px, and 36px on a narrow
      screen), which sit 6px in from the field's edges. */
   /* Where the inline message starts: clear of the button at the start. */
@@ -57,4 +57,70 @@
 
 :root[data-motion='off'] .composer {
   transition: none;
+}
+
+/* The draft is written in an editor of its own (`@gadgets/billow`), whose rules these go on from.
+   It grows to six lines before it scrolls inside the field. */
+.composer-field {
+  max-height: calc(6 * var(--composer-line-height));
+}
+
+/* Its placeholder, in the quiet colour of any other. */
+.composer .composer-draft > [data-billow-caret][data-billow-placeholder]::before {
+  color: var(--text-color-kumo-subtle);
+}
+
+/* A pill's place at the start of the draft (`Chip.css`), in the draft and in the copies that
+   measure it: it hangs from the line's top, as it does anywhere, with room after it before the
+   next or the words, which no space is written for, and is never wider than the field, where its
+   name is cut short instead. */
+.composer-draft > [data-billow-item],
+.composer-draft-pill {
+  display: inline-flex;
+  max-width: 100%;
+  margin-inline-end: 0.375rem;
+  vertical-align: top;
+}
+
+/* The room the editor keeps before a pill for a cursor, in the copies. */
+.composer-draft-caret {
+  display: inline-block;
+  width: 1px;
+}
+
+.composer-draft > [data-billow-item] > [data-billow-inert-content],
+.composer-draft-pill > span {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A pill in the draft has nothing in it that can be pointed at, as the editor keeps what it
+   draws out of reach, so it is its place in the draft that is: it fills as a chip anywhere does,
+   under the pointer of something that is not written in. */
+.composer-draft > [data-billow-item] {
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .composer-draft > [data-billow-item]:hover .chip::after {
+    opacity: 0.09;
+  }
+}
+
+/* Selected with the words around it, a pill is in the selection's own colours: the editor marks
+   it, as a browser does not draw what is in one as selected. */
+.composer .composer-draft > [data-billow-item][data-billow-selected] {
+  color: inherit;
+  background-color: transparent;
+}
+
+.composer .composer-draft > [data-billow-item][data-billow-selected] .chip {
+  color: HighlightText;
+  background: Highlight;
+  box-shadow: none;
+}
+
+.composer .composer-draft > [data-billow-item][data-billow-selected] .chip > svg {
+  opacity: 1;
 }

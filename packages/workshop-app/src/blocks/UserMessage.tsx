@@ -2,13 +2,15 @@ import { Link04Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
+import { CommandIcon } from './CommandIcon'
+import { commandTitle } from './composerCommand'
 import { MessageAttachment } from './MessageAttachment'
 import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
 
 /** A stretch of the message: plain text, or something the user mentioned. */
 export type UserMessagePart =
   | { type: 'text'; text: string }
-  | { type: 'capsule'; title: string; url?: string }
+  | { type: 'capsule'; title: string; url?: string; snippet?: string }
   | { type: 'format'; noun: string; icon: FormatIconName }
   | { type: 'command'; name: string }
 
@@ -21,6 +23,12 @@ export type UserMessageProps = {
   /** Go to the message replied to. The quote is a button for it. */
   onShowQuoted?: () => void
   attachments?: UserMessageAttachment[]
+  /**
+   * What whoever has the chat knows of something the message mentions, for the card over its
+   * chip: what a skill is for and where it is kept, say. Asked as the card is about to show.
+   * Nothing, where they know no more than its name.
+   */
+  describe?: (part: UserMessagePart) => { description?: string; facts?: readonly string[] } | undefined
   /** Who sent it, when it was not the person looking. */
   from?: string
   /** Sent while the agent was working, which has not read it yet. It is dimmed until then. */
@@ -40,16 +48,34 @@ export type UserMessageProps = {
   details?: MessageDetails
 }
 
-const Part = ({ part }: { part: UserMessagePart }) => {
+// Where a connection's link goes, for its card: the site alone.
+const siteOf = (url: string | undefined) => {
+  try {
+    return url ? [new URL(url).hostname.replace(/^www\./, '')] : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// A chip's card says only what is not on the chip: what the message carries of what it mentions
+// (what a connection holds, and where it is), and what whoever has the chat knows of it.
+const Part = ({ part, describe }: { part: UserMessagePart; describe: UserMessageProps['describe'] }) => {
+  const known = (title: string) => () => {
+    const found = describe?.(part)
+    return found && { title, ...found }
+  }
   switch (part.type) {
     case 'text':
       return part.text
     case 'capsule':
-      return <Chip icon={<Link04Icon aria-hidden="true" />} href={part.url}>{part.title}</Chip>
+      return <Chip icon={<Link04Icon aria-hidden="true" />} href={part.url} about={{ title: part.title, description: part.snippet?.trim() || undefined, facts: siteOf(part.url) }}>{part.title}</Chip>
     case 'format':
-      return <Chip icon={<FormatIcon name={part.icon} />}>{part.noun}</Chip>
-    case 'command':
-      return <Chip>/{part.name}</Chip>
+      return <Chip icon={<FormatIcon name={part.icon} />} about={known(part.noun)}>{part.noun}</Chip>
+    case 'command': {
+      // By its name in plain words, as its pill in the draft was; the app's own are not skills.
+      const title = commandTitle(part.name)
+      return <Chip icon={<CommandIcon command={{ kind: part.name === 'compact' ? 'builtin' : 'skill', name: part.name }} />} about={known(title)}>{title}</Chip>
+    }
   }
 }
 
@@ -58,12 +84,12 @@ const written = (part: UserMessagePart) =>
   part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`
 
 /**
- * What a person sent: their words with what they mentioned as chips, the files they attached in a
- * bubble of their own above, and ahead of the words, set apart and quieter, the message they were
- * replying to. The two bubbles join as a run does, and what can be done with the message is on
+ * What a person sent: their words with what they mentioned as pills where the message names
+ * them, the files they attached in a bubble of their own above, and ahead of the words, set apart
+ * and quieter, the message they were replying to. The two bubbles join as a run does, and what can be done with the message is on
  * the last. Copied, it is what they wrote, without the quote.
  */
-export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, loadAttachment, joins, onReply, onMarkUnread, developerCopies, details }: UserMessageProps) => (
+export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], describe, from, unread, onOpenAttachment, loadAttachment, joins, onReply, onMarkUnread, developerCopies, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {/* Spaced as the conversation is, so the bubbles find each other and tuck together as a run. */}
@@ -113,7 +139,10 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from
               </span>
             </button>
           )}
-          {parts.map((part, index) => <Part key={index} part={part} />)}
+          {/* On lines as tall as the draft's were, which a pill is drawn for. */}
+          {parts.some(({ type }) => type !== 'text')
+            ? <div className="chips-on-dark leading-6">{parts.map((part, index) => <Part key={index} part={part} describe={describe} />)}</div>
+            : parts.map((part, index) => <Part key={index} part={part} describe={describe} />)}
         </MessageBubble>
       )}
     </div>

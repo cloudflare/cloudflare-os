@@ -1,0 +1,45 @@
+[data-billow-editor] > [data-billow-item] {
+  display: inline-flex;
+}
+
+[data-billow-editor] > [data-billow-caret] {
+  display: inline-block;
+  position: relative;
+  width: 1px;
+  height: 1em;
+  line-height: 1;
+  vertical-align: baseline;
+}
+
+[data-billow-editor][data-billow-composing] > [data-billow-caret] {
+  display: inline;
+  width: auto;
+  height: auto;
+  line-height: inherit;
+}
+
+[data-billow-editor] > [data-billow-caret][data-billow-placeholder]::before {
+  content: attr(data-billow-placeholder);
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0;
+  width: max-content;
+  color: GrayText;
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+[data-billow-editor][data-billow-composing] > [data-billow-caret][data-billow-placeholder]::before {
+  content: none;
+}
+
+[data-billow-editor] > [data-billow-item]::selection,
+[data-billow-editor] > [data-billow-item] *::selection {
+  color: inherit;
+  background-color: transparent;
+}
+
+[data-billow-editor] > [data-billow-item][data-billow-selected] {
+  color: HighlightText;
+  background-color: Highlight;
+}

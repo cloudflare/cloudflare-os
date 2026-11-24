@@ -7,7 +7,7 @@ import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import type { AddableService } from '@/connections/connectionChoices'
 import { ConnectResource } from '@/connections/SetUpConnection'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerCommand } from '@/blocks/composerCommand'
 import { MessageList } from '@/blocks/MessageList'
 import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -110,7 +110,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   const [unsent, setUnsent] = useState<{ text: string; files: File[]; command?: ComposerCommand } | undefined>(() => initialText ? { text: initialText, files: [] } : undefined)
   useDocumentTitle('New chat')
   // Add a connection is open, at the service chosen for it; and the connections made for the draft,
-  // by their line's key.
+  // by their pill's key.
   const composer = useRef<ComposerHandle>(null)
   const [adding, setAdding] = useState<{ open: boolean; start?: AddableService }>({ open: false })
   const added = useRef(new Map<string, AddedConnection>())
@@ -120,7 +120,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
     // By the workspace too, as each numbers its own: one made in another is not this one.
     const key = `gatekeeper:${made.workspaceId}:${made.gatekeeperId}`
     added.current.set(key, made)
-    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service, snippet: made.description.snippet })
   })
   // A connection is made in the workspace the chat starts in, which is made for it where there is none yet.
   const connect = (service: AddableService) => {
@@ -136,11 +136,12 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   const [offersWanted, setOffersWanted] = useState(false)
   const offers = useComposerOffers({ wanted: offersWanted, builds: startIn !== undefined || ensureWorkspace !== undefined, onConnect: connect, onStartWith: setChosen, onDraft: (text) => composer.current?.appendToDraft(text) })
   const addActions = { offers }
-  const composerFormat = startsWith && {
-    ...startsWith,
-    onRemove: () => {
-      setChosen(undefined)
-      format?.onRemove()
+  // The draft says when it no longer starts with it, its pill deleted, or does again.
+  const composerFormat = {
+    value: startsWith && { noun: startsWith.noun, icon: startsWith.icon, template: startsWith.template, description: startsWith.description },
+    onChange: (next: StartFormat | undefined) => {
+      setChosen(next)
+      if (!next) format?.onRemove()
     },
   }
   // A link in the first message is a connection as in any other, the workspace made for the first of them.

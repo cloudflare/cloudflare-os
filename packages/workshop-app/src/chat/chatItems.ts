@@ -11,7 +11,7 @@ type Message<T extends AiChatMessage['type']> = Extract<AiChatMessage, { type: T
 /** A stretch of a user's message: plain text, or something they mentioned, drawn as a chip. */
 export type MessagePart =
   | { type: 'text'; text: string }
-  | { type: 'capsule'; title: string; url?: string }
+  | { type: 'capsule'; title: string; url?: string; snippet?: string }
   | { type: 'format'; noun: string; icon: OutputIcon }
   | { type: 'command'; name: string }
 
@@ -344,7 +344,7 @@ const userItem = (message: Message<'message'>, viewerId: string | undefined): Om
       ...(message.capsules ?? []).map(({ position, length, description }): Mention => ({
         position,
         length,
-        part: { type: 'capsule', title: description.title, url: webUrl(description.url) },
+        part: { type: 'capsule', title: description.title, url: webUrl(description.url), snippet: description.snippet || undefined },
       })),
       ...formatMentions(message.formats),
     ].map((mention) => ({ ...mention, position: mention.position - offset }))),

@@ -47,16 +47,17 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 const serviceOf = ({ vendor }: LinkStanding) => ({ name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color })
 
 /**
- * Makes the links in a draft connections, as the old Workshop made a link a capsule, each a line
- * above the draft that carries what is left to decide (`ComposerConnectionLines`). One a service
- * knows as a kind of resource of its own (`linkStanding`) is made in the workspace at once
- * (`newGatekeeper`) where one account of the user's can take it: connecting, then what it is, its
- * name taking the link's place in the words. Otherwise its line offers what stands in the way:
- * connecting the service, signing in to an account again, giving it access, or choosing among
- * several, and it carries on by itself once that is done in the service's window. One that could
- * not be made says why, and offers the service's form to choose it in. A link no service knows
- * gets no line and stays as written, as does one whose line is taken off, which puts the link
- * back in the words.
+ * Makes the links in a draft connections, as the old Workshop made a link a capsule: while one
+ * waits on something it is a line above the draft that carries what is left to decide
+ * (`ComposerConnectionLines`), and once made it is a pill at the start of the draft, with its
+ * others, the link no longer written out. One
+ * a service knows as a kind of resource of its own (`linkStanding`) is made in the workspace at
+ * once (`newGatekeeper`) where one account of the user's can take it. Otherwise its line offers
+ * what stands in the way: connecting the service, signing in to an account again, giving it
+ * access, or choosing among several, and it carries on by itself once that is done in the
+ * service's window. One that could not be made says why, and offers the service's form to choose
+ * it in. A link no service knows gets no line and stays as written, as does one whose line is
+ * taken off.
  *
  * A connection made goes with the message as one added from the + menu does, through `added`.
  * Where the workspace is still to be made (`ensureWorkspace`), it is made as the first link is
@@ -111,11 +112,11 @@ export const useLinkConnections = (
     }
   }
 
-  // The link is that connection from here on: it goes with the draft, named in its words.
+  // The link is that connection from here on: it goes with the draft, as a pill in the link's stead.
   const settle = (url: string, connection: AddedConnection, accountId: number) => {
     added.current.set(keyOf(url), connection)
     change(url, { made: { accountId, title: connection.description.title } })
-    composer.current?.replaceInDraft(url, connection.description.title)
+    composer.current?.addConnection({ key: keyOf(url), title: connection.description.title, kind: connection.kind, service: connection.service, snippet: connection.description.snippet }, url)
   }
 
   const make = async (workspace: string, { link: { url }, standing }: Stood, accountId: number) => {
@@ -222,6 +223,11 @@ export const useLinkConnections = (
   }), [stood, workspaceId, act])
 
   const onFound = useHandler((urls: string[]) => {
+    // One made already, whose pill was deleted and whose link is written again, is that connection again.
+    for (const url of urls) {
+      const made = added.current.get(keyOf(url))
+      if (made) composer.current?.addConnection({ key: keyOf(url), title: made.description.title, kind: made.kind, service: made.service, snippet: made.description.snippet }, url)
+    }
     setLinks((current) => [...current, ...urls.filter((url) => !current.some((link) => link.url === url)).map((url) => ({ url }))])
   })
   const onRemove = useHandler((key: string) => {
@@ -231,8 +237,6 @@ export const useLinkConnections = (
     making.current.delete(link.url)
     added.current.delete(key)
     setLinks((current) => current.filter((each) => each !== link))
-    // The link is what was written, so it is again.
-    if (link.made?.title !== undefined) composer.current?.replaceInDraft(link.made.title, link.url)
   })
   // The message went with those that were made; the rest went as the links they are.
   const onSent = useHandler(() => {

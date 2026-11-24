@@ -2,8 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Combobox } from '@cloudflare/kumo/primitives/combobox'
 import { ArrowLeft02Icon, ArrowRight01Icon, AttachmentIcon, PlugSocketIcon, PlusSignIcon, ScrollIcon, Search01Icon } from '@/components/icons'
 import { DropdownMenu } from '@gadgets/ui'
-import { commandGlyph, type ComposerCommand } from './ComposerCommandPicker'
-import { composerAddEntries, composerAddKey, type ComposerAddEntry, type ComposerAddList, type ComposerAddOffer } from './composerAddEntries'
+import { commandGlyph, type ComposerCommand } from './composerCommand'
+import { composerAddEntries, composerAddGivesWay, composerAddKey, type ComposerAddEntry, type ComposerAddList, type ComposerAddOffer } from './composerAddEntries'
 
 export type ComposerAddActions = {
   onUpload?: () => void
@@ -28,8 +28,24 @@ type ComposerAddMenuProps = ComposerAddActions & {
   anchorRef: RefObject<HTMLElement | null>
   /** Keep the popup's anchored corner at the button's original position. */
   inPlace?: boolean
-  /** The menu opened. */
-  onOpen?: () => void
+  /**
+   * Whether it is open, which whoever has it keeps: it is opened by its button, and by them, as
+   * by a slash typed in the draft.
+   */
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** Something was chosen from it, which is about to be done. */
+  onChoose?: () => void
+  /**
+   * It was opened by something typed in the draft, such as a slash, which may have been meant as
+   * what it is: it is then only in the way of whoever is writing, and gives way to the draft
+   * unless what is typed next looks for something in it. Until something is typed in its field,
+   * Backspace takes back what opened it (`onUndo`) and a key that only moves about what is
+   * written puts it away; a space straight away, or words that find nothing, do too. Whoever
+   * opened it is told what is typed in its field (`onQuery`), which was typed for the draft
+   * if nothing comes of it.
+   */
+  tentative?: { onQuery: (query: string) => void; onUndo: () => void }
   /**
    * The draft's field, which has the focus once the menu is put away from the keyboard, rather
    * than the + it opened from: the menu is the composer's, and the draft is where to carry on.
@@ -45,7 +61,7 @@ type ComposerAddMenuProps = ComposerAddActions & {
  * a pointer put it away without choosing, which stays where it clicked, and on a touch screen
  * would bring the keyboard up.
  */
-export const ComposerAddMenu = ({ anchorRef, inPlace, onOpen, fieldRef, ...actions }: ComposerAddMenuProps) => {
+export const ComposerAddMenu = ({ anchorRef, inPlace, open, onOpenChange, onChoose, tentative, fieldRef, ...actions }: ComposerAddMenuProps) => {
   // What was chosen as it closed, if anything was: whether the focus is then the draft's.
   const chose = useRef<'draft' | 'elsewhere'>(undefined)
   return (
@@ -57,11 +73,8 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onOpen, fieldRef, ...actio
       anchorRef={anchorRef}
       side="top"
       inPlace={inPlace}
-      onOpenChange={(open) => {
-        if (!open) return
-        chose.current = undefined
-        onOpen?.()
-      }}
+      open={open}
+      onOpenChange={onOpenChange}
       finalFocus={(closedBy) => {
         if (chose.current === 'elsewhere') return false
         return chose.current === 'draft' || closedBy === 'keyboard' ? fieldRef?.current ?? true : true
@@ -71,7 +84,24 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onOpen, fieldRef, ...actio
       // and wider than a menu of items, for what the end of a row says.
       popupClassName="max-h-[min(var(--available-height),17rem)] w-96"
     >
-      {(close) => <ComposerAddSearch {...actions} close={close} onChosen={(opens) => (chose.current = opens ? 'elsewhere' : 'draft')} />}
+      {(close) => (
+        <ComposerAddSearch
+          {...actions}
+          close={close}
+          tentative={tentative}
+          // Each opening starts with nothing chosen, however it was opened.
+          onOpened={() => (chose.current = undefined)}
+          // Given way to the draft, which is where to carry on.
+          onLeave={() => {
+            chose.current = 'draft'
+            close()
+          }}
+          onChosen={(opens) => {
+            chose.current = opens ? 'elsewhere' : 'draft'
+            onChoose?.()
+          }}
+        />
+      )}
     </DropdownMenu>
   )
 }
@@ -96,8 +126,13 @@ const LISTS: Record<ComposerAddList, string> = { skill: 'Search skills…', conn
  * where it had no room over the composer and opened under it does it keep the height it opened
  * at: shorter, it would fit over the composer after all, and jump there as something is typed.
  */
-const ComposerAddSearch = ({ onUpload, offers, commands, close, onChosen }: ComposerAddActions & {
+const ComposerAddSearch = ({ onUpload, offers, commands, close, tentative, onOpened, onLeave, onChosen }: ComposerAddActions & {
   close: () => void
+  tentative?: ComposerAddMenuProps['tentative']
+  /** It is shown, which it is anew each time the menu opens. */
+  onOpened: () => void
+  /** It gives way to the draft, with nothing chosen. */
+  onLeave: () => void
   /** Something was chosen, which closes the menu: whether what it opens has the focus itself. */
   onChosen: (opens: boolean) => void
 }) => {
@@ -122,7 +157,11 @@ const ComposerAddSearch = ({ onUpload, offers, commands, close, onChosen }: Comp
   // A row that goes on was chosen: the field is not to be filled with its name, as one chosen is.
   const wentOn = useRef(false)
 
-  useEffect(() => fieldRef.current?.focus({ preventScroll: true }), [])
+  useEffect(() => {
+    onOpened()
+    fieldRef.current?.focus({ preventScroll: true })
+    // Only as it opens.
+  }, [])
   // Another list starts at its first row, wherever the one before was scrolled to.
   useLayoutEffect(() => {
     // Set rather than scrolled to, which in some browsers answers with a promise an effect cannot return.
@@ -132,6 +171,8 @@ const ComposerAddSearch = ({ onUpload, offers, commands, close, onChosen }: Comp
   const goTo = (next: ComposerAddList | undefined) => {
     setList(next)
     setQuery('')
+    // What was typed found the list gone on to: it is not the draft's to have back.
+    tentative?.onQuery('')
     fieldRef.current?.focus({ preventScroll: true })
   }
 
@@ -155,13 +196,17 @@ const ComposerAddSearch = ({ onUpload, offers, commands, close, onChosen }: Comp
       className="flex min-h-0 flex-col in-data-[side=bottom]:min-h-[var(--opened-height,0px)] in-data-[side=bottom]:flex-col-reverse"
       style={narrowed && opened !== undefined ? { '--opened-height': `${opened}px` } as CSSProperties : undefined}
       onKeyDown={(event) => {
-        const does = composerAddKey(event.key, { highlighted: highlighted.current, onList: list !== undefined, typed: query !== '' })
+        const does = composerAddKey(event.key, { highlighted: highlighted.current, onList: list !== undefined, typed: query !== '', tentative: !!tentative })
         if (does === 'keep') return event.stopPropagation()
         if (does === 'close') return
         event.preventDefault()
         event.stopPropagation()
         if (does === 'back') goTo(undefined)
-        else if (highlighted.current) choose(highlighted.current)
+        else if (does === 'leave') onLeave()
+        else if (does === 'undo') {
+          tentative?.onUndo()
+          onLeave()
+        } else if (highlighted.current) choose(highlighted.current)
       }}
     >
       <Combobox.Root
@@ -172,7 +217,11 @@ const ComposerAddSearch = ({ onUpload, offers, commands, close, onChosen }: Comp
         filter={null}
         inputValue={query}
         onInputValueChange={(value: string) => {
-          if (!wentOn.current) setQuery(value)
+          if (wentOn.current) return
+          setQuery(value)
+          if (!tentative || list !== undefined) return
+          tentative.onQuery(value)
+          if (composerAddGivesWay({ commands: commands?.items ?? [], offers, upload: !!onUpload, loading }, value)) onLeave()
         }}
         value={null}
         onValueChange={(entry: ComposerAddEntry | null) => entry && choose(entry)}

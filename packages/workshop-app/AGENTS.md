@@ -431,12 +431,12 @@ See all skills… and See all connections…, each ending in a caret, which go o
 kind in the list's place (Back at the start of the field, Escape, or Backspace in an empty
 field). Under it, on the edge nearest the composer, a field finds anything by typing: all of
 those, every skill, the ones chosen last first (`recentCommands` in the user's preferences, by
-their keys, `prefs/recentCommands.ts`, as a slash's matches are), and the templates, as search
+their keys, `prefs/recentCommands.ts`), and the templates, as search
 finds things (`searchMatches`). It is as tall as what it lists, up to five rows and a half, so
 a few results are a short menu. What it offers besides uploading and the skills is the chat's to say (`chat/composerOffers.tsx`,
 plain and tested, read by `useComposerOffers` once the composer is pointed at or written in). A
-format or a template is what the next message starts with, in any chat: a line over the draft
-(`ComposerFormat`), sent as its name where the message says it is (`chat/startWithFormat.ts`), which
+format or a template is what the next message starts with, in any chat: a pill at the start of
+the draft (below), sent as its name where the message says it is (`chat/startWithFormat.ts`), which
 the agent makes from the deployment's blueprint, or for a template from the one of that title
 among those it can list, in the chat it is asked in. Automation and Agent write the start of the
 request in the draft (`automations/startDrafts.ts`). A service is listed once, whatever it has to
@@ -444,7 +444,7 @@ connect (`connections/connectionChoices.tsx`), and goes on to `AddConnection` at
 kinds, or at the form of its one. Put away, the focus is the draft's rather than the +'s
 (`DropdownMenu`'s `finalFocus`): once something is chosen, unless that opened something with the
 focus of its own, such as that dialog, and when it is closed from the keyboard; a pointer that
-closes it without choosing stays where it clicked. A workspace's commands are kept for the visit (`useChatCommands`). On the home page, with no workspace chosen, the first slash or
+closes it without choosing stays where it clicked. A workspace's commands are kept for the visit (`useChatCommands`). On the home page, with no workspace chosen, the first
 opening of the + menu, or the first connection added before the chat exists, makes the workspace the
 chat will start in (`ensureWorkspace` in `routes/_app/index.tsx`, as main's
 `ensureProvisionalGadget`), whose commands are then listed and which is then where it starts unless
@@ -452,6 +452,51 @@ another is chosen. Opening the page alone makes none. A connection added keeps h
 account and resource, or a model: `ConnectionSource`), and one made in another workspace than the
 one the chat starts in is made again there as it is sent (`startConversation`), so the chat is given
 its own.
+
+What a draft holds besides its words is a pill each (`components/Chip`, the same bubble a sent
+message draws it as) at the start of the draft, ahead of the words, in the order they were added:
+the skill or command it goes with, the format or template it starts with, one of each, the one
+chosen taking the place of the one it had, and its connections, by their service's logo. They are
+not among the words, as a message is sent with what it holds named apart from what it says, not
+where it was written: once a message says where each was, they can be (`draftAllowed` in
+`blocks/composerDraft.ts` is what keeps them at the start, and `Composer`'s `keepInWords` the
+cursor after them). The cursor is in the words, never ahead of a pill or between two, and a pill
+is only taken off: by Backspace at the start of the words, the last one first, or selected with
+the words. The draft is written in an editor rather than a text field
+(`@gadgets/billow`), in which a pill is one character, deleted, cut and undone as one. `blocks/composerDraft.ts` (plain and tested) has what a draft is and how it
+is changed, `blocks/ComposerPill.tsx` its pills (`composerDraftRegistry.tsx` tells the editor of
+them), and `Composer` keeps the editor, with what only a browser shows of it (where the focus and
+the cursor are as it is written in, given things and sent) in `Composer.browser.test.tsx`: what changes a
+draft from outside it (the + menu, a link made a connection, the format its keeper says it starts
+with) goes through `change`, as a browser gives an editor the focus whenever its cursor is placed,
+so the focus is handed back unless the draft is where to carry on. A link in the draft is still a
+line over it while it waits on something (`ComposerConnectionLines`), as a pill has nothing to
+press in it, and is a pill with the others once it is made, the link gone from the words. Why a draft cannot go as it is
+(files or connections with a skill, which goes alone) is a line over it (`ComposerNote`). A pill
+is as tall as its line less 2px, so the draft's lines are 24px, and a message with pills is drawn
+on lines as tall. Pointed at, a pill has a card over it of what it names (`components/ChipTooltip`:
+its name, what it is for, and what it is): in a message the chip is the card's own trigger, and in
+the draft, where nothing in a pill can be pointed at, the field is asked which pill the pointer is
+over (`ComposerPillTooltip`). A card says only what is known of the thing and is not on its pill,
+never a sentence about pills: what a skill is for and where it is kept (in a message, from the
+workspace's commands while it still offers the skill, `ChatItemHandlers.describeMention`), what
+a format or a template is for (as its offer in the + menu says; a sent message does not carry
+that), and what a connection holds (its service's snippet) with what kind it is or, in a message,
+the site its link goes to. Where there is nothing of that, there is no card, unless the pill cut
+its name short, which the card then says whole. What a draft holds is also said to a screen
+reader as it changes, with how to take it off, as the cursor does not come across its pills. A `/` or an `@` typed at the start of a word opens the + menu too (`menuOpenerAt`; by the key
+pressed, or by the one character the draft grew by where a keyboard does not say which key it
+was, as a phone's does not), which has
+the focus then, so what is typed next finds something in it, and once something is chosen the one
+typed goes from the draft. One may be meant as what it is, though, so a menu opened that way
+(`ComposerAddMenu`'s `tentative`) never takes what was being written: it gives way to the draft
+at a space typed straight away, at words that find nothing in it (`composerAddGivesWay`), at a
+key that only moves about what is written, and at Escape, and whatever was typed in it meanwhile
+is then written in the draft after the one that opened it, as if the menu had not been there;
+Backspace with nothing typed in it takes that one back. The draft has the focus again at once,
+not when the menu has finished going, so nothing typed straight through is lost: "3 / 4",
+"/usr/bin" and "@zoe" are written as they are. Opened by its button, the menu does none of
+that. A command typed out in full after such a slash is still sent as one.
 
 A chat's notifications, read state and deletion are in its settings (`ChatOptionsTab`), for whoever
 may build in the workspace: someone who can only use it has no chats of it. Its row in the
@@ -647,7 +692,7 @@ have been read yet, as while the index catches up; past the bound the last star 
 Its New button is a menu of the formats that can be started by asking for one (not those whose
 blueprint has something to set up first), and a plain button until there are any. Choosing one goes
 to the home page with `?format=<id>`, whose composer then starts with the format
-(`ComposerFormat`, a line over the draft, as a reply's is), and can be sent with no words. The
+(a pill at the start of the draft), and can be sent with no words. The
 first message names the format ahead of what was written and says where the name is
 (`chat/startWithFormat.ts`), which is what the old composer's Start with menu sent: the agent
 reads the name and makes one from the deployment's blueprint, and the feed draws it as a chip.

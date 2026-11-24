@@ -107,6 +107,8 @@ export default defineConfig({
       // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They
       // do not follow the host repository's lint rules and must round-trip without code changes.
       '**/bundled-blueprints/blueprints/*/files/**',
+      // The draft editor is kept as it was written, which was not to these rules.
+      'packages/billow/src/**',
       '**/*.gen.ts',
       '**/node_modules/**',
       '**/.wrangler/**',

@@ -1,6 +1,7 @@
 import type { OutputFormatOffer } from '@gadgets/workshop-shared/api'
 import type { ComposerAddOffer } from '@/blocks/composerAddEntries'
 import { composerOffers } from '@/chat/composerOffers'
+import type { StartFormat } from '@/chat/startWithFormat'
 import { AGENT_CHOICE, MODEL_CHOICE, type AddableConnection, type AddableService } from '@/connections/connectionChoices'
 import { exampleTemplates } from '@/library/exampleTemplates'
 
@@ -38,16 +39,33 @@ const SERVICES: AddableService[] = [
   serviceOf('Salesforce', ['Report', 'Account'], false),
 ]
 
-/** What a chat's + menu offers, by the app's own rules, over made-up formats, services and templates. */
-export const previewComposerOffers = (say: (chosen: string) => void): ComposerAddOffer[] => {
+/**
+ * What a chat's + menu offers, by the app's own rules, over made-up formats, services and
+ * templates. Each says what was chosen, and is done as well where there is someone to do it
+ * (`does`): the draft started with a format, or given a connection of the service.
+ */
+export const previewComposerOffers = (say: (chosen: string) => void, does?: {
+  onStartWith?: (format: StartFormat) => void
+  onConnect?: (service: AddableService) => void
+  onDraft?: (text: string) => void
+}): ComposerAddOffer[] => {
   const templates = exampleTemplates()
   return composerOffers({
     formats: FORMATS,
     templates,
     stars: templates.slice(2, 3).map(({ id }) => id),
     services: SERVICES,
-    onStartWith: ({ noun, template }) => say(`Preview: start with ${template ? `the ${noun} template` : noun}.`),
-    onConnect: ({ service, kinds }) => say(`Preview: add a connection from ${service.name}${kinds.length > 1 ? `, choosing among ${kinds.map(({ title }) => title).join(', ')}` : ''}.`),
-    onDraft: (text) => say(`Preview: “${text}” is written in the draft.`),
+    onStartWith: (format) => {
+      say(`Preview: start with ${format.template ? `the ${format.noun} template` : format.noun}.`)
+      does?.onStartWith?.(format)
+    },
+    onConnect: (service) => {
+      say(`Preview: add a connection from ${service.service.name}${service.kinds.length > 1 ? `, choosing among ${service.kinds.map(({ title }) => title).join(', ')}` : ''}.`)
+      does?.onConnect?.(service)
+    },
+    onDraft: (text) => {
+      say(`Preview: “${text}” is written in the draft.`)
+      does?.onDraft?.(text)
+    },
   })
 }

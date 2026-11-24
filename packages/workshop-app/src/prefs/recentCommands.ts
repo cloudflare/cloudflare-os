@@ -4,7 +4,7 @@ import type { UserPreferences } from './UserPreferences'
 /**
  * Remembers that the command with that `key` was chosen now, in the user's account:
  * `recentCommands`, the skills and commands chosen last in a composer, latest first, which the
- * composer's + menu names first, and the slash list puts first among equally good matches. By its
+ * composer's + menu names first. By its
  * key rather than its name, which two skills of different collections can share.
  */
 export const recordCommandUse = (preferences: UserPreferences, key: string) => {

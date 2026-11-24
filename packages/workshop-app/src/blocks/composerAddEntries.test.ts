@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ComposerCommand } from './ComposerCommandPicker'
-import { composerAddEntries, composerAddKey, type ComposerAddList, type ComposerAddOffer } from './composerAddEntries'
+import type { ComposerCommand } from './composerCommand'
+import { composerAddEntries, composerAddGivesWay, composerAddKey, type ComposerAddList, type ComposerAddOffer } from './composerAddEntries'
 
 const command = (name: string, title: string, description: string, kind: ComposerCommand['kind'] = 'skill'): ComposerCommand =>
   ({ key: name, name, title, description, kind })
@@ -95,5 +95,41 @@ describe('composerAddKey', () => {
     expect(composerAddKey('Escape', { highlighted: slides, onList: true, typed: true })).toBe('back')
     expect(composerAddKey('Backspace', { highlighted: slides, onList: true })).toBe('back')
     expect(composerAddKey('Backspace', { highlighted: slides, onList: true, typed: true })).toBe('keep')
+  })
+
+  it('opened by what was typed in the draft, gives way to keys that are the draft’s until something is typed in it', () => {
+    const typedOpen = { highlighted: slides, tentative: true }
+    expect(composerAddKey('Backspace', typedOpen)).toBe('undo')
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Delete']) expect(composerAddKey(key, typedOpen)).toBe('leave')
+    // What looks for something, moves through what is listed or chooses from it is the menu's.
+    for (const key of ['a', ' ', 'ArrowDown', 'ArrowUp', 'Enter']) expect(composerAddKey(key, typedOpen)).toBe('keep')
+    expect(composerAddKey('Tab', typedOpen)).toBe('choose')
+    expect(composerAddKey('Escape', typedOpen)).toBe('close')
+    // Once something is typed in it, they are its field's.
+    for (const key of ['Backspace', 'ArrowLeft', 'Home']) expect(composerAddKey(key, { ...typedOpen, typed: true })).toBe('keep')
+    // Gone on to a kind, it is being looked through.
+    expect(composerAddKey('Backspace', { ...typedOpen, onList: true })).toBe('back')
+    expect(composerAddKey('ArrowLeft', { ...typedOpen, onList: true })).toBe('keep')
+  })
+})
+
+describe('composerAddGivesWay', () => {
+  const source = { commands: COMMANDS, offers: OFFERS, upload: true }
+
+  it('gives way to a space typed straight away, and to words that find nothing', () => {
+    expect(composerAddGivesWay(source, ' ')).toBe(true)
+    expect(composerAddGivesWay(source, ' meeting')).toBe(true)
+    expect(composerAddGivesWay(source, 'usr')).toBe(true)
+  })
+
+  it('stays for what finds something, a space in it included, and with nothing typed', () => {
+    expect(composerAddGivesWay(source, '')).toBe(false)
+    expect(composerAddGivesWay(source, 'meet')).toBe(false)
+    expect(composerAddGivesWay(source, 'meeting b')).toBe(false)
+    expect(composerAddGivesWay(source, 'slides ')).toBe(false)
+  })
+
+  it('stays while the skills are still being read, when it cannot tell', () => {
+    expect(composerAddGivesWay({ ...source, commands: [], loading: true }, 'usr')).toBe(false)
   })
 })
