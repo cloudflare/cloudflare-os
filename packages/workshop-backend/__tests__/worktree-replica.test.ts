@@ -548,6 +548,47 @@ describe("worktree commands", () => {
     expect(kept).toBe("workspace\n");
   }));
 
+  // A file of short lines takes many times its bytes once split into lines to merge.
+  it("refuses to merge more lines than a merge holds, keeping the worktree's edit", () => withCommands(async (impl, id) => {
+    const rows = "1\n".repeat(200_000);
+    let refused!: string, kept!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        await repo.writeBytes("ones.csv", enc(rows));
+        const snapshot = await replicator.snapshot(queue);
+        await repo.writeBytes("ones.csv", enc(`${rows}2\n`));
+        const command = await commandResult(impl, snapshot.tree, {"ones.csv": `0\n${rows}`});
+        refused = await replicator.submit(queue, snapshot.tree, command.tree, command.pack())
+          .then(() => "", (error: Error) => error.message);
+        kept = await new Response(await repo.readBytes("ones.csv", {offset: rows.length, length: 2})).text();
+        return "ran";
+      },
+    });
+    await turn(impl, [[execute("command")]]);
+    expect(refused).toMatch("concurrent edits to ones.csv: it is too large to merge as text");
+    expect(kept).toBe("2\n");
+  }));
+
+  // Too large to read as text, but binary, so it merges as binary files do.
+  it("merges a binary file too large to read as text as binary", () => withCommands(async (impl, id) => {
+    const big = new Uint8Array(MAX_WHOLE_TEXT_BYTES + 1);
+    let result!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        await repo.writeBytes("big.bin", big);
+        const snapshot = await replicator.snapshot(queue);
+        await repo.writeBytes("big.bin", enc("\0workspace"));
+        const command = await commandResult(impl, snapshot.tree, {"big.bin": "\0command"});
+        await replicator.submit(queue, snapshot.tree, command.tree, command.pack());
+        result = await new Response(await repo.readBytes("big.bin")).text();
+        return "ran";
+      },
+    });
+    const [output] = await turn(impl, [[execute("command")]]);
+    expect(result).toBe("\0command");
+    expect(output).toContain("merged with concurrent edits, with conflicts in: big.bin");
+  }));
+
   it("builds a submission on an earlier one's tree, even while that one is still merging", () => withCommands(async (impl, id) => {
     let results!: State[], second!: string;
     runCode(impl, id, {

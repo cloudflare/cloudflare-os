@@ -24,8 +24,8 @@ import type {
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
-  commitIdentityForAuthor, TextTooLargeError, TreeShapeError, UnreadableContentError,
-  type FileEntry,
+  commitIdentityForAuthor, isTextBlob, MAX_WHOLE_TEXT_BYTES, TreeShapeError,
+  UnreadableContentError, type FileEntry,
 } from "./git-cache";
 import {
   encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
@@ -38,6 +38,11 @@ type DiffEntry = FileEntry & { referencedBy: GitOid };
 
 /** One file path that differs between two trees: its entry on each side, absent where none. */
 type DiffChange = { from?: DiffEntry, to?: DiffEntry };
+
+// The most lines one merge splits its files' versions into, all of them together. Each line
+// becomes a string of its own, which for a file of short lines, such as a long single-column
+// CSV, takes many times the file's bytes.
+const MAX_MERGE_LINES = 500_000;
 
 /** The replica state of one code execution; see the module doc. */
 export class WorktreeReplicas {
@@ -163,6 +168,7 @@ export class WorktreeReplicas {
     let conflicts: string[] = [];
     let sides = [new Map<string, string>(), new Map<string, string>(), new Map<string, string>()];
     let texts: { path: string, mode: FileEntry["mode"] }[] = [];
+    let lines = 0;
     for (let [path, ours] of await this.#diff(from, current)) {
       let theirs = submitted.get(path);
       if (theirs === undefined) {
@@ -181,15 +187,16 @@ export class WorktreeReplicas {
       // A mode merges on its own: one side's change of it survives the other's edit.
       let mode = theirs.to?.mode === ours.from?.mode ? ours.to?.mode ?? theirs.to?.mode
           : theirs.to?.mode ?? ours.to!.mode;
-      let versions = await Promise.all(
-          [ours.from, ours.to, theirs.to].map(entry => this.#readText(entry, path)));
-      if (versions.includes(null)) {
+      let versions = await this.#readVersions(
+          [ours.from, ours.to, theirs.to], path, MAX_MERGE_LINES - lines);
+      if (versions === null) {
         // Binary: the command's version, unless it deleted what the workspace changed.
         changes.set(path, { mode: mode!, oid: (theirs.to ?? ours.to)!.oid });
         conflicts.push(path);
         continue;
       }
-      versions.forEach((text, side) => { if (text !== undefined) sides[side].set(path, text!); });
+      lines += versions.lines;
+      versions.texts.forEach((text, side) => { if (text !== undefined) sides[side].set(path, text); });
       texts.push({ path, mode: mode! });
     }
     let merged = threeWayMerge(sides[0], sides[1], sides[2],
@@ -216,22 +223,33 @@ export class WorktreeReplicas {
     }
   }
 
-  // A file's text, undefined if absent, or null if it is not readable as text. A text file too
-  // large to merge refuses the submission, before anything changes, rather than counting as
-  // binary, which would take the command's version whole and drop the worktree's edits.
-  async #readText(entry: DiffEntry | undefined, path: string): Promise<string | undefined | null> {
-    if (entry === undefined) return undefined;
-    try {
-      return await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path);
-    } catch (error) {
-      if (error instanceof TextTooLargeError) {
-        throw new Error(`The command's result can't be merged with the worktree's concurrent ` +
-            `edits to ${path}: it is too large to merge as text. Take a new snapshot and run ` +
-            "the command again.", { cause: error });
-      }
-      if (error instanceof UnreadableContentError) return null;
-      throw error;
+  // A file's versions as text, undefined where absent, with how many lines they make; or null
+  // if any is not text. One too large to hold whole, or past the `linesLeft` of the merge's
+  // MAX_MERGE_LINES, refuses the submission, before anything changes, unless another version
+  // shows the file is binary: counting text as binary would take the command's version whole and
+  // drop the worktree's edits.
+  async #readVersions(entries: (DiffEntry | undefined)[], path: string, linesLeft: number)
+      : Promise<{ texts: (string | undefined)[], lines: number } | null> {
+    let readers = await Promise.all(entries.map(entry =>
+        entry && this.host.gitCache.openBlob(entry.oid, entry.referencedBy)));
+    let present = readers.filter(reader => reader !== undefined);
+    let lines = present.reduce((sum, reader) => sum + reader.newlines + 1, 0);
+    if (lines > linesLeft || present.some(reader => reader.size > MAX_WHOLE_TEXT_BYTES)) {
+      if (!present.every(isTextBlob)) return null;
+      throw new Error(`The command's result can't be merged with the worktree's concurrent ` +
+          `edits to ${path}: it is too large to merge as text. Take a new snapshot and run ` +
+          "the command again.");
     }
+    let texts: (string | undefined)[] = [];
+    for (let entry of entries) {
+      try {
+        texts.push(entry && await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path));
+      } catch (error) {
+        if (error instanceof UnreadableContentError) return null;
+        throw error;
+      }
+    }
+    return { texts, lines };
   }
 
   // The file paths that differ between trees `a` and `b`, descending only into subtrees that

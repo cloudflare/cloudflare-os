@@ -1269,7 +1269,8 @@ describe("AdminSettings.testGatewayProvider", () => {
 
   // pi's Google adapter reports a refusal as the response body alone, which
   // names no status.
-  it("reports a refused Google request without a status", async () => {
+  // The Google SDK's message is the JSON body, which carries the status as `error.code`.
+  it("reports a refused Google request's status from its JSON body", async () => {
     const { test, requests } = tested(() => Response.json(
       { error: { code: 401, message: "API key not valid.", status: "UNAUTHENTICATED" } },
       { status: 401 },
@@ -1282,11 +1283,11 @@ describe("AdminSettings.testGatewayProvider", () => {
     expect(requests[0]!.headers.get("cf-aig-skip-cache")).toBe("true");
     expect(requests[0]!.headers.get("x-goog-api-key")).toBeNull();
     expect(result).toStrictEqual({
-      model: "gemini-3.6-flash", ok: false,
+      model: "gemini-3.6-flash", ok: false, status: 401,
       message: '{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}',
     });
     expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
-    expect(entries[0]!.statusCode).toBeUndefined();
+    expect(entries[0]!.statusCode).toBe(401);
   });
 
   it("tests google over the binding transport when no token is configured", async () => {

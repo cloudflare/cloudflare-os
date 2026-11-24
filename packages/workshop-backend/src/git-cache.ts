@@ -185,8 +185,8 @@ export interface GitPullDelegate {
 
 /**
  * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL), is not
- * valid UTF-8, or is too large for a new read to hold whole (TextTooLargeError). The message is
- * the agent-visible, path-flavored description. Distinct from path-shape errors
+ * valid UTF-8, or is too large for a new read to hold whole (assertWholeTextSize). The message
+ * is the agent-visible, path-flavored description. Distinct from path-shape errors
  * (symlink/gitlink/directory) and from transient pull failures so callers can tell "fine to
  * overwrite whole, but unreadable and undiffable" apart from errors that must propagate: the
  * Worktree binding's writeFile falls back to a whole-file `set` on this error (and only this
@@ -202,15 +202,8 @@ export class UnreadableContentError extends Error {}
 export const MAX_WHOLE_TEXT_BYTES = 16 * 1024 * 1024;
 
 /**
- * A text file too large for a new read or edit to hold whole (MAX_WHOLE_TEXT_BYTES). Unreadable
- * as text, like binary content, to the reads that show a note or overwrite whole instead; but it
- * is text, so a merge, which would take one side of a binary file whole, refuses it instead.
- */
-export class TextTooLargeError extends UnreadableContentError {}
-
-/**
  * Options for a whole-text read. `limited` refuses a file over MAX_WHOLE_TEXT_BYTES
- * (TextTooLargeError) before any of it is read, as every new read or edit must. Replay and the
+ * (UnreadableContentError) before any of it is read, as every new read or edit must. Replay and the
  * folding of a chat's saved changes leave it unset: an edit saved before the limit existed must
  * still apply to its base.
  */
@@ -219,7 +212,7 @@ export interface WholeTextReadOptions { limited?: boolean }
 /** Refuses a whole-text read of a file over MAX_WHOLE_TEXT_BYTES; see WholeTextReadOptions. */
 export function assertWholeTextSize(size: number, path: string): void {
   if (size > MAX_WHOLE_TEXT_BYTES) {
-    throw new TextTooLargeError(`${path} is ${size} bytes, too large to read or edit as ` +
+    throw new UnreadableContentError(`${path} is ${size} bytes, too large to read or edit as ` +
         "whole text. Read it by window (readFile with startLine and lineCount), search it with " +
         "grep, or read its bytes.");
   }
@@ -2136,6 +2129,24 @@ export function decodeBlobText(payload: Uint8Array, path: string): string {
   let text = blobText(payload);
   if (text === undefined) throw new UnreadableContentError(`${path} is not a text file`);
   return text;
+}
+
+/**
+ * Whether a blob is text by decodeBlobText's rules, checked a piece at a time rather than
+ * decoded whole, so that a file too large to hold as text can still be told from binary.
+ */
+export function isTextBlob(reader: BlobReader): boolean {
+  let decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  try {
+    for (let piece of reader.pieces()) {
+      if (piece.includes(0)) return false;
+      decoder.decode(piece, { stream: true });
+    }
+    decoder.decode();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

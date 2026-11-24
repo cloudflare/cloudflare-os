@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {expect, it, vi} from "vitest";
 import {makeMockStorage} from "./mock-storage";
 import {makeOverseerStorage} from "../src/storage-schema/overseer-storage";
-import {assertWholeTextSize, MAX_WHOLE_TEXT_BYTES, TextTooLargeError, WorkspaceGitCache} from "../src/git-cache";
+import {assertWholeTextSize, MAX_WHOLE_TEXT_BYTES, UnreadableContentError, WorkspaceGitCache} from "../src/git-cache";
 import {buildPackStream, decodeLooseObject, decodePackStream} from "../src/git-codec";
 
 function fixture() {
@@ -187,7 +187,7 @@ it("refuses new whole-text reads of a file over MAX_WHOLE_TEXT_BYTES", async () 
   const commit = await git.writeFilesAsCommit(new Map([["rows.csv", ref]]), options);
   const refusal = `rows.csv is ${size} bytes, too large to read or edit as whole text`;
   await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toThrow(refusal);
-  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toBeInstanceOf(TextTooLargeError);
+  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toBeInstanceOf(UnreadableContentError);
   await expect(git.readFileAtCommitIfExists(commit, "rows.csv", {limited: true})).rejects.toThrow(refusal);
   expect(() => assertWholeTextSize(size, "rows.csv")).toThrow(refusal);
   // Unlimited, as replay reads it.

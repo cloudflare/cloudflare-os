@@ -5,7 +5,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, MAX_INLINE_MESSAGE_BYTES } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, MAX_INLINE_MESSAGE_BYTES, MAX_INLINE_REPLAY_BYTES } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -2412,7 +2412,9 @@ async function runAgentPass(
   // Every request resends them all, so once the chat's inline ones pass MAX_INLINE_ATTACHMENTS or
   // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts first, from the prompt earlier requests
   // sent, keeping the messages from `attachmentsFitFrom` on, whose attachments fit. Only if it
-  // can't are the older ones named by path instead (`pastLimitParts`).
+  // can't are the older ones named by path instead (`pastLimitParts`). Past
+  // MAX_INLINE_REPLAY_BYTES, older ones are named by path unread (`unreadParts`), so the prompt
+  // is no longer the one earlier requests sent.
   const isInlineCandidate = (mimeType: string) => handle.model.input.includes("image") &&
       (isAllowedChatAttachmentImageMimeType(mimeType) ||
        (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api)));
@@ -2421,8 +2423,9 @@ async function runAgentPass(
   // Those of the messages the model has not answered yet: what a refusal of this pass's first
   // request is put down to.
   const unansweredAttachmentIds: string[] = [];
+  const unreadAttachmentIds = new Set<string>();
   let attachmentsFitFrom: number | undefined;
-  let answered = false, keptAttachments = 0, keptAttachmentBytes = 0;
+  let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   for (let msg of chatMessages.toReversed()) {
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
@@ -2434,6 +2437,11 @@ async function runAgentPass(
         messageBytes += attachment.size;
         messageIds.push(attachment.id);
       }
+    }
+    pastReplayBytes ||= keptAttachmentBytes + messageBytes > MAX_INLINE_REPLAY_BYTES;
+    if (pastReplayBytes) {
+      for (let id of messageIds) unreadAttachmentIds.add(id);
+      continue;
     }
     keptAttachments += messageIds.length;
     keptAttachmentBytes += messageBytes;
@@ -2447,6 +2455,8 @@ async function runAgentPass(
   // The label part of each inline attachment before `attachmentsFitFrom`, with the marker that
   // replaces it and the part after it if the turn has to run without compacting.
   const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
+  // The markers of the attachments past MAX_INLINE_REPLAY_BYTES.
+  const unreadParts = new Set<TextContent | ImageContent>();
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2556,7 +2566,11 @@ async function runAgentPass(
                 };
                 // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
                 // short enough, since text decodes to at least a character per four bytes.
-                if (isInlineCandidate(attachment.mimeType) && !inlineAttachmentIds.has(attachment.id)) {
+                if (unreadAttachmentIds.has(attachment.id)) {
+                  let marker = notShown(PAST_LIMITS);
+                  unreadParts.add(marker);
+                  return [marker];
+                } else if (isInlineCandidate(attachment.mimeType) && !inlineAttachmentIds.has(attachment.id)) {
                   return [notShown(refusedAttachmentIds.has(attachment.id)
                       ? "the model's provider refused a request with it" : PAST_LIMITS)];
                 } else if (textLike && attachment.size > 4 * MAX_TOOL_RESULT_CHARS) {
@@ -4685,7 +4699,9 @@ async function runAgentPass(
       emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
-        if (supportsAnthropicCompaction(handle.model)) {
+        // Native compaction needs the prompt as earlier requests sent it, which unread
+        // attachments change; the summary path reads only the transcript.
+        if (supportsAnthropicCompaction(handle.model) && unreadParts.size === 0) {
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
           let keptFrom = projection.findIndex(({sequence}) =>
             sequence !== undefined && sequence >= compactedTo);
@@ -4754,10 +4770,12 @@ async function runAgentPass(
   if (compactionTurn) return {type: "finished"};
 
   // Past the limits on inline attachments with no compaction: name the older ones by path, and
-  // drop the thinking after the first of them, which that rewrite invalidates. The rewrite lasts
-  // only this pass, whose replies are stored without their thinking.
+  // drop the thinking after the first of them, which that rewrite invalidates, as it does after
+  // attachments left unread. The rewrite lasts only this pass, whose replies are stored without
+  // their thinking.
   let rewrittenFrom = modelMessages.findIndex(message => message.role === "user" &&
-      Array.isArray(message.content) && message.content.some(part => pastLimitParts.has(part)));
+      Array.isArray(message.content) &&
+      message.content.some(part => pastLimitParts.has(part) || unreadParts.has(part)));
   if (rewrittenFrom >= 0) {
     promptRewritten = true;
     modelMessages = modelMessages.flatMap((message, index): Message[] => {
