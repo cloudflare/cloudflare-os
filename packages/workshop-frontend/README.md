@@ -44,6 +44,16 @@ cancellation cannot undo a selection the app already accepted. `selectUsers()` r
 picker cannot be opened or, on teardown, when the app's connection to the host closes. A superseded
 or abandoned directory search is disposed as soon as it is no longer needed.
 
+## Gatekeeper downloads
+
+Gatekeeper management apps can call the trusted host's `downloadFile(url)` capability to download
+an authenticated setup file. Use an absolute URL on the Workshop origin under the calling vendor's
+`/gatekeeper/<vendor>/` route, without a query string or fragment. The host asks the user to confirm
+in a Workshop dialog before fetching. The response must be a successful `Content-Disposition:
+attachment` response; redirects are rejected. Only one download may be pending per management app,
+including its confirmation and body read. Closing the app cancels it. The file contents stay in the
+host and are saved to the user's device, rather than returned to the sandboxed app.
+
 ## Authentication modes
 
 The frontend supports two authentication modes, selected at build time.
