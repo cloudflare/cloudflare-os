@@ -199,6 +199,8 @@ class DocsModel {
   refusedMasks = 0;
   /** Requests for an image's bytes. */
   imageFetches = 0;
+  /** Answers to those let go before they were read to their end. */
+  imageCancels = 0;
   /** Google fails to serve any image. */
   imageOutage = false;
   /** The length Google states for an image, when not its real one. */
@@ -207,6 +209,8 @@ class DocsModel {
   imageRedirect?: string;
   /** The image addresses Google refuses, as it does once one lapses. */
   readonly #lapsed = new Set<string>();
+  /** Runs as each request for an image arrives, before it is answered. */
+  onImage?: () => void;
   /** The bearer token of each Docs request, which names the account it was made as. */
   readonly authorizations: string[] = [];
   driveFetches = 0;
@@ -489,8 +493,11 @@ class DocsModel {
     this.requestBytes += typeof body === "string" ? new TextEncoder().encode(body).byteLength
       : body instanceof Uint8Array ? body.byteLength : 0;
     let response = await this.#answer(input, init);
-    // Counted from a copy, beside the caller's read: the response is not held for the count.
-    void response.clone().arrayBuffer().then(sent => { this.responseBytes += sent.byteLength; });
+    // Counted from a copy, beside the caller's read: the response is not held for the count. An
+    // image is not counted: a copy would read it to its end, whether or not its caller let it go.
+    if (!response.headers.get("content-type")?.startsWith("image/")) {
+      void response.clone().arrayBuffer().then(sent => { this.responseBytes += sent.byteLength; });
+    }
     return response;
   }
 
@@ -522,13 +529,24 @@ class DocsModel {
     }
     if (url.hostname === "docs.google.com") {
       this.imageFetches++;
+      this.onImage?.();
       if (this.#lapsed.has(url.href)) return new Response("gone", { status: 403 });
       if (this.imageOutage) return new Response("busy", { status: 503 });
       let bytes = new TextEncoder().encode(`bytes of ${url.pathname.slice(1)}`);
       if (this.imageRedirect && !url.searchParams.has("moved")) {
         return new Response(null, { status: 302, headers: { location: this.imageRedirect } });
       }
-      return new Response(bytes, { headers: {
+      // Served as Google serves an image, a piece at a time: it ends only once it is read.
+      let pieces = [bytes];
+      let body = new ReadableStream<Uint8Array>({
+        pull: controller => {
+          let piece = pieces.pop();
+          if (piece) controller.enqueue(piece);
+          else controller.close();
+        },
+        cancel: () => { this.imageCancels++; },
+      });
+      return new Response(body, { headers: {
         "content-type": "image/png",
         "content-length": String(this.imageLength ?? bytes.length),
       } });
@@ -1019,7 +1037,7 @@ const driveFacets = new Set<string>();
 const FACET_HOOKS = new Set([
   "submitAppend", "submitReplace", "submitEdit", "callsDuringTableRead", "readMetadata",
   "readContent", "listTabs", "applyAction", "rejectAction", "callDoc", "describe",
-  "docAutoApprovable",
+  "docAutoApprovable", "readImages", "previewUi",
 ]);
 
 /** `fields` without the two a Drive binding's card names the file by, which it checks. */
@@ -5390,20 +5408,28 @@ describe("adding a Google Doc tab", () => {
   });
 });
 
-/** One read of a fresh bound Doc session: what it answered or threw, and what it observed. */
+/**
+ * One read of a fresh bound Doc session: what it answered or threw, and what it observed, past
+ * the opening of the Doc that a Drive binding observes first.
+ */
 async function reading<T>(
   facet: string, method: keyof GoogleDocSession | keyof GoogleDocRenderingReads, ...args: unknown[]
 ) {
   let { value, error, observations } =
     await hooks().callDoc(facet, method as keyof GoogleDocSession, args);
-  return { value: value as unknown as T, error, observations };
+  return {
+    value: value as unknown as T, error,
+    observations: observations.filter(observed => !run.drive || observed !== DRIVE_OPEN),
+  };
 }
 
 /** The field mask of each full read of the document the installed model was sent, in order. */
 const readMasks = () => vi.mocked(fetch).mock.calls.flatMap(([input, init]) =>
   docsRequestKind(input, init) === "read" ? [new Headers(init?.headers).get("X-Goog-FieldMask") ?? ""] : []);
 
-describe("Google Doc pending changes", () => {
+describe.each(RUNS)("Google Doc pending changes, $name", r => {
+  inRun(r);
+
   const pending = (facet: string, tabId: string) =>
     reading<GoogleDocPendingChanges>(facet, "getPendingChanges", tabId);
 
@@ -5445,6 +5471,23 @@ describe("Google Doc pending changes", () => {
     expect((await pending("pending-stale", MAIN_TAB)).value.changes).toEqual([{
       id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
     }]);
+
+    await hooks().rejectAction("pending-stale", actionId);
+    expect((await pending("pending-stale", MAIN_TAB)).value.changes).toEqual([]);
+  });
+
+  it("marks an edit stale that its approval found the document no longer fits", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let actionId = await hooks().submitReplace("pending-unapplied", "target", "changed");
+
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    expect(await hooks().applyAction("pending-unapplied", actionId)).toMatch(/oldMarkdown was not found/);
+
+    expect((await pending("pending-unapplied", MAIN_TAB)).value.changes).toEqual([{
+      id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
   });
 
   it("lists only the edits of the tab it names, and the tab list marks that tab", async () => {
@@ -5462,7 +5505,8 @@ describe("Google Doc pending changes", () => {
     expect(await marked()).toEqual([]);
   });
 
-  it("lists the edits of a tab still to be added, before and after it is added", async () => {
+  // A Drive binding adds no tabs.
+  it.skipIf(r.drive)("lists the edits of a tab still to be added, before and after it is added", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Intro");
     docs.install();
@@ -6732,6 +6776,8 @@ function docsProvider(...models: DocsModel[]): ProviderFake {
   return {
     async handle(request) {
       let url = new URL(request.url);
+      // An image's address names no document.
+      if (url.hostname === "docs.google.com") return models[0].fetch(request.url);
       if (url.hostname !== "docs.googleapis.com") return undefined;
       let id = /^\/v1\/documents\/([^/:]+)/.exec(url.pathname)?.[1];
       let model = models.find(candidate => candidate.documentId === id) ?? models[0];
@@ -8062,6 +8108,63 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(docs.contentBatches).toBe(1);
   });
 
+  const pending = async (facet: string) =>
+    (await reading<GoogleDocPendingChanges>(facet, "getPendingChanges", MAIN_TAB)).value;
+  const drawing = async (facet: string) =>
+    (await reading<GoogleDocDrawing>(facet, "readDrawing", MAIN_TAB)).value;
+  const pendingDrawing = async (facet: string) =>
+    (await reading<GoogleDocPendingDrawing>(facet, "readPendingDrawing", MAIN_TAB)).value;
+
+  it("names the Doc an edit changes, serves the preview that draws it, and the reads it draws from", async () => {
+    let docs = draft();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    let facet = "drive-preview";
+
+    let id = await hooks().submitAppend(facet, "added");
+    expect(await hooks().lastActionPreviewOf).toEqual({
+      anchor: "docs:doc-1", title: "Test document", url: "https://docs.google.com/document/d/doc-1/edit",
+    });
+    // No preview of the connection, which reaches many files: one of whichever file it is sent
+    // to, the three kinds' previews behind an entry that opens the file and starts its kind's.
+    expect(await hooks().describe(facet)).not.toHaveProperty("hasGadgetUi");
+    let files = await hooks().previewUi(facet);
+    expect(files.map(({ path }) => path)).toEqual([
+      "client.js", "docs.js", ...PREVIEW_PATHS.slice(1, -1), "sheets.js", "window.js", "slides.js", "slide.js", "shapes.js",
+      "ui/chrome.js",
+    ]);
+    expect(files[0].code).toContain("openGoogleDoc");
+
+    expect(await pending(facet)).toEqual({ tabId: MAIN_TAB, changes: [{ id, type: "appendText", markdown: "added" }] });
+    let { version, objects } = await drawing(facet);
+    expect(objects).toMatchObject({ photo: { readable: true } });
+    expect(await pendingDrawing(facet)).toMatchObject({
+      tabId: MAIN_TAB, version, edits: [{ blocks: [{ runs: [{ text: "added" }] }] }],
+    });
+    expect(await hooks().readImages(facet, MAIN_TAB, ["photo"], () => {}))
+      .toEqual([{ mimeType: "image/png", text: "bytes of photo" }]);
+  });
+
+  // A Drive source keeps no copy to ask after: it lets go of the one its reads share.
+  it("reads a Doc again for its pending drawing once its drawing was read from a newer revision", async () => {
+    let docs = draft();
+    let facet = "drive-drawing-version";
+    let { version } = await drawing(facet);
+    expect((await pendingDrawing(facet)).version).toBe(version);
+
+    docs.setDrawn(MAIN_TAB, { documentStyle: { marginTop: { magnitude: 10, unit: "PT" } } });
+    // Inside the TTL the pending drawing still names the document the binding's reads share.
+    let from = requestsMade();
+    expect((await pendingDrawing(facet)).version).toBe(version);
+    expect(docsRequestsSince(from)).toEqual([]);
+
+    let again = await drawing(facet);
+    expect(again.version).not.toBe(version);
+    expect(again.sections[0].margins.top).toBe(10);
+    from = requestsMade();
+    expect((await pendingDrawing(facet)).version).toBe(again.version);
+    expect(docsRequestsSince(from)).toEqual(["read"]);
+  });
+
   // The write has landed and the action set has retired the record, so nothing replays the
   // append; its marker is still in the document. Reads are made from inside the marker's deletion
   // and inside the read of the new revision that follows it, as an overlapping read would land.
@@ -8171,6 +8274,63 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     let id = await hooks().submitAppend(facet, "next");
     expect(await hooks().applyAction(facet, id)).toBeNull();
     expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+  });
+
+  it("notes a stale edit of a Doc only while it waits to be rejected", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-note";
+    let notes = () => rawHooks().driveStoredKeys(`drive:${facet}`, DRIVE_DOC, "driveDocs:stale:");
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    passSnapshotTtl();
+
+    await hooks().readContent(facet);
+    expect(await notes()).toEqual(["driveDocs:stale:doc-1"]);
+    await hooks().rejectAction(facet, id);
+    // The next session sweeps it.
+    await hooks().readContent(facet);
+    expect(await notes()).toEqual([]);
+  });
+
+  it("lists as stale an edit of a Doc that its approval refuses for good", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-refused";
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    docs.canEdit = false;
+
+    expect(await hooks().applyAction(facet, id)).toMatch(/cannot edit that file/);
+    expect((await pending(facet)).changes).toEqual([{
+      id, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
+  });
+
+  // Listed by either note of it: the one written with the refusal is for an activation lost
+  // before the other, which nothing here can stage.
+  it("lists as stale an edit of a Doc that its approval finds the document no longer fits", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-unapplied";
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    docs.externalEdit(MAIN_TAB, "rewritten");
+
+    expect(await hooks().applyAction(facet, id)).toMatch(/oldMarkdown was not found/);
+    expect((await pending(facet)).changes).toEqual([{
+      id, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
+  });
+
+  it("lists as stale an edit of a Doc that the proof repeated in its turn refuses for good", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-refused-in-turn";
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    // The account can edit the file when the approval first asks, and no longer when it asks again.
+    let asked = 0;
+    Object.defineProperty(docs, "canEdit", { get: () => ++asked < 2 });
+
+    expect(await hooks().applyAction(facet, id)).toMatch(/cannot edit that file/);
+    expect(asked).toBe(2);
+    expect((await pending(facet)).changes).toEqual([{
+      id, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
   });
 
   // The engine's run holds the write with a promise the test releases, which hangs a Drive binding's
@@ -8319,7 +8479,10 @@ describe("Google Doc edits through a read and write Drive binding", () => {
       mergeTableCells: [{ table: 0, row: 0, column: 0, rows: 1, columns: 2 }],
       unmergeTableCells: [{ table: 0, row: 0, column: 0 }],
     };
-    let reads = new Set(["constructor", "getMetadata", "listTabs", "getContent"]);
+    let reads = new Set([
+      "constructor", "getMetadata", "listTabs", "getContent", "getPendingChanges", "readDrawing",
+      "readPendingDrawing", "readImage", "readFont", "getRenderingTypes",
+    ]);
     let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
       .filter(name => !reads.has(name));
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
@@ -8344,6 +8507,25 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
     expect(docs.fetches).toBe(fetched);
     expect(docs.contentBatches).toBe(0);
+  });
+
+  it("refuses an image of a Doc that left the folder while the image was asked for", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    let drive = new DriveFiles({
+      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      "doc-1": { name: "Test document", mimeType: DRIVE_DOC_MIME, parents: [ROOT] },
+    });
+    serveFakes([drive, docsProvider(docs)]);
+    docs.onImage = () => { drive.files.get("doc-1")!.parents = ["elsewhere"]; };
+
+    let read = await rawHooks().callDriveNative(
+      "drive:drive-doc-image-left-folder", FOLDER, "openGoogleDoc", "doc-1", "readImage", ["photo", MAIN_TAB]);
+
+    expect(read.error).toBe("The requested file is outside this Drive binding.");
+    expect(docs.imageFetches).toBe(1);
+    // What Google had begun to answer is let go, not left open.
+    expect(docs.imageCancels).toBe(1);
   });
 
   it("opens a Doc with no comment method: the binding's own comment writes reach it", async () => {

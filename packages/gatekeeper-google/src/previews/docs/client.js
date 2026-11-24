@@ -1,6 +1,6 @@
 // The Google Doc preview (GoogleDocGatekeeperImpl.getGadgetUi()): gadget-format client code that
-// runs in the gadget UI frame, whose page starts it with main(gadget), at the end of this file.
-// There `gadget` is a GoogleDocSession rather than a gadget server.
+// runs in the gadget UI frame, whose page starts it with main(gadget, host), at the end of this
+// file. There `gadget` is a GoogleDocSession rather than a gadget server.
 // The gatekeeper imports it as text through client.txt, a symlink to this file, and returns it
 // with the modules beside it and ui/chrome.js, which the previews of this gatekeeper share.
 //
@@ -15,8 +15,8 @@
 
 import {
   addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion,
-  outline, outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale,
-  status, touch, ITSELF,
+  outline, outlineList, page, partNavigator, press, reportSpot, segmented, setOutline, setStops, showError, showPage,
+  showStale, status, touch, ITSELF,
 } from './ui/chrome.js';
 import { drawer, drawStyles, faceMeasures, showPicture } from './draw.js';
 import { blockOf, excerpt, merge, plain, said } from './merge.js';
@@ -24,6 +24,8 @@ import { pageStyles, paginate } from './pages.js';
 
 // The session main() is handed, which every read below goes through.
 let gadget;
+// Tells the host where the reader is, once main() has one to tell.
+let saySpot = () => {};
 
 // How far under the head of the frame a page stepped to stops.
 const HEAD = 52;
@@ -141,6 +143,9 @@ thumb.id = 'thumb';
 
 let tabs = [];
 let tabId = null;
+// The ID the tab shown was chosen by, which is not its own where a tab added since was chosen by
+// its provisional one.
+let chosen;
 let loaded = false;
 let generation = 0;
 // What the last drawing showed as changed, so the next one can tell what is new.
@@ -516,13 +521,22 @@ function renderOutline() {
   if (held !== undefined) [...outlineList.querySelectorAll('[data-key]')].find(found => found.dataset.key === held)?.focus();
 }
 
+// How far under the top of the view going to a heading puts it, and how far under it one is passed.
+const PUT = 44;
+const PASSED = 96;
+
+// Which of `found`, headings, the view is at: the first between where going to one puts it and
+// where one is passed, so the one gone to and not those close under it, or else the last above.
+function reached(found) {
+  const tops = found.map(heading => heading.getBoundingClientRect().top);
+  const at = tops.findIndex(top => top >= PUT - 1 && top <= PASSED);
+  return at < 0 ? tops.findLastIndex(top => top <= PASSED) : at;
+}
+
 /** Marks the heading the top of the view is under, or the one it is folded under. */
 function markHeading() {
   if (outline.hidden || !rail.isConnected) return;
-  let current = 0;
-  headings.forEach((heading, index) => {
-    if (heading.getBoundingClientRect().top <= 96) current = index;
-  });
+  let current = Math.max(0, reached(headings));
   while (current > 0 && entries[current].parentElement.hidden) current--;
   entries.forEach((entry, index) => entry.setAttribute('aria-current', String(index === current)));
   const row = entries[current]?.parentElement;
@@ -597,7 +611,10 @@ async function followLink(event) {
   const { tab: to, heading } = destination(link);
   if (to) {
     selectTab(to);
-    await load();
+    // Kept as goTo() keeps one, and gone to by the read that answers: a refresh may start one
+    // that overtakes this, and the reader may have moved on by the time this one ends.
+    if (heading) wanted = encodeURIComponent(heading);
+    return load();
   }
   const target = heading && headingAt(heading);
   if (!target) return;
@@ -606,10 +623,73 @@ async function followLink(event) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Where the reader is
+
+// What Google has saved a heading as saying, by its ID, a chip in it by its words too: nothing
+// for one only a change makes.
+function savedHeading(id) {
+  const block = tab.drawing.blocks.find(found => found.headingId === id);
+  return block?.runs.map(run => run.text ?? run.chip ?? '').join('').replace(/\s+/g, ' ').trim();
+}
+
+// The tab shown, in a document of several, and the heading the view has passed: an address of the
+// form the document's own links to its tabs and headings have. It says only what Google has
+// saved, since a host shows it and tells an agent of it: a heading goes by its saved words
+// whatever a change makes of them, and a tab or a heading only a change makes is no spot yet.
+function here() {
+  // A tab still being read has no place yet, which is not the reader gone from where they were.
+  if (!loaded) return false;
+  const listed = tabs.find(found => found.id === tabId);
+  if (!listed || listed.id.startsWith('pending-tab-')) return undefined;
+  // At the foot of the tab every heading has been read, as markPage() has its last page: one
+  // near the end scrolls no higher.
+  const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
+  const ended = scrollTop > 0 && scrollTop + clientHeight >= scrollHeight - 1;
+  const named = headings.filter(found => found.dataset.heading);
+  // The last heading passed that Google has, and its words there.
+  let at = ended ? named.length - 1 : reached(named);
+  let words;
+  while (at >= 0 && !(words = savedHeading(named[at].dataset.heading))) at--;
+  if (tabs.length < 2 && !words) return undefined;
+  return {
+    anchor: `?tab=${encodeURIComponent(tabId)}${words ? `#heading=${encodeURIComponent(named[at].dataset.heading)}` : ''}`,
+    label: [tabs.length > 1 && listed.title, words].filter(Boolean).join(' › '),
+  };
+}
+
+// Shows the spot `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
+// from anywhere, so it only chooses what to show. False for a tab or a heading no longer there:
+// the reader stays on the tab they are on, or starts on the one load() opens on.
+async function goTo(anchor) {
+  const [, to, id] = /^\?tab=([^#]*)(?:#heading=(.*))?$/.exec(anchor) ?? [];
+  if (to === undefined || loaded && !tabs.some(listed => listed.id === decoded(to))) return false;
+  if (decoded(to) !== tabId) selectTab(decoded(to));
+  // Kept for the read that finds it: a refresh may start one that overtakes this, and one that
+  // fails may be tried again.
+  const opening = !loaded;
+  if (opening) {
+    wanted = id;
+    await load();
+  }
+  if (decoded(to) !== chosen) return false;
+  // Not read, as when Google could not be reached: the spot may well still be there.
+  if (!loaded) return true;
+  const heading = id === undefined ? undefined : headingAt(decoded(id));
+  // The read that opens the tab has gone there itself, and the reader may have moved on since.
+  if (!opening) heading?.scrollIntoView({ block: 'start' });
+  saySpot();
+  return id === undefined || !!heading;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Loading and refreshing
 
+// The heading the host sent this to, or a link led to in another tab, until that tab is read.
+let wanted;
+
 function selectTab(id) {
-  tabId = id;
+  tabId = chosen = id;
+  wanted = undefined;
   loaded = false;
   shown = new Set();
   // Where the reading was is a place in the tab left.
@@ -704,6 +784,9 @@ async function load() {
     showStale(stale, 'document');
     status('');
     loaded = true;
+    if (wanted !== undefined) headingAt(decoded(wanted))?.scrollIntoView({ block: 'start' });
+    wanted = undefined;
+    saySpot();
   } catch (error) {
     if (current !== generation) return;
     status('');
@@ -714,17 +797,20 @@ async function load() {
 }
 
 export default {
-  main(session) {
+  async main(session, host) {
     gadget = session;
-    // Built here, not on import: importing this module draws nothing.
+    // Built here, not on import: a Drive connection's frame holds the previews of all three
+    // kinds of file and starts one.
     document.head.append(...drawStyles, pageStyles, styleSheet);
     page.append(sheets);
     pager = partNavigator('page');
     new ResizeObserver(fit).observe(page);
     addControl(views);
+    saySpot = reportSpot(host, here);
     addEventListener('scroll', () => requestAnimationFrame(() => {
       markHeading();
       markPage();
+      saySpot();
     }), { passive: true });
     outline.addEventListener('outlinechange', markHeading);
     // Text is copied as the document has it, without the joiners draw.js sets its lines with.
@@ -735,5 +821,9 @@ export default {
     page.addEventListener('keydown', pressLink);
     page.addEventListener('click', followLink);
     loadOnRefresh(load);
+    // The host sends this to the spot the reader left, if there is one, before anything is read:
+    // the first tab read is then the one it names.
+    await host.onNavigate(goTo);
+    if (!generation) void load();
   },
 };

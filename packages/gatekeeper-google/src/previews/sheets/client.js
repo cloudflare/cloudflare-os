@@ -1,6 +1,6 @@
 // The Google Sheets preview (GoogleSheetsGatekeeperImpl.getGadgetUi()): gadget-format client code
-// that runs in the gadget UI frame, whose page starts it with main(gadget), at the end of this
-// file. There `gadget` is a GoogleSpreadsheetSession rather than a gadget server.
+// that runs in the gadget UI frame, whose page starts it with main(gadget, host), at the end of
+// this file. There `gadget` is a GoogleSpreadsheetSession rather than a gadget server.
 // The gatekeeper imports it as text through client.txt, a symlink to this file, and returns it
 // with window.js, which says what of a sheet to read, and ui/chrome.js, which the previews of
 // this gatekeeper share.
@@ -11,13 +11,15 @@
 // followed only by a click, in a new browser tab, from a cell Google Sheets has saved.
 
 import {
-  flash, fontReader, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, outlineList, page, setOutline, setStops, showError,
-  showLoading, showPage, showStale, status, touch, ITSELF,
+  flash, fontReader, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, outlineList, page, reportSpot, setOutline, setStops,
+  showError, showLoading, showPage, showStale, status, touch, ITSELF,
 } from './ui/chrome.js';
 import { MAX_CELLS, inView, laidOut, learnt, lines, readOn, smaller, starts, windowOf } from './window.js';
 
 // The session main() is handed, which every read below goes through.
 let gadget;
+// Tells the host where the reader is, once main() has one to tell.
+let saySpot = () => {};
 
 // The headers' height and width.
 const HEAD_H = 24;
@@ -849,8 +851,8 @@ function describe({ row, column, cell }) {
       .filter(change => change.op === 'formatCells') ?? [];
     // What its batch set on this cell. A batch names each range as it lay when it was made, so
     // where later changes have moved the cell out of them all, all that it set is named.
-    const here = formats.filter(change => holdsCell(change.range, row, column));
-    const set = new Set((here.length ? here : formats).flatMap(change => Object.keys(change.format)));
+    const over = formats.filter(change => holdsCell(change.range, row, column));
+    const set = new Set((over.length ? over : formats).flatMap(change => Object.keys(change.format)));
     const line = card.appendChild(make('p', '', 'Formatting set: '));
     line.append(make('b', '', [...set].map(field => FIELDS[field] ?? field).join(', ') || 'changed'));
   }
@@ -937,13 +939,13 @@ function tabsOf({ saved, pending }) {
   return tabs;
 }
 
-// Lists `sheets`, as saved and as the pending changes leave them, with the one shown `here`.
-function renderOutline(sheets = info.sheets, here = sheet) {
+// Lists `sheets`, as saved and as the pending changes leave them, with `opened` the one shown.
+function renderOutline(sheets = info.sheets, opened = sheet) {
   const tabs = tabsOf(sheets);
   // The sheet whose name holds the keyboard: the name drawn in its place is to hold it again.
   const held = document.activeElement?.dataset.sheet;
   const listing = ({ sheet: listed, added, renamed, moved, deleted }) => {
-    const on = listed.id === here.id && !deleted;
+    const on = listed.id === opened.id && !deleted;
     // A sheet that is a chart alone has no cells to draw.
     const drawn = listed.rowCount > 0;
     const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden || !drawn ? ' away' : ''}`);
@@ -1191,26 +1193,31 @@ function open(other) {
 const firstOf = sheets => sheets.find(listed => !listed.hidden && listed.rowCount) ??
   sheets.find(listed => listed.rowCount) ?? sheets[0];
 
-// The pending changes of the sheet `of`. With none, on opening, that is the first sheet the
-// changes touch, or the first there is.
+// The sheet the host sent this to, by its ID as an anchor, until a sheet is read.
+let sent;
+
+// The pending changes of the sheet `of`. With none, on opening, that is the sheet the host sent
+// this to, or else the first sheet the changes touch, or the first there is.
 async function readChanges(of) {
   let title = of?.title;
+  let asked;
   if (title === undefined) {
     const { sheets } = await gadget.getSpreadsheet();
-    title = firstOf(sheets).title;
+    asked = sheets.find(listed => String(listed.id) === sent && listed.rowCount);
+    title = (asked ?? firstOf(sheets)).title;
   }
   const read = await gadget.getPendingChanges(title);
   const { pending } = read.sheets;
-  // A pending change may rename the sheet shown, and give another its title: it is the same sheet
-  // by its ID, and is read again under the title it is to have.
-  const renamed = pending.find(listed => listed.id === of?.id);
+  // A pending change may rename the sheet shown or asked for, and give another its title: it is
+  // the same sheet by its ID, and is read again under the title it is to have.
+  const renamed = pending.find(listed => listed.id === (of ?? asked)?.id);
   if (renamed && renamed.title !== title) return { read: await gadget.getPendingChanges(renamed.title), title: renamed.title };
   const titled = pending.find(listed => listed.title === title);
   // One there already before one a change adds, which is empty until more is written to it.
   const saved = new Set(read.sheets.saved.map(listed => listed.id));
   const changed = pending.filter(listed => listed.touched && !listed.hidden && listed.rowCount);
   const touched = changed.find(listed => saved.has(listed.id)) ?? changed[0];
-  if (of || !touched || touched === titled) return { read, title };
+  if (of || asked || !touched || touched === titled) return { read, title };
   return { read: await gadget.getPendingChanges(touched.title), title: touched.title };
 }
 
@@ -1265,6 +1272,7 @@ async function load() {
     // What was read takes the place of what is drawn only now that its window is read: a read
     // that fails leaves the sheet drawn, with its own changes, rings and places to stop at.
     [info, sheet, axes, rings, ringed] = [read, found, known, made, keys];
+    sent = undefined;
     if (!same) shown = undefined;
     if (!loaded) scroller.scrollTo(0, 0);
     setStops(rings.map(ring => [ring]));
@@ -1285,6 +1293,7 @@ async function load() {
     // What a refresh draws is where the view rests: its reader has not moved it, nor is stepping to a ring of before.
     [misses, retryAt, behind, rested, aim] = [0, 0, false, place()];
     if (fresh) flash(fresh);
+    saySpot();
     void follow();
   } catch (error) {
     if (current !== generation) return;
@@ -1348,10 +1357,42 @@ function build() {
   new ResizeObserver(() => requestAnimationFrame(follow)).observe(scroller);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Where the reader is
+
+// The sheet shown, in a spreadsheet of several, by its ID and under the title Google has saved
+// for it, since a host shows it and tells an agent of it: a title can be changed, and a sheet
+// only a change adds is no spot yet.
+function here() {
+  const saved = loaded && info.sheets.pending.length > 1 ? info.sheets.saved.find(listed => listed.id === sheet.id) : undefined;
+  return saved && { anchor: String(sheet.id), label: saved.title };
+}
+
+// Shows the sheet `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
+// from anywhere, so it only chooses what to show. False for a sheet no longer there, or one with
+// no cells to draw: the reader stays on the sheet they are on, or starts where readChanges() does.
+async function goTo(anchor) {
+  if (!sheet) {
+    sent = anchor;
+    await load();
+    // Not read, as when Google could not be reached: the sheet may well still be there.
+    if (!loaded) return true;
+  } else {
+    const listed = info.sheets.pending.find(found => String(found.id) === anchor && found.rowCount);
+    if (listed && listed.id !== sheet.id) await open(listed);
+  }
+  return String(sheet?.id) === anchor;
+}
+
 export default {
-  main(session) {
+  async main(session, host) {
     gadget = session;
     build();
+    saySpot = reportSpot(host, here);
     loadOnRefresh(load);
+    // The host sends this to the sheet the reader left, if there is one, before anything is read:
+    // the first sheet read is then that one.
+    await host.onNavigate(goTo);
+    if (!generation) void load();
   },
 };

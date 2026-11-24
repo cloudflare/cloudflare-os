@@ -60,11 +60,7 @@ import type {
   GoogleDocDrawing, GoogleDocImageBytes, GoogleDocPendingDrawing, GoogleDocRenderingReads,
 } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
-import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
-import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
-import DOCS_PREVIEW_MERGE from "./previews/docs/merge.txt";
-import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
-import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { PREVIEW_FILES } from "./previews/files";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
@@ -385,13 +381,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getGadgetUi(): Promise<UiFile[]> {
-    return [
-      { path: "client.js", code: DOCS_PREVIEW_CLIENT },
-      { path: "draw.js", code: DOCS_PREVIEW_DRAW },
-      { path: "merge.js", code: DOCS_PREVIEW_MERGE },
-      { path: "pages.js", code: DOCS_PREVIEW_PAGES },
-      ...SHARED_PREVIEW_FILES,
-    ];
+    return PREVIEW_FILES.docs;
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -813,8 +803,8 @@ async function submitGoogleDocEdit(
 /** What a Doc session needs of its connection to show and queue edits. */
 export type DocChangeQueue = {
   /**
-   * The edits a read replays, oldest first. A connection that records an unreplayable edit in the
-   * record itself lists it too, marked with `invalidatedReason`.
+   * The edits a read replays, oldest first, and among them each that can no longer be replayed
+   * and still awaits its rejection, marked with `invalidatedReason`.
    */
   pending(): GoogleDocPendingAction[];
   /** Records that edit `record` can no longer be replayed, for `reason`. */
@@ -2057,7 +2047,8 @@ export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocRead
  * extending it, so its RPC surface has nothing else to call.
  */
 @validateRpc()
-export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEditSession {
+export class GoogleDocEditSessionImpl extends RpcTarget
+    implements GoogleDocEditSession, GoogleDocRenderingReads {
   #session: GoogleDocSessionImpl;
 
   constructor(options: Omit<GoogleDocSessionOptions, "comments">) {
@@ -2133,5 +2124,29 @@ export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEdit
 
   unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void> {
     return this.#session.unmergeTableCells(cell, tabId);
+  }
+
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges> {
+    return this.#session.getPendingChanges(tabId);
+  }
+
+  readDrawing(tabId: string): Promise<GoogleDocDrawing> {
+    return this.#session.readDrawing(tabId);
+  }
+
+  readPendingDrawing(tabId: string): Promise<GoogleDocPendingDrawing> {
+    return this.#session.readPendingDrawing(tabId);
+  }
+
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
+    return this.#session.readImage(imageId, tabId);
+  }
+
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
+    return this.#session.readFont(family, weight, italic);
+  }
+
+  getRenderingTypes(): Promise<string> {
+    return this.#session.getRenderingTypes();
   }
 }

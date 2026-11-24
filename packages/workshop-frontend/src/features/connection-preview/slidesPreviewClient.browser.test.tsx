@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
+import { previewHost } from './previewBundle'
 import { SLIDES_PREVIEW_BUNDLE } from './slidesPreviewBundle'
 
 type Run = { fontFamily: string, fontSize: number, fontWeight: number, color: string, text: string, link?: string, italic?: true }
@@ -32,6 +33,8 @@ type Deck = {
   noPictures?: boolean
   /** Held back until it resolves: what the next read of drawings answers, as it was when asked. */
   hold?: Promise<void>
+  /** What the next read of the pending changes waits for before it answers. */
+  late?: () => Promise<void>
   /** How much each slide's drawing weighs, 1 unless given here: a read of more than 3 is refused. */
   weights?: Record<string, number>
 }
@@ -60,8 +63,9 @@ let frame: HTMLIFrameElement | undefined
 
 afterEach(() => frame?.remove())
 
-/** Draws `deck` and resolves once every slide it is to draw is drawn. */
-async function draw(deck: Deck, width = 1100, height = 700) {
+/** Draws `deck` and resolves once every slide it is to draw is drawn. `at` is the spot its host sends it to. */
+async function draw(deck: Deck, width = 1100, height = 700, at?: string) {
+  const { host, said, go } = previewHost(at)
   const calls: [string, ...unknown[]][] = []
   let loads = 0
   const called = (name: string) => calls.filter(([method]) => method === name).map(([, ...args]) => args)
@@ -69,6 +73,9 @@ async function draw(deck: Deck, width = 1100, height = 700) {
   const gadget = {
     getPendingChanges: async () => {
       loads++
+      const { late } = deck
+      deck.late = undefined
+      await late?.()
       if (deck.broken) throw new Error('The presentation is gone')
       return { changes: deck.changes ?? [], savedPresentation: outline(deck.saved), presentation: outline(deck.slides ?? deck.saved) }
     },
@@ -106,14 +113,14 @@ async function draw(deck: Deck, width = 1100, height = 700) {
       return { mimeType: 'image/png', width: 1600, height: 900, content: PIXEL.buffer }
     },
   }
-  Object.assign(window, { slidesPreviewGadget: gadget })
+  Object.assign(window, { slidesPreviewGadget: gadget, slidesPreviewHost: host })
   frame = document.body.appendChild(document.createElement('iframe'))
   frame.style.cssText = `width:${width}px;height:${height}px`
-  // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
+  // Started as the gadget UI frame starts it: main(gadget, host) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(SLIDES_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
     import client from ${JSON.stringify(entryUrl)}
-    client.main(parent.slidesPreviewGadget)
+    client.main(parent.slidesPreviewGadget, parent.slidesPreviewHost)
   </script>`
   const doc = () => frame!.contentDocument!
   const all = (selector: string) => [...doc().querySelectorAll<HTMLElement>(selector)]
@@ -128,7 +135,7 @@ async function draw(deck: Deck, width = 1100, height = 700) {
     await expect.poll(() => loads).toBeGreaterThan(before)
   }
   return {
-    doc: doc(), all, called,
+    doc: doc(), all, called, said, go,
     card: (id: string) => doc().querySelector<HTMLElement>(`.card[data-slide="${id}"]`)!,
     film: (id: string) => doc().querySelector<HTMLElement>(`.film[data-slide="${id}"]`)!,
     text: (selector: string) => all(selector).map(node => node.textContent),
@@ -481,15 +488,17 @@ it('steps to the last slide in a pane tall enough to show several', async () => 
   await expect.poll(() => next.disabled).toBe(true)
 })
 
-it('steps one slide at a time among slides listed by title, several of which fit at its head', async () => {
-  const { doc, card } = await draw({ saved: listed(...Array.from({ length: 64 }, (_, n) => `Slide ${n + 1}`)), drawings: {} }, 900, 550)
+it('steps, and is sent, one slide at a time among slides listed by title, several of which fit at its head', async () => {
+  const { doc, said, go } = await draw({ saved: listed(...Array.from({ length: 64 }, (_, n) => `Slide ${n + 1}`)), drawings: {} }, 900, 550)
   const pager = doc.getElementById('pager')!
   const [previous, next] = [...pager.querySelectorAll('button')]
   const reading = () => pager.getAttribute('aria-label')
 
+  // The slide it is sent to is the one it says the reader is on, which its host sends it back to.
+  expect(await go('s52')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: 's52', label: 'Slide 52' })
   // From the last slide drawn into the ones listed, and back.
-  card('s50').scrollIntoView()
-  await expect.poll(reading).toBe('Slide 50 of 64')
+  expect(await go('s50')).toBe(true)
   for (const [button, slide] of [[next, 51], [next, 52], [previous, 51], [previous, 50]] as const) {
     button.click()
     await expect.poll(reading).toBe(`Slide ${slide} of 64`)
@@ -1092,4 +1101,95 @@ it('says so when a presentation has no slides, and offers to try again when it c
   error.querySelector('button')!.click()
   await expect.poll(() => failed.card('s1')?.querySelector('.sheet [data-id="s1-title"]')?.textContent).toBe('s1')
   expect(failed.doc.getElementById('error')).toBeNull()
+})
+
+it('goes to the slide its host names once a deck that could not be read is tried again', async () => {
+  const deck: Deck = { saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'), drawings: {}, broken: true }
+  const { doc, said } = await draw(deck, 1100, 700, 's5')
+  deck.broken = false
+  doc.querySelector<HTMLElement>('#error button')!.click()
+  await expect.poll(() => said).toEqual([{ anchor: 's5', label: 'Slide 5' }])
+})
+
+it('leaves the reader on the slide they have gone to since, when the read its host sent it with answers last', async () => {
+  let answer = () => {}
+  const deck: Deck = { saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'), drawings: {} }
+  // The first read waits, and a refresh starts the one that overtakes it.
+  deck.late = () => new Promise<void>(done => {
+    answer = done
+    frame!.contentWindow!.postMessage({ type: 'refresh' }, '*')
+  })
+  const { said, go } = await draw(deck, 1100, 700, 's3')
+  await expect.poll(() => said).toEqual([{ anchor: 's3', label: 'Slide 3' }])
+
+  const fifth = { anchor: 's5', label: 'Slide 5' }
+  expect(await go('s5')).toBe(true)
+  expect(said.at(-1)).toEqual(fifth)
+  answer()
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(fifth)
+})
+
+it('starts no scroll to its first change when its host names a slide that is there, which the scroll would carry it from', async () => {
+  const scrolls: unknown[] = []
+  const deck: Deck = {
+    saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'),
+    changes: [edit(1, 's5', 's5-title')],
+    drawings: { s5: retitled('s5') },
+    // Before the deck is read, every scroll the frame asks for is noted.
+    late: async () => {
+      const { prototype } = (frame!.contentWindow as Window & typeof globalThis).Element
+      const scroll = prototype.scrollIntoView
+      prototype.scrollIntoView = function (how?: boolean | ScrollIntoViewOptions) {
+        scrolls.push(typeof how === 'object' && how.behavior)
+        scroll.call(this, how)
+      }
+    },
+  }
+  const { doc, said } = await draw(deck, 1100, 700, 's1')
+  const first = { anchor: 's1', label: 'Slide 1' }
+
+  await expect.poll(() => said.at(-1)).toEqual(first)
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), doc.scrollingElement!.scrollTop, scrolls.includes('smooth')]).toEqual([first, 0, false])
+})
+
+it('tells its host of no slide that only a change adds', async () => {
+  const saved = listed('One', 'Two', 'Three', 'Four', 'Five', 'Six')
+  const { said, go } = await draw({
+    saved,
+    slides: [...saved.slice(0, 2), { ...saved[0], id: 'new', title: 'Added' }, ...saved.slice(2)].map((info, index) => ({ ...info, index })),
+    changes: [{ id: 1, type: 'createSlide', slideIds: ['new'], layoutId: 'l', newSlideId: 'new' }],
+    drawings: { new: { drawing: slide([box('n', 20, 20, 'Added')]), saved: null } },
+  }, 1100, 700, 's2')
+
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2' })
+  // It goes there when sent, and has nowhere to tell its host of while there.
+  expect(await go('new')).toBe(true)
+  await expect.poll(() => said.at(-1)).toBeNull()
+})
+
+it('tells its host the slide the reader is on, and goes to one its host names', async () => {
+  // Its host sends it to the slide the reader left, which it opens on, not on its first change.
+  const { all, said, go } = await draw({
+    saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six'),
+    changes: [edit(1, 's1', 's1-title')], drawings: { s1: retitled('s1') },
+  }, 1100, 700, 's3')
+  const top = (slide: number) => Math.round(all('.card')[slide].getBoundingClientRect().top)
+  const third = { anchor: 's3', label: 'Slide 3' }
+
+  await expect.poll(() => said.at(-1)).toEqual(third)
+  // The scroll to the first change, which a deck opens with, has not carried it off.
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), top(2) < 700 / 3]).toEqual([third, true])
+
+  expect(await go('s2')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2' })
+  // The reader's own move is told too.
+  frame!.contentWindow!.scrollTo(0, 0)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's1', label: 'Slide 1' })
+
+  // A slide that is not there leaves the reader where they are.
+  expect(await go('s9')).toBe(false)
+  expect(top(0)).toBeGreaterThanOrEqual(0)
 })
