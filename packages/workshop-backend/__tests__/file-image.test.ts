@@ -336,7 +336,8 @@ describe("images read from a worktree", () => {
   }));
 
   it.each([
-    ["openai", "image_parse_error", 200], ["openai", "invalid_image_format", 200],
+    ["openai", "image_parse_error", 200], ["openai", "invalid_image", 200],
+    ["openai", "invalid_image_format", 200],
     ["openai", "invalid_image_mode", 200], ["openai", "invalid_base64_image", 200],
     ["openai", "unsupported_image_media_type", 200], ["openai", "empty_image_file", 200],
     ["openai", "invalid_image_format", 400], ["openai", "invalid_image_mode", 422],

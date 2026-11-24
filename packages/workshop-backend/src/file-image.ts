@@ -19,7 +19,7 @@ export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history.
 export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider could not decode an image in this request. Convert or replace the file before reading it again.";
 
 const ImageDataErrorCode = z.enum([
-  "image_parse_error", "invalid_image_format", "invalid_image_mode", "invalid_base64_image",
+  "image_parse_error", "invalid_image", "invalid_image_format", "invalid_image_mode", "invalid_base64_image",
   "unsupported_image_media_type", "empty_image_file",
 ]);
 const OpenAIImageError = z.object({code: ImageDataErrorCode});
