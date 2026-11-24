@@ -11,7 +11,7 @@ import { jsonOf, type UnifiSend } from "./consoles";
 import { UnifiError } from "./errors";
 import {
   asObject, parseCamera, parseClient, parseClientDetails, parseDevice, parseDeviceDetails,
-  parseDeviceStatistics, parseLanNetwork, parseLight, parseNetworkInfo, parseNetworkPage, parseNvr,
+  parseDeviceStatistics, parseGuestAuthorization, parseLanNetwork, parseLight, parseNetworkInfo, parseNetworkPage, parseNvr,
   parseProtectInfo, parseSensor, parseSite, parseVoucher, parseWifiInfo, parseWifiSummary, listedAsGateway,
   type NetworkSite, type ProtectNvr,
 } from "./parse";
@@ -199,9 +199,17 @@ export class UnifiApi {
   }
 
   /** Authorizes a guest client. */
+  /**
+   * Authorizes a guest client.
+   * @throws UnifiError (protocol) unless UniFi answers with the grant it made: a bare success, from
+   * a proxy say, doesn't show the guest was let on.
+   */
   async authorizeGuest(siteId: string, clientId: string, limits: GuestLimitsBody): Promise<void> {
-    await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
+    const receipt = await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
       { action: "AUTHORIZE_GUEST_ACCESS", ...limits });
+    const granted = receipt && typeof receipt === "object" ? (receipt as Record<string, unknown>).grantedAuthorization : undefined;
+    if (!granted) throw new UnifiError({ kind: "protocol", message: "UniFi's answer didn't include the guest's new access." });
+    parseGuestAuthorization(true, granted);
   }
 
   /** Ends a guest client's authorization. */

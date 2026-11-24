@@ -11,7 +11,10 @@ const OFFICE_HOST = "AABBCCDDEEFF0000000006797F060000000006C719490000000062ABD4E
 beforeEach(async () => {
   for (const host of [HOME.hostId, OFFICE_HOST]) {
     const budget = env.UNIFI_CONSOLE_BUDGET.get(env.UNIFI_CONSOLE_BUDGET.idFromName(host));
-    // Aborting drops its in-memory state; the next request starts a fresh instance.
-    await runInDurableObject(budget, (_instance, state) => state.abort("reset between tests")).catch(() => undefined);
+    // Its stored back-off goes, then aborting drops its memory; the next request starts afresh.
+    await runInDurableObject(budget, (_instance, state) => {
+      state.storage.kv.delete("blockedUntil");
+      state.abort("reset between tests");
+    }).catch(() => undefined);
   }
 });

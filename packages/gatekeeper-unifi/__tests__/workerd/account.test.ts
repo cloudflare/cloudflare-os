@@ -2,6 +2,7 @@
 // collaborators a binding lets see what it read, what its resource pickers list, and how its one egress
 // shares a console's request budget and cache between every binding.
 
+import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   account, appSubresource, binding, connectCloud, connectDirect, CONSOLE_URL, describeSubresource, holdRequestsWith, hooks,
@@ -16,6 +17,9 @@ afterEach(() => {
 
 const BASE_URL = "https://unifi.ui.com/consoles";
 const OFFICE_HOST = "AABBCCDDEEFF0000000006797F060000000006C719490000000062ABD4EB:1261206303";
+/** The Cloud Connector budget of a console no other test touches. */
+const budgetFor = () => env.UNIFI_CONSOLE_BUDGET.get(env.UNIFI_CONSOLE_BUDGET.idFromName("idle-console"));
+
 const ALLOWED = { ok: { allowedObserverIds: ["observer-1"] } };
 const DENIED = { ok: { allowedObserverIds: [] } };
 
@@ -361,6 +365,18 @@ describe("checking collaborators", () => {
     expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), newcomer)).toEqual(DENIED);
   });
 
+  it("refuses a direct collaborator whose Protect answers from a different NVR behind the same gateway", async () => {
+    const { unifi } = installFake();
+    const { owner, consoleId } = await ownerAndSamDirect(unifi);
+    const otherNvr = homeConsole();
+    otherNvr.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, otherNvr, SAM_KEY);
+    const newcomer = await connectDirect({ localApiKey: SAM_KEY });
+    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), newcomer)).toEqual(DENIED);
+    // Network still answers from the same gateway, so a site binding is checked as usual.
+    expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), newcomer)).toEqual(ALLOWED);
+  });
+
   it("refuses a direct collaborator to a binding made through the cloud, which no URL ties it to", async () => {
     installFake();
     const owner = await connectCloud();
@@ -556,6 +572,14 @@ describe("the account's egress", () => {
     const sent = unifi.calls.length;
     expect(await site.failure("listClients")).toMatch(/^The UniFi console is getting too many requests; retry in \d seconds\.$/);
     expect(unifi.calls.length).toBe(sent);
+  });
+
+  it("keeps a console's back-off after its budget object goes idle and loses its memory", async () => {
+    const budget = budgetFor();
+    await budget.block(Date.now() + 60_000);
+    await runInDurableObject(budget, (_instance, state) => state.abort("go idle")).catch(() => undefined);
+    // A fresh instance, as the next connection to the console would reach.
+    expect(await budgetFor().take(0)).toBeGreaterThan(0);
   });
 
   it("shares a console's Cloud Connector budget, and its back-off, across connections to it", async () => {

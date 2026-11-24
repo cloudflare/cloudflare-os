@@ -258,6 +258,20 @@ describe("reconnecting", () => {
     expect(await account(accountId).identity()).toEqual(before);
   });
 
+  it("refuses a reconnect to a different NVR behind the same gateway", async () => {
+    // The gateway's MAC matches, but Protect now answers from other hardware.
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const { url } = unwrap(await hooks().user(accountId, "reconnect")) as { url: string };
+    const otherNvr = homeConsole();
+    otherNvr.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, otherNvr, "new-local-key-0123456789abcdef");
+    const refused = await postForm(new URL(url).pathname.replace("/gatekeeper/unifi", ""),
+      { mode: "direct", localApiKey: "new-local-key-0123456789abcdef" });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("reaches a different console");
+  });
+
   it("won't reconnect in place a connection whose console never said who it was", async () => {
     // With no MAC address from the first connect, nothing proves a later console is the same one.
     const { console } = installFake();

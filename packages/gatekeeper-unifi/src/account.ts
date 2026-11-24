@@ -53,6 +53,8 @@ export type UnifiIdentity =
     consoleName: string;
     /** The console's MAC addresses, which identify it across reconnects and connections. */
     macs: string[];
+    /** The MACs each application identified the console by (`DirectConsoleFacts.appMacs`). */
+    appMacs: { network: string[]; protect: string[] };
     apps: { network: boolean; protect: boolean };
   };
 
@@ -80,6 +82,7 @@ export type AccountSummary = {
 };
 
 const CONNECTION_KEY = "connection";
+const APPS = ["network", "protect"] as const;
 const CALLBACK_KEY = "callback";
 const CONSOLES_TTL_MS = 60_000;
 const GET_TTL_MS = 5_000;
@@ -254,8 +257,12 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const connection = this.#connection();
     const bound = connection && (await this.listConsoles()).find(c => c.id === consoleId);
     if (!connection || !bound) return null;
-    const { credentials } = connection;
-    return { app, consoleId, macs: bound.macs, ...(credentials.mode === "direct" && { baseUrl: credentials.baseUrl }) };
+    const { credentials, identity } = connection;
+    return {
+      app, consoleId, macs: bound.macs,
+      ...(credentials.mode === "direct" && { baseUrl: credentials.baseUrl }),
+      ...(identity.mode === "direct" && { appMacs: identity.appMacs[app] }),
+    };
   }
 
   /**
@@ -321,7 +328,10 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       if (credentials.mode !== "direct" || target.baseUrl !== credentials.baseUrl) return none;
       // The same URL can serve another console after a replacement: where both connections know
       // their console's hardware, it must be the same.
-      if (target.macs.some(isUsableMac) && identity.macs.some(isUsableMac) && !sameConsole(target.macs, identity.macs)) return none;
+      // By the application's own identity: a gateway in common doesn't make a different NVR the same one.
+      const theirs = target.appMacs ?? [];
+      const ours = identity.appMacs[target.app];
+      if (theirs.some(isUsableMac) && ours.some(isUsableMac) && !sameConsole(theirs, ours)) return none;
       consoleId = identity.consoleId;
     } else {
       let consoles: ConsoleSummary[];
@@ -589,24 +599,33 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     if (existing?.identity.mode === "direct") {
       const before = existing.identity;
       // Bindings keep the console's ID across a reconnect, so it must prove it's the same console,
-      // by MAC address, or they'd follow whatever now answers at the URL. One that never said who
+      // or they'd follow whatever now answers at the URL: each application that identified itself
+      // before, and still runs, by the same hardware as before -- the NVR for Protect, the gateway
+      // for Network, since one in common doesn't make the other the same. One that never said who
       // it was when it connected has nothing to compare against.
-      if (before.macs.length === 0) {
+      const pinned = APPS.filter(app => before.appMacs[app].length > 0);
+      if (pinned.length === 0) {
         throw new ConnectRefusal("This connection never confirmed which console it reaches, so it can't be " +
           "reconnected in place. Remove it and connect the console again.");
       }
-      if (!sameConsole(before.macs, facts.macs)) {
-        throw new ConnectRefusal(facts.macs.length === 0
-          ? "Couldn't confirm that the address still reaches the same console. Try again in a moment."
-          : "That address now reaches a different console. Reconnect to the original console.");
+      const unconfirmed = new ConnectRefusal("Couldn't confirm that the address still reaches the same console. Try again in a moment.");
+      for (const app of pinned) {
+        if (facts.appMacs[app].length > 0 && !sameConsole(before.appMacs[app], facts.appMacs[app])) {
+          throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
+        }
+        if (facts.apps[app] && facts.appMacs[app].length === 0) throw unconfirmed;
       }
-      return { credentials, identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs } };
+      if (!pinned.some(app => facts.appMacs[app].length > 0)) throw unconfirmed;
+      return {
+        credentials,
+        identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs },
+      };
     }
     return {
       credentials,
       identity: {
         mode: "direct", consoleId: `local-${randomHex(8)}`, consoleName: facts.name,
-        macs: facts.macs, apps: facts.apps,
+        macs: facts.macs, appMacs: facts.appMacs, apps: facts.apps,
       },
     };
   }

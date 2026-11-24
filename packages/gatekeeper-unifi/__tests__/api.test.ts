@@ -198,3 +198,15 @@ describe("deleting a voucher", () => {
     }
   });
 });
+
+describe("letting a guest on", () => {
+  it("is done only when UniFi answers with the grant it made", async () => {
+    const { api } = setup();
+    await api.authorizeGuest(HOME.siteId, HOME.guestId, { timeLimitMinutes: 60 });
+    // A bare success, from a proxy say, doesn't show the guest was let on.
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+    const empty = new UnifiApi(async () => ({ ok: true, status: 200, json: { action: "AUTHORIZE_GUEST_ACCESS" }, size: 0 }), HOME.hostId);
+    await expect(empty.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+  });
+});

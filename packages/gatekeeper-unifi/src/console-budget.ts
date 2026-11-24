@@ -11,9 +11,18 @@ import { DurableObject } from "cloudflare:workers";
 import { CLOUD_CONSOLE_BUDGET, TokenBucket } from "./egress";
 import type { UnifiEnv } from "./env";
 
+/** Where a 429's back-off is kept, so it outlasts the object going idle and losing its memory. */
+const BLOCKED_UNTIL_KEY = "blockedUntil";
+
 /** The budget for one console. */
 export class UnifiConsoleBudget extends DurableObject<UnifiEnv> {
   readonly #bucket = new TokenBucket(CLOUD_CONSOLE_BUDGET);
+
+  constructor(ctx: DurableObjectState, env: UnifiEnv) {
+    super(ctx, env);
+    const until = ctx.storage.kv.get<number>(BLOCKED_UNTIL_KEY);
+    if (until !== undefined && until > Date.now()) this.#bucket.block(until);
+  }
 
   /**
    * Waits for a permit, up to `maxWaitMs`.
@@ -26,5 +35,6 @@ export class UnifiConsoleBudget extends DurableObject<UnifiEnv> {
   /** Hands out no permits until `until`, as the connector asked after a 429. */
   async block(until: number): Promise<void> {
     this.#bucket.block(until);
+    if (until > (this.ctx.storage.kv.get<number>(BLOCKED_UNTIL_KEY) ?? 0)) this.ctx.storage.kv.put(BLOCKED_UNTIL_KEY, until);
   }
 }

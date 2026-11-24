@@ -44,6 +44,8 @@ export type ObserveTarget = {
   macs: string[];
   /** The console URL the binding reads through, when its owner connected directly. */
   baseUrl?: string;
+  /** The MACs the owner's direct connection pinned for `app`'s console, which a direct collaborator's must match. */
+  appMacs?: string[];
 };
 
 /** The successful JSON body of a response, or the failure thrown as a `UnifiError`. */
@@ -90,6 +92,11 @@ export type DirectConsoleFacts = {
   name: string;
   apps: { network: boolean; protect: boolean };
   macs: string[];
+  /**
+   * The MACs each application identified its console by: the NVR's for Protect, the gateway's for
+   * Network. They can differ, a gateway managing a separate NVR say, so each is pinned on its own.
+   */
+  appMacs: { network: string[]; protect: string[] };
   networkVersion: string | null;
   protectVersion: string | null;
 };
@@ -112,7 +119,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
   ]);
   if (!network.ok && !protect.ok) throw new UnifiError(mostTelling(network.failure, protect.failure));
 
-  const macs = new Set<string>();
+  const appMacs = { network: new Set<string>(), protect: new Set<string>() };
   let name: string | null = null;
   let protectVersion: string | null = null;
   let networkVersion: string | null = null;
@@ -121,7 +128,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
     const nvr = await send(probeRequest("protect", "/v1/nvrs"));
     if (nvr.ok) {
       const parsed = parseNvr(jsonOf(nvr));
-      if (isUsableMac(parsed.macAddress)) macs.add(parsed.macAddress);
+      if (isUsableMac(parsed.macAddress)) appMacs.protect.add(parsed.macAddress);
       name = parsed.name;
     }
   }
@@ -138,7 +145,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
       if (devices.ok) {
         for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
           if (!device.roles.includes("gateway")) continue;
-          if (isUsableMac(device.macAddress)) macs.add(device.macAddress);
+          if (isUsableMac(device.macAddress)) appMacs.network.add(device.macAddress);
           name ??= device.name;
         }
       }
@@ -147,7 +154,8 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
   return {
     name: name ?? "UniFi console",
     apps: { network: network.ok, protect: protect.ok },
-    macs: [...macs],
+    macs: [...new Set([...appMacs.protect, ...appMacs.network])],
+    appMacs: { network: [...appMacs.network], protect: [...appMacs.protect] },
     networkVersion,
     protectVersion,
   };
