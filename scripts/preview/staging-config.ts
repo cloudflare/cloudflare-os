@@ -323,13 +323,13 @@ function stripBaselineResources(config: StagingConfig): void {
   }
 }
 
-// Previews are throwaway, so invocation logs are worth their cost here even though production
-// leaves them off.
-function previewObservability(config: StagingConfig): ObservabilityConfig {
+// HTTP invocation records contain full URLs, including one-use gatekeeper download grants.
+// Keep application diagnostics, but enable invocation logs only for service-only internal Workers.
+function previewObservability(config: StagingConfig, invocationLogs = false): ObservabilityConfig {
   return {
     ...config.observability,
     enabled: true,
-    logs: { ...config.observability?.logs, invocation_logs: true },
+    logs: { ...config.observability?.logs, invocation_logs: invocationLogs },
   };
 }
 
@@ -359,7 +359,7 @@ function routerGatekeeperServices(gatekeepers: string[]): PreviewService[] {
 function applyInternal(config: StagingConfig): void {
   // Reached only through the bindings of the workers deployed after it, so it is told nothing of
   // the instance: no origin, no mount, no resources.
-  config.previews = { observability: previewObservability(config) };
+  config.previews = { observability: previewObservability(config, true) };
 }
 
 function applyGatekeeper(

@@ -60,7 +60,10 @@ to the sandboxed app.
 The gatekeeper endpoint must authorize the download itself, for example with a short-lived,
 single-use grant minted over its authenticated RPC capability. Same-origin fetch forwards cookies
 when present; it does not add the Workshop RPC login token. In password mode that token lives in
-local storage and authenticates RPC, not this HTTP route.
+local storage and authenticates RPC, not this HTTP route. URL-path grants require full-URL
+invocation logging to stay disabled on every HTTP hop. Production and preview router, backend and
+gatekeeper configs keep invocation logs off while retaining application diagnostics; do not turn
+request-URL logging on for these endpoints.
 
 During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` origin is also
 accepted and rewritten through the frontend's same-origin `/gatekeeper/` proxy. That proxy's

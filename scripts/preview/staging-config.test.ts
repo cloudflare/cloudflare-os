@@ -423,6 +423,16 @@ test("every gatekeeper is bound to the backend by RPC and to the router by HTTP"
   }
 });
 
+test("preview HTTP entrypoints keep bearer URLs out of invocation records", () => {
+  const { packages, configs } = buildAll();
+  for (const { name } of packages) {
+    const observability = previewsOf(configs, name).observability;
+    assert.equal(observability?.enabled, true, name);
+    const isHttpEntrypoint = name === "router" || name === "workshop-backend" || isGatekeeperPackage(name);
+    assert.equal(observability?.logs?.invocation_logs, !isHttpEntrypoint, name);
+  }
+});
+
 test("every gatekeeper is mounted under the router's origin", () => {
   const { packages, configs } = buildAll();
 
