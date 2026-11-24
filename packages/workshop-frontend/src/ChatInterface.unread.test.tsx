@@ -65,7 +65,7 @@ const renderChat = async (chat: AiChatMetadata, chats: NonNullable<ReturnType<ty
       selectedChatId={null} onNavigateToChat={() => {}}
       pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+      onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
   );
   if (chat.spawnerName) await showSpawnedChat();
   return {server, markRead, markUnread, setNotifications};

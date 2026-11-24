@@ -40,8 +40,7 @@ afterAll(async () => {
 });
 
 /** The Workshop's refusal at admission, for a reported subresource the account can't read. */
-const DENIED =
-    "This account can't access some of the data this workspace read through this service.";
+const DENIED = "Your account can't access some of the data read from this resource.";
 /** The Workshop's refusal of a read, for a reported subresource a collaborator can't read. */
 const READ_REFUSED = "blocked because it contains data that a current collaborator";
 
