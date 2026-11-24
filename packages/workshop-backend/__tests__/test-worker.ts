@@ -53,6 +53,8 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+/** What a loaded gadget's and an executeCode run's `fetch()` go through, likewise. */
+export { FetchLoopback } from "../src/server.js";
 /** What an enabled hook delivers its events through, likewise. */
 export { GatekeeperHookLoopback } from "../src/server.js";
 /**

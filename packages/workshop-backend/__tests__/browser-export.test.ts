@@ -413,6 +413,28 @@ describe("renderGadgetInBrowser", () => {
     await vi.waitFor(() => expect(released).toBe(1));
   });
 
+  it("lets the page report focus and register navigation, and never navigates it", async () => {
+    let navigated: string[] = [];
+    let { gadget, harness } = makeHarness(undefined, true, async root => {
+      let host = root.host;
+      await host.reportFocus({anchor: "sheet/q3/cell/B7", label: "Q3 › cell B7", context: "1,204"});
+      await host.reportFocus(null);
+      await host.onNavigate((anchor: string) => { navigated.push(anchor); return true; });
+    });
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      {modules: [{path: "client.js", code: "export default { main() {} };"}]},
+      "Test Gadget",
+      gadget as never,
+      {id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf"},
+    );
+
+    expect(await collect(await stream)).toBe("%PDF-1.4");
+    expect(harness.clientInitialized()).toBe(true);
+    expect(navigated).toEqual([]);
+  });
+
   it("gives the page a host whose openAgentChat() does nothing, with no sidebar to open", async () => {
     let opened: unknown[] = [];
     let { harness } = makeHarness(undefined, true, async root => {

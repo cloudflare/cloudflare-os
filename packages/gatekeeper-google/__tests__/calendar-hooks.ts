@@ -48,6 +48,11 @@ class RecordingApprovalQueue extends RpcTarget implements ApprovalQueue {
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
   }
+  // No test here fetches through the session's caller's policy.
+  async getFetcher(): Promise<Fetcher> {
+    throw new Error("getFetcher() is not supported by this fake queue.");
+  }
+
 }
 
 /**

@@ -2,7 +2,7 @@ import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, RpcStub, RpcTarget, type RpcTransport } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import { createLogger } from "@gadgets/observability/logger";
-import type { GadgetExportFormat, GadgetHost, UiBundle } from "@gadgets/workshop-shared/api";
+import type { GadgetExportFormat, GadgetFocus, GadgetHost, UiBundle } from "@gadgets/workshop-shared/api";
 import { prepareUiPage } from "@gadgets/workshop-shared/ui-page";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import CAPNWEB_MODULE from "./generated/capnweb-module.txt";
@@ -131,9 +131,17 @@ export class BrowserRpcTransport implements RpcTransport {
   }
 }
 
-/** A browser-mode export as a Gadget UI's host. There is no Workshop UI around the page. */
+/**
+ * A browser-mode export as a Gadget UI's host. There is no Workshop UI around the page, so there is
+ * no focus to track and no spot to return to.
+ */
 @validateRpc()
 class ExportGadgetHost extends RpcTarget implements GadgetHost {
+  reportFocus(_focus: GadgetFocus | null): void {}
+
+  // Never calls `navigate`, which Cap'n Web disposes when this returns.
+  async onNavigate(_navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void> {}
+
   // No chat sidebar to open it in.
   async openAgentChat(_chatToken: string): Promise<void> {}
 }

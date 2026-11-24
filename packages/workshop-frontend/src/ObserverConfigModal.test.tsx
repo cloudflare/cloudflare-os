@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ComponentProps, type ReactNode } from 'react'
+import { act, createContext, useContext, type ComponentProps, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -17,6 +17,17 @@ import type { AccountDescription, SupportedResource, VendorDescription } from '@
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 vi.mock('@cloudflare/kumo', () => {
+  const CollapsibleState = createContext<{ open: boolean, toggle: () => void }>({ open: false, toggle: () => {} })
+  const Collapsible = {
+    Root: ({ open, onOpenChange, children }: { open: boolean, onOpenChange: (open: boolean) => void, children: ReactNode }) => (
+      <CollapsibleState.Provider value={{ open, toggle: () => onOpenChange(!open) }}>{children}</CollapsibleState.Provider>
+    ),
+    Trigger: ({ children }: { children: ReactNode }) => {
+      const { open, toggle } = useContext(CollapsibleState)
+      return <button type="button" aria-expanded={open} onClick={toggle}>{children}</button>
+    },
+    Panel: ({ children }: { children: ReactNode }) => useContext(CollapsibleState).open ? <>{children}</> : null,
+  }
   const Dialog = Object.assign(
     ({ children }: { children: ReactNode }) => <div>{children}</div>,
     {
@@ -24,11 +35,22 @@ vi.mock('@cloudflare/kumo', () => {
       Title: ({ children }: { children: ReactNode }) => <h1>{children}</h1>,
     },
   )
+  // A native select, so a test can choose an option and read the shown choice or placeholder.
+  // Choosing the empty placeholder emits null, as Base UI does when the selected option disappears.
   const Select = Object.assign(
-    ({ children }: { children: ReactNode }) => <div data-testid="account-select">{children}</div>,
-    { Option: ({ children }: { children: ReactNode }) => <div>{children}</div> },
+    ({ children, value, placeholder, onValueChange, 'aria-label': label }: {
+      children: ReactNode, value?: string | null, placeholder?: string, onValueChange?: (value: string | null) => void, 'aria-label'?: string
+    }) => (
+      <select data-testid="account-select" aria-label={label} value={value ?? ''}
+        onChange={event => onValueChange?.(event.target.value || null)}>
+        <option value="" disabled>{placeholder}</option>
+        {children}
+      </select>
+    ),
+    { Option: ({ children, value }: { children: ReactNode, value: string }) => <option value={value}>{children}</option> },
   )
   return {
+    Collapsible,
     Dialog,
     Loader: () => <span>Loading</span>,
     Select,
@@ -252,14 +274,12 @@ describe('ObserverConfigModal account selection', () => {
       .find(button => button.textContent === 'Grant the access needed to verify this resource')
     expect(verify?.disabled).toBe(true)
     expect(grant).toBeDefined()
-    expect(rendered.textContent).not.toContain('Ready')
 
     await act(async () => grant!.click())
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
     expect(window.open).toHaveBeenCalledWith('', expect.stringMatching(/^gadgets-connect-/), 'popup,width=520,height=680')
     expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
-    expect(rendered.textContent).not.toContain('Ready')
     expect(verify?.disabled).toBe(true)
   })
 
@@ -324,7 +344,6 @@ describe('ObserverConfigModal account selection', () => {
     const verify = [...rendered.querySelectorAll('button')]
       .find(button => button.textContent === 'Verify and open')
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
-    expect(rendered.textContent).toContain('Ready')
     expect(verify?.disabled).toBe(false)
   })
 
@@ -336,10 +355,192 @@ describe('ObserverConfigModal account selection', () => {
     const verify = [...rendered.querySelectorAll('button')]
       .find(button => button.textContent === 'Verify and open')
     expect(verify?.disabled).toBe(false)
-    expect(rendered.textContent).toContain('Ready')
 
     await act(async () => verify!.click())
     expect(onConfirm).toHaveBeenCalledWith([{ gatekeeperId: 12, accountId: 1 }])
+  })
+
+  it('applies one account choice to every connection of a vendor', async () => {
+    const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+    const granted = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern])
+    const second = { ...NEED, gatekeeperId: 13, resourceTitle: 'Q4 planning', resourceUrl: 'https://docs.google.com/document/d/q4' }
+    const rendered = await render([granted, account(2, 'dan.personal@gmail.com', [DOC_RESOURCE.urlPattern])], {
+      needs: [NEED, second],
+      onConfirm,
+    })
+
+    expect(rendered.querySelectorAll('[data-testid="account-select"]')).toHaveLength(1)
+    await act(async () => findButton(rendered, 'Verify and open')!.click())
+    expect(onConfirm).toHaveBeenCalledWith([
+      { gatekeeperId: 12, accountId: 1 },
+      { gatekeeperId: 13, accountId: 1 },
+    ])
+  })
+
+  describe('per-resource accounts', () => {
+    const granted = (id: number, name: string) => account(id, name, [DOC_RESOURCE.urlPattern])
+    const SECOND = { ...NEED, gatekeeperId: 13, resourceTitle: 'Q4 planning', resourceUrl: 'https://docs.google.com/document/d/q4' }
+    const choose = async (container: HTMLElement, label: string, value: string) => {
+      const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!
+      await act(async () => {
+        select.value = value
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    const toggle = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')][0]
+
+    it('keeps the resource list collapsed on a first open', async () => {
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [NEED, SECOND],
+      })
+      expect(toggle(rendered).getAttribute('aria-expanded')).toBe('false')
+      expect(rendered.textContent).not.toContain('Q4 planning')
+    })
+
+    it('sends a different account for a resource set apart, and shows the vendor picker as mixed', async () => {
+      const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [NEED, SECOND],
+        onConfirm,
+      })
+      await act(async () => toggle(rendered).click())
+      await choose(rendered, 'Account for Q4 planning', '2')
+
+      const vendorPicker = rendered.querySelector<HTMLSelectElement>('select[aria-label$="account for all resources"]')!
+      expect(vendorPicker.selectedOptions[0].textContent).toBe('Multiple accounts')
+      await act(async () => findButton(rendered, 'Verify and open')!.click())
+      expect(onConfirm).toHaveBeenCalledWith([
+        { gatekeeperId: 12, accountId: 1 },
+        { gatekeeperId: 13, accountId: 2 },
+      ])
+    })
+
+    it('resets every resource, overrides included, when the vendor picker changes', async () => {
+      const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [NEED, SECOND],
+        onConfirm,
+      })
+      await act(async () => toggle(rendered).click())
+      await choose(rendered, 'Account for Q4 planning', '2')
+      const vendorPicker = rendered.querySelector<HTMLSelectElement>('select[aria-label$="account for all resources"]')!
+      await choose(rendered, vendorPicker.getAttribute('aria-label')!, '1')
+
+      await act(async () => findButton(rendered, 'Verify and open')!.click())
+      expect(onConfirm).toHaveBeenCalledWith([
+        { gatekeeperId: 12, accountId: 1 },
+        { gatekeeperId: 13, accountId: 1 },
+      ])
+    })
+
+    it('keeps the chosen accounts when a picker clears its value', async () => {
+      const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [NEED, SECOND],
+        onConfirm,
+      })
+      await act(async () => toggle(rendered).click())
+      const vendorPicker = rendered.querySelector<HTMLSelectElement>('select[aria-label$="account for all resources"]')!
+      await choose(rendered, vendorPicker.getAttribute('aria-label')!, '')
+      await choose(rendered, 'Account for Q4 planning', '')
+
+      await act(async () => findButton(rendered, 'Verify and open')!.click())
+      expect(onConfirm).toHaveBeenCalledWith([
+        { gatekeeperId: 12, accountId: 1 },
+        { gatekeeperId: 13, accountId: 1 },
+      ])
+    })
+
+    it('opens the list on a retry with several accounts, so each refused resource can get its own', async () => {
+      const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+      const failure = { accountId: 1, reason: 'No access.' }
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [{ ...NEED, failure }, SECOND],
+        onConfirm,
+      })
+      expect(toggle(rendered).getAttribute('aria-expanded')).toBe('true')
+
+      await choose(rendered, 'Account for Q3 planning', '2')
+      await act(async () => findButton(rendered, 'Verify again')!.click())
+      expect(onConfirm).toHaveBeenCalledWith([
+        { gatekeeperId: 12, accountId: 2 },
+        { gatekeeperId: 13, accountId: 1 },
+      ])
+    })
+  })
+
+  describe('a vendor whose connections need different resource types', () => {
+    const SHEET_RESOURCE: SupportedResource = {
+      urlPattern: 'https://docs.google.com/spreadsheets/d/:sheetId/*',
+      title: 'Google Sheet',
+      description: 'Read and edit spreadsheets you choose.',
+      grantable: true,
+    }
+    const RESOURCES = [DOC_RESOURCE, SHEET_RESOURCE]
+    const SHEET_NEED: ObserverBindingNeed = {
+      gatekeeperId: 13,
+      vendorId: 'google',
+      resourceTitle: 'Budget',
+      resourceUrl: 'https://docs.google.com/spreadsheets/d/budget',
+    }
+
+    it('requests every type the connections need when connecting', async () => {
+      const connectAccount = vi.fn<AuthenticatedApi['connectAccount']>().mockResolvedValue(FLOW)
+      mockConnectPopup()
+      const rendered = await render([], {
+        needs: [NEED, SHEET_NEED],
+        api: fakeApi([], { connectAccount }, RESOURCES),
+      })
+
+      await act(async () => findButton(rendered, 'Connect')!.click())
+      expect(connectAccount).toHaveBeenCalledWith('google', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+    })
+
+    it('withholds verification until the account holds both types, and grants only the missing one', async () => {
+      const ensureAccountResources = vi.fn<AuthenticatedApi['ensureAccountResources']>().mockResolvedValue(FLOW)
+      mockConnectPopup()
+      const docsOnly = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern])
+      const rendered = await render([docsOnly], {
+        needs: [NEED, SHEET_NEED],
+        api: fakeApi([docsOnly], { ensureAccountResources }, RESOURCES),
+      })
+
+      expect(findButton(rendered, 'Verify and open')?.disabled).toBe(true)
+      await act(async () => findButton(rendered, 'Grant the access needed to verify these resources')!.click())
+      expect(ensureAccountResources).toHaveBeenCalledWith(1, [SHEET_RESOURCE.urlPattern])
+    })
+
+    it('allows verification once the account holds both types', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const rendered = await render([both], { needs: [NEED, SHEET_NEED], api: fakeApi([both], {}, RESOURCES) })
+
+      expect(findButton(rendered, 'Verify and open')?.disabled).toBe(false)
+    })
+
+    it('on a retry, warns only about the refused connection and offers to re-authenticate its account', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const rendered = await render([both], {
+        needs: [{ ...NEED, failure: { accountId: 1, reason: 'Access was revoked.' } }, SHEET_NEED],
+        api: fakeApi([both], {}, RESOURCES),
+      })
+
+      const warnings = [...rendered.querySelectorAll('.text-kumo-warning')].map(el => el.textContent)
+      expect(warnings).toEqual([expect.stringContaining('Q3 planning · dan@cloudflare.com — Access was revoked.')])
+      expect(findButton(rendered, 'Re-authenticate this account')).toBeDefined()
+    })
+
+    it('words the retry by distinct accounts when one account was refused twice', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const failure = { accountId: 1, reason: 'Access was revoked.' }
+      const rendered = await render([both], {
+        needs: [{ ...NEED, failure }, { ...SHEET_NEED, failure }],
+        api: fakeApi([both], {}, RESOURCES),
+      })
+
+      expect(rendered.textContent).toContain('the reasons below, re-authenticate this account')
+      expect(rendered.textContent).toContain('share the resources that your account can’t access')
+    })
   })
 
   // A popup flow can end without this dialog ever hearing about it: the user closes it, the
@@ -393,7 +594,7 @@ describe('ObserverConfigModal account selection', () => {
     expect(ensureAccountResources).toHaveBeenCalledTimes(2)
   })
 
-  it('does not present an account refused with valid credentials as ready or as signed out', async () => {
+  it('does not present an account refused with valid credentials as signed out', async () => {
     const refusal = 'This collaborator does not have access to the bound Google Doc.'
     const granted = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern])
     const rendered = await render([granted], {
@@ -401,7 +602,6 @@ describe('ObserverConfigModal account selection', () => {
     })
 
     expect(rendered.textContent).toContain(refusal)
-    expect(rendered.textContent).not.toContain('Ready')
     expect(rendered.textContent).toContain('ask the workspace owner')
     // Checking again stays possible (the owner may since have shared it), and re-authenticating
     // stays on offer for a gatekeeper that refused on an auth error without reporting the expiry.
