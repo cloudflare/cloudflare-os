@@ -171,6 +171,25 @@ describe("an item's details", () => {
     await expect(rotation.catch((error: Error) => error.message)).resolves.not.toMatch(/brand-new-pass|welcome-guests/);
   });
 
+  it("counts a camera or floodlight change as made only when Protect answers with it changed", async () => {
+    const { api, console } = setup();
+    const [doorbell, ptz] = structuredClone(console.protect!.cameras);
+    const light = structuredClone(console.protect!.lights[0]!);
+    await api.patchCamera(HOME.doorbellId, { name: "Porch" });
+    // Protect settles a doorbell message's reset time itself.
+    await api.patchCamera(HOME.doorbellId, cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until: Date.now() + 60_000 }));
+    await api.patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
+    // A bare success, an answer with the old settings, or another camera's, doesn't show the change.
+    for (const json of [undefined, {}, doorbell, ptz]) {
+      await expect(receipt(json).patchCamera(HOME.doorbellId, { name: "Porch" })).rejects.toMatchObject({ kind: "protocol" });
+    }
+    for (const json of [undefined, light]) {
+      await expect(receipt(json).patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } })).rejects.toMatchObject({ kind: "protocol" });
+    }
+    // A setting the answer leaves out is no contradiction.
+    await receipt({ ...light, lightDeviceSettings: {} }).patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
+  });
+
   it("finds a device listed under its ID in another case", async () => {
     const { api } = setup();
     expect((await api.getDevice(HOME.siteId, HOME.apId.toUpperCase())).id).toBe(HOME.apId);

@@ -423,9 +423,14 @@ export class UnifiApi {
     return answering(parseCamera(await this.#json("protect", "GET", `/v1/cameras/${id(cameraId, "camera")}`)), cameraId, "camera");
   }
 
-  /** Changes a camera's settings. */
+  /**
+   * Changes a camera's settings.
+   * @throws UnifiError (protocol) unless Protect answers with the camera as changed (see `showsPatch`).
+   */
   async patchCamera(cameraId: string, patch: CameraPatch): Promise<void> {
-    await this.#json("protect", "PATCH", `/v1/cameras/${id(cameraId, "camera")}`, patch);
+    const updated = await this.#json("protect", "PATCH", `/v1/cameras/${id(cameraId, "camera")}`, patch);
+    answering(parseCamera(updated), cameraId, "camera");
+    showsPatch(updated, patch, "camera");
   }
 
   /** Captures a snapshot. */
@@ -481,9 +486,14 @@ export class UnifiApi {
     return answering(parseLight(await this.#json("protect", "GET", `/v1/lights/${id(lightId, "floodlight")}`)), lightId, "floodlight");
   }
 
-  /** Changes a floodlight's settings. */
+  /**
+   * Changes a floodlight's settings.
+   * @throws UnifiError (protocol) unless Protect answers with the floodlight as changed (see `showsPatch`).
+   */
   async patchLight(lightId: string, patch: LightPatch): Promise<void> {
-    await this.#json("protect", "PATCH", `/v1/lights/${id(lightId, "floodlight")}`, patch);
+    const updated = await this.#json("protect", "PATCH", `/v1/lights/${id(lightId, "floodlight")}`, patch);
+    answering(parseLight(updated), lightId, "floodlight");
+    showsPatch(updated, patch, "floodlight");
   }
 
   // -------------------------------------------------------------------------
@@ -523,6 +533,26 @@ function badRequest(message: string): UnifiError {
 /** A WiFi settings object's password, if it shows one. */
 function passphrase(settings: Record<string, unknown>): unknown {
   return (settings.securityConfiguration as Record<string, unknown> | undefined)?.passphrase;
+}
+
+/**
+ * Checks that Protect's answer to a change, the item as it is now, shows the change: a bare
+ * success, from a proxy say, doesn't, and nor does a setting shown otherwise. One the answer leaves
+ * out is no contradiction, and a doorbell message's `resetAt` is Protect's to settle.
+ */
+function showsPatch(receipt: unknown, patch: object, what: string): void {
+  if (contradictsPatch(receipt, patch)) {
+    throw new UnifiError({ kind: "protocol", message: `UniFi's answer doesn't show the ${what}'s new settings.` });
+  }
+}
+
+/** Whether `shown` isn't an object, or shows a field of `sent`, at any depth, as something else. */
+function contradictsPatch(shown: unknown, sent: object): boolean {
+  return typeof shown !== "object" || shown === null || Object.entries(sent).some(([key, value]) => {
+    if (key === "resetAt" || !(key in shown)) return false;
+    const field = (shown as Record<string, unknown>)[key];
+    return typeof value === "object" && value !== null ? contradictsPatch(field, value) : field !== value;
+  });
 }
 
 /** Whether two IDs name the same item: UniFi's are UUIDs or hex, which may be written in either case. */

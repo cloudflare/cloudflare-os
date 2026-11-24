@@ -358,15 +358,23 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       consoleId = match.reachable ? match.id : null;
     }
     if (consoleId === null) return none;
-    // A site's data comes from whatever serves that site, which the owner's connection pinned by the
-    // site's gateway: a direct collaborator's must have pinned the same one, or its probes, which
-    // its own pin confirms, could reach a replacement site in its place.
-    const sameSite = (requirement: UnifiRequirement): boolean => {
-      if (identity.mode !== "direct" || !("siteId" in requirement)) return true;
+    // A site's data came from whatever served that site, which the owner's direct connection pinned
+    // by the site's gateway: the console this connection calls must have the same one there, or its
+    // probes could reach another site of that ID in its place. A direct collaborator pinned its own;
+    // a cloud one reads it through the Cloud Connector, and is refused where it can't.
+    const sites = new Map<string, boolean>();
+    for (const requirement of requirements) {
+      if (!("siteId" in requirement)) continue;
       const site = requirement.siteId.toLowerCase();
       const theirs = target.siteGateways?.[site] ?? [];
-      return !theirs.some(isUsableMac) || sameConsole(theirs, identity.siteGateways[site] ?? []);
-    };
+      if (sites.has(site) || !theirs.some(isUsableMac)) continue;
+      const ours = identity.mode === "direct"
+        ? identity.siteGateways[site] ?? []
+        : await this.#gatewaysAt(consoleId, requirement.siteId, connection);
+      sites.set(site, sameConsole(theirs, ours));
+    }
+    const sameSite = (requirement: UnifiRequirement): boolean =>
+      !("siteId" in requirement) || sites.get(requirement.siteId.toLowerCase()) !== false;
     const codes = await this.#voucherCodes(consoleId, requirements.filter(sameSite), connection);
     const answers: boolean[] = [];
     // A few at a time: each is a request on this connection's own budget for the console.
@@ -385,6 +393,20 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       })));
     }
     return answers;
+  }
+
+  /**
+   * The gateways a connection's key finds on a site, read as `networkIdentity` reads them: none
+   * where it may not read the site's devices. A failure that proves nothing either way throws.
+   */
+  async #gatewaysAt(consoleId: string, siteId: string, connection: StoredConnection): Promise<string[]> {
+    const send: UnifiSend = async request => {
+      const response = await this.#send(
+        request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId } } : request, GET_TTL_MS, connection);
+      if (!response.ok && !["forbidden", "notFound", "redirect"].includes(response.failure.kind)) throw new UnifiError(response.failure);
+      return response;
+    };
+    return (await networkIdentity(send, siteId)).bySite[siteId.toLowerCase()] ?? [];
   }
 
   /**
@@ -488,13 +510,10 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const { target } = request;
     // Every request that reaches the console, but not an answer already cached, which was checked
     // when it was fetched.
-    const load = async (): Promise<UnifiResponse> => {
-      if (!skipIdentity && target.kind === "app" && identity.mode === "direct") {
-        const refusal = await this.#confirmServing(target.app, siteOf(request.path), connection);
-        if (refusal) return refusal;
-      }
-      return await this.#dispatch(credentials, request, group);
-    };
+    const confirm = !skipIdentity && target.kind === "app" && identity.mode === "direct"
+      ? () => this.#confirmServing(target.app, siteOf(request.path), connection)
+      : undefined;
+    const load = () => this.#dispatch(credentials, request, group, confirm);
     if (request.method !== "GET") {
       this.#cache.invalidate(group);
       try {
@@ -561,7 +580,14 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     return null;
   }
 
-  async #dispatch(credentials: UnifiCredentials, request: UnifiRequest, group: string): Promise<UnifiResponse> {
+  /**
+   * Sends a request once the console's budget allows it.
+   * @param confirm Checks what serves the console (`#confirmServing`), after the wait rather than
+   * before it, since what answers there can change while a request waits its turn.
+   */
+  async #dispatch(
+    credentials: UnifiCredentials, request: UnifiRequest, group: string, confirm?: () => Promise<UnifiResponse | null>,
+  ): Promise<UnifiResponse> {
     const permits = this.#permits(group, credentials);
     const wait = await permits.take();
     if (wait > 0) {
@@ -570,6 +596,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         message: `The UniFi console is getting too many requests; retry in ${Math.ceil(wait / 1000)} seconds.`,
       });
     }
+    const unconfirmed = await confirm?.();
+    if (unconfirmed) return unconfirmed;
     // The connection may have been removed or reconnected while this waited its turn, and UniFi
     // doesn't revoke a key: it must not go out under credentials that are no longer this connection's.
     if (!sameCredentials(credentials, this.#connection()?.credentials)) {

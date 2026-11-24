@@ -425,6 +425,28 @@ describe("checking collaborators", () => {
     expect(await verify(barnSite, newcomer)).toEqual(ALLOWED);
   });
 
+  it("refuses a cloud collaborator a site whose gateway on their console isn't the owner's, though another site's is", async () => {
+    // Site Manager matches their console to the owner's by the barn's gateway, but the home site there has another.
+    const { unifi, console } = installFake();
+    const barn = homeConsole().network!.sites[0]!;
+    barn.site = { ...barn.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    barn.devices[0]!.overview.macAddress = "02:aa:bb:cc:dd:ee";
+    console.network!.sites.push(barn);
+    const theirs = homeConsole();
+    theirs.hostId = "02AABBCCDDEE0000000006797F060000000006C719490000000062ABD4EC:1261206304";
+    theirs.mac = "02AABBCCDDEE";
+    theirs.network!.sites[0]!.devices[0]!.overview.macAddress = "00:11:22:33:44:55";
+    theirs.network!.sites.push(barn);
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [theirs] });
+    const owner = await connectDirect();
+    const alex = await connectCloud(ALEX_KEY);
+    const consoleId = await directConsoleId(owner);
+    const home = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
+    expect(await verify(home, alex, [`${appSubresource(home.props.resource)}/clients/${HOME.siteId}`])).toEqual(DENIED);
+    const barnSite = binding(owner, { kind: "site", consoleId, siteId: "88f7af54-0000-4000-8000-000000000002" });
+    expect(await verify(barnSite, alex)).toEqual(ALLOWED);
+  });
+
   it("refuses a direct collaborator to a binding made through the cloud, which no URL ties it to", async () => {
     installFake();
     const owner = await connectCloud();

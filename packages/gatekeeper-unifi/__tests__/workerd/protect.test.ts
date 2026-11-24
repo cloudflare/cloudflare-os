@@ -176,6 +176,34 @@ describe("a camera", () => {
     expect(replacement.calls.some(call => call.path === "/v1/cameras")).toBe(false);
   });
 
+  it("checks the console when a change's turn comes, not before it waits for one", async () => {
+    // A read the console turns away makes the budget wait. The console is swapped during the
+    // change's wait, but only after a check made before the wait would have passed.
+    const { unifi, console } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    const handle = console.handle.bind(console);
+    let limited = false;
+    console.handle = (app, method, path, query, body) => {
+      if (!limited) {
+        limited = true;
+        return new Response("{}", { status: 429, headers: { "Retry-After": "1", "Content-Type": "application/json" } });
+      }
+      if (path === "/v1/nvrs") setTimeout(() => unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY), 50);
+      return handle(app, method, path, query, body);
+    };
+    expect(await protect.failure("listSensors")).toMatch(/Couldn't confirm/);
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
+    expect(replacement.writes()).toEqual([]);
+  });
+
   it("drops what it cached from a console once a check finds a replacement there", async () => {
     const { unifi } = installFake();
     const accountId = await connectDirect();

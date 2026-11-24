@@ -147,7 +147,8 @@ Checks:
   list, read to the end.
 - A collaborator's cloud connection needs Site Manager to list the console, matched by host ID or
   by MAC address, and is then checked the same way through the Cloud Connector, which reaches only
-  consoles the collaborator owns. A collaborator who only administers the console passes nothing,
+  consoles the collaborator owns. For a site's data from a direct owner, the console it reaches must
+  also have the owner's gateway on that site. A collaborator who only administers the console passes nothing,
   since nothing can show what their role may read.
 
 A binding's title is what UniFi calls the resource, as are the names in approvals: the Workshop
