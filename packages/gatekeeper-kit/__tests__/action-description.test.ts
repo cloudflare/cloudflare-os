@@ -380,6 +380,11 @@ describe("sanitizers", () => {
     expect(codeSpan("abcdef", 3)).toBe("`abc…`");
     expect(plainInline("*a* [b](c) #d")).toBe("a bc d");
     expect(plainInline("  ")).toBe("(unnamed)");
+    // Nothing is left to reorder the sentence it is put in; a joiner a word is spelled with stays.
+    expect(plainInline("Title\u202E fill \u2066red\u2069 \u200F now")).toBe("Title fill red now");
+    expect(plainInline("\u06AF\u0632\u0627\u0631\u0634\u200C\u0647\u0627")).toBe("\u06AF\u0632\u0627\u0631\u0634\u200C\u0647\u0627");
+    expect(plainInline("\u202E\u200F")).toBe("(unnamed)");
+    expect(plainInline("Q3\u000BResults")).toBe("Q3 Results");
   });
 
   it("flattens and caps titles", () => {
