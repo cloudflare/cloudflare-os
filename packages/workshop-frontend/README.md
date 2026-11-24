@@ -47,16 +47,23 @@ or abandoned directory search is disposed as soon as it is no longer needed.
 ## Gatekeeper downloads
 
 Gatekeeper management apps can call the trusted host's `downloadFile(url)` capability to download
-an authenticated setup file. Use an absolute URL on the Workshop origin under the calling vendor's
+a setup file authorized by their gatekeeper. Use an absolute URL on the Workshop origin under the
+calling vendor's
 `/gatekeeper/<vendor>/` route, without a query string or fragment. The host asks the user to confirm
 in a Workshop dialog before fetching. The response must be a successful `Content-Disposition:
 attachment` response; redirects are rejected. Only one download may be pending per management app,
-including its confirmation and body read. Closing the app cancels the download. Download confirmation
-and person selection share one prompt slot; an attempt to open either while the other is visible is
-rejected. The file contents stay in the host and are saved to the user's device, rather than returned
+including its confirmation and body read. Closing the app cancels the download. After confirmation,
+a 60-second timeout covers the request and full body read so a stalled transfer can be retried in
+the same frame. Download confirmation and person selection share one prompt slot; an attempt to
+open either while the other is visible is rejected. The file contents stay in the host and are saved to the user's device, rather than returned
 to the sandboxed app.
+The gatekeeper endpoint must authorize the download itself, for example with a short-lived,
+single-use grant minted over its authenticated RPC capability. Same-origin fetch forwards cookies
+when present; it does not add the Workshop RPC login token. In password mode that token lives in
+local storage and authenticates RPC, not this HTTP route.
+
 During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` origin is also
-accepted and rewritten through the frontend's authenticated `/gatekeeper/` proxy. That proxy's
+accepted and rewritten through the frontend's same-origin `/gatekeeper/` proxy. That proxy's
 error logs omit attachment URLs and upstream error details. `pnpm dev-server` also redacts gatekeeper
 paths in Wrangler’s Miniflare request logger, including debug output, while retaining other
 diagnostics and the interactive terminal. The dev launcher disables Local Explorer trace capture

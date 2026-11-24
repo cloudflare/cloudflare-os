@@ -326,6 +326,55 @@ describe("SandboxedGatekeeperApp navigation", () => {
     }
   });
 
+  it("times out a stalled valid attachment and lets the same frame try again", async () => {
+    await mountApp();
+    let respond!: () => void;
+    const started = new Promise<void>(resolve => {respond = resolve;});
+    let expire!: () => void;
+    const setTimer = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      if (delay === 60_000 && typeof callback === "function") expire = () => callback(...args);
+      return setTimer(callback, delay, ...args);
+    });
+    let count = 0;
+    const server = createServer((_request: unknown, response: {
+      writeHead(status: number, headers: Record<string, string>): void;
+      write(data: string): void; end(data?: string): void;
+    }) => {
+      response.writeHead(200, {"Content-Disposition": "attachment; filename=setup.cfosoperator"});
+      if (++count === 1) response.write("partial");
+      else response.end("complete");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected HTTP test server");
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const response = await realFetch(`http://127.0.0.1:${address.port}${new URL(String(input)).pathname}`, options);
+      respond();
+      return response;
+    });
+    try {
+      const url = `${window.location.origin}/gatekeeper/scheduler/setup`;
+      const pending = approvedDownload(url);
+      pending.catch(() => {});
+      await started;
+      await tick();
+      expect(saveBlob).not.toHaveBeenCalled();
+      expire();
+      await expect(pending).rejects.toThrow(/aborted|timed out/i);
+      await expect(approvedDownload(url)).resolves.toBeUndefined();
+      expect(count).toBe(2);
+      expect(saveBlob).toHaveBeenCalledOnce();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error?: Error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it("does not save an unsuccessful response", async () => {
     await mountApp();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Not found", { status: 404 }));
@@ -376,7 +425,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     expect(saveBlob).not.toHaveBeenCalled();
   });
 
-  it.each(["localhost:8787", "LOCALHOST:8787"])("routes canonical development-backend downloads through the authenticated proxy: %s", async backendHost => {
+  it.each(["localhost:8787", "LOCALHOST:8787"])("routes canonical development-backend downloads through the same-origin proxy: %s", async backendHost => {
     vi.stubEnv("VITE_BACKEND_HOST", backendHost);
     await mountApp();
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("config", {

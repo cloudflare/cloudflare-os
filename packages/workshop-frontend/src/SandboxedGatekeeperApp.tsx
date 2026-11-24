@@ -221,8 +221,8 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     return this.#ui
   }
 
-  // The opaque-origin frame cannot perform authenticated attachment navigation. Keep the download
-  // in the trusted host, scoped to this vendor's route; never pass attachment contents to the frame.
+  // Keep same-origin attachment navigation in the trusted host, scoped to this vendor. The
+  // endpoint authorizes the download; file contents never cross into the opaque-origin frame.
   async downloadFile(url: string): Promise<void> {
     let target: URL
     try {
@@ -250,9 +250,12 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     this.#downloading = true
     const controller = new AbortController()
     this.#downloadAbort = controller
+    let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       if (!await this.#confirmDownload()) throw new Error('Download cancelled.')
       controller.signal.throwIfAborted()
+      // Cover headers and the full body, so a stalled transfer releases this frame's slot.
+      timeout = setTimeout(() => controller.abort(new Error('Download timed out. Try again.')), 60_000)
       const response = await fetch(target.href, {
         credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', cache: 'no-store',
         signal: controller.signal,
@@ -268,6 +271,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
       saveBlobToFile(blob, safeName.startsWith('.') ? `download${safeName}` : safeName)
     } finally {
       // Abort even rejected headers: an unread streaming body must not outlive its slot.
+      clearTimeout(timeout)
       controller.abort()
       this.#downloadAbort = null
       this.#downloading = false
