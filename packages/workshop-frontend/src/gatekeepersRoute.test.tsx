@@ -71,6 +71,8 @@ const renderPage = async () => {
   return api
 }
 const button = (text: string) => Array.from(document.body.querySelectorAll('button')).find(element => element.textContent === text)!
+const cardCount = (text: string) => Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
+  .filter(element => element.textContent?.includes(text)).length
 
 describe('native connector modal cancellation', () => {
   it('lets the user cancel a dismissed auth tab and retry without waiting for expiry', async () => {
@@ -115,5 +117,57 @@ describe('native connector modal cancellation', () => {
     await act(async () => finishStart({ url: 'https://workshop.example/gatekeeper/example/connect', nonce: 'a'.repeat(64) }))
     expect(authentication.open).not.toHaveBeenCalled()
     expect(state.toast).not.toHaveBeenCalled()
+  })
+})
+
+describe('ambient gatekeepers with resources', () => {
+  // An ambient gatekeeper whose resource is created by the agent (e.g. Linux Container) is listed
+  // by listGatekeeperVendors whether or not the user already has its account.
+  const ambient = {
+    id: 'container',
+    description: { displayName: 'Linux Container', url: 'https://example.com', autoProvisionsAccount: true },
+    supportedResources: [{ urlPattern: 'container://instance/*', title: 'Shell environment', connectable: false, creatable: true }],
+  }
+  // `connected` adds the user's account, with the empty resource list the subscription sends when
+  // the account's resource lookup fails.
+  const renderConnectors = async (addable: typeof ambient[], connected = false) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    state.api = {
+      listAddableGatekeepers: async () => addable,
+      listGatekeeperVendors: async () => [ambient],
+      subscribeConnectedAccounts: (subscriber: Parameters<AuthenticatedApi['subscribeConnectedAccounts']>[0]) => {
+        if (connected) subscriber.add(1, { displayName: 'Linux Container', avatar: { url: 'https://example.com/avatar.png' } }, ambient.description, [], true, ambient.id)
+        subscriber.ready()
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]() {} })
+      },
+      onRpcBroken: () => {},
+    } as unknown as RpcStub<AuthenticatedApi>
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<GatekeepersPage />))
+  }
+
+  it('is not offered once its account exists', async () => {
+    await renderConnectors([])
+    expect(cardCount('Linux Container')).toBe(0)
+  })
+
+  it('is offered once, with its resources, while it can still be added', async () => {
+    // listAddableGatekeepers carries no resources.
+    await renderConnectors([{ ...ambient, supportedResources: [] }])
+    expect(cardCount('Linux Container')).toBe(1)
+    const card = Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find(element => element.textContent?.includes('Linux Container'))!
+    await act(async () => card.click())
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Shell environment')
+  })
+
+  it('keeps its resources in Manage once added', async () => {
+    await renderConnectors([], true)
+    const card = Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find(element => element.textContent?.includes('Linux Container'))!
+    await act(async () => card.click())
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Shell environment')
   })
 })

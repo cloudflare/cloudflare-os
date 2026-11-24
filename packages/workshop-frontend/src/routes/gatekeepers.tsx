@@ -677,11 +677,14 @@ function ConnectorsPage() {
 
   // Connectable vendors = OAuth/resource gatekeepers plus opt-in ambient ones, rendered identically.
   // An ambient vendor is recognized by `description.autoProvisionsAccount`, which routes the connect
-  // action to a direct (no-OAuth) add instead.
+  // action to a direct (no-OAuth) add instead. An ambient vendor with a resource of its own (a Linux
+  // Container's creatable instances, say) is also among `vendors`; `addable` alone decides whether
+  // it's offered, since it lists one just when adding it would mint an account, but carries no
+  // resources, so the card takes them from the `vendors` entry for search and the Add dialog.
   const availableVendors = useMemo<VendorEntry[]>(
     () => [
-      ...vendors,
-      ...addable,
+      ...vendors.filter((v) => !v.description.autoProvisionsAccount),
+      ...addable.map((a) => vendors.find((v) => v.id === a.id) ?? a),
     ],
     [vendors, addable],
   )
@@ -706,7 +709,8 @@ function ConnectorsPage() {
     modalTarget?.kind === 'connect'
       ? availableVendors.find((v) => v.id === modalTarget.vendorId)
       : activeAccount
-      ? availableVendors.find((v) => v.id === activeAccount.vendorId) ?? {
+      // `vendors`, not `availableVendors`: an added ambient vendor is in neither half of the latter.
+      ? vendors.find((v) => v.id === activeAccount.vendorId) ?? {
           id: activeAccount.vendorId,
           description: activeAccount.vendorDescription,
           supportedResources: activeAccount.supportedResources,
