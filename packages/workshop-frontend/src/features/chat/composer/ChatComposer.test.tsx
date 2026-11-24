@@ -303,9 +303,7 @@ describe("ChatComposer", () => {
       first.report(1, sentence, lateResult);
     });
     expect(first.abort).toHaveBeenCalledOnce();
-    expect(onSend).toHaveBeenCalledWith(
-      "Show me the forecast", null, undefined, undefined, undefined,
-    );
+    expect(onSend).toHaveBeenCalledWith("Show me the forecast", null, {});
     expect(textarea.value).toBe("");
     expect(strip()).toBeNull();
 
@@ -567,9 +565,7 @@ describe("ChatComposer", () => {
     expect(onSend).toHaveBeenCalledWith(
       "Build a dashboard",
       "model-a",
-      undefined,
-      undefined,
-      undefined,
+      {},
     );
     expect(textarea.disabled).toBe(false);
 
@@ -669,7 +665,7 @@ describe("ChatComposer", () => {
 
       await typeText(textarea(), "Make it dark.");
       await pressEnter();
-      expect(onSend).toHaveBeenCalledWith("Make it dark.", "model-a", undefined, undefined, undefined);
+      expect(onSend).toHaveBeenCalledWith("Make it dark.", "model-a", {});
       expect(button("Stop agent")!.disabled).toBe(true);
       await act(async () => finishSend!());
       expect(textarea().value).toBe("");
@@ -695,7 +691,7 @@ describe("ChatComposer", () => {
 
       await render({ onSend, onStop, queuedSteers: [], isAgentActive: false });
       await pressEnter();
-      expect(onSend).toHaveBeenCalledWith("Half a thought\n\nA", "model-a", undefined, undefined, undefined);
+      expect(onSend).toHaveBeenCalledWith("Half a thought\n\nA", "model-a", {});
     });
 
     it("keeps the dropped steers in the draft when Stop fails", async () => {
@@ -823,9 +819,7 @@ describe("ChatComposer", () => {
     expect(onSend).toHaveBeenCalledWith(
       "/deploy production",
       "model-a",
-      undefined,
-      undefined,
-      undefined,
+      {},
     );
   });
 
@@ -862,7 +856,7 @@ describe("ChatComposer", () => {
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(overseer.listSlashCommands).not.toHaveBeenCalled();
     expect(onSend).toHaveBeenCalledWith(
-      "//deploy literally", null, undefined, undefined, undefined,
+      "//deploy literally", null, {},
     );
   });
 
@@ -1043,5 +1037,138 @@ describe("ChatComposer", () => {
     });
     expect(changed.timeout).toBeUndefined();
     expect(changed.actions).toBeUndefined();
+  });
+
+  describe("focus chip", () => {
+    type ComposerProps = Parameters<typeof ChatComposer>[0];
+    const budgetFocus = {
+      gadgetId: 3,
+      gadgetTitle: "Budget",
+      spot: { anchor: "sheet/q3/cell/B7", label: "Q3 › cell B7", context: "1,204,331" },
+    };
+    const budget = { focus: budgetFocus, offerId: 1 };
+
+    beforeEach(() => {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+    });
+    const render = (props: Partial<ComposerProps>) => act(async () => {
+      root!.render(
+        <ChatComposer
+          createCapsuleGatekeeper={async () => null}
+          getOverseer={() => ({} as RpcStub<Overseer>)}
+          onSend={() => {}}
+          isAgentActive={false}
+          models={[]}
+          selectedModel={{ id: "model-a" }}
+          onModelChange={() => {}}
+          {...props}
+        />,
+      );
+    });
+    const textarea = () => container!.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    const dismissButton = () => container!.querySelector<HTMLButtonElement>(
+      '[aria-label^="Don\'t send"]');
+    const send = async (text: string) => {
+      await typeText(textarea(), text);
+      await act(async () => {
+        textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+
+    it("shows a spot's context, which only the chip shows, on a tap or the keyboard", async () => {
+      await render({ focusOffer: budget });
+      const face = container!.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+      expect(face.textContent).toBe("Budget › Q3 › cell B7");
+      expect(document.body.textContent).not.toContain("1,204,331");
+
+      // A tap, Enter and Space all click the button.
+      await act(async () => face.click());
+      expect(face.getAttribute("aria-expanded")).toBe("true");
+      expect(document.body.textContent).toContain("1,204,331");
+    });
+
+    it("shows the gadget and the spot, and sends them without the title", async () => {
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      await render({ onSend, focusOffer: budget });
+
+      expect(container!.textContent).toContain("Budget › Q3 › cell B7");
+      await send("Why is this so low?");
+      expect(onSend).toHaveBeenCalledExactlyOnceWith("Why is this so low?", "model-a", {
+        focus: { gadgetId: 3, spot: budgetFocus.spot },
+      });
+    });
+
+    it("is dismissed for one message", async () => {
+      let finishSend: (() => void) | undefined;
+      const onSend = vi.fn<ComposerProps["onSend"]>(
+        () => new Promise<void>((resolve) => { finishSend = resolve; }),
+      );
+      await render({ onSend, focusOffer: { focus: { gadgetId: 3, gadgetTitle: "Budget" }, offerId: 1 } });
+
+      await act(async () => dismissButton()!.click());
+      expect(dismissButton()).toBeNull();
+      expect(document.activeElement).toBe(textarea());
+      await send("Start over");
+      expect(onSend).toHaveBeenLastCalledWith("Start over", "model-a", {});
+      expect(onSend.mock.lastCall![2].focus).toBeUndefined();
+
+      await act(async () => finishSend!());
+      expect(container!.textContent).toContain("Budget");
+      await send("And this one?");
+      expect(onSend).toHaveBeenLastCalledWith("And this one?", "model-a", {
+        focus: { gadgetId: 3 },
+      });
+    });
+
+    it("turns down only the offer dismissed, whatever the next one names", async () => {
+      await render({ focusOffer: budget });
+      await act(async () => dismissButton()!.click());
+      // The same offer, with the spot's label updated by a repeat report.
+      const relabeled = { ...budgetFocus, spot: { ...budgetFocus.spot, label: "Q3 › B7" } };
+      await render({ focusOffer: { focus: relabeled, offerId: 1 } });
+      expect(dismissButton()).toBeNull();
+
+      await render({ focusOffer: { focus: relabeled, offerId: 2 } });
+      expect(container!.textContent).toContain("Budget › Q3 › B7");
+      expect(dismissButton()).not.toBeNull();
+    });
+
+    it("is never attached to a slash command", async () => {
+      const skill = {
+        selection: { gatekeeperId: 42, commandId: "review" },
+        name: "review",
+        description: "Review the current project.",
+        providerLabel: "Projects",
+      };
+      const overseer = {
+        listSlashCommands: vi.fn<() => Promise<SlashCommandChoice[]>>(async () => [skill]),
+      } as unknown as RpcStub<Overseer>;
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      await render({ onSend, focusOffer: budget, getOverseer: () => overseer });
+
+      const add = container!.querySelector<HTMLButtonElement>('[aria-label="Add to conversation"]')!;
+      await act(async () => add.click());
+      await act(async () => vi.waitFor(() => expect(
+        Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+          .some((option) => option.textContent?.includes("review")),
+      ).toBe(true)));
+      await act(async () => {
+        Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+          .find((option) => option.textContent?.includes("review"))!.click();
+        await new Promise(requestAnimationFrame);
+      });
+
+      expect(dismissButton()).toBeNull();
+      await act(async () => {
+        textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(onSend).toHaveBeenCalledOnce();
+      expect(typeof onSend.mock.lastCall![0]).toBe("object");
+      expect(onSend.mock.lastCall![2].focus).toBeUndefined();
+    });
   });
 });

@@ -7,7 +7,7 @@ import { diffRenderExtension, setDiffRender } from './diffRenderer'
 
 // Mounts a real EditorView to cover the parts diffRenderer.test.ts can't reach state-side:
 // that the change-bar gutter and the line-number gutter actually render the diff layer's line
-// markers and deletion-zone columns.
+// markers and deleted lines' cells.
 
 function mountView(side: 'modified' | 'original', doc: string): EditorView {
   return new EditorView({
@@ -55,15 +55,17 @@ describe('diff gutters in a mounted view', () => {
     view.destroy()
   })
 
-  it('renders a deletion zone widget with row-aligned gutter columns', () => {
+  it('gives each deleted line its own row and gutter cells', () => {
     const view = mountView('modified', 'aaa\nccc')
-    renderModel(view, 'aaa\ngone\nccc')
+    renderModel(view, 'aaa\ngone\ngone too\nccc')
     const dom = view.dom
-    expect(dom.querySelector('.gadgets-deleted-code-zone')?.textContent).toBe('gone')
-    // The zone's own gutter columns: a bar row and the deleted line's original number.
-    expect(dom.querySelector('.gadgets-deleted-bar-zone .gadgets-deleted-num-row'))
-      .not.toBeNull()
-    expect(dom.querySelector('.gadgets-deleted-margin')?.textContent).toBe('2')
+    expect([...dom.querySelectorAll('.gadgets-deleted-code-row')].map(row => row.textContent))
+      .toEqual(['gone', 'gone too'])
+    // Each deleted line's own change bar and original number.
+    expect(dom.querySelectorAll('.gadgets-diff-gutter-bar .gadgets-diff-gutter-delete'))
+      .toHaveLength(2)
+    expect([...dom.querySelectorAll('.gadgets-deleted-margin')].map(cell => cell.textContent))
+      .toEqual(['2', '3'])
     view.destroy()
   })
 })

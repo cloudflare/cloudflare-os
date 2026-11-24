@@ -65,9 +65,16 @@ through logs and errors, then everything else.
   returns whole because each is an API value that holds no credential: `describe()`'s profile, a
   shared workspace's owner and a workspace's notification mute. It builds everything else field by
   field, and names neither a connected account's description nor a blueprint's id.
-- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
-  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
-  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
+- `OverseerDurableObject.applyAdminWrite()` stays reachable only over the Durable Object binding
+  and is called only by `AdminApiImpl.writeWorkspace()`. It re-checks the admin and the writes
+  switch in its own environment, and appends its record to the deployment-wide log before any
+  effect, so that a write whose record cannot be written does not happen. Flag a path that changes
+  a workspace for an admin without these, and any code that reads `ADMIN_WORKSPACE_WRITES` other
+  than through `adminWorkspaceWritesEnabled()`.
+- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS` and `ADMIN_WORKSPACE_WRITES` are
+  env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
+  enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without
+  `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the

@@ -18,6 +18,7 @@ connect the account's capabilities. There's no single switch — the pieces turn
 | `DISABLE_PASSWORD_AUTH=true` | Hides username/password, leaving gatekeeper sign-in only (ignored unless `AUTH_GATEKEEPERS` is non-empty, to avoid lockout). |
 | `ADMIN_WORKSPACE_ACCESS_MAX=off\|metadata` | Whether admins may inspect the metadata of a workspace and of a user's account (`AdminApi.inspectWorkspace()`, `AdminApi.inspectUser()`); `off` turns inspection off whatever admins choose in the admin panel. Default `metadata`; any other value counts as `off`. Set on the backend Worker (its vars, or `.dev.vars` locally); a deploy tool that rewrites the backend's variables must carry it, or it falls back to its default. See [admin-access.md](admin-access.md), which says where each kind of deployment sets it. |
 | `ADMIN_AUDIT_RETENTION_MIN_DAYS=90` | The fewest days the admin audit log keeps a record; admins choose at least this in the admin panel. Default 90; at most 3650, and a larger value counts as 3650. Set on the backend Worker (its vars, or `.dev.vars` locally); a deploy tool that rewrites the backend's variables must carry it, or it falls back to its default. See [admin-access.md](admin-access.md), which says where each kind of deployment sets it. |
+| `ADMIN_WORKSPACE_WRITES=on` | Lets admins change a workspace (stop an agent, restart the workspace) through `AdminApi.writeWorkspace()`. Default off; any other value counts as off. No write gives an admin access to a workspace's content. Set on the backend Worker (its vars, or `.dev.vars` locally); a deploy tool that rewrites the backend's variables must carry it, or writes go off. See [admin-access.md](admin-access.md#writes), which says where each kind of deployment sets it. |
 
 The primary account key is always the user's **verified email**: signing in with any allowlisted
 gatekeeper that yields the same verified email maps to the same account.
@@ -45,8 +46,7 @@ CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
-# Required unless the WORKERS_AI binding carries gateway traffic (see below); always required
-# for the google provider:
+# Required unless the WORKERS_AI binding carries gateway traffic (see below):
 CF_AI_GATEWAY_API_TOKEN=...
 ```
 
@@ -61,10 +61,7 @@ webFetch tool's document-to-Markdown conversion runs on, so unbinding it opts ou
 the gateway transport. Without the binding transport, set
 `CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
 execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
-account or a different one). The token stays required for the `google` provider regardless of the
-binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
-it, so the platform server itself still needs the token). Every provider, Workers AI included,
-routes through the same Gateway.
+account or a different one). Every provider, Workers AI included, routes through the same Gateway.
 
 Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
 environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can

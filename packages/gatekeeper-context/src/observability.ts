@@ -6,15 +6,14 @@ export type ContextObservabilityFields = {
   branch: string;
   collectionId: string;
   commit: string;
-  dir: string;
+  consecutiveFailures: number;
+  documentCount: number;
   filepath: string;
   invalidSkillManifestCount: number;
   invalidSkillManifests: Array<{ filepath: string; reason: string }>;
   maxBodyBytes: number;
-  maxGitDirBytes: number;
   operation: string;
   repoName: string;
-  sizeBytes: number;
   tokenId: number | string;
   vendorId: string;
 };

@@ -19,25 +19,28 @@ const PRUNE_BATCH = 1000;
 // The longest admin or workspace filter list() takes; workspace ids are 64 characters.
 const MAX_FILTER_LENGTH = 1000;
 const TOP_LIMIT = 10;
-// A record's method, and the user an access record's target belongs to (the account's user, or the
-// workspace's owner), which stay in the JSON (see the schema below).
+// A record's method, and the user an access or write record's target belongs to (the account's
+// user, or the workspace's owner), which stay in the JSON (see the schema below).
 const METHOD = "json_extract(record, '$.method')";
 const TARGET =
     "coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner'))";
+// Rows counted as writes: one per write.
+const WRITES = "COUNT(*) FILTER (WHERE kind = 'write')";
 
 // The table's definition from its opening parenthesis: the text SQLite stores for it, which the
 // constructor compares with this one.
 const TABLE = `(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting')),
+  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
   admin TEXT NOT NULL,
   workspace_id TEXT,
   workspace_title TEXT,
   exposed TEXT CHECK (exposed IN ('metadata', 'content')),
   record TEXT NOT NULL CHECK (json_valid(record)),
-  CHECK ((kind = 'workspace') = (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
-  CHECK ((kind = 'setting') = (exposed IS NULL))
+  CHECK ((kind IN ('workspace', 'write')) =
+      (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
+  CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))
 ) STRICT`;
 
 type AuditRow = {
@@ -57,22 +60,24 @@ type AuditRow = {
  * AdminApiImpl before it refuses an open that never reached the workspace. An
  * AdminUserAccessRecord is appended the same way, by the inspected account's Durable Object or by
  * AdminApiImpl. An AdminSettingRecord is appended by AdminSettings before its change takes effect.
+ * An AdminWriteRecord is appended by the workspace before the write takes effect.
  * Always addressed as getByName(""). Callers pass the retention they read for the call; whatever
  * they pass, a record is kept at least minAdminAuditRetentionDays() days. Each method given one
  * first deletes up to 1000 rows older than it, and never lists or counts one.
  *
  * Schema (the integration suite installs a trigger on the table by this name). Each field of a
- * record is stored once: kind, at (epoch ms), admin and, for access to a workspace, workspace_id
- * and workspace_title are columns, and `exposed` is 'metadata' for every access record; the rest
- * of the record is JSON in `record`. The constructor rebuilds a table stored under another
- * definition.
+ * record is stored once: kind, at (epoch ms), admin and, for access or a write to a workspace,
+ * workspace_id and workspace_title are columns, and `exposed` is 'metadata' for every access record
+ * and NULL for any other; the rest of the record is JSON in `record`. The constructor rebuilds a
+ * table stored under another definition.
  *   admin_audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
- *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting')), admin TEXT NOT NULL,
- *     workspace_id TEXT, workspace_title TEXT,
+ *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+ *     admin TEXT NOT NULL, workspace_id TEXT, workspace_title TEXT,
  *     exposed TEXT CHECK (exposed IN ('metadata', 'content')),
  *     record TEXT NOT NULL CHECK (json_valid(record)),
- *     CHECK ((kind = 'workspace') = (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
- *     CHECK ((kind = 'setting') = (exposed IS NULL))) STRICT;
+ *     CHECK ((kind IN ('workspace', 'write')) =
+ *         (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
+ *     CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))) STRICT;
  *   indexes (at), (admin, seq), (workspace_id, seq), (kind, seq), (exposed, seq),
  *     (json_extract(record, '$.method'), seq),
  *     (coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner')), seq)
@@ -85,17 +90,21 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     // SQLite cannot alter a CHECK, and a table created from another definition refuses records its
     // CHECKs do not know, so a table whose stored definition is not this one is copied into one
     // that is. Any change to TABLE that keeps the columns is carried this way; one that changes
-    // them needs its own copy statement. Each row keeps its seq, but AUTOINCREMENT's high-water
-    // mark is not carried, so a seq above the highest row copied (one whose row has since been
-    // deleted) can be handed out again, which only a list cursor held across the rebuild could
-    // notice. The copy is proportional to the log and runs once. The stored text before the
-    // parenthesis is not compared: a rename rewrites the name there, quoted.
+    // them needs its own copy statement. Each row keeps its seq, and the next seq follows the
+    // highest one the table ever issued, a pruned record's included, so a list cursor stays valid:
+    // no later record is numbered below it. The copy is proportional to the log and runs once.
+    // The stored text before the parenthesis is not compared: a rename rewrites the name there,
+    // quoted.
     let { sql: stored } = sql.exec<{ sql: string }>(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admin_audit'").one();
     if (stored.slice(stored.indexOf("(")) !== TABLE) {
       try {
         ctx.storage.transactionSync(() => {
           sql.exec(`CREATE TABLE admin_audit_next ${TABLE}`);
+          // SQLite keeps the highest seq a table has issued in sqlite_sequence, and the copy alone
+          // would start that again from the highest row left.
+          sql.exec(`INSERT INTO sqlite_sequence (name, seq)
+              SELECT 'admin_audit_next', seq FROM sqlite_sequence WHERE name = 'admin_audit'`);
           sql.exec("INSERT INTO admin_audit_next SELECT * FROM admin_audit");
           sql.exec("DROP TABLE admin_audit");
           sql.exec("ALTER TABLE admin_audit_next RENAME TO admin_audit");
@@ -129,11 +138,11 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
   /** Store one record. Throws when it cannot be stored, which fails the call or change it records.
    * Prunes first with `retentionDays`, which only a caller holding the authoritative config passes:
    * an admin view reads the KV mirror, whose retention may be one an admin has since raised, so
-   * its records are stored without pruning, and the next listing prunes. An AdminAccessRecord's
-   * workspaceTitle is stored cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH, and its
-   * workspaceOwner as auditOwnerId() gives it, whatever the caller sent: the fields a workspace's
-   * members choose, neither bounded otherwise. An AdminUserAccessRecord's userId is kept as
-   * auditOwnerId() gives it too. */
+   * its records are stored without pruning, and the next listing prunes. An AdminAccessRecord's or
+   * an AdminWriteRecord's workspaceTitle is stored cut by cutAdminAuditText() to
+   * MAX_ADMIN_AUDIT_ARG_LENGTH, and its workspaceOwner as auditOwnerId() gives it, whatever the
+   * caller sent: the fields a workspace's members choose, neither bounded otherwise. An
+   * AdminUserAccessRecord's userId is kept as auditOwnerId() gives it too. */
   append(record: AdminAuditRecord, retentionDays?: number): void {
     if (retentionDays !== undefined) this.#prune(retentionDays);
     // Each field is stored once, in its column or in the JSON, never both: a title stored twice let
@@ -141,7 +150,8 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     let workspaceId: string | null = null;
     let workspaceTitle: string | null = null;
     let rest: Record<string, unknown>;
-    if (record.kind === "workspace") {
+    if (record.kind === "workspace" || record.kind === "write") {
+      // A write record is stored as an access record is.
       let {
         kind: _kind, at: _at, admin: _admin, workspaceId: id, workspaceTitle: title,
         workspaceOwner: owner, ...fields
@@ -161,7 +171,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     }
     // The table's `exposed` column says what an access record's answer held, and a view answers
     // with metadata alone.
-    let exposed = record.kind === "setting" ? null : "metadata";
+    let exposed = record.kind === "setting" || record.kind === "write" ? null : "metadata";
     this.ctx.storage.sql.exec(
       `INSERT INTO admin_audit (at, kind, admin, workspace_id, workspace_title, exposed, record)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -247,11 +257,14 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
 
     let counts = new Map<number, number>();
     let totalEvents = 0;
-    for (let { day, count } of sql.exec<{ day: number; count: number }>(
-        `SELECT at / ${DAY_MS} AS day, COUNT(*) AS count
+    let writes = 0;
+    type DayRow = { day: number; count: number; writeCount: number };
+    for (let { day, count, writeCount } of sql.exec<DayRow>(
+        `SELECT at / ${DAY_MS} AS day, COUNT(*) AS count, ${WRITES} AS writeCount
          FROM admin_audit WHERE ${where} GROUP BY day`, ...params)) {
       counts.set(day, count);
       totalEvents += count;
+      writes += writeCount;
     }
     let firstDay = start / DAY_MS;
     let byDay = Array.from({ length: days }, (_, i) => ({
@@ -259,7 +272,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       count: counts.get(firstDay + i) ?? 0,
     }));
 
-    return { days, totalEvents, byDay, topAdmins: this.#topAdmins(where, params) };
+    return { days, totalEvents, byDay, topAdmins: this.#topAdmins(where, params), writes };
   }
 
   // The admins with the most rows matching `where`, most first.
@@ -290,7 +303,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
 
 function recordFromRow(row: AuditRow): AdminAuditRecord {
   let rest = JSON.parse(row.record) as Record<string, unknown>;
-  let columns = row.kind === "workspace"
+  let columns = row.kind === "workspace" || row.kind === "write"
       ? { workspaceId: row.workspace_id, workspaceTitle: row.workspace_title } : {};
   return { ...rest, kind: row.kind, at: new Date(row.at), admin: row.admin, ...columns } as
       AdminAuditRecord;

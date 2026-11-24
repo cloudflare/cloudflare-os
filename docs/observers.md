@@ -159,6 +159,15 @@ The compensating controls are:
   returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
 
+An admin write (`AdminApi.writeWorkspace()`, run by
+`OverseerDurableObject.applyAdminWrite()`) also runs without the admin being verified as an
+observer or registered with the workspace's gatekeepers. It does what its operation does for a
+member, and the workspace's members see only that effect, with nothing naming an admin. No write
+gives the admin access to anything in the workspace. Its compensating controls are its own:
+
+- `ADMIN_WORKSPACE_WRITES`, off by default and out of an admin session's reach;
+- the record written before the effect, in the deployment-wide audit log.
+
 [admin-access.md](admin-access.md) is the design record.
 
 ---

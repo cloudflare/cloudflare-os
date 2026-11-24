@@ -1,14 +1,14 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
   createAdminAccessError, createSnapshotSharingError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -54,7 +54,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, type Steer, type StampedMessageFocus, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
@@ -67,15 +67,19 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
-  withholdCreationContent, withholdHookContent,
+  adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
+  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
+  withholdHookContent,
   type AdminViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
+import {
+  chatChangeStatuses, foldCompactedCode, isCompactionTurn, isTurnPrompt,
+} from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -1801,7 +1805,7 @@ class OverseerImpl implements AgentHooks {
       });
       this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
           "The agent could not be resumed because it was interrupted too many times without " +
-          "making progress.");
+          "making progress.", "resume_exhausted");
       finish();
       return;
     }
@@ -7871,14 +7875,41 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Checks a client-supplied focus (see ChatMessageOptions.focus) and stamps it with the gadget's
+  // current title. Like a capsule, it may name only a gadget of the workspace (not a worktree or
+  // a gatekeeper, nor a gadget still pending in another chat). capnweb-validate has checked its
+  // shape but not its lengths, and passes extra properties through, so the result is rebuilt
+  // from the declared fields.
+  #stampFocus(chatId: number, focus: MessageFocus | undefined)
+      : StampedMessageFocus | undefined {
+    if (!focus) return undefined;
+    let {gadgetId, spot} = focus;
+    let gadget = this.storage.gadgets.get(gadgetId);
+    if (!gadget || gadget.type === "worktree" ||
+        (gadget.pending && gadget.pending.chatId !== chatId)) {
+      throw new Error(`Chat message is focused on ${gadgetId}, which is not a gadget in this ` +
+          `workspace.`);
+    }
+    if (!spot) return {gadgetId, gadgetTitle: gadget.title};
+    let {anchor, label, context} = spot;
+    if (anchor.length > MAX_FOCUS_ANCHOR_LENGTH || label.length > MAX_FOCUS_LABEL_LENGTH ||
+        (context?.length ?? 0) > MAX_FOCUS_CONTEXT_LENGTH) {
+      throw new Error("Chat message's focus is longer than the GadgetFocus limits allow.");
+    }
+    return {gadgetId, gadgetTitle: gadget.title,
+            spot: context === undefined ? {anchor, label} : {anchor, label, context}};
+  }
+
   #commitPreparedChatMessage(
       chatId: number, timestamp: Date, author: AiChatAuthorInfo,
       prepared: PreparedChatMessage, capsules: CapsuleSpecifier[] | undefined,
       attachments: ChatAttachmentRef[] | undefined,
       formats: MessageFormatRef[] | undefined,
+      focus: MessageFocus | undefined,
       scratchWorktree?: PreparedScratchWorktree,
       attachmentSourceCommit?: string): void {
     this.#validateCapsules(chatId, capsules);
+    let stampedFocus = this.#stampFocus(chatId, focus);
     // Format references describe the text the user wrote, which for a slash command is its
     // arguments, what the transcript shows, not the message the provider expanded them into.
     formats = sanitizeMessageFormatRefs(
@@ -7911,6 +7942,7 @@ class OverseerImpl implements AgentHooks {
         capsules,
         attachments,
         formats,
+        focus: stampedFocus,
       });
       return;
     }
@@ -7932,6 +7964,7 @@ class OverseerImpl implements AgentHooks {
       capsules,
       attachments,
       formats,
+      focus: stampedFocus,
     });
   }
 
@@ -7939,12 +7972,10 @@ class OverseerImpl implements AgentHooks {
     clientUser: DurableObjectStub<UserDurableObject>,
     userMeta: UserChatContext,
     initialMessage: string | SlashCommandRequest,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    {capsules, attachments, formats, focus}: ChatMessageOptions = {},
   ): Promise<number> {
-    if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
-      throw new Error("Slash commands cannot include resources or attachments.");
+    if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length || focus)) {
+      throw new Error("Slash commands cannot include resources, attachments or a focus.");
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     let prepared = await this.#prepareChatMessage(
@@ -7974,7 +8005,7 @@ class OverseerImpl implements AgentHooks {
 
       this.#commitPreparedChatMessage(
           chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
-          scratchWorktree, scratchWorktree?.commitId);
+          focus, scratchWorktree, scratchWorktree?.commitId);
     });
 
     if (prepared.message !== undefined && userMeta.aiModel) {
@@ -8003,15 +8034,16 @@ class OverseerImpl implements AgentHooks {
   // #finishAgentTurn, postAgentErrorMessage). A turn being stopped takes none: Stop has handed the
   // queue to whoever stopped it. Returns whether `message` was queued.
   steerRunningTurn(chatId: number, userId: string, author: AiChatAuthorInfo,
-                   message: string | SlashCommandRequest, capsules?: CapsuleSpecifier[],
-                   attachments?: ChatAttachmentHandle[], formats?: MessageFormatRef[]): boolean {
+                   message: string | SlashCommandRequest,
+                   {capsules, attachments, formats, focus}: ChatMessageOptions = {}): boolean {
     const isPlainTextMessage = typeof message === "string" && message.trim() !== "" &&
         !capsules?.length && !attachments?.length && !formats?.length;
     const turnTakesSteers = this.#runningAgents.has(chatId) &&
         !this.#liveChats.get(chatId)?.cancelController.signal.aborted;
     if (!isPlainTextMessage || !turnTakesSteers) return false;
+    let stampedFocus = this.#stampFocus(chatId, focus);
     let meta = this.getChatMetaOrThrow(chatId);
-    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author}];
+    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author, focus: stampedFocus}];
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
     this.recordGadgetAnalytics({
@@ -8028,12 +8060,10 @@ class OverseerImpl implements AgentHooks {
     userMeta: UserChatContext,
     chatId: number,
     message: string | SlashCommandRequest,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    {capsules, attachments, formats, focus}: ChatMessageOptions = {},
   ): Promise<void> {
-    if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
-      throw new Error("Slash commands cannot include resources or attachments.");
+    if (typeof message !== "string" && (capsules?.length || attachments?.length || focus)) {
+      throw new Error("Slash commands cannot include resources, attachments or a focus.");
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     this.assertChatNotActive(chatId);
@@ -8081,7 +8111,7 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatMeta.put(meta);
         this.#commitPreparedChatMessage(
             chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
-            formats, preparedScratchWorktree, attachmentSourceCommit);
+            formats, focus, preparedScratchWorktree, attachmentSourceCommit);
         if (scratchWorktree && attachmentFiles.size) {
           this.#appendWorkspaceAttachments(chatId, scratchWorktree, attachmentChanges, userMeta.profile);
         }
@@ -8117,9 +8147,11 @@ class OverseerImpl implements AgentHooks {
     // restart recovery clears any busy marker left without an execution row.
     this.storage.activeAgents.delete(chatId);
     this.#resumeErrors.delete(chatId);
+    // End the turn's decision segment, so approving one of its cards later doesn't resume it. The
+    // boundary tells the model nothing: Continue reruns the turn on the same history, and a new
+    // request arrives as its own prompt.
     let author = this.storage.chatMeta.get(chatId)?.activeAgent ?? this.#decisionWait(chatId)?.agent;
-    if (author) this.addChatMessages(chatId, author,
-        [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+    if (author) this.addChatMessages(chatId, author, [{type: "agentNudge"}]);
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
       ctx.cancelController.abort(new Error("User requested to stop agent."));
@@ -8140,7 +8172,7 @@ class OverseerImpl implements AgentHooks {
 
   // AgentHooks.takeSteers: logs each queued steer at the step boundary where the agent reads it,
   // so the log keeps the order the model saw.
-  takeSteers(chatId: number): string[] {
+  takeSteers(chatId: number): Steer[] {
     let meta = this.storage.chatMeta.get(chatId);
     return meta?.queuedSteers ? this.#logQueuedSteers(meta, true) : [];
   }
@@ -8148,8 +8180,8 @@ class OverseerImpl implements AgentHooks {
   // Moves the chat's queued steers into its log as user messages, `steered` unless they prompt a
   // turn, then writes `meta` without them. Subscribers thus get the messages before the metadata,
   // as subscribeToChat's catch-up delivers them.
-  #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): string[] {
-    let steers = (meta.queuedSteers ?? []).map(({text, author}) => {
+  #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): Steer[] {
+    let steers = (meta.queuedSteers ?? []).map(({text, author, focus}) => {
       this.storage.chats.put({
         chatId: meta.id,
         sequence: this.nextChatSequence(meta.id),
@@ -8157,9 +8189,10 @@ class OverseerImpl implements AgentHooks {
         author,
         type: "message",
         message: text,
+        focus,
         ...(steered ? {steered: true} : {}),
       });
-      return text;
+      return {text, focus};
     });
     delete meta.queuedSteers;
     meta.lastActive = this.getChatTimestamp();
@@ -8610,8 +8643,7 @@ class OverseerImpl implements AgentHooks {
           // may already be ready; #finishAgentTurn claims it in this same synchronous span.
           if (meta && liveChat.cancelController.signal.aborted && this.#decisionWait(chatId)) {
             // A tool that was already in flight may have committed its card after Stop's boundary.
-            this.addChatMessages(chatId, initiator,
-                [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+            this.addChatMessages(chatId, initiator, [{type: "agentNudge"}]);
           }
           let wait = this.#decisionWait(chatId);
           this.#unregisterRunningAgent(chatId,
@@ -12050,6 +12082,96 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Run an admin write (AdminApiImpl.writeWorkspace()). Reachable only over the Workshop's Durable
+   * Object binding, never through a capability a user holds. Reads its environment only through
+   * the OverseerImpl.
+   *
+   * As for openForAdmin(), by explicit policy the admin is not checked by authorizeCollaborator()
+   * or observer verification and joins no session, presence or outputs fan-out. Unlike
+   * openForAdmin(), a write does to the workspace what its operation does for a member.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once its owner has been read;
+   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not "api" or
+   *     "cli", or arguments that are not the action's;
+   *   - an admin who is no longer a deployment admin (`notAdmin`), and writes turned off
+   *     (`writesOff`), both read from this workspace's own environment.
+   *
+   * Then, in this order:
+   *   1. The AdminWriteRecord is appended to the deployment-wide log. A write whose record cannot
+   *      be written does not happen. Nor does one whose workspace was deleted while the record was
+   *      appended (`workspaceNotFound`): the record is kept, and nothing follows it.
+   *   2. The operation runs (see runAdminWrite()). If it throws, the error is rethrown; the
+   *      record stays.
+   * The workspace keeps no note of the write: the record is its only trace, and members see only
+   * what the operation did.
+   */
+  async applyAdminWrite(call: AdminWriteCall): Promise<void> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let reason = validateAdminAccessReason(call.reason);
+    if (call.via !== "api" && call.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    let args = adminWriteArgs(call.action, call.args);
+
+    // Read from the OverseerImpl's environment, so that the checks hold for this workspace's
+    // isolate even if the Worker that called ran an older config.
+    if (!isDeploymentAdmin(impl.env, call.admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(impl.env)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.writesOff);
+    }
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    // Deleted during that read: a deleted workspace gets no record, as for a view's call.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: call.admin,
+      sessionId: call.sessionId,
+      via: call.via,
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: call.action,
+      args: redactAdminAuditArgs(args),
+      reason,
+    };
+    try {
+      // No retention, as for a view's call (see adminViewCall()).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: call.action, error: err,
+      });
+      throw err;
+    }
+    // Deleted while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    await runAdminWrite(impl, call.action, args);
+    // Never the reason or the arguments.
+    impl.logger.info("admin write applied", {
+      event: "admin.write.applied", operation: call.action,
+    });
+  }
+
+  /**
    * Initialize this workspace's default gadget from the release of a blueprint that `metadata`
    * describes. Called by AuthenticatedApi.newWorkspaceFromBlueprint() after creating (and opening)
    * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
@@ -13650,30 +13772,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
-                capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                formats?: MessageFormatRef[]): Promise<number> {
+                options?: ChatMessageOptions): Promise<number> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
-    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
-                             formats);
+    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, options);
   }
 
   async sendChatMessage(
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
-      capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-      formats?: MessageFormatRef[]): Promise<void> {
+      options?: ChatMessageOptions): Promise<void> {
     using _starting = this.#startingTurn(chatId);
     // A steer runs on the running turn's model, so it is queued before the sender's model is
     // looked up: a collaborator need not have that model.
     let author = await this.#getClientProfile();
-    if (this.impl.steerRunningTurn(
-        chatId, this.clientUserId, author, message, capsules, attachments, formats)) {
+    if (this.impl.steerRunningTurn(chatId, this.clientUserId, author, message, options)) {
       return;
     }
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
-    return this.impl.sendChatMessage(
-        this.#clientUser, userMeta, chatId, message, capsules, attachments, formats);
+    return this.impl.sendChatMessage(this.#clientUser, userMeta, chatId, message, options);
   }
 
   async setChatTitle(chatId: number, title: string): Promise<void> {
@@ -13792,13 +13909,30 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error("No AI model available.");
     }
 
+    // Error records never reach the model, so a Retry of a turn that exhausted its resume
+    // attempts would otherwise repeat it unaware. The attempts count model-lookup failures too,
+    // so the nudge states only that the turn was interrupted and keeps its advice conditional.
+    // Any other Retry reruns the turn on the same history, telling the model nothing, and so does
+    // a `/compact`'s, which a note would replace with an ordinary turn.
+    let newestFirst = {prefix: chatKeyPrefix(chatId), reverse: true};
+    let [last] = [...this.impl.storage.chats.list({...newestFirst, limit: 1})];
+    let text = last?.type === "error" && last.code === "resume_exhausted" &&
+        !isCompactionTurn(this.impl.storage.chats.list(newestFirst))
+        ? "The user asked you to try again because your previous turn was abandoned. The " +
+          "Durable Object your agent harness runs in reset repeatedly while you worked on it: " +
+          "the turn was automatically restarted several times, and each time it reset again " +
+          "before your next step could be saved. That step is not in your history. The exact " +
+          "cause is unknown, but your work may have exceeded the CPU or memory limits, for " +
+          "example by processing a large file all at once. Rethink your approach and do the " +
+          "work in small incremental pieces."
+        : undefined;
+
     let result = this.impl.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
     // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
     // if this execution is interrupted before it can commit its first response.
-    this.impl.addChatMessages(chatId, userMeta.profile,
-        [{type: "agentNudge", text: "Retry the previous request."}]);
+    this.impl.addChatMessages(chatId, userMeta.profile, [{type: "agentNudge", text}]);
     meta.activeAgent = userMeta.aiModel.profile;
     meta.lastActive = this.impl.getChatTimestamp();
     this.impl.storage.chatMeta.put(meta);
@@ -14303,12 +14437,11 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async viewChat(_chatId: number): Promise<RpcStub<{}>> { this.#deny(); }
   async newChat(_initialMessage: string | SlashCommandRequest, _modelId: string | null,
-                 _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[]): Promise<number> {
+                _options?: ChatMessageOptions): Promise<number> {
     this.#deny();
   }
   async sendChatMessage(_chatId: number, _message: string | SlashCommandRequest,
-                        _modelId: string | null,
-                        _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[]): Promise<void> {
+                        _modelId: string | null, _options?: ChatMessageOptions): Promise<void> {
     this.#deny();
   }
   async uploadBlob(_content: Uint8Array | {stream: ReadableStream<Uint8Array>, byteLength: number})
@@ -14775,6 +14908,34 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       };
     });
   }
+}
+
+// Runs the operation of an admin write (see OverseerDurableObject.applyAdminWrite()): for each
+// action, the one a member's session runs for it, but for a stop that keeps the chat's queued
+// messages (see AdminApi.writeWorkspace()). `args` are as adminWriteArgs() kept them.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs)
+    : Promise<void> {
+  // adminWriteArgs() checked that every argument the action needs was given.
+  let {chatId} = args as Required<AdminWriteArgs>;
+
+  switch (action) {
+    case "stopAgent":
+      impl.getChatMetaOrThrow(chatId);
+      // A stop drops the chat's queued steers, which the client that stops puts in its draft. No
+      // client stops this turn, so they are logged first, as when a turn fails: they stay in the
+      // chat as their senders' messages, and the agent reads them when it next runs.
+      impl.takeSteers(chatId);
+      impl.cancelAgent(chatId);
+      return;
+
+    case "restartWorkspace":
+      // Not awaited: the restart ends every call on the workspace, and this one is answered
+      // first.
+      impl.scheduleAccessRestart("Gadget restarted.");
+      return;
+  }
+  // Reached by no action: one without an operation above does not compile.
+  action satisfies never;
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

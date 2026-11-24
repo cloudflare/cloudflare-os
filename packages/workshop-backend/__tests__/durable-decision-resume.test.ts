@@ -58,6 +58,28 @@ function inference(gate?: Promise<void>, stages = () => false) {
   return () => count;
 }
 
+// Records the body of each model request, passing it on to the current fetch stub.
+function modelRequestBodies() {
+  const bodies: string[] = [], answer = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin === MODEL.config.apiUrl) {
+      bodies.push(input instanceof Request ? await input.clone().text() : String(init?.body));
+    }
+    return answer(input, init);
+  });
+  return bodies;
+}
+
+// A user's draft edit, left in the chat's change stream for the next turn or Retry to save as a
+// `changes` record. An empty change needs no gadget to touch.
+function addDraftEdit(impl: Impl) {
+  impl.storage.chatChanges.put({chatId: CHAT, generation: 0, revision: 1,
+    timestamp: new Date(), author: USER, change: {}});
+  const meta = impl.storage.chatMeta.get(CHAT)!;
+  impl.storage.chatMeta.put({...meta, codeBase: {pins: [], generation: 0, revision: 1}});
+}
+
 function request(impl: Impl, kind: Kind, requestId = "1:connection") {
   if (kind === "connection") {
     impl.addChatMessages(CHAT, MODEL.profile, [{type: "connectionRequest", requestId,
@@ -544,6 +566,36 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
   });
 
+  // A /compact interrupted too often gets no note on Retry either: it is not an agent turn. Nor do
+  // the user's edits since the failure, which Retry saves as a `changes` record, make it one.
+  it.each([
+    {code: undefined, edited: false},
+    {code: "resume_exhausted", edited: false},
+    {code: undefined, edited: true},
+    {code: "resume_exhausted", edited: true},
+  ])("Retry of a failed /compact compacts again (%o)", async ({code, edited}) => {
+    const s = await scenario(null), requests = inference();
+    await s.visit(async impl => {
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "First"}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "One."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Second"}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Two."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
+        request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.", code);
+      if (edited) addDraftEdit(impl);
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      expect([...impl.storage.chats.list()].slice(-3).map(m => m.type))
+          .toEqual(edited ? ["error", "changes", "agentNudge"] : ["slashCommand", "error", "agentNudge"]);
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge" && m.text))
+          .toEqual([]);
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.getActiveChatCompaction(CHAT)?.summary).toBe("Done.");
+    });
+    expect(requests()).toBe(1);  // The summary; the model is not prompted.
+  });
+
   it("waits for both kinds of decision and consumes the handoff only once", async () => {
     const requests = inference(), s = await scenario("action");
     await s.visit(async impl => {
@@ -689,6 +741,80 @@ describe("decision handoff using the existing execution row", () => {
       }));
     });
     expect(requests()).toBe(4);
+  });
+
+  // Edits since the abandoned turn are saved after Retry reads its error, so they still get the note.
+  it.each([false, true])("tells the model on Retry that the abandoned turn was interrupted (edited: %s)",
+      async edited => {
+    const s = await scenario(), stalled = inference(new Promise(() => {}));
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await expect(s.visit(async impl => {
+        if (attempt === 1) { decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT); }
+        await vi.waitFor(() => expect(stalled()).toBe(attempt));
+        await impl.ctx.storage.sync();
+        impl.ctx.abort("Injected reset during resumed turn");
+      })).rejects.toThrow(/Injected reset/);
+    }
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      if (edited) addDraftEdit(impl);
+      inference();
+      const bodies = modelRequestBodies();
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      await impl.waitForAllAgentsToComplete();
+      if (edited) expect([...impl.storage.chats.list()]).toContainEqual(
+          expect.objectContaining({type: "changes", author: USER}));
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toContain("your previous turn was abandoned");
+    });
+  });
+
+  it("a plain Retry reruns the turn on the same history, adding nothing the model reads", async () => {
+    const s = await scenario(null);
+    await s.visit(async impl => {
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The model request failed.");
+      inference();
+      const bodies = modelRequestBodies();
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      const boundary = [...impl.storage.chats.list()].at(-1);
+      expect(boundary?.type).toBe("agentNudge");
+      expect(boundary?.type === "agentNudge" && boundary.text).toBeUndefined();
+      await impl.waitForAllAgentsToComplete();
+      expect(bodies).toHaveLength(1);
+      const messages: {role: string}[] = JSON.parse(bodies[0]).messages;
+      expect(messages.map(m => m.role)).toEqual(["user"]);
+      expect(JSON.stringify(messages)).toContain("Do the work");
+    });
+  });
+
+  it("Continue after Stop reruns the turn without telling the model it was stopped", async () => {
+    const s = await scenario(null);
+    await s.visit(async impl => {
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The model request failed.");
+      const gate = Promise.withResolvers<void>(), stalled = inference(gate.promise);
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      await vi.waitFor(() => expect(stalled()).toBe(1));
+      impl.cancelAgent(CHAT);
+      gate.resolve();  // The stub ignores the abort signal; the stopped turn discards the reply.
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()].at(-1)).toMatchObject({type: "error", code: "stopped"});
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge" && m.text))
+          .toEqual([]);
+
+      inference();
+      const bodies = modelRequestBodies();
+      await client.retryAgent(CHAT, MODEL.profile.id);  // The stopped turn's Continue.
+      await impl.waitForAllAgentsToComplete();
+      expect(bodies).toHaveLength(1);
+      const messages: {role: string}[] = JSON.parse(bodies[0]).messages;
+      expect(messages.map(m => m.role)).toEqual(["user"]);
+      expect(JSON.stringify(messages)).toContain("Do the work");
+    });
   });
 
   it("Stop clears a retry handoff that no longer has a running task", async () => {

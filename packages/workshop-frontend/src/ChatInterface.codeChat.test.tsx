@@ -68,7 +68,7 @@ const setup = () => {
              returnChatId?: number | null) => testRoot.render(
       <ChatInterface workspaceId="workspace" overseer={server.overseer}
         selectedChatId={selectedChatId} codeChatId={codeChatId} returnChatId={returnChatId}
-        onNavigateToChat={() => {}}
+        onNavigateToChat={() => {}} onOpenFocus={() => {}}
         onAgentActiveChange={activity} onChatChangesChange={changes}
         onSelectedChatProposedChangesChange={proposed} onChatListChange={listed}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"

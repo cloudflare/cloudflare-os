@@ -609,17 +609,17 @@ for (const gk of gatekeepers) {
   const OPTIONAL_FEATURE_VARS = [
     "DISABLE_PASSWORD_AUTH", "AUTH_GATEKEEPERS", "ENABLE_CLOUDFLARE_LIMITS", "PUBLIC_BASE_URL",
     "DAILY_LLM_CALL_LIMIT", "MINIMUM_CLOUDFLARE_BALANCE",
-    // Platform AI Gateway — makes the cross-provider model catalog available. CF_AI_GATEWAY
-    // always needs CF_AI_GATEWAY_ACCOUNT_ID plus one transport: the WORKERS_AI binding
-    // (start with --use-workers-ai-binding; CF_AI_GATEWAY_USE_BINDING=false opts out, e.g.
-    // when the gateway lives in a different account than the dev binding) or
-    // CF_AI_GATEWAY_API_TOKEN over HTTPS. The google provider can't ride the binding and
-    // needs the token even when the binding is present.
+    // Platform AI Gateway -- makes the cross-provider model catalog available.
+    // CF_AI_GATEWAY always needs CF_AI_GATEWAY_ACCOUNT_ID plus one transport:
+    // the WORKERS_AI binding (start with --use-workers-ai-binding;
+    // CF_AI_GATEWAY_USE_BINDING=false opts out, e.g. when the gateway lives in
+    // a different account than the dev binding) or CF_AI_GATEWAY_API_TOKEN.
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
     // The bounds on admin access to workspaces (see docs/admin-access.md), e.g.
-    // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off.
-    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS",
+    // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off, and
+    // `ADMIN_WORKSPACE_WRITES=on pnpm dev-server` lets the dev admin write to workspaces.
+    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS", "ADMIN_WORKSPACE_WRITES",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
