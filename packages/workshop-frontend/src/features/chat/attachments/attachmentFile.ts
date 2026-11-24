@@ -14,10 +14,13 @@ export type AttachmentContentLoader = (id: string) => Promise<Uint8Array>;
 
 /** A set of attachments' bytes, each file read once and shared (useAttachmentContents). */
 export type AttachmentContents = {
-  /** Reads a file, or shares the read under way, and keeps it while the set is shown. */
-  content: AttachmentContentLoader;
-  /** Reads a file as `content` does, but keeps it only while something holds it. */
+  /** Reads a file, or shares the read under way, keeping it only while something holds it. */
   read: AttachmentContentLoader;
+  /**
+   * Reads a file for one use, such as a card's thumbnail, holding it until the read settles or
+   * `signal` aborts.
+   */
+  readOnce: (id: string, signal: AbortSignal) => Promise<Uint8Array>;
   /**
    * Holds a file's read, under way or yet to start, until the returned function is called. A read
    * nothing holds or keeps is then stopped, if it is still under way, and forgotten, bytes and all.

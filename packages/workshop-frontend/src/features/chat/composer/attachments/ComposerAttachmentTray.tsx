@@ -66,7 +66,9 @@ export const ComposerAttachmentTray = ({
                 <ComposerAttachmentCard
                   attachment={attachment}
                   disabled={disabled}
-                  loadContent={() => contents.content(attachment.id)}
+                  loadContent={async (signal, limit) => limit === undefined
+                    ? contents.readOnce(attachment.id, signal)
+                    : new Uint8Array(await attachment.blob.slice(0, limit).arrayBuffer())}
                   onOpen={() => {
                     contents.forgetFailures();
                     setViewedId(attachment.id);

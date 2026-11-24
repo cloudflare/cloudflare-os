@@ -42,6 +42,19 @@ describe("readChatAttachment", () => {
     expect(cancel).toHaveBeenCalled();
   });
 
+  it("reads only as much of a blob as it is asked for, and stops the stream", async () => {
+    const cancel = vi.fn<(reason: unknown) => void>();
+    const overseer = {
+      readBlob: async () => new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(Uint8Array.of(1, 2, 3)); },
+        cancel,
+      }),
+    } as unknown as RpcStub<Overseer>;
+    await expect(readChatAttachment(overseer, 3, attachment("f".repeat(40)), new AbortController().signal, 2))
+      .resolves.toEqual(Uint8Array.of(1, 2));
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it("cancels the stream when the signal aborts", async () => {
     const cancel = vi.fn<(reason: unknown) => void>();
     const overseer = {

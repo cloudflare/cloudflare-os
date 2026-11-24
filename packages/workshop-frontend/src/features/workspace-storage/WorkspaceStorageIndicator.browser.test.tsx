@@ -52,3 +52,18 @@ it("says it all below the top bar where there is room", async () => {
   await expect.element(banner).toMatchTextContent("This workspace's storage is nearly full");
   await expect.element(banner).toMatchTextContent("New files over 1 MB, such as attachments, can't be stored.");
 });
+
+// Opening it on a phone can close the keyboard, which makes the window tall again.
+it("stays open while the window grows, then gives way to the banner", async () => {
+  await render(375, 320);
+  await act(async () => {
+    await userEvent.click(page.getByRole("button", { name: "This workspace's storage is nearly full" }));
+  });
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog).toBeVisible();
+  await page.viewport(375, 700);
+  await expect.element(dialog).toBeVisible();
+  await act(async () => { await userEvent.keyboard("{Escape}"); });
+  await expect.element(page.getByTestId("top-bar")).toBeEmptyDOMElement();
+  await expect.element(page.getByTestId("body")).toMatchTextContent("This workspace's storage is nearly full");
+});

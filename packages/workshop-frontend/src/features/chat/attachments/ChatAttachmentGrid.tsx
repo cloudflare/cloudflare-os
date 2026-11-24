@@ -13,10 +13,10 @@ export const ChatAttachmentGrid = ({
 }: {
   attachments: readonly ChatAttachmentRef[];
   /**
-   * Fetches the bytes of an attachment the message does not carry inline. `signal` aborts when
-   * the grid goes.
+   * Fetches the bytes of an attachment the message does not carry inline, or with `limit` only
+   * its first ones. `signal` aborts when the grid goes.
    */
-  loadContent: (attachment: ChatAttachmentRef, signal: AbortSignal) => Promise<Uint8Array>;
+  loadContent: (attachment: ChatAttachmentRef, signal: AbortSignal, limit?: number) => Promise<Uint8Array>;
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
   const contents = useAttachmentContents(async (id, signal) => {
@@ -36,7 +36,11 @@ export const ChatAttachmentGrid = ({
             <ChatAttachmentCard
               attachment={attachment}
               prominent={attachments.length === 1}
-              loadContent={() => contents.content(attachment.id)}
+              loadContent={(signal, limit) => limit === undefined
+                ? contents.readOnce(attachment.id, signal)
+                : attachment.content
+                  ? Promise.resolve(attachment.content.subarray(0, limit))
+                  : loadContent(attachment, signal, limit)}
               onOpen={() => {
                 contents.forgetFailures();
                 setOpenId(attachment.id);

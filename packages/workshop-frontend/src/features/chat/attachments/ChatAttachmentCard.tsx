@@ -34,7 +34,8 @@ export const ChatAttachmentCard = ({
 }: {
   attachment: ChatAttachmentRef;
   prominent: boolean;
-  loadContent: () => Promise<Uint8Array>;
+  /** Reads the file for its thumbnail, or with `limit` only its first bytes. */
+  loadContent: (signal: AbortSignal, limit?: number) => Promise<Uint8Array>;
   onOpen: () => void;
 }) => {
   const name = attachment.name ?? "Attached file";

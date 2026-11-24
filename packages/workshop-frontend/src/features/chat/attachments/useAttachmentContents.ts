@@ -4,21 +4,19 @@ import type { AttachmentContents } from "./attachmentFile";
 type Read = {
   bytes: Promise<Uint8Array>;
   abort: AbortController;
-  /** Whether a card asked for it, which keeps it while the component is mounted. */
-  kept: boolean;
   failed: boolean;
 };
 
 /**
  * Reads each attachment's bytes once, as one promise, so a card's thumbnail and the viewer share a
- * single fetch and the viewer can read it with `use()`. A read a card asks for is kept while the
- * component is mounted. One only the viewer asks for is kept while held: while the viewer shows
- * the file, or until a download of it is saved. So moving on from a large file, or closing the
- * viewer, stops its fetch and drops its bytes. A failed read stays remembered, or each render of
+ * fetch under way and the viewer can read it with `use()`. A read is kept only while held: while a
+ * card makes its thumbnail from it, while the viewer shows the file, or until a download of it is
+ * saved. So a chat keeps no file's bytes it isn't using, and moving on from a large file, or
+ * closing the viewer, stops its fetch and drops its bytes. A failed read stays remembered, or each render of
  * the failure would read again, until `forgetFailures` is called: when a person opens the viewer,
  * which is how they retry. Only the attachments in `liveIds` are kept: a file removed from the
  * composer, or sent, gives its bytes back. `load` gets a signal that aborts when its read is
- * dropped or the component goes, as leaving a chat does.
+ * dropped or the component goes, as leaving a chat does, unless a download is waiting for it.
  */
 export const useAttachmentContents = (
   load: (id: string, signal: AbortSignal) => Promise<Uint8Array>,
@@ -39,9 +37,10 @@ export const useAttachmentContents = (
     read.abort.abort();
   };
   useEffect(() => {
-    const current = reads.current;
+    const current = reads.current, pending = downloads.current;
     return () => {
-      for (const read of current.values()) read.abort.abort();
+      // A download asked for goes on to be saved.
+      for (const [id, read] of current) if (!pending.has(id)) read.abort.abort();
       current.clear();
     };
   }, []);
@@ -56,7 +55,7 @@ export const useAttachmentContents = (
       if (started) return started;
       const abort = new AbortController();
       const read: Read = {
-        bytes: loadRef.current(id, abort.signal), abort, kept: false, failed: false,
+        bytes: loadRef.current(id, abort.signal), abort, failed: false,
       };
       read.bytes.catch(() => { read.failed = true; });
       reads.current.set(id, read);
@@ -75,7 +74,7 @@ export const useAttachmentContents = (
         // StrictMode does with an effect, keeps the read.
         queueMicrotask(() => {
           const read = reads.current.get(id);
-          if (read && !read.kept && !holds.current.has(id)) drop(id, read);
+          if (read && !holds.current.has(id)) drop(id, read);
         });
       };
     };
@@ -86,12 +85,12 @@ export const useAttachmentContents = (
     };
     const showDownloads = () => setDownloading(new Set(downloads.current));
     return {
-      content: (id) => {
-        const read = start(id);
-        read.kept = true;
-        return read.bytes;
-      },
       read: (id) => start(id).bytes,
+      readOnce: (id, signal) => {
+        const release = hold(id);
+        signal.addEventListener("abort", release, { once: true });
+        return start(id).bytes.finally(release);
+      },
       hold,
       forgetFailures,
       download: (id, save) => {

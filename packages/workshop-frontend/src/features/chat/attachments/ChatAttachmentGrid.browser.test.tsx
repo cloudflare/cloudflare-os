@@ -59,9 +59,10 @@ const mount = async (
   attachments: ChatAttachmentRef[],
   files: Record<string, Uint8Array | Error | Promise<Uint8Array>>,
 ) => {
-  const loadContent = vi.fn<(attachment: ChatAttachmentRef, signal: AbortSignal) => Promise<Uint8Array>>(async (attachment) => {
+  const loadContent = vi.fn<(attachment: ChatAttachmentRef, signal: AbortSignal, limit?: number) => Promise<Uint8Array>>(async (attachment, _, limit) => {
     const file = files[attachment.id];
     if (file instanceof Promise) return file;
+    if (file instanceof Uint8Array && limit !== undefined) return file.subarray(0, limit);
     if (!file || file instanceof Error) throw file ?? new Error("missing");
     return file;
   });
@@ -192,6 +193,8 @@ it("steps through a message's attachments with the arrow keys and closes on Esca
 it("shows an SVG from a data URL, which has no origin to run its script as if opened on its own", async () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
   await mount([ref("logo.svg", "image/svg+xml")], { "logo.svg": encoder.encode(svg) });
+  // Its card's thumbnail too.
+  await expect.poll(() => host!.querySelector("img")?.getAttribute("src") ?? "").toMatch(/^data:image\/svg\+xml;base64,/);
   await userEvent.click(page.getByRole("button", { name: "Preview logo.svg" }));
   const image = page.getByRole("dialog").getByRole("img", { name: "logo.svg" });
   await expect.poll(() => image.element().getAttribute("src") ?? "").toMatch(/^data:image\/svg\+xml;base64,/);
@@ -243,8 +246,9 @@ it("says so when a file cannot be loaded or read, and retries on reopening", asy
   await userEvent.keyboard("{Escape}");
   await userEvent.click(page.getByRole("button", { name: "Preview notes.md" }));
   await expect.element(page.getByRole("heading", { name: "Recovered" })).toBeVisible();
-  // Each card's thumbnail, the first opening, and the retry; the second file's is shared.
-  expect(loadContent).toHaveBeenCalledTimes(4);
+  // Each card's thumbnail, each opening, and the retry: a card keeps no bytes once its thumbnail
+  // is made, so the viewer reads the second file again.
+  expect(loadContent).toHaveBeenCalledTimes(5);
 });
 
 // A message carries only small images' bytes; the card of a larger one fetches it to draw.
@@ -261,6 +265,38 @@ it("offers a file over 25 MB for download instead of fetching it to preview", as
   await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
   await expect.element(page.getByText("This file is too large to preview.")).toBeVisible();
   expect(loadContent).not.toHaveBeenCalled();
+});
+
+// A card shows a few lines of a text file, so it reads no more of it than that.
+it("reads only the start of a text file for its card, and all of a PDF", async () => {
+  const loadContent = await mount(
+    [ref("rows.csv", "text/csv", undefined, 20 * 1024 * 1024), ref("report.pdf", "application/pdf")],
+    { "rows.csv": encoder.encode("name,team\n".repeat(1000)), "report.pdf": buildPdf("Quarterly report") },
+  );
+  await expect.poll(() => loadContent.mock.calls.length).toBe(2);
+  const limits = Object.fromEntries(loadContent.mock.calls.map(([attachment, , limit]) => [attachment.id, limit]));
+  expect(limits).toEqual({ "rows.csv": 4096, "report.pdf": undefined });
+});
+
+it("lets a download finish when the chat is left", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  const loadContent = await mount(
+    [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      undefined, 80 * 1024 * 1024)],
+    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) },
+  );
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    await userEvent.click(page.getByRole("button", { name: "Download" }).last());
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+    resolve(encoder.encode("workbook"));
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+  } finally {
+    saves.mockRestore();
+  }
 });
 
 it("aborts its fetches when it goes", async () => {
