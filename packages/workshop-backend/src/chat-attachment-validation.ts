@@ -135,15 +135,20 @@ export function imageDimensions(mimeType: string, source: ImageHeaderSource): [n
     }
   }
   if (mimeType === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let scanned = bytes, scannedAt = 0;
+    let scanned = bytes, scannedAt = 0, remaining = 16 * 1024;
     const byteAt = (offset: number) => {
-      if (offset >= size) return undefined;
+      // Bound marker/padding work, not offsets: long metadata payloads are skipped by length.
+      if (--remaining < 0 || offset >= size) return undefined;
       if (source instanceof Uint8Array) return source[offset];
       if (offset < scannedAt || offset >= scannedAt + scanned.length) {
         scanned = read(offset, Math.min(1024, size - offset));
         scannedAt = offset;
       }
       return scanned[offset - scannedAt];
+    };
+    const wordAt = (offset: number) => {
+      const high = byteAt(offset), low = byteAt(offset + 1);
+      return high === undefined || low === undefined ? undefined : (high << 8) | low;
     };
     for (let offset = 2; offset < size;) {
       if (byteAt(offset++) !== 0xff) return undefined;
@@ -153,13 +158,12 @@ export function imageDimensions(mimeType: string, source: ImageHeaderSource): [n
       if (marker === 0xda || marker === 0xd9) return undefined; // Scan data/end before SOF.
       if (marker === 1 || (marker >= 0xd0 && marker <= 0xd8)) continue; // No segment length.
       if (offset + 2 > size) return undefined;
-      const header = read(offset, Math.min(size - offset, 8));
-      const segment = new DataView(header.buffer, header.byteOffset, header.byteLength);
-      const length = segment.getUint16(0);
-      if (length < 2 || offset + length > size) return undefined;
+      const length = wordAt(offset);
+      if (length === undefined || length < 2 || offset + length > size) return undefined;
       if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
         if (length < 8) return undefined;
-        return [segment.getUint16(5), segment.getUint16(3)];
+        const width = wordAt(offset + 5), height = wordAt(offset + 3);
+        return width === undefined || height === undefined ? undefined : [width, height];
       }
       offset += length;
     }

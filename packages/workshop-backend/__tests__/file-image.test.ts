@@ -10,6 +10,7 @@ import {getModel} from "../src/ai-models";
 import {estimateImageTokens, getModelTokenLimits} from "../src/agent-compaction";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
 import {ELIDED_FILE_IMAGE, OVERFLOW_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageDescription, withImageDimensions, isImageDecodeError, readFileImage} from "../src/file-image";
+import {inlineChatAttachmentImageDimensions} from "../src/chat-attachment-validation";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -1235,6 +1236,42 @@ describe("images read from a worktree", () => {
     expect(isImageDecodeError("image input is not supported - hint: provide the mmproj", status, provider)).toBe(expected);
     expect(isImageDecodeError("audio input is not supported", status, provider)).toBe(false);
   });
+
+  it("buffers JPEG segment headers instead of rereading each short comment", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = new Uint8Array(JPEG.length + 4000);
+    bytes.set(JPEG.subarray(0, 2));
+    for (let offset = 2; offset < 4002; offset += 4) bytes.set([0xff, 0xfe, 0, 2], offset);
+    bytes.set(JPEG.subarray(2), 4002);
+    const blob = impl.gitCache.writeBlob(bytes);
+    const reader = await impl.openBlob(blob.oid);
+    const ranges = vi.spyOn(reader, "read");
+    expect(readFileImage(reader)?.data).toBe(bytes.toBase64());
+    expect(ranges.mock.calls.length).toBeLessThan(16);
+  }));
+
+  it.each(["comments", "padding"])("bounds a JPEG probe with excessive %s", kind =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const prefixLength = 4 * 1024 * 1024 - 4096;
+      const bytes = new Uint8Array(JPEG.length + prefixLength);
+      bytes.set(JPEG.subarray(0, 2));
+      if (kind === "comments") {
+        for (let offset = 2; offset < prefixLength + 2; offset += 4) bytes.set([0xff, 0xfe, 0, 2], offset);
+      } else bytes.fill(0xff, 2, prefixLength + 2);
+      bytes.set(JPEG.subarray(2), prefixLength + 2);
+      const blob = impl.gitCache.writeBlob(bytes);
+      const reader = await impl.openBlob(blob.oid);
+      let ranges = 0, largestRange = 0;
+      const probe = {size: reader.size, read: (offset: number, length: number) => {
+        ++ranges;
+        largestRange = Math.max(largestRange, length);
+        return reader.read(offset, length);
+      }};
+      // The same valid pixels remain in the worktree; unusually complex headers stay opaque.
+      expect(inlineChatAttachmentImageDimensions("image/jpeg", probe)).toBeUndefined();
+      expect(ranges).toBeLessThan(128);
+      expect(largestRange).toBeLessThanOrEqual(1024);
+      expect(inlineChatAttachmentImageDimensions("image/jpeg", bytes)).toBeUndefined();
+    }));
 
   it.each(["png", "webp", "jpeg"])("rejects %s resolution from a real blob header without reading its body", format =>
     inKernel(crypto.randomUUID(), async impl => {
