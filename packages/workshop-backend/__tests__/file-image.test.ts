@@ -286,7 +286,7 @@ describe("images read from a worktree", () => {
         impl.addChatMessages(chatId, USER, [{type: "message", message: "Use vision now"}]);
         const switched = await turn(impl, chatId, []);
         expect(results(switched.requests[0])[0].content.some(part => part.type === "image")).toBe(true);
-        if (provider === "ollama") expect(metadata).toHaveBeenCalledTimes(2);
+        if (provider === "ollama") expect(metadata).toHaveBeenCalledOnce();
       } finally {
         if (provider === "ollama") vi.unstubAllGlobals();
       }

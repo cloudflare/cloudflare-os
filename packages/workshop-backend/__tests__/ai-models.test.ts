@@ -745,10 +745,10 @@ describe("getModel direct routing (no gateway)", () => {
   it.each([
     {capabilities: ["completion", "tools"], images: false},
     {capabilities: ["completion", "vision"], images: true},
-    {capabilities: undefined, images: false},
+    {capabilities: undefined, images: true},
   ])("resolves Ollama vision from model metadata: $capabilities", async ({capabilities, images}) => {
     const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-      apiUrl: "http://ollama.fixture:11434/v1", extraHeaders: {Authorization: "Bearer proxy", "X-Proxy": "fixture"}};
+      apiUrl: `http://${crypto.randomUUID()}.fixture:11434/v1`, extraHeaders: {Authorization: "Bearer proxy", "X-Proxy": "fixture"}};
     const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
     let request: Request | undefined;
     const metadata = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -759,7 +759,7 @@ describe("getModel direct routing (no gateway)", () => {
     try {
       await resolveModelInput(handle, config, new AbortController().signal);
       expect(metadata).toHaveBeenCalledOnce();
-      expect(request!.url).toBe("http://ollama.fixture:11434/api/show");
+      expect(request!.url).toBe(handle.model.baseUrl.replace(/\/v1$/, "") + "/api/show");
       expect(request!.method).toBe("POST");
       expect(await request!.json()).toEqual({model: "custom-model"});
       expect(request!.headers.get("Authorization")).toBe("Bearer proxy");
@@ -770,16 +770,47 @@ describe("getModel direct routing (no gateway)", () => {
   });
 
   it.each(["unavailable", "invalid", "network"])("keeps Ollama text usable when metadata is %s", async failure => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture"};
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
+      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
     const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-    vi.stubGlobal("fetch", async () => {
+    const metadata = vi.fn(async () => {
       if (failure === "network") throw new TypeError("offline");
       return new Response(failure === "invalid" ? "not json" : "missing", {status: failure === "invalid" ? 200 : 404});
     });
+    vi.stubGlobal("fetch", metadata);
     try {
       await resolveModelInput(handle, config, new AbortController().signal);
-      expect(handle.model.input).toEqual(["text"]);
+      expect(handle.model.input).toEqual(["text", "image"]);
+      const next = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+      await resolveModelInput(next, config, new AbortController().signal);
+      expect(next.model.input).toEqual(["text", "image"]);
+      expect(metadata).toHaveBeenCalledOnce();
     } finally {vi.unstubAllGlobals();}
+  });
+
+  it("caches Ollama capabilities briefly without sharing them across credentials", async () => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "first",
+      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
+    const metadata = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      Response.json({capabilities: new Headers(init?.headers).get("Authorization") === "Bearer first"
+        ? ["completion"] : ["completion", "vision"]}));
+    vi.stubGlobal("fetch", metadata);
+    const resolve = async (settings = config) => {
+      const handle = getModel(env({CF_AI_GATEWAY: undefined}), settings, INITIATOR);
+      await resolveModelInput(handle, settings, new AbortController().signal);
+      return handle.model.input;
+    };
+    let clock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      expect(await resolve()).toEqual(["text"]);
+      expect(await resolve()).toEqual(["text"]);
+      expect(metadata).toHaveBeenCalledTimes(1);
+      expect(await resolve({...config, apiToken: "second"})).toEqual(["text", "image"]);
+      expect(metadata).toHaveBeenCalledTimes(2);
+      clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+      expect(await resolve()).toEqual(["text"]);
+      expect(metadata).toHaveBeenCalledTimes(3);
+    } finally {clock?.mockRestore(); vi.unstubAllGlobals();}
   });
 
   it("preserves cancellation during Ollama metadata resolution", async () => {
