@@ -40,7 +40,7 @@ it("discovers a newly advertised app for an existing account, persisting it with
   }]);
   expect(await user.listProvidedAccounts()).toHaveLength(1);
   expect(await user.listProvidedAccounts(true)).toHaveLength(1);
-  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
+  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe", "describe"]);
 });
 
 it("keeps cached descriptions when a gatekeeper is unavailable", async () => {
@@ -57,7 +57,7 @@ it("keeps cached descriptions when a gatekeeper is unavailable", async () => {
   expect(await user.listProvidedAccounts(true)).toMatchObject(cached);
   expect(await user.listProvidedAccounts()).toMatchObject(cached);
   expect(await user.listProvidedAccounts(true)).toMatchObject(cached);
-  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
+  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe", "describe"]);
   expect(warnings.mock.calls).toContainEqual([expect.objectContaining({
     event: "account.describe.refresh.failed", vendorId: "container", accountId: id,
   })]);
@@ -107,13 +107,19 @@ it("refreshes only the requested vendor for a direct app open", async () => {
 it("shares discovery between the app list and a simultaneous direct app open", async () => {
   const { user, hooks, userId, id } = await fixture();
   await hooks.pauseAccountDescriptions(userId, true);
-  const listing = user.listProvidedAccounts(true);
+  let listSettled = false;
+  let directSettled = false;
+  const listing = user.listProvidedAccounts(true).then(result => { listSettled = true; return result; });
   await vi.waitFor(async () => expect(await hooks.accountCalls(userId)).toHaveLength(2));
-  const direct = user.listProvidedAccounts(true, "container");
+  const direct = user.listProvidedAccounts(true, "container").then(result => { directSettled = true; return result; });
   try {
     // A later DO invocation lets the direct open reach the already-pending refresh.
     await runInDurableObject(user, () => {});
     expect(await hooks.accountCalls(userId)).toHaveLength(2);
+    // Both callers must wait past the former one-second deadline instead of returning unavailable.
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    expect(listSettled).toBe(false);
+    expect(directSettled).toBe(false);
   } finally {
     await hooks.pauseAccountDescriptions(userId, false);
   }
@@ -126,7 +132,7 @@ it("shares discovery between the app list and a simultaneous direct app open", a
 it.each([
   { disabledGatekeepers: ["container"] },
   { ambientGatekeeperModes: { container: "disabled" } },
-])("checks current availability before opening an app: %j", async config => {
+])("checks current availability before listing or opening an app: %j", async config => {
   const { user, hooks, userId, id } = await fixture();
   await hooks.pauseAccountDescriptions(userId, true);
   const listing = user.listProvidedAccounts(true);
@@ -136,7 +142,8 @@ it.each([
     internals.env = { ...internals.env, BLUEPRINTS: { get: async () => JSON.stringify(config) } as unknown as KVNamespace };
   });
   await hooks.pauseAccountDescriptions(userId, false);
-  await listing;
+  expect(await listing).toEqual([]);
+  expect(await user.listProvidedAccounts()).toEqual([]);
   expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });
@@ -171,35 +178,6 @@ it("does not refresh ordinary OAuth accounts", async () => {
   });
   expect(await user.listProvidedAccounts(true)).toEqual([]);
   expect(await hooks.accountCalls(userId)).toEqual(["describe"]);
-});
-
-it("bounds the wait, coalesces blocked refreshes and persists late app discovery", async () => {
-  const { user, hooks, userId, id } = await fixture();
-  await hooks.pauseAccountDescriptions(userId, true);
-  let settled = false;
-  const pending = user.listProvidedAccounts(true).then(result => { settled = true; return result; });
-  try {
-    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
-    expect(await pending).toEqual([]);
-    expect(await user.listProvidedAccounts(true)).toEqual([]);
-    expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
-  } finally {
-    await hooks.pauseAccountDescriptions(userId, false);
-    await pending;
-  }
-  await vi.waitFor(async () => expect(await user.listProvidedAccounts()).toMatchObject([
-    { accountId: id, description: { providesUi: { title: userId } } },
-  ]));
-  expect(await user.listProvidedAccounts(true)).toHaveLength(1);
-  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
-});
-
-it("refreshes again after the throttle interval", async () => {
-  const { user, hooks, userId } = await fixture();
-  await user.listProvidedAccounts(true);
-  using _clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
-  await user.listProvidedAccounts(true);
-  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe", "describe"]);
 });
 
 it.each(["disconnect", "new description"])("preserves a concurrent %s during metadata discovery", async change => {

@@ -42,9 +42,6 @@ const logger = createWorkshopLogger("workshop.user");
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
-// A slow connector must not hold up app navigation; keep its cached metadata after this wait.
-const APP_DISCOVERY_TIMEOUT_MS = 1_000;
-const APP_DISCOVERY_INTERVAL_MS = 5 * 60_000;
 const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
 const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
@@ -338,7 +335,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
-  #appDiscovery = new Map<number, { started: number; refresh?: Promise<void> }>();
+  #appDiscovery = new Map<number, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -2352,9 +2349,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
-   * `refreshApps` refreshes only management-app metadata, with a short cached fallback for slow
-   * auto-provisioned providers. Late results populate the next listing; attempts are throttled per
-   * account. `vendorId` scopes direct app opens; ordinary agent reads use the saved descriptions.
+   * `refreshApps` refreshes only management-app metadata for auto-provisioned accounts. Concurrent
+   * callers await the same pending refresh. `vendorId` scopes refresh calls for direct app opens;
+   * ordinary agent reads use the saved descriptions.
    */
   async listProvidedAccounts(refreshApps = false, vendorId?: string): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
@@ -2364,12 +2361,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         if (!rec.autoProvisioned || (vendorId !== undefined && rec.vendorId !== vendorId) ||
             config.disabledGatekeepers.includes(rec.vendorId) ||
             ambientGatekeeperMode(config, rec.vendorId) === "disabled") return;
-        let attempt = this.#appDiscovery.get(rec.id);
-        if (!attempt?.refresh) {
-          if (attempt && Date.now() - attempt.started < APP_DISCOVERY_INTERVAL_MS) return;
-          attempt = { started: Date.now() };
-          this.#appDiscovery.set(rec.id, attempt);
-          attempt.refresh = (async () => {
+        let refresh = this.#appDiscovery.get(rec.id);
+        if (!refresh) {
+          refresh = (async () => {
             try {
               let description = await rec.account.describe();
               if (JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
@@ -2384,33 +2378,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
               logger.warn("failed to refresh an account description for app discovery", {
                 event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
               });
-            } finally {
-              delete attempt.refresh;
             }
-          })();
-          this.ctx.waitUntil(attempt.refresh);
+          })().finally(() => { this.#appDiscovery.delete(rec.id); });
+          this.#appDiscovery.set(rec.id, refresh);
         }
-        let remaining = APP_DISCOVERY_TIMEOUT_MS - (Date.now() - attempt.started);
-        if (remaining <= 0) return;
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            attempt.refresh,
-            new Promise<void>(resolve => {
-              timeout = setTimeout(resolve, remaining);
-            }),
-          ]);
-        } finally {
-          clearTimeout(timeout);
-        }
+        await refresh;
       }));
+      // Discovery yields to admin changes; use current availability for the returned list.
+      config = await readAdminConfig(this.env);
     }
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
       if (!rec.description.singleton && !rec.description.providesUi) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
-      if (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled") continue;
+      if (config.disabledGatekeepers.includes(rec.vendorId) ||
+          (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled")) continue;
       result.push({ accountId: rec.id, vendorId: rec.vendorId, description: rec.description });
     }
     return result;
