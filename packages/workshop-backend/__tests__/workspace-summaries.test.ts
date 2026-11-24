@@ -13,6 +13,7 @@ import { OverseerDurableObject } from "../src/overseer.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations.js";
+import type { WorkspaceListing } from "../src/workspace-listing.js";
 import { putAction } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -330,6 +331,38 @@ describe("background reads of an offline builder", () => {
       await impl.userUpdateAttempt(reader.id.toString());
     });
     expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  });
+
+  it("sends nothing else of a listing to a builder who loses access while their summary is checked", async () => {
+    const {fixture, reader, profile, state} = await admitReader();
+    const readerId = reader.id.toString();
+    const parked = Promise.withResolvers<void>();
+    state.park = parked.promise;
+    const sent: WorkspaceListing[] = [];
+    await withImpl(fixture.workspace, async impl => {
+      const users = impl.users;
+      impl.users = new Proxy(users, {get(target, key) {
+        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+          if (member === "syncWorkspaceListing" && id.toString() === readerId) {
+            return async (_workspaceId: string, listing: WorkspaceListing) => { sent.push(listing); };
+          }
+          return Reflect.get(user, member);
+        }});
+        return Reflect.get(target, key);
+      }});
+      await readAndAsk(impl, "doc:1");
+      impl.storage.pendingUserUpdates.put({userId: readerId, profileId: profile.id, seq: 1,
+        parts: ["summary", "outputs", "title"]});
+      const pass = impl.deliverUserUpdates();
+      await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
+      using _removed = vi.spyOn(await impl.getSharingManager(), "getEffectiveAccess").mockReturnValue(undefined);
+      parked.resolve();
+      await pass;
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toHaveProperty("outputs");
+    expect(sent[0]).not.toHaveProperty("title");
+    expect(sent[0]?.summary).toBeNull();
   });
 });
 

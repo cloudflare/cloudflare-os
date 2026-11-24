@@ -968,6 +968,28 @@ describe("background reads", () => {
     expect(await background(world)).toBe(true);
   }));
 
+  it("withholds once a reopen is refused something already checked, and not for an outage", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(true);
+
+    // An outage refuses the open but settles nothing about the account.
+    world.verifiers.set("carol", new Error("upstream outage"));
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace"))
+        .rejects.toThrow(/could not confirm/);
+    expect(denied(world)).toBeUndefined();
+
+    // x is recorded already, so only the reopen's refusal can end background reads of it.
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace"))
+        .rejects.toThrow(/could not confirm/);
+    expect(denied(world)).toBe(true);
+    world.verifiers.delete("carol");
+    expect(await background(world)).toBe(false);
+  }));
+
   it("withholds when the chosen account is gone", () => withWorld(async world => {
     let calls: FacetCall[] = [];
     await admitOffline(world);

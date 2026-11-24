@@ -1113,12 +1113,16 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   denial, whichever publish finds it, keeps the watermark and marks the choice `denied` in the
   same write that queues their summary again: both publishes withhold, the summary they hold is
   cleared, and later publishes call nothing until a workspace admission re-verifies the choice
-  and clears the mark, or an admission replaces the account. A failure or
-  timeout records nothing and throws: the listing pass sends the rest of the listing and retries
-  the summary alone, and fanout keeps them as a failed recipient. A workspace with a legacy
-  connection admits no collaborator to either. Requirements at or below a watermark are not
-  checked again, so a vendor-side revocation of a resource already checked waits for the next
-  open.
+  and clears the mark, or an admission replaces the account. An admission refused by a definitive
+  denial (the account gone, or `verifyObserverAccess()` refusing it) marks a choice with a
+  watermark `denied` the same way, unless a concurrent admission changed the choice meanwhile; an
+  operational failure marks nothing. A failure or timeout of a background check records nothing
+  and throws: the listing pass sends the rest of the listing and retries the summary alone, and
+  fanout keeps them as a failed recipient. The rest of a collaborator's listing is re-scoped to
+  their access as it stands once the check is done: outputs refiltered, and outputs and title
+  dropped if they have no access left. A workspace with a legacy connection admits no
+  collaborator to either. Requirements at or below a watermark are not checked again, so a
+  vendor-side revocation of a resource already checked waits for the next open.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
   (at most three times) if a connection in its scope appeared or disappeared, or its requirements
   changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped

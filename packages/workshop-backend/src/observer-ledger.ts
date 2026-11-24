@@ -142,12 +142,10 @@ export interface ObserverLedgerHost {
   liveCollaborators(): string[];
 }
 
-/**
- * The verifier for `accountId` in `user`'s own User DO. Throws if the account is gone, with the
- * reason the user sees, or belongs to another vendor (getVerifier's own error).
- */
-export async function requireVerifier(user: DurableObjectStub<UserDurableObject>,
-                                      accountId: number, vendorId: string) {
+// The verifier for `accountId` in `user`'s own User DO. Throws if the account is gone, with the
+// reason the user sees, or belongs to another vendor (getVerifier's own error).
+async function requireVerifier(user: DurableObjectStub<UserDurableObject>,
+                               accountId: number, vendorId: string) {
   let verifier = await user.getVerifier(accountId, vendorId);
   if (!verifier) throw new Error("This account is no longer connected.");
   return verifier;

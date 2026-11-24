@@ -126,7 +126,7 @@ import {
   SharingManager, SharingCaller, accessIncludesGadget, accessIncludesLiveGadget,
 } from "./sharing";
 import {
-  MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
+  MAX_VERIFICATION_PASSES, ObserverLedger, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
@@ -1731,7 +1731,9 @@ class OverseerImpl implements AgentHooks {
   // queued again meanwhile. A failed send is retried from the alarm, and forgets what it carried
   // as acknowledged: it may still land, having timed out, so what it replaced is no longer known
   // to be there. A summary whose admission check fails is held back alone: the rest is sent, and
-  // the row is left owing only the summary, retried from the alarm.
+  // the row is left owing only the summary, retried from the alarm. A collaborator's other parts
+  // were read under their access when the pass started, so they are re-scoped to it as it stands
+  // once the awaits before the send are done.
   async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks, readers}: {
     update: PendingUserUpdate, listing: WorkspaceListing, sent: Map<ListingPart, string>,
     acks: Map<ListingPart, string>, readers: ChatStateReaders | undefined,
@@ -1757,6 +1759,18 @@ class OverseerImpl implements AgentHooks {
           summaryCheck = {error};
           delete listing.summary;
           sent.delete("summary");
+        }
+      }
+      if (profileId !== undefined && readers && (sent.has("outputs") || sent.has("title"))) {
+        let access = readers.sharing.getEffectiveAccess(profileId);
+        if (!access) {
+          delete listing.outputs;
+          delete listing.title;
+          sent.delete("outputs");
+          sent.delete("title");
+        } else if (listing.outputs) {
+          listing.outputs = listing.outputs.filter(output => accessIncludesGadget(access, output.workpieceId));
+          sent.set("outputs", canonicalJson(listing.outputs));
         }
       }
       if (sent.size) {
@@ -2124,26 +2138,31 @@ class OverseerImpl implements AgentHooks {
             sharing.getEffectiveAccess(profileId)?.role !== "build") {
           return;
         }
-        let summaryUser = this.users.idFromName(profileId).toString();
-        this.storage.transaction(() => {
-          this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
-            [gk.id]: allowed ? {accountId, verifiedThroughActionId: batch.through}
-              : {...choice, denied: true}}});
-          // A denial clears the summary they hold, whichever publish found it: the summary is
-          // owed again, its acknowledgement forgotten so the pass re-judges it.
-          if (!allowed) this.#queueUserUpdate(summaryUser, profileId, {parts: ["summary"]});
-        });
         if (!allowed) {
-          this.#listingAcks.get(summaryUser)?.delete("summary");
-          this.#requestUserUpdates();
-          this.logger.warn("background reads withheld from a collaborator", {
-            event: "observer.background.withheld", gatekeeperId: gk.id,
-            observerId: observer.observerId,
-          });
+          this.#denyBackgroundReads(current, gk.id);
           return;
         }
+        this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
+          [gk.id]: {accountId, verifiedThroughActionId: batch.through}}});
       }
     }
+  }
+
+  // Marks `current`'s choice for `gatekeeperId` `denied`, so neither background publish admits
+  // them until a workspace admission re-verifies it, and, in the same write, queues the summary
+  // they hold to be cleared, its acknowledgement forgotten so the pass re-judges it.
+  #denyBackgroundReads(current: ObserverRecord, gatekeeperId: number): void {
+    let summaryUser = this.users.idFromName(current.profileId).toString();
+    this.storage.transaction(() => {
+      this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
+        [gatekeeperId]: {...current.accountChoices[gatekeeperId]!, denied: true}}});
+      this.#queueUserUpdate(summaryUser, current.profileId, {parts: ["summary"]});
+    });
+    this.#listingAcks.get(summaryUser)?.delete("summary");
+    this.#requestUserUpdates();
+    this.logger.warn("background reads withheld from a collaborator", {
+      event: "observer.background.withheld", gatekeeperId, observerId: current.observerId,
+    });
   }
 
   #initializeUnreadTracking(): void {
@@ -12139,7 +12158,7 @@ class OverseerImpl implements AgentHooks {
       record = {profileId, observerId: crypto.randomUUID(), accountChoices: {}};
       this.storage.observers.put(record);
     }
-    let {observerId} = record;
+    let {observerId, accountChoices: initialChoices} = record;
     let accountChoices: {[gatekeeperId: number]: number} = Object.fromEntries(
         Object.entries(record.accountChoices).map(([id, choice]) => [id, choice.accountId]));
 
@@ -12243,8 +12262,9 @@ class OverseerImpl implements AgentHooks {
         //    recorded requirements the grant reaches, ask it to check those with the same verifier.
         //    It is asked only about requirements no earlier pass checked (see `checked`). Collect
         //    *every* failure rather than just the first, so a re-prompt can present them all at
-        //    once.
+        //    once. `denials` holds the definitive ones: the account gone, or refused access.
         let failures = new Map<number, ObserverBindingFailure>();
+        let denials = new Set<number>();
 
         await Promise.all(inScope.map(async gk => {
           // Removed while this open awaited: step 6 re-runs the pass without it.
@@ -12256,7 +12276,11 @@ class OverseerImpl implements AgentHooks {
           }
 
           try {
-            let verifier = await requireVerifier(clientUser, accountId, vendorId);
+            let verifier = await clientUser.getVerifier(accountId, vendorId);
+            if (!verifier) {
+              denials.add(gk.id);
+              throw new Error("This account is no longer connected.");
+            }
             // Serialized per (observer, gatekeeper) so this registration can't land while an
             // exclusion teardown's removeObserver for the same pair is still in flight (which
             // would delete it moments later); see #withObserverGatekeeperLock.
@@ -12266,6 +12290,7 @@ class OverseerImpl implements AgentHooks {
             let unchecked = (scope.requirements.get(gk.id) ?? []).filter(id => !done.has(id));
             if (unchecked.length > 0) {
               if (!await this.observerLedger.allowsAccess(verifier, observerId, gk, unchecked)) {
+                denials.add(gk.id);
                 throw new Error(
                     "Your account can't access some of the data read from this resource.");
               }
@@ -12301,6 +12326,21 @@ class OverseerImpl implements AgentHooks {
         }
 
         if (failures.size > 0) {
+          // A definitive denial of a choice admitted to background reads (one with a watermark)
+          // also ends them (see #denyBackgroundReads): later observations of what it was refused
+          // record nothing new to check. Only while the choice is as this admission found it, so
+          // a concurrent admission's newer verification stands.
+          for (let id of denials) {
+            let current = this.storage.observers.get(profileId);
+            let choice = current?.accountChoices[id];
+            if (current?.observerId === observerId && choice && !choice.denied &&
+                choice.verifiedThroughActionId !== undefined &&
+                choice.accountId === failures.get(id)!.accountId &&
+                choice.verifiedThroughActionId === initialChoices[id]?.verifiedThroughActionId) {
+              this.#denyBackgroundReads(current, id);
+            }
+          }
+
           // Drop the failed choices so the re-prompt asks about exactly these bindings. A failed
           // binding's unpersisted account choice self-corrects on the next open (re-verification
           // fails the stale persisted choice and re-prompts).
