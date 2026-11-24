@@ -292,7 +292,8 @@ describe("images read from a worktree", () => {
       }
     }));
 
-  it.each([false, true])("accounts for identical JPEG pixels with long metadata on live reads and replay (metadata=%s)", longHeader =>
+  it.each([false, true].flatMap(longHeader => [false, true].map(attachment => ({longHeader, attachment}))))(
+    "accounts for identical JPEG pixels on live reads and replay: %j", ({longHeader, attachment}) =>
     inKernel(crypto.randomUUID(), async impl => {
       const bytes = longHeader ? new Uint8Array(JPEG.length + 2 * 65537) : JPEG;
       if (longHeader) {
@@ -300,7 +301,10 @@ describe("images read from a worktree", () => {
         for (const offset of [2, 65539]) bytes.set([0xff, 0xfe, 0xff, 0xff], offset);
         bytes.set(JPEG.subarray(2), 2 + 2 * 65537);
       }
-      const {chatId} = await setup(impl, bytes);
+      const {chatId, blob} = await setup(impl, bytes);
+      if (attachment) await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()),
+        {profile: USER}, chatId, "Attached", {attachments: Array.from({length: 4}, (_, index) =>
+          ({oid: blob.oid, mimeType: "image/jpeg", name: `${index}.jpg`}))});
       impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(68_500)}]);
       const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture",
         contextWindow: 8_000_000, compactionInputBudget: 272_000};
@@ -312,14 +316,14 @@ describe("images read from a worktree", () => {
         return faux.stream(model, context, options);
       };
       const checkpoints = vi.spyOn(impl, "commitChatCompaction");
-      faux.setResponses([fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+      faux.setResponses([...(attachment ? [] : [fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"})]),
         fauxAssistantMessage(fauxText("Done"))]);
       const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
       await run();
       impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
       faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
       await run();
-      expect(imageTokens).toEqual([0, 4096, 4096]);
+      expect(imageTokens).toEqual(attachment ? [4096, 4096] : [0, 4096, 4096]);
       expect(checkpoints).not.toHaveBeenCalled();
     }));
 

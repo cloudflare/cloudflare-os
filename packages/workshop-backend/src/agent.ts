@@ -5,7 +5,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import { inlineChatAttachmentImageDimensions, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -54,7 +54,7 @@ import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
   ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
-  MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage,
+  MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage, withImageDimensions,
 } from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
@@ -2446,13 +2446,14 @@ async function runAgentPass(
             "original contents are currently unavailable.]"}];
         }
         let text = decodeChatAttachmentText(attachment.mimeType, data);
-        if (handle.model.input.includes("image") &&
-            canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
-          return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
+        const dimensions = handle.model.input.includes("image")
+          ? inlineChatAttachmentImageDimensions(attachment.mimeType, data, attachmentImageMaxEdge) : undefined;
+        if (dimensions) {
+          return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, withImageDimensions({
             type: "image",
             data: data.toBase64(),
             mimeType: attachment.mimeType,
-          }];
+          }, dimensions)];
         } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
           return [{
             type: "text",

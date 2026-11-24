@@ -23,8 +23,12 @@ export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider re
 
 // Request-local metadata, rebuilt on replay. Keep it off the model payload and durable chat.
 const admittedDimensions = new WeakMap<ImageContent, [number, number]>();
-export function fileImageDimensions(image: ImageContent): [number, number] | undefined {
+export function admittedImageDimensions(image: ImageContent): [number, number] | undefined {
   return admittedDimensions.get(image);
+}
+export function withImageDimensions(image: ImageContent, dimensions: [number, number]): ImageContent {
+  admittedDimensions.set(image, dimensions);
+  return image;
 }
 
 const ImageDataErrorCode = z.enum([
@@ -105,7 +109,5 @@ export function readFileImage(reader: BlobReader, mimeType = fileImageMimeType(r
   if (!dimensions) {
     throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
   }
-  const image: ImageContent = { type: "image", data: reader.read(0, reader.size).toBase64(), mimeType };
-  admittedDimensions.set(image, dimensions);
-  return image;
+  return withImageDimensions({ type: "image", data: reader.read(0, reader.size).toBase64(), mimeType }, dimensions);
 }
