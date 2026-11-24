@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_TOOL_RESULT_CHARS } from "../src/agent";
-import { MAX_CHAT_ATTACHMENT_BYTES } from "../src/chat-attachment-validation";
+import { MAX_INLINE_ATTACHMENT_BYTES } from "../src/chat-attachment-validation";
 import { BlobReader, BlobWriter, type ChunkStore } from "../src/git-chunked-blob";
 import { encodeLooseObject } from "../src/git-codec";
 import type { ReadFileWindow } from "../src/line-window";
@@ -72,8 +72,8 @@ describe("readFileResult", () => {
     expect(read(blob(png(edge, edge)), "ok.png")).toHaveLength(2);
     expect(() => read(blob(png(edge + 1, 10)), "wide.png"))
         .toThrow(`wide.png is a ${edge + 1}x10 image, too large to view`);
-    expect(() => read(blob(png(10, 10, MAX_CHAT_ATTACHMENT_BYTES + 1)), "heavy.png"))
-        .toThrow(`heavy.png is ${MAX_CHAT_ATTACHMENT_BYTES + 1} bytes, too large to view as an image`);
+    expect(() => read(blob(png(10, 10, MAX_INLINE_ATTACHMENT_BYTES + 1)), "heavy.png"))
+        .toThrow(`heavy.png is ${MAX_INLINE_ATTACHMENT_BYTES + 1} bytes, too large to view as an image`);
   });
 
   it("nominates images by extension", () => {

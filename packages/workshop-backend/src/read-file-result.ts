@@ -4,7 +4,7 @@
 // so the same bytes must always produce the same content.
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { imageDimensions, MAX_CHAT_ATTACHMENT_BYTES } from "./chat-attachment-validation";
+import { imageDimensions, MAX_INLINE_ATTACHMENT_BYTES } from "./chat-attachment-validation";
 import { readFileWindow, type LineSource, type ReadFileWindow } from "./line-window";
 
 /**
@@ -48,7 +48,7 @@ export function readFileResult(source: LineSource, window: ReadFileWindow, path:
   if (source.kind === "blob" && mimeType !== undefined &&
       window.startLine === undefined && window.lineCount === undefined) {
     let { reader } = source;
-    let tooBig = reader.size > MAX_CHAT_ATTACHMENT_BYTES;
+    let tooBig = reader.size > MAX_INLINE_ATTACHMENT_BYTES;
     // An oversized file's header is looked for in its first bytes only; a JPEG whose header lies
     // beyond them falls through to the text window, which reports it as binary.
     let bytes = reader.read(0, tooBig ? IMAGE_HEADER_PREFIX : reader.size);
@@ -57,7 +57,7 @@ export function readFileResult(source: LineSource, window: ReadFileWindow, path:
       let [width, height] = dimensions;
       if (tooBig) {
         throw new Error(`${path} is ${reader.size} bytes, too large to view as an image ` +
-            `(the limit is ${MAX_CHAT_ATTACHMENT_BYTES} bytes).`);
+            `(the limit is ${MAX_INLINE_ATTACHMENT_BYTES} bytes).`);
       }
       if (width > MAX_READ_FILE_IMAGE_EDGE || height > MAX_READ_FILE_IMAGE_EDGE) {
         throw new Error(`${path} is a ${width}x${height} image, too large to view: readFile ` +

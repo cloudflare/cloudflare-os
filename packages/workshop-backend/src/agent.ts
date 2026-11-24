@@ -1,11 +1,11 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, MAX_INLINE_MESSAGE_BYTES, MAX_INLINE_REPLAY_BYTES } from './chat-attachment-validation';
 import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -34,7 +34,7 @@ import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
-import { assertNoNul } from "./git-cache";
+import { assertNoNul, type WholeTextReadOptions } from "./git-cache";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -376,6 +376,9 @@ export interface AgentHooks {
       turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
+  /** Records attachments a provider refused, so later turns name them by path instead. */
+  refuseInlineAttachments(chatId: number, attachmentIds: string[]): void;
+
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
   setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void;
 
@@ -526,9 +529,11 @@ export interface AgentHooks {
    * the path -- never a whole tree -- the lazy base resolver behind worktree session content and
    * the way every unpinned read is served, gadget or worktree. Returns undefined for an absent
    * path; throws descriptive, agent-visible errors for a symlink or submodule path (naming the
-   * target), binary content, and pull failures.
+   * target), binary content, and pull failures, and with `options.limited` refuses a file too
+   * large to hold as text (see WholeTextReadOptions).
    */
-  readFileAtCommit(commit: string, path: string): Promise<string | undefined>;
+  readFileAtCommit(commit: string, path: string, options?: WholeTextReadOptions)
+      : Promise<string | undefined>;
 
   /**
    * Open one file of a commit's tree by path for reading in pieces, whatever its size, along with
@@ -573,10 +578,11 @@ export interface AgentHooks {
    * The grep tool's scan: the lines matching `pattern` in the searchable files under `path` in
    * a workpiece's overlay-over-base view, with missing base blobs pulled in one batch (see
    * scanWorkpieceForGrep). `base` is the commit the workpiece's untouched files are read from,
-   * or undefined for a gadget with no committed code.
+   * or undefined for a gadget with no committed code. Matches past `maxChars` of output are
+   * counted rather than kept.
    */
   grepWorkpiece(turn: WorktreeTurnAccess, workpieceId: WorkpieceId, base: string | undefined,
-                pattern: RegExp, path?: string): Promise<GrepScan>;
+                pattern: RegExp, path: string | undefined, maxChars: number): Promise<GrepScan>;
 
   /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in chat `chatId`'s
@@ -782,9 +788,9 @@ and wait for the command to return its
 files before referencing them. Ignored files and files outside mounts stay in the container.
 Do not put image bytes or base64 in your reply.
 The same URLs work in literal \`<img src="worktree://BINDING/path">\` tags in \`<inline-html>\`
-for custom layouts; construct the file references in the markup, not dynamically in a script.
+for custom layouts; write each file reference in quotes in the view's text, never build one in code.
 
-You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text. Write up to 20 values into a view's code; for more, write them to a file (see "Views of data from code").
 
 \`\`\`
 Spending on food rose 18% in October, mostly eating out.
@@ -807,13 +813,45 @@ Spending on food rose 18% in October, mostly eating out.
 \`\`\`
 
 * Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
-* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
-* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the globals \`agent\` and \`embeds\`.
+* A view has no \`env\` and no network: it shows what you write into it and the files it reads. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
 * The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
 * \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
 * For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
 * The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
 * A view keeps no state. Something that must remember things between visits belongs in a Gadget.
+
+## Views of data from code
+
+For more than 20 values, read or work out the data with \`executeCode\`, and write it to a file in a worktree (create one with \`createWorktree\`, no \`commitId\`, if the chat has none for generated files). Then, in your next response, read the file in the view, so the data never passes through your answer: never retype it into the view's code. Save the figures your answer states with the rows, so the view shows them too. The view reads the file as it was when you wrote the answer, so a view in the same response as the write would not see it: write first, then draw the view. Call the tool; never paste its code into your answer.
+
+\`\`\`
+export default async function(self, env) {
+  const months = await env.EXPENSES.rpc.monthlyTotals(); // [["Jan", 96], …]
+  const total = months.reduce((sum, [, amount]) => sum + amount, 0);
+  await env.OUTPUTS.writeBytes("spending.json", new TextEncoder().encode(JSON.stringify({ total, months })));
+}
+\`\`\`
+
+Then, in your answer:
+
+\`\`\`
+<inline-html>
+<title>Spending by month</title>
+<h3 id="total"></h3>
+<div id="months"></div>
+<script type="module">
+  const { total, months } = await embeds.json("worktree://OUTPUTS/spending.json");
+  document.getElementById("total").textContent = \`Total: \${total}\`;
+  const list = document.getElementById("months");
+  for (const [month, amount] of months) {
+    list.appendChild(document.createElement("p")).textContent = \`\${month}: \${amount}\`;
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* \`embeds.json(url)\` and \`embeds.text(url)\` read the whole file.
 
 # Writing Gadgets
 
@@ -1843,16 +1881,19 @@ async function runAgentPass(
   // Lazily reads a worktree file's base text into the session content, so later edits (and
   // replayed changes) apply against it exactly as if the base tree had been materialized.
   // Returns undefined for a path absent from the base; throws readFileAtCommit's descriptive
-  // errors (symlink/submodule/binary/pull failure). No-ops for anything that is not a
-  // worktree.
-  let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
+  // errors (symlink/submodule/binary/pull failure, and with `options.limited` a file too large
+  // to hold as text). No-ops for anything that is not a worktree.
+  let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string,
+                                 options?: WholeTextReadOptions)
       : Promise<string | undefined> => {
     let base = worktreeBase(worktreeId);
     if (base === undefined) return undefined;
-    let text = await hooks.readFileAtCommit(base, filename);
+    let text = await hooks.readFileAtCommit(base, filename, options);
     // A re-root by a concurrent call of the same execution can move the base during the read,
     // whose text is then the old base's: read the new one instead.
-    if (worktreeBase(worktreeId) !== base) return await faultWorktreeBase(worktreeId, filename);
+    if (worktreeBase(worktreeId) !== base) {
+      return await faultWorktreeBase(worktreeId, filename, options);
+    }
     if (text === undefined) return undefined;
     sessionContent = new Map(sessionContent);
     let files = new Map(sessionContent.get(worktreeId));
@@ -1863,11 +1904,13 @@ async function runAgentPass(
 
   // The live-read variant of faultWorktreeBase: a path the chat's change stream has removed
   // reports absent instead of resurrecting from the base. Only the tool-facing reads use this;
-  // replay seeding deliberately does not (see seedWorktreeBasesForChange).
+  // replay seeding deliberately does not (see seedWorktreeBasesForChange). It is a new read or
+  // edit, so it is `limited`; replay still reads a file of any size, to apply edits saved before
+  // that limit.
   let readWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
       : Promise<string | undefined> =>
       worktreeRemovedPaths.get(worktreeId)?.has(filename)
-          ? undefined : await faultWorktreeBase(worktreeId, filename);
+          ? undefined : await faultWorktreeBase(worktreeId, filename, { limited: true });
 
   // Reading a blob-backed UTF-8 upload must not change its representation: text edits over
   // byte replacements still require a separate composition protocol.
@@ -2382,18 +2425,64 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  // Count across the whole replay, not just the latest upload batch. PDFs also count on some
-  // providers; conservatively include candidate parts even if their headers later rule them out.
-  // Images readFile showed count too, nominated by name alike; they never exceed the many-image
-  // bound themselves (MAX_READ_FILE_IMAGE_EDGE), but they can push attachments over it.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
-    ? (msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
-        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0) +
-      (msg.toolCalls?.filter(call => call.toolName === "readFile" && !call.error &&
-        call.input.startLine === undefined && call.input.lineCount === undefined &&
-        readFileImageMimeType(call.input.filename) !== undefined).length ?? 0)
-    : 0), 0);
-  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
+  // Which images and PDFs go inline. Whether one does depends only on its own message, so a
+  // request never changes what an earlier one showed, which would invalidate the model's preserved
+  // thinking after it: the model must take images, the attachment must be within
+  // MAX_INLINE_ATTACHMENT_BYTES and its message's inline ones within MAX_INLINE_MESSAGE_BYTES, and
+  // no provider may have refused a request for it (see the failure at the end of this pass). Parts
+  // count even if their headers later rule them out.
+  //
+  // Every request resends them all, so once the chat's inline ones pass MAX_INLINE_ATTACHMENTS or
+  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts first, from the prompt earlier requests
+  // sent, keeping the messages from `attachmentsFitFrom` on, whose attachments fit. Only if it
+  // can't are the older ones named by path instead (`pastLimitParts`). Past
+  // MAX_INLINE_REPLAY_BYTES, older ones are named by path unread (`unreadParts`), so the prompt
+  // is no longer the one earlier requests sent.
+  const isInlineCandidate = (mimeType: string) => handle.model.input.includes("image") &&
+      (isAllowedChatAttachmentImageMimeType(mimeType) ||
+       (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api)));
+  const refusedAttachmentIds = new Set(agentContext.refusedInlineAttachments ?? []);
+  const inlineAttachmentIds = new Set<string>();
+  // Those of the messages the model has not answered yet: what a refusal of this pass's first
+  // request is put down to.
+  const unansweredAttachmentIds: string[] = [];
+  const unreadAttachmentIds = new Set<string>();
+  let attachmentsFitFrom: number | undefined;
+  // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
+  let prompt: number | undefined;
+  let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
+  for (let msg of chatMessages.toReversed()) {
+    if (msg.type !== "message") continue;
+    if (msg.author.type === "agent") answered = true;
+    else if (!answered) prompt ??= msg.sequence;
+    let messageIds: string[] = [], messageBytes = 0;
+    for (let attachment of msg.attachments ?? []) {
+      if (isInlineCandidate(attachment.mimeType) && !refusedAttachmentIds.has(attachment.id) &&
+          attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
+          messageBytes + attachment.size <= MAX_INLINE_MESSAGE_BYTES) {
+        messageBytes += attachment.size;
+        messageIds.push(attachment.id);
+      }
+    }
+    pastReplayBytes ||= keptAttachmentBytes + messageBytes > MAX_INLINE_REPLAY_BYTES;
+    if (pastReplayBytes) {
+      for (let id of messageIds) unreadAttachmentIds.add(id);
+      continue;
+    }
+    keptAttachments += messageIds.length;
+    keptAttachmentBytes += messageBytes;
+    if (attachmentsFitFrom === undefined && (keptAttachments > MAX_INLINE_ATTACHMENTS ||
+        keptAttachmentBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
+      attachmentsFitFrom = msg.sequence + 1;
+    }
+    for (let id of messageIds) inlineAttachmentIds.add(id);
+    if (!answered) unansweredAttachmentIds.push(...messageIds);
+  }
+  // The label part of each inline attachment before `attachmentsFitFrom`, with the marker that
+  // replaces it and the part after it if the turn has to run without compacting.
+  const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
+  // The markers of the attachments past MAX_INLINE_REPLAY_BYTES.
+  const unreadParts = new Set<TextContent | ImageContent>();
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2468,6 +2557,53 @@ async function runAgentPass(
                     ? `; workspace file env.${agentContext.scratch.bindingName}/` +
                       attachment.workspacePath
                     : "";
+                let textLike = isTextLikeAttachmentMimeType(attachment.mimeType);
+                let isPdf = attachment.mimeType === PDF_MIME_TYPE;
+                // Inlined, text this long would be resent on every turn, and could alone exceed
+                // the model's window, which compaction cannot fix.
+                let tooLargeText = (): TextContent[] => [{
+                  type: "text",
+                  text: `\n\n[Attached text file${filename}${workspaceLocation}; ${attachment.size} ` +
+                      "bytes, too large to inline. " + (workspaceLocation
+                          ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                            "workspace file.]"
+                          : "It is not in the workspace yet, so its contents are unavailable.]"),
+                }];
+                // Model input support does not restrict workspace files. Never decode binary
+                // uploads lossily or send unsupported formats to a provider as image parts.
+                let binary = (): TextContent[] => [{
+                  type: "text",
+                  text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
+                      `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
+                }];
+                let notShown = (reason: string): TextContent => ({type: "text", text:
+                    `\n\n[Attached ${isPdf ? "PDF file" : "image"}${filename}${workspaceLocation}; ` +
+                    `${attachment.size} bytes, not shown to you: ${reason}.]`});
+                const PAST_LIMITS = "past the limits on the images and PDFs one request can carry";
+                // A label and inline part, which the marker replaces if the turn runs uncompacted
+                // past the limits.
+                let inline = (label: string, data: string): (TextContent | ImageContent)[] => {
+                  let pair: [TextContent, ImageContent] = [{type: "text", text: label},
+                    {type: "image", data, mimeType: attachment.mimeType}];
+                  if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
+                    pastLimitParts.set(pair[0], notShown(PAST_LIMITS));
+                  }
+                  return pair;
+                };
+                // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
+                // short enough, since text decodes to at least a character per four bytes.
+                if (unreadAttachmentIds.has(attachment.id)) {
+                  let marker = notShown(PAST_LIMITS);
+                  unreadParts.add(marker);
+                  return [marker];
+                } else if (isInlineCandidate(attachment.mimeType) && !inlineAttachmentIds.has(attachment.id)) {
+                  return [notShown(refusedAttachmentIds.has(attachment.id)
+                      ? "the model's provider refused a request with it" : PAST_LIMITS)];
+                } else if (textLike && attachment.size > 4 * MAX_TOOL_RESULT_CHARS) {
+                  return tooLargeText();
+                } else if (!textLike && !isInlineCandidate(attachment.mimeType)) {
+                  return binary();
+                }
                 let data: Uint8Array;
                 try {
                   data = await hooks.getChatAttachmentData(chatId, attachment.id);
@@ -2481,12 +2617,8 @@ async function runAgentPass(
                     "original contents are currently unavailable.]"}];
                 }
                 let text = decodeChatAttachmentText(attachment.mimeType, data);
-                if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
-                  return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
-                    type: "image",
-                    data: data.toBase64(),
-                    mimeType: attachment.mimeType,
-                  }];
+                if (canInlineChatAttachmentImage(attachment.mimeType, data)) {
+                  return inline(`\n\n[Attached image${filename}${workspaceLocation}]`, data.toBase64());
                 } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
@@ -2494,34 +2626,15 @@ async function runAgentPass(
                         text,
                   }];
                 } else if (text !== undefined) {
-                  // Inlined, it would be resent on every turn, and could alone exceed the model's
-                  // window, which compaction cannot fix.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
-                        "bytes, too large to inline. " + (workspaceLocation
-                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
-                              "workspace file.]"
-                            : "It is not in the workspace yet, so its contents are unavailable.]"),
-                  }];
-                } else if (attachment.mimeType === PDF_MIME_TYPE &&
-                           modelApiSupportsPdfAttachments(handle.model.api)) {
+                  return tooLargeText();
+                } else if (isPdf && modelApiSupportsPdfAttachments(handle.model.api)) {
                   // pi has no file/document content part, so a PDF rides an ImageContent part;
                   // the model handle rewrites it into the provider's native document block just
                   // before the request goes out (see chat-attachment-pdf.ts). The text part
                   // carries the filename, which the disguised part cannot.
-                  return [
-                    {type: "text", text: `\n\n[Attached PDF file${filename}${workspaceLocation}]`},
-                    {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
-                  ];
+                  return inline(`\n\n[Attached PDF file${filename}${workspaceLocation}]`, data.toBase64());
                 } else {
-                  // Model input support does not restrict workspace files. Never decode binary
-                  // uploads lossily or send unsupported formats to a provider as image parts.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
-                        `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
-                  }];
+                  return binary();
                 }
               }));
               parts.push(...attachmentParts.flat());
@@ -3614,7 +3727,8 @@ async function runAgentPass(
           let base = pinnedGadgets.has(workpieceId)
               ? worktreeBase(workpieceId)
               : observeHead(workpieceId) ?? hooks.getWorktreePinBase(workpieceId);
-          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, re, path);
+          let scan = await hooks.grepWorkpiece(
+              worktreeTurnAccess, workpieceId, base, re, path, MAX_TOOL_RESULT_CHARS);
           // Recorded as shown: replay reads this text back, and a broad match over several
           // large files could otherwise exceed a storage record.
           let output = formatGrep(scan, MAX_TOOL_RESULT_CHARS);
@@ -4322,6 +4436,11 @@ async function runAgentPass(
   // loop reports them as a final assistant message with stopReason "error"/"aborted".) Nothing
   // from a failed turn is persisted.
   let turnFailure: AssistantMessage | undefined;
+  // Whether a step of this pass got a response, so a failure is not this pass's first request.
+  let stepFinished = false;
+  // Whether this pass's prompt names older attachments by path where earlier requests showed
+  // them (see `pastLimitParts`).
+  let promptRewritten = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4355,8 +4474,10 @@ async function runAgentPass(
         switch (ev.type) {
           case "text_delta": {
             answerText += ev.delta;
-            // Only syntax that can complete a file reference can add a pin. Ordinary prose
-            // must not reparse the accumulated answer; the final pass also handles EOF.
+            // Only syntax that can complete a file reference can add a pin, so a quoted URL pins
+            // with the next delta holding `)`, `]`, `>` or a newline, at the latest the block's
+            // closing tag. Ordinary prose must not reparse the accumulated answer; the final pass
+            // also handles EOF.
             const newEmbeds = /[)\]>\r\n]/.test(ev.delta)
                 ? await snapshotEmbeds(answerText, true) : undefined;
             emitStreamEvent({type: "textDelta", delta: ev.delta, embeds: newEmbeds});
@@ -4501,8 +4622,11 @@ async function runAgentPass(
           }
 
           // The model-facing snapshot rides along for the overseer to persist beside the display
-          // record.
-          msg.modelData = makeStoredAssistantMessage(message);
+          // record. Thinking signed over a rewritten prompt is left out: later turns replay, and
+          // may compact, the prompt earlier requests sent, against which it would be invalid.
+          msg.modelData = makeStoredAssistantMessage(promptRewritten
+              ? {...message, content: message.content.filter(block => block.type !== "thinking")}
+              : message);
           msgs.push(msg);
         }
 
@@ -4579,15 +4703,23 @@ async function runAgentPass(
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
   let compactionTurn = isCompactionTurn(chatMessages.toReversed());
-  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
-    let compactedTo = findCompactionBoundary(
-        projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
+  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget) ||
+      attachmentsFitFrom !== undefined) {
+    // Native compaction needs the prompt as earlier requests sent it, which unread attachments
+    // change; the summary path reads only the transcript.
+    let native = supportsAnthropicCompaction(handle.model) && unreadParts.size === 0;
+    // The prompt stays: summarized, the agent would see only a summary of what it is answering.
+    let protectedFrom = findProtectedFromSequence(chatMessages);
+    if (prompt !== undefined && !(protectedFrom !== undefined && protectedFrom <= prompt)) {
+      protectedFrom = prompt;
+    }
+    let compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,
+        checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom, native);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
-        if (supportsAnthropicCompaction(handle.model)) {
+        if (native) {
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
           let keptFrom = projection.findIndex(({sequence}) =>
             sequence !== undefined && sequence >= compactedTo);
@@ -4655,6 +4787,32 @@ async function runAgentPass(
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
   if (compactionTurn) return {type: "finished"};
 
+  // Past the limits on inline attachments with no compaction: name the older ones by path, and
+  // drop the thinking after the first of them, which that rewrite invalidates, as it does after
+  // attachments left unread. The rewrite lasts only this pass, whose replies are stored without
+  // their thinking.
+  let rewrittenFrom = modelMessages.findIndex(message => message.role === "user" &&
+      Array.isArray(message.content) &&
+      message.content.some(part => pastLimitParts.has(part) || unreadParts.has(part)));
+  if (rewrittenFrom >= 0) {
+    promptRewritten = true;
+    modelMessages = modelMessages.flatMap((message, index): Message[] => {
+      if (index < rewrittenFrom) return [message];
+      if (message.role === "assistant") {
+        let content = message.content.filter(block => block.type !== "thinking");
+        return content.length ? [{...message, content}] : [];
+      }
+      if (message.role !== "user" || !Array.isArray(message.content)) return [message];
+      let content: (TextContent | ImageContent)[] = [];
+      for (let i = 0; i < message.content.length; ++i) {
+        let marker = pastLimitParts.get(message.content[i]);
+        content.push(marker ?? message.content[i]);
+        if (marker) ++i;
+      }
+      return [{...message, content}];
+    });
+  }
+
   if (modelMessages.length === 0 ||
       modelMessages[modelMessages.length - 1].role === "assistant") {
     // The log tail ends with a completed assistant response and nothing new has arrived for
@@ -4678,6 +4836,12 @@ async function runAgentPass(
     replayCatalogChange(sequence, catalogChanges, Date.now());
   }
 
+  // The model's context is built and nothing below reads the stored rows, so release them: they
+  // hold their own copy of the text of agent steps, which the context takes from stored
+  // snapshots. Emptied in place because runAgent holds the array too; it reads it again only to
+  // recognise a `/compact` turn, and such a pass has returned above.
+  chatMessages.length = 0;
+
   let context: AgentContext = {
     messages: [leadingSystemMessage, ...modelMessages],
     tools: toolList,
@@ -4696,6 +4860,7 @@ async function runAgentPass(
       decisionRequestsForStep = hooks.consumeCapturedDecisionRequests(chatId);
       if (decisionRequestsForStep.length > 0) decisionRequested = true;
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
+      stepFinished = true;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
       // The next request is this step's measured prompt plus the tool results just produced,
@@ -4746,8 +4911,19 @@ async function runAgentPass(
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
-    let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    let statusCode = httpStatusFromError(message, handle.lastResponse);
+    let error = new AgentTurnError(message, statusCode);
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
+    // A provider that refuses the pass's first request may be refusing an attachment the model
+    // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
+    // Those go by path from now on. The model answered nothing after them, so no thinking
+    // depends on how they were shown.
+    if ((statusCode === 400 || statusCode === 413) && !stepFinished &&
+        unansweredAttachmentIds.length > 0) {
+      hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
+      throw new AgentTurnError(`${message}\n\nRetrying sends this message's images and PDFs ` +
+          "as workspace files instead.", statusCode);
+    }
     throw error;
   }
 

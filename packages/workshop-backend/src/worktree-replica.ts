@@ -24,7 +24,8 @@ import type {
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
-  commitIdentityForAuthor, TreeShapeError, UnreadableContentError, type FileEntry,
+  commitIdentityForAuthor, decodeBlobText, fitsWholeText, isTextBlob, TreeShapeError,
+  UnreadableContentError, type FileEntry,
 } from "./git-cache";
 import {
   encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
@@ -37,6 +38,11 @@ type DiffEntry = FileEntry & { referencedBy: GitOid };
 
 /** One file path that differs between two trees: its entry on each side, absent where none. */
 type DiffChange = { from?: DiffEntry, to?: DiffEntry };
+
+// The most lines one merge splits its files' versions into, all of them together. Each line
+// becomes a string of its own, which for a file of short lines, such as a long single-column
+// CSV, takes many times the file's bytes.
+const MAX_MERGE_LINES = 500_000;
 
 /** The replica state of one code execution; see the module doc. */
 export class WorktreeReplicas {
@@ -162,6 +168,7 @@ export class WorktreeReplicas {
     let conflicts: string[] = [];
     let sides = [new Map<string, string>(), new Map<string, string>(), new Map<string, string>()];
     let texts: { path: string, mode: FileEntry["mode"] }[] = [];
+    let lines = 0;
     for (let [path, ours] of await this.#diff(from, current)) {
       let theirs = submitted.get(path);
       if (theirs === undefined) {
@@ -169,27 +176,33 @@ export class WorktreeReplicas {
         continue;
       }
       if (theirs.to?.oid === ours.to?.oid && theirs.to?.mode === ours.to?.mode) continue;
-      let kept = theirs.to ?? ours.to!;
-      if ((theirs.to === undefined || ours.to === undefined) && kept.oid === ours.from?.oid) {
-        // One side deleted the file and the other changed only its mode, which the text merge
-        // can't see: keep the change, as against any deletion.
-        changes.set(path, fileEntry(kept));
+      if (theirs.to === undefined || ours.to === undefined) {
+        // One side deleted the file and the other changed it, if only its mode: keep the change,
+        // as against any deletion, as the text merge would, without reading it.
+        changes.set(path, fileEntry(theirs.to ?? ours.to!));
         conflicts.push(path);
         continue;
       }
       // A mode merges on its own: one side's change of it survives the other's edit.
-      let mode = theirs.to?.mode === ours.from?.mode ? ours.to?.mode ?? theirs.to?.mode
-          : theirs.to?.mode ?? ours.to!.mode;
-      let versions = await Promise.all(
-          [ours.from, ours.to, theirs.to].map(entry => this.#readText(entry, path)));
-      if (versions.includes(null)) {
-        // Binary: the command's version, unless it deleted what the workspace changed.
-        changes.set(path, { mode: mode!, oid: (theirs.to ?? ours.to)!.oid });
+      let mode = theirs.to.mode === ours.from?.mode ? ours.to.mode : theirs.to.mode;
+      // Content that only one side changed, or both alike, needs no text merge, whatever the
+      // file holds: that content, with the merged mode.
+      if (theirs.to.oid === ours.from?.oid || ours.to.oid === ours.from?.oid ||
+          theirs.to.oid === ours.to.oid) {
+        changes.set(path, { mode, oid: theirs.to.oid === ours.from?.oid ? ours.to.oid : theirs.to.oid });
+        continue;
+      }
+      let versions = await this.#readVersions(
+          [ours.from, ours.to, theirs.to], path, MAX_MERGE_LINES - lines);
+      if (versions === null) {
+        // Binary: the command's version.
+        changes.set(path, { mode, oid: theirs.to.oid });
         conflicts.push(path);
         continue;
       }
-      versions.forEach((text, side) => { if (text !== undefined) sides[side].set(path, text!); });
-      texts.push({ path, mode: mode! });
+      lines += versions.lines;
+      versions.texts.forEach((text, side) => { if (text !== undefined) sides[side].set(path, text); });
+      texts.push({ path, mode });
     }
     let merged = threeWayMerge(sides[0], sides[1], sides[2],
                                { base: "base", ours: "workspace", theirs: "command" });
@@ -215,15 +228,33 @@ export class WorktreeReplicas {
     }
   }
 
-  // A file's text, undefined if absent, or null if it is not readable as text.
-  async #readText(entry: DiffEntry | undefined, path: string): Promise<string | undefined | null> {
-    if (entry === undefined) return undefined;
-    try {
-      return await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path);
-    } catch (error) {
-      if (error instanceof UnreadableContentError) return null;
-      throw error;
+  // A file's versions as text, undefined where absent, with how many lines they make; or null
+  // if any is not text. One too large to hold whole (fitsWholeText), or past the `linesLeft` of
+  // the merge's MAX_MERGE_LINES, refuses the submission, before anything changes, unless another version
+  // shows the file is binary: counting text as binary would take the command's version whole and
+  // drop the worktree's edits.
+  async #readVersions(entries: (DiffEntry | undefined)[], path: string, linesLeft: number)
+      : Promise<{ texts: (string | undefined)[], lines: number } | null> {
+    let readers = await Promise.all(entries.map(entry =>
+        entry && this.host.gitCache.openBlob(entry.oid, entry.referencedBy)));
+    let present = readers.filter(reader => reader !== undefined);
+    let lines = present.reduce((sum, reader) => sum + reader.newlines + 1, 0);
+    if (lines > linesLeft || !present.every(fitsWholeText)) {
+      if (!present.every(isTextBlob)) return null;
+      throw new Error(`The command's result can't be merged with the worktree's concurrent ` +
+          `edits to ${path}: it is too large to merge as text. Take a new snapshot and run ` +
+          "the command again.");
     }
+    let texts: (string | undefined)[] = [];
+    for (let reader of readers) {
+      try {
+        texts.push(reader && decodeBlobText(reader.read(0, reader.size), path));
+      } catch (error) {
+        if (error instanceof UnreadableContentError) return null;
+        throw error;
+      }
+    }
+    return { texts, lines };
   }
 
   // The file paths that differ between trees `a` and `b`, descending only into subtrees that

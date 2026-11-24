@@ -130,9 +130,32 @@ describe("host-pinned answer files", () => {
     expect(read).not.toHaveBeenCalled();
     await snapshotChatEmbeds(prefix + '.png">\n', images, read, true);
     expect(read).toHaveBeenCalledWith("SCRATCH", "a.png");
+    // A view reads every URL its text quotes, so quoted URLs in a comment or a script pin too.
     await snapshotChatEmbeds(prefix + '.png">\n<!-- <img src="worktree://SCRATCH/comment.png"> -->\n' +
         '<script>const example = \'<img src="worktree://SCRATCH/script.png">\';</script>\n</inline-html>', images, read);
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls.map(([, path]) => path)).toEqual(["a.png", "comment.png", "script.png"]);
+  });
+
+  it("pins every URL a view's raw text quotes, in scripts, SVG, templates and attributes alike", async () => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds('<inline-html>\n<script type="module">await embeds.json("worktree://OUTPUTS/a.json");</script>\n' +
+        "<svg><script>embeds.text('worktree://OUTPUTS/b.csv')</script></svg>\n" +
+        "<template><script>embeds.text(`worktree://OUTPUTS/c.txt`)</script></template>\n" +
+        '<p data-file="worktree://OUTPUTS/d.json"></p>\n</inline-html>\n\n' +
+        'Prose that quotes "worktree://OUTPUTS/prose.json" pins nothing.', snapshots, read);
+    expect(Object.keys(snapshots).toSorted()).toEqual(
+        ["a.json", "b.csv", "c.txt", "d.json"].map(path => "worktree://OUTPUTS/" + path));
+  });
+
+  it("pins a quoted URL only once its quote closes, and on a last line with no newline", async () => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const open = '<inline-html>\n<script type="module">\nawait embeds.json("worktree://OUTPUTS/sales';
+    await snapshotChatEmbeds(open + "\n", snapshots, read, true);
+    expect(read).not.toHaveBeenCalled();
+    await snapshotChatEmbeds(open + '.json");\n</script>\n</inline-html>', snapshots, read);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/sales.json": A});
   });
 
   it.each([false, true])("keeps pinning other references after an invalid inline view (streaming: %s)", async streaming => {

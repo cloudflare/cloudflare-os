@@ -20,6 +20,7 @@ import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { runAgent, type WorktreeTurnAccess } from "../src/agent";
 import { chatChangeStatuses } from "../src/agent-compaction";
 import { concatBytes } from "../src/git-codec";
+import { MAX_WHOLE_TEXT_BYTES, type WholeTextReadOptions } from "../src/git-cache";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -357,6 +358,38 @@ describe("reads around a re-root", () => {
     });
     await agentTurn(impl, [[execute("command")]]);
     expect(reads).toEqual(["one\ncommand\n", "one\ncommand\n"]);
+  }));
+
+  // The read of the new base is a new read too, so a file too large to hold as text is refused.
+  it("a base read the re-root overtakes refuses a new base too large to read whole",
+      () => withImpl(async impl => {
+    let { id } = await setup(impl);
+    let readFileAtCommit = impl.readFileAtCommit.bind(impl);
+    let held!: () => void, release!: () => void;
+    let holding = new Promise<void>(resolve => held = resolve);
+    let released = new Promise<void>(resolve => release = resolve);
+    impl.readFileAtCommit = async (commit: string, path: string, options?: WholeTextReadOptions) => {
+      let text = await readFileAtCommit(commit, path, options);
+      impl.readFileAtCommit = readFileAtCommit;
+      held();
+      await released;
+      return text;
+    };
+    let large = "a row\n".repeat(Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / 6));
+    let outcome: unknown;
+    stubExecution(impl, {
+      command: async turn => {
+        let result = await resultCommit(impl, turn, id, { ...BASE, "a.txt": large });
+        let pending = turn.readFile(id, "a.txt");
+        await holding;
+        turn.reRoot(id, result);
+        release();
+        outcome = await pending.then(() => "read", (error: Error) => error.message);
+        return "ran";
+      },
+    });
+    await agentTurn(impl, [[execute("command")]]);
+    expect(outcome).toMatch("too large to read or edit as whole text");
   }));
 
   // An execution that only commits pins the worktree live, so a read after it is served from
