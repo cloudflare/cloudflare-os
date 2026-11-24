@@ -1769,7 +1769,6 @@ function BlueprintGatekeeperBindingField({
       <AccountChooser
         accounts={matchingAccounts}
         selectedAccountId={selectedAccountId}
-        vendorId={vendor.id}
         vendorName={vendor.description.displayName}
         resourceTitle={resource.title}
         connecting={connectingVendor === vendor.id}

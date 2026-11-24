@@ -888,7 +888,6 @@ export default function GatekeeperModal({
                   <AccountChooser
                     accounts={matchingAccounts}
                     selectedAccountId={selectedAccountId}
-                    vendorId={selectedConnection.vendorId}
                     vendorName={selectedConnection.vendor}
                     resourceTitle={selectedConnection.resourceUrlPattern ? selectedConnection.title : undefined}
                     connecting={connectingVendor === selectedConnection.vendorId}

@@ -33,7 +33,6 @@ export function AccountAvatar({ avatarUrl, logoUrl }: { avatarUrl: string | unde
 export function AccountChooser({
   accounts,
   selectedAccountId,
-  vendorId,
   vendorName,
   resourceTitle,
   connecting,
@@ -47,7 +46,6 @@ export function AccountChooser({
 }: {
   accounts: AccountOption[]
   selectedAccountId: number | null
-  vendorId?: string
   vendorName: string
   resourceTitle?: string
   connecting: boolean
@@ -59,16 +57,12 @@ export function AccountChooser({
   onReconnect: (id: number) => void
   onGrantAccess?: (id: number) => void
 }) {
-  const isEmailMailbox = vendorId === 'email' && resourceTitle === 'Email Mailbox'
-
   return (
     <section className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
       <div className="border-b border-kumo-line px-3 py-2.5">
         <p className="text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-default">Account</p>
         <p className="mt-0.5 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-          {isEmailMailbox
-            ? 'Enable the Email receiver account, then choose the mailbox name below.'
-            : `Pick which ${vendorName} identity this ${resourceTitle ?? 'connection'} should use.`}
+          {`Pick which ${vendorName} identity this ${resourceTitle ?? 'connection'} should use.`}
         </p>
       </div>
       <div className="divide-y divide-kumo-line">
@@ -142,23 +136,19 @@ export function AccountChooser({
           )
         })}
 
-        {(!isEmailMailbox || accounts.length === 0) && (
-          <button
-            type="button"
-            onClick={onConnect}
-            disabled={connecting}
-            className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-elevated hover:text-kumo-default disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {connecting ? (
-              <span className="h-3.5 w-3.5 rounded-full border-2 border-kumo-brand border-t-transparent animate-spin" />
-            ) : (
-              <Plus size={14} />
-            )}
-            {isEmailMailbox
-              ? 'Enable Email mailboxes'
-              : accounts.length === 0 ? `Connect ${vendorName}` : `Use another ${vendorName} account`}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onConnect}
+          disabled={connecting}
+          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:bg-kumo-elevated hover:text-kumo-default disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {connecting ? (
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-kumo-brand border-t-transparent animate-spin" />
+          ) : (
+            <Plus size={14} />
+          )}
+          {accounts.length === 0 ? `Connect ${vendorName}` : `Use another ${vendorName} account`}
+        </button>
       </div>
     </section>
   )

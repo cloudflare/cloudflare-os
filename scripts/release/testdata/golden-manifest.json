@@ -201,48 +201,6 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/context"
       }
     },
-    "gatekeeper-email": {
-      "bindings": [],
-      "compatibilityDate": "2026-09-04",
-      "compatibilityFlags": [
-        "allow_irrevocable_stub_storage",
-        "nodejs_als"
-      ],
-      "inputs": [],
-      "installable": false,
-      "kind": "gatekeeper",
-      "mainModule": "email.js",
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "UserAccount",
-            "EmailGatekeeperImpl",
-            "EmailAddress"
-          ],
-          "tag": "v0"
-        }
-      ],
-      "modules": [
-        {
-          "name": "email.js",
-          "r2Key": "blobs/modules/1371f0469544690edc4b8cacc62791628d99039b9f0bc9781d32a4f6e3a63562",
-          "sha256": "1371f0469544690edc4b8cacc62791628d99039b9f0bc9781d32a4f6e3a63562",
-          "size": 58,
-          "type": "esm"
-        }
-      ],
-      "observability": {
-        "enabled": true,
-        "head_sampling_rate": 1,
-        "logs": {
-          "invocation_logs": false
-        }
-      },
-      "shortName": "email",
-      "vars": {
-        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/email"
-      }
-    },
     "gatekeeper-github": {
       "bindings": [
         {

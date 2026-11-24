@@ -211,7 +211,6 @@ Each gatekeeper package contains instructions for how to set it up:
 * [Supabase API](packages/gatekeeper-supabase/README.md)
 * [Notion API](packages/gatekeeper-notion/README.md)
 * [Confluence API](packages/gatekeeper-confluence/README.md)
-* [Email Workers](packages/gatekeeper-email/README.md)
 * [Home Assistant](packages/gatekeeper-homeassistant/README.md)
 * [Slack API](packages/gatekeeper-slack/README.md)
 * [Spotify](packages/gatekeeper-spotify/README.md)

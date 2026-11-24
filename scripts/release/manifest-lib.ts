@@ -307,10 +307,6 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
 ]);
 
-// Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
-// instances don't have. The bundle still ships in the release so the entry stays auditable.
-const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
-
 // Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
 // no user interaction. Members must take no inputs of any kind (enforced below): a preinstall
 // has nobody to ask.
@@ -560,13 +556,8 @@ export function buildWorkerEntry(
     installable = false;
   } else {
     vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${releaseShortName(pkgName)}`;
-    installable = !NOT_INSTALLABLE.has(pkgName);
-    if (installable) {
-      inputs = deployInputs ??
-          (NO_DEFAULT_CRED_INPUTS.has(pkgName) ? [] : DEFAULT_CRED_INPUTS);
-    } else {
-      inputs = [];
-    }
+    inputs = deployInputs ??
+        (NO_DEFAULT_CRED_INPUTS.has(pkgName) ? [] : DEFAULT_CRED_INPUTS);
     // Every declared secret input becomes a pass-through secret_text binding.
     for (const input of inputs) {
       if (input.kind === "secret") {

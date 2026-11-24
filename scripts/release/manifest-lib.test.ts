@@ -147,10 +147,6 @@ test("worker entries carry the deploy contract", () => {
       google.bindings.find((b) => b.name === "CLIENT_SECRET"),
       { type: "secret_text", name: "CLIENT_SECRET", text: "$SECRET(CLIENT_SECRET)" });
 
-  // gatekeeper-email ships in the release but is not installable (needs Email Routing/a zone).
-  assert.equal(workers["gatekeeper-email"].installable, false);
-  assert.deepEqual(workers["gatekeeper-email"].inputs, []);
-
   // gatekeeper-context: closed-beta artifacts binding is cut; its KV is a normal template and
   // no OAuth-app inputs are demanded.
   const context = workers["gatekeeper-context"];
