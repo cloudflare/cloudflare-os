@@ -126,8 +126,8 @@ interface PullRequest {
   /** The base of the diff. GitHub moves it only when the branch takes the base branch in. */
   baseSha: string;
   /**
-   * The judge commit: the commit of the base branch that this run's merge commit is built on. The
-   * workflow file and these scripts come from it, and so do the reviewer's rules.
+   * The judge commit: the commit of the base branch that this run's merge commit is built on.
+   * These scripts come from it, and so do the reviewer's rules.
    */
   judgeSha: string;
   title: string;

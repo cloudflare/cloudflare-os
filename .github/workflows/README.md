@@ -72,15 +72,15 @@ blobs there, and `proof-tests` only when made against that commit with a head th
 file with a recent escaped defect raises the risk level one step; that raise ignores lockfiles and
 Markdown, `docs/` and `plans/` outside `.agents/`.
 
-Every producer job runs the **judge**: the scripts under `scripts/automerge/` and, for the two
-reviewers, `REVIEW.md` and the other instruction files. A `pull_request` run reads its workflow
-file from the run's merge commit, which GitHub builds as the head merged onto the base branch's
-tip. The judge comes from that commit's first parent, the **judge commit**: `main` as the run
-merges onto it, and never the head. Each job copies the judge commit's scripts to
-`$RUNNER_TEMP/judge` before it checks anything out, and runs them from there. The judge is not
-read from the pull request's own base commit (`pull_request.base.sha`), which stays the base of
-the diff and of the proofs: GitHub moves it only when the branch takes `main` in, so it can be
-months behind `main`, with an old judge or none.
+Every producer job runs the **judge**: the scripts under `scripts/automerge/` with the
+`scripts/risk-review*` modules they import and, for the two reviewers, `REVIEW.md` and the other
+instruction files. A `pull_request` run reads its workflow file from the run's merge commit, which
+GitHub builds as the head merged onto the base branch's tip. The judge comes from that commit's
+first parent, the **judge commit**: `main` as the run merges onto it, and never the head. Each job
+copies the judge commit's scripts to `$RUNNER_TEMP/judge` before it checks anything out, and runs
+them from there. The judge is not read from the pull request's own base commit
+(`pull_request.base.sha`), which stays the base of the diff and of the proofs: GitHub moves it
+only when the branch takes `main` in, so it can be months behind `main`, with an old judge or none.
 
 These paths always need a person:
 

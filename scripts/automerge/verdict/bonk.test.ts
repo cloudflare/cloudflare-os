@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { dig, parseWorkflow } from "../../risk-review-fixtures/workflow.ts";
+import { git } from "../git.ts";
+import { createTestRepo } from "../test-repo.ts";
 import { JOB_NAME, REVIEW_STEP, buildBonkVerdict, type BonkInputs } from "./bonk.ts";
 
 const MODEL = "cloudflare-ai-gateway/openai/gpt-6.1-sol";
@@ -60,6 +65,44 @@ describe("buildBonkVerdict", () => {
     assert.equal(limited.round, 4);
     assert.equal(limited.needs_person.length, 1);
     assert.equal(buildBonkVerdict(inputs({ report: CLEAN, round: 6 })).needs_person.length, 1);
+  });
+});
+
+describe("bonk.ts prepare", () => {
+  // Bonk reads its working tree, so an instruction file left there is one it follows.
+  it("gives Bonk the judge commit's rules, in its prompt and in its checkout", () => {
+    const origin = createTestRepo();
+    const temp = mkdtempSync(join(tmpdir(), "bonk-prepare-"));
+    try {
+      const base = origin.commit({ "REVIEW.md": "base rules", "AGENTS.md": "base guide", "src/a.ts": "1\n" });
+      const head = origin.commit({ "REVIEW.md": "head rules", "AGENTS.md": "head guide", "src/a.ts": "2\n" });
+      origin.git("checkout", "-q", "-b", "merged-onto", base);
+      const judge = origin.commit({ "REVIEW.md": "main rules", "AGENTS.md": "main guide", "src/a.ts": "1\n" });
+      // The job's checkout: the head alone, at depth 1.
+      const workspace = join(temp, "workspace");
+      mkdirSync(workspace);
+      git(["init", "-q"], workspace);
+      git(["remote", "add", "origin", pathToFileURL(origin.dir).href], workspace);
+      git(["fetch", "-q", "--no-tags", "--depth=1", "origin", head], workspace);
+      git(["checkout", "-q", "--detach", "FETCH_HEAD"], workspace);
+      const event = join(temp, "event.json");
+      writeFileSync(event, JSON.stringify({
+        pull_request: { number: 7, head: { sha: head, ref: "feature" }, base: { sha: base }, title: "Change a", body: null, draft: false },
+      }));
+      const output = join(temp, "output");
+      execFileSync(process.execPath, [fileURLToPath(new URL("bonk.ts", import.meta.url)), "prepare"], {
+        env: { ...process.env, GITHUB_WORKSPACE: workspace, RUNNER_TEMP: temp, GITHUB_EVENT_PATH: event, GITHUB_OUTPUT: output,
+          AUTOMERGE_JUDGE_SHA: judge },
+        stdio: "pipe",
+      });
+      const prompt = readFileSync(output, "utf8");
+      assert.match(prompt, /main rules/);
+      assert.doesNotMatch(prompt, /base rules|head rules/);
+      assert.equal(readFileSync(join(workspace, "AGENTS.md"), "utf8"), "main guide");
+    } finally {
+      origin.remove();
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });
 

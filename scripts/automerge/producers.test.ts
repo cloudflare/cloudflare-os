@@ -22,25 +22,26 @@ function topDirectory(path: string): string {
   return path.split("/", 1).join("");
 }
 
-/** The shell of each `run` step of a job, in order. */
-function runsOf(job: Json): string[] {
+function stepsIn(job: Json): Json[] {
   const steps = dig(job, "steps");
-  return (Array.isArray(steps) ? steps : []).flatMap((step) => {
-    const run = dig(step, "run");
-    return typeof run === "string" ? [run] : [];
-  });
+  return Array.isArray(steps) ? steps : [];
+}
+
+function runOf(step: Json): string {
+  const run = dig(step, "run");
+  return typeof run === "string" ? run : "";
 }
 
 /** Each script a step starts with node, as the step names it. */
 function startedScripts(run: string): string[] {
-  return [...run.matchAll(/\bnode\s+(\S+\.ts)\b/g)].map((match) => match[1] ?? "");
+  return [...run.matchAll(/\bnode\s+(?:-\S+\s+)*(\S+\.ts)\b/g)].map((match) => match[1] ?? "");
 }
 
 /**
  * A repository as GitHub holds one pull request: `main` has the working tree's judge, the pull
  * request's base commit is older and has none, and the head replaces every script in `started` with
- * one that throws. The merge commit, which a `pull_request` run gets as `GITHUB_SHA`, keeps the
- * head's scripts.
+ * one that throws. The merge commit, which a `pull_request` run gets as `GITHUB_SHA` and GitHub
+ * names `refs/pull/<number>/merge`, keeps the head's scripts.
  */
 function pullRequestRepository(dir: string, started: string[]): { url: string; name: string; main: string; merge: string } {
   const origin = join(dir, "origin.git");
@@ -66,7 +67,9 @@ function pullRequestRepository(dir: string, started: string[]): { url: string; n
   for (const path of started) run(["update-index", "--add", "--cacheinfo", `100644,${thrower},${path}`]);
   const headTree = run(["write-tree"]);
   const head = commit(headTree, base);
-  return { url: pathToFileURL(dir).href, name: basename(origin), main, merge: commit(headTree, main, head) };
+  const merge = commit(headTree, main, head);
+  execFileSync("git", ["--git-dir", origin, "update-ref", "refs/pull/7/merge", merge]);
+  return { url: pathToFileURL(dir).href, name: basename(origin), main, merge };
 }
 
 // A `pull_request` run reads its workflow file from the merge commit, so the scripts that file
@@ -77,8 +80,10 @@ describe("the producers' workflows", () => {
   const temp = mkdtempSync(join(tmpdir(), "automerge-judge-"));
   after(() => rmSync(temp, { recursive: true, force: true }));
   const workflows = [...new Set(Object.values(PRODUCERS).map(({ workflow }) => workflow))];
+  // The two whose jobs must run no pull request code.
+  const codeFree = new Set<string>([PRODUCERS.opus.workflow, PRODUCERS["proof-deps"].workflow]);
   const jobs = workflows.flatMap((file) => jobsOf(parseWorkflow(readFileSync(join(ROOT, file), "utf8")))
-    .map((job) => ({ file, job, started: runsOf(job).flatMap(startedScripts) }))
+    .map((job) => ({ file, job, started: stepsIn(job).map(runOf).flatMap(startedScripts) }))
     .filter(({ started }) => started.length > 0));
   const judgeScripts = [...new Set(jobs.flatMap(({ started }) => started.flatMap(runnerTempPaths)))];
 
@@ -97,17 +102,25 @@ describe("the producers' workflows", () => {
       const runnerTemp = join(temp, `job-${index}`);
       mkdirSync(runnerTemp);
       const output = join(runnerTemp, "output");
-      const copies = runsOf(job).filter((run) => runnerTempPaths(run).some((path) => path === copied));
+      const copies = stepsIn(job).filter((step) => runnerTempPaths(runOf(step)).some((path) => path === copied));
       assert.ok(copies.length > 0, `${file}: a step fills $RUNNER_TEMP/${copied}`);
       // In the runner's temp directory, which is no repository: the copy needs no checkout.
       for (const copy of copies) {
-        execFileSync("bash", ["-e", "-c", copy], {
+        execFileSync("bash", ["-e", "-c", runOf(copy)], {
           cwd: runnerTemp,
           env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: output, GITHUB_SHA: repository.merge,
             GITHUB_SERVER_URL: repository.url, GITHUB_REPOSITORY: repository.name },
         });
       }
-      assert.ok(readFileSync(output, "utf8").includes(repository.main), `${file}: the step reports the commit it copied`);
+      const [reported] = readFileSync(output, "utf8").split("\n").filter((line) => line.endsWith(`=${repository.main}`));
+      assert.ok(reported, `${file}: a step reports the commit it copied`);
+      if (codeFree.has(file)) {
+        // With any other ref, an empty one included, the job's working tree would hold the pull
+        // request's files while its toolchain is set up.
+        const judgeCommit = copies.map((copy) => `\${{ steps.${String(dig(copy, "id"))}.outputs.${reported.slice(0, reported.indexOf("="))} }}`);
+        const refs = stepsIn(job).filter((step) => String(dig(step, "uses")).startsWith("actions/checkout@")).map((step) => dig(step, "with", "ref"));
+        assert.ok(refs.length > 0 && refs.every((ref) => typeof ref === "string" && judgeCommit.includes(ref)), `${file} checks out ${JSON.stringify(refs)}`);
+      }
       for (const script of started.flatMap(runnerTempPaths)) {
         const url = pathToFileURL(join(runnerTemp, script)).href;
         // Imported rather than run: that loads every module the script imports and starts nothing.

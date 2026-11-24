@@ -9,9 +9,9 @@ name: Review verdict
 #
 # Nothing from the head's working tree configures or runs anything here: the checkout, the
 # toolchain setup and the scripts are the judge commit's, and the head is fetched only as git
-# objects for the review copy and the patch. This file is the head's on `pull_request`, so verdict
-# trust still rests on the gate, which gives no AI decision to a pull request that touches
-# `.github/**` or `scripts/automerge/**`. Fork pull requests never get here.
+# objects for the review copy and the patch. This file is the merge commit's on `pull_request`, and
+# the head can change it, so verdict trust still rests on the gate, which gives no AI decision to a
+# pull request that touches `.github/**` or `scripts/automerge/**`. Fork pull requests never get here.
 
 on:
   pull_request:
