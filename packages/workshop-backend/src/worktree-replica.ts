@@ -24,8 +24,8 @@ import type {
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
-  commitIdentityForAuthor, fitsWholeText, isTextBlob, TreeShapeError, UnreadableContentError,
-  type FileEntry,
+  commitIdentityForAuthor, decodeBlobText, fitsWholeText, isTextBlob, TreeShapeError,
+  UnreadableContentError, type FileEntry,
 } from "./git-cache";
 import {
   encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
@@ -246,9 +246,9 @@ export class WorktreeReplicas {
           "the command again.");
     }
     let texts: (string | undefined)[] = [];
-    for (let entry of entries) {
+    for (let reader of readers) {
       try {
-        texts.push(entry && await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path));
+        texts.push(reader && decodeBlobText(reader.read(0, reader.size), path));
       } catch (error) {
         if (error instanceof UnreadableContentError) return null;
         throw error;

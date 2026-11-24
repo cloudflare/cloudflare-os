@@ -1631,9 +1631,9 @@ export class WorkspaceGitCache {
       : Promise<string> {
     // Its callers are new reads (a binding's readFile, a diff, a replica's merge), never the
     // replay of a saved change, so it refuses a file too large to hold as text, as `limited`.
-    await this.#faultFileBlob(oid, referencedBy);
-    assertWholeTextFits(this.openLocalBlob(oid)!, path);
-    return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);
+    let reader = await this.openBlob(oid, referencedBy);
+    assertWholeTextFits(reader, path);
+    return decodeBlobText(reader.read(0, reader.size), path);
   }
 
   /**
