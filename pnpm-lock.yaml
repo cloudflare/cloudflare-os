@@ -1760,6 +1760,9 @@ importers:
       '@cloudflare/config':
         specifier: 0.30.2
         version: 0.30.2
+      acorn:
+        specifier: ^8.18.0
+        version: 8.18.0
       aws4fetch:
         specifier: ^1.0.20
         version: 1.0.20

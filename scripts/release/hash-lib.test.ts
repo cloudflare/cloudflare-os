@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  cfAssetHash, collectAssets, collectModules, sha256Hex, stableStringify,
+  cfAssetHash, collectAssets, collectModules, oneByteSource, sha256Hex, stableStringify,
 } from "./hash-lib.ts";
 
 const TESTDATA = join(dirname(fileURLToPath(import.meta.url)), "testdata");
@@ -77,6 +77,70 @@ test("collectModules requires exactly one ESM module", () => {
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test("collectModules hashes and sizes an ESM module as rewritten", () => {
+  const out = mkdtempSync(join(tmpdir(), "release-hash-test-"));
+  try {
+    writeFileSync(join(out, "main.js"), "// a \u2014 b\nexport default {}\n");
+    const [mod] = collectModules(out).modules;
+    const expected = Buffer.from("// a ? b\nexport default {}\n");
+    assert.equal(mod.bytes.toString(), expected.toString());
+    assert.equal(mod.sha256, sha256Hex(expected));
+    assert.equal(mod.size, expected.length);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+function rewritten(source: string): string {
+  return oneByteSource(Buffer.from(source)).bytes.toString();
+}
+
+test("oneByteSource replaces comment characters above U+00FF one for one", () => {
+  assert.equal(
+      rewritten("// caf\u00e9 \u2014 x\nlet a = 1; /* \u{1f600} \u2192 */ a++;\n"),
+      "// caf\u00e9 ? x\nlet a = 1; /* ?? ? */ a++;\n");
+});
+
+test("oneByteSource tells comments from templates and regular expressions", () => {
+  assert.equal(
+      rewritten("let a = `// ${/* \u2014 */ 1} /* x */`;\n"),
+      "let a = `// ${/* ? */ 1} /* x */`;\n");
+
+  // `//` inside a template or a regular expression does not start a comment.
+  for (const source of [
+    "let a = `// \u2014`; // \u2014\n",
+    "let a = /[//] \u2014/;\n",
+    "if (a) /[//] \u2014/.test(a);\n",
+  ]) {
+    assert.equal(rewritten(source), source);
+  }
+});
+
+test("oneByteSource leaves a module alone when a comment has to keep its text", () => {
+  for (const source of [
+    "let a = 1 /* \u2028 \u2014 */\n++a;\n",
+    "/*! \u00a9 \u2014 */\nlet a;\n",
+    "//! \u2014\nlet a;\n",
+    "/* @license \u2014 */\nlet a;\n",
+    "/* @preserve \u2014 */\nlet a;\n",
+    "let a;\n//# sourceURL=\u2014.js\n",
+    "let a;\n//@ sourceMappingURL=\u2014.js.map\n",
+  ]) {
+    assert.equal(rewritten(source), source);
+  }
+});
+
+test("oneByteSource reports the character it may not replace, not an earlier comment's", () => {
+  const { blockedBy } = oneByteSource(Buffer.from("// \u2014\nlet a = 1;\nlet b = /[\u2022]/;\n"));
+  assert.ok(blockedBy?.includes("U+2022"));
+  assert.ok(blockedBy?.includes("3:11"));
+});
+
+test("oneByteSource leaves a module alone when it does not parse", () => {
+  const source = "// \u2014\nlet = ;\n";
+  assert.equal(rewritten(source), source);
 });
 
 test("collectAssets builds an upload-session-shaped manifest with deduped blobs", () => {

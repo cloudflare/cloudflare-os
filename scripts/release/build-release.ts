@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-// Builds an immutable release: every deployable worker bundled exactly as `wrangler deploy`
-// would upload it (dry-run + outdir, with the repo's pinned wrangler), plus the Access-mode
-// workshop-frontend asset build, plus the release manifest that describes it all.
+// Builds an immutable release: every deployable worker as `wrangler deploy` bundles it (dry-run +
+// outdir, with the repo's pinned wrangler) and `oneByteSource` (hash-lib.ts) then rewrites its
+// comments, plus the Access-mode workshop-frontend asset build, plus the release manifest that
+// describes it all.
 //
 // Output layout (mirrored to R2 by upload-release.ts):
 //   <out>/manifest.json                    the release manifest (upload LAST — its presence
@@ -230,9 +231,10 @@ async function buildFrontend(signal: AbortSignal): Promise<CollectedAssets> {
   return collectAssets(join(FRONTEND_DIR, "dist"));
 }
 
-// Bundles one package the way `wrangler deploy` would, without uploading. Run from the package dir
-// so custom build commands (capnweb-validate) resolve their bins, and into a directory of its own,
-// which is what makes these safe to overlap.
+// Bundles one package the way `wrangler deploy` would, without uploading, and collects the result
+// (`collectModules` rewrites comments: see `oneByteSource`). Run from the package dir so custom
+// build commands (capnweb-validate) resolve their bins, and into a directory of its own, which is
+// what makes these safe to overlap.
 async function bundleWorker(pkg: DeployablePackage, bundleDir: string, signal: AbortSignal) {
   const outDir = join(bundleDir, pkg.name);
   await run(pkg.name, "pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", outDir],
@@ -401,6 +403,14 @@ async function main() {
   const moduleCount = workers.reduce((n, w) => n + w.modules.length, 0);
   console.log(`\nrelease ${releaseId}: ${workers.length} workers, ${moduleCount} modules, ` +
       `${Object.keys(manifest.assets).length} unique asset blobs -> ${args.out}`);
+  for (const worker of workers) {
+    for (const mod of worker.modules) {
+      if (mod.blockedBy === undefined) continue;
+      console.log(`warning: ${worker.pkgName}: V8 stores the source of ${mod.name} ` +
+          `(${join(args.out, "modules", mod.sha256)}) two bytes per character ` +
+          `(cause: ${mod.blockedBy})`);
+    }
+  }
 }
 
 try {

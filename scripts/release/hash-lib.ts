@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, extname, sep } from "node:path";
+import { getLineInfo, parse } from "acorn";
 
 /** A worker module as collected from a dry-run bundle, before the manifest strips `bytes`. */
 export interface CollectedModule {
@@ -24,6 +25,11 @@ export interface CollectedModule {
   size: number;
   /** The contents. Stripped before the module reaches the manifest. */
   bytes: Buffer;
+  /**
+   * Set on an ESM module V8 will store two bytes per character: what kept {@link oneByteSource}
+   * from changing it. Not part of the manifest.
+   */
+  blockedBy?: string;
 }
 
 /** One static asset's entry in the assets-upload-session manifest. */
@@ -72,11 +78,69 @@ function isNonModuleFile(name: string): boolean {
   return name.endsWith(".map") || name === "README.md";
 }
 
+const ABOVE_ONE_BYTE = /[\u0100-\uffff]/;
+const ABOVE_ONE_BYTE_EXCEPT_LINE_TERMINATORS = /[\u0100-\u2027\u202a-\uffff]/g;
+const SOURCE_DIRECTIVE = /^[#@]\s*source(?:Mapping)?URL=/;
+
+/**
+ * An ESM module's source with every character above U+00FF in its comments replaced by `?`. When
+ * that would still leave such a character in the module, the bytes come back unchanged and
+ * `blockedBy` says why: the first character that may not be replaced, or that the module does
+ * not parse.
+ *
+ * V8 keeps a module's source text while the module is loaded, and stores all of it two bytes per
+ * character if one UTF-16 code unit is above U+00FF. The bundler escapes such characters in
+ * strings and identifiers but keeps them in comments and regular expression literals, so one dash
+ * in a comment doubles the memory the source takes. A module that would stay two-byte gains
+ * nothing, so it is not changed.
+ *
+ * Not replaced: U+2028 and U+2029 (line terminators even in a block comment, so they decide
+ * semicolon insertion and line numbers), `sourceURL` and `sourceMappingURL` comments (tools read
+ * them), and legal comments by esbuild's rule (a licence notice stays as written). One code unit
+ * replaces one, so every offset, source map and stack position is unchanged.
+ */
+export function oneByteSource(bytes: Buffer): { bytes: Buffer; blockedBy?: string } {
+  const source = bytes.toString("utf8");
+  if (!ABOVE_ONE_BYTE.test(source)) return { bytes };
+
+  const parts: string[] = [];
+  let copiedTo = 0;
+  try {
+    parse(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      onComment(isBlock, text, start, end) {
+        if (!ABOVE_ONE_BYTE.test(text)) return;
+        if (text.startsWith("!") || text.includes("@license") || text.includes("@preserve")) return;
+        if (!isBlock && SOURCE_DIRECTIVE.test(text)) return;
+        parts.push(source.slice(copiedTo, start),
+            source.slice(start, end).replace(ABOVE_ONE_BYTE_EXCEPT_LINE_TERMINATORS, "?"));
+        copiedTo = end;
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    // acorn rejects the module.
+    return { bytes, blockedBy: `does not parse: ${error.message}` };
+  }
+  parts.push(source.slice(copiedTo));
+  const rewritten = parts.join("");
+
+  const index = rewritten.search(ABOVE_ONE_BYTE);
+  const codePoint = index < 0 ? undefined : rewritten.codePointAt(index);
+  if (codePoint === undefined) return { bytes: Buffer.from(rewritten, "utf8") };
+  const { line, column } = getLineInfo(rewritten, index);
+  const hex = codePoint.toString(16).toUpperCase().padStart(4, "0");
+  return { bytes, blockedBy: `U+${hex} at ${line}:${column + 1}` };
+}
+
 /**
  * Reads a `wrangler deploy --dry-run --outdir` output directory and returns
  * `{ mainModule, modules }` where modules is sorted by name and each entry is
- * `{ name, type, sha256, size, bytes }`. Fails closed: an extension we don't recognize means a
- * bundle shape this pipeline has never seen, and needs an explicit decision rather than a guess.
+ * `{ name, type, sha256, size, bytes }`, with ESM modules passed through {@link oneByteSource}
+ * first, so the hash and size describe the bytes that ship. Fails closed: an extension we don't
+ * recognize means a bundle shape this pipeline has never seen, and needs an explicit decision
+ * rather than a guess.
  */
 export function collectModules(outDir: string): {
   mainModule: string;
@@ -91,8 +155,11 @@ export function collectModules(outDir: string): {
     if (!type) {
       throw new Error(`unrecognized module file in dry-run output: ${name} (${outDir})`);
     }
-    const bytes = readFileSync(file);
-    unsorted.push({ name, type, sha256: sha256Hex(bytes), size: bytes.length, bytes });
+    const contents = readFileSync(file);
+    const shipped = type === "esm" ? oneByteSource(contents) : { bytes: contents };
+    unsorted.push({
+      name, type, sha256: sha256Hex(shipped.bytes), size: shipped.bytes.length, ...shipped,
+    });
   }
   const modules = unsorted.toSorted((a, b) => (a.name < b.name ? -1 : 1));
 

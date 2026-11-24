@@ -7,6 +7,14 @@ How customer instances get deployed.
   the contract between this repo's CI and the deploy service, produced by `manifest-lib.ts` from each
   package's wrangler.jsonc with account-specific values replaced by placeholders (`$ACCOUNT_ID`,
   `$WORKER_NAME(...)`, `$SECRET(...)`, `$PUBLIC_BASE_URL`, ...).
+- V8 keeps a module's source in memory, two bytes per character if any character in it is above
+  U+00FF. So `collectModules` replaces such characters with `?` where they sit in ordinary comments
+  of a worker's ESM module (`oneByteSource` in `hash-lib.ts`), and only when that leaves none in the
+  module. The step is deterministic, so a commit still builds to the same bytes; they differ from
+  `wrangler deploy` output only in those comment characters. `wrangler deploy`, `wrangler dev` and
+  PR previews do not run the step. The build warns at the end about a module that still has such a
+  character and names what kept it: write that character as an escape if it is in our code (a
+  regular expression literal, usually).
 - Each worker's manifest entry has a `kind`: `backend`, `router`, `gatekeeper` or `internal`. An
   `internal` worker (`INTERNAL_WORKERS` in `manifest-lib.ts`, listed by name) is one that other
   workers reach through a service binding and nothing routes to. Its kind is what says it is
