@@ -55,7 +55,7 @@ import { readFileWindow, type LineSource } from "./line-window";
 import {
   ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
   MAX_FILE_IMAGE_BYTES, MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT,
-  admittedImageDimensions, readFileImage, withImageDimensions,
+  admittedImageDimensions, fileImageDescription, readFileImage, withImageDimensions,
 } from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
@@ -1414,7 +1414,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. PNG, JPEG and WebP files up to 4 MiB, 8000 pixels per axis and 30,000 32px patches are shown as images; omit line windows for them. Older image pixels may be omitted from history, with a note to read them again. Use byte-aware binding operations for other binary files.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. PNG, JPEG and WebP files up to 4 MiB, 8000 pixels per axis and 30,000 32px patches are shown as images; omit line windows for them. Providers may resize images. Before acting on image coordinates, use the source-to-model mapping in the result; if unavailable, first crop/resize within the selected model's native vision limits and retain the transform back to the source. Older image pixels may be omitted from history, with a note to read them again. Use byte-aware binding operations for other binary files.
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
@@ -2712,7 +2712,7 @@ async function runAgentPass(
                       if (!reads) sentImageReads.set(msg.sequence, reads = new Set());
                       reads.add(toolCall.toolCallId);
                     }
-                    toolOutput = image ? {text: "Image file.", image} :
+                    toolOutput = image ? {text: fileImageDescription(image, handle.model), image} :
                         {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE :
                           !handle.model.input.includes("image") ? UNSUPPORTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
@@ -3785,7 +3785,7 @@ async function runAgentPass(
               fileImageTokens += tokens;
               markFileRead(resolved.workpieceId, filename, file.oid);
               return {
-                content: [{type: "text" as const, text: "Image file."}, image],
+                content: [{type: "text" as const, text: fileImageDescription(image, handle.model)}, image],
                 details: notes,
               };
             }
@@ -4882,6 +4882,29 @@ async function runAgentPass(
         });
       } finally {
         emitStreamEvent({type: "compacted"});
+      }
+    } else if (!compactionTurn) {
+      // A single assistant record and all its tool results are indivisible. If that tail
+      // combines large text and pixels, another summary cannot free space. Elide only file
+      // images from the projection, oldest first, using the same estimate as compaction.
+      // Durable observations stay intact, and no completed tool or external effect is rerun.
+      const systemTokens = Math.ceil(getSystemMessageText(systemMessage).length / 4);
+      const estimate = () => estimateProjectionTokens(projection, handle.model) + systemTokens;
+      const measuredRatio = Math.max(1, contextTokens / Math.max(1, estimate()));
+      for (const {message, sequence} of projection) {
+        if (!shouldCompactChat(estimate() * measuredRatio, inputBudget)) break;
+        if (sequence === undefined || message.role !== "toolResult" ||
+            !sentImageReads.get(sequence)?.has(message.toolCallId)) continue;
+        const image = message.content.find(part => part.type === "image");
+        if (!image) continue;
+        message.content = [{type: "text", text: ELIDED_FILE_IMAGE}];
+        const reads = sentImageReads.get(sequence)!;
+        reads.delete(message.toolCallId);
+        if (reads.size === 0) sentImageReads.delete(sequence);
+        --fileImageCount;
+        fileImageBytes -= image.data.length * 3 / 4 -
+            (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0);
+        fileImageTokens -= imageTokens(image);
       }
     } else if (compactionTurn) {
       // An automatic attempt that finds no boundary just runs the turn, but `/compact` returns

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import { inlineChatAttachmentImageDimensions } from "./chat-attachment-validation";
 import type { BlobReader } from "./git-chunked-blob";
 
@@ -29,6 +29,42 @@ export function admittedImageDimensions(image: ImageContent): [number, number] |
 export function withImageDimensions(image: ImageContent, dimensions: [number, number]): ImageContent {
   admittedDimensions.set(image, dimensions);
   return image;
+}
+
+/** Explain the pixel frame for file images; providers can resize otherwise unchanged bytes. */
+export function fileImageDescription(image: ImageContent, model: Model<Api>): string {
+  const dimensions = admittedImageDimensions(image);
+  if (!dimensions) return "Image file. Provider coordinate mapping unavailable; crop/resize within the selected model's native vision limits before using pixel coordinates.";
+  const [width, height] = dimensions;
+  const source = `Image file. Source: ${width} x ${height} pixels.`;
+  // Claude documents its native resize rule. Other providers and routed/aliased models must
+  // not inherit a guessed coordinate frame. Keep this aligned with:
+  // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
+  const version = /claude[-.](?:opus|sonnet|haiku)[-.](\d+)(?:[-.](\d+))?/.exec(model.id);
+  if (model.api !== "anthropic-messages" || !version) return source +
+    " Provider coordinate mapping unavailable: pixels may be resized. Before coordinate-sensitive actions, crop/resize within the selected model's native vision limits and retain the scale and crop offset back to the source; prefer semantic element targeting when available.";
+  const highResolution = Number(version[1]) > 4 ||
+    (Number(version[1]) === 4 && Number(version[2] ?? 0) >= 7);
+  const edge = highResolution ? 2576 : 1568, tokens = highResolution ? 4784 : 1568;
+  const fits = (w: number, h: number) => Math.ceil(w / 28) * 28 <= edge &&
+    Math.ceil(h / 28) * 28 <= edge && Math.ceil(w / 28) * Math.ceil(h / 28) <= tokens;
+  let resizedWidth = width, resizedHeight = height;
+  if (!fits(width, height)) {
+    // Search the long edge, preserving aspect ratio, exactly as Claude's reference helper.
+    const landscape = width >= height, long = Math.max(width, height), short = Math.min(width, height);
+    let low = 1, high = long;
+    while (low + 1 < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (fits(mid, Math.max(1, Math.round(mid * short / long)))) low = mid;
+      else high = mid;
+    }
+    [resizedWidth, resizedHeight] = landscape
+      ? [low, Math.max(1, Math.round(low * short / long))]
+      : [Math.max(1, Math.round(low * short / long)), low];
+  }
+  return source + ` Claude content frame: ${resizedWidth} x ${resizedHeight} pixels before bottom/right padding.` +
+    ` Map model pixel (x,y) to source (x * ${width}/${resizedWidth}, y * ${height}/${resizedHeight}); do not scale by padded dimensions.` +
+    " For screen input, also apply the screenshot's crop origin and desktop/DPI transform. Normalize image orientation before coordinate-sensitive use.";
 }
 
 const ImageDataErrorCode = z.enum([
@@ -108,8 +144,8 @@ export function readFileImage(
     throw new Error("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
   }
   // OpenAI's original/auto detail rejects images above 30,000 32px patches rather than
-  // resizing them. Bound resolution before persisting a successful read, preserving coordinates
-  // and fine detail for accepted images instead of silently selecting a downsampled detail level.
+  // resizing them. Bound resolution before persisting a successful read. Preserve original
+  // bytes here; fileImageDescription explains provider resizing before coordinate use.
   const dimensions = inlineChatAttachmentImageDimensions(mimeType, reader, 8000, 30_000);
   if (!dimensions) {
     throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");

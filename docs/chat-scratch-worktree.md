@@ -100,6 +100,22 @@ New images are read from the same immutable blob for previews; there
 is no separate payload copy in attachment records. Existing limits remain: 4 MiB per file,
 5 MiB and five files per message.
 
+The existing `readFile` tool also displays PNG, JPEG and WebP worktree files as model images,
+subject to the file-image byte, dimension and context budgets. Successful reads retain immutable
+blob metadata, so replay shows the same source after edits or deletion. If a single tool-result
+batch mixes too much text with pixels to compact further, replay omits older file pixels with a
+reread marker; it preserves the text and never repeats completed tool effects.
+
+Original bytes do not imply original model coordinates: providers may resize images. File-image
+results identify source dimensions. Known, versioned Claude models also receive the documented
+source-to-model coordinate transform, excluding bottom/right padding (see [Claude coordinate
+rules](https://platform.claude.com/docs/en/build-with-claude/vision-coordinates)). For providers or
+aliases without a known mapping, coordinate-sensitive actions require a crop/resize within the
+selected model's native vision limits and a retained transform back to the source; use semantic
+element targeting when available. Normalize orientation first. Screenshot-based input must also
+apply the screenshot's crop origin and desktop/DPI transform; image pixels alone do not identify
+absolute desktop coordinates.
+
 Filename allocation reserves existing base and pending root names, including directories.
 Prior names are read from chat-scoped message metadata, never from a workspace-wide payload
 scan. After the one-time legacy migration, messages without uploads do no attachment-namespace work.

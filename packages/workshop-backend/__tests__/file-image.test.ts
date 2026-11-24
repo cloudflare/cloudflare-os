@@ -9,7 +9,7 @@ import {runAgent} from "../src/agent";
 import {getModel} from "../src/ai-models";
 import {estimateImageTokens, getModelTokenLimits} from "../src/agent-compaction";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
-import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
+import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageDescription, withImageDimensions, isImageDecodeError, readFileImage} from "../src/file-image";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -402,6 +402,95 @@ describe("images read from a worktree", () => {
       for (const messages of requests) expect(messages.reduce((sum, message) =>
         sum + estimateImageTokens(message, handle.model), 0)).toBeLessThanOrEqual(budget);
     }));
+
+  it.each([false, true])("elides file pixels when a mixed image/text batch cannot compact further (replay=%s)", replay =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      new DataView(bytes.buffer).setUint32(16, 1920);
+      new DataView(bytes.buffer).setUint32(20, 1080);
+      const logs = Array.from({length: 5}, (_, index) => [`log${index}.txt`,
+        new TextEncoder().encode("log entry with several fields ".repeat(1100).slice(0, 32100))] as [string, Uint8Array]);
+      const {chatId} = await setup(impl, bytes, logs);
+      const calls = [read(), read(), ...logs.map(([filename]) => read({filename}))];
+      if (replay) await expect(scriptedTurn(impl, chatId, [
+        fauxAssistantMessage(calls, {stopReason: "toolUse"}),
+        fauxAssistantMessage(fauxText(""), {stopReason: "error", errorMessage: "400 fixture stop after saved batch"}),
+      ])).rejects.toThrow("400 fixture stop");
+      const config: AiModelConfig = {provider: "openai", model: "gpt-4o-mini", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+        models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const requests: Message[][] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      };
+      const effects = vi.spyOn(impl, "commitAgentStep");
+      faux.setResponses([...(replay ? [] : [fauxAssistantMessage(calls, {stopReason: "toolUse"})]),
+        ...Array.from({length: 6}, () => fauxAssistantMessage(fauxText("Summary or completed response")))]);
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      const retained = requests.findLast(messages => results(messages).length === 7)!;
+      expect(retained).toBeDefined();
+      expect(results(retained).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(1);
+      expect(JSON.stringify(results(retained))).toContain(ELIDED_FILE_IMAGE);
+      expect(results(retained).filter(result => JSON.stringify(result.content).includes("log entry with several fields"))).toHaveLength(5);
+      const recorded = effects.mock.calls.flatMap(call => call[2]).flatMap(message =>
+        message.type === "message" ? message.toolCalls ?? [] : []).filter(call => call.toolName === "readFile");
+      expect(recorded).toHaveLength(replay ? 0 : 7);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      faux.setResponses(Array.from({length: 6}, () => fauxAssistantMessage(fauxText("Done"))));
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      expect(results(requests.at(-1)!).flatMap(result => result.content.filter(part => part.type === "image")).length).toBeLessThanOrEqual(1);
+      expect([...impl.storage.chats.list()].flatMap(message => message.type === "message" ?
+        message.toolCalls ?? [] : []).some(call => call.toolName === "readFile" && call.image?.rejected)).toBe(false);
+    }));
+
+  it("shows the source-to-Claude coordinate transform on live reads and replay", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = PNG.slice();
+    new DataView(bytes.buffer).setUint32(16, 3840);
+    new DataView(bytes.buffer).setUint32(20, 2160);
+    const {chatId} = await setup(impl, bytes);
+    const config: AiModelConfig = {provider: "anthropic", model: "claude-opus-5-5", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+    const requests: Message[][] = [];
+    handle.stream = (model, context, options) => {
+      requests.push(structuredClone(context.messages));
+      return faux.stream(model, context, options);
+    };
+    faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]);
+    const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    await run();
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+    await run();
+    for (const messages of requests.slice(1)) {
+      const output = JSON.stringify(results(messages));
+      expect(output).toContain("Source: 3840 x 2160");
+      expect(output).toContain("Claude content frame: 2576 x 1449");
+      expect(output).toContain("x * 3840/2576, y * 2160/1449");
+      expect(output).toContain("desktop/DPI transform");
+      expect(output).toContain(bytes.toBase64());
+    }
+  }));
+
+  it.each([
+    ["claude-sonnet-4-5", 1920, 1080, "1456 x 819"],
+    ["claude-opus-4-7", 3840, 2160, "2576 x 1449"],
+    ["claude-sonnet-4-5", 1075, 1520, "924 x 1307"],
+    ["claude-opus-5-5", 1000, 1000, "1000 x 1000"],
+  ] as const)("describes documented native coordinate frames: %s %sx%s", (id, width, height, frame) => {
+    const {model} = getModel({} as Cloudflare.Env, {provider: "anthropic", model: id, apiToken: "fixture"}, USER);
+    const image = withImageDimensions({type: "image", mimeType: "image/png", data: ""}, [width, height]);
+    expect(fileImageDescription(image, model)).toContain(`Claude content frame: ${frame}`);
+  });
+
+  it("requires a known crop/resize transform for providers without a coordinate mapping", () => {
+    const {model} = getModel({} as Cloudflare.Env, {provider: "openai", model: "gpt-4o-mini", apiToken: "fixture"}, USER);
+    const image = withImageDimensions({type: "image", mimeType: "image/png", data: ""}, [3840, 2160]);
+    expect(fileImageDescription(image, model)).toContain("crop/resize within the selected model's native vision limits");
+    expect(fileImageDescription(image, model)).not.toContain("Claude content frame");
+  });
 
   it("admits visual token cost before reading an image body", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = new Uint8Array(4 * 1024 * 1024);
