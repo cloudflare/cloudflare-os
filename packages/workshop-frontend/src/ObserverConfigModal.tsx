@@ -181,7 +181,8 @@ export default function ObserverConfigModal({
   // gatekeeperId -> chosen accountId (undefined = not yet chosen). A vendor's picker sets every one
   // of its connections at once; its expanded resource list can set one connection apart.
   const [choices, setChoices] = useState<Record<number, number | undefined>>({})
-  // vendorId -> whether its resource list is open, once the user has toggled it (see `isExpanded`).
+  // vendorId -> whether its resource list is open, once the user has toggled it; until then the
+  // default comes from `open` where each vendor is rendered.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // Vendor metadata keyed by vendorId, used both for display and to resolve the resource scopes each
   // observer binding needs.
