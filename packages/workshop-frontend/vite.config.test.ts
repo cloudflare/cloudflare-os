@@ -126,7 +126,7 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     if (build.status !== 0 || !build.stdout.includes('BUILD_SUBPROCESS_OK')) throw Error('Preload interfered with a build subprocess');
     const child = spawn(process.execPath, [resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
       '--local', '--port', String(port), '--inspector-port', '0', '--show-interactive-dev-session=false'], {
-      cwd: dir, env: getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)}, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false'}),
+      cwd: dir, env: getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)}, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false', X_LOCAL_OBSERVABILITY: 'true'}),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
@@ -149,6 +149,14 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
         const response = await fetch(origin + path + suffix);
         if (response.status !== status || await response.text() !== path + suffix) throw Error('Original upstream route not preserved');
       }
+      const traces = await fetch(backend + '/cdn-cgi/local/explorer/api/local/observability/query', {
+        method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({sql: 'SELECT * FROM spans'}),
+      });
+      const traceResponse = await traces.text();
+      if (traces.status !== 404 || !traceResponse.includes('Local observability is not enabled')) {
+        throw Error('Local Explorer can still capture credential-bearing requests: ' + traces.status);
+      }
+      console.log('LOCAL_OBSERVABILITY_DISABLED');
       await new Promise(resolve => setTimeout(resolve, 100));
       console.log('UPSTREAM_FIXTURE_PASSED');
     } finally {
@@ -165,6 +173,7 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
   expect(child.error).toBeUndefined()
   expect(child.status).toBe(0)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
+  expect(output).toContain('LOCAL_OBSERVABILITY_DISABLED')
   expect(output).toContain('/gatekeeper/[redacted] 200')
   expect(output).toContain('/gatekeeper/[redacted] 503')
   expect(output).toContain('/health')

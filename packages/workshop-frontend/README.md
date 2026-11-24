@@ -59,7 +59,9 @@ During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` 
 accepted and rewritten through the frontend's authenticated `/gatekeeper/` proxy. That proxy's
 error logs omit attachment URLs and upstream error details. `pnpm dev-server` also redacts gatekeeper
 paths in Wrangler’s Miniflare request logger, including debug output, while retaining other
-diagnostics and the interactive terminal. One-use tickets stay private in both processes.
+diagnostics and the interactive terminal. The dev launcher disables Local Explorer trace capture
+(`X_LOCAL_OBSERVABILITY=false`), which otherwise persists full request URLs independently of terminal
+logging. Worker console diagnostics remain available. One-use tickets stay private in both processes.
 
 ## Authentication modes
 

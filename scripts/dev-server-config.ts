@@ -73,6 +73,9 @@ export function getDevServerEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Pr
   const redactor = new URL("./redact-dev-gatekeeper-logs.ts", import.meta.url).href;
   return {
     ...env,
+    // Local Explorer stores request URLs independently of the terminal logger. Enrollment URLs
+    // carry one-use credentials, so the dev backend must not attach that trace collector.
+    X_LOCAL_OBSERVABILITY: "false",
     NODE_OPTIONS: [env.NODE_OPTIONS, `--import=${redactor}`].filter(Boolean).join(" "),
   };
 }
