@@ -7,7 +7,7 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Trans
 import {buildPackStream, concatBytes, decodePackStream, encodeGitTree, gitObjectOid, parseGitTree,
   type PackableObject} from "../src/git-codec";
 import {runAgent} from "../src/agent";
-import {MAX_WHOLE_TEXT_BYTES} from "../src/git-cache";
+import {MAX_WHOLE_TEXT_BYTES, MAX_WHOLE_TEXT_LINES} from "../src/git-cache";
 import {byteStream} from "./git-cache-fixtures";
 import {deflateSync} from "node:zlib";
 import type {GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
@@ -567,6 +567,30 @@ describe("worktree commands", () => {
     await turn(impl, [[execute("command")]]);
     expect(refused).toMatch("concurrent edits to ones.csv: it is too large to merge as text");
     expect(kept).toBe("2\n");
+  }));
+
+  // Only one side changed the content, so nothing needs reading as text, however large: the
+  // workspace's edit and the command's chmod both survive.
+  it.each([
+    ["text too large to merge", "1\n".repeat(MAX_WHOLE_TEXT_LINES + 1)],
+    ["binary", "\0".repeat(1000)],
+  ])("merges a mode-only change with a concurrent edit of a %s file", (_, base) => withCommands(async (impl, id) => {
+    let result!: State, output!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        await repo.writeBytes("data.csv", enc(base));
+        const snapshot = await replicator.snapshot(queue);
+        await repo.writeBytes("data.csv", enc(`${base}edited\n`));
+        const command = await commandResult(impl, snapshot.tree, {"data.csv": {mode: "100755", text: base}});
+        result = await replicator.submit(queue, snapshot.tree, command.tree, command.pack());
+        output = await new Response(await repo.readBytes("data.csv", {offset: base.length, length: 7})).text();
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(output).toBe("edited\n");
+    const entry = parseGitTree(impl.gitCache.readLocalObject(result.tree)!.payload).find(entry => entry.name === "data.csv")!;
+    expect(entry.mode).toBe("100755");
   }));
 
   // Too large to read as text, but binary, so it merges as binary files do.
