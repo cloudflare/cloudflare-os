@@ -618,14 +618,16 @@ function makeHandle(args: HandleArgs): ModelHandle {
         },
         // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
         // apply to: PDF attachments ride pi image parts and become the provider's native document
-        // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
+        // blocks (see chat-attachment-pdf.ts), Gemini parallel responses stay together ahead of
+        // legacy image turns, Gemini function calls without a thought signature
         // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
         // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
         // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
-          const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
+          const grouped = groupGeminiFunctionResponses(args.model, bridged ?? payload) ?? bridged;
+          const signed = signGeminiFunctionCalls(args.model, grouped ?? payload) ?? grouped;
           if (options.cacheRetention === "none") return signed;
           const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
           const final = split === undefined
@@ -771,6 +773,37 @@ function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | 
     })};
   });
   return signed ? {...payload, contents} : undefined;
+}
+
+// pi puts Gemini 2.5's tool-result images in separate user turns. With parallel calls those
+// images split the response batch, which Google rejects. Keep the responses together before
+// the image turns, without moving them across a model turn or changing their order.
+function groupGeminiFunctionResponses(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "google-generative-ai" || typeof payload !== "object" || payload === null ||
+      !("contents" in payload) || !Array.isArray(payload.contents)) return undefined;
+  const isResponse = (part: unknown): boolean =>
+      typeof part === "object" && part !== null && "functionResponse" in part;
+  let responseTurn: {parts: unknown[]} | undefined;
+  let grouped = false;
+  const contents = payload.contents.flatMap((content: unknown) => {
+    if (typeof content !== "object" || content === null || !("role" in content) ||
+        content.role !== "user" || !("parts" in content) || !Array.isArray(content.parts)) {
+      responseTurn = undefined;
+      return [content];
+    }
+    const responses = content.parts.filter(isResponse);
+    if (responses.length === 0) return [content];
+    const rest = content.parts.filter(part => !isResponse(part));
+    const remainder = rest.length ? [{...content, parts: rest}] : [];
+    if (responseTurn) {
+      responseTurn.parts.push(...responses);
+      grouped = true;
+      return remainder;
+    }
+    responseTurn = {...content, parts: [...responses]};
+    return [responseTurn, ...remainder];
+  });
+  return grouped ? {...payload, contents} : undefined;
 }
 
 // The message with every string in its tool calls' arguments well-formed, a lone surrogate

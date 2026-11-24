@@ -1869,6 +1869,46 @@ describe("Gemini function call signatures", () => {
   }, 15000);
 });
 
+describe("Gemini parallel image tool results", () => {
+  beforeEach(() => { capturedRequests.length = 0; });
+
+  it.each([
+    ["gemini-2.5-flash", true], ["gemini-2.5-flash", false],
+    ["gemini-3.6-flash", true], ["gemini-3.6-flash", false],
+  ] as const)("keeps each response batch together: %s, second image %s", async (model, secondImage) => {
+    const handle = getModel(env(), {provider: "google", model, apiToken: "fixture"}, INITIATOR);
+    const step = (prefix: string): [AssistantMessage, ToolResultMessage, ToolResultMessage] => {
+      const result = (id: number): ToolResultMessage => ({
+        role: "toolResult", toolCallId: `${prefix}_${id}`, toolName: "readFile", isError: false, timestamp: 0,
+        content: [{type: "text", text: `${prefix}_${id}`},
+          ...(id === 1 || secondImage ? [{type: "image" as const, mimeType: "image/png", data: btoa(`${prefix}_${id}`)}] : [])],
+      });
+      return [{
+        role: "assistant", api: handle.model.api, provider: handle.model.provider, model,
+        usage: zeroUsage(), stopReason: "toolUse", timestamp: 0,
+        content: [1, 2].map(id => ({type: "toolCall", id: `${prefix}_${id}`, name: "readFile", arguments: {}})),
+      }, result(1), result(2)];
+    };
+    const stream = handle.stream(handle.model, {
+      messages: [{role: "user", content: "Read these files", timestamp: 0}, ...step("a"), ...step("b")],
+    }, {fetch: fetchStub, maxRetries: 0});
+    expect((await stream.result()).stopReason).toBe("error");
+    const image = z.object({inlineData: z.object({data: z.string()}).optional()});
+    const body = z.object({contents: z.array(z.object({role: z.string(), parts: z.array(z.object({
+      functionResponse: z.object({response: z.object({output: z.string()}), parts: z.array(image).optional()}).optional(),
+      inlineData: z.object({data: z.string()}).optional(),
+    }))}))}).parse(JSON.parse(capturedRequests[0].body));
+    const responseTurns = body.contents.filter(content => content.parts.some(part => part.functionResponse));
+    expect(responseTurns.map(content => content.parts.flatMap(part => part.functionResponse?.response.output ?? [])))
+      .toEqual([["a_1", "a_2"], ["b_1", "b_2"]]);
+    const pixels = body.contents.flatMap(content => content.parts.flatMap(part => [
+      ...(part.inlineData ? [part.inlineData.data] : []),
+      ...(part.functionResponse?.parts?.flatMap(part => part.inlineData?.data ?? []) ?? []),
+    ]));
+    expect(pixels).toEqual(["a_1", ...(secondImage ? ["a_2"] : []), "b_1", ...(secondImage ? ["b_2"] : [])].map(value => btoa(value)));
+  });
+});
+
 describe("Tool-call arguments", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
