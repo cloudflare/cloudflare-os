@@ -1309,7 +1309,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     vendorId = vendorId.toLowerCase();
     const vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error("Unknown gatekeeper vendor.");
-    const resources = await vendor.getSupportedResources(supportedResourcesHint(this.env, actor.admin));
+    const resources = await vendor.getSupportedResources(
+        supportedResourcesHint(this.env, actor.admin, vendorId));
     const resource = findResourceType(resources, resourceTypeId)
       ?? findResourceType(resources, undefined, resourceTypeId);
     await this.#mutateAdminConfig(actor, config => {
@@ -1442,7 +1443,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         try {
           let [description, supportedResources] = await Promise.all([
             vendor.describe(),
-            vendor.getSupportedResources(supportedResourcesHint(this.env, adminUserId)),
+            vendor.getSupportedResources(supportedResourcesHint(this.env, adminUserId, id)),
           ]);
           if (description.autoProvisionsAccount) {
             // Auto-provisioning ("ambient") gatekeeper: a three-state mode, no resources to toggle.

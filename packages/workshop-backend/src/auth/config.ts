@@ -57,10 +57,25 @@ export function sameDeploymentAdmin(a: string, b: string): boolean {
   return asciiLowerCase(a) === asciiLowerCase(b);
 }
 
-/** What GatekeeperVendor.getSupportedResources() is told of the user it is asked for. */
-export function supportedResourcesHint(env: Cloudflare.Env, userId: string)
-    : { userId: string, isAdmin: boolean } {
-  return { userId, isAdmin: isDeploymentAdmin(env, userId) };
+/**
+ * Vendor id of the admin gatekeeper (the suffix of GATEKEEPER_ADMIN, lowercased): the one vendor
+ * a deployment admin's connect flow hands their Admin API to (see AdminApiGrantImpl), and the one
+ * told whether a user is a deployment admin (see supportedResourcesHint()). The binding is trusted
+ * as the backend's own configuration is, and the release build refuses any other package whose
+ * install slug folds to this id.
+ */
+export const ADMIN_GATEKEEPER_VENDOR_ID = "admin";
+
+/**
+ * What vendor `vendorId`'s GatekeeperVendor.getSupportedResources() is told of the user it is
+ * asked for. Only the admin gatekeeper is told whether they are a deployment admin: who the
+ * deployment's admins are is no other vendor's to know.
+ */
+export function supportedResourcesHint(env: Cloudflare.Env, userId: string, vendorId: string)
+    : { userId: string, isAdmin?: boolean } {
+  return vendorId === ADMIN_GATEKEEPER_VENDOR_ID
+    ? { userId, isAdmin: isDeploymentAdmin(env, userId) }
+    : { userId };
 }
 
 // Only ASCII letters are folded: toLowerCase() also folds some other characters onto ASCII ones,

@@ -11,7 +11,8 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AdminSettings } from "../src/admin-settings";
 import type { AdminSettingActor } from "../src/admin-access";
-import { ADMIN_GATEKEEPER_VENDOR_ID, UserDurableObject } from "../src/user";
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "../src/auth/config";
+import { UserDurableObject } from "../src/user";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -40,7 +41,7 @@ type Exports = {
 let counter = 0;
 
 /** A user's Durable Object beside two vendors: the admin gatekeeper and another. */
-function fixture(userId: string) {
+function fixture(userId: string, overrides: Record<string, unknown> = {}) {
   const vendor = () => ({
     describe: async () => DESCRIPTION,
     getSupportedResources: vi.fn(async (_options?: { isAdmin?: boolean }) => [RESOURCE]),
@@ -53,6 +54,7 @@ function fixture(userId: string) {
   const vars = {
     ...env, GATEKEEPER_ADMIN: admin, GATEKEEPER_EXAMPLE: other,
     BLUEPRINTS: { get: async () => "{}", put: async () => {} },
+    ...overrides,
   } as unknown as Cloudflare.Env;
   const stub = env.TEST_USER.getByName(`admin-api-grant-${++counter}`);
   const inUser = <T>(f: (user: UserDurableObject, exports: Exports) => Promise<T>) =>
@@ -157,6 +159,26 @@ describe("the hint a vendor's resources are asked for with", () => {
     }
   });
 
+  it("tells no other vendor whether the user is a deployment admin", async () => {
+    const { other, inUser } = fixture(ADMIN);
+    await inUser(async user => {
+      await user.listGatekeeperVendors();
+      await user.listGatekeeperVendors({ resourceUrl: "https://example.com/thing/7" });
+      await user.connectAccount("example", ["thing"]);
+      await user.createResourceGatekeeper("example", "thing", "A thing").catch(() => {});
+    });
+    // Five asks: the listing, the filtered listing's filter and its list, the connect, the creation.
+    expect(other.getSupportedResources.mock.calls)
+        .toEqual(Array.from({ length: 5 }, () => [{ userId: ADMIN }]));
+  });
+
+  it("marks only the admin gatekeeper unavailable while ADMINS cannot be read", async () => {
+    const { inUser } = fixture(MEMBER, { ADMINS: "not a list" });
+    const found = await inUser(user => user.listGatekeeperVendors());
+    expect(found.map(vendor => [vendor.id, vendor.unavailable === true]).toSorted())
+        .toEqual([["admin", true], ["example", false]]);
+  });
+
   it("says so for the admin whose settings page or setting change asks", async () => {
     const { admin, inSettings } = fixture(ADMIN);
     await inSettings(async settings => {
@@ -165,5 +187,14 @@ describe("the hint a vendor's resources are asked for with", () => {
     });
     expect(admin.getSupportedResources.mock.calls)
         .toEqual([[{ userId: ADMIN, isAdmin: true }], [{ userId: ADMIN, isAdmin: true }]]);
+  });
+
+  it("tells no other vendor on the settings page or a setting change", async () => {
+    const { other, inSettings } = fixture(ADMIN);
+    await inSettings(async settings => {
+      await settings.getSettings(ADMIN);
+      await settings.setResourceEnabled("example", "thing", false, ACTOR(ADMIN));
+    });
+    expect(other.getSupportedResources.mock.calls).toEqual([[{ userId: ADMIN }], [{ userId: ADMIN }]]);
   });
 });
