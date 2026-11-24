@@ -1216,6 +1216,70 @@ describe("staging", () => {
   });
 });
 
+describe("staging while a \"use\" collaborator uses the gadget", () => {
+  const GADGET: GatekeeperCaller = {from: "gadget", gadgetId: 9};
+  const use = (impl: Impl, gadgetId = 9) =>
+    impl.joinSession({kind: "use", profileId: "bob"}, gadgetId);
+
+  it("holds the gadget's actions, and what follows them, until staging is accepted", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      const leave = use(impl);
+      await impl.submitAction(GK, 1, description(true), GADGET);
+      leave();
+      await impl.submitAction(GK, 2, description(true), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
+      expect(gatekeeper.applied).toEqual([]);
+    });
+    using overseer = await client();
+    expect((await overseer.getMetadata()).stagedActions).toBe(2);
+    expect(await overseer.acceptStagedActions()).toEqual({outcome: "applied"});
+    await visit(impl => {
+      expect(gatekeeper.applied).toEqual([1, 2]);
+      expect(record(impl, 1)).toMatchObject({resolvedBy: USER, autoApproved: false});
+    });
+  });
+
+  it("holds them for a minute after the collaborator leaves, and no longer", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      use(impl)();
+      now.mockReturnValue(1_059_999);
+      await impl.submitAction(GK, 1, description(), GADGET);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1)).toEqual(["pending"]);
+      await impl.rejectPendingAction(record(impl, 1), USER);
+
+      now.mockReturnValue(1_060_000);
+      await impl.submitAction(GK, 2, description(), GADGET);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([2]);
+    });
+  });
+
+  it("applies at once what another gadget, a chat's gadget or a \"build\" collaborator's does",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      use(impl, 8);
+      impl.joinSession({kind: "build", profileId: "carol"});
+      await impl.submitAction(GK, 1, description(), GADGET);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([1, 2]);
+
+      use(impl);
+      await impl.submitAction(GK, 3, description(), {...GADGET, chatId: 1});
+      expect(record(impl, 3).heldForReview).toBeUndefined();
+    });
+  });
+});
+
 describe("staging pending from before it applied at once", () => {
   const HOOK: GatekeeperCaller = {from: "hook", gadgetId: 9};
 

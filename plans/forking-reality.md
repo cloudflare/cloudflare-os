@@ -755,12 +755,19 @@ is that **every chat is built on it.**
 - **Normally it is empty.** A staged action is recorded, and applied as soon as `submitAction()`
   has replied, through the same path as an accept. The gatekeeper still submits and waits for the
   apply call. It is attributed to the workspace owner, with `autoApproved: true`.
-- **It holds actions in two situations**, both decided by the kernel, never chosen by a user:
+- **It holds actions in three situations**, all decided by the kernel, never chosen by a user:
   - **Holding is imposed.** Restricted-data mode, today: otherwise the latch that makes every
     action require review would stop covering gadget actions. Staged actions then wait until a
     `build` user accepts them.
+  - **A `use` collaborator may have caused the action.** A gadget's action is held when a `use`
+    collaborator has that gadget open, or closed it within the last minute, since a call made
+    just before leaving may still be running. The kernel cannot tell whose request a gadget is
+    serving, so presence stands in for it, and whoever else is using the gadget then has their
+    actions held too. `build` collaborators do not count: they may apply any action themselves.
+    The mark is made when the action is submitted and stays until a `build` user decides it. See
+    "A known gap" below for what this does not catch.
   - **An earlier staged action on that connection is still pending.** Order is kept in staging
-    as on a branch, so later actions wait behind one that failed.
+    as on a branch, so later actions wait behind one that failed or is held.
 - **A failure.** A staged action whose apply failed stays pending, and is retried the next time
   anything applies on that connection. One the gatekeeper reports as not retryable is rejected
   automatically, along with whatever it reports could not apply without it: nobody is watching
@@ -824,15 +831,23 @@ What "apply at once" newly allows (decision 5, confirmed):
   approve what they just clicked would be needless friction. A user who wants review holds.
 - **Hook-driven actions.** The kernel cannot tell a gadget call caused by a user's click from one
   caused by a hook or an alarm; all are `{from: "gadget"}`.
-- **`use` collaborators.** Their use of a gadget today queues actions for a `build` user. They
-  would now act through the connection directly.
 
-**A known gap this must leave room for.** The user driving a gadget may not have permission to
-perform its actions, in which case a user who does is supposed to approve them. That is not
-enforced today: the kernel does not track which user caused a gadget's action, and assumes the
-owner. Fixing it is out of scope. When it is fixed, such a user's actions will be held in
-staging. Two questions then need answers, and the design leaves both open without closing off
-either:
+`use` collaborators are not among them. Their use of a gadget today queues actions for a `build`
+user, and applying those at once would let anyone a gadget is shared with act as its owner. So
+staging holds a gadget's actions while one is using it (above).
+
+**A known gap.** The user driving a gadget may not have permission to perform its actions, in
+which case a user who does is supposed to approve them. The kernel does not track which user
+caused a gadget's action, so holding by presence is a stand-in until it does (by carrying the
+user through the gadget's async context). It misses an action the gadget takes for a
+collaborator after they have been gone a minute, such as a job their click left in the gadget's
+storage for a later request or hook firing to carry out. A gadget has no alarms, and a `use`
+collaborator cannot enable a hook, so that takes a gadget built to defer work. It also holds more
+than it must: the owner's own use of the gadget, and a hook's firing into it, while a
+collaborator has it open. And no rule releases a held action, so a shared gadget whose purpose is
+to write needs a `build` user to accept each time. When the kernel does track the user, only
+that user's actions will be held. Two questions then need answers, and the design leaves both
+open without closing off either:
 
 - **Who waits behind a held action.** Everyone sees it simulated, so a permitted user's later
   action on that connection waits behind it, unless staging is split per driving user. A split

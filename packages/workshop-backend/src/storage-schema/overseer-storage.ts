@@ -551,10 +551,11 @@ export type ActionRecord = {
   applying?: true;
 
   /**
-   * Set by the version 10 migration on each staged action then pending: one that, before staging
-   * applied actions at once, was waiting for a user's review. Staging holds it, and what follows
-   * it on its connection, until a user decides it (see OverseerImpl.#stagedRun). Meaningless once
-   * it is decided.
+   * Set on a staged action that waits for a user's review instead of applying at once: one a
+   * gadget submitted while a "use" collaborator was using it, or had just been (see
+   * OverseerImpl.submitAction), and, by the version 10 migration, each one pending from before
+   * staging applied actions at once. Staging holds it, and what follows it on its connection,
+   * until a user decides it (see OverseerImpl.#stagedRun). Meaningless once it is decided.
    */
   heldForReview?: true;
 

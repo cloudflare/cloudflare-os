@@ -962,6 +962,10 @@ export function sanitizeMessageFormatRefs(
 // owner's sessions are never counted, since the owner is never an observer.
 type SessionHolder = {kind: CollaboratorRole, profileId: string};
 
+// How long after a "use" session on a gadget ends the gadget's actions are still held for review
+// (see OverseerImpl.#usedByCollaborator): longer than a gadget call it left running should take.
+const USE_SESSION_COOLDOWN_MS = 60_000;
+
 // How folding a chat's content reads the base text of a worktree edit (see
 // OverseerImpl.seedWorktreeEditBases): one file of a commit as text, undefined when the commit has
 // no file there.
@@ -1167,7 +1171,23 @@ class OverseerImpl implements AgentHooks {
   joinSession(holder: SessionHolder, gadgetId?: WorkpieceId): () => void {
     let session = {holder, gadgetId: holder.kind === "use" ? gadgetId : undefined};
     this.#liveSessions.add(session);
-    return () => { this.#liveSessions.delete(session); };
+    return () => {
+      this.#liveSessions.delete(session);
+      if (session.gadgetId !== undefined) this.#useSessionEnded.set(session.gadgetId, Date.now());
+    };
+  }
+
+  // When a "use" session holding each gadget last ended (see joinSession). In memory, like the
+  // gadget work such a session began, which a restart of the workspace ends too.
+  #useSessionEnded = new Map<WorkpieceId, number>();
+
+  // Whether a "use" collaborator may have caused what the gadget does now: one holds a session on
+  // it, or did within USE_SESSION_COOLDOWN_MS, since a call made just before leaving may still be
+  // running. The kernel cannot tell whose request a gadget is serving, so presence stands in for
+  // it. A "build" collaborator is not counted: they may apply any action themselves.
+  #usedByCollaborator(gadgetId: WorkpieceId | undefined): boolean {
+    return gadgetId !== undefined && this.#hasCollaboratorSession(new Set([gadgetId])) ||
+        Date.now() - (this.#useSessionEnded.get(gadgetId!) ?? -Infinity) < USE_SESSION_COOLDOWN_MS;
   }
 
   /** The collaborators holding a live session (see joinSession), each profile id once. */
@@ -6756,8 +6776,8 @@ class OverseerImpl implements AgentHooks {
   // soon as they are submitted, whoever's code submitted them and whatever their autoApprovable
   // verdict, because the user chose to run that code outside any chat. Staging holds them only
   // while the workspace has read restricted data, where every action needs a user's review, until
-  // a user accepts them (acceptStagedActions), behind one that was waiting for a user's review
-  // before staging applied at once (ActionRecord.heldForReview), until a user decides it, and
+  // a user accepts them (acceptStagedActions), behind one that waits for a user's review
+  // (ActionRecord.heldForReview), until a user decides it, and
   // behind one that failed to apply, which the next apply on the connection retries (see
   // #applyStaged). One a user accepted on the connection's resource while it was unsaved applies
   // as approved by them (ActionRecord.accepted).
@@ -7829,7 +7849,12 @@ class OverseerImpl implements AgentHooks {
       createdAt: new Date(),
       state: "pending",
       type: "action",
-      description
+      description,
+      // A mainline gadget's action would apply at once as the owner (see #stagedRun), which a
+      // "use" collaborator using the gadget is not, so it waits for a user who may apply it.
+      ...(caller.from === "gadget" && branchOf(caller) === null &&
+          this.#usedByCollaborator(caller.gadgetId ?? this.defaultGadgetId)
+          ? {heldForReview: true as const} : {}),
     };
 
     // The marking walk stamps the verified push closure "pending push" -- the read grant that

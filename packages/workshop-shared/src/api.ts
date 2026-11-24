@@ -4816,8 +4816,11 @@ export interface Overseer extends RpcTarget {
    * Applies the pending actions with no chat (see WorkspaceMetadata.stagedActions), one connection
    * at a time, as they stood when the call began, up to `through` as in MergeChangesOptions.through.
    * Those normally apply as soon as they are submitted; they wait for this while the workspace has
-   * read restricted data, behind one that was waiting for a user's review before they did, and
-   * behind one that failed to apply. The first that fails to apply stops it with a "failed"
+   * read restricted data, behind one that waits for a user's review, and behind one that failed
+   * to apply. One waits for review when a gadget submitted it while a "use" collaborator had the
+   * gadget open, or within a minute after: the Workshop cannot tell whose request a gadget is
+   * serving, and only a "build" user may act through its connections. So does one pending from
+   * before staged actions applied at once. The first that fails to apply stops it with a "failed"
    * outcome, leaving that action pending with its ActionLogEntry.applyError and those after it on
    * its connection pending; calling again retries it. On a connection whose resource is unsaved,
    * they are accepted instead, and held until it is saved (see ActionLogEntry.accepted); one
