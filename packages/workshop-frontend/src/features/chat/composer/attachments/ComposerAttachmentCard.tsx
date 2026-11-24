@@ -43,7 +43,8 @@ export const ComposerAttachmentCard = ({
   const kind = attachmentKind(attachment.mimeType, attachment.name);
   const failed = attachment.uploadState === "error";
   const uploading = attachment.uploadState === "uploading";
-  // An image is its own thumbnail (`previewUrl`); a thumbnail of anything else reads it whole.
+  // An image is its own thumbnail (`previewUrl`); a file over `MAX_PREVIEW_BYTES` gets none, and a
+  // text card reads only its first bytes.
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
     attachment.previewUrl || attachment.blob.size > MAX_PREVIEW_BYTES
       ? undefined : previewFormat(attachment.mimeType, attachment.name),
