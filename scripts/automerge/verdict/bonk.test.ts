@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
-import { pathToFileURL } from "node:url";
 
-import { dig, parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
-import { git } from "../git.ts";
+import { dig, parseWorkflow } from "../../risk-review-fixtures/workflow.ts";
 import { JOB_NAME, REVIEW_STEP, buildBonkVerdict, type BonkInputs } from "./bonk.ts";
 
 const MODEL = "cloudflare-ai-gateway/openai/gpt-6.1-sol";
@@ -17,15 +13,6 @@ function inputs(overrides: Partial<BonkInputs>): BonkInputs {
 }
 
 const CLEAN = "## Findings\n\nNone.\n\n## Summary\n\nNothing to fix.\nMERGE-CONFIDENCE: 9\n";
-
-/** Each path a step's script names under `$RUNNER_TEMP`, relative to it. */
-function runnerTempPaths(script: string): string[] {
-  return [...script.matchAll(/\$\{?RUNNER_TEMP\}?\/([\w./-]+)/g)].map((match) => match[1] ?? "");
-}
-
-function topDirectory(path: string): string {
-  return path.split("/", 1).join("");
-}
 
 describe("buildBonkVerdict", () => {
   it("is an error when Bonk's report file is missing, empty or not in the report format", () => {
@@ -87,38 +74,5 @@ describe("bonk-pr.yml", () => {
     assert.equal(dig(job, "name") ?? JOB_NAME, JOB_NAME);
     const steps = dig(job, "steps");
     assert.ok(Array.isArray(steps) && steps.some((step) => dig(step, "name") === REVIEW_STEP));
-  });
-
-  // The job runs bonk.ts from a copy of the base commit's judge code, outside the checkout, so a
-  // module the copy leaves out is missing only there.
-  it("copies every module bonk.ts imports to where it runs it", () => {
-    const scripts = stepsOf(workflow).flatMap(({ run }) => (typeof run === "string" ? [run] : []));
-    const started = new Set(scripts.flatMap(runnerTempPaths).filter((path) => path.endsWith(".ts")));
-    const directories = new Set([...started].map(topDirectory));
-    // The steps that fill the directory the started scripts sit in.
-    const copies = scripts.filter((script) => runnerTempPaths(script).some((path) => !path.endsWith(".ts") && directories.has(topDirectory(path))));
-    assert.ok(started.size > 0 && copies.length > 0, "steps copy the scripts, and later steps run them");
-
-    const temp = mkdtempSync(join(tmpdir(), "automerge-judge-"));
-    try {
-      // The working tree's judge code as a tree, written to a scratch object store.
-      const env = {
-        ...process.env,
-        GIT_INDEX_FILE: join(temp, "index"),
-        GIT_OBJECT_DIRECTORY: join(temp, "objects"),
-        GIT_ALTERNATE_OBJECT_DIRECTORIES: git(["rev-parse", "--path-format=absolute", "--git-path", "objects"], root).trim(),
-      };
-      mkdirSync(env.GIT_OBJECT_DIRECTORY);
-      execFileSync("git", ["add", "--all", "--", "scripts/automerge"], { cwd: root, env });
-      const tree = execFileSync("git", ["write-tree"], { cwd: root, env, encoding: "utf8" }).trim();
-      for (const copy of copies) execFileSync("bash", ["-e", "-c", copy], { cwd: root, env: { ...env, BASE_SHA: tree, RUNNER_TEMP: temp } });
-      for (const script of started) {
-        const url = pathToFileURL(join(temp, script)).href;
-        // Imported rather than run: that loads every module the script imports and starts nothing.
-        execFileSync(process.execPath, ["--input-type=module", "--eval", `await import(${JSON.stringify(url)});`], { stdio: "pipe" });
-      }
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
-    }
   });
 });

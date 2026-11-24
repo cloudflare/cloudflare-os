@@ -5,10 +5,10 @@ name: Automerge proofs
 # it, binding it to this file, the `pull_request` event, the head SHA and the newest attempt.
 # Nothing here posts a check or holds a secret.
 #
-# The job checks out the pull request's BASE and runs the base's scripts; the head commit arrives as
-# objects only. A job that ran head code could upload an artifact under any name in its run, so the
-# proof that judges untrusted dependencies stays in a run where no head code executes. The proofs
-# that must build or test head code live in automerge-head-proofs.yml instead.
+# The job checks out the judge commit and runs its scripts; the head commit arrives as objects
+# only. A job that ran head code could upload an artifact under any name in its run, so the proof
+# that judges untrusted dependencies stays in a run where no head code executes. The proofs that
+# must build or test head code live in automerge-head-proofs.yml instead.
 
 on:
   pull_request:
@@ -37,11 +37,26 @@ jobs:
       AUTOMERGE_HEAD_REF: ${{ github.head_ref }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      # Full history: the proof diffs from the merge base, and the base can be well behind main.
-      - name: Check out the base
+      # The judge is the base branch's, as this run merges the head onto it: the first parent of the
+      # merge commit this workflow file comes from (README.md, "Risk review").
+      # `pull_request.base.sha` can be far older. Fetched into a repository of its own.
+      - name: Copy the judge
+        id: judge
+        run: |
+          git init -q --bare "$RUNNER_TEMP/judge.git"
+          git -C "$RUNNER_TEMP/judge.git" fetch -q --no-tags --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          judge=$(git -C "$RUNNER_TEMP/judge.git" rev-parse "$GITHUB_SHA^1")
+          git -C "$RUNNER_TEMP/judge.git" archive --output="$RUNNER_TEMP/judge.tar" "$judge" scripts/automerge 'scripts/risk-review*'
+          mkdir "$RUNNER_TEMP/judge"
+          tar -xf "$RUNNER_TEMP/judge.tar" -C "$RUNNER_TEMP/judge"
+          echo "sha=$judge" >> "$GITHUB_OUTPUT"
+
+      # Full history: the proof diffs from the merge base, and the pull request's base can be well
+      # behind the judge commit.
+      - name: Check out the judge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ steps.judge.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -61,7 +76,7 @@ jobs:
       # The producer writes its artifact even when it cannot decide (status `error`), and exits
       # non-zero only when it cannot write one.
       - name: proof-deps
-        run: node scripts/automerge/proofs/deps.ts
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/proofs/deps.ts"
 
       - name: Upload proof-deps
         if: ${{ !cancelled() }}

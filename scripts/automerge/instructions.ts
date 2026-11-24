@@ -1,4 +1,4 @@
-// The paths an agent reads as instructions, listed once. Both reviewers read the base commit's
+// The paths an agent reads as instructions, listed once. Both reviewers read the judge commit's
 // version of each (verdict/review-copy.ts), and the gate sends a change to one to a person
 // (risk-review-policy.ts), so that no AI decides a change to what AI reviewers follow.
 

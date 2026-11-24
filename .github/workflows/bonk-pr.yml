@@ -152,6 +152,23 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The judge is the base branch's, as this run merges the head onto it: the first parent of the
+      # merge commit this workflow file comes from (README.md, "Risk review").
+      # `pull_request.base.sha` can be far older, and the head is the pull request's own. Fetched into
+      # a repository of its own, before the checkout and any pull request code. The pull request's
+      # install below can still reach the copy, which is the limit stated above the job.
+      - name: Copy the judge
+        id: judge
+        if: steps.break_glass.outputs.active != 'true'
+        run: |
+          git init -q --bare "$RUNNER_TEMP/judge.git"
+          git -C "$RUNNER_TEMP/judge.git" fetch -q --no-tags --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          judge=$(git -C "$RUNNER_TEMP/judge.git" rev-parse "$GITHUB_SHA^1")
+          git -C "$RUNNER_TEMP/judge.git" archive --output="$RUNNER_TEMP/judge.tar" "$judge" scripts/automerge 'scripts/risk-review*'
+          mkdir "$RUNNER_TEMP/judge"
+          tar -xf "$RUNNER_TEMP/judge.tar" -C "$RUNNER_TEMP/judge"
+          echo "sha=$judge" >> "$GITHUB_OUTPUT"
+
       # The head, not the merge commit: opencode reviews the branch, and the setup below installs
       # what it checks out.
       - name: Checkout repository
@@ -159,25 +176,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Fetch the base commit
-        if: steps.break_glass.outputs.active != 'true'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-
-      # The verdict scripts run from the base commit, as the Opus job's do, never from the head:
-      # copied out of git objects before any pull request code runs. The whole of
-      # scripts/automerge, since bonk.ts imports modules beside its own directory. The pull
-      # request's install below can still reach the copy, which is the limit stated above the job.
-      - name: Copy the base commit's verdict scripts
-        if: steps.break_glass.outputs.active != 'true'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          mkdir "$RUNNER_TEMP/automerge-judge"
-          git archive "$BASE_SHA" scripts/automerge |
-            tar -x --strip-components=2 -C "$RUNNER_TEMP/automerge-judge"
 
       - name: Enable Corepack
         if: steps.break_glass.outputs.active != 'true'
@@ -197,14 +195,16 @@ jobs:
 
       # After the install, so the install cannot put a tracked instruction file back; files it creates
       # elsewhere, such as in node_modules, are not replaced. REVIEW.md and every tracked instruction
-      # file come from the base commit: the checkout is the head, so reading them there would let a
+      # file come from the judge commit: the checkout is the head, so reading them there would let a
       # pull request rewrite the rules its own review runs with.
       - name: Prepare the review
         id: prompt
         if: steps.break_glass.outputs.active != 'true'
+        env:
+          AUTOMERGE_JUDGE_SHA: ${{ steps.judge.outputs.sha }}
         # Unquoted on purpose: RUNNER_TEMP has no spaces, and CodeQL's untrusted-checkout query reads a
         # script path that starts with a quote as a path inside the checkout.
-        run: node $RUNNER_TEMP/automerge-judge/verdict/bonk.ts prepare
+        run: node $RUNNER_TEMP/judge/scripts/automerge/verdict/bonk.ts prepare
 
       - name: Run Bonk
         if: steps.break_glass.outputs.active != 'true'
@@ -238,7 +238,7 @@ jobs:
         if: ${{ !cancelled() && steps.break_glass.outputs.active != 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node $RUNNER_TEMP/automerge-judge/verdict/bonk.ts verdict
+        run: node $RUNNER_TEMP/judge/scripts/automerge/verdict/bonk.ts verdict
 
       - name: Upload the verdict
         if: ${{ !cancelled() && steps.break_glass.outputs.active != 'true' }}

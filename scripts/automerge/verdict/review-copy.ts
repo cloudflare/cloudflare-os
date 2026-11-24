@@ -1,6 +1,6 @@
-// Gives a reviewer the head commit's code with every file that steers an agent taken from the base
-// commit instead: a fresh copy written from git objects for the Opus runner, or the checkout itself
-// for Bonk, which reads the working tree.
+// Gives a reviewer the head commit's code with every file that steers an agent taken from the judge
+// commit instead (the commit of the base branch the run merges the head onto): a fresh copy written
+// from git objects for the Opus runner, or the checkout itself for Bonk, which reads the working tree.
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -59,17 +59,17 @@ interface ReviewCopy {
 
 /**
  * Writes the head tree of `repo` into the empty directory `outDir`, with instruction paths from
- * `baseSha` in place of the head's. Symlinks are left out: one pointing at `/proc/self/environ`
+ * `judgeSha` in place of the head's. Symlinks are left out: one pointing at `/proc/self/environ`
  * would hand the reviewer the gateway token through its read tool. Files are written without
  * their executable bit, since nothing runs them.
  */
-export function buildReviewCopy(repo: string, headSha: string, baseSha: string, outDir: string): ReviewCopy {
+export function buildReviewCopy(repo: string, headSha: string, judgeSha: string, outDir: string): ReviewCopy {
   if (readdirSync(outDir).length > 0) throw new Error(`${outDir} is not empty`);
   const head = listTree(repo, headSha);
   const skipped = head.filter(entry => !REGULAR_FILE_MODES.has(entry.mode)).map(entry => entry.path);
   const files = [
     ...head.filter(entry => REGULAR_FILE_MODES.has(entry.mode) && !isInstructionPath(entry.path)),
-    ...listTree(repo, baseSha).filter(entry => REGULAR_FILE_MODES.has(entry.mode) && isInstructionPath(entry.path)),
+    ...listTree(repo, judgeSha).filter(entry => REGULAR_FILE_MODES.has(entry.mode) && isInstructionPath(entry.path)),
   ];
   for (const { path } of files) assertSafePath(path);
   const blobs = readBlobs(repo, [...new Set(files.map(entry => entry.object))]);
@@ -97,25 +97,25 @@ function assertRealParents(root: string, path: string): void {
 }
 
 /**
- * Puts the base commit's instruction files in place of the head's in `worktree`, a checkout of
+ * Puts the judge commit's instruction files in place of the head's in `worktree`, a checkout of
  * `headSha`, before a reviewer that reads the working tree runs there. Every head instruction path,
- * symlinks among them, is removed; every regular base instruction file is written in its place, and
- * base symlinks are left out. Returns the head paths it removed or replaced.
+ * symlinks among them, is removed; every regular instruction file of the judge commit is written
+ * in its place, and its symlinks are left out. Returns the head paths it removed or replaced.
  *
  * None of this shows in `git status`: the pinned opencode runner commits and pushes a dirty checkout
- * after the review. Tracked head paths are marked skip-worktree, and base files the head does not
+ * after the review. Tracked head paths are marked skip-worktree, and files the head does not
  * track are listed in the repository's own exclude file.
  */
-export function replaceInstructionFiles(worktree: string, headSha: string, baseSha: string): string[] {
+export function replaceInstructionFiles(worktree: string, headSha: string, judgeSha: string): string[] {
   const head = listTree(worktree, headSha).filter(entry => isInstructionPath(entry.path)).map(entry => entry.path);
-  const base = listTree(worktree, baseSha).filter(entry => REGULAR_FILE_MODES.has(entry.mode) && isInstructionPath(entry.path));
-  for (const path of [...head, ...base.map(entry => entry.path)]) {
+  const judge = listTree(worktree, judgeSha).filter(entry => REGULAR_FILE_MODES.has(entry.mode) && isInstructionPath(entry.path));
+  for (const path of [...head, ...judge.map(entry => entry.path)]) {
     assertSafePath(path);
     assertRealParents(worktree, path);
     rmSync(join(worktree, path), { recursive: true, force: true });
   }
-  const blobs = readBlobs(worktree, [...new Set(base.map(entry => entry.object))]);
-  for (const { path, object } of base) {
+  const blobs = readBlobs(worktree, [...new Set(judge.map(entry => entry.object))]);
+  for (const { path, object } of judge) {
     const content = blobs.get(object);
     if (content === undefined) throw new Error(`git cat-file did not return ${object} for ${path}`);
     mkdirSync(dirname(join(worktree, path)), { recursive: true });
@@ -124,7 +124,7 @@ export function replaceInstructionFiles(worktree: string, headSha: string, baseS
   }
   if (head.length > 0) gitWithInput(["update-index", "--skip-worktree", "-z", "--stdin"], `${head.join("\0")}\0`, worktree);
   const tracked = new Set(head);
-  const untracked = base.map(entry => entry.path).filter(path => !tracked.has(path));
+  const untracked = judge.map(entry => entry.path).filter(path => !tracked.has(path));
   if (untracked.length > 0) {
     const exclude = resolve(worktree, git(["rev-parse", "--git-path", "info/exclude"], worktree).trim());
     mkdirSync(dirname(exclude), { recursive: true });

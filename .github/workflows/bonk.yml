@@ -68,7 +68,8 @@ jobs:
         run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
 
       # The checkout is a pull request's head, so its REVIEW.md may hold that pull request's own
-      # edits. Bonk gets the base commit's copy as an instruction file outside the checkout instead.
+      # edits. Bonk gets the base branch's copy as an instruction file outside the checkout instead:
+      # the branch's tip, since the pull request's `base.sha` can be far behind it.
       - name: Load base review guidelines
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,11 +79,11 @@ jobs:
           GUIDELINES: ${{ runner.temp }}/base-review-guidelines.md
         run: |
           if [[ -n "$PR_NUMBER" ]]; then
-            ref=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.sha')
+            ref=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.ref')
           else
             ref=$DEFAULT_BRANCH
           fi
-          guidelines=$(gh api "repos/$GH_REPO/contents/REVIEW.md?ref=$ref" \
+          guidelines=$(gh api -X GET "repos/$GH_REPO/contents/REVIEW.md" -f "ref=$ref" \
             -H 'Accept: application/vnd.github.raw')
           {
             echo "These are the repository's review guidelines from $ref. Follow them when you review a"

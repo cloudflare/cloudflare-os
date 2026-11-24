@@ -123,7 +123,13 @@ interface BinaryFile {
 
 interface PullRequest {
   headSha: string;
+  /** The base of the diff. GitHub moves it only when the branch takes the base branch in. */
   baseSha: string;
+  /**
+   * The judge commit: the commit of the base branch that this run's merge commit is built on. The
+   * workflow file and these scripts come from it, and so do the reviewer's rules.
+   */
+  judgeSha: string;
   title: string;
   body: string;
 }
@@ -145,7 +151,7 @@ function paths(workDir: string) {
 
 /**
  * Writes everything one review reads into `workDir`. REVIEW.md and the other instruction files come
- * from the pull request's base commit. From round {@link ROUND_LIMIT} on there is no review to
+ * from the judge commit. From round {@link ROUND_LIMIT} on there is no review to
  * run, and only the metadata is written. Returns whether a model review should run.
  */
 export function prepareInputs(repo: string, workDir: string, pr: PullRequest, plan: RoundPlan): boolean {
@@ -183,9 +189,9 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
       round: String(plan.round),
       inputs: files.inputs,
       scope: plan.reviewFromSha === null ? SCOPE_FULL : fill(SCOPE_SINCE, { from: plan.reviewFromSha }),
-      review_md: git(["show", `${pr.baseSha}:REVIEW.md`], repo),
+      review_md: git(["show", `${pr.judgeSha}:REVIEW.md`], repo),
     }));
-    const copy = buildReviewCopy(repo, pr.headSha, pr.baseSha, files.review);
+    const copy = buildReviewCopy(repo, pr.headSha, pr.judgeSha, files.review);
     meta.head_instruction_paths = copy.headInstructionPaths;
     meta.skipped_paths = copy.skipped;
   }
@@ -403,7 +409,7 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
  * head's history (a force-push may drop it), no merge may sit between them (merging the base in
  * would put the base's changes in that diff), and its workflow file must equal the base's: the run
  * takes the workflow from the head, which could make it succeed without a review. The scripts
- * always come from that run's base commit.
+ * never come from the head.
  */
 export function canReviewSince(repo: string, previousSha: string, pr: Pick<PullRequest, "headSha" | "baseSha">): boolean {
   const ok = (args: string[]) => tryGit(args, repo) !== undefined;
@@ -419,7 +425,7 @@ export function env(name: string): string {
 }
 
 /** The pull request fields the workflow's `pull_request` event payload carries. */
-export function eventPullRequest(): PullRequest & { number: number; headRef: string; draft: boolean } {
+export function eventPullRequest(): Omit<PullRequest, "judgeSha"> & { number: number; headRef: string; draft: boolean } {
   const pull = field(parseJson(readFileSync(env("GITHUB_EVENT_PATH"), "utf8"), "the event payload"), "pull_request");
   const number = field(pull, "number");
   const headSha = field(field(pull, "head"), "sha");
@@ -451,7 +457,7 @@ async function main(command: string | undefined): Promise<void> {
       stepName: null,
     }, path => githubJson(path, token));
     const plan = planRound(pr.headSha, reviewed, sha => canReviewSince(repo, sha, pr));
-    const review = prepareInputs(repo, workDir, pr, plan);
+    const review = prepareInputs(repo, workDir, { ...pr, judgeSha: env("AUTOMERGE_JUDGE_SHA") }, plan);
     appendFileSync(env("GITHUB_OUTPUT"), `review=${review}\n`);
     return;
   }

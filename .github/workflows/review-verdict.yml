@@ -4,14 +4,14 @@ name: Review verdict
 # risk-review gate reads. The other verdict is Bonk's, from bonk-pr.yml. This workflow publishes
 # nothing itself: no check run, no comment, and no write permission. From the fourth reviewed head
 # on it runs no model and its verdict sends the pull request to a person. The reviewer reads a copy
-# of the head built from git objects with every instruction file taken from the base commit, and
+# of the head built from git objects with every instruction file taken from the judge commit, and
 # the gateway secrets reach only the step that runs opencode.
 #
 # Nothing from the head's working tree configures or runs anything here: the checkout, the
-# toolchain setup and the scripts are the base commit's, and the head is fetched only as git objects
-# for the review copy and the patch. This file is the head's on `pull_request`, so verdict trust
-# still rests on the gate, which gives no AI decision to a pull request that touches `.github/**`
-# or `scripts/automerge/**`. Fork pull requests never get here.
+# toolchain setup and the scripts are the judge commit's, and the head is fetched only as git
+# objects for the review copy and the patch. This file is the head's on `pull_request`, so verdict
+# trust still rests on the gate, which gives no AI decision to a pull request that touches
+# `.github/**` or `scripts/automerge/**`. Fork pull requests never get here.
 
 on:
   pull_request:
@@ -40,11 +40,25 @@ jobs:
       actions: read
       contents: read
     steps:
+      # The judge is the base branch's, as this run merges the head onto it: the first parent of the
+      # merge commit this workflow file comes from (README.md, "Risk review").
+      # `pull_request.base.sha` can be far older. Fetched into a repository of its own.
+      - name: Copy the judge
+        id: judge
+        run: |
+          git init -q --bare "$RUNNER_TEMP/judge.git"
+          git -C "$RUNNER_TEMP/judge.git" fetch -q --no-tags --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          judge=$(git -C "$RUNNER_TEMP/judge.git" rev-parse "$GITHUB_SHA^1")
+          git -C "$RUNNER_TEMP/judge.git" archive --output="$RUNNER_TEMP/judge.tar" "$judge" scripts/automerge 'scripts/risk-review*'
+          mkdir "$RUNNER_TEMP/judge"
+          tar -xf "$RUNNER_TEMP/judge.tar" -C "$RUNNER_TEMP/judge"
+          echo "sha=$judge" >> "$GITHUB_OUTPUT"
+
       # Full history for the merge base and earlier reviewed heads.
-      - name: Check out the base commit
+      - name: Check out the judge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ steps.judge.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -69,7 +83,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPO_DIR: ${{ github.workspace }}
           JOB_NAME: Verdict (opus)
-        run: node scripts/automerge/verdict/verdict.ts prepare
+          AUTOMERGE_JUDGE_SHA: ${{ steps.judge.outputs.sha }}
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/verdict/verdict.ts" prepare
 
       # The platform binary straight from the registry, checked against a pinned sha256 so the
       # reviewer cannot change under the same version. Bump the version and hash together, and
@@ -94,11 +109,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
-        run: node scripts/automerge/verdict/verdict.ts review
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/verdict/verdict.ts" review
 
       - name: Write the verdict
         if: ${{ !cancelled() }}
-        run: node scripts/automerge/verdict/verdict.ts finalize
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/verdict/verdict.ts" finalize
 
       - name: Upload the verdict
         if: ${{ !cancelled() }}

@@ -1,5 +1,5 @@
 // The verdict steps of Bonk's job in .github/workflows/bonk-pr.yml:
-//   node scripts/automerge/verdict/bonk.ts prepare   before "Run Bonk": base instruction files, prompt
+//   node scripts/automerge/verdict/bonk.ts prepare   before "Run Bonk": the judge commit's instruction files, prompt
 //   node scripts/automerge/verdict/bonk.ts verdict   after it: Bonk's report file into the artifact
 // The verdict comes only from the report file Bonk writes in this job. Bonk posts no review when it
 // finds nothing, and its comments cannot be tied to one run, since `/bonk` runs post as the same App.
@@ -27,7 +27,7 @@ export const REVIEW_STEP = "Run Bonk";
 const REPORT_FILE = "automerge-bonk-report.md";
 
 /**
- * What Bonk is asked to do: review under the base REVIEW.md, then write its report to `reportPath`.
+ * What Bonk is asked to do: review under the judge commit's REVIEW.md, then write its report to `reportPath`.
  * Adapted from workerd's auto-reviewer:
  * https://github.com/cloudflare/workerd/blob/4a92109c11b107f0fb6ceb097d5f60af9e07c910/.github/workflows/new-pr-review.yml#L29-L38
  */
@@ -129,13 +129,14 @@ async function main(command: string | undefined): Promise<void> {
   const temp = env("RUNNER_TEMP");
   const reportPath = join(temp, REPORT_FILE);
   if (command === "prepare") {
-    const pr = eventPullRequest();
-    git(["fetch", "--no-tags", "--depth=1", "origin", pr.baseSha], repo);
-    const replaced = replaceInstructionFiles(repo, pr.headSha, pr.baseSha);
-    console.log(`Replaced ${replaced.length} head instruction paths with the base's.`);
+    const { headSha } = eventPullRequest();
+    const judgeSha = env("AUTOMERGE_JUDGE_SHA");
+    git(["fetch", "--no-tags", "--depth=1", "origin", judgeSha], repo);
+    const replaced = replaceInstructionFiles(repo, headSha, judgeSha);
+    console.log(`Replaced ${replaced.length} head instruction paths with the judge commit's.`);
     rmSync(reportPath, { force: true });
     const delimiter = `EOF_${randomBytes(16).toString("hex")}`;
-    const prompt = bonkPrompt(git(["show", `${pr.baseSha}:REVIEW.md`], repo), reportPath);
+    const prompt = bonkPrompt(git(["show", `${judgeSha}:REVIEW.md`], repo), reportPath);
     appendFileSync(env("GITHUB_OUTPUT"), `value<<${delimiter}\n${prompt}\n${delimiter}\n`);
     return;
   }

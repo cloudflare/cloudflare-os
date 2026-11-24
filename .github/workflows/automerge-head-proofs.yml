@@ -7,8 +7,8 @@ name: Automerge head proofs
 # No job here holds a secret or posts a check. Head code runs in every job, so any job could upload
 # an artifact under any name in this run; that is why the proof that judges untrusted dependency
 # code runs in automerge-proofs.yml, where nothing from the head executes. What this run produces
-# rests on the author being a maintainer (threat model, rule 7). For a Dependabot pull request the
-# head's scripts are the base's, but its dependencies run here, and a compromised one could write a
+# rests on the author being a maintainer (threat model, rule 7). The scripts are the judge commit's,
+# but the head's code and dependencies run beside them, and a compromised dependency could write a
 # false `preview-smoke`.
 
 on:
@@ -40,6 +40,21 @@ jobs:
       AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       AUTOMERGE_MUTATION_BUDGET_MINUTES: "20"
     steps:
+      # The judge is the base branch's, as this run merges the head onto it: the first parent of the
+      # merge commit this workflow file comes from (README.md, "Risk review").
+      # `pull_request.base.sha` can be far older, and the head may not hold these scripts at all.
+      # Fetched into a repository of its own, so the head's full clone stays full.
+      - name: Copy the judge
+        id: judge
+        run: |
+          git init -q --bare "$RUNNER_TEMP/judge.git"
+          git -C "$RUNNER_TEMP/judge.git" fetch -q --no-tags --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          judge=$(git -C "$RUNNER_TEMP/judge.git" rev-parse "$GITHUB_SHA^1")
+          git -C "$RUNNER_TEMP/judge.git" archive --output="$RUNNER_TEMP/judge.tar" "$judge" scripts/automerge 'scripts/risk-review*'
+          mkdir "$RUNNER_TEMP/judge"
+          tar -xf "$RUNNER_TEMP/judge.tar" -C "$RUNNER_TEMP/judge"
+          echo "sha=$judge" >> "$GITHUB_OUTPUT"
+
       - name: Check out the head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,7 +73,7 @@ jobs:
           run-install: true
 
       - name: proof-tests
-        run: node scripts/automerge/proofs/tests.ts
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/proofs/tests.ts"
 
       - name: Upload proof-tests
         if: ${{ !cancelled() }}
@@ -82,6 +97,18 @@ jobs:
       AUTOMERGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       AUTOMERGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
+      # The judge, as in the job above.
+      - name: Copy the judge
+        id: judge
+        run: |
+          git init -q --bare "$RUNNER_TEMP/judge.git"
+          git -C "$RUNNER_TEMP/judge.git" fetch -q --no-tags --depth=2 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          judge=$(git -C "$RUNNER_TEMP/judge.git" rev-parse "$GITHUB_SHA^1")
+          git -C "$RUNNER_TEMP/judge.git" archive --output="$RUNNER_TEMP/judge.tar" "$judge" scripts/automerge 'scripts/risk-review*'
+          mkdir "$RUNNER_TEMP/judge"
+          tar -xf "$RUNNER_TEMP/judge.tar" -C "$RUNNER_TEMP/judge"
+          echo "sha=$judge" >> "$GITHUB_OUTPUT"
+
       - name: Check out the head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,7 +126,7 @@ jobs:
           run-install: true
 
       - name: preview-smoke
-        run: node scripts/automerge/proofs/smoke.ts local
+        run: node "$RUNNER_TEMP/judge/scripts/automerge/proofs/smoke.ts" local
 
       - name: Upload preview-smoke
         if: ${{ !cancelled() }}

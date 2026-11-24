@@ -72,6 +72,16 @@ blobs there, and `proof-tests` only when made against that commit with a head th
 file with a recent escaped defect raises the risk level one step; that raise ignores lockfiles and
 Markdown, `docs/` and `plans/` outside `.agents/`.
 
+Every producer job runs the **judge**: the scripts under `scripts/automerge/` and, for the two
+reviewers, `REVIEW.md` and the other instruction files. A `pull_request` run reads its workflow
+file from the run's merge commit, which GitHub builds as the head merged onto the base branch's
+tip. The judge comes from that commit's first parent, the **judge commit**: `main` as the run
+merges onto it, and never the head. Each job copies the judge commit's scripts to
+`$RUNNER_TEMP/judge` before it checks anything out, and runs them from there. The judge is not
+read from the pull request's own base commit (`pull_request.base.sha`), which stays the base of
+the diff and of the proofs: GitHub moves it only when the branch takes `main` in, so it can be
+months behind `main`, with an old judge or none.
+
 These paths always need a person:
 
 - everything under `.github/`;
@@ -90,7 +100,7 @@ The one exception is a skill's own files under `.agents/skills/` at the reposito
 not on this list. They are still instruction paths, so they rate at least medium risk, and no rung
 takes a change to one today: rung 2 takes only low risk, and no rung 1 proof checks them. A symlink
 there is on the list, and so is an instruction file or directory of its own inside a skill. Both
-reviewers read the base commit's copy of every instruction path
+reviewers read the judge commit's copy of every instruction path
 ([`scripts/automerge/instructions.ts`](../../scripts/automerge/instructions.ts) holds the one list
 the reviewers and the gate use), so a pull request's edit to one cannot steer its own review.
 
@@ -172,9 +182,13 @@ key from the app.
   to `refs/pull/N/merge` and its merge commit) would be one; building them is a later decision.
 - A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
   until the next push, which sends the pull request to a person.
-- Bonk's review, the Opus verdict and the dependency proof run the base commit's copy of
-  `scripts/automerge/`. GitHub moves a pull request's base commit only when its branch takes in
-  newer commits of `main`, so a branch that does not hold those scripts fails the three jobs, and
-  gets no Bonk review from `bonk-pr.yml`, until it merges `main`.
+- A pull request fails the producer jobs while its head holds workflow files that call a judge its
+  base branch does not have: the pull request that adds the judge or changes how a workflow calls
+  it, and a pull request into another branch whose head has merged a newer `main` than that
+  branch. It passes once the base branch holds that judge.
+- The head proofs run `main`'s judge on the head's tree. A change on `main` to what the judge
+  expects of that tree (the port and ready line of `scripts/run-local.ts`, `pnpm build`, the vitest
+  version) makes them status `error` on a branch that has not taken `main` in.
+- The judge is fetched without credentials, which works while the repository is public.
 - The report lists a follow-up only when it names the pull request or reverts it within 14 days;
   fixes on GitLab, or ones that name nothing, are not listed.
