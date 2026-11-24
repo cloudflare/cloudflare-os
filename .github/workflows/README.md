@@ -172,5 +172,9 @@ key from the app.
   to `refs/pull/N/merge` and its merge commit) would be one; building them is a later decision.
 - A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
   until the next push, which sends the pull request to a person.
+- Bonk's review, the Opus verdict and the dependency proof run the base commit's copy of
+  `scripts/automerge/`, and GitHub moves a pull request's base commit only when its head is pushed.
+  A pull request last pushed before those scripts reached `main` fails the three jobs, and gets no
+  Bonk review from `bonk-pr.yml`, until its next push.
 - The report lists a follow-up only when it names the pull request or reverts it within 14 days;
   fixes on GitLab, or ones that name nothing, are not listed.
