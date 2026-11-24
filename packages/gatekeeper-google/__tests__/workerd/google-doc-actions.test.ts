@@ -42,6 +42,9 @@ import { DOC_REVISION_PIN_MS, DOC_SNAPSHOT_TTL_MS } from "../../src/doc-actions"
 import { WIDER } from "../wider-run";
 import { GoogleDocEditSessionImpl } from "../../src/docs";
 
+/** The files of the Doc preview, by the paths its modules import one another by. */
+const PREVIEW_PATHS = ["client.js", "draw.js", "merge.js", "pages.js", "ui/chrome.js"];
+
 /** A request in a batch: a content change, a tab's add, or a write marker's create or delete. */
 type BatchRequest =
   | GoogleDocsBatchRequest
@@ -4566,6 +4569,23 @@ describe("Google Doc with no revision ID", () => {
     expect(docs.documentFetches).toBe(2);
     // Nothing to compare, so the probe is not worth a request.
     expect(docs.revisionProbes).toBe(0);
+  });
+});
+
+describe("Google Doc preview", () => {
+  // What the code does is checked where it runs: the Workshop's ConnectionPreviewPane browser test.
+  it("offers a preview", async () => {
+    new DocsModel().install();
+
+    expect(await hooks().describe("preview")).toMatchObject({ hasGadgetUi: true });
+    let files = await hooks().previewUi("preview");
+    expect(files.map(({ path }) => path)).toEqual(PREVIEW_PATHS);
+    expect(files[0].code).toContain("gadget.readDrawing(");
+    expect(files[0].code).toContain("gadget.readPendingDrawing(");
+    // Each module it imports is one of the files beside it.
+    for (let [, path] of files.map(({ code }) => code).join("\n").matchAll(/ from '\.\/([^']+)'/g)) {
+      expect(PREVIEW_PATHS).toContain(path);
+    }
   });
 });
 

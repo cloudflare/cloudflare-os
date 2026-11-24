@@ -3,6 +3,7 @@ import capnwebValidate from "capnweb-validate/vite";
 import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
 import deployed from "./cloudflare.config.ts";
+import { textModules } from "./vitest.text-modules.ts";
 
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
@@ -12,6 +13,7 @@ const { compatibilityDate, compatibilityFlags } = deployed.worker;
  */
 export default defineConfig({
   plugins: [
+    textModules,
     // The tests' program, which holds the PDF renderer's entrypoint the pool's Worker exports: a
     // class outside the program is not given its validators, and refuses to be loaded without.
     capnwebValidate({ tsconfig: "tsconfig.test.json" }),
@@ -72,5 +74,8 @@ export default defineConfig({
       "__tests__/workerd/workspace-observers.test.ts",
     ],
     setupFiles: ["@gadgets/scripts/assert-workerd"],
+    // Vitest's module cache hands `.txt` modules back under ids `textModules` cannot read, so
+    // every run after the first would fail.
+    fsModuleCache: false,
   },
 });

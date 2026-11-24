@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  HookDescription, ObservationDescription, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { tableCounts } from "./doc-store-scenarios";
 import { TestGitCache } from "./test-git-cache";
@@ -432,6 +432,10 @@ export class TestHooks extends DurableObject<Env> {
     return throughDrive(facetName)
       ? this.#drive(facetName, DRIVE_DOC).describe()
       : this.#gatekeeper(facetName).describe();
+  }
+
+  previewUi(facetName: string): Promise<UiFile[]> {
+    return this.#gatekeeper(facetName).getGadgetUi();
   }
 
   async #withReadSession<Session, T>(
