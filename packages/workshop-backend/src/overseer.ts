@@ -2791,6 +2791,16 @@ class OverseerImpl implements AgentHooks {
     return scanWorkpieceForGrep(this.gitCache, turn, workpieceId, base, path, pattern);
   }
 
+  // Where buildChatContent and declaredPins start listing a chat's rows: at the message that
+  // opened the current epoch (see ChatCodeBase.epoch). Nothing before it reaches either fold:
+  // both start over at an epoch-boundary merge, and the rows before a migrated chat's conversion
+  // boundary carry nothing the folds read. The rows of closed epochs can hold megabytes of code.
+  // A `through` from before the epoch asks about a closed one, so the whole chat is listed.
+  #epochStart(chatId: number, through = Infinity): string | undefined {
+    let epoch = this.storage.chatMeta.get(chatId)?.codeBase?.epoch;
+    return epoch !== undefined && epoch <= through ? chatKey(chatId, epoch) : undefined;
+  }
+
   // Rebuild a chat's content -- `gadgetId -> (path -> text)` for every gadget whose files live
   // in the chat's change stream -- from the chat log. Content is epoch-scoped: a merge message with
   // `epochBoundary` (or a migrated chat's `conversionBoundary` changes message) discards
@@ -2811,7 +2821,8 @@ class OverseerImpl implements AgentHooks {
   // `readBase` is the reader seedWorktreeEditBases takes for the base texts of worktree edits.
   async buildChatContent(chatId: number, through?: number, readBase?: BaseTextReader)
       : Promise<CodeContent> {
-    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let messages = [...this.storage.chats.list(
+        {prefix: chatKeyPrefix(chatId), start: this.#epochStart(chatId, through)})];
     if (through !== undefined) {
       messages = messages.filter(msg => msg.sequence <= through);
     }
@@ -3318,7 +3329,8 @@ class OverseerImpl implements AgentHooks {
   // materializeChatChanges), and what pin rollback removes when the rows that established them
   // are discarded; a revert also takes each surviving pin's base from here.
   declaredPins(chatId: number): Map<WorkpieceId, ChatGadgetPinRecord> {
-    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let messages = [...this.storage.chats.list(
+        {prefix: chatKeyPrefix(chatId), start: this.#epochStart(chatId)})];
     let statuses = chatChangeStatuses(messages);
     let declared = new Map<WorkpieceId, ChatGadgetPinRecord>();
     for (let msg of messages) {
