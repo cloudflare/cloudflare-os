@@ -208,5 +208,16 @@ describe("letting a guest on", () => {
     await expect(bare.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
     const empty = new UnifiApi(async () => ({ ok: true, status: 200, json: { action: "AUTHORIZE_GUEST_ACCESS" }, size: 0 }), HOME.hostId);
     await expect(empty.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+    // A grant without the method, start and expiry the API always gives proves nothing either.
+    const partial = new UnifiApi(async () => ({ ok: true, status: 200, json: { grantedAuthorization: {} }, size: 0 }), HOME.hostId);
+    await expect(partial.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+  });
+
+  it("ends a guest's access only when UniFi answers with the access it ended", async () => {
+    const { api } = setup();
+    await api.authorizeGuest(HOME.siteId, HOME.guestId, { timeLimitMinutes: 60 });
+    await api.revokeGuest(HOME.siteId, HOME.guestId);
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.revokeGuest(HOME.siteId, HOME.guestId)).rejects.toMatchObject({ kind: "protocol" });
   });
 });

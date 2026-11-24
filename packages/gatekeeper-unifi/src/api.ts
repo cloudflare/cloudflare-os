@@ -201,22 +201,36 @@ export class UnifiApi {
   /** Authorizes a guest client. */
   /**
    * Authorizes a guest client.
-   * @throws UnifiError (protocol) unless UniFi answers with the grant it made: a bare success, from
-   * a proxy say, doesn't show the guest was let on.
+   * @throws UnifiError (protocol) unless UniFi answers with the grant it made (see `#receipt`).
    */
   async authorizeGuest(siteId: string, clientId: string, limits: GuestLimitsBody): Promise<void> {
-    const receipt = await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
-      { action: "AUTHORIZE_GUEST_ACCESS", ...limits });
-    const granted = receipt && typeof receipt === "object" ? (receipt as Record<string, unknown>).grantedAuthorization : undefined;
-    if (!granted) throw new UnifiError({ kind: "protocol", message: "UniFi's answer didn't include the guest's new access." });
-    parseGuestAuthorization(true, granted);
+    this.#receipt(await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
+      { action: "AUTHORIZE_GUEST_ACCESS", ...limits }), "grantedAuthorization", "the guest's new access");
   }
 
-  /** Ends a guest client's authorization. */
+  /**
+   * Ends a guest client's access.
+   * @throws UnifiError (protocol) unless UniFi answers with the access it ended (see `#receipt`).
+   */
   async revokeGuest(siteId: string, clientId: string): Promise<void> {
-    await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
-      { action: "UNAUTHORIZE_GUEST_ACCESS" });
+    this.#receipt(await this.#json("network", "POST", `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}/actions`,
+      { action: "UNAUTHORIZE_GUEST_ACCESS" }), "revokedAuthorization", "the access it ended");
   }
+
+  /**
+   * Checks a guest action's receipt names the authorization it changed, with the method, start and
+   * expiry the API always gives: a bare or partial success, from a proxy say, doesn't show the
+   * change was made.
+   */
+  #receipt(body: unknown, key: "grantedAuthorization" | "revokedAuthorization", what: string): void {
+    const value = body && typeof body === "object" ? (body as Record<string, unknown>)[key] : undefined;
+    const authorization = value && typeof value === "object" ? value as Record<string, unknown> : null;
+    const parsed = authorization ? parseGuestAuthorization(key === "grantedAuthorization", authorization) : null;
+    if (!parsed || typeof authorization!.authorizationMethod !== "string" || !parsed.authorizedAt || !parsed.expiresAt) {
+      throw new UnifiError({ kind: "protocol", message: `UniFi's answer didn't include ${what}.` });
+    }
+  }
+
 
   /** A site's networks (VLANs). */
   async listLanNetworks(siteId: string): Promise<UnifiLanNetwork[]> {

@@ -599,23 +599,24 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     if (existing?.identity.mode === "direct") {
       const before = existing.identity;
       // Bindings keep the console's ID across a reconnect, so it must prove it's the same console,
-      // or they'd follow whatever now answers at the URL: each application that identified itself
-      // before, and still runs, by the same hardware as before -- the NVR for Protect, the gateway
-      // for Network, since one in common doesn't make the other the same. One that never said who
-      // it was when it connected has nothing to compare against.
+      // or they'd follow whatever now answers at the URL: every application that identified itself
+      // before, by the same hardware as before -- the NVR for Protect, the gateway for Network,
+      // since one in common doesn't make the other the same. One that doesn't answer now proves
+      // nothing, and its pin must not be lost. One that never said who it was when it connected
+      // has nothing to compare against.
       const pinned = APPS.filter(app => before.appMacs[app].length > 0);
       if (pinned.length === 0) {
         throw new ConnectRefusal("This connection never confirmed which console it reaches, so it can't be " +
           "reconnected in place. Remove it and connect the console again.");
       }
-      const unconfirmed = new ConnectRefusal("Couldn't confirm that the address still reaches the same console. Try again in a moment.");
       for (const app of pinned) {
-        if (facts.appMacs[app].length > 0 && !sameConsole(before.appMacs[app], facts.appMacs[app])) {
+        if (facts.appMacs[app].length === 0) {
+          throw new ConnectRefusal("Couldn't confirm that the address still reaches the same console. Try again in a moment.");
+        }
+        if (!sameConsole(before.appMacs[app], facts.appMacs[app])) {
           throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
         }
-        if (facts.apps[app] && facts.appMacs[app].length === 0) throw unconfirmed;
       }
-      if (!pinned.some(app => facts.appMacs[app].length > 0)) throw unconfirmed;
       return {
         credentials,
         identity: { ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs },
