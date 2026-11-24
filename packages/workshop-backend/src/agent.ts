@@ -1948,6 +1948,11 @@ async function runAgentPass(
         }
         let newContent = sessionContent.get(id)?.get(filename);
         if (oldContent === newContent) continue;
+        if (withheldFiles.has(`${id}:${filename}`)) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; read the file`);
+          continue;
+        }
         if ((newContent !== undefined && typeof newContent !== "string") ||
             (oldContent !== undefined && typeof oldContent !== "string")) {
           fileDiffParts.push(`${filename}: binary content changed`); continue;
@@ -2006,6 +2011,11 @@ async function runAgentPass(
     if (files === undefined) filesRead.set(workpieceId, files = new Map());
     files.set(filename, oid);
   };
+
+  // The files a withheld change wrote to (see blockedInput, below), as `<workpiece>:<filename>`.
+  // A diff of one, the withheld change's own or a later one's, would quote what the model must
+  // not be shown again, so it is replaced by a note and the model's knowledge of the file dropped.
+  let withheldFiles = new Set<string>();
 
   // A gadget pin is where its file knowledge stops being checked against committed code (from
   // here on reads are session-served and editFile skips the oid gate), so the stamped entries it
@@ -2327,14 +2337,6 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  // Count across the whole replay, not just the latest upload batch. PDFs also count on some
-  // providers; conservatively include candidate parts even if their headers later rule them out.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
-    ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
-        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
-    : 0), 0);
-  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
-
   // What a request that AI Gateway Guardrails blocked had newly carried (see
   // AiChatMessageBody.blockedInput). A request that shows it to the model again is blocked
   // again, so replay withholds it: a user's message, edits or call is left out, and an agent step
@@ -2342,6 +2344,16 @@ async function runAgentPass(
   // bindings and change numbers stay as the log has them.
   let blockedInput = new Set(chatMessages.flatMap(
       msg => msg.type === "error" ? msg.blockedInput ?? [] : []));
+
+  // Count across the whole replay, not just the latest upload batch, less the withheld messages,
+  // whose attachments are not sent. PDFs also count on some providers; conservatively include
+  // candidate parts even if their headers later rule them out.
+  const attachmentImageCount = chatMessages.reduce((count, msg) => count +
+    (msg.type === "message" && !blockedInput.has(msg.sequence)
+    ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
+        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
+    : 0), 0);
+  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
 
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
@@ -2869,14 +2881,12 @@ async function runAgentPass(
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
-            diff = applyReplayedChange(msg.change, isUserActivity);
             if (withheld) {
-              // The model is not shown this diff (see the end of the loop), so it no longer
-              // knows the files it changed, as when a diff is too large to show.
               for (let [id, files] of Object.entries(msg.change)) {
-                for (let [filename] of files) filesRead.get(Number(id))?.delete(filename);
+                for (let [filename] of files) withheldFiles.add(`${id}:${filename}`);
               }
             }
+            diff = applyReplayedChange(msg.change, isUserActivity);
           }
           if (isUserActivity) {
             // Surface everything the user did in this batch as one synthetic observation:

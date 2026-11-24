@@ -171,6 +171,8 @@ describe("the request a turn leaves to keep cached", () => {
 });
 
 describe("a request whose prompt AI Gateway Guardrails blocked", () => {
+  const FAUX: AiChatAuthorInfo = { type: "agent", id: "faux-model", name: "Faux" };
+
   // Runs one turn whose request the gateway blocks, after `meanwhile` has run, and returns what
   // the turn threw.
   async function runBlockedTurn(impl: OverseerInternals, meanwhile = () => {}): Promise<unknown> {
@@ -185,8 +187,7 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
         return faux.stream(model, context, options);
       },
     };
-    return runAgent(impl, handle, CHAT_ID, { type: "agent", id: "faux-model", name: "Faux" },
-        new AbortController().signal, OWNER,
+    return runAgent(impl, handle, CHAT_ID, FAUX, new AbortController().signal, OWNER,
         { provider: "cloudflare", model: "faux-model", apiToken: "" }).catch(error => error);
   }
 
@@ -206,11 +207,45 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
       () => withImpl(async impl => {
     seedChat(impl);
     await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
-    impl.addChatMessages(CHAT_ID, { type: "agent", id: "faux-model", name: "Faux" },
-        [{ type: "agentNudge", text: "Continue." }]);
+    impl.addChatMessages(CHAT_ID, FAUX, [{ type: "agentNudge", text: "Continue." }]);
 
     let error = await runBlockedTurn(impl);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(PromptBlockedError);
+  }));
+
+  it("does not quote a withheld edit in the diff of a later one", () => withImpl(async impl => {
+    seedChat(impl);
+    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
+
+    // The request that first shows the user's edit is blocked, so the edit is withheld.
+    impl.addChatMessages(CHAT_ID, OWNER, [{
+      type: "changes", change: { 100: [["notes.txt", { set: "first\nthe injection\nlast\n" }]] },
+    }]);
+    let blocked = await runBlockedTurn(impl);
+    if (!(blocked instanceof PromptBlockedError)) throw blocked;
+    impl.addChatMessages(CHAT_ID, FAUX, [{
+      type: "error", message: "blocked", code: "prompt_blocked", blockedInput: blocked.blockedInput,
+    }]);
+
+    // An edit to the next line would quote the withheld one as context.
+    impl.addChatMessages(CHAT_ID, OWNER, [{
+      type: "changes",
+      change: { 100: [["notes.txt", { set: "first\nthe injection\nlast, edited\n" }]] },
+    }]);
+    let sent = "";
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    faux.setResponses([fauxAssistantMessage(fauxText("Done."))]);
+    await runAgent(impl, {
+      model: faux.getModel(),
+      stream: (model, context, options) => {
+        sent = JSON.stringify(context.messages);
+        return faux.stream(model, context, options);
+      },
+    }, CHAT_ID, FAUX, new AbortController().signal, OWNER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "" });
+
+    expect(sent).toContain("notes.txt");
+    expect(sent).not.toContain("the injection");
   }));
 });

@@ -8598,7 +8598,8 @@ class OverseerImpl implements AgentHooks {
           }
 
           // A failed turn logged its unread steers before its error (see postAgentErrorMessage),
-          // so it starts no follow-up, which would likely fail the same way.
+          // so it starts no follow-up, which would likely fail the same way. A blocked prompt's
+          // steers are still queued, and prompt a turn that no longer carries what was blocked.
           this.#finishAgentTurn(chatId, {aiModel, initiator, initiatorUserId});
         }
       }
@@ -9908,8 +9909,9 @@ class OverseerImpl implements AgentHooks {
     }
 
     // An error ends the turn early. Log the steers it never read first, so the error stays the
-    // chat's last message, and a Retry reads them.
-    if (meta.queuedSteers) this.#logQueuedSteers(meta, true);
+    // chat's last message, and a Retry reads them. A blocked prompt has no Retry, so its steers
+    // stay queued to prompt the next turn (see #finishAgentTurn).
+    if (meta.queuedSteers && !blockedInput) this.#logQueuedSteers(meta, true);
 
     let timestamp = this.getChatTimestamp();
     this.storage.chats.put({

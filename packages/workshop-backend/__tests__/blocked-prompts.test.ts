@@ -53,11 +53,11 @@ describe("unansweredInput", () => {
     ))).toEqual([1]);
   });
 
-  it("leaves out what an earlier block names, and keeps the steer that block never read", () => {
+  it("leaves out what an earlier block names, and keeps what that request never carried", () => {
     expect(carried(log(
       [AGENT, TOOL_STEP],                                       // 0
       [USER, said("The injection")],                            // 1
-      [USER, { type: "message", message: "Never mind", steered: true }],  // 2: logged unread
+      [USER, { type: "changes" }],                              // 2: made while it was out
       [AGENT, { type: "error", message: "blocked", code: "prompt_blocked", blockedInput: [1, 0] }],
       [USER, said("Try this instead")],                         // 4
     ))).toEqual([4, 2]);
