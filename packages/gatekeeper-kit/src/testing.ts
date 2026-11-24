@@ -125,6 +125,11 @@ class HarnessQueue extends RpcTarget implements ApprovalQueue {
     return undefined;
   }
 
+  // The harness drives no fetch through a caller's policy.
+  async getFetcher(): Promise<Fetcher> {
+    throw new Error("getFetcher() is not supported by the branch harness.");
+  }
+
   async getBranch(): Promise<BranchView> {
     return this.#view;
   }
