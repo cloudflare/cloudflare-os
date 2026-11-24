@@ -55,7 +55,7 @@ import { readFileWindow, type LineSource } from "./line-window";
 import {
   ELIDED_FILE_IMAGE, OVERFLOW_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
   MAX_FILE_IMAGE_BYTES, MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT,
-  admittedImageDimensions, fileImageDescription, readFileImage, withImageDimensions,
+  FileImageValidationError, admittedImageDimensions, fileImageDescription, readFileImage, withImageDimensions,
 } from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
@@ -2701,6 +2701,10 @@ async function runAgentPass(
                 case "readFile": {
                   if (toolCall.image && !sawRevertedContent(msgIndex)) {
                     const image = replayFileImages.get(toolCall);
+                    if (image instanceof FileImageValidationError) {
+                      toolOutput = {text: `${image}`, isError: true};
+                      break;
+                    }
                     if (image instanceof Error) throw image;
                     if (image) {
                       let reads = sentImageReads.get(msg.sequence);

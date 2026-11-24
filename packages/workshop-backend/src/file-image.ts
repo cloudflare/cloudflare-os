@@ -155,20 +155,23 @@ export function fileImageMimeType(reader: BlobReader): string | undefined {
   return mimeType;
 }
 
+/** Expected size/header rejection, distinct from a failed blob read or replay bug. */
+export class FileImageValidationError extends Error {}
+
 /** Load pixels after count/byte checks and optional header-only admission, such as visual token cost. */
 export function readFileImage(
     reader: BlobReader, mimeType = fileImageMimeType(reader),
     admit?: (image: ImageContent) => boolean): ImageContent | undefined {
   if (mimeType === undefined) return undefined;
   if (reader.size > MAX_FILE_IMAGE_BYTES) {
-    throw new Error("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
+    throw new FileImageValidationError("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
   }
   // OpenAI's original/auto detail rejects images above 30,000 32px patches rather than
   // resizing them. Bound resolution before persisting a successful read. Preserve original
   // bytes here; fileImageDescription explains provider resizing before coordinate use.
   const dimensions = inlineChatAttachmentImageDimensions(mimeType, reader, 8000, 30_000);
   if (!dimensions) {
-    throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
+    throw new FileImageValidationError("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
   }
   const image = withImageDimensions({type: "image", data: "", mimeType}, dimensions);
   if (admit && !admit(image)) return undefined;

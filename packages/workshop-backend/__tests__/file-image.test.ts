@@ -634,17 +634,45 @@ describe("images read from a worktree", () => {
       faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]);
       await runAgent(impl, {model: {...faux.getModel(), input: ["text"]}, stream: faux.stream}, chatId,
         AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "fixture", apiToken: "", contextWindow: 8_000_000});
-      for (let retry = 0; retry < 2; ++retry) {
-        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
-        const {requests} = await turn(impl, chatId, []);
-        expect(results(requests[0])[0]).toMatchObject({isError: true});
-        expect(JSON.stringify(results(requests[0]))).toContain(kind === "oversize" ? "4 MiB" : "8000 pixels");
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (let retry = 0; retry < 2; ++retry) {
+          impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
+          const {requests} = await turn(impl, chatId, []);
+          expect(results(requests[0])[0]).toMatchObject({isError: true});
+          expect(JSON.stringify(results(requests[0]))).toContain(kind === "oversize" ? "4 MiB" : "8000 pixels");
+        }
+        impl.addChatMessages(chatId, USER, [{type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+        const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+        await scriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Earlier invalid image omitted."))]);
+        expect(checkpoints).toHaveBeenCalledOnce();
+        expect(errors.mock.calls.map(([entry]) => (entry as Record<string, unknown>).event))
+          .not.toContain("agent.tool.call.replay.failed");
+      } finally {
+        errors.mockRestore();
       }
-      impl.addChatMessages(chatId, USER, [{type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
-      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
-      await scriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Earlier invalid image omitted."))]);
-      expect(checkpoints).toHaveBeenCalledOnce();
     }));
+
+  it("keeps unexpected image blob replay failures in the error log", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await turn(impl, chatId, [[read()]]);
+    const open = impl.openBlob.bind(impl);
+    vi.spyOn(impl, "openBlob").mockImplementation(oid => {
+      if (oid === blob.oid) throw new Error("Fixture blob unavailable");
+      return open(oid);
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      const {requests} = await turn(impl, chatId, []);
+      expect(results(requests[0])[0]).toMatchObject({isError: true});
+      expect(JSON.stringify(results(requests[0]))).toContain("Fixture blob unavailable");
+      expect(errors.mock.calls.map(([entry]) => (entry as Record<string, unknown>).event))
+        .toContain("agent.tool.call.replay.failed");
+    } finally {
+      errors.mockRestore();
+    }
+  }));
 
   it.each(["dimensions", "legacy", "unavailable"])("bounds blob opens across a long image history (%s)", mode =>
     inKernel(crypto.randomUUID(), async impl => {
