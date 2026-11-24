@@ -494,7 +494,7 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
     using app = await ws.createGadget("App", undefined, "APP");
     const upload = {oid: await ws.uploadBlob(new TextEncoder().encode("chat A notes")),
       mimeType: "text/plain", name: "notes.txt"};
-    const chatA = await ws.newChat("A", null, undefined, [upload]);
+    const chatA = await ws.newChat("A", null, {attachments: [upload]});
     const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
     if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
     const attachmentId = message.attachments[0].id;

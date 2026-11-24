@@ -15,10 +15,8 @@ import { Brain, DotsThree, File as FileIcon } from "@phosphor-icons/react";
 import { RpcStub } from "capnweb";
 import type {
   AiChatAuthorInfo,
-  CapsuleSpecifier,
-  ChatAttachmentHandle,
+  ChatMessageOptions,
   GatekeeperClient,
-  MessageFormatRef,
   OutputFormatOffer,
   Overseer,
   SlashCommandChoice,
@@ -65,6 +63,8 @@ import {
 } from "./composerDocument";
 import { useComposerResources } from "./useComposerResources";
 import { useComposerEditorLayout } from "./useComposerEditorLayout";
+import { FocusChip } from "../../gadget-focus/FocusChip";
+import { messageFocusOf, type FocusOffer } from "../../gadget-focus/paneFocus";
 import { appendDictatedText, useComposerDictation } from "./useComposerDictation";
 import styles from "./ChatComposer.module.css";
 
@@ -86,6 +86,7 @@ export const ChatComposer = ({
   createCapsuleGatekeeper,
   getOverseer,
   onSend,
+  focusOffer,
   isAgentActive,
   models,
   selectedModel,
@@ -123,10 +124,13 @@ export const ChatComposer = ({
   onSend: (
     message: string | SlashCommandRequest,
     modelId: string | null,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    options: ChatMessageOptions,
   ) => Promise<void> | void;
+  /**
+   * What the user is focused on, sent with the message unless they dismiss its chip for that
+   * message. Offer only a focus the message's chat accepts. A slash command never carries it.
+   */
+  focusOffer?: FocusOffer;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: SelectedModel;
@@ -210,6 +214,11 @@ export const ChatComposer = ({
     }));
   };
   const [isSending, setIsSending] = useState(false);
+  // The focus offer the user dismissed for the message being written.
+  const [dismissedFocusOffer, setDismissedFocusOffer] = useState<number | null>(null);
+  const offeredFocus = focusOffer && focusOffer.offerId !== dismissedFocusOffer && !selectedSlashCommand
+    ? focusOffer
+    : undefined;
   // Set by Stop until the agent goes idle: a steer sent meanwhile would be refused.
   const [isStopping, setIsStopping] = useState(false);
   if (isStopping && !isAgentActive) setIsStopping(false);
@@ -572,11 +581,15 @@ export const ChatComposer = ({
       const { message, capsules: capsuleSpecifiers, formats: formatRefs } =
         submissionResult.submission;
 
-      await onSend(message, selectedModel?.id ?? null,
-          capsuleSpecifiers,
-          readyAttachments.length ? readyAttachments : undefined,
-          formatRefs);
+      await onSend(message, selectedModel?.id ?? null, {
+        capsules: capsuleSpecifiers,
+        attachments: readyAttachments.length ? readyAttachments : undefined,
+        formats: formatRefs,
+        focus: offeredFocus && typeof message === "string" ? messageFocusOf(offeredFocus.focus) : undefined,
+      });
       clearSentAttachments(attachmentsSnapshot);
+      // A dismissal is for one message.
+      if (mountedRef.current) setDismissedFocusOffer(null);
       if (!completeDraftSend(draftSend)) return;
       replaceComposerDocument({ text: "", capsules: [], formats: [], command: null });
     } finally {
@@ -813,6 +826,19 @@ export const ChatComposer = ({
           disabled={isSending}
           onRemove={removeAttachment}
         />
+        {offeredFocus && (
+          <div className="flex px-3 pt-2.5">
+            <FocusChip
+              focus={offeredFocus.focus}
+              disabled={isSending}
+              onDismiss={() => {
+                setDismissedFocusOffer(offeredFocus.offerId);
+                // The button goes away with the chip, so keyboard focus moves on to the message.
+                composerTextareaRef.current?.focus();
+              }}
+            />
+          </div>
+        )}
         {/* Textarea */}
         <div className="relative px-4 pb-2.5 pt-3">
           {slashCommandPicker.popup}

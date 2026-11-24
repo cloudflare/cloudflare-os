@@ -1,7 +1,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
-import { openAgentSession } from "../src/agent-session.js";
+import { openAgentSession, type WorkshopAgentSession } from "../src/agent-session.js";
 import { ADMIN_USERNAME, startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel } from "../src/mock-model.js";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
@@ -18,11 +18,21 @@ const models = scriptedModelRouter();
 const TRUSTED_HOST = "gadgets-test.example";
 const TARGET = `https://${TRUSTED_HOST}/restricted-web-fetch`;
 const OTHER_HOST = "other.example";
+const THIRD_HOST = "third.example";
 const PAGE = "The trusted page.";
+// Pages that redirect, to the URL each names.
+const REDIRECTS: Record<string, string> = {
+  [`https://${TRUSTED_HOST}/moved`]: `https://${OTHER_HOST}/moved-here`,
+  [`https://${OTHER_HOST}/approved-redirect`]: `https://${THIRD_HOST}/landing`,
+};
 const webRequests: string[] = [];
-const web: Handler = url => {
-  if (url.host !== TRUSTED_HOST && url.host !== OTHER_HOST) return null;
+const userAgents = new Set<string | null>();
+const web: Handler = (url, _method, headers) => {
+  if (![TRUSTED_HOST, OTHER_HOST, THIRD_HOST].includes(url.host)) return null;
   webRequests.push(url.href);
+  userAgents.add(headers.get("user-agent"));
+  const location = REDIRECTS[url.href];
+  if (location !== undefined) return new Response(null, { status: 302, headers: { location } });
   return new Response(PAGE, { headers: { "content-type": "text/plain" } });
 };
 const network = new NetworkInterceptor({ handlers: [models.handler, web] });
@@ -55,6 +65,12 @@ const fetchStep = (id: string, url: string) => ({ toolCall: { id, name: "webFetc
 const toolResult = (id: string, content: string) => ({ messages: expect.arrayContaining([
   expect.objectContaining({ role: "tool", tool_call_id: id, content: expect.stringContaining(content) }),
 ]) });
+
+// The workspace's record of each request it allowed, oldest first.
+const fetchObservations = async (session: WorkshopAgentSession) =>
+  (await session.listActions({ filter: "observation" })).entries
+      .filter(entry => entry.description.title.startsWith("Fetched "))
+      .map(entry => entry.description.description).toReversed();
 
 const openSession = (model: RoutedScriptedModel) => openAgentSession(harness.url, {
   modelId: SCRIPTED_MODEL_ID,
@@ -97,6 +113,8 @@ it("fetches only from trusted hosts once the workspace has read restricted data"
     expect(model.requests[2]).toMatchObject(toolResult("fetch-trusted", PAGE));
     expect(model.requests[3]).toMatchObject(toolResult("fetch-other", `may only fetch from ${TRUSTED_HOST}`));
     expect(webRequests).toEqual([TARGET]);
+    expect(userAgents).toEqual(new Set(["Cloudflare-OS/1.0"]));
+    expect(await fetchObservations(session)).toEqual([`GET \`${TARGET}\``]);
   } finally {
     await admin.setRestrictedWebFetchHosts([]);
   }
@@ -146,6 +164,70 @@ it("fetches a URL the trusted hosts refuse once the user approves it, if the adm
       .toEqual(expect.objectContaining({ url: approved, state: "pending" }));
     expect(webRequests.filter(url => url === approved)).toHaveLength(1);
     expect(webRequests).not.toContain(denied);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
+  }
+});
+
+it("asks the user about a redirect the trusted hosts refuse, then fetches where it led", async () => {
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const moved = `https://${TRUSTED_HOST}/moved`;
+    const destination = REDIRECTS[moved];
+    const model = models.script([
+      READ_RESTRICTED,
+      fetchStep("ask", moved),
+      fetchStep("fetch-destination", destination),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    const asked = await session.runTurn("Read the restricted value, then fetch the page.");
+
+    // The turn ends on the card, with no further model request.
+    expect(asked.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(2);
+    const requests = asked.history.filter(msg => msg.type === "webFetchRequest");
+    expect(requests).toEqual([expect.objectContaining({ url: destination, state: "pending" })]);
+    expect(webRequests).toContain(moved);
+    expect(webRequests).not.toContain(destination);
+
+    const resumed = await session.approveWebFetchRequestsAndWait([requests[0].requestId]);
+    expect(resumed.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(4);
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-destination", PAGE));
+    expect(webRequests).toContain(destination);
+    // One record per request the workspace allowed.
+    expect(await fetchObservations(session)).toEqual([`GET \`${moved}\``, `GET \`${destination}\``]);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
+    await admin.setRestrictedWebFetchHosts([]);
+  }
+});
+
+it("reports where an approved URL's redirects led", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const approved = `https://${OTHER_HOST}/approved-redirect`;
+    const landing = REDIRECTS[approved];
+    const model = models.script([
+      READ_RESTRICTED,
+      fetchStep("ask", approved),
+      fetchStep("fetch-approved", approved),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    const asked = await session.runTurn("Read the restricted value, then fetch the page.");
+    const [request] = asked.history.filter(msg => msg.type === "webFetchRequest");
+    expect(request).toMatchObject({ url: approved, state: "pending" });
+
+    // The approval covers the URL's redirects, though the landing page's host is not trusted.
+    const resumed = await session.approveWebFetchRequestsAndWait([request.requestId]);
+    expect(resumed.outcome).toEqual({ status: "completed" });
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-approved", `url: ${landing}\n`));
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-approved", PAGE));
+    expect(webRequests).toEqual(expect.arrayContaining([approved, landing]));
+    expect(await fetchObservations(session)).toEqual([`GET \`${approved}\``]);
   } finally {
     await admin.setRestrictedWebFetchApprovals(false);
   }

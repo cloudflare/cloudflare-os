@@ -157,8 +157,8 @@ In the age of AI, this change is critically important. On one hand, AI empowers 
 
 ### Sandboxed and secure by default
 
-Each Gadget runs in a secure sandbox that prevents it from talking to the internet at all without your explicit consent. In particular:
-* The server runs in a [Dynamic Worker](https://blog.cloudflare.com/dynamic-workers/) which has had its access to the internet disabled. It can only communicate with specific external resources that you have explicitly designated, via [Workers Bindings](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
+Each Gadget runs in a secure sandbox that prevents it from sending your data to the internet without your explicit consent. In particular:
+* The server runs in a [Dynamic Worker](https://blog.cloudflare.com/dynamic-workers/) which has had its internet access carefully limited. By default, it can read public web sites, but not write to them, nor access any private data. To go beyond that, you must explicitly grant access to specific resources, via [Workers Bindings](https://blog.cloudflare.com/workers-environment-live-object-bindings/).
 * The client code runs in a sandboxed iframe. This iframe can communicate with its server only via a Cap'n Web RPC session provided over `postMessage()` to the parent frame. The iframe is otherwise blocked from accessing the internet (to the maximum extent allowed by browsers, via `Content-Security-Policy` and iframe sandbox settings).
 
 ### Capability-based access control

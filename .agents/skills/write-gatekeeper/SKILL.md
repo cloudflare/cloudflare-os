@@ -436,6 +436,21 @@ Because the callback is a persistent stub tied to a session, the gatekeeper neve
 
 When defining a session interface with hooks, it's important to include comments that clearly state when a method expects to be passed a *persistent* stub created with `ctx.restore()`, as opposed to a regular RpcStub. The caller needs to do extra work to make sure the stub they provide you is persistent.
 
+## Hosting untrusted code: the caller's fetch policy
+
+A gatekeeper that runs code on the caller's behalf somewhere outside the workspace, such as a container, must hold that code's outbound requests to the workspace's fetch policy. `ApprovalQueue.getFetcher()` returns a `Fetcher` that applies it: GET and HEAD to public `https:` URLs, no credentials, an allowlist of headers, and only the admin's trusted hosts once the workspace has observed restricted data. Install it as the hosted code's egress. The design as built is [`docs/unified-fetch.md`](../../../docs/unified-fetch.md); the doc comment on `getFetcher()` in `gatekeeper.ts` is the contract.
+
+The `Fetcher` is only for code the gatekeeper hosts. The gatekeeper's own calls to its vendor keep using its own `fetch()`.
+
+- **The workspace decides, except for trusted hosts.** The workspace decides each request by its policy as it stands then, so a change of policy reaches a stored `Fetcher` at its next request. The exception is the deployment admin's trusted hosts (package registries and the like), which the `Fetcher` allows itself, with no round trip, by the list as it stood when it was taken: a container's `npm install` stays fast.
+- **Store it to install it.** It can be kept in the gatekeeper's Durable Object storage and used from later calls. It has no dispose.
+- **One per execution.** A `Fetcher` taken in a session for an agent's code execution serves that execution: once the execution ends, the workspace refuses the requests it decides (trusted hosts still work). So take a new one in each such session that runs hosted code, such as each container command, and install it in place of the last. The test gatekeeper's `fetchUrl()` (`packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts`) shows the pattern.
+- **One workspace per environment.** An environment a `Fetcher` filters holds one workspace's data under that workspace's `Fetcher`. Never let two workspaces share one: workspace B's unrestricted `Fetcher` would let workspace A's restricted data out. To reuse an environment for another workspace, discard everything it retained first.
+- **Refusals are responses.** A refused request gets a 403 (405 for the method) with the reason as a `text/plain` body and a `Cloudflare-OS-Fetch-Refused` header of `denied` or `approval-requested`, so a container's HTTP client sees an ordinary error response. On `approval-requested` the hosted code need do nothing: the user has been asked, the agent's turn ends, and the agent runs the command again once the user approves. Approvals exist only for agent callers; a gadget, hook or user caller gets `denied`.
+- **Redirects.** A 3xx goes back to the hosted code to follow, and its next hop is checked like any request. A user-approved URL's redirects are the exception: the `Fetcher` follows them itself, and the response's `Cloudflare-OS-Fetch-Url` header names the URL it came from, since its `url` and `redirected` describe only the request sent.
+- **What is recorded.** The workspace records each request it allows, attributed to the session's caller. Requests to trusted hosts leave no record. The gatekeeper's own `authorizeObservation()` for the call (the command it ran, for a container) still records the call itself.
+- `getFetcher()` throws once the session has ended, like `requireLive()`.
+
 ## Reviewing a gatekeeper
 
 Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
@@ -458,6 +473,7 @@ Reviews tend to stop at general correctness. The most important review is of the
   - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
 - **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
+- **Hosted code.** A gatekeeper that runs untrusted code sends that code's egress through a `getFetcher()` `Fetcher`, takes a new one for each agent execution it runs code for, and keeps each environment to one workspace (see [Hosting untrusted code](#hosting-untrusted-code-the-callers-fetch-policy)).
 
 ## Tips
 
