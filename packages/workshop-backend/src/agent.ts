@@ -242,7 +242,10 @@ type AgentProgress = {
   executionId: string;
   barrierSequence: number;
   // Freeze replay admission after decode recovery; only explicit new reads can add pixels.
-  fileImagesAfterRecovery?: Set<string>;
+  fileImagesAfterRecovery?: {
+    reads: ReadonlyMap<number, ReadonlySet<string>>;
+    newReadsFrom: number;
+  };
 };
 
 /**
@@ -448,8 +451,8 @@ export interface AgentHooks {
    */
   loadChatHistory(chatId: number): ChatHistory;
 
-  /** Omit rejected file-image pixels on future replay, preserving the original immutable files. */
-  rejectChatFileImages(chatId: number, oids: ReadonlySet<string>): void;
+  /** Omit only included read IDs, keyed by message sequence; preserve the immutable files. */
+  rejectChatFileImages(chatId: number, reads: ReadonlyMap<number, ReadonlySet<string>>): void;
 
   /** Publish a compaction checkpoint: later history loads start from it. */
   commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void;
@@ -2494,20 +2497,35 @@ async function runAgentPass(
   const maxFileImages = Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount));
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
   const replayFileImages = new Set<AiToolCall>();
-  const sentFileImages = new Set<string>();
-  const recoverFileImages = (error: unknown, oids: ReadonlySet<string>): boolean => {
-    if (!(error instanceof AgentTurnError) || oids.size === 0 ||
+  const sentImageReads = new Map<number, Set<string>>();
+  const liveImageReads = new Set<string>();
+  const firstLiveSequence = hooks.nextChatSequencePeek(chatId);
+  const recoverFileImages = (
+      error: unknown, reads: ReadonlyMap<number, ReadonlySet<string>>, includeLive = false): boolean => {
+    if (!(error instanceof AgentTurnError) ||
         !isImageDecodeError(error.message, error.statusCode)) return false;
-    // The provider may not name the bad part. Conservatively omit these observations, never
-    // blacklist or change files: a later explicit read can show healthy pixels again.
-    hooks.rejectChatFileImages(chatId, oids);
+    const rejected = new Map(reads);
+    if (includeLive && liveImageReads.size > 0) {
+      // Live results acquire their message sequences at the persistence barrier. Resolve their
+      // exact records only on this rare failure path, never rescan the chat inside the write.
+      for (const msg of hooks.loadChatHistory(chatId).chatMessages) {
+        if (msg.type !== "message" || msg.sequence < firstLiveSequence) continue;
+        const ids = new Set((msg.toolCalls ?? []).flatMap(call => call.toolName === "readFile" &&
+          call.image && !call.error && liveImageReads.has(call.toolCallId) ? [call.toolCallId] : []));
+        if (ids.size) rejected.set(msg.sequence, ids);
+      }
+    }
+    if (rejected.size === 0) return false;
+    // The provider may not name the bad part. Omit only the included read observations, never
+    // other reads of the same blob: reverting a newer batch must preserve an earlier good read.
+    hooks.rejectChatFileImages(chatId, rejected);
     if (progress.fileImagesAfterRecovery) return false;
     // Removing rejected pixels must not promote older, previously elided images into the one
     // recovery request. Preserve the chosen window, including unsummarized compaction images.
-    progress.fileImagesAfterRecovery = new Set([
-      ...[...replayFileImages].flatMap(call => call.toolName === "readFile" && call.image ? [call.image.oid] : []),
-      ...sentFileImages,
-    ]);
+    progress.fileImagesAfterRecovery = {
+      reads: new Map([...sentImageReads, ...rejected]),
+      newReadsFrom: hooks.nextChatSequencePeek(chatId),
+    };
     return true;
   };
   let fileImageCount = 0, fileImageBytes = 0;
@@ -2517,7 +2535,9 @@ async function runAgentPass(
     if (msg.type !== "message" || sawRevertedContent(index)) continue;
     for (const call of (msg.toolCalls ?? []).toReversed()) {
       if (call.toolName !== "readFile" || !call.image || call.image.rejected || call.error) continue;
-      if (progress.fileImagesAfterRecovery && !progress.fileImagesAfterRecovery.has(call.image.oid)) continue;
+      const recovery = progress.fileImagesAfterRecovery;
+      if (recovery && msg.sequence < recovery.newReadsFrom &&
+          !recovery.reads.get(msg.sequence)?.has(call.toolCallId)) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;
       replayFileImages.add(call);
       ++fileImageCount;
@@ -2649,7 +2669,11 @@ async function runAgentPass(
                   if (toolCall.image && !sawRevertedContent(msgIndex)) {
                     const image = replayFileImages.has(toolCall)
                       ? readFileImage(await hooks.openBlob(toolCall.image.oid)) : undefined;
-                    if (image) sentFileImages.add(toolCall.image.oid);
+                    if (image) {
+                      let reads = sentImageReads.get(msg.sequence);
+                      if (!reads) sentImageReads.set(msg.sequence, reads = new Set());
+                      reads.add(toolCall.toolCallId);
+                    }
                     toolOutput = image ? {text: "Image file.", image} :
                         {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
@@ -3670,8 +3694,7 @@ async function runAgentPass(
               const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
               if (oid === undefined) throw new Error("Image file has no immutable blob.");
               const image = readFileImage(file.source.reader, mimeType)!;
-              sentFileImages.add(oid);
-              progress.fileImagesAfterRecovery?.add(oid);
+              liveImageReads.add(toolCallId);
               ++stepImageCount;
               stepImageBytes += byteLength;
               ++fileImageCount;
@@ -4761,10 +4784,7 @@ async function runAgentPass(
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
         abortSignal.throwIfAborted();
-        const summarizedImages = new Set(chatMessages.flatMap(msg =>
-          msg.type !== "message" || msg.sequence >= compactedTo ? [] :
-            (msg.toolCalls ?? []).flatMap(call => call.toolName === "readFile" &&
-              call.image && replayFileImages.has(call) ? [call.image.oid] : [])));
+        const summarizedImages = new Map([...sentImageReads].filter(([sequence]) => sequence < compactedTo));
         if (recoverFileImages(error, summarizedImages)) return {type: "rejectedFileImages"};
         if (compactionTurn) throw error;
         logger.warn("compaction failed; running the turn without it", {
@@ -4884,7 +4904,7 @@ async function runAgentPass(
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
     // Completed steps are durable: reload their projection without re-executing effects.
-    if (recoverFileImages(error, sentFileImages)) return {type: "rejectedFileImages"};
+    if (recoverFileImages(error, sentImageReads, true)) return {type: "rejectedFileImages"};
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }

@@ -304,12 +304,44 @@ describe("images read from a worktree", () => {
     }
   }));
 
+  it("preserves earlier omitted observations of a blob when the rejected batch is reverted", () => inKernel(crypto.randomUUID(), async impl => {
+    const newer = [
+      ...[1, 2, 3].map(index => new Uint8Array([...PNG, index])), PNG, PNG.slice(0, 33),
+    ];
+    const {chatId} = await setup(impl, PNG, newer.map((bytes, index) => [`new-${index}.png`, bytes]));
+    await turn(impl, chatId, [[read()]]);
+    const older = impl.loadChatHistory(chatId).chatMessages.findLast(msg =>
+      msg.type === "message" && msg.toolCalls?.some(call => call.toolName === "readFile"))!;
+    const newerFrom = impl.nextChatSequencePeek(chatId);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Read the newer batch"}]);
+    await turn(impl, chatId, newer.map((_, index) => [read({filename: `new-${index}.png`})]));
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 invalid image data"}),
+      fauxAssistantMessage(fauxText("Omitted the failed batch")),
+    ]);
+    expect(results(requests[0])[0].content).toEqual([{type: "text", text: ELIDED_FILE_IMAGE}]);
+    expect(results(requests[1])[0].content).toEqual([{type: "text", text: ELIDED_FILE_IMAGE}]);
+    const savedOlder = impl.loadChatHistory(chatId).chatMessages.find(msg => msg.sequence === older.sequence);
+    expect(savedOlder?.type === "message" && savedOlder.toolCalls?.some(call =>
+      call.toolName === "readFile" && call.image?.rejected)).toBe(false);
+    const latestSameBlob = impl.loadChatHistory(chatId).chatMessages.flatMap(msg =>
+      msg.type === "message" ? msg.toolCalls ?? [] : []).findLast(call =>
+        call.toolName === "readFile" && call.input.filename === "new-3.png");
+    expect(latestSameBlob).toHaveProperty("image.rejected", true);
+    impl.addChatMessages(chatId, USER, [{type: "revert", revertFrom: newerFrom},
+      {type: "message", message: "Continue from before that batch"}]);
+    const replay = await turn(impl, chatId, []);
+    expect(results(replay.requests[0])[0].content).toContainEqual({type: "image", mimeType: "image/png", data: PNG.toBase64()});
+  }));
+
   it.each([
-    ["openai", "image_parse_error"], ["openai", "invalid_image_format"],
-    ["openai", "invalid_image_mode"], ["openai", "invalid_base64_image"],
-    ["openai", "unsupported_image_media_type"], ["openai", "empty_image_file"],
-    ["google", "Unable to process input image"],
-  ] as const)("recovers through the real %s provider adapter: %s", (provider, errorCode) => inKernel(crypto.randomUUID(), async impl => {
+    ["openai", "image_parse_error", 200], ["openai", "invalid_image_format", 200],
+    ["openai", "invalid_image_mode", 200], ["openai", "invalid_base64_image", 200],
+    ["openai", "unsupported_image_media_type", 200], ["openai", "empty_image_file", 200],
+    ["openai", "invalid_image_format", 400], ["openai", "invalid_image_mode", 422],
+    ["google", "Unable to process input image", 400],
+  ] as const)("recovers through the real %s provider adapter: %s (%s)", (provider, errorCode, status) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
     const config: AiModelConfig = {provider, model: provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture"};
@@ -326,6 +358,9 @@ describe("images read from a worktree", () => {
       if (requests.length !== 2) return faux.stream(model, context, options);
       const response = realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
         body = await new Request(input, init).text();
+        if (provider === "openai" && status !== 200) return Response.json({error: {
+          code: errorCode, message: "The supplied image could not be parsed.", type: "invalid_request_error", param: null,
+        }}, {status});
         return provider === "openai"
           ? new Response([
             {type: "response.created", response: {id: "resp_fixture", status: "in_progress", output: []}},
@@ -340,7 +375,10 @@ describe("images read from a worktree", () => {
     await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
     expect(body).toContain(bytes.toBase64());
     expect(providerError).toContain(errorCode);
-    if (provider === "openai") expect(handle.lastResponse?.status).toBe(200);
+    if (provider === "openai") {
+      if (status === 200) expect(handle.lastResponse?.status).toBe(200);
+      else expect(providerError).toContain(`OpenAI API error (${status}):`);
+    }
     expect(requests).toHaveLength(3);
     expect(results(requests[2])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
@@ -390,6 +428,8 @@ describe("images read from a worktree", () => {
     ["image_parse_error: Could not process image", 200, true],
     ["Error Code image_parse_error: Could not process image", 200, true],
     ["invalid_image_mode: Could not process image", 200, true],
+    ['OpenAI API error (400): {"code":"invalid_image_format","message":"The supplied image could not be parsed."}', 400, true],
+    ['OpenAI API error (503): {"code":"invalid_image_format","message":"The supplied image could not be parsed."}', 503, false],
     ["image_content_policy_violation: Could not process image", 200, false],
     ["failed_to_download_image: Could not process image", 200, false],
     [JSON.stringify({error: {code: 400, message: "Unable to process input image"}}), undefined, true],

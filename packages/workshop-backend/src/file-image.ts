@@ -18,6 +18,12 @@ export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history.
 /** Pixels omitted after a provider rejected image data; the original file is unchanged. */
 export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider could not decode an image in this request. Convert or replace the file before reading it again.";
 
+const ImageDataErrorCode = z.enum([
+  "image_parse_error", "invalid_image_format", "invalid_image_mode", "invalid_base64_image",
+  "unsupported_image_media_type", "empty_image_file",
+]);
+const OpenAIImageError = z.object({code: ImageDataErrorCode});
+
 // Gemini's SDK can report a nested JSON error without an HTTP-status prefix.
 const NestedImageError = z.object({error: z.object({
   code: z.union([z.literal(400), z.literal(422)]), message: z.string(),
@@ -26,9 +32,14 @@ const NestedImageError = z.object({error: z.object({
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
 export function isImageDecodeError(message: string, status: number | undefined): boolean {
   // Responses can fail within an HTTP 200 SSE stream; its explicit error code is authoritative.
-  if (/^(?:Error Code )?(?:image_parse_error|invalid_image_format|invalid_image_mode|invalid_base64_image|unsupported_image_media_type|empty_image_file):/.test(message)) return true;
+  const streamCode = /^(?:Error Code )?([a-z0-9_]+):/.exec(message)?.[1];
+  if (ImageDataErrorCode.safeParse(streamCode).success) return true;
   try {
-    const nested = NestedImageError.safeParse(JSON.parse(message));
+    // The same adapter wraps a structured JSON error on HTTP 400/422 instead of SSE failure.
+    const envelope = /^OpenAI API error \((?:400|422)\):\s*/.exec(message);
+    const body: unknown = JSON.parse(envelope ? message.slice(envelope[0].length) : message);
+    if (envelope && OpenAIImageError.safeParse(body).success) return true;
+    const nested = NestedImageError.safeParse(body);
     if (nested.success) {
       status = nested.data.error.code;
       message = nested.data.error.message;

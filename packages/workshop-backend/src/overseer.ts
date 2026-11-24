@@ -8347,13 +8347,14 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
-  rejectChatFileImages(chatId: number, oids: ReadonlySet<string>): void {
+  rejectChatFileImages(chatId: number, reads: ReadonlyMap<number, ReadonlySet<string>>): void {
     this.ctx.storage.transactionSync(() => {
-      for (const msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-        if (msg.type !== "message") continue;
+      for (const [sequence, ids] of reads) {
+        const msg = this.storage.chats.get(chatKey(chatId, sequence));
+        if (msg?.type !== "message") continue;
         let changed = false;
         for (const call of msg.toolCalls ?? []) {
-          if (call.toolName === "readFile" && call.image && oids.has(call.image.oid) && !call.image.rejected) {
+          if (call.toolName === "readFile" && call.image && ids.has(call.toolCallId) && !call.image.rejected) {
             call.image.rejected = true;
             changed = true;
           }
