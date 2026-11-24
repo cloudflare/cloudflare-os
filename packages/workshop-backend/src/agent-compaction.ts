@@ -267,8 +267,8 @@ export function estimateImageTokens(message: Message, model?: Model<Api>): numbe
       if (dimensions) {
         const [width, height] = dimensions;
         const scale = Math.min(1, resize[0] / width, resize[0] / height);
-        patches = Math.ceil(Math.max(1, Math.floor(width * scale)) / 32) *
-          Math.ceil(Math.max(1, Math.floor(height * scale)) / 32);
+        // Keep fractional edges until patch coverage so pixel rounding cannot undercount a patch.
+        patches = Math.ceil(width * scale / 32) * Math.ceil(height * scale / 32);
       }
       // The provider's second resize cannot exceed this patch budget. Its ceiling is a safe
       // estimate without duplicating the pixel-perfect resize algorithm needed for coordinates.

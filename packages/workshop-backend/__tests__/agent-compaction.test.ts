@@ -258,6 +258,7 @@ describe("image context estimates", () => {
     {id: "gpt-4o-mini", width: 4096, height: 1024, tokens: 25_501},
     {id: "gpt-4.1-mini", width: 1024, height: 1024, tokens: 1659},
     {id: "gpt-4.1-mini", width: 6400, height: 4800, tokens: 4977},
+    {id: "gpt-4.1-mini", width: 6400, height: 202, tokens: 312},
     {id: "openai/gpt-4.1-mini-2025-04-14", width: 4800, height: 6400, tokens: 4977},
     {id: "gpt-5.2", width: 6400, height: 4800, tokens: 3687},
     {id: "gpt-5.4", width: 6400, height: 4800, tokens: 3000},
