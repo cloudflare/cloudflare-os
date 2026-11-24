@@ -104,7 +104,10 @@ The existing `readFile` tool also displays PNG, JPEG and WebP worktree files as 
 subject to the file-image byte, dimension and context budgets. Successful reads retain immutable
 blob metadata, so replay shows the same source after edits or deletion. If a single tool-result
 batch mixes too much text with pixels to compact further, replay omits older file pixels with a
-reread marker; it preserves the text and never repeats completed tool effects.
+reread marker; it preserves the text and never repeats completed tool effects. If the provider
+still reports a context overflow, the existing saved-step loop retries once without file pixels
+for that execution. This does not mark valid images as rejected or remove their durable references;
+a second overflow surfaces, and a fresh turn can inspect the images again.
 
 Original bytes do not imply original model coordinates: providers may resize images. File-image
 results identify source dimensions. Known, versioned Claude models also receive the documented

@@ -9,7 +9,7 @@ import {runAgent} from "../src/agent";
 import {getModel} from "../src/ai-models";
 import {estimateImageTokens, getModelTokenLimits} from "../src/agent-compaction";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
-import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageDescription, withImageDimensions, isImageDecodeError, readFileImage} from "../src/file-image";
+import {ELIDED_FILE_IMAGE, OVERFLOW_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageDescription, withImageDimensions, isImageDecodeError, readFileImage} from "../src/file-image";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -403,12 +403,15 @@ describe("images read from a worktree", () => {
         sum + estimateImageTokens(message, handle.model), 0)).toBeLessThanOrEqual(budget);
     }));
 
-  it.each([false, true])("elides file pixels when a mixed image/text batch cannot compact further (replay=%s)", replay =>
+  it.each([
+    {replay: false, overflow: false}, {replay: true, overflow: false},
+    {replay: false, overflow: true}, {replay: true, overflow: true},
+  ])("elides or recovers an unsplittable mixed image/text batch: %j", ({replay, overflow}) =>
     inKernel(crypto.randomUUID(), async impl => {
       const bytes = PNG.slice();
       new DataView(bytes.buffer).setUint32(16, 1920);
       new DataView(bytes.buffer).setUint32(20, 1080);
-      const logs = Array.from({length: 5}, (_, index) => [`log${index}.txt`,
+      const logs = Array.from({length: overflow ? 6 : 5}, (_, index) => [`log${index}.txt`,
         new TextEncoder().encode("log entry with several fields ".repeat(1100).slice(0, 32100))] as [string, Uint8Array]);
       const {chatId} = await setup(impl, bytes, logs);
       const calls = [read(), read(), ...logs.map(([filename]) => read({filename}))];
@@ -421,22 +424,38 @@ describe("images read from a worktree", () => {
       const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
         models: [{id: "fixture", contextWindow: 8_000_000}]});
       const requests: Message[][] = [];
+      const realStream = handle.stream;
+      let overflowRequests = 0, rejectedBody = "";
       handle.stream = (model, context, options) => {
         requests.push(structuredClone(context.messages));
+        if (overflow && overflowRequests === 0 && results(context.messages).length === calls.length &&
+            results(context.messages).some(result => result.content.some(part => part.type === "image"))) {
+          ++overflowRequests;
+          return realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+            rejectedBody = await new Request(input, init).text();
+            return Response.json({error: {code: "context_length_exceeded", type: "invalid_request_error",
+              message: "Your input exceeds the context window of this model"}}, {status: 400});
+          }});
+        }
         return faux.stream(model, context, options);
       };
       const effects = vi.spyOn(impl, "commitAgentStep");
       faux.setResponses([...(replay ? [] : [fauxAssistantMessage(calls, {stopReason: "toolUse"})]),
         ...Array.from({length: 6}, () => fauxAssistantMessage(fauxText("Summary or completed response")))]);
       await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
-      const retained = requests.findLast(messages => results(messages).length === 7)!;
+      const retained = requests.findLast(messages => results(messages).length === calls.length)!;
       expect(retained).toBeDefined();
-      expect(results(retained).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(1);
-      expect(JSON.stringify(results(retained))).toContain(ELIDED_FILE_IMAGE);
-      expect(results(retained).filter(result => JSON.stringify(result.content).includes("log entry with several fields"))).toHaveLength(5);
+      expect(results(retained).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(overflow ? 0 : 1);
+      expect(JSON.stringify(results(retained))).toContain(overflow ? OVERFLOW_FILE_IMAGE : ELIDED_FILE_IMAGE);
+      expect(results(retained).filter(result => JSON.stringify(result.content).includes("log entry with several fields"))).toHaveLength(logs.length);
       const recorded = effects.mock.calls.flatMap(call => call[2]).flatMap(message =>
         message.type === "message" ? message.toolCalls ?? [] : []).filter(call => call.toolName === "readFile");
-      expect(recorded).toHaveLength(replay ? 0 : 7);
+      expect(recorded).toHaveLength(replay ? 0 : calls.length);
+      if (overflow) {
+        expect(overflowRequests).toBe(1);
+        expect(rejectedBody).toContain(bytes.toBase64());
+        for (const [filename] of logs) expect(rejectedBody).toContain(filename);
+      }
       impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
       faux.setResponses(Array.from({length: 6}, () => fauxAssistantMessage(fauxText("Done"))));
       await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
@@ -444,6 +463,41 @@ describe("images read from a worktree", () => {
       expect([...impl.storage.chats.list()].flatMap(message => message.type === "message" ?
         message.toolCalls ?? [] : []).some(call => call.toolName === "readFile" && call.image?.rejected)).toBe(false);
     }));
+
+  it.each([false, true])("bounds overflow recovery and subsequent explicit reads (second overflow=%s)", secondOverflow => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+    const failure = () => fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 context_length_exceeded"});
+    faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"}), failure(),
+      ...(secondOverflow ? [failure()] : [fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))])]);
+    const requests: Message[][] = [];
+    const running = runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+      requests.push(structuredClone(context.messages));
+      return faux.stream(model, context, options);
+    }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "fixture", apiToken: "", contextWindow: 8_000_000});
+    if (secondOverflow) await expect(running).rejects.toThrow("context_length_exceeded");
+    else await running;
+    expect(requests).toHaveLength(secondOverflow ? 3 : 4);
+    expect(results(requests[1])[0].content.some(part => part.type === "image")).toBe(true);
+    expect(results(requests[2])[0].content).toEqual([{type: "text", text: OVERFLOW_FILE_IMAGE}]);
+    const reads = impl.loadChatHistory(chatId).chatMessages.flatMap(message =>
+      message.type === "message" ? message.toolCalls ?? [] : []).filter(call => call.toolName === "readFile");
+    expect(reads).toHaveLength(secondOverflow ? 1 : 2);
+    expect(reads.every(call => !call.image?.rejected)).toBe(true);
+    for (const message of results(requests.at(-1)!)) expect(message.content).toEqual([{type: "text", text: OVERFLOW_FILE_IMAGE}]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Inspect the original in a fresh turn"}]);
+    expect(results((await turn(impl, chatId, [])).requests[0])[0].content).toContainEqual({
+      type: "image", mimeType: "image/png", data: PNG.toBase64(),
+    });
+  }));
+
+  it("surfaces a text-only context overflow without adding a file-image retry", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([], {
+      stopReason: "error", errorMessage: "400 context_length_exceeded without file pixels",
+    })])).rejects.toThrow("context_length_exceeded without file pixels");
+  }));
 
   it("shows the source-to-Claude coordinate transform on live reads and replay", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice();
@@ -481,6 +535,8 @@ describe("images read from a worktree", () => {
     ["claude-opus-4-7-20261001", 3840, 2160, "2576 x 1449"],
     ["claude-opus-4-7", 3840, 2160, "2576 x 1449"],
     ["claude-sonnet-4-5", 1075, 1520, "924 x 1307"],
+    ["claude-haiku-4-5", 6272, 3138, "1568 x 784"],
+    ["claude-haiku-4-5", 3138, 6272, "784 x 1568"],
     ["claude-opus-5-5", 1000, 1000, "1000 x 1000"],
   ] as const)("describes documented native coordinate frames: %s %sx%s", (id, width, height, frame) => {
     const {model} = getModel({} as Cloudflare.Env, {provider: "anthropic", model: id, apiToken: "fixture"}, USER);
@@ -989,7 +1045,10 @@ describe("images read from a worktree", () => {
     expect(impl.loadChatHistory(chatId).checkpoint).toBeUndefined();
   }));
 
-  it("reruns explicit native /compact without rejected pixels through the real Anthropic adapter", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([
+    ["Could not process image", REJECTED_FILE_IMAGE],
+    ["prompt is too long: 210000 tokens > 200000 maximum", OVERFLOW_FILE_IMAGE],
+  ])("reruns native /compact without file pixels after %s", (errorMessage, marker) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
     await turn(impl, chatId, [[read()]]);
@@ -1003,7 +1062,7 @@ describe("images read from a worktree", () => {
     handle.stream = (model, context, options) => realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
       bodies.push(await new Request(input, init).text());
       if (bodies.length === 1) return Response.json({type: "error", error: {
-        type: "invalid_request_error", message: "Could not process image",
+        type: "invalid_request_error", message: errorMessage,
       }}, {status: 400});
       const events = [
         {type: "message_start", message: {id: "msg_fixture", type: "message", role: "assistant", model: config.model,
@@ -1022,7 +1081,7 @@ describe("images read from a worktree", () => {
     expect(bodies[0]).toContain(bytes.toBase64());
     expect(bodies[0]).toContain('"compaction"');
     expect(bodies[1]).not.toContain(bytes.toBase64());
-    expect(bodies[1]).toContain(REJECTED_FILE_IMAGE);
+    expect(bodies[1]).toContain(marker);
     expect(impl.loadChatHistory(chatId).checkpoint?.summary).toBe("Image content omitted.");
   }));
 

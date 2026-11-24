@@ -15,6 +15,9 @@ export const MAX_FILE_IMAGE_CONTEXT_COUNT = 4;
 /** Replacement for pixels discarded from model history. The immutable file is still readable. */
 export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history. Read the file again if needed.";
 
+/** A bounded overflow retry omits file pixels for this execution without rejecting the source. */
+export const OVERFLOW_FILE_IMAGE = "Image pixels omitted for this turn after the provider's context limit was exceeded. The original file is unchanged. Reduce text/image context before rereading in a fresh turn.";
+
 /** A text-only model keeps the immutable reference for a later switch to a vision model. */
 export const UNSUPPORTED_FILE_IMAGE = "Image pixels omitted because the selected model does not support images. Switch to a vision model to inspect this file.";
 
@@ -52,15 +55,21 @@ export function fileImageDescription(image: ImageContent, model: Model<Api>): st
   if (!fits(width, height)) {
     // Search the long edge, preserving aspect ratio, exactly as Claude's reference helper.
     const landscape = width >= height, long = Math.max(width, height), short = Math.min(width, height);
+    const aspectRatio = long / short;
+    // Python's round() in the documented helper uses ties-to-even, unlike Math.round().
+    const shortEdge = (value: number) => {
+      const scaled = value / aspectRatio, floor = Math.floor(scaled);
+      return Math.max(1, scaled - floor === 0.5 ? floor + floor % 2 : Math.round(scaled));
+    };
     let low = 1, high = long;
     while (low + 1 < high) {
       const mid = Math.floor((low + high) / 2);
-      if (fits(mid, Math.max(1, Math.round(mid * short / long)))) low = mid;
+      if (fits(mid, shortEdge(mid))) low = mid;
       else high = mid;
     }
     [resizedWidth, resizedHeight] = landscape
-      ? [low, Math.max(1, Math.round(low * short / long))]
-      : [Math.max(1, Math.round(low * short / long)), low];
+      ? [low, shortEdge(low)]
+      : [shortEdge(low), low];
   }
   return source + ` Claude content frame: ${resizedWidth} x ${resizedHeight} pixels before bottom/right padding.` +
     ` Map model pixel (x,y) to source (x * ${width}/${resizedWidth}, y * ${height}/${resizedHeight}); do not scale by padded dimensions.` +

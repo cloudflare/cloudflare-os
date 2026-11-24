@@ -10,7 +10,7 @@ import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/g
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
 import {
-  getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
+  getSystemMessageText, isContextOverflow, isRetryableAssistantError, toToolDeclaration,
 } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, SystemMessage, TextContent, ToolCall,
@@ -53,7 +53,7 @@ import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
-  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
+  ELIDED_FILE_IMAGE, OVERFLOW_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
   MAX_FILE_IMAGE_BYTES, MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT,
   admittedImageDimensions, fileImageDescription, readFileImage, withImageDimensions,
 } from "./file-image";
@@ -236,13 +236,15 @@ export type ChatHistory = {
 type AgentPassOutcome =
   | {type: "finished"; lastRequest?: CachedRequest}
   | {type: "reloadForCompaction"}
-  | {type: "rejectedFileImages"}
+  | {type: "retryWithoutFileImages"}
   | {type: "compacted"; checkpoint: CompactionCheckpoint}
   | {type: "transientFailure"; error: AgentTurnError};
 
 type AgentProgress = {
   executionId: string;
   barrierSequence: number;
+  // One context-overflow recovery per execution, without durably rejecting valid pixels.
+  omitFileImagesAfterOverflow?: boolean;
   // Freeze replay admission after decode recovery; only explicit new reads can add pixels.
   fileImagesAfterRecovery?: {
     reads: ReadonlyMap<number, ReadonlySet<string>>;
@@ -1730,7 +1732,7 @@ export async function runAgent(
       hooks.emitChatStreamEvent(chatId, {type: "streamReset"});
       await scheduler.wait(1000 * retries);
     }
-    if (outcome.type === "rejectedFileImages") {
+    if (outcome.type === "retryWithoutFileImages") {
       hooks.emitChatStreamEvent(chatId, {type: "streamReset"});
       abortSignal.throwIfAborted();
       continue; // An explicit /compact must retry its projection too.
@@ -2507,7 +2509,7 @@ async function runAgentPass(
       attachmentImageBytes += part.data.length * 3 / 4 - (part.data.endsWith("==") ? 2 : part.data.endsWith("=") ? 1 : 0);
     }
   }
-  const maxFileImages = handle.model.input.includes("image")
+  const maxFileImages = handle.model.input.includes("image") && !progress.omitFileImagesAfterOverflow
     ? Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount)) : 0;
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
   // Compaction cannot split a tool-result batch. Reserve a quarter of the input window for
@@ -2517,6 +2519,11 @@ async function runAgentPass(
   const sentImageReads = new Map<number, Set<string>>();
   const liveImageReads = new Set<string>();
   const firstLiveSequence = hooks.nextChatSequencePeek(chatId);
+  const recoverFileImageOverflow = (message: AssistantMessage, includesFileImages: boolean): boolean => {
+    if (!includesFileImages || progress.omitFileImagesAfterOverflow || !isContextOverflow(message)) return false;
+    progress.omitFileImagesAfterOverflow = true;
+    return true;
+  };
   const recoverFileImages = (
       error: unknown, reads: ReadonlyMap<number, ReadonlySet<string>>, includeLive = false): boolean => {
     if (!(error instanceof AgentTurnError)) return false;
@@ -2714,7 +2721,8 @@ async function runAgentPass(
                     }
                     toolOutput = image ? {text: fileImageDescription(image, handle.model), image} :
                         {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE :
-                          !handle.model.input.includes("image") ? UNSUPPORTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
+                          !handle.model.input.includes("image") ? UNSUPPORTED_FILE_IMAGE :
+                          progress.omitFileImagesAfterOverflow ? OVERFLOW_FILE_IMAGE : ELIDED_FILE_IMAGE};
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
                       resolveToolWorkpieceId(toolCall.input.workpiece));
                     markFileRead(workpieceId, toolCall.input.filename, toolCall.observedOid);
@@ -3759,11 +3767,11 @@ async function runAgentPass(
               if (oid === undefined) throw new Error("Image file has no immutable blob.");
               const imageReference: NonNullable<Extract<AiToolCall, {toolName: "readFile"}>["image"]> = {oid, byteLength};
               const notes = {image: imageReference, ...file.oid ? {observedOid: file.oid} : {}};
-              if (!handle.model.input.includes("image")) {
+              if (!handle.model.input.includes("image") || progress.omitFileImagesAfterOverflow) {
                 if (byteLength <= MAX_FILE_IMAGE_BYTES) imageReference.dimensions =
                   inlineChatAttachmentImageDimensions(mimeType, file.source.reader, 8000, 30_000);
                 markFileRead(resolved.workpieceId, filename, file.oid);
-                return toolResult(UNSUPPORTED_FILE_IMAGE, notes);
+                return toolResult(progress.omitFileImagesAfterOverflow ? OVERFLOW_FILE_IMAGE : UNSUPPORTED_FILE_IMAGE, notes);
               }
               if (maxFileImages === 0 || byteLength > maxFileImageBytes) {
                 throw new Error("Image cannot fit alongside this conversation's attachments. Use a smaller image or a new chat.");
@@ -4875,7 +4883,13 @@ async function runAgentPass(
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
         abortSignal.throwIfAborted();
         const summarizedImages = new Map([...sentImageReads].filter(([sequence]) => sequence < compactedTo));
-        if (recoverFileImages(error, summarizedImages)) return {type: "rejectedFileImages"};
+        if (supportsAnthropicCompaction(handle.model) && error instanceof Error) {
+          const failure: AssistantMessage = {...makeReplayAssistantMessage([], handle.model, 0),
+            stopReason: "error", errorMessage: error.message};
+          if (recoverFileImageOverflow(failure, summarizedImages.size > 0)) return {type: "retryWithoutFileImages"};
+          if (progress.omitFileImagesAfterOverflow && isContextOverflow(failure)) throw error;
+        }
+        if (recoverFileImages(error, summarizedImages)) return {type: "retryWithoutFileImages"};
         if (compactionTurn) throw error;
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
@@ -4883,16 +4897,17 @@ async function runAgentPass(
       } finally {
         emitStreamEvent({type: "compacted"});
       }
-    } else if (!compactionTurn) {
+    } else if (!compactionTurn && fileImageCount > 0) {
       // A single assistant record and all its tool results are indivisible. If that tail
       // combines large text and pixels, another summary cannot free space. Elide only file
       // images from the projection, oldest first, using the same estimate as compaction.
       // Durable observations stay intact, and no completed tool or external effect is rerun.
       const systemTokens = Math.ceil(getSystemMessageText(systemMessage).length / 4);
       const estimate = () => estimateProjectionTokens(projection, handle.model) + systemTokens;
-      const measuredRatio = Math.max(1, contextTokens / Math.max(1, estimate()));
+      let projectedTokens = estimate();
+      const measuredRatio = Math.max(1, contextTokens / Math.max(1, projectedTokens));
       for (const {message, sequence} of projection) {
-        if (!shouldCompactChat(estimate() * measuredRatio, inputBudget)) break;
+        if (!shouldCompactChat(projectedTokens * measuredRatio, inputBudget)) break;
         if (sequence === undefined || message.role !== "toolResult" ||
             !sentImageReads.get(sequence)?.has(message.toolCallId)) continue;
         const image = message.content.find(part => part.type === "image");
@@ -4905,6 +4920,7 @@ async function runAgentPass(
         fileImageBytes -= image.data.length * 3 / 4 -
             (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0);
         fileImageTokens -= imageTokens(image);
+        projectedTokens = estimate(); // At most one estimate per removed file image.
       }
     } else if (compactionTurn) {
       // An automatic attempt that finds no boundary just runs the turn, but `/compact` returns
@@ -5018,7 +5034,8 @@ async function runAgentPass(
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
     // Completed steps are durable: reload their projection without re-executing effects.
-    if (recoverFileImages(error, sentImageReads, true)) return {type: "rejectedFileImages"};
+    if (recoverFileImageOverflow(turnFailure, fileImageCount > 0)) return {type: "retryWithoutFileImages"};
+    if (recoverFileImages(error, sentImageReads, true)) return {type: "retryWithoutFileImages"};
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }
