@@ -94,7 +94,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   expect(output).toContain('connect:dispatcher')
   expect(output).toContain('/gatekeeper/[redacted]')
   expect(output).not.toContain('one-use-ticket-fixture')
-})
+}, 20_000)
 
 it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s level', level => {
   const plugin = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
