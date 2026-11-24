@@ -86,6 +86,7 @@ function connectingTo(connect: () => ExpenseLog): VerifierSession {
       newMessagePortRpcSession(port2, new FakeWorkshop(connect));
       return { client: await newMessagePortRpcSession<Workshop>(port1).gadget(), chatId: 1 };
     },
+    listActions: async () => ({ entries: [] }),
     connectionDrops: 0,
     readBlobText: async () => { throw new Error("readBlobText is not used by this test"); },
   };

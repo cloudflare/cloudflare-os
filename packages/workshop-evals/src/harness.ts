@@ -1,4 +1,4 @@
-import type { AgentTurnResult } from "@gadgets/integration-tests/agent-session";
+import type { AgentTurnResult, Connection } from "@gadgets/integration-tests/agent-session";
 import type { AiChatMessage } from "@gadgets/workshop-shared/api";
 import {
   attachHarnessRunToError, createHarness, normalizeHarnessRun, type JsonValue,
@@ -6,10 +6,13 @@ import {
 } from "vitest-evals";
 import { EVAL_AGENT_BUDGET_MS, EVAL_VERIFICATION_BUDGET_MS } from "./budgets.js";
 import { resolveEvalModel, type EvalIdentity } from "./config.js";
-import type { EvalCheck, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult } from "./task.js";
+import {
+  usesThings, type EvalCheck, type EvalRunInput, type EvalRunOutput, type EvalTask,
+  type EvalTurnResult,
+} from "./task.js";
 import { measureHistory, toTranscriptEvents } from "./transcript.js";
 import {
-  addSkills, openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
+  addSkills, messageOptions, openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
 } from "./target.js";
 import { EvalVerifier } from "./verifier.js";
 
@@ -64,16 +67,20 @@ export function createWorkshopHarness(
       try {
         const agentTurnBudget = Math.floor(EVAL_AGENT_BUDGET_MS / task.turns.length);
         const verificationBudget = Math.floor(EVAL_VERIFICATION_BUDGET_MS / task.turns.length);
-        opened = await openLocalEvalTarget(access, model, agentTurnBudget, task.modelSettings);
+        const things = usesThings(task) ? new Map<string, Connection>() : undefined;
+        opened = await openLocalEvalTarget(
+            access, model, agentTurnBudget, task.modelSettings, things !== undefined);
 
         for (const turn of task.turns) {
           if (turn.skills !== undefined) await addSkills(opened.session, turn.skills);
+          const message = things && await messageOptions(opened.session, turn, things);
           const turnStartedAt = Date.now();
           const previousSequence = history.at(-1)?.sequence ?? -1;
           unrecordedPrompt = turn.prompt;
           const running = opened.session.runTurn(turn.prompt, {
             timeoutMs: agentTurnBudget,
             signal,
+            ...(message ? { message } : {}),
           });
           const result = await withTimeout(
               running, agentTurnBudget + verificationBudget,

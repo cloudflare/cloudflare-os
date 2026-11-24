@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentTurnOutcome } from "@gadgets/integration-tests/agent-session";
-import type { GatewayModelSettings } from "@gadgets/workshop-shared/api";
+import type { GadgetFocus, GatewayModelSettings } from "@gadgets/workshop-shared/api";
 import type { JsonValue } from "vitest-evals";
 import { z } from "zod";
 import type { EvalVerifier } from "./verifier.js";
@@ -36,14 +36,38 @@ export type EvalSkill = {
   instructions: string;
 };
 
+const THING_URL = /https:\/\/gadgets-test\.example\/things\/[\w-]+/g;
+
+/**
+ * The link to the Test Thing called `name`: a connection that holds a number, which the agent
+ * reads and asks to set (see gatekeeper-test in integration-tests). In a prompt it is a link the
+ * user pasted, which binds the Test Thing in the chat.
+ */
+export const thingUrl = (name: string) => `https://gadgets-test.example/things/${name}`;
+
+/** Where the Test Things linked in `prompt` stand in it. */
+export const linkedThings = (prompt: string) =>
+    [...prompt.matchAll(THING_URL)].map(({ 0: url, index }) => ({ url, position: index }));
+
+/**
+ * The Test Thing the user was viewing beside the chat when they sent a prompt, and the spot its
+ * UI reported there. Viewing it binds nothing: the chat holds it only if a prompt linked it.
+ */
+export type EvalFocus = { url: string; spot?: GadgetFocus };
+
 export type EvalTurn = {
   /** Skills the user adds to their Skills library before sending `prompt`, turning Skills on. */
   skills?: readonly EvalSkill[];
   prompt: string;
+  focus?: EvalFocus;
   verify(verifier: EvalVerifier): Promise<void>;
   /** Commit this turn, reload its Gadgets, then run these checks. */
   verifyAfterAccept?(verifier: EvalVerifier): Promise<void>;
 };
+
+/** Whether a task's turns involve a Test Thing, so that its Workshop needs their gatekeeper. */
+export const usesThings = (task: EvalTask) =>
+    task.turns.some(turn => turn.focus !== undefined || linkedThings(turn.prompt).length > 0);
 
 export type EvalTask = {
   id: string;
@@ -67,11 +91,11 @@ export function defineEvalTask(task: EvalTask): EvalTask {
 }
 
 /**
- * Hash what the agent was asked to do: each turn's prompt and the skills it adds, and the model
- * settings it runs under.
+ * Hash what the agent was asked to do: each turn's prompt, the skills it adds and what the user
+ * was viewing, and the model settings it runs under.
  */
 export function taskVersion(task: EvalTask): string {
-  const turns = task.turns.map(({ prompt, skills }) => ({ prompt, skills }));
+  const turns = task.turns.map(({ prompt, skills, focus }) => ({ prompt, skills, focus }));
   return createHash("sha256")
       .update(JSON.stringify(task.modelSettings === undefined
         ? turns : { turns, modelSettings: task.modelSettings }))

@@ -107,6 +107,17 @@ it("keeps model-supplied identifiers out of the document structure", () => {
   expect(markdown).toContain("## injected");
 });
 
+it("shows what a message's sender was viewing below the message", () => {
+  const markdown = renderTrajectories(report([
+    { type: "message", role: "user", content: "Change this to 17.", metadata: { focus: { gadgetId: 3, gadgetTitle: "Budget" } } },
+    { type: "message", role: "user", content: "Change it." },
+  ]));
+  expect(markdown.split("### Transcript\n\n")[1]?.trimEnd().split("\n\n")).toEqual([
+    "**user** `Change this to 17.`\nFocus: `{\"gadgetId\":3,\"gadgetTitle\":\"Budget\"}`",
+    "**user** `Change it.`",
+  ]);
+});
+
 it("puts each step's prompt tokens before the reply they paid for", () => {
   const markdown = renderTrajectories(report([
     { type: "message", role: "user", content: "Build it.", metadata: { sequence: 0 } },

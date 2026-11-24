@@ -25,7 +25,13 @@ export function toTranscriptEvents(history: readonly AiChatMessage[]): Transcrip
         : message.author.type === "agent" ? "assistant" : undefined;
       if (role === undefined) continue;
       if (message.message !== "") {
-        events.push({ type: "message", role, content: message.message, metadata });
+        // What the Workshop recorded the sender as viewing, which the model is told of after the
+        // message: without it a turn that ignored a focus reads like one that was sent none.
+        const focus = toJsonValue(message.focus);
+        events.push({
+          type: "message", role, content: message.message,
+          metadata: focus === undefined ? metadata : { ...metadata, focus },
+        });
       }
       if (role !== "assistant") continue;
       const calls = message.toolCalls ?? [];

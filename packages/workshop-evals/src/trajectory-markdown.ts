@@ -39,10 +39,14 @@ function value(json: JsonValue | undefined): string {
 
 function event(entry: TranscriptEvent): string {
   switch (entry.type) {
-    case "message":
+    case "message": {
       // Fenced rather than inlined: an agent's Markdown would otherwise add its own headings to
       // this document's structure.
-      return `**${entry.role}** ${value(entry.content)}`;
+      const said = `**${entry.role}** ${value(entry.content)}`;
+      const focus = entry.metadata?.focus;
+      // Compact, so a focus with no long text picked stays on its own line.
+      return focus === undefined ? said : `${said}\nFocus: ${value(JSON.stringify(focus))}`;
+    }
     case "tool_call": {
       const lines = [`→ ${value(entry.name)} ${value(entry.id)}`];
       for (const [key, argument] of Object.entries(entry.arguments ?? {})) {

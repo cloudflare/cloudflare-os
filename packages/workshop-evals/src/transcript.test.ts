@@ -54,6 +54,18 @@ it("normalizes Workshop messages and failed tools", () => {
   });
 });
 
+it("records what a message's sender was viewing", () => {
+  const focus = { gadgetId: 7, gadgetTitle: "Budget" };
+  const [focused, bare] = toTranscriptEvents([
+    { chatId: 1, sequence: 0, timestamp: new Date(0), author: user, type: "message",
+      message: "Change this to 17.", focus },
+    { chatId: 1, sequence: 1, timestamp: new Date(1), author: user, type: "message",
+      message: "Change it." },
+  ]);
+  expect(focused?.metadata).toMatchObject({ focus });
+  expect(bare?.metadata).not.toHaveProperty("focus");
+});
+
 it("keeps every model-visible input in the trajectory", () => {
   const history: AiChatMessage[] = [{
     chatId: 1,

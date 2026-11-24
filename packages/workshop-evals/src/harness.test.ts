@@ -36,6 +36,7 @@ const fakes = vi.hoisted(() => {
     denyWebFetchRequest: async () => { throw new Error("denyWebFetchRequest is not used by this test"); },
     listActions: async () => ({ entries: [] }),
     connectedAccount: () => { throw new Error("connectedAccount is not used by this test"); },
+    connect: async () => { throw new Error("connect is not used by this test"); },
     enableAmbientGatekeeper: async () => {
       throw new Error("enableAmbientGatekeeper is not used by this test");
     },
