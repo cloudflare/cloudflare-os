@@ -81,12 +81,6 @@ type ImageHeaderSource = Uint8Array | {
   read(offset: number, length: number): Uint8Array;
 };
 
-/** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */
-export function canInlineChatAttachmentImage(
-    mimeType: string, bytes: ImageHeaderSource, maxEdge = 8000, maxPatches = Infinity): boolean {
-  return inlineChatAttachmentImageDimensions(mimeType, bytes, maxEdge, maxPatches) !== undefined;
-}
-
 /** The admitted dimensions, reusable by callers that also need image token accounting. */
 export function inlineChatAttachmentImageDimensions(
     mimeType: string, bytes: ImageHeaderSource, maxEdge = 8000,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertChatAttachmentSize,
-  canInlineChatAttachmentImage,
+  inlineChatAttachmentImageDimensions,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
@@ -39,7 +39,7 @@ function imageHeader(format: string, width: number, height: number): {mimeType: 
   return {mimeType: "image/webp", bytes};
 }
 
-describe("canInlineChatAttachmentImage", () => {
+describe("inlineChatAttachmentImageDimensions", () => {
   it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "].flatMap(format => [
     {width: 1, height: 1, allowed: true},
     {width: 8000, height: 1, allowed: true},
@@ -51,26 +51,26 @@ describe("canInlineChatAttachmentImage", () => {
       const {mimeType, bytes} = imageHeader(format, width, height);
       // Views can start at a nonzero buffer offset (for example, a Node Buffer).
       const padded = new Uint8Array(bytes.length + 7); padded.set(bytes, 7);
-      expect(canInlineChatAttachmentImage(mimeType, padded.subarray(7))).toBe(allowed);
+      expect(inlineChatAttachmentImageDimensions(mimeType, padded.subarray(7))).toEqual(allowed ? [width, height] : undefined);
     },
   );
 
   it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "])("keeps truncated %s dimension metadata workspace-only", format => {
     const {mimeType, bytes} = imageHeader(format, 1, 1);
     const dimensionBytes = format === "png" ? 24 : format === "VP8L" ? 25 : bytes.length;
-    expect(canInlineChatAttachmentImage(mimeType, bytes)).toBe(true);
+    expect(inlineChatAttachmentImageDimensions(mimeType, bytes)).toEqual([1, 1]);
     for (let length = 0; length < dimensionBytes; ++length) {
-      expect(canInlineChatAttachmentImage(mimeType, bytes.subarray(0, length))).toBe(false);
+      expect(inlineChatAttachmentImageDimensions(mimeType, bytes.subarray(0, length))).toBeUndefined();
     }
   });
 
   it("does not inline zero-sized, unknown, or malformed image headers", () => {
     for (const format of ["png", "jpeg"]) {
       const {mimeType, bytes} = imageHeader(format, 0, 1);
-      expect(canInlineChatAttachmentImage(mimeType, bytes)).toBe(false);
+      expect(inlineChatAttachmentImageDimensions(mimeType, bytes)).toBeUndefined();
     }
-    expect(canInlineChatAttachmentImage("image/gif", new Uint8Array())).toBe(false);
-    expect(canInlineChatAttachmentImage("image/jpeg", Uint8Array.of(0xff, 0xd8, 0xff, 0xe1, 0, 0))).toBe(false);
+    expect(inlineChatAttachmentImageDimensions("image/gif", new Uint8Array())).toBeUndefined();
+    expect(inlineChatAttachmentImageDimensions("image/jpeg", Uint8Array.of(0xff, 0xd8, 0xff, 0xe1, 0, 0))).toBeUndefined();
   });
 
   it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "].flatMap(format => [
@@ -80,7 +80,7 @@ describe("canInlineChatAttachmentImage", () => {
   ].map(size => ({format, ...size}))))(
     "many-image request: $format $width×$height: inline=$allowed", ({format, width, height, allowed}) => {
       const {mimeType, bytes} = imageHeader(format, width, height);
-      expect(canInlineChatAttachmentImage(mimeType, bytes, 2000)).toBe(allowed);
+      expect(inlineChatAttachmentImageDimensions(mimeType, bytes, 2000)).toEqual(allowed ? [width, height] : undefined);
     },
   );
 });
