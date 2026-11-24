@@ -52,6 +52,25 @@ export function systemPromptOf(request: unknown): string {
   return system.content;
 }
 
+const TOOL_MESSAGES = z.object({
+  messages: z.array(z.object({
+    role: z.string(),
+    content: z.string().nullish(),
+    tool_call_id: z.string().optional(),
+  })),
+});
+
+/**
+ * What the model sees of the result of tool call `toolCallId`: the `tool` message that answers
+ * the call in the recorded agent request `request`, sent after the step that made the call.
+ */
+export function toolResultText(request: unknown, toolCallId: string): string {
+  const message = TOOL_MESSAGES.parse(request).messages
+      .find(entry => entry.role === "tool" && entry.tool_call_id === toolCallId);
+  if (message?.content == null) throw new Error(`No tool result for ${toolCallId}`);
+  return message.content;
+}
+
 export const SCRIPTED_MODEL_ID = "@cf/zai-org/glm-5.2";
 export const SCRIPTED_MODEL_PROFILE: AiChatAuthorInfo = {
   type: "agent",

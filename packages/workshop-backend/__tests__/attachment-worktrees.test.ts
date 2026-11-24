@@ -4,6 +4,8 @@ import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
 import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
+import {PromptBlockedError} from "../src/ai-invoke";
+import type {ModelHandle} from "../src/ai-models";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
@@ -174,6 +176,37 @@ describe("attachment worktree ingress", () => {
     expect([...impl.storage.gadgets.list()].filter(record => record.type === "worktree")).toHaveLength(1);
     expect(JSON.stringify(requests[0])).toContain("workspace file env.SCRATCH/input-2.txt");
     expect(JSON.stringify(fileToolResults(requests[1]))).toContain("uploaded");
+  }));
+
+  it("does not quote a withheld upload in the diff of a later edit to it", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const oid = impl.gitCache.writeBlob(new TextEncoder().encode("first\nthe injection\nlast\n")).oid;
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this",
+      {attachments: [{oid, name: "notes.txt", mimeType: "text/plain"}]});
+    const {worktreeId} = impl.getChatAgentContext(chatId).scratch!;
+
+    // AI Gateway Guardrails blocks the request that carries the upload, so its message is withheld.
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    faux.setResponses([fauxAssistantMessage(fauxText(""), {stopReason: "error", errorMessage: "424 Prompt blocked"})]);
+    const handle: ModelHandle = {model: faux.getModel(), stream: (model, context, options) => {
+      handle.lastResponse = {status: 424, promptBlocked: true};
+      return faux.stream(model, context, options);
+    }};
+    const blocked = await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""}).catch(error => error);
+    if (!(blocked instanceof PromptBlockedError)) throw blocked;
+    impl.postAgentErrorMessage(chatId, AUTHOR, "blocked", "prompt_blocked", blocked.blockedInput);
+
+    // The upload is the scratch worktree's base, with no change that records it. The user edits
+    // the line after the withheld one, which a diff would quote as context.
+    const {generation, revision} = impl.storage.chatMeta.get(chatId)!.codeBase ?? {generation: 0, revision: 0};
+    await impl.submitCodeChange(chatId, {generation, revision, clientId: "editor", seq: 1,
+      change: {[worktreeId]: [["notes.txt", {edit: [24, [0, ", edited"], 1]}]]},
+      pins: [{gadgetId: worktreeId, baseCommit: impl.getWorktreePinBase(worktreeId)!}]}, USER, "user-do");
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Go on.");
+    const requests = await scriptedTurn(impl, chatId, []);
+    expect(JSON.stringify(requests[0])).toContain("notes.txt");
+    expect(JSON.stringify(requests[0])).not.toContain("the injection");
   }));
 
   it("normalizes legacy source metadata without overwriting an already edited scratch file", () => inKernel(crypto.randomUUID(), async impl => {

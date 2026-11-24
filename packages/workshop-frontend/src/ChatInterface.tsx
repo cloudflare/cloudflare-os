@@ -6669,7 +6669,7 @@ function ChatInterface({
                                       </button>
                                     </Tooltip>
                                   )}
-                                  {isLast && msg.code !== "usage_limit" && (
+                                  {isLast && msg.code !== "usage_limit" && msg.code !== "prompt_blocked" && (
                                     <Tooltip content={msg.code === "stopped" ? "Continue where the agent stopped." : "Retry the last action."} asChild>
                                       <button
                                         type="button"

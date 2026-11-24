@@ -45,6 +45,22 @@ export function httpStatusFromError(errorMessage: string, response: ModelHandle[
 }
 
 /**
+ * A model request whose prompt AI Gateway Guardrails blocked (e.g. as a prompt injection). Every
+ * request that carries the same input is blocked the same way, so the overseer ends the turn
+ * with a "prompt_blocked" error that names the input, and replay withholds it from the model
+ * (see AiChatMessageBody.blockedInput).
+ */
+export class PromptBlockedError extends AgentTurnError {
+  /** The records the request carried that no answered request had (see unansweredInput). */
+  readonly blockedInput: number[];
+
+  constructor(message: string, statusCode: number | undefined, blockedInput: number[]) {
+    super(message, statusCode);
+    this.blockedInput = blockedInput;
+  }
+}
+
+/**
  * Run a single non-streaming-style completion against a ModelHandle and return the response
  * text. Used for one-shot calls: title generation, binding naming, compaction summaries, and
  * LanguageModelBinding.run. Requests thinking off unless asked (one-shots should be quick, and

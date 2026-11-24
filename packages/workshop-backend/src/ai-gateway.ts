@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider,
   AutoRouterPool, GatewayModel, GatewayModelMode, ModelKind, ReasoningLevel,
@@ -383,6 +384,32 @@ export async function getGatewayModels(env: Cloudflare.Env): Promise<GatewayMode
   let gateway = getAiGatewayConfig(env);
   if (!gateway) return null;
   return new GatewayModels(gateway, await readAdminConfig(env));
+}
+
+// AI Gateway reports a failure of its own, as distinct from a provider's, in one envelope on
+// every route and both transports: `{"success":false,"error":[{"code":2001,"message":"..."}]}`
+// beside other fields (measured 2026-11-23 for codes 2001 and 2009).
+const GATEWAY_ERROR = z.object({
+  success: z.literal(false),
+  error: z.array(z.object({ code: z.number() })),
+});
+
+// The code of a request whose prompt Guardrails blocked:
+// https://developers.cloudflare.com/ai-gateway/features/guardrails/set-up-guardrail/
+const GUARDRAILS_PROMPT_BLOCKED = 2016;
+
+/**
+ * Whether `response` is AI Gateway refusing a request because Guardrails blocked its prompt. The
+ * answer is read from the response because the provider SDKs each keep a different part of its
+ * body in their error text: pi's OpenAI adapters only the `error` array, its Anthropic one only
+ * the message.
+ */
+export async function isGuardrailsPromptBlock(response: Response): Promise<boolean> {
+  if (response.ok) return false;
+  // A body that can't be read as JSON, such as a proxy's error page or a cut-off response, is
+  // not the gateway's envelope.
+  const body = GATEWAY_ERROR.safeParse(await response.clone().json().catch(() => undefined));
+  return body.success && body.data.error.some(({ code }) => code === GUARDRAILS_PROMPT_BLOCKED);
 }
 
 /** Identifies the Gateway and credentials needed to retrieve an inference log. */

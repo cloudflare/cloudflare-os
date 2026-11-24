@@ -577,6 +577,59 @@ describe("getModel AI Gateway binding transport", () => {
 
 });
 
+describe("a prompt that AI Gateway Guardrails blocked", () => {
+  // An error of AI Gateway's own, in the envelope it answered with on 2026-11-23 for codes 2001
+  // and 2009. No Guardrails block has been measured: 2016 is the code its docs give one, and the
+  // status here stands in for whatever it sends.
+  const gatewayError = (code: number, message: string) => Response.json({
+    success: false, result: [], messages: [], error: [{ code, message }],
+    name: "AiGatewayError", httpCode: 424, internalCode: code, message, description: message,
+  }, { status: 424 });
+  const promptBlock = () => gatewayError(2016, "Prompt blocked due to security configurations");
+
+  // What the handle records of the response to one request, which `respond` answers.
+  async function lastResponseTo(handle: ModelHandle, respond: () => Response) {
+    const stream = handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }],
+    }, { fetch: async () => respond() });
+    expect((await stream.result()).stopReason).toBe("error");
+    return handle.lastResponse;
+  }
+
+  const gateway = env({ CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare" });
+
+  // Each of pi's adapters keeps a different part of the response in its error text, so the block
+  // is read from the response itself.
+  it.each([
+    ["anthropic-messages", ANTHROPIC_CONFIG],
+    ["openai-responses", { provider: "openai", model: "gpt-5", apiToken: "" }],
+    ["google-generative-ai", { provider: "google", model: "gemini-2.5-flash", apiToken: "" }],
+    ["openai-completions", WORKERS_AI_CONFIG],
+  ] as const)("is recorded for a model that speaks %s", async (api, config) => {
+    const handle = getModel(gateway, config, INITIATOR);
+    expect(handle.model.api).toBe(api);
+    expect(await lastResponseTo(handle, promptBlock)).toMatchObject({ promptBlocked: true });
+  }, 15000);
+
+  it("is not read into another failure", async () => {
+    const handle = getModel(gateway, ANTHROPIC_CONFIG, INITIATOR);
+    for (const respond of [
+      () => gatewayError(2001, "Please configure AI Gateway in the Cloudflare dashboard"),
+      // A provider's own error that happens to use the code.
+      () => Response.json({ error: { code: 2016, message: "Invalid parameters" } }, { status: 400 }),
+      () => new Response("<html>Bad gateway</html>", { status: 502 }),
+    ]) {
+      expect(await lastResponseTo(handle, respond)).toBeUndefined();
+    }
+  }, 15000);
+
+  it("is not looked for on a direct connection", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }),
+        { provider: "openai", model: "gpt-5", apiToken: "direct-api-token" }, INITIATOR);
+    expect(await lastResponseTo(handle, promptBlock)).toBeUndefined();
+  }, 15000);
+});
+
 describe("getModel direct routing (no gateway)", () => {
   beforeEach(() => {
     capturedRequests.length = 0;

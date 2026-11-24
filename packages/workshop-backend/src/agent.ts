@@ -31,7 +31,10 @@ import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
-import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
+import {
+  AgentTurnError, PromptBlockedError, completeText, httpStatusFromError, zeroUsage,
+} from "./ai-invoke";
+import { unansweredInput } from "./blocked-prompts";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
 import { assertNoNul } from "./git-cache";
@@ -2000,6 +2003,11 @@ async function runAgentPass(
         }
         let newContent = sessionContent.get(id)?.get(filename);
         if (oldContent === newContent) continue;
+        if (withheldFiles.has(`${id}:${filename}`)) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; read the file`);
+          continue;
+        }
         if ((newContent !== undefined && typeof newContent !== "string") ||
             (oldContent !== undefined && typeof oldContent !== "string")) {
           fileDiffParts.push(`${filename}: binary content changed`); continue;
@@ -2057,6 +2065,18 @@ async function runAgentPass(
     let files = filesRead.get(workpieceId);
     if (files === undefined) filesRead.set(workpieceId, files = new Map());
     files.set(filename, oid);
+  };
+
+  // The files a withheld change or upload wrote (see blockedInput, below), as
+  // `<workpiece>:<filename>`, each with the sequence of the first record that did. A diff of one,
+  // the withheld change's own or a later one's, would quote what the model must not be shown
+  // again, so it is replaced by a note and the model's knowledge of the file dropped. A
+  // checkpoint carries the files withheld before its boundary, which replay no longer reaches.
+  let withheldFiles = new Map(
+      checkpoint?.withheldFiles?.map((file): [string, number] => [file, -1]));
+  let withholdFile = (workpieceId: WorkpieceId | string, filename: string, sequence: number) => {
+    let file = `${workpieceId}:${filename}`;
+    if (!withheldFiles.has(file)) withheldFiles.set(file, sequence);
   };
 
   // A gadget pin is where its file knowledge stops being checked against committed code (from
@@ -2379,16 +2399,28 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  // Count across the whole replay, not just the latest upload batch. PDFs also count on some
-  // providers; conservatively include candidate parts even if their headers later rule them out.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
+  // What a request that AI Gateway Guardrails blocked had newly carried (see
+  // AiChatMessageBody.blockedInput). A request that shows it to the model again is blocked
+  // again, so replay withholds it: a user's message, edits or call is left out, and an agent step
+  // keeps its calls but not their results. What those records did still replays, so files,
+  // bindings and change numbers stay as the log has them.
+  let blockedInput = new Set(chatMessages.flatMap(
+      msg => msg.type === "error" ? msg.blockedInput ?? [] : []));
+
+  // Count across the whole replay, not just the latest upload batch, less the withheld messages,
+  // whose attachments are not sent. PDFs also count on some providers; conservatively include
+  // candidate parts even if their headers later rule them out.
+  const attachmentImageCount = chatMessages.reduce((count, msg) => count +
+    (msg.type === "message" && !blockedInput.has(msg.sequence)
     ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
         (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
+
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
+    let withheld = blockedInput.has(msg.sequence);
     switch (msg.type) {
       case "message": {
         let content = msg.message;
@@ -2421,6 +2453,16 @@ async function runAgentPass(
           }
           parts.push(content.slice(pos));
           content = parts.join("");
+        }
+        if (withheld && msg.author.type !== "agent") {
+          // A withheld message keeps its pasted resources bound, above, and loads no attachments.
+          // Its uploads are in the scratch worktree, the first of them with no change to record it.
+          for (let {workspacePath} of msg.attachments ?? []) {
+            if (agentContext.scratch && workspacePath !== undefined) {
+              withholdFile(agentContext.scratch.worktreeId, workspacePath, msg.sequence);
+            }
+          }
+          break;
         }
 
         // The step's persisted model-facing snapshot, if it has one (agent steps persisted since
@@ -2616,7 +2658,7 @@ async function runAgentPass(
                     toolOutput = {text: readFileWindow(
                         {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
-                    markFileRead(workpieceId, toolCall.input.filename, oid);
+                    if (!withheld) markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
                         hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
@@ -2658,7 +2700,7 @@ async function runAgentPass(
 
                     toolOutput = {text: readFileWindow(source, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
-                    markFileRead(workpieceId, toolCall.input.filename);
+                    if (!withheld) markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
                 }
@@ -2819,6 +2861,13 @@ async function runAgentPass(
                 toolName: toolCall.toolName, toolCallId: toolCall.toolCallId, error: err,
               });
             }
+            if (withheld) {
+              toolOutput = {
+                text: "This result was left out because a safety filter blocked a request " +
+                    "that carried it. The call was made, and what it changed is in place.",
+                isError: true,
+              };
+            }
 
             modelMessages.push({
               role: "toolResult",
@@ -2904,6 +2953,11 @@ async function runAgentPass(
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
+            if (withheld) {
+              for (let [id, files] of Object.entries(msg.change)) {
+                for (let [filename] of files) withholdFile(id, filename, msg.sequence);
+              }
+            }
             diff = applyReplayedChange(msg.change, isUserActivity);
           }
           if (isUserActivity) {
@@ -3121,6 +3175,10 @@ async function runAgentPass(
         msg satisfies never;
         break;
     }
+
+    // A withheld record of another kind has replayed what it did, above. Only what it added for
+    // the model to read is dropped.
+    if (withheld && msg.type !== "message") modelMessages.length = modelMessageStart;
 
     while (modelMessageSources.length < modelMessages.length) {
       modelMessageSources.push({
@@ -4606,11 +4664,14 @@ async function runAgentPass(
           written = {summary};
         }
 
+        let withheldBefore = [...withheldFiles].flatMap(
+            ([file, sequence]) => sequence < compactedTo ? [file] : []);
         let compacted: CompactionCheckpoint = {
           chatId,
           compactedTo,
           ...written,
           workspacePrompt: systemPromptWorkspace,
+          ...(withheldBefore.length > 0 ? {withheldFiles: withheldBefore} : {}),
           alwaysAvailableResources: [
             ...seenAlwaysAvailableResources(listedResources, chatMessages, compactedTo).values(),
           ],
@@ -4735,7 +4796,19 @@ async function runAgentPass(
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
-    let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    let status = httpStatusFromError(message, handle.lastResponse);
+    if (handle.lastResponse?.promptBlocked) {
+      // Guardrails blocks the request again for as long as it carries the same input, so the
+      // turn ends with that input named, for replay to withhold. The log is read again for the
+      // steps and steers this pass added to it. Changes a user made meanwhile (a gadget, a
+      // binding) are not counted: this pass never loaded them, so the request did not carry them.
+      let loaded = chatMessages.at(-1)?.sequence ?? -1;
+      let carried = unansweredInput(hooks.loadChatHistory(chatId).chatMessages
+          .filter(entry => entry.type !== "changes" || entry.sequence <= loaded)
+          .toReversed());
+      if (carried.length > 0) throw new PromptBlockedError(message, status, carried);
+    }
+    let error = new AgentTurnError(message, status);
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }
