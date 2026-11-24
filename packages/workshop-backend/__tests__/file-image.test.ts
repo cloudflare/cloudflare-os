@@ -123,15 +123,33 @@ describe("images read from a worktree", () => {
     expect(shown.at(-1)?.content.every(part => part.type === "text")).toBe(true);
   }));
 
-  it.each(["oversize", "dimensions", "truncated"])("rejects %s images without sending binary text", kind => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["oversize", "dimensions", "patches", "truncated"])("rejects %s images without sending binary text", kind => inKernel(crypto.randomUUID(), async impl => {
     const bytes = kind === "oversize" ? new Uint8Array(4 * 1024 * 1024 + 1) : PNG.slice();
     bytes.set(PNG.slice(0, Math.min(bytes.length, PNG.length)));
     if (kind === "dimensions") new DataView(bytes.buffer).setUint32(16, 8001);
+    if (kind === "patches") {
+      // Header-only fixture: resolution admission runs before any provider can decode pixels.
+      const view = new DataView(bytes.buffer);
+      view.setUint32(16, 7680); view.setUint32(20, 4320);
+    }
     const {chatId} = await setup(impl, kind === "truncated" ? bytes.slice(0, 16) : bytes);
     const {requests} = await turn(impl, chatId, [[read()]]);
     expect(results(requests.at(-1)!)[0].isError).toBe(true);
     expect(results(requests.at(-1)!)[0].content.every(part => part.type === "text")).toBe(true);
+    expect([...impl.storage.chats.list()].flatMap(message => message.type === "message"
+      ? message.toolCalls ?? [] : []).filter(call => call.toolName === "readFile").every(call => !call.image)).toBe(true);
   }));
+
+  it.each([[6400, 4800, true], [6401, 4800, false], [8000, 3840, true], [8000, 3841, false]] as const)(
+    "bounds 32px patch coverage for a %s x %s header", (width, height, accepted) => inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      const view = new DataView(bytes.buffer);
+      view.setUint32(16, width); view.setUint32(20, height);
+      const blob = impl.gitCache.writeBlob(bytes);
+      const reader = await impl.openBlob(blob.oid);
+      if (accepted) expect(readFileImage(reader)?.data).toBe(bytes.toBase64());
+      else expect(() => readFileImage(reader)).toThrow("30,000 32px patches");
+    }));
 
   it("reserves image-count capacity for earlier user attachments", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);

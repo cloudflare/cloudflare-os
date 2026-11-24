@@ -63,8 +63,11 @@ export function readFileImage(reader: BlobReader, mimeType = fileImageMimeType(r
     throw new Error("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
   }
   const bytes = reader.read(0, reader.size);
-  if (!canInlineChatAttachmentImage(mimeType, bytes)) {
-    throw new Error("Image header is unsupported or dimensions exceed 8000 pixels. Resize or convert the file first.");
+  // OpenAI's original/auto detail rejects images above 30,000 32px patches rather than
+  // resizing them. Bound resolution before persisting a successful read, preserving coordinates
+  // and fine detail for accepted images instead of silently selecting a downsampled detail level.
+  if (!canInlineChatAttachmentImage(mimeType, bytes, 8000, 30_000)) {
+    throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
   }
   return { type: "image", data: bytes.toBase64(), mimeType };
 }
