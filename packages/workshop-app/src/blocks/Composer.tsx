@@ -23,7 +23,7 @@ export type ComposerHandle = {
   /** Put the cursor in the message, e.g. once something outside has set up a reply. */
   focus: () => void
   /**
-   * Adds a connection to the draft (from the add menu's Add a connection, once it is made), or
+   * Adds a connection to the draft (one chosen from the add menu, once it is made), or
    * changes the one with its key in place.
    */
   addConnection: (connection: ComposerConnection) => void
@@ -62,7 +62,7 @@ export type ComposerProps = {
    * it.
    */
   commands?: readonly ComposerCommand[]
-  /** The skills are still being read, and none are known yet: the add menu keeps their room. */
+  /** The skills are still being read, and none are known yet: the add menu's list of them says so. */
   commandsLoading?: boolean
   /**
    * The skills are about to be wanted: the composer was pointed at or written in, which is
@@ -78,12 +78,12 @@ export type ComposerProps = {
    */
   reply?: { quote: string; onShow?: () => void; onCancel: () => void }
   /**
-   * The draft starts with a format (a Document, a Spreadsheet, …): what it asks for something as,
-   * shown above the draft, and the way to make the draft an ordinary message again. It can then be
-   * sent with no words, as the format is something to say. Whoever sends the message knows what it
-   * starts with.
+   * The draft starts with a format (a Document, a Spreadsheet, …) or a template: what it asks for
+   * something as, shown above the draft, and the way to make the draft an ordinary message again.
+   * It can then be sent with no words, as the format is something to say. Whoever sends the
+   * message knows what it starts with.
    */
-  format?: { noun: string; icon: FormatIconName; onRemove: () => void }
+  format?: { noun: string; icon: FormatIconName; template?: boolean; onRemove: () => void }
   /** Why the last message did not go, shown over the composer until dismissed. */
   problem?: { message: string; onDismiss: () => void }
   /**
@@ -93,7 +93,8 @@ export type ComposerProps = {
    * at once when it cannot be asked now, which leaves everything as it was.
    */
   stop?: { waiting: readonly string[]; onStop: () => Promise<void> | false }
-  addActions?: Omit<ComposerAddActions, 'onUpload'>
+  /** What the + menu offers besides uploading and the skills: connections, formats and templates. */
+  addActions?: Pick<ComposerAddActions, 'offers'>
   /** What the draft's links are made, where someone can tell: connections, each a line of its own. */
   links?: ComposerLinks
   /**
@@ -231,7 +232,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     }
     setSlash(undefined)
     setCommand(chosen)
-    recordCommandUse(preferences, chosen.name)
+    recordCommandUse(preferences, chosen.key)
     field?.focus()
   }
 
@@ -492,6 +493,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
           <div className="absolute bottom-1.5 left-1.5 flex">
             <ComposerAddMenu
               anchorRef={formRef}
+              fieldRef={inputRef}
               inPlace={addMenuInPlace}
               {...addActions}
               onOpen={onCommandsWanted}

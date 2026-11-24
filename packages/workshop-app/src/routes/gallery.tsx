@@ -58,6 +58,7 @@ import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
 import { UserPickerPreview } from '@/gallery/UserPickerPreview'
+import { previewComposerOffers } from '@/gallery/composerOffersPreview'
 import { SignInPreview } from '@/gallery/SignInPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
@@ -538,10 +539,8 @@ const BubblesPage = () => (
 
 // The composer in each of the ways it is written in, and the home page around it.
 const ComposerPage = () => {
-  const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
-  const addActions = {
-    onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-  }
+  const [menuAction, setMenuAction] = useState('Open + to preview files, formats, connections, skills and templates.')
+  const [addActions] = useState(() => ({ offers: previewComposerOffers(setMenuAction) }))
   const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
     setMenuAction(command
       ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
@@ -562,7 +561,8 @@ const ComposerPage = () => {
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
-            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft; the + menu lists them too, under a field to find one by. Backspace at the start or Escape takes it off.
+            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft. Backspace at the start or Escape takes it off.
+            The + menu has everything the draft can be given or started with, a line each with what choosing it does, or what tells it apart, at its end: uploading, the formats, Automation and Agent, a handful of services, then See all skills… and See all connections…, which go on to all of them, over a field that finds any of them, and the templates, by typing.
           </p>
           <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
@@ -571,7 +571,7 @@ const ComposerPage = () => {
           </div>
         </div>
       </Section>
-      <Section title="Composer (150 skills: the + menu opens at the height it keeps, its list scrolling, with the field nearest the composer and the focus in it; typing narrows the list as a slash does, the arrow keys move, Enter or Tab chooses and Escape closes. The second is still reading its skills, and keeps their room)">
+      <Section title="Composer (150 skills: the + menu is as tall as what it lists, up to five rows and a half, its list then scrolling, with the field nearest the composer and the focus in it; typing lists what fits of everything, best first, the arrow keys move, Enter or Tab chooses and Escape closes; See all skills… lists them all, with Back, Escape or Backspace in the empty field going back. The second is still reading its skills, and says so)">
         <div className="flex w-full flex-col gap-3">
           <Composer onSend={previewSend} addActions={addActions} commands={manyCommands} />
           <Composer onSend={previewSend} addActions={addActions} commandsLoading />

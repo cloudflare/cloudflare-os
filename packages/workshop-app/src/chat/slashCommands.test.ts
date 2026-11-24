@@ -16,6 +16,11 @@ describe('composer commands', () => {
     expect(composerCommandOf(COMPACT)).toMatchObject({ name: 'compact', title: 'Compact', kind: 'builtin' })
   })
 
+  it('says which collection a skill is kept in, which tells it from another of its name', () => {
+    expect(composerCommandOf({ ...SKILL, resourceLabel: 'Sales Playbooks · meeting-brief/SKILL.md' }).source).toBe('Sales Playbooks')
+    expect(composerCommandOf({ ...SKILL, resourceLabel: 'Runbooks' }).source).toBe('Runbooks')
+  })
+
   it('sends a command as the workspace offers it, with the words after it', () => {
     expect(slashRequestFor([COMPACT, SKILL], composerCommandOf(SKILL), 'for Tuesday')).toEqual({ id: SKILL.selection, args: 'for Tuesday', commandPosition: 0 })
   })

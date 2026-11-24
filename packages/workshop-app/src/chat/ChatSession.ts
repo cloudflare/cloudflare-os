@@ -1,6 +1,6 @@
 import type { RpcStub } from 'capnweb'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, ChatCodeBase, Overseer, CapsuleSpecifier, ChatArtifact, ChatConnectionUse, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, ChatCodeBase, Overseer, CapsuleSpecifier, ChatArtifact, ChatConnectionUse, MessageFormatRef, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   toChatFeed,
@@ -541,11 +541,12 @@ export class ChatSession {
   /**
    * Sends a message to the chat, words or a skill or command with what it is given, with `files`
    * uploaded for it to carry and the connections in `capsules` given to the chat, replying to the
-   * message numbered `replyTo` if given, and resolves to whether it went, so that whoever drafted
-   * it can keep the draft when it did not. The message and the reply come back through the
+   * message numbered `replyTo` if given, `formats` saying where its words name a format or a
+   * template, and resolves to whether it went, so that whoever drafted it can keep the draft when
+   * it did not. The message and the reply come back through the
    * subscription, not from here; a failure is reported in the snapshot's `sendError`.
    */
-  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = [], capsules?: CapsuleSpecifier[], replyTo?: number): Promise<boolean> => {
+  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = [], capsules?: CapsuleSpecifier[], replyTo?: number, formats?: MessageFormatRef[]): Promise<boolean> => {
     if (this.options.connection?.blocked()) return false
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) {
@@ -568,7 +569,7 @@ export class ChatSession {
     }
     try {
       const attachments = await uploadAttachments(overseer, files)
-      await overseer.sendChatMessage(this.chatId, message, modelId, capsules, attachments, undefined, replyTo)
+      await overseer.sendChatMessage(this.chatId, message, modelId, capsules, attachments, formats, replyTo)
     } catch (error) {
       if (run === this.#run) {
         this.#sendError = messageOf(error)

@@ -10,7 +10,7 @@ export type ChatStartProps = {
   initialDraft?: ComposerProps['initialDraft']
   /** The skills and commands the first message can be sent with. */
   commands?: ComposerProps['commands']
-  /** The skills are still being read, so the + menu keeps their room. */
+  /** The skills are still being read, which the + menu's list of them says. */
   commandsLoading?: ComposerProps['commandsLoading']
   /** A slash was typed or the + menu opened, for commands read only once they are looked for. */
   onCommandsWanted?: ComposerProps['onCommandsWanted']

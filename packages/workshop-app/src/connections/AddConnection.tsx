@@ -1,15 +1,14 @@
 import { memo, useMemo, useState, type ReactNode } from 'react'
-import { AiMagicIcon } from '@/components/icons'
 import type { RpcPromise } from 'capnweb'
-import { AGENT_SPAWNER_CONNECTION_ID, type GatekeeperClient } from '@gadgets/workshop-shared/api'
-import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
-import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
-import { AgentMark } from '@/blocks/AgentMark'
+import type { GatekeeperClient } from '@gadgets/workshop-shared/api'
+import type { ResourceDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { AddConnectionDialog } from '@/blocks/AddConnectionDialog'
 import { ChatModelDialog } from '@/blocks/ChatModelDialog'
 import { useBindableModels } from '@/gadgets/useBindableModels'
 import { Dialog } from '@gadgets/ui'
 import { useApi } from '@/rpc/ApiContext'
-import { resourceGroups, resourceOfUrl } from './connectionList'
+import { AGENT_CHOICE, AGENT_KEY, AGENT_SERVICE, MODEL_CHOICE, MODEL_KEY, MODEL_SERVICE, serviceChoices, type AddableConnection, type AddableService } from './connectionChoices'
+import { resourceOfUrl } from './connectionList'
 import { ConnectResource, MakeAgent } from './SetUpConnection'
 import { useConnections } from './useConnections'
 
@@ -39,40 +38,17 @@ export type AddConnectionProps = {
   onOpenChange: (open: boolean) => void
   /** What it is added to, as the dialogs say it: "this chat". */
   to: string
+  /**
+   * The service chosen before it was opened, as from the + menu: it opens at which of that
+   * service's kinds, or at setting up the one it has, where Back goes to everything there is.
+   */
+  start?: AddableService
   /** Hands the connection to what it was added for; the dialogs close once it resolves. */
   onAdded: (connection: AddedConnection) => Promise<void>
 }
 
-// One of the user's models, offered with the services, which has a page of its own.
-const MODEL_KEY = 'ai-model'
-// A sparkle, as the Workshop's own cloud carries, rather than a brain.
-const MODEL_SERVICE = { name: 'AI model', glyph: <AiMagicIcon aria-hidden="true" /> }
-const MODEL_CHOICE: ConnectionChoice = {
-  key: MODEL_KEY,
-  service: MODEL_SERVICE,
-  title: 'AI model',
-  description: 'One of your models, for a gadget’s code to use',
-  connected: true,
-}
-
-// An agent, offered with them too, as main's Workshop offered it: named and given a model on a page of its own.
-const AGENT_KEY = AGENT_SPAWNER_CONNECTION_ID
-// Drawn as an agent is everywhere else: the Workshop's cloud.
-const AGENT_SERVICE = { name: 'Agent', glyph: <AgentMark size="small" /> }
-const AGENT_CHOICE: ConnectionChoice = {
-  key: AGENT_KEY,
-  service: AGENT_SERVICE,
-  title: 'Agent',
-  description: 'Works on its own when a gadget calls on it',
-  connected: true,
-}
-
-type Chosen = ConnectionChoice & {
-  vendorId: string
-  urlPattern: string
-  /** The kinds its form may choose among, when it stands for more than one (`groupedWith`). */
-  kinds: SupportedResource[]
-}
+// What it opens at setting up: the one kind of a service chosen for it that has no other.
+const onlyKind = (service: AddableService | undefined) => (service?.kinds.length === 1 ? service.kinds[0] : undefined)
 
 /**
  * Adds a connection to a chat, as the user chose rather than an agent asked: what to connect
@@ -82,54 +58,39 @@ type Chosen = ConnectionChoice & {
  * again only for props of its own, not with the chat it is in as each word of a reply comes: a
  * stable `onAdded` keeps it so.
  */
-export const AddConnection = memo(function AddConnection({ workspaceId, open, onOpenChange, to, onAdded }: AddConnectionProps) {
+export const AddConnection = memo(function AddConnection({ workspaceId, open, onOpenChange, to, start, onAdded }: AddConnectionProps) {
   const { api } = useApi()
   const { state } = useConnections()
   // What is being set up, whose form is the page shown, until Back. It stays after closing, so
-  // that the page shown is the one that closes; each opening starts at choosing.
-  const [chosen, setChosen] = useState<Chosen | typeof MODEL_CHOICE | typeof AGENT_CHOICE>()
+  // that the page shown is the one that closes; each opening starts at choosing, or at the one
+  // kind of the service chosen for it.
+  const [chosen, setChosen] = useState<AddableConnection | undefined>(open ? onlyKind(start) : undefined)
   const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)
-    if (open) setChosen(undefined)
+    if (open) setChosen(onlyKind(start))
   }
+  // The service chosen for it, where it has several kinds to choose among: only those are listed.
+  const within = start && start.kinds.length > 1 ? start : undefined
   const models = useBindableModels()
 
-  const choices = useMemo((): Chosen[] | undefined => {
-    if (state.status !== 'ready') return undefined
-    const mine = new Set(state.connections.flatMap((each) => (each.kind === 'account' ? [each.vendorId] : [])))
-    // A service once, whether it is listed for an account on it or to be connected.
-    const services = new Map(state.connections.map((each) => [each.vendorId, each]))
-    return [...services.values()]
-      // Those the deployment provides come with every chat already.
-      .filter(({ vendor }) => !vendor.autoProvisionsAccount)
-      // A choice per group of kinds: Google Drive, rather than its folders, files and Docs apart.
-      .flatMap(({ vendorId, vendor, resources }) => resourceGroups(resources).map(({ lead, members }): Chosen => ({
-        key: `${vendorId} ${lead.urlPattern}`,
-        vendorId,
-        urlPattern: lead.urlPattern,
-        kinds: members,
-        service: { name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color },
-        title: lead.title,
-        description: lead.description,
-        connected: mine.has(vendorId),
-      })))
-      .toSorted((a, b) => a.service.name.localeCompare(b.service.name) || a.title.localeCompare(b.title))
-  }, [state])
-  const offered = useMemo(() => choices && [MODEL_CHOICE, AGENT_CHOICE, ...choices], [choices])
+  const choices = useMemo(() => (state.status === 'ready' ? serviceChoices(state.connections) : undefined), [state])
+  const everything = useMemo(() => choices && [MODEL_CHOICE, AGENT_CHOICE, ...choices], [choices])
+  const offered = within ? within.kinds : everything
 
   return (
     // One dialog that goes from the choice to its service's form and back as pages, rather than
     // one put away for another. Each kind is a page of its own, so its form starts afresh.
-    <Dialog open={open} onOpenChange={onOpenChange} wide={chosen !== undefined && 'vendorId' in chosen} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
+    <Dialog open={open} onOpenChange={onOpenChange} wide={chosen !== undefined && 'vendorId' in chosen} page={chosen ? { key: chosen.key, depth: 1 } : { key: within?.key ?? '', depth: 0 }}>
       {!chosen ? (
         <AddConnectionDialog
           open={open}
           onOpenChange={onOpenChange}
           to={to}
+          service={within?.service.name}
           choices={offered}
-          problem={state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
-          onChoose={(choice) => setChosen(choice.key === MODEL_KEY ? MODEL_CHOICE : choice.key === AGENT_KEY ? AGENT_CHOICE : choices?.find(({ key }) => key === choice.key))}
+          problem={!within && state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
+          onChoose={(choice) => setChosen(offered?.find(({ key }) => key === choice.key))}
         />
       ) : chosen.key === AGENT_KEY ? (
         <MakeAgent

@@ -20,13 +20,18 @@ const BUILTINS: Record<string, Pick<ComposerCommand, 'title' | 'description'>> =
   compact: { title: 'Compact', description: 'Sum up the chat so far, to make room for more' },
 }
 
-/** A command a workspace offers (`Overseer.listSlashCommands`), as the composer shows it. */
-export const composerCommandOf = ({ selection, name, description, providerLabel }: SlashCommandChoice): ComposerCommand => ({
+/**
+ * A command a workspace offers (`Overseer.listSlashCommands`), as the composer shows it. A skill
+ * says where it is kept, which tells it from another of its name: the first part of what its
+ * provider labels it with, which for the Context Library is its collection (the rest is its path
+ * there), or else the provider.
+ */
+export const composerCommandOf = ({ selection, name, description, providerLabel, resourceLabel }: SlashCommandChoice): ComposerCommand => ({
   key: keyOf(selection),
   name,
   ...(selection.builtin
     ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: titleOf(name), description }) }
-    : { kind: 'skill', title: titleOf(name), description, source: providerLabel }),
+    : { kind: 'skill', title: titleOf(name), description, source: resourceLabel?.split(' · ')[0]?.trim() || providerLabel }),
 })
 
 /**

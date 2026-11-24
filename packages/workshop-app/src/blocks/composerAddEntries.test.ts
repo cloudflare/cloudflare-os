@@ -1,54 +1,99 @@
 import { describe, expect, it } from 'vitest'
 import type { ComposerCommand } from './ComposerCommandPicker'
-import { composerAddEntries, composerAddKey } from './composerAddEntries'
+import { composerAddEntries, composerAddKey, type ComposerAddList, type ComposerAddOffer } from './composerAddEntries'
 
 const command = (name: string, title: string, description: string, kind: ComposerCommand['kind'] = 'skill'): ComposerCommand =>
   ({ key: name, name, title, description, kind })
 
 const COMMANDS = [
-  command('compact', 'Compact', 'Sum up the chat so far', 'builtin'),
   command('meeting-brief', 'Meeting Brief', 'Prepare for a meeting'),
   command('review-writing', 'Review Writing', 'Polish a brief draft'),
+  command('invoice-check', 'Invoice Check', 'Read an invoice through'),
+  command('compact', 'Compact', 'Sum up the chat so far', 'builtin'),
 ]
-const BOTH = { upload: true, connection: true }
-const keys = (query: string, can = BOTH) => composerAddEntries(COMMANDS, query, can).map(({ key }) => key)
+
+const offer = (group: ComposerAddOffer['group'], key: string, title: string, more: Partial<ComposerAddOffer> = {}): ComposerAddOffer =>
+  ({ key: `${group}:${key}`, group, title, icon: null, onChoose: () => {}, ...more })
+
+const OFFERS = [
+  offer('format', 'slides', 'Slides', { suggested: true, detail: 'Make slides' }),
+  offer('format', 'board', 'Board'),
+  offer('setup', 'automation', 'Automation', { suggested: true, keywords: ['scheduled'] }),
+  offer('connection', 'google', 'Google', { suggested: true, keywords: ['Drive', 'Calendar'] }),
+  offer('connection', 'github', 'GitHub', { suggested: true, detail: 'Repository' }),
+  offer('connection', 'slack', 'Slack', { detail: 'Sign in to connect' }),
+  offer('template', 'tips', 'Tip Jar', { detail: 'Template' }),
+  offer('template', 'brief', 'Brief Builder', { detail: 'Template · Ada' }),
+]
+
+const listed = (query: string, list?: ComposerAddList, commands = COMMANDS, offers = OFFERS) =>
+  composerAddEntries({ commands, offers, upload: true }, query, list).map(({ key }) => key)
 
 describe('composerAddEntries', () => {
-  it('starts with uploading and a connection, then the skills in their order, then the app’s commands', () => {
-    expect(keys('')).toEqual(['upload', 'connection', 'command:meeting-brief', 'command:review-writing', 'command:compact'])
-  })
-
-  it('marks what cannot be done as disabled, rather than leaving it out', () => {
-    expect(composerAddEntries([], '', { upload: true, connection: false })).toEqual([
-      { key: 'upload', kind: 'action', disabled: false },
-      { key: 'connection', kind: 'action', disabled: true },
+  it('opens with uploading, what is offered first, then the ways on to all the skills and connections', () => {
+    expect(listed('')).toEqual(['upload', 'format:slides', 'setup:automation', 'connection:google', 'connection:github', 'all:skill', 'all:connection'])
+    expect(composerAddEntries({ commands: COMMANDS, offers: OFFERS, upload: true }, '').slice(-2)).toEqual([
+      { key: 'all:skill', kind: 'all', list: 'skill', title: 'See all skills…' },
+      { key: 'all:connection', kind: 'all', list: 'connection', title: 'See all connections…' },
     ])
   })
 
-  it('narrows to the skills and commands that fit what is typed, as a slash does', () => {
-    expect(keys('Meet')).toEqual(['command:meeting-brief'])
-    // A word of the title first, then what it is for.
-    expect(keys('brief')).toEqual(['command:meeting-brief', 'command:review-writing'])
-    expect(keys('zzz')).toEqual([])
+  it('has a way on only to what there is, and to the skills while they are still being read', () => {
+    expect(listed('', undefined, [], [])).toEqual(['upload'])
+    expect(composerAddEntries({ commands: [], upload: true, loading: true }, '').at(-1)).toMatchObject({ key: 'all:skill' })
+  })
+
+  it('says uploading is unavailable where it is, rather than leaving it out', () => {
+    expect(composerAddEntries({ commands: [], upload: false }, '')).toEqual([expect.objectContaining({ key: 'upload', kind: 'upload', disabled: true })])
+  })
+
+  it('lists all of a kind once gone on to it: the skills, then the app’s commands; or every service', () => {
+    expect(listed('', 'skill')).toEqual(['command:meeting-brief', 'command:review-writing', 'command:invoice-check', 'command:compact'])
+    expect(listed('', 'connection')).toEqual(['connection:google', 'connection:github', 'connection:slack'])
+  })
+
+  it('narrows a kind gone on to by what is typed, and finds nothing of another kind there', () => {
+    expect(listed('sla', 'connection')).toEqual(['connection:slack'])
+    expect(listed('slides', 'connection')).toEqual([])
+    expect(listed('brief', 'skill')).toEqual(['command:meeting-brief', 'command:review-writing'])
+  })
+
+  it('finds what fits what is typed across every kind, best first, templates and what is not offered first included', () => {
+    // A title that starts with it, then one with a word that does, then what it is known by besides.
+    expect(listed('brief')).toEqual(['template:brief', 'command:meeting-brief', 'command:review-writing'])
+    expect(listed('board')).toEqual(['format:board'])
+    expect(listed('zzz')).toEqual([])
+  })
+
+  it('finds a service by its kinds, a skill by what it is for, and uploading by what it takes', () => {
+    expect(listed('calendar')).toEqual(['connection:google'])
+    expect(listed('invoice')).toEqual(['command:invoice-check'])
+    expect(listed('photo')).toEqual(['upload'])
+    expect(listed('scheduled')).toEqual(['setup:automation'])
   })
 
   it('takes nothing but spaces as nothing typed', () => {
-    expect(keys('   ')).toEqual(keys(''))
+    expect(listed('   ')).toEqual(listed(''))
   })
 })
 
 describe('composerAddKey', () => {
-  const [upload, connection, skill] = composerAddEntries(COMMANDS, '', { upload: true, connection: false })
+  const [upload, slides] = composerAddEntries({ commands: COMMANDS, offers: OFFERS, upload: false }, '')
 
   it('chooses the highlighted row on Tab, unless it cannot be chosen or there is none', () => {
-    expect(composerAddKey('Tab', skill)).toBe('choose')
-    expect(composerAddKey('Tab', upload)).toBe('choose')
-    expect(composerAddKey('Tab', connection)).toBe('close')
-    expect(composerAddKey('Tab', undefined)).toBe('close')
+    expect(composerAddKey('Tab', { highlighted: slides })).toBe('choose')
+    expect(composerAddKey('Tab', { highlighted: upload })).toBe('close')
+    expect(composerAddKey('Tab', { highlighted: undefined })).toBe('close')
   })
 
   it('leaves Escape to the menu, and keeps letters and arrows from it', () => {
-    expect(composerAddKey('Escape', skill)).toBe('close')
-    for (const key of ['a', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' ']) expect(composerAddKey(key, skill)).toBe('keep')
+    expect(composerAddKey('Escape', { highlighted: slides })).toBe('close')
+    for (const key of ['a', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' ', 'Backspace']) expect(composerAddKey(key, { highlighted: slides })).toBe('keep')
+  })
+
+  it('goes back from a kind gone on to by Escape, and by Backspace once nothing is typed', () => {
+    expect(composerAddKey('Escape', { highlighted: slides, onList: true, typed: true })).toBe('back')
+    expect(composerAddKey('Backspace', { highlighted: slides, onList: true })).toBe('back')
+    expect(composerAddKey('Backspace', { highlighted: slides, onList: true, typed: true })).toBe('keep')
   })
 })

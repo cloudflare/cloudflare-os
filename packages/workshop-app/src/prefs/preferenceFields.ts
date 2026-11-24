@@ -1,7 +1,7 @@
 import type { UserPreferences as StoredPreferences } from '@gadgets/workshop-shared/api'
 import { isRecord } from './stored'
 
-/** The most names `AppPreferences.recentCommands` holds. */
+/** The most commands `AppPreferences.recentCommands` holds. */
 export const MAX_RECENT_COMMANDS = 20
 
 /** The most pages `AppPreferences.asideShown` holds. */
@@ -68,7 +68,7 @@ export type SavedExport = {
  * can be dropped to stay within bounds.
  */
 export type AppPreferences = {
-  /** The skills and commands chosen last in a composer, latest first. At most MAX_RECENT_COMMANDS. */
+  /** The skills and commands chosen last in a composer, each by its key, latest first. At most MAX_RECENT_COMMANDS. */
   recentCommands: string[]
   /**
    * What was last shown beside each page, as its `?open=` value, by page: a workspace's own page

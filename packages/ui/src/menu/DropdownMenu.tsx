@@ -53,6 +53,12 @@ export type DropdownMenuProps = TriggerContent & {
   /** Whether it is open, for whoever keeps that, such as for a menu left open. With `onOpenChange`; otherwise it opens and closes itself, and `onOpenChange` alone is only told. */
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /**
+   * What has the focus once the menu is closed, in place of its trigger: for a menu that is part
+   * of something else, such as a field's, which is where to carry on. Given how it was closed
+   * (`keyboard`, or a pointer), it answers with an element, or `true` for the trigger as usual.
+   */
+  finalFocus?: Menu.Popup.Props['finalFocus']
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -88,6 +94,7 @@ const DropdownMenuRoot = ({
   raised = false,
   open,
   onOpenChange,
+  finalFocus,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const actionsRef = useRef<Menu.Root.Actions>(null)
@@ -155,6 +162,7 @@ const DropdownMenuRoot = ({
         >
           <Menu.Popup
             ref={popupRef}
+            finalFocus={finalFocus}
             data-in-place={inPlace || undefined}
             data-keep-trigger={keepsTrigger || undefined}
             data-raised={raised || undefined}

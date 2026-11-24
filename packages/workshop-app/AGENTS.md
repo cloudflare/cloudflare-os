@@ -422,12 +422,29 @@ workspace's crumb in its header, what is shown beside it (`?open=`, dropped as a
 since it was the other's), and the workspace marked in the sidebar; the chat then takes the empty
 one's place in the history. The old `/workspace/<id>/new` redirects there, for links made before.
 
-The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the commands,
-the ones chosen last first (`recentCommands` in the user's preferences, `prefs/recentCommands.ts`, as a slash's matches are),
-under a field to find one by on the edge nearest the composer (`composerAddEntries.ts`, plain and
-tested): typing narrows it as a slash does and leaves the two actions out. It opens at the size it
-keeps: a workspace's commands are kept for the visit (`useChatCommands`), and until they are known the
-room they take says it is loading. On the home page, with no workspace chosen, the first slash or
+The composer's + menu (`ComposerAddMenu`) has everything a draft can be given or started with, a
+line each: what it is, and at its end what choosing it does ("Make a document") or, where names
+clash, what tells it from another (a skill's collection, whose a template is). It opens on a short
+list that stays as it is (`composerAddEntries.ts`, plain and tested): Upload, the first formats,
+Automation and Agent, a handful of the services connected most, the user's own first, and then
+See all skills… and See all connections…, each ending in a caret, which go on to all of that
+kind in the list's place (Back at the start of the field, Escape, or Backspace in an empty
+field). Under it, on the edge nearest the composer, a field finds anything by typing: all of
+those, every skill, the ones chosen last first (`recentCommands` in the user's preferences, by
+their keys, `prefs/recentCommands.ts`, as a slash's matches are), and the templates, as search
+finds things (`searchMatches`). It is as tall as what it lists, up to five rows and a half, so
+a few results are a short menu. What it offers besides uploading and the skills is the chat's to say (`chat/composerOffers.tsx`,
+plain and tested, read by `useComposerOffers` once the composer is pointed at or written in). A
+format or a template is what the next message starts with, in any chat: a line over the draft
+(`ComposerFormat`), sent as its name where the message says it is (`chat/startWithFormat.ts`), which
+the agent makes from the deployment's blueprint, or for a template from the one of that title
+among those it can list, in the chat it is asked in. Automation and Agent write the start of the
+request in the draft (`automations/startDrafts.ts`). A service is listed once, whatever it has to
+connect (`connections/connectionChoices.tsx`), and goes on to `AddConnection` at which of its
+kinds, or at the form of its one. Put away, the focus is the draft's rather than the +'s
+(`DropdownMenu`'s `finalFocus`): once something is chosen, unless that opened something with the
+focus of its own, such as that dialog, and when it is closed from the keyboard; a pointer that
+closes it without choosing stays where it clicked. A workspace's commands are kept for the visit (`useChatCommands`). On the home page, with no workspace chosen, the first slash or
 opening of the + menu, or the first connection added before the chat exists, makes the workspace the
 chat will start in (`ensureWorkspace` in `routes/_app/index.tsx`, as main's
 `ensureProvisionalGadget`), whose commands are then listed and which is then where it starts unless
@@ -1766,7 +1783,10 @@ draws is a component in `components/icons.ts`, named as in Hugeicons and made by
 `hugeIcon`: import it from there, and add a line there for a new one. It is drawn as Phosphor's were,
 1em unless a class sizes it, in the text's colour, with a `weight`: `regular`, `bold` (small marks
 such as carets and closes), `fill` and `duotone`, which the free set lacks and `hugeIcon` draws from
-its lines. Kumo's own components still draw a few Phosphor icons inside them.
+its lines. Kumo's own components still draw a few Phosphor icons inside them. The one icon of the
+app's own is `components/AgentIcon`, the Workshop's cloud in the icons' line with its sparkle solid
+in it, drawn from the mascot's shapes: an agent among other icons, as in the + menu, where
+`AgentMark`'s solid cloud would sit heavy.
 
 ## Theming
 

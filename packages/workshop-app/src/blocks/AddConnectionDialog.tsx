@@ -20,6 +20,8 @@ export type AddConnectionDialogProps = {
   onOpenChange: (open: boolean) => void
   /** What it is added to, for the line under the title: "this chat". */
   to: string
+  /** The one service all of `choices` are of, where that was chosen already: it lists its kinds, under its name. */
+  service?: string
   /** What can be connected; none given, it is still being read. */
   choices?: readonly ConnectionChoice[]
   /** Why there is nothing to choose from, when it could not be read. */
@@ -33,7 +35,7 @@ const GROUPS = [
 ] as const
 
 // What the dialog holds, which is only there while it is open: what is typed starts over each time.
-const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnectionDialogProps, 'open' | 'onOpenChange'>) => {
+const AddConnectionContent = ({ to, service: only, choices, problem, onChoose }: Omit<AddConnectionDialogProps, 'open' | 'onOpenChange'>) => {
   const [query, setQuery] = useState('')
   const found = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)
@@ -44,13 +46,13 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
     <>
       <header className="flex items-start gap-3 p-6 pb-5">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5 leading-snug">
-          <Dialog.Title className="text-lg font-medium text-kumo-default">Add a connection</Dialog.Title>
+          <Dialog.Title className="text-lg font-medium text-kumo-default">{only ? `Add from ${only}` : 'Add a connection'}</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">Choose what {to} can use. You pick which one next, in the service’s own form.</Dialog.Description>
         </div>
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <div className="px-6 pb-3">
-        <TextField aria-label="Find a service" type="search" placeholder="Find a service" value={query} onValueChange={setQuery} autoFocus />
+        <TextField aria-label={only ? `Find in ${only}` : 'Find a service'} type="search" placeholder={only ? `Find in ${only}` : 'Find a service'} value={query} onValueChange={setQuery} autoFocus />
       </div>
       <div className="flex min-h-0 grow flex-col gap-4 overflow-y-auto px-4 pb-4">
         {problem && <p role="alert" className="px-2 text-base/5 text-kumo-danger">{problem}</p>}
@@ -63,7 +65,8 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
           if (rows.length === 0) return null
           return (
             <section key={label} aria-label={label} className="flex flex-col">
-              <h3 className="px-3 pb-1 text-sm font-medium text-kumo-subtle">{label}</h3>
+              {/* One service's kinds are all its own, under its name already. */}
+              {!only && <h3 className="px-3 pb-1 text-sm font-medium text-kumo-subtle">{label}</h3>}
               {rows.map((choice) => (
                 // As a service is a row on the Connections page: all of it a button, with where it goes at its end.
                 <button
@@ -75,7 +78,7 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
                   <ServiceLogo name={choice.service.name} src={choice.service.logoUrl} glyph={choice.service.glyph} color={choice.service.color} small />
                   <span className="flex min-w-0 flex-1 flex-col leading-snug">
                     <span className="truncate font-medium text-kumo-default">{choice.title}</span>
-                    <span className="truncate text-kumo-subtle">{choice.description ? `${choice.service.name} · ${choice.description}` : choice.service.name}</span>
+                    <span className="truncate text-kumo-subtle">{only ? choice.description : choice.description ? `${choice.service.name} · ${choice.description}` : choice.service.name}</span>
                   </span>
                   <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-subtle transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transition-none" />
                 </button>
@@ -91,8 +94,8 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
 /**
  * The first step of adding a connection to a chat: what to connect, as each kind of resource the
  * services offer (a repository, a spreadsheet), those the user has an account on first, found by
- * service or kind as typed. Choosing one goes on to the service's own form for which
- * (`SetUpConnectionDialog`).
+ * service or kind as typed; or the kinds of the one service chosen already (`service`). Choosing
+ * one goes on to the service's own form for which (`SetUpConnectionDialog`).
  */
 export const AddConnectionDialog = ({ open, onOpenChange, ...props }: AddConnectionDialogProps) => (
   <Dialog open={open} onOpenChange={onOpenChange}>

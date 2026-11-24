@@ -7,20 +7,23 @@ import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
 
 export type ComposerFormatProps = {
-  /** What the draft asks for something as. Left out while it asks for nothing in particular. */
-  format?: { noun: string; icon: FormatIconName }
+  /**
+   * What the draft asks for something as, a format by its name or a template (`template`) by its
+   * title. Left out while it asks for nothing in particular.
+   */
+  format?: { noun: string; icon: FormatIconName; template?: boolean }
   onRemove: () => void
 }
 
 /**
- * The format a draft starts with (a Document, a Spreadsheet, …), as one line at the top of the
+ * The format a draft starts with (a Document, a Spreadsheet, …), or the template, as one line at the top of the
  * composer, with the way to make it an ordinary message again. It opens and closes the way the
  * reply line above it does.
  */
 export const ComposerFormat = ({ format, onRemove }: ComposerFormatProps) => {
   // The line stays written while the row closes.
   const [written, setWritten] = useState(format)
-  if (format && (format.noun !== written?.noun || format.icon !== written?.icon)) setWritten(format)
+  if (format && (format.noun !== written?.noun || format.icon !== written?.icon || format.template !== written?.template)) setWritten(format)
   const open = format !== undefined
   const transition = useReducedMotion() ? { duration: 0 } : TRANSITION
 
@@ -38,7 +41,7 @@ export const ComposerFormat = ({ format, onRemove }: ComposerFormatProps) => {
         <div className="flex h-9 items-center gap-2 rounded-[15px] bg-kumo-base ps-3 pe-1.5 text-sm text-kumo-subtle ring-1 ring-kumo-line ring-inset">
           <FormatIcon name={written?.icon} className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">
-            Start with <span className="font-medium text-kumo-default">{written?.noun}</span>
+            Start with {written?.template && 'the '}<span className="font-medium text-kumo-default">{written?.noun}</span>{written?.template && ' template'}
           </span>
           {/* Quiet until pointed at, as the actions beside a message are. */}
           <Button

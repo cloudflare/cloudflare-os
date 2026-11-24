@@ -1,5 +1,6 @@
 import type { AuthenticatedApi, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { ConnectedAccount } from '@/connections/connectionList'
+import { byRelevance, byServiceRelevance } from '@/connections/serviceRelevance'
 
 /** A service offered as the user is set up, to sign in to: once, whatever accounts it takes. */
 export type OnboardingService = {
@@ -32,24 +33,8 @@ const listed = ({ id, description }: GatekeeperVendorInfo) => ({
   tagline: description.tagline,
 })
 
-// By a service's id (see `serviceCategories.ts`): those most people work in every day first (mail
-// and documents, chat, code, tickets), then wikis and notes, then what fewer people use, so that
-// the few anyone is likely to connect are at the top of a long list.
-const SERVICES_FIRST = [
-  'google', 'microsoft', 'slack', 'github', 'gitlab', 'jira', 'confluence', 'cf_wiki', 'notion', 'linear',
-  'cloudflare', 'email', 'backstage', 'salesforce', 'workday', 'pagerduty', 'sentry',
-]
 // What the agent reaches for most, first.
 const TOOLS_FIRST = ['websearch', 'context', 'scheduler', 'container']
-
-const byRelevance = (first: string[]) => {
-  const rank = (vendorId: string) => {
-    const at = first.indexOf(vendorId)
-    return at === -1 ? first.length : at
-  }
-  return (a: { vendorId: string; name: string }, b: { vendorId: string; name: string }) =>
-    rank(a.vendorId) - rank(b.vendorId) || a.name.localeCompare(b.name)
-}
 
 /**
  * What setting up offers: each service that can be signed in to and can be reached, said to be
@@ -68,7 +53,7 @@ export const onboardingChoicesOf = ({ vendors, addable, accounts }: {
     services: vendors
       .filter(({ unavailable, description }) => !unavailable && !description.autoProvisionsAccount)
       .map((vendor): OnboardingService => ({ ...listed(vendor), connected: had.has(vendor.id) }))
-      .toSorted(byRelevance(SERVICES_FIRST)),
+      .toSorted(byServiceRelevance),
     tools: addable
       .filter(({ id, unavailable, description }) => !unavailable && description.autoProvisionsAccount && !had.has(id))
       .map(listed)

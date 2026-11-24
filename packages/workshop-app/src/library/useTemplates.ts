@@ -10,14 +10,14 @@ export const templateStore = new TemplateStore()
 /**
  * The templates there are to start something from, and the ids of the starred ones, in their
  * order, kept over the backend connection there is: again over a new one, with what was read
- * before shown meanwhile.
+ * before shown meanwhile. Not read unless `wanted`; what another has read is there all the same.
  */
-export const useTemplates = () => {
+export const useTemplates = (wanted = true) => {
   const { api, reconnecting } = useApi()
   // Over a lost connection it could only fail; the new connection's `api` reads them.
   useEffect(() => {
-    if (!reconnecting) templateStore.connect(api)
-  }, [api, reconnecting])
+    if (wanted && !reconnecting) templateStore.connect(api)
+  }, [api, reconnecting, wanted])
   return { state: useSyncExternalStore(templateStore.subscribe, templateStore.getSnapshot), setStars: templateStore.setStars, reload: templateStore.reload }
 }
 

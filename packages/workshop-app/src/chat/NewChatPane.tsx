@@ -5,6 +5,7 @@ import { ChatStart, type ChatStartProps } from '@/blocks/ChatStart'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import type { AddableService } from '@/connections/connectionChoices'
 import { ConnectResource } from '@/connections/SetUpConnection'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { MessageList } from '@/blocks/MessageList'
@@ -21,14 +22,22 @@ import { ComposerModelPicker } from './ComposerModelPicker'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatCommands } from './useChatCommands'
 import { useLinkConnections } from './useLinkConnections'
+import { useComposerOffers } from './useComposerOffers'
 
-// As the message will be drawn: the skill or the format as what it is, then what was written.
+// The words of a message, as the parts it is drawn in, those there are.
+const words = (text: string): UserMessagePart[] => (text ? [{ type: 'text', text }] : [])
+
+// As the message will be drawn: the skill as what it is, then what was written; or what is sent
+// for a format or a template (`startWithFormat`), with its name as what it is.
 const shownOf = ({ text, files, command, format }: { text: string; files: File[]; command?: ComposerCommand; format?: StartFormat }): FirstMessage => {
-  const lead: UserMessagePart | undefined = command
-    ? { type: 'command', name: command.name }
-    : format && { type: 'format', noun: format.noun, icon: format.icon }
+  const named = !command && format ? startWithFormat(format, text) : undefined
+  const at = named?.formats[0]
   return {
-    parts: [...(lead ? [lead] : []), ...(text ? [{ type: 'text' as const, text: lead ? ` ${text}` : text }] : [])],
+    parts: command
+      ? [{ type: 'command', name: command.name }, ...words(text && ` ${text}`)]
+      : named && at
+        ? [...words(named.text.slice(0, at.position)), { type: 'format', noun: at.noun, icon: at.icon }, ...words(named.text.slice(at.position + at.length))]
+        : words(text),
     attachments: files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type })),
   }
 }
@@ -89,7 +98,7 @@ export type NewChatPaneProps = {
  */
 export const NewChatPane = ({ header, sendingHeader = header, greeting, format, workspace, start, onStarted, startIn, listCommands, ensureWorkspace, initialText }: NewChatPaneProps) => {
   const model = useDefaultModel()
-  // Until they are read, the + menu keeps their room.
+  // Until they are read, the + menu's list of them says so.
   const { commands, loading: commandsLoading } = useChatCommands(startIn ?? '', listCommands, startIn !== undefined)
   const connection = useConnectionNotice()
   // The message being sent, as it was written and with the skill or format it started with, shown
@@ -100,32 +109,48 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   // start from when it comes back.
   const [unsent, setUnsent] = useState<{ text: string; files: File[]; command?: ComposerCommand } | undefined>(() => initialText ? { text: initialText, files: [] } : undefined)
   useDocumentTitle('New chat')
-  // Add a connection is open; and the connections made for the draft, by their line's key.
+  // Add a connection is open, at the service chosen for it; and the connections made for the draft,
+  // by their line's key.
   const composer = useRef<ComposerHandle>(null)
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState<{ open: boolean; start?: AddableService }>({ open: false })
   const added = useRef(new Map<string, AddedConnection>())
+  // Put away, it keeps the service it was at, whose page is the one that closes.
+  const [changeAdding] = useState(() => (open: boolean) => setAdding((current) => ({ ...current, open })))
   const [onAdded] = useState(() => async (made: AddedConnection) => {
     // By the workspace too, as each numbers its own: one made in another is not this one.
     const key = `gatekeeper:${made.workspaceId}:${made.gatekeeperId}`
     added.current.set(key, made)
     composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
   })
-  const addActions = startIn !== undefined
-    ? { onAddConnection: () => setAdding(true) }
-    : ensureWorkspace && {
-      onAddConnection: () => {
-        if (connection?.blocked()) return
-        setProblem(undefined)
-        ensureWorkspace().then(() => setAdding(true), (error: unknown) => setProblem(`Couldn’t add a connection: ${error instanceof Error ? error.message : String(error)}`))
-      },
-    }
+  // A connection is made in the workspace the chat starts in, which is made for it where there is none yet.
+  const connect = (service: AddableService) => {
+    if (startIn !== undefined) return setAdding({ open: true, start: service })
+    if (!ensureWorkspace || connection?.blocked()) return
+    setProblem(undefined)
+    ensureWorkspace().then(() => setAdding({ open: true, start: service }), (error: unknown) => setProblem(`Couldn’t add a connection: ${error instanceof Error ? error.message : String(error)}`))
+  }
+  // The format or the template chosen from the + menu, in place of the one the page opened with.
+  // Its formats and templates are read once the composer is pointed at or written in.
+  const [chosen, setChosen] = useState<StartFormat>()
+  const startsWith = chosen ?? format
+  const [offersWanted, setOffersWanted] = useState(false)
+  const offers = useComposerOffers({ wanted: offersWanted, builds: startIn !== undefined || ensureWorkspace !== undefined, onConnect: connect, onStartWith: setChosen, onDraft: (text) => composer.current?.appendToDraft(text) })
+  const addActions = { offers }
+  const composerFormat = startsWith && {
+    ...startsWith,
+    onRemove: () => {
+      setChosen(undefined)
+      format?.onRemove()
+    },
+  }
   // A link in the first message is a connection as in any other, the workspace made for the first of them.
   const links = useLinkConnections(startIn, composer, added, ensureWorkspace)
   const linkForm = links?.form && <ConnectResource {...links.form} />
   // A failure leaves the commands unread; sending still makes the workspace as it goes.
-  const onCommandsWanted = startIn === undefined && ensureWorkspace
-    ? () => void ensureWorkspace().catch(() => undefined)
-    : undefined
+  const onCommandsWanted = () => {
+    setOffersWanted(true)
+    if (startIn === undefined) void ensureWorkspace?.().catch(() => undefined)
+  }
 
   // Resolves to whether the conversation was started; the composer keeps the draft until it has.
   const send = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -136,7 +161,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
     }
     setProblem(undefined)
     // A skill is sent as itself, so a format does not go with it.
-    const asked = command ? undefined : format
+    const asked: StartFormat | undefined = command || !startsWith ? undefined : { noun: startsWith.noun, icon: startsWith.icon, template: startsWith.template }
     setPending({ text, files, command, format: asked })
     try {
       const message = asked ? startWithFormat(asked, text) : { text, formats: undefined }
@@ -164,8 +189,8 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} links={links?.draft} endSlot={modelPicker} autoFocus />
-        {startIn !== undefined && <AddConnection workspaceId={startIn} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />}
+        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={composerFormat} problem={composerProblem} workspace={workspace} addActions={addActions} links={links?.draft} endSlot={modelPicker} autoFocus />
+        {startIn !== undefined && <AddConnection workspaceId={startIn} open={adding.open} start={adding.start} onOpenChange={changeAdding} to="this chat" onAdded={onAdded} />}
         {linkForm}
       </StartLayout>
     )
@@ -174,7 +199,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
     // Its links are the greeting's composer's, where that is what was sent from.
-    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} links={greeting === undefined ? links?.draft : undefined} endSlot={modelPicker} />}>
+    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={pending ? undefined : composerFormat} problem={composerProblem} addActions={addActions} links={greeting === undefined ? links?.draft : undefined} endSlot={modelPicker} />}>
       {/* In the conversation's own list, so it is where the conversation this becomes will be. */}
       <MessageList messages={[]}>
         {pending && <UserMessage {...shownOf(pending)} />}

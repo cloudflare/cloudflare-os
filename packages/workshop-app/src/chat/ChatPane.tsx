@@ -5,6 +5,7 @@ import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import type { AddableService } from '@/connections/connectionChoices'
 import type { CreationAction } from '@/connections/ApproveCreation'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
@@ -44,6 +45,8 @@ import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
 import { THINKING, WRITING } from './statusWords'
 import { useLinkConnections } from './useLinkConnections'
+import { startWithFormat, type StartFormat } from './startWithFormat'
+import { useComposerOffers } from './useComposerOffers'
 import { ConnectResource } from '@/connections/SetUpConnection'
 import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
@@ -200,8 +203,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const ranOut = items && outOfCreditsAt(items)
   const [creditsShown, setCreditsShown] = useState<{ open: boolean; seen?: string }>({ open: false })
   const outOfCredits = creditsShown.open || (ranOut !== undefined && ranOut !== creditsShown.seen)
-  // Add a connection is open; and the connections made for the draft, by their line's key.
-  const [adding, setAdding] = useState(false)
+  // The service a connection is being added of, from the + menu; and the connections made for the draft,
+  // by their line's key.
+  const [adding, setAdding] = useState<AddableService>()
+  const changeAdding = useHandler((open: boolean) => {
+    if (!open) setAdding(undefined)
+  })
   const added = useRef(new Map<string, AddedConnection>())
   // One made from the menu: the chat has it once the message goes with it. Stable, as it uses
   // only refs, so that the dialog is not drawn again for each word of a reply.
@@ -213,6 +220,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const links = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  // The format or the template the next message asks for something as, chosen from the + menu,
+  // whose formats and templates are read once the composer is pointed at or written in.
+  const [startsWith, setStartsWith] = useState<StartFormat>()
+  const [offersWanted, setOffersWanted] = useState(false)
+  const wantOffers = useHandler(() => setOffersWanted(true))
+  const offers = useComposerOffers({ wanted: offersWanted, builds, onConnect: setAdding, onStartWith: setStartsWith, onDraft: (text) => composer.current?.appendToDraft(text) })
+  const addActions = useMemo(() => ({ offers }), [offers])
   const draftLinks = links?.draft
   const linkForm = links?.form
   // Left once, whether the workspace says it was deleted first or the call returns first.
@@ -344,7 +358,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     setProblem(undefined)
     setNotice(undefined)
     const replied = reply
-    const words = replied ? withQuote(replied.quote, text) : text
+    // A skill is sent as itself, so a format does not go with it.
+    const asked = command ? undefined : startsWith
+    const named = asked && startWithFormat(asked, text)
+    const said = named?.text ?? text
+    const words = replied ? withQuote(replied.quote, said) : said
+    // Where the name is in all of what is sent, which a quote ahead of it moves along.
+    const formats = named?.formats.map((format) => ({ ...format, position: format.position + words.length - said.length }))
     // A skill or command goes as the workspace offers it, given the words; one it no longer
     // offers, such as a skill deleted since, does not go.
     const request = command && slashRequestFor(commands.choices, command, words)
@@ -355,9 +375,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // The connections after the words, each where its capsule shows it.
     const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
     const { text: written, capsules } = withCapsules(words, given)
-    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined, replied?.sequence)
-    // Unless another message has been chosen to reply to meanwhile.
-    if (sent) setReply((current) => (current === replied ? undefined : current))
+    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined, replied?.sequence, formats)
+    // Unless another message has been chosen to reply to meanwhile, or another format to start with.
+    if (sent) {
+      setReply((current) => (current === replied ? undefined : current))
+      setStartsWith((current) => (current === asked ? undefined : current))
+    }
     return sent
   })
 
@@ -482,15 +505,17 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onSend={sendMessage}
       commands={composerCommands}
       commandsLoading={commandsLoading}
+      onCommandsWanted={wantOffers}
       links={draftLinks}
-      addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
+      addActions={addActions}
+      format={startsWith && { ...startsWith, onRemove: () => setStartsWith(undefined) }}
       stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
       problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
       reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
     />
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, draftLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWith, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -573,7 +598,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       {outOfCredits && <OutOfCredits onClose={() => setCreditsShown({ open: false, seen: ranOut })} />}
       {/* Only while it is open, as what it lists is read afresh for it. */}
       {adding && (
-        <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
+        <AddConnection workspaceId={workspaceId} open start={adding} onOpenChange={changeAdding} to="this chat" onAdded={onAdded} />
       )}
       {linkForm && <ConnectResource {...linkForm} />}
     </ChatLayout>

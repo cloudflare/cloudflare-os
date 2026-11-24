@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { knownLogoTone, readLogoTone, type LogoTone } from './logoTone'
 
 export type ServiceLogoProps = {
   /** What the service is called, whose first letter stands in for a logo it has none of. */
@@ -22,8 +23,19 @@ export type ServiceLogoProps = {
    * leaving a 3px gap round the badge through which what is behind shows, whatever that is.
    */
   notched?: boolean
-  /** Just the logo, 14px, with no tile or colour behind it, to sit on a surface of its own such as a button. */
+  /**
+   * Just the logo, 14px, with no tile or colour behind it, to sit on a surface of its own such as
+   * a button. One drawn all in a dark tone, as GitHub's is, is drawn light in the dark theme, and
+   * one all in white dark in the light theme, as either would be lost on the surface otherwise.
+   */
   bare?: boolean
+}
+
+// A logo of one tone, turned to the other where the theme's surface is of its own: light on dark,
+// with its hue kept, and back again.
+const TONED: Record<LogoTone, string> = {
+  dark: 'dark:invert dark:hue-rotate-180',
+  light: 'invert hue-rotate-180 dark:invert-0 dark:hue-rotate-0',
 }
 
 // The badge's middle is 4px in from each edge, and the cut 3px wider than its 6px radius.
@@ -37,12 +49,15 @@ export const ServiceLogo = ({ name, src, glyph, color, small = false, tiny = fal
   // The address that did not load, so that another is tried.
   const [failed, setFailed] = useState<string>()
   const shown = src !== undefined && src !== failed
+  // What the bare logo was found to be once it loaded, for the address it was read at.
+  const [read, setRead] = useState<{ src: string; tone: LogoTone | undefined }>()
 
   if (bare) {
+    const tone = shown ? (read?.src === src ? read.tone : knownLogoTone(src)) : undefined
     return (
       <span aria-hidden="true" className="grid size-3.5 shrink-0 place-items-center text-[0.5625rem] font-medium text-kumo-subtle">
         {shown
-          ? <img src={src} alt="" className="size-full object-contain" onError={() => setFailed(src)} />
+          ? <img src={src} alt="" className={cn('size-full object-contain', tone && TONED[tone])} onLoad={(event) => setRead({ src, tone: readLogoTone(event.currentTarget, src) })} onError={() => setFailed(src)} />
           : name.trim().slice(0, 1).toUpperCase() || '?'}
       </span>
     )
