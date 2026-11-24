@@ -159,6 +159,17 @@ export type SpreadsheetFormats = {
 /**
  * Read-only access to one Google spreadsheet. With changes queued, reads show them as entered (see
  * `pendingCells`).
+ *
+ * A `<user-focus>` on this spreadsheet says which worksheet the user was viewing: its `anchor` is
+ * the worksheet's `id`, then `!` and the cell or range they had picked, such as `B7` or `B7:D9`.
+ * A range names its worksheet by title, and a queued change can rename one: take the title from
+ * `getSpreadsheet()`, of the worksheet with that `id`, never from the `label`, which gives the
+ * title as last saved. Its body is what those cells hold, a range's as lines of tab-separated
+ * cells, or the text they had selected. Cells given with no body are empty, or were not all on
+ * the user's screen: read them. Cells are told as picked only for as long as the worksheet's size
+ * and its queued changes read as they did when the user picked them.
+ * A body that starts with the line `(shown with changes not yet approved)` holds values that
+ * changes still awaiting approval enter, which the spreadsheet does not hold yet.
  */
 export interface GoogleSpreadsheetReadSession {
   /** Return spreadsheet metadata and its worksheet list. */

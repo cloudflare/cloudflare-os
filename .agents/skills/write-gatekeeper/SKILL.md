@@ -300,6 +300,24 @@ gatekeeper):
   anchor it is called with is the item's `anchor`, or begins with it. Every spot it reports
   (`host.reportFocus()`) begins with it too, so that a frame started again is sent to the same
   item. Keep it well under the 256 characters an anchor may have.
+- What a preview reports is also what the agent is told the user was looking at
+  (`<user-focus>`), under the connection's title alone. Say in the session's JSDoc what an
+  anchor is made of, start an item's label with the item's name, and give the text the user has
+  selected as the spot's `context`. Where the session names something finer than the place (a
+  cell, an element), let the user pick it and put its name in the anchor, as the session's
+  methods take it. Name it only where what is drawn is certainly what the session would act on:
+  where a pending change may have moved it, report the place without it and say so in the label.
+  A pick lasts as long as the reading it was made on: find it again in a new drawing by its
+  identity alone (an ID, or its place in the reading drawn), never by where it was or what it
+  says, and when a refresh reads the resource or its pending changes as anything else, let it go
+  and report that.
+- A preview draws changes that are not approved yet, so what it reports must not pass them off
+  as saved. Keep the label to what the vendor has saved, and start the `context` with a line
+  saying so wherever it holds text a pending change wrote (`reportSpot()` in the Google
+  previews' `chrome.js`). Build the anchor from IDs the session listed and from numbers, never
+  from an address or from text of the resource. A label is for the user: where the session's
+  methods take a name a pending change can alter (a worksheet's title), say in the JSDoc that
+  the agent finds it by the anchor's ID, not in the label.
 - The anchor may come from any client, so it only chooses what to draw: resolve it through the
   session, which checks access as any open does. Open the item by the methods a gadget bound to
   the connection would use (the Drive preview walks `openFolder()` to `openGoogleDoc()`), not by

@@ -262,6 +262,12 @@ export type DriveFileBytes = {
  * above. So to move a file, request a folder that holds both where the file is and where it goes,
  * or all of Drive. Where the deployment keeps Google Drive read-only, no binding has read and write
  * access, whatever was requested, and a write fails saying so.
+ *
+ * A `<user-focus>` on this binding says which Docs, Sheets or Slides file the user was viewing.
+ * Its `anchor` starts `docs:`, `sheets:` or `slides:`, then the IDs of the folders between the
+ * binding and the file and the file's own, joined by `/`. After a space comes the place in the
+ * file, as a `<user-focus>` on a binding to that file gives it. Its `label` starts with the file's
+ * name.
  */
 export interface GoogleDriveReadSession {
   /**

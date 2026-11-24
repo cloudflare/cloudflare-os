@@ -403,6 +403,14 @@ export type SlideThumbnail = {
  * element takes from its placeholder or theme; `getSlideThumbnail()` shows the slide whole.
  * `getPresentation()` lists the masters and layouts, with their backgrounds and the theme's
  * colours, but not their elements.
+ *
+ * A `<user-focus>` on this presentation says which slide the user was at, which is the one
+ * they had picked an element or selected text on, or else were viewing: its `anchor` is the
+ * slide's `id`, then `#` and the `id` of the element they had picked, which `getSlides()`
+ * lists unless it is the layout's or the master's. Find the slide by that `id`, not by the
+ * `label`, which numbers it as the user saw it. Its body is that element's text, or the text
+ * they had selected. A body that starts with the line `(shown with changes not yet approved)`
+ * reads as the changes still awaiting approval leave it, so the presentation may not hold it.
  */
 export interface GooglePresentationReadSession {
   /** Return presentation metadata and a summary of every slide. */

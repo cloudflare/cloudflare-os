@@ -14,9 +14,9 @@
 // or a heading, and out to the web, in a new browser tab, from text Google Docs has saved.
 
 import {
-  addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion,
-  outline, outlineList, page, partNavigator, press, reportSpot, segmented, setOutline, setStops, showError, showPage,
-  showStale, status, touch, ITSELF,
+  addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss,
+  motion, outline, outlineList, page, partNavigator, picking, press, quote, reportSpot, segmented, setOutline, setStops,
+  showError, showPage, showStale, status, takesIn, touch, ITSELF,
 } from './ui/chrome.js';
 import { drawer, drawStyles, faceMeasures, showPicture } from './draw.js';
 import { blockOf, excerpt, merge, plain, said } from './merge.js';
@@ -26,6 +26,13 @@ import { pageStyles, paginate } from './pages.js';
 let gadget;
 // Tells the host where the reader is, once main() has one to tell.
 let saySpot = () => {};
+// What the reader picked: a paragraph, told by the heading it is under and by its text, since a
+// document names no paragraph, or a cell of a table, told as the session's table methods name one.
+let picker;
+// What is drawn of a pending change's own: the text it writes, the blocks and cells it adds, and
+// a paragraph or a cell it edits wherever that is not drawn as saved, which reads there as the
+// change leaves it though it only takes words away.
+const UNSAVED = 'ins, .added, #sheets:not([data-view="before"]) :is(.para, td).changed';
 
 // How far under the head of the frame a page stepped to stops.
 const HEAD = 52;
@@ -53,6 +60,20 @@ styleSheet.textContent = `
   [data-does="added"] { --glow: var(--mark-ink); }
   [data-does="removed"] { --glow: var(--gone-ink); }
   [data-does="changed"] { --glow: var(--edit-ink); }
+  /* What the reader picked: a dashed frame round a paragraph's text, clear of the space above
+     and below it, faintly tinted, with the pale edge and the band a change's ring has in Slides.
+     It lies over the paragraph, which keeps its own look. A cell is framed inside its borders.
+     On paper, which is light in either theme. */
+  .para.chosen::after { content: ''; position: absolute; z-index: 1; pointer-events: none;
+    inset: calc(var(--above, 0px) - 5px) -5px calc(var(--below, 0px) - 5px);
+    border: 1.5px dashed; border-radius: 6px; color: #1a73e8;
+    background: color-mix(in srgb, currentColor 5%, transparent);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / .75), 0 0 0 4px color-mix(in srgb, currentColor 16%, transparent);
+    animation: choose .2s ease-out; }
+  td.chosen { outline: 1.5px dashed #1a73e8; outline-offset: -3px; }
+  /* Where each change is marked in place, text selected reads as a pick does: without the words
+     a change takes away. */
+  .redline del { user-select: none; }
   /* A mark has no box to ring: it glows itself. */
   .omit { outline: none !important; }
   .grid:is(.added, .removed, .changed) { position: relative; }
@@ -169,6 +190,8 @@ async function readDrawing(id, version) {
   const held = drawings.get(id);
   if (held?.version && held.version === version) return held;
   const drawing = plain(await gadget.readDrawing(id));
+  // Google names no saving to an account that may not edit: one that reads as the one held is it.
+  if (held && !drawing.version && JSON.stringify(drawing) === JSON.stringify(held)) return held;
   drawings.set(id, drawing);
   return drawing;
 }
@@ -194,7 +217,8 @@ async function read(id) {
   if (apart() && pending.edits.length) throw new Error('The document is being edited');
   // Edits made again may no longer fit: the changes listed before them do not say so.
   const { changes } = await (again ? gadget.getPendingChanges(id) : listed);
-  return { drawing, pending, changes };
+  // Still of two savings, the copy the agent reads may count its tables from other blocks.
+  return { drawing, pending, apart: apart(), changes };
 }
 
 /**
@@ -212,10 +236,15 @@ function compose() {
   let stop = -1;
   let marked = false;
   let fresh = false;
+  // How many tables the tab holds so far as the pending changes leave it, which is how the
+  // session's table methods number one, from 0: whichever copy is drawn, and however its tables
+  // were paired with the saved ones.
+  let tables = 0;
 
   for (const [index, row] of rows.entries()) {
     const { mark } = row;
     const block = blockOf(row, hidden);
+    const table = mark !== 'removed' && (row.pending ?? row.saved).type === 'table' ? tables++ : undefined;
     // A section break has no box: one that goes is left where the tab is read as it will be.
     if ((row.pending ?? row.saved).type === 'section') {
       if (block) items.push({ section: block.section });
@@ -228,6 +257,11 @@ function compose() {
     if (key) keys.add(key);
     const place = element => {
       element.dataset.row = index;
+      // Told only where the cells drawn are certainly that table's as the session reads it: where
+      // the tab is drawn as the changes leave it, and where no change touches the table. A table
+      // drawn with what it was may be drawn with what another was, and none is counted from a
+      // drawing the changes were not read against.
+      if (table !== undefined && !tab.apart && (view === 'after' || !mark)) element.dataset.table = table;
       if (!mark) return;
       element.dataset.stop = stop;
       element.dataset.does = row.does;
@@ -250,8 +284,13 @@ function compose() {
       }
       continue;
     }
-    for (const element of draw.blocks(block)) {
+    const elements = draw.blocks(block);
+    for (const [part, element] of elements.entries()) {
       place(element);
+      // Which of the elements its row is drawn as: a table of contents is a paragraph for each
+      // entry. A changed row drawn as several, or as a table, may be drawn in another copy with
+      // other entries or cells at the same places, so what it is drawn as is this copy's alone.
+      element.dataset.part = mark && (elements.length > 1 || element.matches('.grid')) ? `${view} ${part}` : part;
       items.push({ element });
     }
   }
@@ -328,6 +367,11 @@ function keepPlace(place) {
  * something new; `place` is where the reading was, when that was taken before now.
  */
 function render(arriving, place = readingPlace()) {
+  // What is picked is that thing for as long as the merge it was picked in is drawn.
+  const [held] = tab === drawn ? picker.parts() : [];
+  const picked = held && nameOf(held);
+  // The scrolls this makes move no reader on.
+  picker.keep();
   const { items, keys, fresh, draw } = compose();
   // A tab with nothing pending has one copy.
   views.hidden = !tab.changed;
@@ -335,6 +379,7 @@ function render(arriving, place = readingPlace()) {
   // The sheets are measured as they are filled, so they are filled at their own size.
   sheets.style.transform = '';
   sheets.className = view === 'inline' ? 'redline' : '';
+  sheets.dataset.view = view;
   const endless = view === 'inline' || !!tab.drawing.pageless;
   paginate(sheets, tab.drawing, items, blocks => draw.apart(() => blocks.flatMap(block => draw.blocks(block))), endless);
   sheetWidth = Math.max(...[...sheets.children].map(sheet => sheet.offsetWidth));
@@ -352,6 +397,10 @@ function render(arriving, place = readingPlace()) {
   describeLinks();
   showPictures();
   keepPlace(place);
+  // It is picked again where this draws it, or let go, in a copy that leaves it out as in
+  // another merge, and the host told.
+  picker.set(picked && [...sheets.querySelectorAll(picked)]);
+  drawn = tab;
   if (arriving) {
     shown = keys;
     // A new change is what to look at; on opening, so is the first one there is.
@@ -432,11 +481,15 @@ const folded = new Set();
 const fold = (key, label) => foldArrow(key, label, folded, renderOutline);
 let reading = -1;
 
-// What a heading says, without what is drawn beside its text or is being removed from it.
-function headingText(heading) {
-  const copy = heading.cloneNode(true);
-  for (const gone of copy.querySelectorAll(view === 'inline' ? 'del, .marker, .tick, .obj' : '.marker, .tick, .obj')) gone.remove();
-  return copy.textContent.replaceAll('⁠', '').trim();
+// What a heading, or anything picked, says, without what is drawn beside its text or is being
+// removed from it: all of it, given the parts its pages cut it in.
+function headingText(...parts) {
+  const beside = sheets.dataset.view === 'inline' ? 'del, .marker, .tick, .obj' : '.marker, .tick, .obj';
+  return parts.map(part => {
+    const copy = part.cloneNode(true);
+    for (const gone of copy.querySelectorAll(beside)) gone.remove();
+    return copy.textContent;
+  }).join('').replaceAll('\u2060', '').trim();
 }
 
 function renderOutline() {
@@ -613,7 +666,7 @@ async function followLink(event) {
     selectTab(to);
     // Kept as goTo() keeps one, and gone to by the read that answers: a refresh may start one
     // that overtakes this, and the reader may have moved on by the time this one ends.
-    if (heading) wanted = encodeURIComponent(heading);
+    if (heading) wanted = { id: encodeURIComponent(heading) };
     return load();
   }
   const target = heading && headingAt(heading);
@@ -632,11 +685,40 @@ function savedHeading(id) {
   return block?.runs.map(run => run.text ?? run.chip ?? '').join('').replace(/\s+/g, ' ').trim();
 }
 
-// The tab shown, in a document of several, and the heading the view has passed: an address of the
-// form the document's own links to its tabs and headings have. It says only what Google has
-// saved, since a host shows it and tells an agent of it: a heading goes by its saved words
-// whatever a change makes of them, and a tab or a heading only a change makes is no spot yet.
-function here() {
+// Where `cell` is, as the session's table methods name one: its table among the tab's, as
+// compose() counts them, and its row and column there, as draw.js does. Nowhere, for a cell of
+// a table compose() gives no number.
+function placeOf(cell) {
+  const { table } = cell.closest('[data-row]').dataset;
+  if (table === undefined) return undefined;
+  const [row, column] = cell.dataset.cell.split(' ').map(Number);
+  return { table: Number(table), row, column };
+}
+
+// Every piece of the cell at `row` and `column` of the tab's table `table`, counted so.
+const cellAt = (table, row, column) => [...sheets.querySelectorAll(`.grid[data-table="${table}"] > tbody > tr > td[data-cell="${row} ${column}"]`)];
+
+// What `node` is, a paragraph or a cell, in any drawing of the merge it is drawn from: a selector
+// of every piece of it, which are the parts its pages cut it in, and a cell of a row its table
+// repeats on each page. By the merge's row, the element of that row (compose()) and a cell's
+// place in its table (draw.js), and never by what it says, which says nothing of which it is.
+function nameOf(node) {
+  const { row, part } = node.closest('[data-row]').dataset;
+  return `[data-row="${row}"][data-part="${part}"]${node.matches('td') ? ` > tbody > tr > td[data-cell="${node.dataset.cell}"]` : ''}`;
+}
+
+// The tab last drawn, which says of the next drawing whether it is of the same merge.
+let drawn;
+
+// The tab shown and the last heading at or before what is picked, or else where the text selected
+// starts, or with neither the one the view has passed: an address of the form the document's own
+// links to its tabs and headings have, and after it the cell picked, where the session's table
+// methods would certainly act on that cell (compose()). A cell of a table drawn with what a change
+// makes of it or takes from it is told by its heading and its text alone. The tab and the heading
+// are told as Google has them saved, since a host shows them and tells an agent of them: a heading
+// goes by its saved words whatever a change makes of them, and a tab or a heading only a change
+// makes is no spot yet.
+function here(range) {
   // A tab still being read has no place yet, which is not the reader gone from where they were.
   if (!loaded) return false;
   const listed = tabs.find(found => found.id === tabId);
@@ -645,46 +727,83 @@ function here() {
   // near the end scrolls no higher.
   const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
   const ended = scrollTop > 0 && scrollTop + clientHeight >= scrollHeight - 1;
+  const parts = picker.parts();
+  const [picked] = parts;
   const named = headings.filter(found => found.dataset.heading);
-  // The last heading passed that Google has, and its words there.
-  let at = ended ? named.length - 1 : reached(named);
+  // Where what is picked starts, or else the text selected.
+  const start = (picked || range) && document.createRange();
+  start?.setStart(picked ?? range.startContainer, picked ? 0 : range.startOffset);
+  // The last heading at or before that, or with neither the last passed, that Google has, and its words.
+  let at = start ? named.findLastIndex(found => start.comparePoint(found, 0) <= 0)
+    : ended ? named.length - 1 : reached(named);
   let words;
   while (at >= 0 && !(words = savedHeading(named[at].dataset.heading))) at--;
-  if (tabs.length < 2 && !words) return undefined;
+  const heading = named[at];
+  const place = picked?.matches('td') ? placeOf(picked) : undefined;
+  // A row its table repeats on each page says its words once.
+  const context = picked && headingText(...parts.filter((part, nth) => !nth || !part.closest('tr[data-header]')));
+  // Told as it reads with the pending changes, wherever they wrote any of it or took any away.
+  const pending = parts.some(part => takesIn(part, UNSAVED));
+  // A label says nothing a pending change wrote, and counts as a person does.
+  const what = !picked || picked === heading ? undefined
+    : place ? `Table ${place.table + 1} › row ${place.row + 1}, column ${place.column + 1}`
+    : picked.matches('td') ? picked.closest('.removed') ? 'Cell being deleted' : 'Cell of a table being changed'
+    : pending ? 'Pending change' : context ? quote(context) : 'Image';
+  const within = [
+    heading && `heading=${encodeURIComponent(heading.dataset.heading)}`,
+    place && `table=${place.table}&row=${place.row}&column=${place.column}`,
+  ].filter(Boolean);
   return {
-    anchor: `?tab=${encodeURIComponent(tabId)}${words ? `#heading=${encodeURIComponent(named[at].dataset.heading)}` : ''}`,
-    label: [tabs.length > 1 && listed.title, words].filter(Boolean).join(' › '),
+    anchor: `?tab=${encodeURIComponent(tabId)}${within.length ? `#${within.join('&')}` : ''}`,
+    // None at the top of a document of one tab: nowhere more particular than the document.
+    label: [tabs.length > 1 && listed.title, words, what].filter(Boolean).join(' › ') || undefined,
+    context,
+    pending,
   };
 }
 
+// A spot here() gives: a tab, a heading in it, and a cell of one of its tables.
+const SPOT = /^\?tab=([^#]*)(?:#(?:heading=([^&]*))?(?:&?table=(\d+)&row=(\d+)&column=(\d+))?)?$/;
+
 // Shows the spot `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
 // from anywhere, so it only chooses what to show. False for a tab or a heading no longer there:
-// the reader stays on the tab they are on, or starts on the one load() opens on.
+// the reader stays on the tab they are on, or starts on the one load() opens on. A cell that is
+// there is picked again, and one that is not leaves them at its heading.
 async function goTo(anchor) {
-  const [, to, id] = /^\?tab=([^#]*)(?:#heading=(.*))?$/.exec(anchor) ?? [];
+  const [, to, id, ...place] = SPOT.exec(anchor) ?? [];
   if (to === undefined || loaded && !tabs.some(listed => listed.id === decoded(to))) return false;
   if (decoded(to) !== tabId) selectTab(decoded(to));
   // Kept for the read that finds it: a refresh may start one that overtakes this, and one that
   // fails may be tried again.
   const opening = !loaded;
   if (opening) {
-    wanted = id;
+    wanted = { id, place };
     await load();
   }
   if (decoded(to) !== chosen) return false;
   // Not read, as when Google could not be reached: the spot may well still be there.
   if (!loaded) return true;
-  const heading = id === undefined ? undefined : headingAt(decoded(id));
   // The read that opens the tab has gone there itself, and the reader may have moved on since.
-  if (!opening) heading?.scrollIntoView({ block: 'start' });
+  if (!opening) showSpot({ id, place });
   saySpot();
-  return id === undefined || !!heading;
+  return id === undefined || !!headingAt(decoded(id));
+}
+
+// Brings a spot of the tab drawn into view: the cell at `place`, which is picked, or else the
+// heading `id` names. A cell not there, one of a table told no number here, or one of a tab
+// still to be added, where nothing is picked, is none.
+function showSpot({ id, place = [] }) {
+  const cell = place[0] === undefined || tabId.startsWith('pending-tab-') ? [] : cellAt(...place.map(Number));
+  picker.keep();
+  (cell[0] ?? (id === undefined ? undefined : headingAt(decoded(id))))?.scrollIntoView({ block: cell[0] ? 'center' : 'start' });
+  picker.set(cell);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Loading and refreshing
 
-// The heading the host sent this to, or a link led to in another tab, until that tab is read.
+// The spot the host sent this to, or the heading a link led to in another tab, until that tab is
+// read: as showSpot() takes it.
 let wanted;
 
 function selectTab(id) {
@@ -699,6 +818,8 @@ function selectTab(id) {
   views.hidden = true;
   setStops([]);
   showStale(0, 'document');
+  // And what was picked is a thing of that tab.
+  picker.set();
 }
 
 // The looks `block` is set in that an edit made (merge.js), which its drawing does not hold.
@@ -749,7 +870,7 @@ async function load() {
       asked = read(tabId);
     }
     if (tab) renderOutline();
-    const { drawing, pending, changes } = await asked;
+    const { drawing, pending, apart, changes } = await asked;
     if (current !== generation) return;
     const stale = changes.filter(change => change.stale).length;
     // The card is over every tab while a change waits on any of them.
@@ -768,7 +889,7 @@ async function load() {
     }
 
     const { rows, lists } = merge(drawing, pending);
-    tab = { drawing, edits, rows, lists, changed: rows.some(row => row.mark) };
+    tab = { drawing, edits, rows, lists, apart, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
 
     // The text is set in each font as it arrives, and the first time waits a moment for them:
@@ -784,7 +905,7 @@ async function load() {
     showStale(stale, 'document');
     status('');
     loaded = true;
-    if (wanted !== undefined) headingAt(decoded(wanted))?.scrollIntoView({ block: 'start' });
+    if (wanted) showSpot(wanted);
     wanted = undefined;
     saySpot();
   } catch (error) {
@@ -806,7 +927,19 @@ export default {
     pager = partNavigator('page');
     new ResizeObserver(fit).observe(page);
     addControl(views);
-    saySpot = reportSpot(host, here);
+    saySpot = reportSpot(host, here, UNSAVED, '#sheets');
+    // A paragraph of the body with something in it, its text or a picture, or a cell of a table
+    // there, in every piece of it: one of a table inside another's cell is told as the cell that
+    // holds it.
+    picker = picking(target => {
+      // Nothing of a tab still to be added, which is no spot a host is told of.
+      if (tabId.startsWith('pending-tab-')) return undefined;
+      const block = target.closest('[data-row]');
+      const node = block?.matches('.grid') ? [...block.querySelectorAll(':scope > tbody > tr > td')].find(cell => cell.contains(target))
+        : block?.matches('.para') ? block : undefined;
+      const pieces = node ? [...sheets.querySelectorAll(nameOf(node))] : [];
+      return pieces.some(piece => piece.matches('td') || headingText(piece) || piece.querySelector('.obj')) ? pieces : undefined;
+    }, () => saySpot());
     addEventListener('scroll', () => requestAnimationFrame(() => {
       markHeading();
       markPage();

@@ -10,9 +10,9 @@
 // saved: text of a pending change is not yet approved.
 
 import {
-  dataUrl, flash, fontReader, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion, outline, outlineList, page,
-  partNavigator, press, reportSpot, segmented, setOutline, setStops, showError, showLoading, showPage, showStale,
-  status, SYSTEM_FONT,
+  dataUrl, flash, fontReader, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion, outline, outlineList,
+  page, partNavigator, picking, press, quote, reportSpot, segmented, setOutline, setStops, showError, showLoading,
+  showPage, showStale, status, takesIn, SYSTEM_FONT,
 } from './ui/chrome.js';
 import { boxOf, drawSlide, slideStyles, LINE_HEIGHT } from './slide.js';
 
@@ -20,6 +20,24 @@ import { boxOf, drawSlide, slideStyles, LINE_HEIGHT } from './slide.js';
 let gadget;
 // Tells the host where the reader is, once main() has one to tell.
 let saySpot = () => {};
+// The element the reader picked on a slide, and the one the host sent this to on a slide not yet
+// drawn, as `{ slide, id }`.
+let picker = { node: () => undefined };
+let sent;
+const drawnAs = id => `[data-id="${CSS.escape(id)}"]`;
+// The element `node` draws, of its slide as that is drawn large.
+const elementOf = node => cards.get(node.closest('[data-slide]').dataset.slide)
+  ?.stages[0]?.[1].elements.find(found => found.id === node.dataset.id);
+// What a click on `target` picks: an element of a slide as it is drawn large. None of a slide
+// still to be added, which is no spot a host is told of, and none the slide takes from its layout
+// or its master, which is not the slide's to edit.
+function pickable(target) {
+  const node = target?.closest('.card:not(.added) .sheet [data-id]');
+  return node && !elementOf(node)?.from ? node : undefined;
+}
+// What is drawn of a pending change's own: an element it adds or changes, a slide it adds, and
+// the words it adds to the notes or takes from them.
+const UNSAVED = '.unsaved, .card.added, ins, .notes del';
 
 // How many slides are drawn, the rest being listed by title, and how many are read at once.
 const MAX_DRAWN = 50;
@@ -97,6 +115,9 @@ styleSheet.textContent = `
     box-shadow: 0 0 0 1.5px rgb(255 255 255 / .9); }
   .spot.gone > i { background: var(--lost); }
   .spot.edit > i { background: var(--edited); }
+  /* The frame round what the reader picked: a change's ring, dashed and faintly tinted. */
+  .spot.pick { --spot: #1a73e8; border-style: dashed; animation: choose .2s ease-out;
+    background: color-mix(in srgb, currentColor 5%, transparent); }
   .spot:is(.here, .lit) { box-shadow: 0 0 0 1px rgb(255 255 255 / .75), 0 0 0 7px color-mix(in srgb, currentColor 32%, transparent); }
   .changes { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
   .change { display: flex; align-items: center; gap: 6px; padding: 3px 9px 3px 4px; border: 0;
@@ -120,6 +141,8 @@ styleSheet.textContent = `
   .notes > .ghost { width: 60%; margin: 8px 0 4px !important; }
   .notes.here { box-shadow: 0 0 0 2px var(--mark-ink), 0 0 0 6px var(--mark), var(--paper); }
   ins { background: var(--mark); color: var(--mark-ink); text-decoration: none; }
+  /* Text selected in the notes reads as they will: without the words a change takes away. */
+  .notes del { user-select: none; }
   del { background: var(--gone); color: var(--gone-ink);
     text-decoration: line-through color-mix(in srgb, currentColor 55%, transparent); }
   ins, del { border-radius: 2px; padding: 1px 0; }
@@ -520,6 +543,13 @@ function paint(card, over) {
   const stage = drawSlide(slide, size, slide === before || !card.differs, card.pending);
   const small = drawSlide(after ?? before, size, false, card.pending);
   card.stages = [[stage, slide], [small, after ?? before]];
+  // What a pending change put on the slide, or changed there, is marked as not yet saved.
+  for (const [drawn, shown] of card.stages) {
+    if (shown !== before) for (const { id } of card.spots) drawn.querySelector(drawnAs(id))?.classList.add('unsaved');
+  }
+  // The element picked on the drawing this replaces, or the one the host sent this to.
+  const held = picker.node();
+  const again = sent?.slide === card.id ? sent.id : card.sheet.contains(held) ? held.dataset.id : undefined;
   if (card.sheet.classList.contains('wait')) stage.classList.add('first');
   card.sheet.classList.remove('wait');
   card.mini.classList.remove('wait');
@@ -531,6 +561,7 @@ function paint(card, over) {
   } else {
     card.sheet.replaceChildren(stage);
   }
+  if (again !== undefined) picker.set(pickable(stage.querySelector(drawnAs(again))));
   card.mini.replaceChildren(small, ...card.mini.querySelectorAll('.tags'));
   for (const spot of card.spots) {
     const frame = spot.gone ? spot.before : spot[card.view];
@@ -540,15 +571,34 @@ function paint(card, over) {
     spot.node.classList.toggle('off', !on);
     spot.chip.classList.toggle('off', !on);
     spot.chip.title = on ? '' : box ? 'Off the slide' : 'Not on the slide as saved';
-    if (!on) continue;
-    // No further than the slide's edges, past which nothing of it shows.
-    const [left, top] = [Math.max(box.x, 0), Math.max(box.y, 0)];
-    const [right, bottom] = [Math.min(box.x + box.width, size.width), Math.min(box.y + box.height, size.height)];
-    Object.assign(spot.node.style, {
-      left: `${left / size.width * 100}%`, top: `${top / size.height * 100}%`,
-      width: `${Math.max(right - left, 0) / size.width * 100}%`, height: `${Math.max(bottom - top, 0) / size.height * 100}%`,
-    });
+    if (on) placeMark(spot.node, box);
   }
+  framePick();
+}
+
+// Puts a mark of a slide over `box`, in the slide's points: no further than the slide's edges,
+// past which nothing of it shows.
+function placeMark(mark, box) {
+  const [left, top] = [Math.max(box.x, 0), Math.max(box.y, 0)];
+  const [right, bottom] = [Math.min(box.x + box.width, size.width), Math.min(box.y + box.height, size.height)];
+  Object.assign(mark.style, {
+    left: `${left / size.width * 100}%`, top: `${top / size.height * 100}%`,
+    width: `${Math.max(right - left, 0) / size.width * 100}%`, height: `${Math.max(bottom - top, 0) / size.height * 100}%`,
+  });
+}
+
+// The frame round the element picked, among the marks of its slide: over what the element draws,
+// as a change's ring is, which is not its box where its text spills or it is turned.
+let pickFrame;
+function framePick() {
+  const node = picker.node();
+  const card = node && cards.get(node.closest('[data-slide]').dataset.slide);
+  const element = node && elementOf(node);
+  if (!element) return pickFrame?.remove();
+  pickFrame ??= make('div', 'spot pick');
+  placeMark(pickFrame, inked(card.stages[0][0], element.id, boxOf(element)));
+  // Left where it is on its slide, it moves to the next pick there.
+  if (pickFrame.parentNode !== card.marks) card.marks.append(pickFrame);
 }
 
 function showNotes(card) {
@@ -855,7 +905,11 @@ function showStops() {
   setStops(stops);
   // On opening, the first change is what to look at, unless the reader is sent to a slide that is there.
   const opening = !loaded && !rows.some(row => row.id === owed?.split('#')[0]);
-  (firstFresh ?? (opening ? stops[0]?.[0] : undefined))?.scrollIntoView({ block: 'center', behavior: motion() });
+  const first = firstFresh ?? (opening ? stops[0]?.[0] : undefined);
+  if (!first) return;
+  // Its own scroll, which moves no reader on from what they picked.
+  picker.keep();
+  first.scrollIntoView({ block: 'center', behavior: motion() });
 }
 
 async function load() {
@@ -880,6 +934,8 @@ async function load() {
     for (const row of rows) row.seen += theme;
     const drawn = pick(rows);
     const scrollTop = document.scrollingElement.scrollTop;
+    // The cards move as they are laid out again, which is no reader moving on from a pick.
+    picker.keep();
     layOut(drawn);
     showStale(pending.changes.filter(change => change.stale).length, 'presentation');
     lift(pending.changes.length > 0);
@@ -921,24 +977,54 @@ async function load() {
 // ---------------------------------------------------------------------------------------------
 // Where the reader is
 
-// The slide the view is on, in a deck of several, by its ID: its number moves with the deck. A
-// slide only a change adds is no spot yet: a host is told of none that Google does not have.
-function here() {
-  const row = loaded && rows.length > 1 ? rows[viewed] : undefined;
+// What an element with no text is called.
+const NOUNS = { shape: 'Shape', line: 'Line', table: 'Table', image: 'Image', video: 'Video', chart: 'Chart' };
+
+// The slide the view is on, by its ID: its number moves with the deck. One of several is labelled.
+// An element picked is named after its slide, by its own ID, with its text as what is there.
+// A slide only a change adds is no spot yet: a host is told of none that Google does not have.
+// With none picked, text selected names the slide it is on, which need not be the one the view
+// is on. A range the deck was drawn again under may start in no slide: the view's it is then.
+function here(range) {
+  const node = picker.node();
+  const slide = (node ?? range?.startContainer.parentElement)?.closest('[data-slide]')?.dataset.slide;
+  const on = slide === undefined ? viewed : rows.findIndex(row => row.id === slide);
+  const row = loaded ? rows[on] : undefined;
   if (!row?.was) return undefined;
-  const number = rows.slice(0, viewed + 1).filter(kept => kept.slide).length;
-  return { anchor: row.id, label: row.slide ? `Slide ${number}` : `Deleted slide: ${row.title}` };
+  const number = rows.slice(0, on + 1).filter(kept => kept.slide).length;
+  const label = row.slide ? `Slide ${number}` : `Deleted slide: ${row.title}`;
+  if (!node) return { anchor: row.id, label: rows.length > 1 ? label : undefined };
+  const element = elementOf(node);
+  const context = node.innerText?.trim();
+  const pending = takesIn(node, UNSAVED);
+  const going = cards.get(row.id).spots.some(spot => spot.gone && spot.id === node.dataset.id);
+  return {
+    anchor: `${row.id}#${node.dataset.id}`,
+    // By its text only where that is saved: a label says nothing a pending change wrote. One a
+    // change deletes is still Google's to name, and is said to be going.
+    label: `${label} › ${context && !pending ? quote(context) : NOUNS[element?.of ?? element?.kind] ?? 'Element'}${going ? ', being deleted' : ''}`,
+    context,
+    pending,
+  };
 }
 
 // The spot the host sent this to, until the deck is read.
 let owed;
 
-// Shows the slide `anchor` names. False for a slide no longer there.
+// Shows the slide `anchor` names, and picks the element named after it. False for a slide no
+// longer there. An element no longer there leaves the reader on its slide.
 function showSpot(anchor) {
-  const card = rows.some(row => row.id === anchor) && cards.get(anchor);
+  const [slide, id] = anchor.split('#');
+  const card = rows.some(row => row.id === slide) && cards.get(slide);
   if (!card) return false;
+  // Its own scroll, which moves no reader on from what it picks.
+  picker.keep();
   card.node.scrollIntoView({ block: 'start' });
   markSlide();
+  const stage = card.stages[0]?.[0];
+  // A slide not drawn yet has its element picked as it is (paint()).
+  if (!stage) sent = id === undefined ? undefined : { slide, id };
+  else picker.set(id === undefined ? undefined : pickable(stage.querySelector(drawnAs(id))));
   return true;
 }
 
@@ -964,7 +1050,15 @@ export default {
     document.head.append(slideStyles, styleSheet);
     pager = partNavigator('slide');
     sized = new ResizeObserver(entries => entries.forEach(({ target }) => scale(target)));
-    saySpot = reportSpot(host, here);
+    // A slide's title and the names of its changes are written unmarked: only what is drawn of
+    // the slide and of its notes is text to tell.
+    saySpot = reportSpot(host, here, UNSAVED, '.sheet, .notes > div');
+    // A click on the slide itself picks none.
+    picker = picking(pickable, () => {
+      sent = undefined;
+      framePick();
+      saySpot();
+    });
     addEventListener('scroll', () => requestAnimationFrame(markSlide), { passive: true });
     outline.addEventListener('outlinechange', markSlide);
     // The slides are drawn after they are laid out, which moves those under them.
