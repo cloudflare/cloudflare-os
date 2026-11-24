@@ -338,7 +338,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
-  #appDiscovery = new Map<number, { started: number; pending: boolean }>();
+  #appDiscovery = new Map<number, { started: number; refresh?: Promise<void> }>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -2365,37 +2365,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             config.disabledGatekeepers.includes(rec.vendorId) ||
             ambientGatekeeperMode(config, rec.vendorId) === "disabled") return;
         let attempt = this.#appDiscovery.get(rec.id);
-        if (attempt?.pending || (attempt && Date.now() - attempt.started < APP_DISCOVERY_INTERVAL_MS)) return;
-        attempt = { started: Date.now(), pending: true };
-        this.#appDiscovery.set(rec.id, attempt);
-        let refresh = (async () => {
-          try {
-            let previous = JSON.stringify(rec.description);
-            let description = await rec.account.describe();
-            if (JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
-            let current = this.storage.connectedAccounts.get(rec.id);
-            // Disconnect/reconnect may run while describe yields. Never restore a deleted account
-            // or replace a description another operation has already updated.
-            if (current && JSON.stringify(current.description) === previous) {
-              this.storage.connectedAccounts.put({ ...current,
-                description: { ...current.description, providesUi: description.providesUi } });
+        if (!attempt?.refresh) {
+          if (attempt && Date.now() - attempt.started < APP_DISCOVERY_INTERVAL_MS) return;
+          attempt = { started: Date.now() };
+          this.#appDiscovery.set(rec.id, attempt);
+          attempt.refresh = (async () => {
+            try {
+              let description = await rec.account.describe();
+              if (JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
+              let current = this.storage.connectedAccounts.get(rec.id);
+              // A disconnect may run while describe yields. Preserve other current metadata.
+              if (current) {
+                this.storage.connectedAccounts.put({ ...current,
+                  description: { ...current.description, providesUi: description.providesUi } });
+              }
+            } catch {
+              // Provider error messages may contain response bodies or credentials.
+              logger.warn("failed to refresh an account description for app discovery", {
+                event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
+              });
+            } finally {
+              delete attempt.refresh;
             }
-          } catch {
-            // Provider error messages may contain response bodies or credentials.
-            logger.warn("failed to refresh an account description for app discovery", {
-              event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
-            });
-          } finally {
-            attempt.pending = false;
-          }
-        })();
-        this.ctx.waitUntil(refresh);
+          })();
+          this.ctx.waitUntil(attempt.refresh);
+        }
+        let remaining = APP_DISCOVERY_TIMEOUT_MS - (Date.now() - attempt.started);
+        if (remaining <= 0) return;
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            refresh,
+            attempt.refresh,
             new Promise<void>(resolve => {
-              timeout = setTimeout(resolve, APP_DISCOVERY_TIMEOUT_MS);
+              timeout = setTimeout(resolve, remaining);
             }),
           ]);
         } finally {
@@ -2405,7 +2407,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
-      if (vendorId !== undefined && rec.vendorId !== vendorId) continue;
       if (!rec.description.singleton && !rec.description.providesUi) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
@@ -2437,8 +2438,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async startAccountAppUi(
       accountId: number, options: Pick<AppUiContext, "isAdmin">,
   ): Promise<GatekeeperUiFrame> {
-    let record = this.storage.connectedAccounts.get(accountId);
-    if (!record?.description.providesUi) throw new Error("No such app.");
+    let record = await this.#uiAccountRecord(accountId);
+    if (!record) throw new Error("No such app.");
     let userSelectionExchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
       props: { selectorUserId: this.ctx.id.toString(), appAccountId: accountId },
     });
@@ -2451,9 +2452,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // offers (the same test listProvidedAccounts applies, since a "disabled"
   // ambient gatekeeper's account stays dormant).
   async #uiAccountRecord(accountId: number): Promise<ConnectedAccountRecord | undefined> {
+    let config = await readAdminConfig(this.env);
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record?.description.providesUi) return undefined;
-    let config = await readAdminConfig(this.env);
     if (config.disabledGatekeepers.includes(record.vendorId)) return undefined;
     if (record.autoProvisioned) {
       if (ambientGatekeeperMode(config, record.vendorId) === "disabled") return undefined;

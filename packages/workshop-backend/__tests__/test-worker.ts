@@ -275,10 +275,6 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
   }
 
-  async unavailableAccount(accountName: string): Promise<Fetcher<FakeGatekeeperAccount>> {
-    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName, failDescribe: true } });
-  }
-
   async pauseAccountDescriptions(accountName: string, paused: boolean): Promise<void> {
     await this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).pauseDescriptions(paused);
   }

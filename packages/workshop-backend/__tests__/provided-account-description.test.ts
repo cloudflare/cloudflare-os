@@ -46,9 +46,8 @@ it("discovers a newly advertised app for an existing account, persisting it with
 it("keeps cached descriptions when a gatekeeper is unavailable", async () => {
   using warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
   const { user, hooks, userId, id } = await fixture();
-  await runInDurableObject(user, async instance => {
-    const localEnv = (instance as unknown as { env: typeof env }).env;
-    const account = await localEnv.TEST_GATEKEEPER_USER_PICKER.getByName("").unavailableAccount(userId);
+  await runInDurableObject(user, instance => {
+    const account = instance["ctx"].exports.FakeGatekeeperAccount({ props: { name: userId, failDescribe: true } });
     const storage = (instance as unknown as { storage: UserStorage }).storage;
     const record = storage.connectedAccounts.get(id)!;
     storage.connectedAccounts.put({ ...record, account,
@@ -96,9 +95,72 @@ it("removes cached app metadata when the gatekeeper no longer advertises an app"
 it("refreshes only the requested vendor for a direct app open", async () => {
   const { user, hooks, userId, id } = await fixture();
   const unrelated = `${userId}-unrelated`;
-  await hooks.addAccount(userId, "homeassistant", unrelated, { providesUi: true });
-  expect(await user.listProvidedAccounts(true, "container")).toMatchObject([{ accountId: id, vendorId: "container" }]);
+  const otherId = await hooks.addAccount(userId, "homeassistant", unrelated, { providesUi: true });
+  await runInDurableObject(user, instance => {
+    const storage = (instance as unknown as { storage: UserStorage }).storage;
+    storage.connectedAccounts.put({ ...storage.connectedAccounts.get(otherId)!, autoProvisioned: true });
+  });
+  expect(await user.listProvidedAccounts(true, "container")).toContainEqual(expect.objectContaining({ accountId: id, vendorId: "container" }));
   expect(await hooks.accountCalls(unrelated)).toEqual(["describe"]);
+});
+
+it("shares discovery between the app list and a simultaneous direct app open", async () => {
+  const { user, hooks, userId, id } = await fixture();
+  await hooks.pauseAccountDescriptions(userId, true);
+  const listing = user.listProvidedAccounts(true);
+  await vi.waitFor(async () => expect(await hooks.accountCalls(userId)).toHaveLength(2));
+  const direct = user.listProvidedAccounts(true, "container");
+  try {
+    // A later DO invocation lets the direct open reach the already-pending refresh.
+    await runInDurableObject(user, () => {});
+    expect(await hooks.accountCalls(userId)).toHaveLength(2);
+  } finally {
+    await hooks.pauseAccountDescriptions(userId, false);
+  }
+  expect(await listing).toContainEqual(expect.objectContaining({ accountId: id }));
+  expect(await direct).toContainEqual(expect.objectContaining({ accountId: id }));
+  const frame = await user.startAccountAppUi(id, { isAdmin: false });
+  frame.ui[Symbol.dispose]();
+});
+
+it.each([
+  { disabledGatekeepers: ["container"] },
+  { ambientGatekeeperModes: { container: "disabled" } },
+])("checks current availability before opening an app: %j", async config => {
+  const { user, hooks, userId, id } = await fixture();
+  await hooks.pauseAccountDescriptions(userId, true);
+  const listing = user.listProvidedAccounts(true);
+  await vi.waitFor(async () => expect(await hooks.accountCalls(userId)).toHaveLength(2));
+  await runInDurableObject(user, instance => {
+    const internals = instance as unknown as { env: Cloudflare.Env };
+    internals.env = { ...internals.env, BLUEPRINTS: { get: async () => JSON.stringify(config) } as unknown as KVNamespace };
+  });
+  await hooks.pauseAccountDescriptions(userId, false);
+  await listing;
+  expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
+  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
+});
+
+it("loads the account after the app availability check yields", async () => {
+  const { user, hooks, userId, id } = await fixture();
+  await user.listProvidedAccounts(true);
+  const release = Promise.withResolvers<string | null>();
+  let readingConfig = false;
+  await runInDurableObject(user, instance => {
+    const internals = instance as unknown as { env: Cloudflare.Env };
+    internals.env = { ...internals.env, BLUEPRINTS: {
+      get: () => { readingConfig = true; return release.promise; },
+    } as unknown as KVNamespace };
+  });
+  const opening = hooks.openAppUi(userId, id, userId, "");
+  try {
+    await vi.waitFor(() => expect(readingConfig).toBe(true));
+    await runInDurableObject(user, instance => {
+      (instance as unknown as { storage: UserStorage }).storage.connectedAccounts.delete(id);
+    });
+  } finally { release.resolve(null); }
+  expect(await opening).toEqual({ error: "No such app." });
+  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });
 
 it("does not refresh ordinary OAuth accounts", async () => {
@@ -154,7 +216,7 @@ it.each(["disconnect", "new description"])("preserves a concurrent %s during met
     }
   });
   await hooks.pauseAccountDescriptions(userId, false);
-  expect(await pending).toEqual([]);
+  expect(await pending).toHaveLength(change === "disconnect" ? 0 : 1);
   await runInDurableObject(user, instance => {
     const record = (instance as unknown as { storage: UserStorage }).storage.connectedAccounts.get(id);
     expect(record?.description.displayName).toBe(change === "disconnect" ? undefined : "Newer connection");
