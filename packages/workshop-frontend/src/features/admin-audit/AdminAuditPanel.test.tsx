@@ -5,13 +5,19 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import { ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
+import {
+  ADMIN_ACCESS_ERROR_CODES,
+  ADMIN_GRANT_ERROR_CODES,
+  MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  createAdminGrantError,
+} from '@gadgets/workshop-shared/api'
 import type {
   AdminAccessRecord,
   AdminApi,
   AdminAuditPage,
   AdminAuditRecord,
   AdminAuditStats,
+  AdminContentRequest,
   AdminGrantRecord,
   AdminSettingRecord,
   AdminUserAccessRecord,
@@ -162,12 +168,31 @@ const grantRecord = (patch: Partial<AdminGrantRecord> = {}): AdminGrantRecord =>
   ...patch,
 })
 
+// The request grantRecord() records, still pending.
+const contentRequest = (patch: Partial<AdminContentRequest> = {}): AdminContentRequest => ({
+  id: 'request-1',
+  workspaceId: 'ws-titled',
+  workspaceTitle: 'Quarterly report',
+  workspaceOwner: 'owner@example.test',
+  reason: 'Ticket 42: owner unreachable',
+  requestedBy: 'admin',
+  via: 'api',
+  requestedAt: WRITE_AT,
+  expiresAt: new Date('2026-10-22T11:45:00Z'),
+  state: 'pending',
+  ...patch,
+})
+
 const testPage = (records: AdminAuditRecord[] = [settingRecord()], nextCursor?: string): AdminAuditPage =>
   nextCursor === undefined ? { records } : { records, nextCursor }
 
 const fakeAdmin = () => ({
   getAdminAuditStats: vi.fn<AdminApi['getAdminAuditStats']>(async () => testStats()),
   listAdminAudit: vi.fn<AdminApi['listAdminAudit']>(async () => testPage()),
+  listContentAccessRequests: vi.fn<AdminApi['listContentAccessRequests']>(async () => []),
+  approveContentAccess: vi.fn<AdminApi['approveContentAccess']>(
+    async (id) => contentRequest({ id, state: 'approved', grantId: 'grant-1' })),
+  denyContentAccess: vi.fn<AdminApi['denyContentAccess']>(async () => {}),
   setAdminWorkspaceAccess: vi.fn<AdminApi['setAdminWorkspaceAccess']>(async () => {}),
   setAdminAuditRetentionDays: vi.fn<AdminApi['setAdminAuditRetentionDays']>(async () => {}),
 })
@@ -253,13 +278,20 @@ describe('AdminAuditPanel', () => {
 
   // Renders the panel as the admin page does: a filter change is kept, as the URL keeps it, and
   // shown again.
-  const render = async (settings: AuditSettings = settingsWith(), admin = fakeAdmin(), initialFilter: AuditFilter = {}) => {
+  const render = async (
+    settings: AuditSettings = settingsWith(),
+    admin = fakeAdmin(),
+    initialFilter: AuditFilter = {},
+    /** The signed-in admin; null while not yet confirmed. */
+    userId: string | null = 'admin',
+  ) => {
     const onSettingsChanged = vi.fn<() => Promise<void>>(async () => {})
     let filter = initialFilter
     let reported = settings
     const draw = () => root.render(
       <AdminAuditPanel
         admin={admin as unknown as RpcStub<AdminApi>}
+        userId={userId ?? undefined}
         settings={reported}
         onSettingsChanged={onSettingsChanged}
         filter={filter}
@@ -1298,6 +1330,275 @@ describe('AdminAuditPanel', () => {
       expect(container.querySelector('[role="alert"]')).toBeNull()
       expect(hasButton('Retry')).toBe(false)
       expect(logRows()[0].textContent).toContain('setSiteName')
+    })
+  })
+
+  describe('content access requests', () => {
+    // The level at which requests can be made and approved.
+    const contentLevel = () => settingsWith({ access: { effective: 'content', chosen: 'content', max: 'content' } })
+    // A request still pending, the approval of an earlier one, and a request no longer pending.
+    const requestPage = () => testPage([
+      grantRecord(),
+      grantRecord({ method: 'approveContentAccess', requestId: 'request-0', admin: 'third-admin', grantId: 'grant-0' }),
+      grantRecord({ requestId: 'request-0', at: ACCESS_AT }),
+    ])
+    const withRequests = () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(requestPage())
+      admin.listContentAccessRequests.mockResolvedValue([
+        contentRequest(), contentRequest({ id: 'request-0', state: 'approved', grantId: 'grant-0' }),
+      ])
+      return admin
+    }
+    const kindCell = (index: number) => logRows()[index].querySelectorAll('td')[4]
+    const pendingCheckbox = () => {
+      const label = [...card('Activity log').querySelectorAll('label')]
+        .find((element) => element.textContent === 'Pending requests only')
+      const checkbox = label?.querySelector<HTMLElement>('[role="checkbox"]') ??
+        (label?.htmlFor ? document.getElementById(label.htmlFor) : null)
+      if (!checkbox) throw new Error('no Pending checkbox')
+      return checkbox
+    }
+    // Base UI builds the click's PointerEvent, which jsdom lacks, so the window has a stand-in.
+    const toggleCheckbox = async (checkbox: HTMLElement) => {
+      const view: { PointerEvent?: typeof MouseEvent } = window
+      const previous = view.PointerEvent
+      view.PointerEvent = MouseEvent
+      try {
+        await click(checkbox)
+      } finally {
+        view.PointerEvent = previous
+      }
+    }
+
+    it('offers Pending requests only at the Content level, or while it is set', async () => {
+      const { show } = await render()
+      expect(card('Activity log').textContent).not.toContain('Pending requests only')
+      await show(contentLevel())
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('false')
+
+      act(() => root.unmount())
+      root = createRoot(container)
+      await render(settingsWith(), fakeAdmin(), { pending: true })
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('true')
+    })
+
+    it('lists only pending requests when Pending is checked, and says so in the URL', async () => {
+      const { listAdminAudit, onFilterChange } = await render(contentLevel(), fakeAdmin(), { admin: 'admin' })
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('false')
+
+      await toggleCheckbox(pendingCheckbox())
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin', pending: true })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', pending: true }))
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('true')
+
+      await toggleCheckbox(pendingCheckbox())
+      expect(onFilterChange.mock.lastCall?.[0]).toStrictEqual({ admin: 'admin', pending: undefined })
+      expect(listAdminAudit.mock.lastCall?.[0]?.pending).toBeUndefined()
+    })
+
+    it('asks for pending requests when the URL does', async () => {
+      const { listAdminAudit } = await render(contentLevel(), fakeAdmin(), { pending: true })
+      expect(listAdminAudit).toHaveBeenCalledExactlyOnceWith(pageQuery({ pending: true }))
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('true')
+    })
+
+    it('marks a request still pending, and no other record', async () => {
+      await render(contentLevel(), withRequests(), {}, 'second-admin')
+      expect([0, 1, 2].map((index) => kindCell(index).textContent?.includes('Pending')))
+        .toEqual([true, false, false])
+
+      expect(hasButton('Approve')).toBe(false)
+      const details = await expand(0)
+      expect(within(details, 'Approve')).toBeDefined()
+      expect(within(details, 'Deny')).toBeDefined()
+      expect((await expand(2)).querySelectorAll('button').length).toBe(1)
+    })
+
+    it('approves another admin’s request, then loads the log again with the row kept and focused', async () => {
+      const admin = withRequests()
+      const { approveContentAccess, listAdminAudit, getAdminAuditStats } = await render(
+        contentLevel(), admin, {}, 'second-admin')
+      const details = await expand(0)
+      const toggle = logRows()[0].querySelector<HTMLButtonElement>('button[aria-expanded]')!
+      // The reload holds the approval's record above the request, which is no longer pending.
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        grantRecord({ method: 'approveContentAccess', admin: 'second-admin', grantId: 'grant-1' }),
+        ...requestPage().records,
+      ]))
+      admin.listContentAccessRequests.mockResolvedValue([])
+      const approve = within(details, 'Approve')
+      approve.focus()
+
+      await click(approve)
+
+      expect(approveContentAccess).toHaveBeenCalledExactlyOnceWith('request-1')
+      expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approved: Quarterly report', variant: 'success' }))
+      expect(listAdminAudit).toHaveBeenCalledTimes(2)
+      expect(getAdminAuditStats).toHaveBeenCalledTimes(2)
+      expect(logRows()).toHaveLength(4)
+      expect(kindCell(1).textContent).not.toContain('Pending')
+      expect(logRows()[1].contains(toggle)).toBe(true)
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(details.querySelectorAll('button').length).toBe(1)
+      expect(document.activeElement).toBe(toggle)
+    })
+
+    it('denies another admin’s request', async () => {
+      const { denyContentAccess, listAdminAudit } = await render(contentLevel(), withRequests(), {}, 'second-admin')
+      await click(within(await expand(0), 'Deny'))
+      expect(denyContentAccess).toHaveBeenCalledExactlyOnceWith('request-1')
+      expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Denied: Quarterly report' }))
+      expect(listAdminAudit).toHaveBeenCalledTimes(2)
+    })
+
+    it('offers only Withdraw on the signed-in admin’s own request, whatever the case of its ASCII letters', async () => {
+      const { denyContentAccess, approveContentAccess } = await render(contentLevel(), withRequests(), {}, 'ADMIN')
+      const details = await expand(0)
+      expect(details.textContent).toContain('Your request is waiting for another admin')
+      expect([...details.querySelectorAll('button')].map((b) => b.textContent?.trim()).slice(-1)).toEqual(['Withdraw'])
+      expect(hasButton('Approve')).toBe(false)
+
+      await click(within(details, 'Withdraw'))
+      expect(denyContentAccess).toHaveBeenCalledExactlyOnceWith('request-1')
+      expect(approveContentAccess).not.toHaveBeenCalled()
+      expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Withdrawn: Quarterly report' }))
+    })
+
+    it('offers only Deny until the signed-in admin is confirmed', async () => {
+      await render(contentLevel(), withRequests(), {}, null)
+      const details = await expand(0)
+      expect(hasButton('Approve')).toBe(false)
+      expect(within(details, 'Deny')).toBeDefined()
+    })
+
+    it('says the server’s refusal, and why a workspace gave no grant', async () => {
+      const admin = withRequests()
+      const refusal = createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending)
+      admin.approveContentAccess.mockRejectedValueOnce(refusal)
+      admin.approveContentAccess.mockResolvedValueOnce(
+        contentRequest({ state: 'failed', error: 'The workspace has a new owner.' }))
+      const { listAdminAudit } = await render(contentLevel(), admin, {}, 'second-admin')
+      const details = await expand(0)
+
+      await click(within(details, 'Approve'))
+      expect(addToast).toHaveBeenLastCalledWith(
+        { title: 'Couldn’t approve the request', description: refusal.message, variant: 'error' })
+      expect(listAdminAudit).toHaveBeenCalledTimes(2)
+
+      // Still pending after the reload, so it can be approved again.
+      await click(within(details, 'Approve'))
+      expect(addToast).toHaveBeenLastCalledWith({
+        title: 'Approval not confirmed: Quarterly report', description: 'The workspace has a new owner.', variant: 'error',
+      })
+    })
+
+    it('shows the log without waiting for the requests, and marks them once they are listed', async () => {
+      const admin = withRequests()
+      const listing = deferred<AdminContentRequest[]>()
+      admin.listContentAccessRequests.mockReturnValue(listing.promise)
+      await render(contentLevel(), admin, {}, 'second-admin')
+      expect(logRows()).toHaveLength(3)
+      expect(kindCell(0).textContent).not.toContain('Pending')
+
+      await act(async () => { listing.resolve([contentRequest()]) })
+      expect(kindCell(0).textContent).toContain('Pending')
+    })
+
+    it('leaves Pending requests only when the count of content reads is chosen', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ contentReads: 2 }))
+      const { onFilterChange, listAdminAudit } = await render(contentLevel(), admin, { pending: true, admin: 'admin' })
+      await click(button('2 content reads: show only content reads'))
+      expect(onFilterChange.mock.lastCall?.[0]).toStrictEqual(
+        { admin: 'admin', pending: undefined, exposed: 'content' })
+      expect(listAdminAudit.mock.lastCall?.[0]).toMatchObject({ exposed: 'content', pending: undefined })
+    })
+
+    it('says when the requests on a page cannot be listed, and lists them again on Retry', async () => {
+      const admin = withRequests()
+      admin.listContentAccessRequests.mockRejectedValueOnce(new Error('overloaded'))
+      const { listContentAccessRequests } = await render(contentLevel(), admin, {}, 'second-admin')
+      expect(logRows()).toHaveLength(3)
+      expect(kindCell(0).textContent).not.toContain('Pending')
+      expect(card('Activity log').querySelector('[role="alert"]')?.textContent)
+        .toContain('Couldn’t load which requests are pending')
+
+      await click(within(card('Activity log'), 'Retry'))
+      expect(listContentAccessRequests).toHaveBeenCalledTimes(2)
+      expect(card('Activity log').querySelector('[role="alert"]')).toBeNull()
+      expect(kindCell(0).textContent).toContain('Pending')
+    })
+
+    it('keeps focus on Retry while the requests are listed again, and gives it to the log once they are', async () => {
+      const admin = withRequests()
+      admin.listContentAccessRequests.mockRejectedValueOnce(new Error('overloaded'))
+      await render(contentLevel(), admin, {}, 'second-admin')
+      const alertText = () => card('Activity log').querySelector('[role="alert"]')?.textContent ?? null
+      const retry = within(card('Activity log'), 'Retry')
+
+      // A retry that fails again keeps the button, and its focus.
+      const again = deferred<AdminContentRequest[]>()
+      admin.listContentAccessRequests.mockReturnValueOnce(again.promise)
+      retry.focus()
+      await click(retry)
+      expect(retry.isConnected).toBe(true)
+      expect(document.activeElement).toBe(retry)
+      await act(async () => { again.reject(new Error('overloaded')) })
+      expect(alertText()).toContain('Couldn’t load which requests are pending')
+      expect(document.activeElement).toBe(retry)
+
+      // One that answers takes the button away, and focus goes to the log's first row.
+      await click(retry)
+      expect(alertText()).toBeNull()
+      expect(document.activeElement).toBe(logRows()[0].querySelector('button[aria-expanded]'))
+    })
+
+    it('lists the requests only once the page has answered, so a request filed between the two is marked', async () => {
+      const admin = withRequests()
+      const page = deferred<AdminAuditPage>()
+      admin.listAdminAudit.mockReturnValueOnce(page.promise)
+      const { listContentAccessRequests } = await render(contentLevel(), admin, {}, 'second-admin')
+      expect(listContentAccessRequests).not.toHaveBeenCalled()
+
+      await act(async () => { page.resolve(requestPage()) })
+      expect(listContentAccessRequests).toHaveBeenCalledOnce()
+      expect(kindCell(0).textContent).toContain('Pending')
+    })
+
+    it('shows the log quietly when the requests cannot be listed and the page holds none', async () => {
+      const admin = fakeAdmin()
+      admin.listContentAccessRequests.mockRejectedValue(new Error('no such method'))
+      await render(contentLevel(), admin)
+      expect(logRows()).toHaveLength(1)
+      expect(card('Activity log').querySelector('[role="alert"]')).toBeNull()
+    })
+
+    it('keeps an open request’s details with it when a record of the same moment arrives above', async () => {
+      const admin = withRequests()
+      const requests = (...ids: string[]) => ids.map((requestId) => grantRecord({ requestId, at: WRITE_AT }))
+      admin.listAdminAudit.mockResolvedValue(testPage(requests('request-a', 'request-b')))
+      admin.listContentAccessRequests.mockResolvedValue(
+        ['request-a', 'request-b', 'request-c'].map((id) => contentRequest({ id })))
+      await render(contentLevel(), admin, {}, 'second-admin')
+      expect(detail(await expand(1), 'Request')).toBe('request-b')
+
+      admin.listAdminAudit.mockResolvedValue(testPage(requests('request-c', 'request-a', 'request-b')))
+      await click(button('Refresh'))
+      const open = logRows().findIndex((row) => row.querySelector('[aria-expanded="true"]'))
+      expect(open).toBe(2)
+      const toggle = logRows()[open].querySelector<HTMLButtonElement>('button[aria-expanded]')!
+      expect(detail(document.getElementById(toggle.getAttribute('aria-controls')!)!, 'Request')).toBe('request-b')
+    })
+
+    it('offers only Deny on a request left from before the level was lowered below Content', async () => {
+      const { approveContentAccess } = await render(settingsWith(), withRequests(), {}, 'second-admin')
+      expect(kindCell(0).textContent).toContain('Pending')
+      const details = await expand(0)
+      expect(details.textContent).toContain('below Content, so it can’t be approved')
+      expect(hasButton('Approve')).toBe(false)
+      await click(within(details, 'Deny'))
+      expect(approveContentAccess).not.toHaveBeenCalled()
     })
   })
 

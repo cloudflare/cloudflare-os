@@ -47,6 +47,9 @@ export type AuditFilter = {
   /** Only records of calls whose answer exposed this: content, which only a call into a workspace
    * can, or metadata alone, as every call into a user's account does. */
   exposed?: AdminAccessExposure
+  /** Only the requests to read a workspace's content that are still pending, which an admin can
+   * approve or deny. */
+  pending?: true
 }
 
 /**
@@ -84,6 +87,7 @@ export const auditFilterOf = (search: Record<string, unknown>): AuditFilter => {
   const owner = text(search.owner)
   if (owner !== undefined) filter.owner = owner
   if (isAuditExposure(search.exposed)) filter.exposed = search.exposed
+  if (search.pending === true) filter.pending = true
   return filter
 }
 
