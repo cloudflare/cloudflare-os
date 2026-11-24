@@ -1,7 +1,7 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GatekeeperVendorListOptions, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -17,6 +17,7 @@ import {
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
+import { askVendor } from "./gatekeeper-discovery";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
@@ -272,6 +273,16 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return result === 0;
 }
 
+// How long the user object serves a gatekeeper's discovery answer, and its failure to answer.
+const DISCOVERY_ANSWER_TTL_MS = 60_000;
+const DISCOVERY_FAILURE_TTL_MS = 30_000;
+
+/** What listGatekeeperVendors asks of each gatekeeper. */
+type VendorDiscovery = { description: VendorDescription, supportedResources: SupportedResource[] };
+
+/** One gatekeeper's discovery, in flight (`expires` is Infinity) or settled. */
+type DiscoveryEntry = { expires: number, failed: boolean, answer: Promise<VendorDiscovery> };
+
 function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
   return {
     id,
@@ -292,7 +303,7 @@ async function checkGatekeeperVendorFilter(
     filter: GatekeeperVendorFilter): Promise<boolean> {
   try {
     if (filter.resourceUrl) {
-      let resources = await vendor.getSupportedResources();
+      let resources = await askVendor("filter", vendorId, () => vendor.getSupportedResources());
       let matched = false;
       for (let resource of resources) {
         if (typeof resource.urlPattern !== "string") {
@@ -2081,12 +2092,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async listGatekeeperVendors(filter: GatekeeperVendorFilter = {})
+  async listGatekeeperVendors(filter: GatekeeperVendorListOptions = {})
       : Promise<GatekeeperVendorInfo[]> {
-    let options = {
-      userId: this.storage.profile.get().id
-    };
-
     // Admin-disabled resources/gatekeepers are filtered out here, which also covers the agent (the
     // Overseer's connectable-vendor/resource list is sourced from this method).
     let config = await readAdminConfig(this.env);
@@ -2104,10 +2111,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         }
 
         try {
-          let [description, supportedResources] = await Promise.all([
-            vendor.describe(),
-            vendor.getSupportedResources(options),
-          ]);
+          let {description, supportedResources} =
+              await this.#discover(id, vendor, filter.retryUnavailable === true);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
@@ -2128,6 +2133,42 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     return (await Promise.all(promises)).filter(value => value !== null);
   }
+
+  // A bound gatekeeper's description and the resource types it offers this user, asked through
+  // askVendor, so that one that never answers fails within its bound rather than holding up the
+  // list (and, through it, every agent turn's system prompt). Concurrent callers share each
+  // question. An answer is served for DISCOVERY_ANSWER_TTL_MS and a failure for
+  // DISCOVERY_FAILURE_TTL_MS, both from when it settled, so a gatekeeper that does not answer
+  // costs one bounded wait per failure lifetime rather than one per list; `retryFailure` asks
+  // again at once instead of serving a failure.
+  #discover(vendorId: string, vendor: Service<GatekeeperVendor>, retryFailure: boolean)
+      : Promise<VendorDiscovery> {
+    let cached = this.#discovery.get(vendorId);
+    if (cached && cached.expires > Date.now() && !(retryFailure && cached.failed)) {
+      return cached.answer;
+    }
+    let userId = this.storage.profile.get().id;
+    let entry: DiscoveryEntry = {
+      expires: Infinity,
+      failed: false,
+      answer: askVendor("list", vendorId, async () => {
+        let [description, supportedResources] = await Promise.all([
+          vendor.describe(), vendor.getSupportedResources({ userId }),
+        ]);
+        return {description, supportedResources};
+      }),
+    };
+    this.#discovery.set(vendorId, entry);
+    entry.answer.then(() => {
+      entry.expires = Date.now() + DISCOVERY_ANSWER_TTL_MS;
+    }, () => {
+      entry.failed = true;
+      entry.expires = Date.now() + DISCOVERY_FAILURE_TTL_MS;
+    });
+    return entry.answer;
+  }
+
+  #discovery = new Map<string, DiscoveryEntry>();
 
   async connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart> {
     let vendor = this.vendors.get(vendorId);
@@ -2191,13 +2232,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Resolve every bound vendor that auto-provisions an account (VendorDescription.autoProvisionsAccount),
-  // describing them in parallel and dropping any whose describe() fails. Shared discovery step for both
-  // listing and auto-provisioning ambient gatekeepers; callers apply their own admin-mode filter.
+  // describing them in parallel and dropping any whose describe() fails or outlasts its bound.
+  // Shared discovery step for both listing and auto-provisioning ambient gatekeepers; callers apply
+  // their own admin-mode filter.
   async #ambientVendors():
       Promise<Array<{vendorId: string, vendor: Service<GatekeeperVendor>, description: VendorDescription}>> {
     let described = await Promise.all([...this.vendors].map(async ([vendorId, vendor]) => {
       try {
-        let description = await vendor.describe();
+        let description = await askVendor("ambient", vendorId, () => vendor.describe());
         return description.autoProvisionsAccount ? {vendorId, vendor, description} : null;
       } catch (err) {
         logger.warn("failed to describe vendor", {
@@ -2521,7 +2563,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       try {
         let vendorDescriptionPromise = vendorDescriptions.get(record.vendorId);
         if (!vendorDescriptionPromise) {
-          vendorDescriptionPromise = vendor.describe().catch(err => {
+          vendorDescriptionPromise = askVendor(
+              "connections", record.vendorId, () => vendor.describe()).catch(err => {
             vendorDescriptions.delete(record.vendorId);
             throw err;
           });
@@ -2538,11 +2581,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
       let supportedResources: SupportedResource[] = [];
       try {
-        supportedResources = await record.account.getSupportedResources();
+        supportedResources = await askVendor(
+            "connections", record.vendorId, () => record.account.getSupportedResources());
         supportedResources =
             filterEnabledResources(config, record.vendorId, supportedResources,
               config.disabledResources[record.vendorId]?.length
-                ? await vendor.getSupportedResources({ userId: subscriberUserId })
+                ? await askVendor("connections", record.vendorId,
+                    () => vendor.getSupportedResources({ userId: subscriberUserId }))
                 : supportedResources);
       } catch (err) {
         supportedResources = [];

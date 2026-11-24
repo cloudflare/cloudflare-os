@@ -3,7 +3,7 @@
 
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo, AuthenticatedApi, ConnectedAccountsSubscriber, ConnectFlowStart, ModelKind,
@@ -787,5 +787,90 @@ describe('stable resource type selection', () => {
       ...accountDescription(1, []), grantedResourceTypeIds: ['catalog'],
     }, VENDOR, [resource], true, 'catalog'))
     expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')
+  })
+})
+
+describe('GatekeeperModal vendor list', () => {
+  const CATALOG = { id: 'catalog', description: VENDOR, supportedResources: [RESOURCE] }
+  const STALLED = {
+    id: 'directory', unavailable: true, supportedResources: [],
+    description: { displayName: 'directory', url: '' },
+  }
+  const catalogGroup = () =>
+    document.body.querySelector('[aria-controls="connection-group-panel-vendor:catalog"]')
+  const loadingRow = () => document.body.querySelector('[role="status"]')
+  const retryButton = () => document.body.querySelector<HTMLButtonElement>('button[aria-label="Retry directory"]')
+
+  async function renderOpen(
+    open: boolean, listGatekeeperVendors: AuthenticatedApi['listGatekeeperVendors'],
+  ) {
+    testState.authenticatedApi = { ...authenticatedApi(), listGatekeeperVendors } as unknown as RpcStub<AuthenticatedApi>
+    if (!root) {
+      container = document.createElement('div')
+      document.body.appendChild(container)
+      root = createRoot(container)
+    }
+    await act(async () => root!.render(<GatekeeperModal
+      open={open}
+      onClose={() => {}}
+      getOverseer={() => { throw new Error('not called') }}
+      onCreated={() => Promise.resolve()}
+    />))
+  }
+
+  // The suite's afterEach unmounts the last test's root; these tests render into one root twice.
+  beforeEach(() => {
+    root = undefined
+  })
+
+  it('shows a loading row until the first list arrives', async () => {
+    const list = Promise.withResolvers<typeof CATALOG[]>()
+    await renderOpen(true, () => list.promise as never)
+    expect(loadingRow()?.textContent).toContain('Loading services')
+    expect(catalogGroup()).toBeNull()
+
+    await act(async () => list.resolve([CATALOG]))
+    expect(loadingRow()).toBeNull()
+    expect(catalogGroup()).not.toBeNull()
+  })
+
+  it('keeps showing the last list while a reopen refreshes it', async () => {
+    await renderOpen(true, async () => [CATALOG] as never)
+    await vi.waitFor(() => expect(catalogGroup()).not.toBeNull())
+    await renderOpen(false, async () => [CATALOG] as never)
+
+    const refresh = Promise.withResolvers<never>()
+    await renderOpen(true, () => refresh.promise)
+    expect(catalogGroup()).not.toBeNull()
+    expect(loadingRow()).toBeNull()
+  })
+
+  it('shows an unreachable vendor with a retry that asks for it again', async () => {
+    const listGatekeeperVendors = vi.fn<AuthenticatedApi['listGatekeeperVendors']>()
+      .mockResolvedValueOnce([CATALOG, STALLED])
+      .mockResolvedValueOnce([CATALOG, { ...STALLED, unavailable: undefined,
+        description: { displayName: 'Directory', url: 'https://directory.example.com/' },
+        supportedResources: [{ ...RESOURCE, urlPattern: 'https://directory.example.com/*' }] }])
+    await renderOpen(true, listGatekeeperVendors as never)
+    await vi.waitFor(() => expect(retryButton()).not.toBeNull())
+    expect(document.body.textContent).toContain('Unreachable right now')
+
+    await act(async () => retryButton()!.click())
+    expect(listGatekeeperVendors).toHaveBeenLastCalledWith({ retryUnavailable: true })
+    await vi.waitFor(() => expect(retryButton()).toBeNull())
+    expect(document.body.querySelector('[aria-controls="connection-group-panel-vendor:directory"]'))
+      .not.toBeNull()
+  })
+
+  it('finds an unreachable vendor by searching for it', async () => {
+    await renderOpen(true, async () => [CATALOG, STALLED] as never)
+    await vi.waitFor(() => expect(retryButton()).not.toBeNull())
+    const search = document.body.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'direc')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(retryButton()).not.toBeNull()
+    expect(document.body.textContent).not.toContain('No matching connection types.')
   })
 })

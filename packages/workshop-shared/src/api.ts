@@ -397,6 +397,15 @@ export type GatekeeperVendorFilter = {
   resourceUrl?: string,
 };
 
+/** Options for listing gatekeeper vendors. */
+export type GatekeeperVendorListOptions = GatekeeperVendorFilter & {
+  /**
+   * Ask again, at once, each gatekeeper whose last answer failed, rather than listing it as
+   * unavailable for the rest of the time the Workshop keeps that failure.
+   */
+  retryUnavailable?: boolean,
+};
+
 /** Options for subscribing to connected accounts. */
 export type ConnectedAccountsFilter = GatekeeperVendorFilter & {
   /** Ensure and include auto-provisioned accounts forced by deployment policy. */
@@ -1084,7 +1093,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * (see Overseer.acceptConnectionRequest()). Ambient gatekeepers need no connecting: see
    * listAddableGatekeepers().
    */
-  listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
+  listGatekeeperVendors(filter?: GatekeeperVendorListOptions): Promise<GatekeeperVendorInfo[]>;
 
   /**
    * Connect this account to an account on a connector: a third-party service or MCP server. Returns

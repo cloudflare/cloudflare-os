@@ -8,6 +8,7 @@ import type {
   GatekeeperUiFrame,
   GatekeeperUserSelection,
   GatekeeperUserVerifier,
+  SupportedResource,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
@@ -110,6 +111,12 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
       uniqueName: this.ctx.props.name,
       ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
     };
+  }
+
+  /** No resource types: enough for a connections list to show the account. */
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    this.#record("getSupportedResources");
+    return [];
   }
 
   async revoke(): Promise<void> {

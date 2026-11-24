@@ -127,3 +127,19 @@ export async function retryOnDoReset<T>(
     return recovered;
   }
 }
+
+/** The rejection of a `withTimeout` request that took longer than its bound. */
+export class TimeoutError extends Error {}
+
+/** Resolves or rejects as `request` does, unless `ms` pass first: then rejects with a
+ * `TimeoutError` carrying `message`. The request is not cancelled; its late answer is dropped.
+ * Uses `setTimeout` cleared on settlement, not `AbortSignal.timeout`, whose timer outlives a
+ * prompt answer and delays Durable Object eviction. */
+export async function withTimeout<T>(request: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([request, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new TimeoutError(message)), ms);
+    })]);
+  } finally { clearTimeout(timeout); }
+}

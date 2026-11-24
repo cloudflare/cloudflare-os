@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, GadgetSnapshotClient, GatekeeperVendorInfo } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
@@ -14,7 +14,7 @@ import {
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -116,7 +116,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, withTimeout, wrapDoStubForTelemetry } from "./do-retry";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
@@ -166,14 +166,13 @@ function sameChatFanoutStart(left: ChatFanoutStart, right: ChatFanoutStart): boo
     left.participatingUsers?.join() === right.participatingUsers?.join();
 }
 
-async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([request, new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("User DO handoff timed out.")), 2_000);
-    })]);
-  } finally { clearTimeout(timeout); }
+function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+  return withTimeout(request, 2_000, "User DO handoff timed out.");
 }
+
+// How long an agent turn's setup waits on one gatekeeper before going on without its answer
+// (see prepareChatBindings). Long enough for a loaded gatekeeper to list a large catalog.
+const TURN_SETUP_TIMEOUT_MS = 30_000;
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
@@ -9079,14 +9078,22 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The binding name a gatekeeper suggests for its resource, if any. Rejects when the gatekeeper
+  // fails or takes longer than turn setup waits; callers fall back to a generic name.
+  #suggestedBindingName(gatekeeperId: WorkpieceId): Promise<string | undefined> {
+    return withTimeout(
+        (async () =>
+            (await (await this.getGatekeeperFacet(gatekeeperId)).describe()).suggestedBindingName)(),
+        TURN_SETUP_TIMEOUT_MS, "Gatekeeper describe() timed out.");
+  }
+
   // The binding name an ambient resource takes in a chat: its gatekeeper's suggested binding name,
   // made unique.
   async #ambientBindingName(gatekeeperId: WorkpieceId, isTaken: (name: string) => boolean)
       : Promise<string> {
     let suggested: string | undefined;
     try {
-      suggested =
-          (await (await this.getGatekeeperFacet(gatekeeperId)).describe()).suggestedBindingName;
+      suggested = await this.#suggestedBindingName(gatekeeperId);
     } catch (err) {
       this.logger.warn("failed to fetch suggested binding name for ambient resource", {
         event: "chat.binding.ambient.describe.failed", gatekeeperId, error: err,
@@ -9317,8 +9324,7 @@ class OverseerImpl implements AgentHooks {
           let suggested: string | undefined;
           if (target !== undefined && this.storage.gatekeepers.get(target)) {
             try {
-              suggested =
-                  (await (await this.getGatekeeperFacet(target)).describe()).suggestedBindingName;
+              suggested = await this.#suggestedBindingName(target);
             } catch {
               // Fall through to the generic fallback.
             }
@@ -9374,9 +9380,13 @@ class OverseerImpl implements AgentHooks {
             // getAgentCatalog is optional on Gatekeeper; ambient resources always implement it (the
             // agent relies on it for discovery), answering null when they have none, so we view the
             // facet through CatalogGatekeeperFacet (derived from the contract) to call it directly.
-            let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
-                CatalogGatekeeperFacet;
-            let catalog = await facet.getAgentCatalog();
+            // Bounded, so that a gatekeeper that never answers costs the turn its catalog rather
+            // than stalling it.
+            let catalog = await withTimeout((async () => {
+              let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
+                  CatalogGatekeeperFacet;
+              return facet.getAgentCatalog();
+            })(), TURN_SETUP_TIMEOUT_MS, "Gatekeeper getAgentCatalog() timed out.");
             if (!catalog) {
               this.#catalogless.add(gatekeeperId);
               return [gatekeeperId, null];
@@ -10513,12 +10523,15 @@ class OverseerImpl implements AgentHooks {
 
   // Short-TTL cache for the gatekeeper vendor list. The list is derived from static
   // GATEKEEPER_* bindings, so it barely changes, but the connection hooks below (and the agent's
-  // system prompt) call it on every turn — caching avoids hammering the user DO each time.
+  // system prompt) call it on every turn — caching avoids hammering the user DO each time. A list
+  // naming a gatekeeper as unavailable is kept only #VENDORS_UNAVAILABLE_TTL_MS from its arrival,
+  // so that the gatekeeper's recovery reaches the agent sooner.
   #vendorsCache: {
     expires: number;
-    promise: Promise<{id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]>;
+    promise: Promise<GatekeeperVendorInfo[]>;
   } | null = null;
   static readonly #VENDORS_CACHE_TTL_MS = 60_000;
+  static readonly #VENDORS_UNAVAILABLE_TTL_MS = 10_000;
 
   #listGatekeeperVendorsCached() {
     let now = Date.now();
@@ -10527,11 +10540,16 @@ class OverseerImpl implements AgentHooks {
     }
     let promise = retryOnDoReset(
         () => this.#ownerUserStub().listGatekeeperVendors(), this.logger);
-    // Don't cache failures: drop the entry so the next call retries.
-    promise.catch(() => {
-      if (this.#vendorsCache?.promise === promise) this.#vendorsCache = null;
+    let entry = { expires: now + OverseerImpl.#VENDORS_CACHE_TTL_MS, promise };
+    promise.then(vendors => {
+      if (vendors.some(vendor => vendor.unavailable)) {
+        entry.expires = Math.min(entry.expires, Date.now() + OverseerImpl.#VENDORS_UNAVAILABLE_TTL_MS);
+      }
+    }, () => {
+      // Don't cache failures: drop the entry so the next call retries.
+      if (this.#vendorsCache === entry) this.#vendorsCache = null;
     });
-    this.#vendorsCache = { expires: now + OverseerImpl.#VENDORS_CACHE_TTL_MS, promise };
+    this.#vendorsCache = entry;
     return promise;
   }
 

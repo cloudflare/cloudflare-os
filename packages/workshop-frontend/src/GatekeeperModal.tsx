@@ -1,6 +1,6 @@
 import { logRpcFailure } from './rpcErrors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Dialog, useKumoToastManager } from '@cloudflare/kumo'
+import { Dialog, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import {
   CaretDown,
   CaretLeft,
@@ -9,6 +9,7 @@ import {
   MagnifyingGlass,
   Robot,
   Sparkle,
+  WarningCircle,
   X,
 } from '@phosphor-icons/react'
 import { RpcPromise, RpcStub } from 'capnweb'
@@ -35,6 +36,7 @@ import {
 } from './gatekeeper-modal/AgentSpawnerConfigForm'
 import { AiModelConnectionConfig } from './gatekeeper-modal/AiModelConnectionConfig'
 import { AccountChooser, AccountOption } from './gatekeeper-modal/AccountChooser'
+import { useGatekeeperVendors } from './gatekeeper-modal/useGatekeeperVendors'
 import { classifyMatch } from './resourceMatching'
 import { reportIssue } from './errorReporting'
 import { useSiteName } from './ServerConfigContext'
@@ -245,7 +247,7 @@ export default function GatekeeperModal({
   const [grantingAccountId, setGrantingAccountId] = useState<number | null>(null)
   const [reconnectingAccountId, setReconnectingAccountId] = useState<number | null>(null)
   const [accounts, setAccounts] = useState<AccountOption[]>([])
-  const [vendors, setVendors] = useState<VendorOption[]>([])
+  const { vendors, loading: vendorsLoading, retry: retryVendors } = useGatekeeperVendors(open)
 
   const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>([])
   const [decisionModels, setDecisionModels] = useState<AiChatAuthorInfo[]>([])
@@ -306,8 +308,9 @@ export default function GatekeeperModal({
   const siteName = useSiteName()
   const allConnections = useMemo(() => [
     ...platformConnectionTypes(siteName),
-    ...vendors.flatMap(connectionsForVendor),
+    ...(vendors ?? []).filter(vendor => !vendor.unavailable).flatMap(connectionsForVendor),
   ], [siteName, vendors])
+  const unreachableVendors = (vendors ?? []).filter(vendor => vendor.unavailable)
 
   const selectedConnection = useMemo(
     () => allConnections.find(connection => connection.id === selectedConnectionId) ?? null,
@@ -412,7 +415,6 @@ export default function GatekeeperModal({
     setCreating(false)
     setConnectingVendor(null)
     setReconnectingAccountId(null)
-    setVendors([])
     setSelectedAccountId(null)
     updateConfiguratorFrameState(null)
     setConfiguratorLoading(false)
@@ -435,16 +437,6 @@ export default function GatekeeperModal({
       console.error('Failed to load models:', err)
       reportIssue('gatekeeper.models-load', err)
       toasts.add({ title: "Couldn't load AI models", variant: 'error' })
-    })
-
-    authenticatedApi.listGatekeeperVendors().then(vendors => {
-      if (cancelled) return
-      setVendors(vendors)
-    }).catch(err => {
-      if (cancelled) return
-      console.error('Failed to load connection vendors:', err)
-      reportIssue('gatekeeper.vendors-load', err)
-      toasts.add({ title: "Couldn't load connection options", variant: 'error' })
     })
 
     return () => {
@@ -525,6 +517,12 @@ export default function GatekeeperModal({
   }, [allConnections])
 
   const isSearching = searchText.trim().length > 0
+  const shownUnreachableVendors = isSearching
+    ? unreachableVendors.filter(vendor => [vendor.id, vendor.description.displayName].join(' ')
+      .toLowerCase().includes(searchText.trim().toLowerCase()))
+    : unreachableVendors
+  // The first list is on its way. A reopen shows the last list while it refreshes instead.
+  const vendorsArriving = vendors === null && vendorsLoading
 
   const toggleGroup = useCallback((key: string) => {
     setExpandedGroups(prev => {
@@ -970,7 +968,7 @@ export default function GatekeeperModal({
             <div className="new-gatekeeper-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
               <div className="overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
                 {isSearching ? (
-                  filteredConnections.length === 0 ? (
+                  filteredConnections.length === 0 && shownUnreachableVendors.length === 0 && !vendorsArriving ? (
                     <div className="px-4 py-8 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
                       No matching connection types.
                     </div>
@@ -999,6 +997,25 @@ export default function GatekeeperModal({
                       onSelectItem={handleSelectConnection}
                     />
                   ))
+                )}
+                {shownUnreachableVendors.map(vendor => (
+                  <UnreachableVendorRow
+                    key={vendor.id}
+                    vendor={vendor}
+                    retrying={vendorsLoading}
+                    onRetry={retryVendors}
+                  />
+                ))}
+                {vendorsArriving && (
+                  <div
+                    role="status"
+                    className="flex items-center gap-3 border-t border-kumo-line px-3 py-3 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle first:border-t-0"
+                  >
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center">
+                      <Loader size="sm" />
+                    </div>
+                    Loading services...
+                  </div>
                 )}
               </div>
             </div>
@@ -1072,6 +1089,41 @@ function ConnectionTypeRow({
       </div>
       <CaretRight size={14} className="shrink-0 text-kumo-inactive transition-transform group-hover:translate-x-0.5 group-hover:text-kumo-default" />
     </button>
+  )
+}
+
+// A vendor the server could not reach in time. Retrying refetches the whole list, asking such
+// vendors again at once rather than serving the failure the server keeps for a while.
+function UnreachableVendorRow({
+  vendor,
+  retrying,
+  onRetry,
+}: {
+  vendor: VendorOption
+  retrying: boolean
+  onRetry: () => void
+}) {
+  return (
+    <div className="flex items-center gap-3 border-t border-kumo-line px-3 py-3 first:border-t-0">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-kumo-elevated">
+        {vendor.description.logo?.url ? (
+          <img src={vendor.description.logo.url} alt="" className="h-6 w-6 object-contain opacity-60" />
+        ) : (
+          <WarningCircle size={19} weight="duotone" className="text-kumo-warning" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+          {vendor.description.displayName}
+        </p>
+        <p className="mt-0.5 line-clamp-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
+          Unreachable right now
+        </p>
+      </div>
+      <WorkshopButton onClick={onRetry} disabled={retrying} aria-label={`Retry ${vendor.description.displayName}`}>
+        {retrying ? 'Retrying...' : 'Retry'}
+      </WorkshopButton>
+    </div>
   )
 }
 
