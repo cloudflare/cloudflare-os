@@ -4667,6 +4667,12 @@ async function runAgentPass(
     replayCatalogChange(sequence, catalogChanges, Date.now());
   }
 
+  // The model's context is built and nothing below reads the stored rows, so release them: they
+  // hold their own copy of the text of agent steps, which the context takes from stored
+  // snapshots. Emptied in place because runAgent holds the array too; it reads it again only to
+  // recognise a `/compact` turn, and such a pass has returned above.
+  chatMessages.length = 0;
+
   let context: AgentContext = {
     messages: [leadingSystemMessage, ...modelMessages],
     tools: toolList,
