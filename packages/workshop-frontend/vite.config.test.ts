@@ -38,12 +38,13 @@ describe('Vite development proxy', () => {
 it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   const pluginUrl = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
   const program = `
-    import {createServer as createUpstream} from 'node:http';
+    import {createServer as createUpstream, request} from 'node:http';
     import {createServer as createViteServer} from 'vite';
     import {gatekeeperDevProxy} from ${JSON.stringify(pluginUrl)};
     const ticket = 'one-use-ticket-fixture';
-    let forwarded = 0;
+    let forwarded = 0, totalRequests = 0;
     const upstream = createUpstream((req, res) => {
+      ++totalRequests;
       if (req.url.includes(ticket)) ++forwarded;
       if (req.url.endsWith('/fail')) return req.socket.destroy();
       res.writeHead(200, {'Content-Disposition': 'attachment; filename=setup.cfosoperator'});
@@ -63,6 +64,15 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
       const failed = await fetch(origin + '/gatekeeper/scheduler/' + ticket + '/fail');
       await failed.text();
       if (failed.status !== 502 || forwarded !== 2) throw Error('Failure handling failed');
+      for (const path of ['/gatekeeper/' + ticket + '/../../api/private', '/gatekeeper/%2e%2e/api/private']) {
+        const rejected = await new Promise((resolve, reject) => {
+          const req = request({hostname: '127.0.0.1', port: vite.httpServer.address().port, path}, res => {
+            res.resume(); res.on('end', () => resolve(res.statusCode));
+          });
+          req.on('error', reject); req.end();
+        });
+        if (rejected !== 400 || totalRequests !== 2) throw Error('Traversal reached upstream');
+      }
       console.log('FIXTURE_PASSED');
     } finally {
       await vite.close();
@@ -71,7 +81,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   `
   const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
     cwd: fileURLToPath(new URL('.', import.meta.url)),
-    env: {...process.env, DEBUG: 'vite:*'}, encoding: 'utf8', timeout: 15_000,
+    env: {...process.env, DEBUG: '*'}, encoding: 'utf8', timeout: 15_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const output = child.stdout + child.stderr
@@ -80,6 +90,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   expect(output).toContain('FIXTURE_PASSED')
   expect(output).toContain('Gatekeeper development proxy failed.')
   expect(output).toContain('vite:time')
+  expect(output).toContain('connect:dispatcher')
   expect(output).toContain('/gatekeeper/[redacted]')
   expect(output).not.toContain('one-use-ticket-fixture')
 })
