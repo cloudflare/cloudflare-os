@@ -2189,6 +2189,26 @@ describe("Resending a request to keep its cache", () => {
     expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
   }, 15000);
 
+  it.each(["anthropic", "openai"] as const)("does not retain %s media requests for warming", async provider => {
+    const handle = getModel(env(), {provider, model: provider === "anthropic" ? "claude-opus-5-5" : "gpt-6-luna", apiToken: ""}, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeDefined();
+    for (const role of ["user", "toolResult"] as const) {
+      const image = {type: "image" as const, mimeType: "image/png", data: "a".repeat(4 * 1024 * 1024)};
+      const message = role === "user" ? {role, content: [image], timestamp: 0} : {
+        role, toolCallId: "read", toolName: "readFile", content: [image], isError: false, timestamp: 0,
+      };
+      const result = await handle.stream(handle.model, {messages: [message]},
+          {fetch: answering(), maxRetries: 0}).result();
+      expect(result.stopReason).toBe("stop");
+      expect(result.usage.cacheRead).toBeGreaterThan(0);
+      expect(handle.lastRequest).toBeUndefined();
+    }
+    // Once images have left the model projection, text-only warming is available again.
+    await send(handle);
+    expect(handle.lastRequest).toBeDefined();
+  }, 15000);
+
   it("prices a resend as a read of the whole prompt and a one-token answer, and a miss as a " +
       "write of the chat's own part", async () => {
     const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },

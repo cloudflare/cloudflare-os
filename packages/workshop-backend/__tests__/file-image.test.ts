@@ -387,6 +387,38 @@ describe("images read from a worktree", () => {
     expect(results(replay.requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
   }));
 
+  it("surfaces an image-policy refusal once and omits those pixels from later turns", async () => {
+    const name = crypto.randomUUID();
+    let chatId: number;
+    await inKernel(name, async impl => {
+      ({chatId} = await setup(impl));
+      await turn(impl, chatId, [[read()]]);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Describe it"}]);
+      const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const stream = handle.stream;
+      let requests = 0;
+      handle.stream = (model, context, options) => stream(model, context, {...options, maxRetries: 0, fetch: async () => {
+        ++requests;
+        return new Response(`data: ${JSON.stringify({type: "response.failed", response: {
+          id: "policy", status: "failed", output: [], error: {
+            code: "image_content_policy_violation", message: "Image rejected under the image policy.",
+          },
+        }})}\n\n`, {headers: {"content-type": "text/event-stream"}});
+      }});
+      await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config))
+          .rejects.toThrow("image_content_policy_violation");
+      expect(requests).toBe(1);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Now discuss an unrelated topic"}]);
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const {requests} = await turn(impl, chatId, []);
+      expect(results(requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+    });
+  });
+
   it("reruns explicit native /compact without rejected pixels through the real Anthropic adapter", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);

@@ -52,7 +52,7 @@ import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
-  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError,
+  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
   MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage,
 } from "./file-image";
 
@@ -2502,8 +2502,9 @@ async function runAgentPass(
   const firstLiveSequence = hooks.nextChatSequencePeek(chatId);
   const recoverFileImages = (
       error: unknown, reads: ReadonlyMap<number, ReadonlySet<string>>, includeLive = false): boolean => {
-    if (!(error instanceof AgentTurnError) ||
-        !isImageDecodeError(error.message, error.statusCode)) return false;
+    if (!(error instanceof AgentTurnError)) return false;
+    const policyRefusal = isImagePolicyError(error.message);
+    if (!policyRefusal && !isImageDecodeError(error.message, error.statusCode)) return false;
     const rejected = new Map(reads);
     if (includeLive && liveImageReads.size > 0) {
       // Live results acquire their message sequences at the persistence barrier. Resolve their
@@ -2519,6 +2520,8 @@ async function runAgentPass(
     // The provider may not name the bad part. Omit only the included read observations, never
     // other reads of the same blob: reverting a newer batch must preserve an earlier good read.
     hooks.rejectChatFileImages(chatId, rejected);
+    // Record the omission for future turns, but preserve this refusal and never retry it.
+    if (policyRefusal) throw error;
     if (progress.fileImagesAfterRecovery) return false;
     // Removing rejected pixels must not promote older, previously elided images into the one
     // recovery request. Preserve the chosen window, including unsummarized compaction images.

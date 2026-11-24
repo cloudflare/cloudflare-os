@@ -6,6 +6,7 @@ import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/cod
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
+import {imageDimensions} from "./chat-attachment-validation";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -221,11 +222,26 @@ export type CompactionProjectionMessage = {
 };
 
 function projectionMessageWeight(message: Message): number {
-  // Use serialized length to divide the measured prompt size between messages. Replace attachment
-  // data (base64 image payloads ride ImageContent.data) with a short marker because the model's
-  // attachment cost depends on the content it processes, not the byte count.
-  return JSON.stringify(message, (key, value) =>
-    key === "data" && typeof value === "string" && value.length > 64 ? "[binary]" : value).length;
+  // Text uses serialized characters. Image weight follows dimensions rather than compressed
+  // bytes: a flat-color screenshot can be tiny on disk but expensive at original resolution.
+  const text = JSON.stringify(message, (key, value) =>
+    key === "data" && typeof value === "string" ? "[binary]" : value).length;
+  const imageTokens = typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
+    if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
+    // Decode at most 64 KiB of header, never allocate another copy of a multi-MiB image here.
+    // An unusually long JPEG header or unknown encoding gets the maximum admitted file estimate.
+    let dimensions: [number, number] | undefined;
+    try {
+      dimensions = imageDimensions(part.mimeType, Uint8Array.fromBase64(part.data.slice(0, 87_380)));
+    } catch { /* A malformed header must not break compaction. */ }
+    // Estimate original-detail 32px patches at 1.2 tokens/patch, as current OpenAI defaults do.
+    // Other providers may resize and use fewer tokens; measured usage replaces this estimate on
+    // the next step. Keep a floor for small images' per-image overhead.
+    // https://developers.openai.com/api/docs/guides/images-vision#patch-based-image-tokenization
+    const patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
+    return sum + Math.max(1024, Math.ceil(patches * 1.2));
+  }, 0);
+  return text + imageTokens * 4;
 }
 
 /** Estimate tokens for messages not included in provider usage, or when usage data is unavailable. */

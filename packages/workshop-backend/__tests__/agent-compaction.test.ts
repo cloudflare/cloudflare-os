@@ -3,7 +3,7 @@ import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
   buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn,
+  estimateProjectionTokens, foldProposedChanges, getModelTokenLimits, isCompactionTurn,
   shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
 import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -227,6 +227,38 @@ describe("compaction trigger", () => {
       type: "connectionRequest", requestId: "1:1", vendorId: "v", vendorName: "V",
       reason: "Needed", state: "pending",
     }))).toBe(false);
+  });
+});
+
+describe("image context estimates", () => {
+  // The header is all the estimator reads. Size on disk does not determine visual tokens.
+  function image(width: number, height: number, padding = 0) {
+    const bytes = new Uint8Array(24 + padding);
+    const view = new DataView(bytes.buffer);
+    for (const [offset, value] of [[0, 0x89504e47], [4, 0x0d0a1a0a], [8, 13], [12, 0x49484452], [16, width], [20, height]]) {
+      view.setUint32(offset, value);
+    }
+    return {type: "image" as const, mimeType: "image/png", data: bytes.toBase64()};
+  }
+  it("counts the four original-resolution file results before the next request and on replay", () => {
+    const live = Array.from({length: 4}, (_, index) => ({message: {
+      role: "toolResult" as const, toolName: "readFile", toolCallId: String(index),
+      content: [image(6400, 4800)], isError: false, timestamp: 0,
+    }}));
+    const replay = structuredClone(live);
+    const limits = getModelTokenLimits({provider: "openai", model: "gpt-6-astra", apiToken: ""});
+    for (const projection of [live, replay]) {
+      expect(estimateProjectionTokens(projection)).toBeGreaterThanOrEqual(144_000);
+      expect(shouldCompactChat(150_000 + estimateProjectionTokens(projection), limits.inputBudget)).toBe(true);
+    }
+  });
+  it("uses dimensions and a small header allocation, independent of encoded pixel size", () => {
+    const estimate = (part: ReturnType<typeof image>) => estimateProjectionTokens([
+      {message: {role: "user", content: [part], timestamp: 0}},
+    ]);
+    expect(estimate(image(6400, 4800, 4 * 1024 * 1024))).toBe(estimate(image(6400, 4800)));
+    expect(estimate(image(1, 1))).toBeLessThan(1100);
+    expect(estimate({...image(1, 1), data: "malformed"})).toBeGreaterThanOrEqual(36_000);
   });
 });
 

@@ -688,6 +688,11 @@ function cachedRequest(
     sent: { payload: unknown; at: number }, usage: Usage,
     aiGatewayLogRoute: AiGatewayLogRoute | undefined,
     routing: SimpleStreamOptions): CachedRequest | undefined {
+  // A viewed chat keeps this closure alive between turns. Retaining several base64 image/PDF
+  // payloads per chat can exhaust the DO's heap across its viewed chats. Let media prompts expire
+  // naturally; text-only requests remain eligible for warming.
+  if (context.messages.some(message => Array.isArray(message.content) &&
+      message.content.some(part => part.type === "image"))) return undefined;
   const resent = cappedForResend(model, sent.payload);
   if (resent === undefined || usage.cacheRead + usage.cacheWrite === 0) return undefined;
   const { cacheRead, cacheWrite, output } = model.cost;

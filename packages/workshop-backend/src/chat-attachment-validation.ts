@@ -87,9 +87,8 @@ export function canInlineChatAttachmentImage(
       Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) <= maxPatches;
 }
 
-// Read dimensions from supported format headers only; never decode/decompress pixel data.
-// Unknown or truncated headers fall back to the workspace rather than breaking model replay.
-function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
+/** Read supported format headers without decoding pixels; unknown or truncated headers return undefined. */
+export function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (mimeType === "image/png" && bytes.length >= 24 &&
       view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a &&

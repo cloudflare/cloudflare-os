@@ -16,18 +16,29 @@ export const MAX_FILE_IMAGE_CONTEXT_COUNT = 4;
 export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history. Read the file again if needed.";
 
 /** Pixels omitted after a provider rejected image data; the original file is unchanged. */
-export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider could not decode an image in this request. Convert or replace the file before reading it again.";
+export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider rejected an image in this request. The original file is unchanged.";
 
 const ImageDataErrorCode = z.enum([
   "image_parse_error", "invalid_image", "invalid_image_format", "invalid_image_mode", "invalid_base64_image",
   "unsupported_image_media_type", "empty_image_file",
 ]);
-const OpenAIImageError = z.object({code: ImageDataErrorCode});
+const OpenAIImageError = z.object({code: z.string()});
 
 // Gemini's SDK can report a nested JSON error without an HTTP-status prefix.
 const NestedImageError = z.object({error: z.object({
   code: z.union([z.literal(400), z.literal(422)]), message: z.string(),
 })});
+
+/** An explicit image-policy refusal must be surfaced without retrying the turn. */
+export function isImagePolicyError(message: string): boolean {
+  if (/^(?:Error Code )?image_content_policy_violation:/.test(message)) return true;
+  const envelope = /^OpenAI API error \((?:400|422)\):\s*/.exec(message);
+  if (!envelope) return false;
+  try {
+    const body = OpenAIImageError.safeParse(JSON.parse(message.slice(envelope[0].length)));
+    return body.success && body.data.code === "image_content_policy_violation";
+  } catch { return false; }
+}
 
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
 export function isImageDecodeError(message: string, status: number | undefined): boolean {
@@ -38,7 +49,10 @@ export function isImageDecodeError(message: string, status: number | undefined):
     // The same adapter wraps a structured JSON error on HTTP 400/422 instead of SSE failure.
     const envelope = /^OpenAI API error \((?:400|422)\):\s*/.exec(message);
     const body: unknown = JSON.parse(envelope ? message.slice(envelope[0].length) : message);
-    if (envelope && OpenAIImageError.safeParse(body).success) return true;
+    if (envelope) {
+      const error = OpenAIImageError.safeParse(body);
+      if (error.success && ImageDataErrorCode.safeParse(error.data.code).success) return true;
+    }
     const nested = NestedImageError.safeParse(body);
     if (nested.success) {
       status = nested.data.error.code;
