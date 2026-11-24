@@ -2023,7 +2023,12 @@ class OverseerImpl implements AgentHooks {
       for (let {facetName} of Array.from(this.storage.gadgetSnapshots.list())) {
         this.deleteGadgetSnapshot(facetName);
       }
-      // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
+      // So does the result of an apply it had in flight, whose actions still carry the mark.
+      this.#recordLostApply(
+          Array.from(this.storage.actions.byHistoryFilter.get("pending"))
+              .flatMap(record => record.type === "action" && record.applying ? [record.id] : []),
+          "The workspace restarted while this was being applied.");
+            // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
       if ([...this.storage.activeAgents.list()].some(r => this.storage.chatMeta.get(r.chatId)?.activeAgent)) {
@@ -6582,6 +6587,22 @@ class OverseerImpl implements AgentHooks {
     return last ? actionBranch(last.record) : null;
   }
 
+  // Records that an apply naming these actions ended with no result, and with it whether anything
+  // applied. Each one still pending keeps its mark (ActionRecord.applying), for the next call to
+  // reconcile, and says so to a user who would deny it instead.
+  #recordLostApply(ids: number[], message: string): void {
+    let applyError = {message, retryable: true, outcomeUnknown: true as const};
+    this.storage.transaction(() => {
+      for (let id of ids) {
+        let record = this.storage.actions.get(id);
+        if (record?.type !== "action" || record.state !== "pending") continue;
+        record.applyError = applyError;
+        record.appliedAt = new Date();
+        this.storage.actions.put(record);
+      }
+    });
+  }
+
   // Applies one view's list through Gatekeeper.applyActions(), calling again with what is left
   // while a call applies something, and settles each action a call names from its result. Those
   // reported applied are approved. The failed one keeps the error and stays pending, as does
@@ -6622,19 +6643,7 @@ class OverseerImpl implements AgentHooks {
                 new Map([...named].map(([action, {id}]) => [action, id])),
                 this.pushVisibleTo(gatekeeperId, branch)));
       } catch (error) {
-        // The call's result is lost, and with it whether anything applied. Each action keeps its
-        // mark, for the next call to reconcile, and says so to a user who would deny it instead.
-        let applyError =
-            {message: stringifyError(error), retryable: true, outcomeUnknown: true as const};
-        this.storage.transaction(() => {
-          for (let {record: {id}} of items) {
-            let record = this.storage.actions.get(id);
-            if (record?.type !== "action" || record.state !== "pending") continue;
-            record.applyError = applyError;
-            record.appliedAt = new Date();
-            this.storage.actions.put(record);
-          }
-        });
+        this.#recordLostApply(items.map(({record}) => record.id), stringifyError(error));
         throw error;
       }
       let {applied, failed} = result;

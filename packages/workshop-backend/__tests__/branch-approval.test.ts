@@ -1143,6 +1143,29 @@ describe("staging", () => {
     });
   });
 
+  it("says an action may have applied when the workspace restarted during its apply",
+      async () => {
+    const {visit} = await workspace({
+      applyActions: () => new Promise<ApplyActionsResult>(() => {}),
+    });
+    await expect(visit(async impl => {
+      await impl.adoptsBranches(GK);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.submitAction(GK, 2, description(), CHAT_B);
+      void impl.acceptBranch(1, impl.branchSnapshot(1), USER).catch(() => {});
+      await vi.waitFor(() => expect(record(impl, 1).applying).toBe(true));
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during an apply");
+    })).rejects.toThrow(/Injected reset/);
+    await visit(impl => {
+      expect(record(impl, 1)).toMatchObject({state: "pending", applying: true, applyError: {
+        message: "The workspace restarted while this was being applied.",
+        retryable: true, outcomeUnknown: true,
+      }});
+      expect(record(impl, 2).applyError).toBeUndefined();
+    });
+  });
+
   it("holds a staged action the provider may have applied anyway, with what follows, for a user",
       async () => {
     const rejected: number[] = [];
