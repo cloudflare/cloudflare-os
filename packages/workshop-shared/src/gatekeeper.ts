@@ -797,9 +797,10 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * connectable (default true) and creatable (default false) flags control which flows offer it.
    *
    * `options.userId` specifies the user ID (usually, email address) of the user who is driving the
-   * query, and `options.isAdmin` whether that user is a deployment admin, which the gatekeeper can
-   * consider in deciding what resources are available. If it returns an empty list, then the
-   * gatekeeper will be totally hidden from the user.
+   * query, which the gatekeeper can consider in deciding what resources are available. If it
+   * returns an empty list, then the gatekeeper will be totally hidden from the user.
+   * `options.isAdmin` says whether that user is a deployment admin, and is given to the admin
+   * gatekeeper (whatever is bound as GATEKEEPER_ADMIN) alone: no other vendor receives it.
    *
    * TODO: Providing the user ID here is a temporary hack to enable a hidden internal gatekeeper.
    *   Later on we should come up with a better way to manage which users see which gatekeepers.

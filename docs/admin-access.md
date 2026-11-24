@@ -495,9 +495,10 @@ which methods the gatekeeper may call: the gatekeeper serves its agents the read
 (`ADMIN_AGENT_KINDS`), and its Worker is trusted as the backend's own configuration is. The
 release build reserves the `admin` install slug for it.
 
-**Who is offered it.** `GatekeeperVendor.getSupportedResources()` is told whether the user it is
-asked for is a deployment admin (`isAdmin`), and the gatekeeper returns no resource for anyone
-else, which hides it from them as any vendor with no resource is hidden.
+**Who is offered it.** The admin gatekeeper's `GatekeeperVendor.getSupportedResources()` is told
+whether the user it is asked for is a deployment admin (`isAdmin`; no other vendor is told), and
+the gatekeeper returns no resource for anyone else, which hides it from them as any vendor with
+no resource is hidden.
 
 **Who sees what it read.** Nothing here is specific to this gatekeeper. Its reads set the
 restricted-data latch and report one subresource, so the workspace's actions wait for a person,
@@ -857,7 +858,7 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `cli-admins-only.test.ts`: the `via` a session's User-Agent gives its records.
 - `admin-api-grant.test.ts`: the grant a deployment admin's connect flow hands the admin
   gatekeeper and no other vendor, what it answers for a user who is no admin, and the `isAdmin`
-  hint on every `getSupportedResources()` call.
+  hint on every `getSupportedResources()` call to the admin gatekeeper and on none to another.
 - `admin-view.test.ts`: `adminViewCall()`, the call discipline both views share: the order of its
   checks, its read of the setting, the read and the record before the answer; each call recorded
   with no retention; a call refused and recorded while the setting or the cap is off or not a

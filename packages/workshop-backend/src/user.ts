@@ -25,7 +25,7 @@ import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
-import { isDeploymentAdmin, supportedResourcesHint } from "./auth/config.js";
+import { ADMIN_GATEKEEPER_VENDOR_ID, isDeploymentAdmin, supportedResourcesHint } from "./auth/config.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
   authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
@@ -202,14 +202,6 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
  * Gateway billing flow is Cloudflare-specific, so several places key off this literal.
  */
 export const CLOUDFLARE_VENDOR_ID = "cloudflare";
-
-/**
- * Vendor id of the admin gatekeeper (the suffix of GATEKEEPER_ADMIN, lowercased): the one vendor
- * a deployment admin's connect flow hands their Admin API to (see AdminApiGrantImpl). The binding
- * is trusted as the backend's own configuration is, and the release build refuses any other
- * package whose install slug folds to this id.
- */
-export const ADMIN_GATEKEEPER_VENDOR_ID = "admin";
 
 const withholdSecret = (secret: string) => secret === "" ? "" : null;
 
@@ -2092,7 +2084,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async listGatekeeperVendors(filter: GatekeeperVendorFilter = {})
       : Promise<GatekeeperVendorInfo[]> {
-    let options = supportedResourcesHint(this.env, this.storage.profile.get().id);
+    let userId = this.storage.profile.get().id;
 
     // Admin-disabled resources/gatekeepers are filtered out here, which also covers the agent (the
     // Overseer's connectable-vendor/resource list is sourced from this method).
@@ -2106,15 +2098,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         continue;  // Whole gatekeeper disabled by admin.
       }
       promises.push((async () => {
-        if (filter && !(await checkGatekeeperVendorFilter(
-            () => vendor.getSupportedResources(options), id, filter))) {
-          return null;
-        }
-
         try {
+          // Inside the try: the admin gatekeeper's hint reads ADMINS, and a malformed one marks
+          // that vendor unavailable rather than failing the list.
+          let hint = supportedResourcesHint(this.env, userId, id);
+          if (filter && !(await checkGatekeeperVendorFilter(
+              () => vendor.getSupportedResources(hint), id, filter))) {
+            return null;
+          }
+
           let [description, supportedResources] = await Promise.all([
             vendor.describe(),
-            vendor.getSupportedResources(options),
+            vendor.getSupportedResources(hint),
           ]);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
@@ -2157,7 +2152,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     let callback = this.ctx.exports.GatekeeperConnectCallbackImpl({props});
 
-    let hint = supportedResourcesHint(this.env, this.storage.profile.get().id);
+    let hint = supportedResourcesHint(this.env, this.storage.profile.get().id, vendorId);
     let usesIds = resourceTypeIds !== undefined &&
       (await vendor.getSupportedResources(hint)).some(resource => resource.id !== undefined);
     let {url} = await vendor.connectAccount(callback, {
@@ -2501,7 +2496,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let config = await readAdminConfig(this.env);
     let disabledGatekeeperSet = new Set(config.disabledGatekeepers);
 
-    const subscriberHint = supportedResourcesHint(this.env, this.storage.profile.get().id);
+    const subscriberId = this.storage.profile.get().id;
+    const env = this.env;
     async function notifyAdd(record: ConnectedAccountRecord) {
       // Ambient (auto-provisioned) accounts only appear in the Connectors list when their vendor is
       // "optional" — i.e. the user opted in and can manage/remove it. "enabled" (forced) accounts have
@@ -2556,7 +2552,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         supportedResources =
             filterEnabledResources(config, record.vendorId, supportedResources,
               config.disabledResources[record.vendorId]?.length
-                ? await vendor.getSupportedResources(subscriberHint)
+                ? await vendor.getSupportedResources(
+                    supportedResourcesHint(env, subscriberId, record.vendorId))
                 : supportedResources);
       } catch (err) {
         supportedResources = [];
@@ -3062,7 +3059,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
     let advertised = findResourceType(
         await vendor.getSupportedResources(
-            supportedResourcesHint(this.env, this.storage.profile.get().id)),
+            supportedResourcesHint(this.env, this.storage.profile.get().id, vendorId)),
         resourceTypeId, legacyUrlPattern);
     if (!advertised?.creatable) {
       throw new Error(`This vendor does not advertise creation of "${resourceTypeId ?? legacyUrlPattern}". ` +
@@ -3103,7 +3100,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // type narrowed out of this account's list. ID-only policy checks need no additional RPC.
     let advertised = config.disabledResources[normalized]?.length
       ? await this.vendors.get(normalized)!.getSupportedResources(
-            supportedResourcesHint(this.env, this.storage.profile.get().id))
+            supportedResourcesHint(this.env, this.storage.profile.get().id, normalized))
       : [resource];
     if (isResourceDisabled(config, normalized, resource, advertised)) {
       throw new Error(
