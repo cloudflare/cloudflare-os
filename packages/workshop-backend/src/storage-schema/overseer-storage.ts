@@ -1326,6 +1326,18 @@ export type BlueprintGadgetRecord = {
   codeVersion?: number;
 
   /**
+   * What the last successful propagation published: the `commitId` and `metadata.bindings` the
+   * record had then. Unpublished-change flags compare the gadget against these, so they stay
+   * true to what is public while a later propagation has failed and left the record `dirty`.
+   * Absent on a record not successfully propagated since this was recorded; `commitId` and
+   * `metadata.bindings` stand in.
+   */
+  published?: {
+    commitId?: string;
+    bindings: BlueprintMetadata["bindings"];
+  };
+
+  /**
    * Set true before propagating to User DO / KV; cleared on success.
    * If persistently true, the UI should show a retry indicator.
    */
@@ -1719,10 +1731,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // decision, keyed by chat (see OverseerImpl.#waiting()). A request is decided in
           // place, which drops it from here. A request a workspace stored before version 8 is
           // here only if it was in its chat's current decision segment then: one an earlier
-          // turn left pending is no longer what its chat waits on.
-          pendingRequestsByChat(msg: StoredChatMessage) {
-            return (msg.type === "connectionRequest" || msg.type === "webFetchRequest") &&
-                msg.state === "pending" ? msg.chatId : null;
+          // turn left pending is no longer what its chat waits on, so the index is partial.
+          pendingRequestsByChat: {
+            partial: true,
+            key(msg: StoredChatMessage) {
+              return (msg.type === "connectionRequest" || msg.type === "webFetchRequest") &&
+                  msg.state === "pending" ? msg.chatId : null;
+            },
           },
         },
       }),

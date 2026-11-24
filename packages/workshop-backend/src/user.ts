@@ -3,7 +3,7 @@ import type { ChatReadState, ChatTimelineHead, OutputsSubscriber, UnreadStateSco
 import { RECENT_THREADS_LIMIT, type WorkspacesSubscriber } from "@gadgets/workshop-shared/api";
 import type { WorkspaceListing } from "./workspace-listing.js";
 import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
-import { MAX_PREFERENCES_SIZE, type UserPreferences, type UserPreferencesSubscriber } from "@gadgets/workshop-shared/api";
+import { MAX_PREFERENCES_SIZE, type UserPreferences, type UserPreferencesUpdate, type UserPreferencesSubscriber } from "@gadgets/workshop-shared/api";
 import { blueprintScreenshotUrl, type OwnBlueprintsSubscriber, type WorkpieceId } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
@@ -341,22 +341,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
-  #notificationSubscribers = new UserSubscriptions<NotificationSubscriber>(this.ctx);
+  #notificationSubscribers = new UserSubscriptions<NotificationSubscriber>(this.ctx, "notifications");
   // The current minute of notification-service calls: when it began, and the calls made in it.
   #notificationCallWindowStart = -Infinity;
   #notificationCallsInWindow = 0;
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
-  #unreadSubscribers = new UserSubscriptions<UnreadStateSubscriber, UnreadStateScope>(this.ctx);
-  #summarySubscribers = new UserSubscriptions<WorkspaceSummarySubscriber>(this.ctx);
-  #outputSubscribers = new UserSubscriptions<OutputsSubscriber>(this.ctx);
+  #unreadSubscribers = new UserSubscriptions<UnreadStateSubscriber, UnreadStateScope>(this.ctx, "unread");
+  #summarySubscribers = new UserSubscriptions<WorkspaceSummarySubscriber>(this.ctx, "summaries");
+  #outputSubscribers = new UserSubscriptions<OutputsSubscriber>(this.ctx, "outputs");
   // A live push (even an empty one) supersedes an index read that is still in flight.
   #pendingOutputBackfills = new Set<string>();
   // The subscriptions' catch-up, run once however many subscribe while it runs.
   #outputsBackfill?: Promise<void>;
-  #ownBlueprintSubscribers = new UserSubscriptions<OwnBlueprintsSubscriber>(this.ctx);
-  #preferenceSubscribers = new UserSubscriptions<UserPreferencesSubscriber>(this.ctx);
-  #workspacesSubscribers = new UserSubscriptions<WorkspacesSubscriber>(this.ctx);
+  // The page of the outputs catch-up being read, shared by every caller that asks meanwhile.
+  #outputsBackfillPage?: Promise<boolean>;
+  #ownBlueprintSubscribers = new UserSubscriptions<OwnBlueprintsSubscriber>(this.ctx, "ownBlueprints");
+  #preferenceSubscribers = new UserSubscriptions<UserPreferencesSubscriber>(this.ctx, "preferences");
+  #workspacesSubscribers = new UserSubscriptions<WorkspacesSubscriber>(this.ctx, "workspaces");
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -1790,8 +1792,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** See `AuthenticatedApi.subscribeToWorkspaces()`. */
   async subscribeToWorkspaces(subscriber: RpcStub<WorkspacesSubscriber>): Promise<RpcStub<{}>> {
-    let workspaces = this.#listWorkspaces();
-    return this.#workspacesSubscribers.add(subscriber, listener => listener.snapshot(workspaces));
+    return this.#workspacesSubscribers.add(subscriber, listener => listener.snapshot(this.#listWorkspaces()));
   }
 
   // Tell subscribers of a listing that changed, as listWorkspaces() lists it: a workspace still
@@ -1918,8 +1919,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async subscribeToOutputs(subscriber: RpcStub<OutputsSubscriber>): Promise<RpcStub<{}>> {
     let catchingUp = !this.storage.outputsBackfilled.get();
-    let outputs = this.#readOutputs();
-    let lease = this.#outputSubscribers.add(subscriber, listener => listener.snapshot(outputs, catchingUp));
+    let lease = this.#outputSubscribers.add(subscriber,
+      listener => listener.snapshot(this.#readOutputs(), !this.storage.outputsBackfilled.get()));
     // Where a listOutputs() caller asks again, a subscription drains the remaining pages itself
     // while anyone listens, then tells them the sweep has ended.
     if (catchingUp) {
@@ -1948,7 +1949,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Sweeps one bounded page and reports whether more remains, rather than sweeping everything: a
   // first Outputs load must not wait on every workspace the user has ever created. The caller
   // drains the rest, so the list fills in while the page is open.
-  async #backfillOutputs(): Promise<boolean> {
+  //
+  // Every caller that asks while a page is being read shares that read, and its result or failure:
+  // two reads of one page at once would each discard the other's outputs and race on the cursor.
+  #backfillOutputs(): Promise<boolean> {
+    return this.#outputsBackfillPage ??= this.#backfillOutputsPage().finally(() => {
+      this.#outputsBackfillPage = undefined;
+    });
+  }
+
+  async #backfillOutputsPage(): Promise<boolean> {
     if (this.storage.outputsBackfilled.get()) return false;
 
     let startAfter = this.storage.outputsBackfillCursor.get() || undefined;
@@ -2021,12 +2031,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async subscribeToWorkspaceSummaries(subscriber: RpcStub<WorkspaceSummarySubscriber>): Promise<RpcStub<{}>> {
-    let summaries = this.#readWorkspaceSummaries();
-    return this.#summarySubscribers.add(subscriber, listener => listener.snapshot(summaries));
+    return this.#summarySubscribers.add(subscriber, listener => listener.snapshot(this.#readWorkspaceSummaries()));
   }
 
-  updatePreferences(update: UserPreferences): void {
-    let preferences = {...this.storage.preferences.get(), ...update};
+  updatePreferences(update: UserPreferencesUpdate): void {
+    let preferences: UserPreferences = {...this.storage.preferences.get()};
+    for (let [key, value] of Object.entries(update)) {
+      if (value === null) delete preferences[key];
+      else preferences[key] = value;
+    }
     let size = 0;
     for (let [key, value] of Object.entries(preferences)) size += key.length + value.length;
     if (size > MAX_PREFERENCES_SIZE) {
@@ -2037,8 +2050,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async subscribeToPreferences(subscriber: RpcStub<UserPreferencesSubscriber>): Promise<RpcStub<{}>> {
-    let preferences = this.storage.preferences.get();
-    return this.#preferenceSubscribers.add(subscriber, listener => listener.updated(preferences));
+    return this.#preferenceSubscribers.add(subscriber, listener => listener.updated(this.storage.preferences.get()));
   }
 
   #readOutputs(records: Iterable<WorkspaceOutputEntry & {workspaceId: string}> = this.storage.outputs.list()): OutputSummary[] {
@@ -2299,8 +2311,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async subscribeToOwnBlueprints(subscriber: RpcStub<OwnBlueprintsSubscriber>): Promise<RpcStub<{}>> {
-    let blueprints = this.#listBlueprints();
-    return this.#ownBlueprintSubscribers.add(subscriber, listener => listener.snapshot(blueprints));
+    return this.#ownBlueprintSubscribers.add(subscriber, listener => listener.snapshot(this.#listBlueprints()));
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {

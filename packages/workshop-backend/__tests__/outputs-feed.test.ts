@@ -388,6 +388,30 @@ it("never restores an output removed while the backfill was reading", async () =
   expect(read).toHaveBeenCalledTimes(1);
 });
 
+it("reads a backfill page once for a listOutputs() that asks while the subscription reads it", async () => {
+  const {user, workspaceId} = await setup();
+  await runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).outputsBackfilled.put(false));
+  const finish = Promise.withResolvers<void>();
+  using read = vi.spyOn(OverseerDurableObject.prototype, "getOutputsForOwnerBackfill").mockImplementationOnce(async () => {
+    await finish.promise;
+    return [{workpieceId: 10, title: "Healthy", created: new Date(0)}];
+  }).mockRejectedValueOnce(new Error("unavailable"));
+
+  const updates = new OutputUpdates();
+  using callback = new RpcStub(updates);
+  using _subscription = await user.subscribeToOutputs(callback);
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  const listing = await runInDurableObject(user, async (instance: UserDurableObject) => {
+    const result = instance.listOutputs();
+    finish.resolve();
+    return result;
+  });
+
+  expect(listing).toMatchObject({outputs: [{workspaceId, workpieceId: 10}], catchingUp: false});
+  await vi.waitFor(() => expect(updates.snapshots.at(-1)).toMatchObject([[{workspaceId, workpieceId: 10}], false]));
+  expect(read).toHaveBeenCalledTimes(1);
+});
+
 it("ends the sweep at a page where every workspace failed, and resumes it on the next subscription", async () => {
   const {user, workspaceId} = await setup();
   await runInDurableObject(user, (_instance, ctx) => {

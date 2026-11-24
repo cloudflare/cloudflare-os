@@ -159,6 +159,48 @@ it("flips a blueprint's changes in its publisher's account as its gadget's head 
   await vi.waitFor(() => expect(own.updates.at(-1)).toEqual([id, null]));
 }));
 
+it("flags code committed after a publish that failed at the account, the public lookup already updated",
+    () => withPublisher(async ({user, client, inWorkspace}) => {
+  const {id} = await (await client.getGadget(1)).createBlueprint("Starter", "A starter");
+  await inWorkspace(impl => {
+    const users = impl.users;
+    impl.users = {...users, idFromString: (id: string) => users.idFromString(id), get: (userId: DurableObjectId) =>
+      new Proxy(users.get(userId), {get: (stub, key) => key === "updateBlueprint"
+        ? () => Promise.reject(new Error("User DO unavailable"))
+        : Reflect.get(stub, key)})} as typeof users;
+    return client.updateBlueprint(id, {title: "Renamed"}).finally(() => { impl.users = users; });
+  }).then(() => { throw new Error("The publish succeeded."); }, error => expect(String(error)).toContain("User DO unavailable"));
+  expect(JSON.parse(kv.get(id)!).metadata.title).toBe("Renamed");
+
+  await inWorkspace(impl => commit(impl, {"client.js": "two\n"}));
+  expect((await client.listBlueprints())[0]).toMatchObject({dirty: true, unpublishedChanges: {code: true}});
+  await vi.waitFor(async () => expect(await changes(user, id)).toEqual({code: true}));
+}));
+
+it("keeps flagging code whose release failed to publish until a retry publishes it",
+    () => withPublisher(async ({user, client, inWorkspace}) => {
+  const {id} = await (await client.getGadget(1)).createBlueprint("Starter", "A starter");
+  await inWorkspace(impl => commit(impl, {"client.js": "two\n"}));
+  await vi.waitFor(async () => expect(await changes(user, id)).toEqual({code: true}));
+
+  // The release of "two" is minted, so the record's commit moves to it, but is never public.
+  using failedPublish = vi.spyOn(BLUEPRINTS, "put").mockRejectedValueOnce(new Error("KV unavailable"));
+  await expect(client.updateBlueprint(id, {updateCode: true})).rejects.toThrow("KV unavailable");
+  expect(failedPublish).toHaveBeenCalledTimes(1);
+  await inWorkspace(async impl => {
+    expect(impl.storage.blueprints.get(id)!.commitId).toBe((impl.storage.gadgets.get(1) as GadgetRecord).commitId);
+    // Cross the deferred projection's scheduling boundary before checking the flag.
+    impl.resyncListingTo(impl.ownerId!);
+    await scheduler.wait(50);
+  });
+  expect((await client.listBlueprints())[0]).toMatchObject({dirty: true, unpublishedChanges: {code: true}});
+  expect(await changes(user, id)).toEqual({code: true});
+
+  await client.retryBlueprintPublish(id);
+  expect((await client.listBlueprints())[0]?.unpublishedChanges).toBeUndefined();
+  await vi.waitFor(async () => expect(await changes(user, id)).toBeUndefined());
+}));
+
 // Gives gadget 1 these bindings, each to a connection made here if it is not yet.
 const bind = (impl: Impl, bindings: Record<string, {target: number, annotation?: {title: string, description: string}}>) => {
   for (let {target} of Object.values(bindings)) {
@@ -235,6 +277,20 @@ it("flags the bindings when a connection a binding names changes, an agent spawn
       resourceUrl: "https://example.com/100", typeUrlPattern: "https://example.com/*"}});
   });
   await vi.waitFor(async () => expect(await changes(user, id)).toEqual({bindings: true}));
+}));
+
+it("names an agent spawner's binding by its target's lowest exported alias, whatever the order",
+    () => withPublisher(async ({inWorkspace}) => {
+  const spawnerEnv = await inWorkspace(impl => {
+    bind(impl, {ZED: {target: 100}, ALPHA: {target: 100}});
+    impl.storage.gatekeepers.put({id: 7, resourceTitle: "Spawner", class: {} as never,
+      creationSpec: {type: "agentSpawner", config: {displayName: "Helper", modelId: null}},
+      bindings: {DOCS: {target: 100}}});
+    setBindings(impl, {...(impl.storage.gadgets.get(1) as GadgetRecord).bindings, HELPER: {target: 7}});
+    const helper = impl.collectBindingMetadata(1).HELPER;
+    return helper.type === "agentSpawner" ? helper.env : undefined;
+  });
+  expect(spawnerEnv).toEqual({DOCS: {type: "binding", name: "ALPHA"}});
 }));
 
 it("counts bindings that cannot be collected as no binding changes, and still flags the code",

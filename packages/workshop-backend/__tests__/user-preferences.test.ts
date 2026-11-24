@@ -68,3 +68,15 @@ it("refuses an update that would take the preferences past MAX_PREFERENCES_SIZE,
   using _subscription = await user.subscribeToPreferences(callback);
   await vi.waitFor(() => expect(updates.received).toEqual([{...atBound, b: "z"}]));
 });
+
+it("deletes the keys an update sets to null, even from preferences already past MAX_PREFERENCES_SIZE", async () => {
+  const user = await newUser();
+  // Stored before the bound shrank, say: over it already, so only a delete can be accepted.
+  await runInDurableObject(user, (_instance, ctx) =>
+    makeUserStorage(ctx.storage).preferences.put({a: "x".repeat(MAX_PREFERENCES_SIZE), b: "y"}));
+  await user.updatePreferences({a: null});
+  const updates = new PreferenceUpdates();
+  using callback = new RpcStub(updates);
+  using _subscription = await user.subscribeToPreferences(callback);
+  await vi.waitFor(() => expect(updates.received).toEqual([{b: "y"}]));
+});

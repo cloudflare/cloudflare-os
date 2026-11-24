@@ -1006,6 +1006,11 @@ type SessionHolder = {kind: CollaboratorRole, profileId: string};
 type BaseTextReader =
     (commit: string, path: string) => string | undefined | Promise<string | undefined>;
 
+// What admitting collaborators to background chat-state reads depends on, read once per delivery
+// pass (see OverseerImpl.mayReadChatState): the sharing manager and, scanned on first need by a
+// collaborator's check (the scan throws for legacy gatekeepers), the in-scope gatekeepers.
+type ChatStateReaders = {sharing: SharingManager, gatekeepers(): GatekeeperRecord[]};
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -1611,6 +1616,7 @@ class OverseerImpl implements AgentHooks {
       let listingRev = Math.max(now, this.storage.listingRev.get() + 1);
       if (updates.length) this.storage.listingRev.put(listingRev);
       let whole = this.#readListing(new Set(deleting ? [] : updates.flatMap(update => update.parts ?? [])));
+      let readers = sharing && this.#chatStateReaders(sharing);
       let sends = updates.flatMap(update => {
         let {userId, profileId} = update;
         let owner = !deleting && userId === this.ownerId;
@@ -1650,7 +1656,7 @@ class OverseerImpl implements AgentHooks {
           this.#userRetryAt.delete(userId);
           return [];
         }
-        return [{update, listing, sent, acks}];
+        return [{update, listing, sent, acks, readers}];
       });
       for (let send of sends) {
         let {userId} = send.update;
@@ -1719,9 +1725,9 @@ class OverseerImpl implements AgentHooks {
   // queued again meanwhile. A failed send is retried from the alarm, and forgets what it carried
   // as acknowledged: it may still land, having timed out, so what it replaced is no longer known
   // to be there.
-  async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks}: {
+  async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks, readers}: {
     update: PendingUserUpdate, listing: WorkspaceListing, sent: Map<ListingPart, string>,
-    acks: Map<ListingPart, string>,
+    acks: Map<ListingPart, string>, readers: ChatStateReaders | undefined,
   }): Promise<void> {
     let event = "shared.gadget.access.refresh.failed";
     try {
@@ -1732,8 +1738,8 @@ class OverseerImpl implements AgentHooks {
       event = "workspace.listing.push.failed";
       // A collaborator's summary only while admitted (access to what this workspace reads
       // confirmed): not admitted, theirs stays unknown.
-      if (sent.has("summary") && profileId !== undefined &&
-          !await this.mayReadChatState(userId, profileId).catch(() => false)) {
+      if (sent.has("summary") && profileId !== undefined && (!readers ||
+          !await this.mayReadChatState(userId, profileId, readers).catch(() => false))) {
         delete listing.summary;
         sent.delete("summary");
       }
@@ -1856,10 +1862,11 @@ class OverseerImpl implements AgentHooks {
           (!meta ? dirty.failedRecipients?.some(pending => pending.userId === userId) :
             notifications.some(event => event.userId === userId && event.kind === "permissionRequested" &&
               start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)));
+        let readers = this.#chatStateReaders(sharing);
         let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
           // Admission belongs to the source. Accepted alerts are delivery intent owned by the
           // recipient; retries need neither a source read nor a new authorization decision.
-          if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
+          if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!, readers)) return;
           let {participatingUsers, ...progress} = start;
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
             this.ctx.id.toString(), chatId, meta ? {...progress, latestVisibleSequence, latestMessageAuthorId,
@@ -2004,14 +2011,25 @@ class OverseerImpl implements AgentHooks {
 
   // Background reads retain the admission established on open, with the same lazy revocation
   // semantics as existing sessions. New/unconfigured gatekeepers require a fresh interactive open.
-  async mayReadChatState(userId: string, profileId: string): Promise<boolean> {
+  // A delivery pass reads what admission depends on once (see ChatStateReaders), then checks
+  // each recipient against it.
+  async mayReadChatState(userId: string, profileId: string, readers: ChatStateReaders): Promise<boolean> {
     if (!this.ownerId) return false;
     if (userId === this.ownerId) return true;
-    let sharing = await this.getSharingManager();
-    if (sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
+    if (readers.sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
     let observer = this.storage.observers.get(profileId);
-    return this.#inScopeGatekeepers("workspace").every(gk =>
-      observer?.accountChoices[gk.id] !== undefined);
+    return readers.gatekeepers().every(gk => observer?.accountChoices[gk.id] !== undefined);
+  }
+
+  #chatStateReaders(sharing: SharingManager): ChatStateReaders {
+    let scan: {gatekeepers: GatekeeperRecord[]} | {error: unknown} | undefined;
+    return {sharing, gatekeepers: () => {
+      if (!scan) {
+        try { scan = {gatekeepers: this.#inScopeGatekeepers("workspace")}; } catch (error) { scan = {error}; }
+      }
+      if ("error" in scan) throw scan.error;
+      return scan.gatekeepers;
+    }};
   }
 
   #initializeUnreadTracking(): void {
@@ -7736,14 +7754,13 @@ class OverseerImpl implements AgentHooks {
       listing.activity = {lastActive, totalCost: this.storage.totalCost.get()};
     }
     if (parts.has("blueprintChanges")) {
-      // A release is written locally before it is public: its record is left out until
-      // propagation succeeds and the clean record marks this again.
-      let changes = Array.from(this.storage.blueprints.list()).filter(record => !record.dirty)
-          .map(record => ({
-            blueprintId: record.id,
-            changes: this.#unpublishedChanges(record) ?? null,
-            gadgetId: (record.gadgetId ?? this.defaultGadgetId)!,
-          }));
+      // Measured from what each blueprint last published (see #unpublishedChanges), so a record
+      // whose latest propagation failed still reports changes made since.
+      let changes = Array.from(this.storage.blueprints.list()).map(record => ({
+        blueprintId: record.id,
+        changes: this.#unpublishedChanges(record) ?? null,
+        gadgetId: (record.gadgetId ?? this.defaultGadgetId)!,
+      }));
       if (changes.length) listing.blueprintChanges = changes;
     }
     return listing;
@@ -10064,7 +10081,13 @@ class OverseerImpl implements AgentHooks {
       // This edge is exported, so it can serve as the blueprint binding for its target in spawner
       // env references. Registered here rather than in a pass over all edges, so that a dropped
       // edge (dangling, ambient, or legacy `included: false`) never lends its name to an env entry.
-      if (!edgeNameByTarget.has(edge.target)) edgeNameByTarget.set(edge.target, bindingName);
+      // Take the lexicographically lowest exported name (not the first in `bindings` order), so
+      // renaming an alias away and back yields identical metadata. Note a blueprint published
+      // while another alias was lowest will be flagged as unpublished once after this change.
+      let prevEdgeName = edgeNameByTarget.get(edge.target);
+      if (prevEdgeName === undefined || bindingName < prevEdgeName) {
+        edgeNameByTarget.set(edge.target, bindingName);
+      }
 
       let base = {
         title: annotation?.title || defaultBlueprintBindingTitle(gk, bindingName),
@@ -10363,6 +10386,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    // Write to KV first, so the owner and the featured list never name metadata that the public
+    // lookup lacks.
+    let kvRecord: BlueprintKvRecord = {
+      metadata: record.metadata,
+      ownerId: this.ownerId,
+      gadgetId: this.ctx.id.toString(),
+    };
+    await this.env.BLUEPRINTS.put(record.id, JSON.stringify(kvRecord));
+
     // Propagate to User DO.
     let owner = this.users.get(this.users.idFromString(this.ownerId));
     let isFeatured = await owner.updateBlueprint(
@@ -10376,16 +10408,9 @@ class OverseerImpl implements AgentHooks {
       });
     }
 
-    // Write to KV.
-    let kvRecord: BlueprintKvRecord = {
-      metadata: record.metadata,
-      ownerId: this.ownerId,
-      gadgetId: this.ctx.id.toString(),
-    };
-    await this.env.BLUEPRINTS.put(record.id, JSON.stringify(kvRecord));
-
-    // Clear dirty flag.
+    // Clear dirty flag, recording what is now published.
     record.dirty = false;
+    record.published = {commitId: record.commitId, bindings: record.metadata.bindings};
     this.storage.blueprints.put(record);
   }
 
@@ -10440,9 +10465,10 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Whether the gadget a blueprint exports has committed files other than the ones the
-  // blueprint last published, which are those of the record's `commitId`. A gadget that has
-  // since been removed has nothing left to publish, and a record from before git-backed code
-  // storage has no commit to compare with until it is migrated.
+  // blueprint last published, which are those of the record's `published.commitId` (or, on a
+  // record without it, `commitId`). A gadget that has since been removed has nothing left to
+  // publish, and a record from before git-backed code storage has no commit to compare with
+  // until it is migrated.
   //
   // The trees are what is compared, not the commits: publishing an unchanged tree mints nothing
   // and leaves `commitId` where it was (see mintBlueprintRelease), so a head that has moved on
@@ -10451,14 +10477,15 @@ class OverseerImpl implements AgentHooks {
     let gadgetId = record.gadgetId ?? this.defaultGadgetId;
     let gadget = gadgetId === undefined ? undefined : this.storage.gadgets.get(gadgetId);
     let head = gadget?.type === "gadget" ? gadget.commitId : undefined;
-    let published = record.commitId;
+    let published = record.published?.commitId ?? record.commitId;
     if (head === undefined || published === undefined || head === published) return false;
     let store = this.gitCache;
     return store.commitTree(head) !== store.commitTree(published);
   }
 
   // Whether the gadget's bindings, as updateBlueprint() would collect them now, differ from the
-  // ones the blueprint last published. Compared as canonical JSON, so the order bindings and
+  // ones the blueprint last published (`published.bindings`, or on a record without it,
+  // `metadata.bindings`). Compared as canonical JSON, so the order bindings and
   // their fields were written in does not count. Bindings that cannot be collected (a binding
   // with no creation spec) could not be published either, so they count as none, and are only
   // logged: this runs in the flush that pushes the code flag too.
@@ -10467,7 +10494,7 @@ class OverseerImpl implements AgentHooks {
     if (gadgetId === undefined || this.storage.gadgets.get(gadgetId)?.type !== "gadget") return false;
     try {
       return canonicalJson(this.collectBindingMetadata(gadgetId)) !==
-          canonicalJson(record.metadata.bindings);
+          canonicalJson((record.published ?? record.metadata).bindings);
     } catch (error) {
       this.logger.warn("failed to collect blueprint bindings", {
         event: "blueprint.bindings.collect.failed", gadgetId: this.ctx.id.toString(),

@@ -228,3 +228,35 @@ it("says a workspace left the list when it is dismissed or deleted", async () =>
   await owner.workspaceRemoved(workspaceId);
   await vi.waitFor(() => expect(ownerFeed.updates.updates).toEqual([[workspaceId, null]]));
 });
+
+it("never restores a workspace removed while a slow snapshot is still being taken", async () => {
+  const {owner, workspaceId} = await setup();
+  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  // Applies each delivery to its own list, as a client does, taking its time over the snapshot.
+  class SlowClient extends RpcTarget implements WorkspacesSubscriber {
+    list: string[] = [];
+    snapshotTaken = false;
+    updateCount = 0;
+    async snapshot(workspaces: WorkspaceMetadataWithTimestamps[]) {
+      entered.resolve();
+      await gate.promise;
+      this.list = workspaces.map(workspace => workspace.id);
+      this.snapshotTaken = true;
+    }
+    async updated(id: string, workspace: WorkspaceMetadataWithTimestamps | null) {
+      this.list = this.list.filter(listed => listed !== id).concat(workspace ? [id] : []);
+      this.updateCount++;
+    }
+  }
+  const client = new SlowClient();
+  // Subscribed in the object with a Cap'n Web stub, which starts each call as it is made.
+  await runInDurableObject(owner, async (instance: UserDurableObject) => {
+    using callback = new RpcStub(client);
+    using _subscription = await instance.subscribeToWorkspaces(callback);
+    await entered.promise;
+    await instance.workspaceRemoved(workspaceId);
+    gate.resolve();
+    await vi.waitFor(() => expect([client.snapshotTaken, client.updateCount]).toEqual([true, 1]));
+  });
+  expect(client.list).toEqual([]);
+});

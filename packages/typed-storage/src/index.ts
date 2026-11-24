@@ -97,8 +97,8 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
    * Discard the index's contents and re-derive them from the collection's records. Indexes are
    * only maintained at write time, so an index declared after records already exist starts empty
    * and leaves those records out; a migration must rebuild() such an index, or indexRecords() the
-   * records it must find, before reading it. Updating or deleting a record the index leaves out
-   * changes nothing in it beyond the keys the record's new value adds.
+   * records it must find, before reading it. Updating or deleting a record such an index leaves
+   * out throws, unless the index is declared `partial` (see `NonUniqueIndexSchema`).
    */
   rebuild(): void;
 
@@ -107,7 +107,8 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
    * a backfill of chosen records where rebuild() would read them all. Idempotent, so a record
    * already indexed may be passed again. Each record costs only point reads and writes, so
    * `records` may be a listing of the collection itself (e.g. its `list({prefix})`), consumed as
-   * it streams.
+   * it streams. An index that stays backfilled this way, leaving other records out, must be
+   * declared `partial: true` (see `NonUniqueIndexSchema`), or writing one of those records throws.
    */
   indexRecords(records: Iterable<T>): void;
 }
@@ -124,12 +125,27 @@ type IndexFunction<T> =
 type ReturnType<T> = T extends (...args: any) => infer R ? R : never;
 type RemoveArray<T> = T extends Array<infer U> ? U : T;
 
+/**
+ * A non-unique index declared with options rather than as a bare `IndexFunction`.
+ *
+ * `partial: true` declares that the index may deliberately leave out records it would derive a
+ * key for (it was backfilled with indexRecords() rather than rebuild()): updating or deleting
+ * such a record then silently skips its missing entry. Without it, a missing entry means the
+ * index is inconsistent, and the write throws.
+ */
+export interface NonUniqueIndexSchema<F> {
+  key: F;
+  partial?: boolean;
+}
+
+type IndexKeyFunction<I> = I extends NonUniqueIndexSchema<infer F> ? F : I;
+
 type UniqueIndexed<T, Indexes> = {
   [K in keyof Indexes]: UniqueIndex<T, RemoveArray<ReturnType<Indexes[K]>>>
 }
 
 type NonUniqueIndexed<T, Indexes, PK extends Key = Key> = {
-  [K in keyof Indexes]: NonUniqueIndex<T, RemoveArray<ReturnType<Indexes[K]>>, PK>
+  [K in keyof Indexes]: NonUniqueIndex<T, RemoveArray<ReturnType<IndexKeyFunction<Indexes[K]>>>, PK>
 }
 
 export interface Subscriber<T> {
@@ -654,10 +670,13 @@ function createCollection<
   // ---------------------------------------------------------------------------
   // Non-unique indexes
 
-  for (let [idxName, idx] of Object.entries(schema.nonUniqueIndexes || {})) {
+  for (let [idxName, idxSpec] of Object.entries(schema.nonUniqueIndexes || {})) {
     let idxKv = new KvPrefixedView<number>(storage.kv, `${name}.${idxName}`);
+    let {key: idx, partial = false} = typeof idxSpec === "function"
+        ? {key: idxSpec as IndexFunction<T>}
+        : idxSpec as NonUniqueIndexSchema<IndexFunction<T>>;
 
-    let addToIndex = addIndexSubscriber(idx as IndexFunction<T>, {
+    let addToIndex = addIndexSubscriber(idx, {
       add(idxKey: Key, pk: Key, type: "Insertion" | "Update") {
         let id = idxKv.get(idxKey);
         if (id === undefined) {
@@ -669,9 +688,13 @@ function createCollection<
         child.put(pk, {});
       },
       remove(idxKey: Key, pk: Key) {
-        // A record the index leaves out (see indexRecords()) has no entry to remove.
         let id = idxKv.get(idxKey);
-        if (id === undefined) return;
+        if (id === undefined) {
+          // A partial index leaves records out (see indexRecords()), so has no entry to remove.
+          if (partial) return;
+          throw new Error(
+              `Index '${name}.${idxName}' is inconsistent: removed record is not present.`);
+        }
 
         let child = idxKv.getChild(id.toString());
         child.delete(pk);

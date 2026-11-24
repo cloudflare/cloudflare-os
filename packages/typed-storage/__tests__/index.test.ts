@@ -995,8 +995,10 @@ describe("non-unique index rebuild", () => {
 
     let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
 
-    // Declared over pre-existing records, the index starts empty.
+    // Declared over pre-existing records, the index starts empty -- and resolving one of those
+    // records would throw on the index's remove.
     expect([...storage.users.byLevel.list()]).toStrictEqual([]);
+    expect(() => storage.users.put({...ALICE, level: 0})).toThrow("inconsistent");
 
     storage.users.byLevel.rebuild();
     expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE, CAROL]);
@@ -1066,7 +1068,7 @@ describe("non-unique index rebuild", () => {
 
 describe("non-unique index indexRecords", () => {
   // Users written before byLevel or byGroup was declared, so each index starts empty.
-  function legacyStorage<S extends typeof INDEXED_SCHEMA | typeof GROUP_SCHEMA>(schema: S) {
+  function legacyStorage<S extends typeof INDEXED_SCHEMA | typeof GROUP_SCHEMA | typeof PARTIAL_SCHEMA>(schema: S) {
     let mockStorage = makeMockStorage();
     let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
     for (let user of [ALICE, BOB, CAROL, DAVE, EVE]) legacy.users.put(user);
@@ -1097,8 +1099,19 @@ describe("non-unique index indexRecords", () => {
     expect([...storage.users.byGroup.get("everyone")]).toStrictEqual([ALICE, BOB]);
   });
 
-  it("lets a record it left out be updated and deleted, indexing only its new keys", () => {
-    let {storage} = legacyStorage(INDEXED_SCHEMA);
+  const PARTIAL_SCHEMA = {
+    collections: {
+      users: collection<User>()({
+        primaryKey: "name",
+        nonUniqueIndexes: {
+          byLevel: {partial: true, key: (user: User) => user.level == 0 ? null : user.level},
+        }
+      })
+    }
+  };
+
+  it("lets a partial index's left-out record be updated and deleted, indexing only its new keys", () => {
+    let {storage} = legacyStorage(PARTIAL_SCHEMA);
     storage.users.byLevel.indexRecords([BOB]);
 
     storage.users.put({...ALICE, level: 0});  // level 8, never indexed, to none

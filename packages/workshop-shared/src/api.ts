@@ -534,6 +534,12 @@ export const MAX_PREFERENCES_SIZE = 256 * 1024;
  */
 export type UserPreferences = Record<string, string>;
 
+/**
+ * A change to the user's preferences (see `AuthenticatedApi.updatePreferences()`): each key given
+ * a string is set to it, each given `null` is removed, and keys not given are left as they are.
+ */
+export type UserPreferencesUpdate = Record<string, string | null>;
+
 /** Callback used by `AuthenticatedApi.subscribeToPreferences()`. */
 export interface UserPreferencesSubscriber extends RpcTarget {
   /** Replace yours with these. Called once right after subscribing, and after every change. */
@@ -1311,11 +1317,12 @@ export interface AuthenticatedApi extends RpcTarget {
   subscribeToWorkspaceSummaries(subscriber: RpcStub<WorkspaceSummarySubscriber>): Promise<RpcStub<{}>>;
 
   /**
-   * Set each of the user's preferences that `update` gives, leaving the rest as they are. Throws,
-   * changing nothing, if the result would exceed MAX_PREFERENCES_SIZE. Every subscriber
-   * (`subscribeToPreferences()`) gets the result, the caller's own included.
+   * Set each of the user's preferences that `update` gives a string, remove each it gives `null`,
+   * and leave the rest as they are. Throws, changing nothing, if the result would exceed
+   * MAX_PREFERENCES_SIZE (measured after the update, so removing never counts against it). Every
+   * subscriber (`subscribeToPreferences()`) gets the result, the caller's own included.
    */
-  updatePreferences(update: UserPreferences): Promise<void>;
+  updatePreferences(update: UserPreferencesUpdate): Promise<void>;
 
   /**
    * Subscribe to the user's preferences, so that a change made in one tab or device reaches the

@@ -314,9 +314,9 @@ function summaries(impl: any, role: "build" | "use"): WorkpieceSummary[] {
   return entries;
 }
 
-// Publishes V2 as the blueprint's second release, but for a failure that leaves the record dirty
-// and the first release published, as if the upload of the second's content had failed. Returns
-// that content, the key it belongs under, and the record.
+// Publishes V2 as the blueprint's second release, but for a failure at the owner's User DO that
+// leaves the record dirty, its metadata already in KV, and then its content gone, as if its
+// upload had failed. Returns that content, the key it belongs under, and the record.
 async function failUpdate(
     impl: any, client: Overseer, owner: Workspace["owner"], blueprintId: string)
     : Promise<{ key: string, sent: Uint8Array, record: any }> {
@@ -327,7 +327,7 @@ async function failUpdate(
       .rejects.toThrow("user DO unreachable");
   owner.updateBlueprint = updateBlueprint;
 
-  expect((await publishedMetadata(blueprintId))!.version).toBe(1);
+  expect((await publishedMetadata(blueprintId))!.version).toBe(2);
   let record = impl.storage.blueprints.get(blueprintId);
   expect(record).toMatchObject({ dirty: true, metadata: { version: 2 } });
   let key = `${blueprintId}/${record.metadata.commitId}`;

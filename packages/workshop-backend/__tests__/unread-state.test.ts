@@ -1182,6 +1182,26 @@ describe("local counts and explicit read boundaries", () => {
     ]);
   });
 
+  it("reads sharing once per chat delivery for every recipient's admission", async () => {
+    const fixture = await setup();
+    await addReader(fixture);
+    await addReader(fixture);
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
+      using sharing = vi.spyOn(impl, "getSharingManager");
+      let original = impl.mayReadChatState.bind(impl);
+      let sharingReadsDuringAdmission = 0;
+      using admission = vi.spyOn(impl, "mayReadChatState").mockImplementation(async (...args) => {
+        let before = sharing.mock.calls.length;
+        try { return await original(...args); } finally { sharingReadsDuringAdmission += sharing.mock.calls.length - before; }
+      });
+      await impl.deliverDirtyChats();
+      expect(admission).toHaveBeenCalledTimes(3);
+      expect(sharingReadsDuringAdmission).toBe(0);
+    });
+  });
+
   it("repairs a rename skipped during admission denial when the collaborator reopens", async () => {
     const fixture = await setup();
     const {reader, owner} = await addReader(fixture);
