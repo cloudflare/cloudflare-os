@@ -1,6 +1,7 @@
 import type { ConfigEnv, UserConfig, UserConfigExport } from 'vite'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { stripVTControlCharacters } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('vite', async (importOriginal) => {
@@ -84,7 +85,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
     env: {...process.env, DEBUG: '*'}, encoding: 'utf8', timeout: 15_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const output = child.stdout + child.stderr
+  const output = stripVTControlCharacters(child.stdout + child.stderr)
   expect(child.error).toBeUndefined()
   expect(child.status).toBe(0)
   expect(output).toContain('FIXTURE_PASSED')
@@ -160,7 +161,7 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     cwd: fileURLToPath(new URL('.', import.meta.url)), env: {...process.env, DEBUG: '*'},
     encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const output = child.stdout + child.stderr
+  const output = stripVTControlCharacters(child.stdout + child.stderr)
   expect(child.error).toBeUndefined()
   expect(child.status).toBe(0)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
