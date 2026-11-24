@@ -21,8 +21,9 @@ export type RateLimitOptions = {
 }
 
 /**
- * Returns the rate-limited proxy plus a `dispose` that cancels any pending resume timer (otherwise it
- * could fire after the session is torn down). `dispose` is a no-op in `reject` mode (no timer).
+ * Returns the rate-limited proxy plus a `dispose` that ends it: it rejects every call the capability
+ * has not received yet, refuses new ones, and cancels any pending resume timer, so nothing runs after
+ * the session is torn down. A call the capability already received still settles.
  */
 export function createRateLimitedCapability(
   capability: any,
@@ -39,6 +40,8 @@ export function createRateLimitedCapability(
   const queue: QueuedCall[] = []
   let inFlight = 0
   let resumeTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
+  const closed = () => new Error(`${options.label} has closed.`)
 
   const pruneCallWindow = () => {
     const cutoff = Date.now() - 60_000
@@ -69,7 +72,11 @@ export function createRateLimitedCapability(
       startedCalls.push(Date.now())
       inFlight++
       Promise.resolve()
-        .then(() => capability[call.method](...call.args))
+        // dispose() may have run since this call left the queue.
+        .then(() => {
+          if (disposed) throw closed()
+          return capability[call.method](...call.args)
+        })
         .then(call.resolve, call.reject)
         .finally(() => {
           inFlight--
@@ -88,6 +95,10 @@ export function createRateLimitedCapability(
       if (property === Symbol.dispose) return undefined
       if (typeof property !== 'string' || property in stubMembers) return undefined
       return (...args: unknown[]) => new Promise((resolve, reject) => {
+        if (disposed) {
+          reject(closed())
+          return
+        }
         if (queue.length + inFlight >= options.maxPendingCalls) {
           reject(new Error(`${options.label} has too many pending requests.`))
           return
@@ -101,10 +112,12 @@ export function createRateLimitedCapability(
   return {
     capability: proxy,
     dispose: () => {
+      disposed = true
       if (resumeTimer !== null) {
         clearTimeout(resumeTimer)
         resumeTimer = null
       }
+      for (const call of queue.splice(0)) call.reject(closed())
     },
   }
 }
