@@ -639,7 +639,7 @@ read nothing the level withholds:
 | `listChats()` | The chats as a member's `listChats()` lists them, titles included | `queuedSteers`, which hold message text |
 | `getChatState()` | The recorded agent turn, the time of the chat's newest entry, the ids of its pending actions, and each queued call's id, method and model | Each queued call's arguments |
 | `listChatAttachments()` | Each attachment's id, name, type, size and `oid`, with its message's sequence | The bytes, which a stored reference can hold |
-| `listActions()` | The action log's entries with their titles, states, resources, times and `autoApprovable` verdicts | Each entry's `description.description`, and the `description.fields` of an action or an observation |
+| `listActions()` | The action log's entries with their titles, states, resources, times and `autoApprovable` verdicts | Each entry's `description.description`, the `description.fields` of an action or an observation, and the `description.previewOf` of an action, which names the item its fields do |
 | `listFiles()` | The names in the tree at a gadget's committed head | Nothing: it reads trees, never a file |
 | `getCommitLog()` | Each commit's id, parents, author and time | Each `message` |
 | `listFilesAtCommit()` | The names in the tree at a stored commit | Nothing: it reads trees, never a file |
