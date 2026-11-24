@@ -110,12 +110,12 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     const emit = EventEmitter.prototype.emit;
     let watching = false;
     EventEmitter.prototype.emit = function(type, event, ...args) {
-      if (!watching && type === 'reloadComplete' && event?.proxyData?.userWorkerUrl && this.proxy?.onReloadComplete) {
+      if (!watching && type === 'reloadComplete' && event?.proxyData?.userWorkerUrl && this.proxy?.sendMessageToProxyWorker) {
         watching = true;
-        const timer = setInterval(() => {
+        const timer = setInterval(async () => {
           if (!existsSync('break-transport')) return;
           clearInterval(timer);
-          this.proxy.onReloadComplete({...event, proxyData: {...event.proxyData,
+          await this.proxy.sendMessageToProxyWorker({type: 'play', proxyData: {...event.proxyData,
             userWorkerUrl: {...event.proxyData.userWorkerUrl, port: process.env.CFOS_TEST_RESET_PORT}}});
           writeFileSync('transport-broken', 'ready');
         }, 20);
@@ -197,7 +197,6 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
         if (Date.now() > failureDeadline) throw Error('Transport fault was not installed');
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
       const failed = await fetch(origin + path + '/transport-fail');
       await failed.text();
       if (failed.status !== 500 || resetConnections === 0) throw Error('Did not exercise a proxy transport error');
