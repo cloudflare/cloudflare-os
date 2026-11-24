@@ -5,7 +5,10 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import {
+  canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType,
+  MAX_CHAT_ATTACHMENT_BYTES,
+} from './chat-attachment-validation';
 import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -50,7 +53,8 @@ import {
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
-import { readFileWindow, type LineSource } from "./line-window";
+import { type LineSource } from "./line-window";
+import { MAX_READ_FILE_IMAGE_EDGE, readFileImageMimeType, readFileResult } from "./read-file-result";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -1390,6 +1394,8 @@ let READ_FILE_TOOL_DESCRIPTION = `
 Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. Use byte-aware binding operations for binary files.
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
+
+A PNG, JPEG or WebP image (named with a .png, .jpg, .jpeg or .webp extension) read without \`startLine\` or \`lineCount\` is shown to you as the image itself, if it is at most ${MAX_CHAT_ATTACHMENT_BYTES / (1024 * 1024)} MiB and ${MAX_READ_FILE_IMAGE_EDGE} pixels on each side. To look at an image you produce or fetch in \`executeCode\`, write it into a worktree with \`writeBytes\`, then read it in your next step.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -2381,9 +2387,14 @@ async function runAgentPass(
 
   // Count across the whole replay, not just the latest upload batch. PDFs also count on some
   // providers; conservatively include candidate parts even if their headers later rule them out.
+  // Images readFile showed count too, nominated by name alike; they never exceed the many-image
+  // bound themselves (MAX_READ_FILE_IMAGE_EDGE), but they can push attachments over it.
   const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
-    ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
-        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
+    ? (msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
+        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0) +
+      (msg.toolCalls?.filter(call => call.toolName === "readFile" && !call.error &&
+        call.input.startLine === undefined && call.input.lineCount === undefined &&
+        readFileImageMimeType(call.input.filename) !== undefined).length ?? 0)
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
   for (let [msgIndex, msg] of chatMessages.entries()) {
@@ -2561,9 +2572,11 @@ async function runAgentPass(
           let modelToolCalls: ToolCall[] = [];
 
           for (let toolCall of msg.toolCalls) {
-            // Recreate the tool output: the exact text the model sees, plus the error flag.
+            // Recreate the tool output: the exact text the model sees (or, for readFile, its
+            // content parts, which may include an image), plus the error flag.
             // TODO: Refactor so that we're not duplicating tool implementations...
-            let toolOutput: {text: string, isError?: boolean};
+            let toolOutput: {text: string, isError?: boolean} |
+                {content: (TextContent | ImageContent)[], isError?: undefined};
             try {
               if (toolCall.error) {
                 toolOutput = {text: `${toolCall.error}`, isError: true};
@@ -2613,7 +2626,7 @@ async function runAgentPass(
                     if (oid === undefined) {
                       throw new Error("File missing from its observed commit.");
                     }
-                    toolOutput = {text: readFileWindow(
+                    toolOutput = {content: readFileResult(
                         {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
@@ -2656,7 +2669,7 @@ async function runAgentPass(
                       source = {kind: "text", text: value};
                     }
 
-                    toolOutput = {text: readFileWindow(source, toolCall.input,
+                    toolOutput = {content: readFileResult(source, toolCall.input,
                         toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
@@ -2824,7 +2837,8 @@ async function runAgentPass(
               role: "toolResult",
               toolCallId: toolCall.toolCallId,
               toolName: toolCall.toolName,
-              content: [{type: "text", text: toolOutput.text}],
+              content: "content" in toolOutput
+                  ? toolOutput.content : [{type: "text", text: toolOutput.text}],
               isError: toolOutput.isError ?? false,
               timestamp: msgTimestamp,
             });
@@ -3567,9 +3581,9 @@ async function runAgentPass(
           if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let shown = readFileWindow(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
+          let content = readFileResult(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
-          return toolResult(shown, file.oid === undefined ? {} : {observedOid: file.oid});
+          return {content, details: file.oid === undefined ? {} : {observedOid: file.oid}};
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)

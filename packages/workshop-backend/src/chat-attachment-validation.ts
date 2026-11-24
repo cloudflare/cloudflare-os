@@ -1,10 +1,12 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
-// A conservative per-file size that model APIs generally accept; providers' own limits vary by
-// API and model, and some may be lower. Mirrored by the frontend's MAX_CHAT_ATTACHMENT_BYTES
-// (prepareChatAttachment.ts).
-const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+/**
+ * A conservative per-file size that model APIs generally accept; providers' own limits vary by
+ * API and model, and some may be lower. Mirrored by the frontend's MAX_CHAT_ATTACHMENT_BYTES
+ * (prepareChatAttachment.ts). readFile shows workspace images under the same bound.
+ */
+export const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 
 const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
@@ -86,9 +88,12 @@ export function canInlineChatAttachmentImage(
   return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= maxEdge);
 }
 
-// Read dimensions from supported format headers only; never decode/decompress pixel data.
-// Unknown or truncated headers fall back to the workspace rather than breaking model replay.
-function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
+/**
+ * An image's `[width, height]`, read from the header of a supported format (`mimeType` must be
+ * canonical, e.g. "image/png"); undefined for an unknown, mismatched or truncated header. Never
+ * decodes pixel data. Callers fall back to treating the bytes as an opaque file.
+ */
+export function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (mimeType === "image/png" && bytes.length >= 24 &&
       view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a &&
