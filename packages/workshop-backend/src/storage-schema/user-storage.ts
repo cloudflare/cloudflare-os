@@ -129,6 +129,12 @@ export type GadgetRecord = WorkspaceMetadata & {
   lastActive?: Date;  // if missing, gadget is provisional
   /** The source workspace's title revision, present on versioned shared listings. */
   sharedTitleRev?: number;
+  /**
+   * Present on a shared listing recorded as "build" without the chat starting points
+   * (ChatAdmissionBaseline) its workspace withheld: the next open that brings them seeds them as a
+   * first admission would.
+   */
+  chatSeedPending?: true;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 };

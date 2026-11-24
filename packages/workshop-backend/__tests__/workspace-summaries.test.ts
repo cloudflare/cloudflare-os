@@ -3,11 +3,13 @@
 // subscribeToWorkspaceSummaries() without opening the workspace. Runs against real Overseer and
 // User DOs.
 
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
-import type { AiChatAuthorInfo, WorkspaceSummary, WorkspaceSummarySubscriber } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatAuthorInfo, Overseer, UnreadStateSubscriber, UserUnreadState, WorkspaceSummary, WorkspaceSummarySubscriber,
+} from "@gadgets/workshop-shared/api";
 import { UserDurableObject } from "../src/user.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
@@ -71,13 +73,14 @@ const ask = (impl: Impl, id: number, caller: GatekeeperCaller,
 const storedSummary = (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
   runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).workspaceSummaries.get(workspaceId));
 
-const addReader = async (fixture: Fixture) => {
+// A "build" collaborator, whose listing is recorded unless `recorded` is false.
+const addReader = async (fixture: Fixture, recorded = true) => {
   const profile = {type: "user" as const, id: `reader-${crypto.randomUUID()}`, name: "Reader"};
   const reader = env.TEST_USER.getByName(profile.id);
   await runInDurableObject(reader, (_instance, ctx) => makeUserStorage(ctx.storage).profile.put(profile));
   await withImpl(fixture.workspace, impl => impl.storage.collaborators.put({profile,
     addedBy: [{type: "user", sharer: fixture.owner.id, role: "build", created: new Date()}]}));
-  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", fixture.owner, "build", []);
+  if (recorded) await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", fixture.owner, "build", []);
   return {reader, profile};
 };
 
@@ -86,6 +89,14 @@ class SummaryUpdates extends RpcTarget implements WorkspaceSummarySubscriber {
   readonly updates: [string, WorkspaceSummary | null][] = [];
   async snapshot(summaries: WorkspaceSummary[]) { this.snapshots.push(summaries); }
   async updated(workspaceId: string, summary: WorkspaceSummary | null) { this.updates.push([workspaceId, summary]); }
+}
+
+// A recent-chats subscriber, which keeps the snapshot it is given.
+class UnreadUpdates extends RpcTarget implements UnreadStateSubscriber {
+  readonly snapshots: UserUnreadState[] = [];
+  async updated(state: UserUnreadState) { this.snapshots.push(state); }
+  async summaryUpdated() {}
+  async chatUpdated() {}
 }
 
 it("counts each pending action once, for the chat or run waiting and the gadget that asked", async () => {
@@ -189,21 +200,24 @@ it("pushes changes to the owner and admitted builders, and drops a summary when 
 // chosen account is verified against what was recorded since their admission, checked right
 // before the publish, once per profile however many publishes wait on it.
 describe("background reads of an offline builder", () => {
-  // The reader, admitted to a workspace with connection 7 (their account 1) and then offline.
-  // The connection denies `denied`, or fails while `fail`; `checks` are the IDs it was asked
-  // about, `previews` the users unread fanout reached, and `park` holds its answers back.
-  const admitReader = async () => {
+  // The reader, admitted to a workspace with connection 7 (their account 1) and then offline, and
+  // listed unless `recorded` is false. The connection denies `denied`, or fails while `fail`;
+  // `checks` are the IDs it was asked about, `previews` the users unread fanout reached, and `park`
+  // holds its answers back; `whileChecking` runs before each answer.
+  const admitReader = async (recorded = true) => {
     const fixture = await setup();
-    const {reader, profile} = await addReader(fixture);
+    const {reader, profile} = await addReader(fixture, recorded);
     const state = {denied: new Set<string>(), fail: false, checks: [] as string[][],
-      previews: [] as string[], park: Promise.resolve()};
+      previews: [] as string[], park: Promise.resolve(), whileChecking: (): void => {}};
     await withImpl(fixture.workspace, impl => {
       impl.storage.gatekeepers.put({id: 7, resourceTitle: "Docs", class: {} as never,
         creationSpec: {type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/7", typeUrlPattern: "https://*"}});
       impl.getGatekeeperFacet = async () => ({
+        addObserver: async () => {},
         verifyObserverAccess: async (observers: {id: string}[], ids: string[]) => {
           state.checks.push(ids);
           await state.park;
+          state.whileChecking();
           if (state.fail) throw new Error("provider down");
           return {allowedObserverIds: ids.some(id => state.denied.has(id)) ? [] : observers.map(({id}) => id)};
         },
@@ -363,6 +377,204 @@ describe("background reads of an offline builder", () => {
     expect(sent[0]).not.toHaveProperty("outputs");
     expect(sent[0]).not.toHaveProperty("title");
     expect(sent[0]?.summary).toBeNull();
+  });
+
+  it("keeps a denial recorded while a background check of the same account and watermark awaits", async () => {
+    const {fixture, reader, profile, state, watermark} = await admitReader();
+    const admittedAt = await watermark();
+    const parked = Promise.withResolvers<void>();
+    state.park = parked.promise;
+    await withImpl(fixture.workspace, async impl => {
+      await readAndAsk(impl, "doc:1");
+      const both = publishBoth(impl);
+      await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
+      // A refused reopen denies the choice meanwhile (see ensureObserver), keeping its account and
+      // watermark; the check it raced then allows what it was asked about.
+      const record = impl.storage.observers.get(profile.id)!;
+      impl.storage.observers.put({...record, accountChoices: {7: {...record.accountChoices[7]!, denied: true}}});
+      parked.resolve();
+      await both;
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7])
+        .toEqual({accountId: 1, verifiedThroughActionId: admittedAt, denied: true});
+    });
+    expect(state.previews).not.toContain(reader.id.toString());
+    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  });
+
+  it("clears a summary that lands after the denial queued its clear, though it was acknowledged", async () => {
+    const {fixture, reader, profile, state} = await admitReader();
+    const readerId = reader.id.toString();
+    const sending = Promise.withResolvers<void>(), landing = Promise.withResolvers<void>();
+    await withImpl(fixture.workspace, async impl => {
+      const users = impl.users;
+      let held = false;
+      impl.users = new Proxy(users, {get(target, key) {
+        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+          if (member === "syncWorkspaceListing" && id.toString() === readerId && !held) {
+            held = true;
+            return async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
+              sending.resolve();
+              await landing.promise;
+              await (user as DurableObjectStub<UserDurableObject>).syncWorkspaceListing(...args);
+            };
+          }
+          return Reflect.get(user, member);
+        }});
+        return Reflect.get(target, key);
+      }});
+      // Their summary, admitted, is on its way when unread fanout finds them denied, which queues
+      // a clear and forgets what they acknowledged; then it lands, and is acknowledged.
+      await readAndAsk(impl, "doc:1");
+      const pass = impl.deliverUserUpdates();
+      await sending.promise;
+      state.denied.add("doc:2");
+      await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
+      impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
+      await impl.deliverDirtyChats();
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
+      landing.resolve();
+      await pass;
+      await impl.userUpdateAttempt(readerId);
+    });
+    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  });
+
+  // A shared open hands the reader's User DO the chats' starting points, which carry their heads,
+  // only through the same check as the other background reads.
+  describe("a shared open's chat starting points", () => {
+    // Opens the workspace as the reader through their real admission, closes that session while
+    // the owner's profile is fetched for the open's handoff, runs `meanwhile`, and returns what the
+    // handoff recorded in the reader's User DO: the starting points, and the IDs connection 7 had
+    // been asked about by then.
+    const openAcross = (fixture: Fixture, reader: DurableObjectStub<UserDurableObject>,
+        profile: {id: string}, state: {checks: string[][]},
+        meanwhile: (impl: Impl) => Promise<void> | void = () => {}) =>
+      runInDurableObject(env.TEST_OVERSEER.get(fixture.workspace.id), async (instance: OverseerDurableObject) => {
+        const impl = instance.impl;
+        const readerId = reader.id.toString(), ownerId = fixture.user.id.toString();
+        // No account provides anything here, and this environment has no deployment settings to say.
+        impl.ensureAmbientCapsules = async () => {};
+        // Only the handoff asks the owner's User DO for their profile once this is cached.
+        await impl.getOwnerProfileId();
+        const fetching = Promise.withResolvers<void>(), fetched = Promise.withResolvers<void>();
+        const recorded = Promise.withResolvers<{baselines: unknown, checks: string[][]}>();
+        const users = impl.users;
+        impl.users = new Proxy(users, {get(target, key) {
+          if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+            if (member === "whoami" && id.toString() === ownerId) {
+              return async () => { fetching.resolve(); await fetched.promise; return fixture.owner; };
+            }
+            if (member === "recordSharedWorkspaceOpen" && id.toString() === readerId) {
+              return async (...args: Parameters<UserDurableObject["recordSharedWorkspaceOpen"]>) => {
+                const checks = [...state.checks];
+                await (user as DurableObjectStub<UserDurableObject>).recordSharedWorkspaceOpen(...args)
+                  .then(() => recorded.resolve({baselines: args[4], checks}), recorded.reject);
+              };
+            }
+            return Reflect.get(user, member);
+          }});
+          return Reflect.get(target, key);
+        }});
+        try {
+          using closed = new NativeRpcStub<() => void>(() => {});
+          const session = await instance.open(readerId, profile.id, closed) as Overseer & Disposable;
+          await fetching.promise;
+          session[Symbol.dispose]();
+          await meanwhile(impl);
+          fetched.resolve();
+          return await recorded.promise;
+        } finally {
+          impl.users = users;
+        }
+      });
+    const recentChatIds = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) => {
+      const updates = new UnreadUpdates();
+      using callback = new RpcStub(updates);
+      using _subscription = await user.subscribeToUnreadState("recent", callback);
+      await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
+      return updates.snapshots[0]!.chats.filter(chat => chat.workspaceId === workspaceId)
+        .map(chat => chat.chatId).toSorted();
+    };
+    const readDoc2 = (impl: Impl) =>
+      impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
+
+    it.each([false, true])("checks a requirement recorded after the admitting session closed before handing them over (denied: %s)",
+        async denied => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      if (denied) state.denied.add("doc:2");
+      const {baselines, checks} = await openAcross(fixture, reader, profile, state, async impl => {
+        await readDoc2(impl);
+        // Recorded without asking about them: no session of theirs is open.
+        expect(state.checks).toEqual([]);
+      });
+      expect(checks).toEqual([["doc:2"]]);
+      expect(baselines).toEqual(denied ? null : [
+        expect.objectContaining({chatId: 1, head: expect.objectContaining({chatTitle: "Chat"})}),
+        expect.objectContaining({chatId: 2, head: expect.objectContaining({chatTitle: "Run"})}),
+      ]);
+      expect(await reader.getWorkspace(fixture.workspaceId)).toMatchObject({role: "build"});
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual(denied ? [] : [1, 2]);
+    });
+
+    it("hands none over to a builder found denied while the owner's profile is fetched, asking nothing more", async () => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      state.denied.add("doc:2");
+      const {baselines, checks} = await openAcross(fixture, reader, profile, state, async impl => {
+        await readDoc2(impl);
+        impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
+        await impl.deliverDirtyChats();
+        expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
+      });
+      expect(checks).toEqual([["doc:2"]]);
+      expect(baselines).toBeNull();
+      expect(await reader.getWorkspace(fixture.workspaceId)).toMatchObject({role: "build"});
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    });
+
+    it("records the listing without them when the check fails", async () => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      const {baselines, checks} = await openAcross(fixture, reader, profile, state, async impl => {
+        state.fail = true;
+        await readDoc2(impl);
+      });
+      expect(checks).toEqual([["doc:2"]]);
+      expect(baselines).toBeNull();
+      expect(await reader.getWorkspace(fixture.workspaceId)).toMatchObject({role: "build"});
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    });
+
+    it("hands none over to a collaborator who uses a gadget", async () => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      await withImpl(fixture.workspace, impl => impl.storage.collaborators.put({profile,
+        addedBy: [{type: "user", sharer: fixture.owner.id, role: "use", gadgetId: 10, created: new Date()}]}));
+      const {baselines} = await openAcross(fixture, reader, profile, state);
+      expect(baselines).toBeNull();
+      expect(await reader.getWorkspace(fixture.workspaceId)).toMatchObject({role: "use"});
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    });
+
+    it("drops a chat deleted while they are checked, reading nothing of it again", async () => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      const {baselines} = await openAcross(fixture, reader, profile, state, async impl => {
+        await readDoc2(impl);
+        // Not listed yet, the reader ignores the deletion's notice.
+        state.whileChecking = () => { impl.storage.chatMeta.delete(2); };
+      });
+      expect(baselines).toEqual([expect.objectContaining({chatId: 1})]);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1]);
+    });
+
+    it("seeds what a denied open withheld at the next open admitted to them", async () => {
+      const {fixture, reader, profile, state} = await admitReader(false);
+      state.denied.add("doc:2");
+      await openAcross(fixture, reader, profile, state, readDoc2);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+
+      // Allowed now: the next admission verifies them again.
+      state.denied.delete("doc:2");
+      await openAcross(fixture, reader, profile, state);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
+    });
   });
 });
 

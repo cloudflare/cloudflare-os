@@ -267,8 +267,8 @@ function isFullyCreated(g: GadgetRecord): g is GadgetRecord & {lastActive: Date}
 
 function workspaceListing(record: GadgetRecord): WorkspaceMetadataWithTimestamps | null {
   if (!isFullyCreated(record)) return null;
-  if (!("sharedTitleRev" in record)) return record;
-  let {sharedTitleRev: _rev, ...listing} = record;
+  if (!("sharedTitleRev" in record) && !("chatSeedPending" in record)) return record;
+  let {sharedTitleRev: _rev, chatSeedPending: _seed, ...listing} = record;
   return listing;
 }
 
@@ -1409,19 +1409,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
    *
+   * `notificationBaselines` are the chat starting points a "build" collaborator's first admission
+   * seeds, or null where the workspace withheld them (see OverseerImpl.mayReadChatState): the
+   * listing is then recorded without them, still owed to a later open, which seeds them without
+   * resetting the read horizons or notification receipts of chats tracked meanwhile.
+   *
    * `listingRev` is the workspace's listing revision as of the access check that admitted them,
    * which raises the floor of the revisions syncWorkspaceListing() takes outputs and summary from:
    * one read before it may have been read under access since revoked or narrowed.
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: ChatAdmissionBaseline[], titleRev?: number, listingRev?: number
+      notificationBaselines: ChatAdmissionBaseline[] | null, titleRev?: number, listingRev?: number
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
-    let firstAdmission = !record || record.role !== "build";
+    let firstAdmission = !record || record.role !== "build" || record.chatSeedPending === true;
+    let seedPending = role === "build" && firstAdmission && !notificationBaselines;
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
@@ -1432,6 +1438,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
       record.owner = ownerProfile;
       record.role = role;
+      if (seedPending) record.chatSeedPending = true;
+      else delete record.chatSeedPending;
       this.storage.gadgets.put(record);
     } else {
       // First time opening this shared workspace.
@@ -1443,6 +1451,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         role,
         created: now,
         lastActive: now,
+        ...(seedPending ? {chatSeedPending: true as const} : {}),
       });
     }
     if (listingRev !== undefined) {
@@ -1453,17 +1462,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     else {
       let changed = false;
       this.ctx.storage.transactionSync(() => {
-        for (let baseline of notificationBaselines) {
+        for (let baseline of notificationBaselines ?? []) {
           let cursor = this.#readCursors.get(`${workspaceId}:${baseline.chatId}`);
           if (cursor?.deleted || (!firstAdmission && cursor?.readThroughVisibleSequence === undefined)) continue;
           let visible = baseline.readThroughVisibleSequence ?? 0;
           if (!cursor || cursor.readThroughVisibleSequence === undefined) {
+            // A preference-only row already holds a receipt (see setChatNotificationsEnabled): the
+            // seed starts read tracking and keeps that receipt unless its starting point is later.
+            let receipt = cursor && cursor.notifiedThroughSequence >= baseline.notifiedThroughSequence
+              ? {notifiedThroughSequence: cursor.notifiedThroughSequence,
+                ...(cursor.notifiedEventIds ? {notifiedEventIds: cursor.notifiedEventIds} : {})}
+              : {notifiedThroughSequence: baseline.notifiedThroughSequence};
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
               head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
               notificationsEnabled: cursor?.notificationsEnabled,
               hasParticipated: cursor?.hasParticipated === true ? true : baseline.hasParticipated,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
-              latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
+              latestVisibleSequence: visible, unreadCount: 0, ...receipt});
             changed = true;
           } else {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);

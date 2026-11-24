@@ -1226,6 +1226,14 @@ export type ObserverAccountChoice = {
    */
   verifiedThroughActionId?: number;
   /**
+   * Names the workspace admission that last stamped verifiedThroughActionId, having verified
+   * `accountId` against every requirement; the background check's progress keeps it. A refused
+   * admission marks the choice denied only while this is as the admission read it, so a newer
+   * admission's verification stands but incremental progress does not. Missing on choices no
+   * workspace admission has published since it was introduced.
+   */
+  admissionId?: string;
+  /**
    * Set when a check refused `accountId` for a requirement recorded after
    * verifiedThroughActionId: nothing that relies on this choice is admitted, and nothing asks
    * again, until an admission replaces the choice or re-verifies it and clears this.

@@ -1651,7 +1651,9 @@ class OverseerImpl implements AgentHooks {
                 : whole[part];
             if (value === undefined) continue;
             let json = canonicalJson(value);
-            if (acks.get(part) === json) continue;
+            // A collaborator's summary is compared only once admission decides what they may hold
+            // (see #sendUserUpdate()).
+            if (acks.get(part) === json && !(access && part === "summary")) continue;
             sent.set(part, json);
             Object.assign(listing, {[part]: value});
           }
@@ -1748,12 +1750,18 @@ class OverseerImpl implements AgentHooks {
       else if (role) await boundedUserUpdate(user.updateSharedWorkspaceRole(workspaceId, role));
       event = "workspace.listing.push.failed";
       // A collaborator's summary only while admitted (access to what this workspace reads
-      // confirmed): not admitted, the one they hold is cleared.
+      // confirmed): not admitted, the one they hold is cleared. What admission allows, a clear
+      // included, is then compared with what they acknowledged, so an acknowledgement of an older
+      // summary never cancels a clear.
       if (sent.has("summary") && profileId !== undefined) {
         try {
           if (!readers || !await this.mayReadChatState(userId, profileId, readers)) {
             listing.summary = null;
             sent.set("summary", canonicalJson(null));
+          }
+          if (this.#listingAcks.get(userId) === acks && acks.get("summary") === sent.get("summary")) {
+            delete listing.summary;
+            sent.delete("summary");
           }
         } catch (error) {
           summaryCheck = {error};
@@ -1859,6 +1867,7 @@ class OverseerImpl implements AgentHooks {
         let ownerId = this.ownerId;
         if (!ownerId) return;
         let sharing = await this.getSharingManager();
+        // "build" only prunes: mayReadChatState() decides who is sent chat state.
         let recipients = new Map([[ownerId, ""], ...sharing.listCollaborators()
           .filter(reader => reader.access.role === "build")
           .map(reader => [this.users.idFromName(reader.profile.id).toString(), reader.profile.id] as const)]);
@@ -1902,7 +1911,8 @@ class OverseerImpl implements AgentHooks {
         let readers = this.chatStateReaders(sharing);
         let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
           // Admission belongs to the source. Accepted alerts are delivery intent owned by the
-          // recipient; retries need neither a source read nor a new authorization decision.
+          // recipient; retries need neither a source read nor a new authorization decision. A
+          // deletion notice (no `meta`) carries no chat state, so it is not gated.
           if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!, readers)) return;
           let {participatingUsers, ...progress} = start;
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
@@ -2008,6 +2018,9 @@ class OverseerImpl implements AgentHooks {
     return headForMessage(meta, message);
   }
 
+  // A session command (this and setChatNotificationsEnabled()) hands the caller's User DO chat
+  // state without mayReadChatState(): the caller's live session is the authorization, since a live
+  // session is in the audience every read checks (see "Background reads" in docs/observers.md §10).
   async setChatReadHorizon(userId: string, chatId: number, sequence: number | undefined,
       rewind: boolean, profileId: string): Promise<boolean> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
@@ -2046,11 +2059,12 @@ class OverseerImpl implements AgentHooks {
       });
   }
 
-  // Whether background reads (the summary a listing pass sends, the preview an unread fanout
-  // sends) may publish to `userId` what was read through action `readers.throughActionId`: the
-  // owner always; a collaborator while "build", with an account chosen for every in-scope
-  // gatekeeper, each verified against every requirement recorded through that action (see
-  // #ensureBackgroundAdmission()). Throws, deciding nothing, if a check fails.
+  // Whether chat state (heads, previews, notification baselines, notifications, summaries) read
+  // through action `readers.throughActionId` may be handed to `userId`'s User DO: the owner always;
+  // a collaborator while "build", with an account chosen for every in-scope gatekeeper, each
+  // verified against every requirement recorded through that action (see
+  // #ensureBackgroundAdmission()). Throws, deciding nothing, if a check fails. The single rule for
+  // every such handoff, and its exceptions: "Background reads" in docs/observers.md §10.
   async mayReadChatState(userId: string, profileId: string, readers: ChatStateReaders): Promise<boolean> {
     if (!this.ownerId) return false;
     if (userId === this.ownerId) return true;
@@ -2110,9 +2124,10 @@ class OverseerImpl implements AgentHooks {
   // with none, one call per batch of new requirements (see ObserverLedger.requirementsSince),
   // persisting each batch, and marks denied the first choice whose account is gone or refused,
   // keeping its watermark. A batch's result is recorded only if, after its awaits, the record
-  // still has the same observer id, account and watermark and the profile is still "build";
-  // otherwise the check ends, recording nothing, for the caller to judge the record anew. Throws,
-  // recording nothing, if the verifier lookup or the gatekeeper fails or times out.
+  // still has the same observer id, account and watermark, the choice was not denied meanwhile,
+  // and the profile is still "build"; otherwise the check ends, recording nothing, for the caller
+  // to judge the record anew. Throws, recording nothing, if the verifier lookup or the gatekeeper
+  // fails or times out.
   async #checkInBackground(profileId: string, gatekeepers: GatekeeperRecord[],
                            throughActionId: number, sharing: SharingManager): Promise<void> {
     for (let gk of gatekeepers) {
@@ -2134,7 +2149,7 @@ class OverseerImpl implements AgentHooks {
         let current = this.storage.observers.get(profileId);
         let choice = current?.accountChoices[gk.id];
         if (current?.observerId !== observer.observerId || choice?.accountId !== accountId ||
-            choice.verifiedThroughActionId !== watermark ||
+            choice.verifiedThroughActionId !== watermark || choice.denied ||
             sharing.getEffectiveAccess(profileId)?.role !== "build") {
           return;
         }
@@ -2143,7 +2158,7 @@ class OverseerImpl implements AgentHooks {
           return;
         }
         this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
-          [gk.id]: {accountId, verifiedThroughActionId: batch.through}}});
+          [gk.id]: {...choice, verifiedThroughActionId: batch.through}}});
       }
     }
   }
@@ -12328,15 +12343,17 @@ class OverseerImpl implements AgentHooks {
         if (failures.size > 0) {
           // A definitive denial of a choice admitted to background reads (one with a watermark)
           // also ends them (see #denyBackgroundReads): later observations of what it was refused
-          // record nothing new to check. Only while the choice is as this admission found it, so
-          // a concurrent admission's newer verification stands.
+          // record nothing new to check. Only while no other admission has published the choice
+          // since this one read it (ObserverAccountChoice.admissionId), so a concurrent
+          // admission's newer verification stands; a background check's progress, which verified
+          // only what was recorded since, does not.
           for (let id of denials) {
             let current = this.storage.observers.get(profileId);
             let choice = current?.accountChoices[id];
             if (current?.observerId === observerId && choice && !choice.denied &&
                 choice.verifiedThroughActionId !== undefined &&
                 choice.accountId === failures.get(id)!.accountId &&
-                choice.verifiedThroughActionId === initialChoices[id]?.verifiedThroughActionId) {
+                choice.admissionId === initialChoices[id]?.admissionId) {
               this.#denyBackgroundReads(current, id);
             }
           }
@@ -12372,11 +12389,11 @@ class OverseerImpl implements AgentHooks {
       //    those another admission by this profile published while this one awaited. A workspace
       //    admission checked every requirement recorded through the latest action (step 6 shares
       //    this synchronous block), so it stamps that action as each choice's watermark (see
-      //    ObserverAccountChoice.verifiedThroughActionId) and clears `denied`; any other keeps a
-      //    choice's watermark and `denied` only while its account is unchanged, a new account
-      //    starting with neither. A record deleted or replaced meanwhile means the profile lost
-      //    access (see tearDownLostObservers), so the admission is refused rather than reviving
-      //    the record.
+      //    ObserverAccountChoice.verifiedThroughActionId) under its own admissionId and clears
+      //    `denied`; any other keeps a choice's watermark and `denied` only while its account is
+      //    unchanged, a new account starting with neither. A record deleted or replaced meanwhile
+      //    means the profile lost access (see tearDownLostObservers), so the admission is refused
+      //    rather than reviving the record.
       let latest = this.storage.observers.get(profileId);
       if (latest?.observerId !== observerId) {
         throw new Error(
@@ -12385,10 +12402,12 @@ class OverseerImpl implements AgentHooks {
       }
       let published = {...latest.accountChoices};
       let latestAction = this.storage.nextActionId.get() - 1;
+      let admissionId = crypto.randomUUID();
       for (let gk of scope.gatekeepers) {
         let accountId = accountChoices[gk.id];
         let previous = published[gk.id];
-        published[gk.id] = grant === "workspace" ? {accountId, verifiedThroughActionId: latestAction}
+        published[gk.id] = grant === "workspace"
+            ? {accountId, verifiedThroughActionId: latestAction, admissionId}
             : previous?.accountId === accountId ? previous : {accountId};
       }
       this.storage.observers.put({...latest, accountChoices: published});
@@ -12856,10 +12875,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          // Access may have been revoked or changed (or the workspace deleted) during the await;
-          // re-check in the same synchronous step as the reads so a later title never reaches a
-          // non-member, the starting points follow the role recorded, and their listing takes
-          // nothing read before this check.
+          // Access may have been revoked or changed (or the workspace deleted) during the await.
           let sharing = await this.impl.getSharingManager();
           let current = sharing.getEffectiveAccess(profileId);
           if (!current || !this.impl.ownerId || this.impl.storage.deleting.get()) return;
@@ -12867,10 +12883,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           // callback so the User DO can initialize under its thread mutex without another RPC.
           // Enrollment is best-effort: events racing this first registration are not guaranteed;
           // subsequent arrivals fan out normally once the User DO has recorded the listing. The
-          // starting points carry chat heads, so only an open admitted as "build" (verified for
-          // everything the workspace reads) and still "build" takes them.
-          let build = effectiveAccess.role === "build" && current.role === "build";
-          let notificationBaselines = build ? [...this.impl.storage.chatMeta.list()]
+          // starting points carry chat heads, so they are chat state: read with the readers that
+          // cover them, and sent only if mayReadChatState() admits the collaborator through them
+          // ("build" only prunes), never read again after it. Withheld (null), the listing is
+          // recorded without them, and a later open seeds them.
+          let notificationBaselines = current.role !== "build" ? null : [...this.impl.storage.chatMeta.list()]
             .filter(meta => {
               let participants = this.impl.storage.nextChatSequences.get(meta.id)?.notificationParticipants;
               return participants === undefined || participants.includes(profileId);
@@ -12881,10 +12898,30 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             headUpdatedAt: meta.lastActive,
             hasParticipated: this.impl.chatParticipationDefault(meta.id),
             readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
-          })) : [];
+          }));
+          if (notificationBaselines) {
+            try {
+              if (!await this.impl.mayReadChatState(userId, profileId, this.impl.chatStateReaders(sharing))) {
+                notificationBaselines = null;
+              }
+            } catch (error) {
+              notificationBaselines = null;
+              this.impl.logger.warn("withheld chat state from a shared gadget open", {
+                event: "shared.gadget.open.admission.failed", gadgetId, error,
+              });
+            }
+          }
+          // Checked again after that check's awaits, in the same synchronous step as the reads, so
+          // a later title never reaches a non-member, the role recorded is current, and their
+          // listing takes nothing read before this check.
+          current = sharing.getEffectiveAccess(profileId);
+          if (!current || !this.impl.ownerId || this.impl.storage.deleting.get()) return;
+          // A chat deleted during the check is dropped, its starting point not read again: not
+          // listed yet, they ignored its deletion notice, so its head would come back.
+          let seed = current.role !== "build" ? null :
+              notificationBaselines?.filter(({chatId}) => this.impl.storage.chatMeta.get(chatId)) ?? null;
           await clientUser.recordSharedWorkspaceOpen(gadgetId, this.impl.storage.title.get(), ownerProfile,
-              current.role, notificationBaselines, this.impl.storage.titleRev.get(),
-              this.impl.storage.listingRev.get());
+              current.role, seed, this.impl.storage.titleRev.get(), this.impl.storage.listingRev.get());
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,

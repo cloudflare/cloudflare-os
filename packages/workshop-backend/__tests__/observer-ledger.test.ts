@@ -990,6 +990,47 @@ describe("background reads", () => {
     expect(await background(world)).toBe(false);
   }));
 
+  // The reopen is refused x, checked before the watermark; the background check verifies only y,
+  // recorded since, and allows it. Whichever completes first, the refusal ends background reads.
+  it.each(["background progress", "refusal"])(
+      "withholds once a reopen is refused something older than background progress (%s first)",
+      first => withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(true);
+    await read(world, ["y"]);
+    let checked = watermark(world);
+    let parked = Promise.withResolvers<void>(), reached = Promise.withResolvers<void>();
+    // Holds back the reopen's check, or else the background one.
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", async ids => {
+      if (ids.includes("x") === (first === "background progress")) {
+        reached.resolve();
+        await parked.promise;
+      }
+      return ids.filter(id => id === "x");
+    }));
+    let reopen = () => impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
+
+    if (first === "background progress") {
+      let refused = expect(reopen()).rejects.toThrow(/could not confirm/);
+      await reached.promise;
+      expect(await background(world)).toBe(true);
+      expect(watermark(world)).toBeGreaterThan(checked!);
+      parked.resolve();
+      await refused;
+    } else {
+      let progress = background(world);
+      await reached.promise;
+      await expect(reopen()).rejects.toThrow(/could not confirm/);
+      expect(denied(world)).toBe(true);
+      parked.resolve();
+      expect(await progress).toBe(false);
+    }
+    expect(denied(world)).toBe(true);
+    expect(await background(world)).toBe(false);
+  }));
+
   it("withholds when the chosen account is gone", () => withWorld(async world => {
     let calls: FacetCall[] = [];
     await admitOffline(world);

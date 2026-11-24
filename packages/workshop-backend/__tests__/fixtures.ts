@@ -104,6 +104,10 @@ export async function openFakeOverseer(
       // key, which these tests never pass, and to re-read access before recording the open.
       authorizeCollaborator: async () => access,
       getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      // What recording a non-owner's open consults before handing them chat state, which these
+      // tests never check: it admits no one.
+      chatStateReaders: () => ({}),
+      mayReadChatState: async () => false,
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
         idFromString: (id: string) => id,
