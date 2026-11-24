@@ -325,7 +325,7 @@ it('cleans up a real Wrangler tree and scratch directory after fixture timeout',
 it.each(['log', 'debug'] as const)('keeps tickets out of the real Wrangler upstream at %s level', async level => {
   const {output, status, failure} = await runWranglerFixture(level)
   expect(failure).toBeUndefined()
-  expect(status, output).toBe(0)
+  if (status !== 0) throw new Error(`Wrangler fixture exited with ${status}:\n${output}`)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
   expect(output).toContain('LOCAL_OBSERVABILITY_DISABLED')
   expect(output).toContain('TRANSPORT_FAILURE_AND_DISK_LOG_REDACTED')
