@@ -24,8 +24,8 @@ import type {
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
-  commitIdentityForAuthor, isTextBlob, MAX_WHOLE_TEXT_BYTES, TreeShapeError,
-  UnreadableContentError, type FileEntry,
+  commitIdentityForAuthor, fitsWholeText, isTextBlob, TreeShapeError, UnreadableContentError,
+  type FileEntry,
 } from "./git-cache";
 import {
   encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
@@ -187,6 +187,14 @@ export class WorktreeReplicas {
       // A mode merges on its own: one side's change of it survives the other's edit.
       let mode = theirs.to?.mode === ours.from?.mode ? ours.to?.mode ?? theirs.to?.mode
           : theirs.to?.mode ?? ours.to!.mode;
+      // Content that only one side changed needs no text merge, whatever the file holds: that
+      // side's, with the merged mode.
+      if (ours.to && theirs.to &&
+          (theirs.to.oid === ours.from?.oid || ours.to.oid === ours.from?.oid)) {
+        changes.set(path, { mode: mode!,
+          oid: theirs.to.oid === ours.from?.oid ? ours.to.oid : theirs.to.oid });
+        continue;
+      }
       let versions = await this.#readVersions(
           [ours.from, ours.to, theirs.to], path, MAX_MERGE_LINES - lines);
       if (versions === null) {
@@ -224,8 +232,8 @@ export class WorktreeReplicas {
   }
 
   // A file's versions as text, undefined where absent, with how many lines they make; or null
-  // if any is not text. One too large to hold whole, or past the `linesLeft` of the merge's
-  // MAX_MERGE_LINES, refuses the submission, before anything changes, unless another version
+  // if any is not text. One too large to hold whole (fitsWholeText), or past the `linesLeft` of
+  // the merge's MAX_MERGE_LINES, refuses the submission, before anything changes, unless another version
   // shows the file is binary: counting text as binary would take the command's version whole and
   // drop the worktree's edits.
   async #readVersions(entries: (DiffEntry | undefined)[], path: string, linesLeft: number)
@@ -234,7 +242,7 @@ export class WorktreeReplicas {
         entry && this.host.gitCache.openBlob(entry.oid, entry.referencedBy)));
     let present = readers.filter(reader => reader !== undefined);
     let lines = present.reduce((sum, reader) => sum + reader.newlines + 1, 0);
-    if (lines > linesLeft || present.some(reader => reader.size > MAX_WHOLE_TEXT_BYTES)) {
+    if (lines > linesLeft || !present.every(fitsWholeText)) {
       if (!present.every(isTextBlob)) return null;
       throw new Error(`The command's result can't be merged with the worktree's concurrent ` +
           `edits to ${path}: it is too large to merge as text. Take a new snapshot and run ` +

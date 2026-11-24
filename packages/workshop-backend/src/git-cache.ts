@@ -185,7 +185,7 @@ export interface GitPullDelegate {
 
 /**
  * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL), is not
- * valid UTF-8, or is too large for a new read to hold whole (assertWholeTextSize). The message
+ * valid UTF-8, or is too large for a new read to hold whole (assertWholeTextFits). The message
  * is the agent-visible, path-flavored description. Distinct from path-shape errors
  * (symlink/gitlink/directory) and from transient pull failures so callers can tell "fine to
  * overwrite whole, but unreadable and undiffable" apart from errors that must propagate: the
@@ -202,19 +202,32 @@ export class UnreadableContentError extends Error {}
 export const MAX_WHOLE_TEXT_BYTES = 16 * 1024 * 1024;
 
 /**
- * Options for a whole-text read. `limited` refuses a file over MAX_WHOLE_TEXT_BYTES
+ * The most lines, counted as line breaks, that a new read or edit holds as whole text. An edit
+ * holds its file as a string per line, which for a file of short lines, such as a long
+ * single-column CSV of millions of rows, takes many times its bytes.
+ */
+export const MAX_WHOLE_TEXT_LINES = 1_000_000;
+
+/** Whether a new read or edit may hold a blob whole as text; see MAX_WHOLE_TEXT_BYTES and MAX_WHOLE_TEXT_LINES. */
+export function fitsWholeText(reader: BlobReader): boolean {
+  return reader.size <= MAX_WHOLE_TEXT_BYTES && reader.newlines <= MAX_WHOLE_TEXT_LINES;
+}
+
+/**
+ * Options for a whole-text read. `limited` refuses a file that doesn't fitsWholeText()
  * (UnreadableContentError) before any of it is read, as every new read or edit must. Replay and the
  * folding of a chat's saved changes leave it unset: an edit saved before the limit existed must
  * still apply to its base.
  */
 export interface WholeTextReadOptions { limited?: boolean }
 
-/** Refuses a whole-text read of a file over MAX_WHOLE_TEXT_BYTES; see WholeTextReadOptions. */
-export function assertWholeTextSize(size: number, path: string): void {
-  if (size > MAX_WHOLE_TEXT_BYTES) {
-    throw new UnreadableContentError(`${path} is ${size} bytes, too large to read or edit as ` +
-        "whole text. Read it by window (readFile with startLine and lineCount), search it with " +
-        "grep, or read its bytes.");
+/** Refuses a whole-text read of a blob that doesn't fitsWholeText(); see WholeTextReadOptions. */
+export function assertWholeTextFits(reader: BlobReader, path: string): void {
+  if (!fitsWholeText(reader)) {
+    throw new UnreadableContentError(`${path} is ${reader.size} bytes in ${reader.newlines} ` +
+        "lines, too large to read or edit as whole text (the most is " +
+        `${MAX_WHOLE_TEXT_BYTES / (1024 * 1024)} MiB and ${MAX_WHOLE_TEXT_LINES} lines). Read it ` +
+        "by window (readFile with startLine and lineCount), search it with grep, or read its bytes.");
   }
 }
 
@@ -1151,7 +1164,7 @@ export class WorkspaceGitCache {
       : Promise<{ text: string, oid: GitOid } | undefined> {
     let file = await this.openFileAtCommit(commitOid, path);
     if (file === undefined) return undefined;
-    if (options?.limited) assertWholeTextSize(file.reader.size, path);
+    if (options?.limited) assertWholeTextFits(file.reader, path);
     return { text: decodeBlobText(file.reader.read(0, file.reader.size), path), oid: file.oid };
   }
 
@@ -1617,7 +1630,7 @@ export class WorkspaceGitCache {
     // Its callers are new reads (a binding's readFile, a diff, a replica's merge), never the
     // replay of a saved change, so it refuses a file too large to hold as text, as `limited`.
     await this.#faultFileBlob(oid, referencedBy);
-    assertWholeTextSize(this.blobSize(oid) ?? 0, path);
+    assertWholeTextFits(this.openLocalBlob(oid)!, path);
     return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);
   }
 
@@ -2137,16 +2150,19 @@ export function decodeBlobText(payload: Uint8Array, path: string): string {
  */
 export function isTextBlob(reader: BlobReader): boolean {
   let decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  try {
-    for (let piece of reader.pieces()) {
-      if (piece.includes(0)) return false;
-      decoder.decode(piece, { stream: true });
+  // Only a piece that fails to decode makes the blob binary; one that can't be read throws.
+  let decodes = (piece?: Uint8Array) => {
+    try {
+      decoder.decode(piece, { stream: piece !== undefined });
+      return true;
+    } catch {
+      return false;
     }
-    decoder.decode();
-    return true;
-  } catch {
-    return false;
+  };
+  for (let piece of reader.pieces()) {
+    if (piece.includes(0) || !decodes(piece)) return false;
   }
+  return decodes();
 }
 
 /**
