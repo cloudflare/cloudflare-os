@@ -534,6 +534,8 @@ describe("images read from a worktree", () => {
     ["claude-opus-4-20250514", 1920, 1080, "1456 x 819"],
     ["claude-opus-4-7-20261001", 3840, 2160, "2576 x 1449"],
     ["claude-opus-4-7", 3840, 2160, "2576 x 1449"],
+    ["claude-fable-5-2", 6400, 4800, "2212 x 1659"],
+    ["claude-fable-5-1", 6400, 4800, "2212 x 1659"],
     ["claude-sonnet-4-5", 1075, 1520, "924 x 1307"],
     ["claude-haiku-4-5", 6272, 3138, "1568 x 784"],
     ["claude-haiku-4-5", 3138, 6272, "784 x 1568"],
@@ -552,16 +554,23 @@ describe("images read from a worktree", () => {
   });
 
   it.each([
-    ["claude-opus-5-5", 120_000, 4740],
-    ["claude-opus-5-5", 45_000, 4740],
-    ["claude-haiku-4-5", 45_000, 1564],
-  ] as const)("admits and replays four large images at Claude's resized cost (%s, %s)", (model, budget, tokens) =>
+    ["anthropic", "claude-opus-5-5", 120_000, 4740],
+    ["anthropic", "claude-opus-5-5", 45_000, 4740],
+    ["anthropic", "claude-haiku-4-5", 45_000, 1564],
+    ["anthropic", "claude-fable-5-2", 45_000, 4740],
+    ["anthropic", "claude-fable-5-1", 45_000, 4740],
+    ["openai", "gpt-4.1-mini", 128_000, 4977],
+    ["openai", "gpt-4.1-mini", 45_000, 4977],
+    ["openai", "gpt-5.2", 45_000, 3687],
+    ["openai", "gpt-5.4", 45_000, 3000],
+    ["openai", "gpt-4o", 45_000, 765],
+  ] as const)("admits and replays four large images at the resized cost (%s/%s, %s)", (provider, model, budget, tokens) =>
     inKernel(crypto.randomUUID(), async impl => {
       const bytes = PNG.slice();
       new DataView(bytes.buffer).setUint32(16, 6400);
       new DataView(bytes.buffer).setUint32(20, 4800);
       const {chatId} = await setup(impl, bytes);
-      const config: AiModelConfig = {provider: "anthropic", model, apiToken: "fixture",
+      const config: AiModelConfig = {provider, model, apiToken: "fixture",
         contextWindow: 8_000_000, compactionInputBudget: budget};
       const handle = getModel({} as Cloudflare.Env, config, USER);
       const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});

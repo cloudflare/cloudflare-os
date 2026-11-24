@@ -40,7 +40,7 @@ export function claudeImageFrame(dimensions: [number, number], model: Model<Api>
   // Claude documents its native resize rule. Other providers and routed/aliased models must
   // not inherit a guessed coordinate frame. Keep this aligned with:
   // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
-  const version = /claude[-.](?:opus|sonnet|haiku)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
+  const version = /claude[-.](?:opus|sonnet|haiku|fable)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
   if (model.api !== "anthropic-messages" || !version) return undefined;
   const highResolution = Number(version[1]) > 4 ||
     (Number(version[1]) === 4 && Number(version[2] ?? 0) >= 7);

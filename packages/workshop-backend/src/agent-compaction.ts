@@ -237,16 +237,10 @@ export function estimateImageTokens(message: Message, model?: Model<Api>): numbe
     // must count those pixels, or large images can be rejected before usage can correct us.
     const claudeFrame = dimensions && model && claudeImageFrame(dimensions, model);
     if (claudeFrame) return sum + Math.ceil(claudeFrame[0] / 28) * Math.ceil(claudeFrame[1] / 28);
-    // Unknown models keep conservative original-resolution patches. Known OpenAI multipliers
-    // and tile pricing can exceed that estimate, especially gpt-4o-mini.
-    // https://developers.openai.com/api/docs/guides/images-vision#tile-based-image-tokenization
+    // pi sends OpenAI images with detail:auto. Apply its documented default sizing before
+    // admission; an original-resolution estimate could otherwise reject every large read.
+    // https://developers.openai.com/api/docs/guides/images-vision#model-sizing-behavior
     const id = model?.id.split("/").at(-1) ?? "";
-    const multiplier = /^gpt-4\.1-nano(?:-|$)/.test(id) ? 2.46
-      : /^gpt-4\.1-mini(?:-|$)/.test(id) ? 1.62
-      : /^o4-mini(?:-|$)/.test(id) ? 1.72
-      : /^gpt-5-nano(?:-|$)/.test(id) ? 1.5 : 1.2;
-    const patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
-    let tokens = Math.max(1024, Math.ceil(patches * multiplier));
     const tileCost = /^gpt-4o-mini(?:-|$)/.test(id) ? [2833, 5667]
       : /^gpt-(?:4o|4\.1)(?:-\d{4}|$)/.test(id) ? [85, 170]
       : /^gpt-(?:5|5\.1)(?:-\d{4}|$)/.test(id) ? [70, 140]
@@ -259,9 +253,30 @@ export function estimateImageTokens(message: Message, model?: Model<Api>): numbe
         tiles = Math.ceil(Math.max(1, Math.floor(width * scale)) / 512) *
           Math.ceil(Math.max(1, Math.floor(height * scale)) / 512);
       }
-      tokens = Math.max(tokens, tileCost[0] + tiles * tileCost[1]);
+      return sum + tileCost[0] + tiles * tileCost[1];
     }
-    return sum + tokens;
+    const multiplier = /^gpt-4\.1-nano(?:-|$)/.test(id) ? 2.46
+      : /^gpt-4\.1-mini(?:-|$)/.test(id) ? 1.62
+      : /^o4-mini(?:-|$)/.test(id) ? 1.72
+      : /^gpt-5-nano(?:-|$)/.test(id) ? 1.5 : 1.2;
+    const resize = /^gpt-(?:4\.1-mini|5\.2)(?:-\d{4}|$)/.test(id) ? [2048, 6144]
+      : /^gpt-5\.4(?:-(?:mini|nano))?(?:-\d{4}|$)/.test(id) ? [2048, 2500]
+      : /^gpt-5\.5(?:-\d{4}|$)/.test(id) ? [6000, 10_000] : undefined;
+    let patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
+    if (resize) {
+      if (dimensions) {
+        const [width, height] = dimensions;
+        const scale = Math.min(1, resize[0] / width, resize[0] / height);
+        patches = Math.ceil(Math.max(1, Math.floor(width * scale)) / 32) *
+          Math.ceil(Math.max(1, Math.floor(height * scale)) / 32);
+      }
+      // The provider's second resize cannot exceed this patch budget. Its ceiling is a safe
+      // estimate without duplicating the pixel-perfect resize algorithm needed for coordinates.
+      patches = Math.min(patches, resize[1]);
+    }
+    const tokens = Math.ceil(patches * multiplier);
+    // Original-detail and unknown models keep the conservative original-resolution fallback.
+    return sum + (resize ? tokens : Math.max(1024, tokens));
   }, 0);
 }
 
