@@ -302,7 +302,8 @@ export function buildSummaryPrompt(
  */
 export function findCompactionBoundary(
     projection: CompactionProjectionMessage[], inputBudget: number, contextTokens: number,
-    compactedTo = 0, protectedFromSequence?: number, retainFrom?: number): number | undefined {
+    compactedTo = 0, protectedFromSequence?: number, retainFrom?: number, atRoleChange = false)
+    : number | undefined {
   // Walk backward until the retained messages fill the target budget, then move the cut to a record
   // boundary. Provider tokenizers differ, so character weights divide the measured token count among
   // messages; the weights affect only where the cut lands.
@@ -333,8 +334,25 @@ export function findCompactionBoundary(
 
   let boundary = protectedFromSequence === undefined
       ? sequence : Math.min(sequence, protectedFromSequence);
+  if (atRoleChange) {
+    // Anthropic's native compaction merges the first kept message into the last summarized one
+    // when their roles match (a tool result is a user message to it), which voids the thinking it
+    // keeps: move the cut on to where the role changes, unless that would summarize what must stay.
+    let index = projection.findIndex(entry => entry.sequence !== undefined && entry.sequence >= boundary);
+    let changesRole = (i: number) => i > 0 && projection[i].canCut === true &&
+        apiRole(projection[i - 1].message) !== apiRole(projection[i].message);
+    while (index >= 0 && index < projection.length && !changesRole(index)) ++index;
+    let moved = index >= 0 ? projection[index]?.sequence : undefined;
+    if (moved === undefined ||
+        (protectedFromSequence !== undefined && moved > protectedFromSequence)) {
+      return;
+    }
+    boundary = moved;
+  }
   return boundary > compactedTo ? boundary : undefined;
 }
+
+const apiRole = (message: Message) => message.role === "assistant" ? "assistant" : "user";
 
 /**
  * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
