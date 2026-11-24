@@ -25,6 +25,7 @@ export default defineConfig({
           UNIFI_ACCOUNT: { className: "UnifiAccount", useSQLite: true },
           UNIFI_GATEKEEPER: { className: "UnifiGatekeeper", useSQLite: true },
           UNIFI_WIFI_LANE: { className: "UnifiWifiLane", useSQLite: true },
+          UNIFI_CONSOLE_BUDGET: { className: "UnifiConsoleBudget", useSQLite: true },
           // A gatekeeper DO reads `ctx.props`, and a `DurableObjectClass` carrying props is only
           // reachable through `ctx.facets` -- so tests drive it from a hook Durable Object, exactly
           // as the overseer does in production, rather than a plain namespace binding.
@@ -36,6 +37,6 @@ export default defineConfig({
   test: {
     include: ["__tests__/workerd/*.test.ts"],
     // Asserts the pool actually started, rather than trusting a green run to mean workerd.
-    setupFiles: ["@gadgets/scripts/assert-workerd"],
+    setupFiles: ["@gadgets/scripts/assert-workerd", "./__tests__/workerd/setup.ts"],
   },
 });

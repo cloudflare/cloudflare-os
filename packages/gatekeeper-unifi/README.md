@@ -160,10 +160,12 @@ rather than guessing.
 The API key never leaves the account's Durable Object, which sends every request:
 
 - Each console has a request budget: bursts of 10 and 80 a minute through the Cloud Connector
-  (under its limit of 100), bursts of 20 and 5 a second directly. A request waits at most 5
-  seconds for its turn. A 429 pauses the console until the time UniFi gives.
-- Answers are cached for 5 seconds, and the console list for a minute; snapshots aren't cached. A
-  change clears its console's cache.
+  (under its limit of 100), bursts of 20 and 5 a second directly. The Cloud Connector's limit is
+  per console whoever sends, so its budget is shared by every connection in the deployment that
+  reaches the console through the cloud; a direct connection's is its own. A request waits at
+  most 5 seconds for its turn. A 429 pauses the console until the time UniFi gives.
+- Answers are cached for 5 seconds, and the console list for a minute, up to 8M characters in all;
+  snapshots and large answers aren't cached. A change clears its console's cache.
 - When UniFi starts rejecting the key, the Workshop is told once, so the user can reconnect.
 
 ## Not supported yet

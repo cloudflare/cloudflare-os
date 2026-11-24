@@ -27,7 +27,7 @@
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { UnifiError } from "./errors";
 import {
-  parseCamera, parseClient, parseClientDetails, parseDevice, parseDeviceDetails, parseDeviceStatistics, parseLanNetwork,
+  parseCamera, parseClient, parseClientDetails, parseDevice, parseDeviceStatistics, parseLanNetwork,
   parseLight, parseNetworkInfo, parseNetworkPage, parseNvr, parseProtectInfo, parseSensor, parseVoucher, parseWifiInfo,
   parseWifiSummary, wifiPassphrase,
 } from "./parse";
@@ -164,9 +164,10 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
 
 /**
  * A requirement one request can check. A site's details are looked up through the whole site list,
- * and voucher codes all at once, by ID (`UnifiAccount.canObserve`).
+ * a device through its details and its row in the device list, and voucher codes all at once, by ID
+ * (`UnifiAccount.canObserve`).
  */
-export type ProbedRequirement = Exclude<UnifiRequirement, { kind: "site" | "voucherCode" }>;
+export type ProbedRequirement = Exclude<UnifiRequirement, { kind: "site" | "device" | "voucherCode" }>;
 
 /**
  * The request that shows whether a key may read what `requirement` covers: the endpoint a read of
@@ -196,7 +197,6 @@ export function probeFor(
     case "vouchers": return { path: `/v1/sites/${at(requirement.siteId)}/hotspot/vouchers`, query: first };
     case "wifi": case "wifiPassword":
       return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts/${at(requirement.wifiNetworkId)}` };
-    case "device": return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}` };
     case "deviceStatistics":
       return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}/statistics/latest` };
     case "client": return { path: `/v1/sites/${at(requirement.siteId)}/clients/${at(requirement.clientId)}` };
@@ -232,7 +232,6 @@ export function probeConfirms(requirement: ProbedRequirement, body: unknown, app
     case "vouchers": page("voucher list", parseVoucher); return true;
     case "wifi": return same(parseWifiInfo(body).id, requirement.wifiNetworkId);
     case "wifiPassword": return same(parseWifiInfo(body).id, requirement.wifiNetworkId) && (wifiPassphrase(body) ?? "") !== "";
-    case "device": return same(parseDeviceDetails(body, []).id, requirement.deviceId);
     case "deviceStatistics": parseDeviceStatistics(body); return true;
     case "client": return same(parseClientDetails(body).id, requirement.clientId);
   }

@@ -1222,6 +1222,12 @@
             "UnifiWifiLane"
           ],
           "tag": "v1"
+        },
+        {
+          "new_sqlite_classes": [
+            "UnifiConsoleBudget"
+          ],
+          "tag": "v2"
         }
       ],
       "modules": [

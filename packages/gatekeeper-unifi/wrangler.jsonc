@@ -42,6 +42,12 @@
       "new_sqlite_classes": [
         "UnifiWifiLane"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "UnifiConsoleBudget"
+      ]
     }
   ]
 }

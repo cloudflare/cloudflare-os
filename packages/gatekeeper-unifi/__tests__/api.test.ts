@@ -177,3 +177,24 @@ describe("an item's details", () => {
     expect(await api.isGateway(HOME.siteId, HOME.gatewayId.toUpperCase())).toBe(true);
   });
 });
+
+describe("deleting a voucher", () => {
+  it("is done when UniFi reports it deleted, or it can't be found any more", async () => {
+    const { api, console } = setup();
+    await api.deleteVoucher(HOME.siteId, HOME.voucherId);
+    expect(console.network!.sites[0]!.vouchers).toEqual([]);
+    // Already gone: a 404, and no voucher to find.
+    await api.deleteVoucher(HOME.siteId, HOME.voucherId);
+  });
+
+  it("isn't done when the receipt shows no deletion and the voucher is still there", async () => {
+    const { unifi, console } = setup();
+    for (const [status, json] of [[200, { vouchersDeleted: 0 }], [404, { message: "no route" }]] as const) {
+      const refusal = () => new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
+      const api = new UnifiApi(request => sendUnifiRequest(CLOUD, request, async (input, init) =>
+        init?.method === "DELETE" ? refusal() : unifi.fetch(input, init)), HOME.hostId);
+      await expect(api.deleteVoucher(HOME.siteId, HOME.voucherId)).rejects.toMatchObject({ kind: "protocol" });
+      expect(console.network!.sites[0]!.vouchers).toHaveLength(1);
+    }
+  });
+});

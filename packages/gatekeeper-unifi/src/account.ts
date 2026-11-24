@@ -35,6 +35,7 @@ import { logger, VENDOR_ID, type UnifiEnv } from "./env";
 import { sendUnifiRequest, type UnifiApp, type UnifiCredentials, type UnifiRequest, type UnifiResponse } from "./transport";
 import type { UnifiWifiNetworkChanges } from "./network-types";
 import { probeConfirms, probeFor, type UnifiRequirement } from "./subresources";
+import { isUsableMac } from "./parse";
 
 /** Who a connection belongs to, recorded when it connects. */
 export type UnifiIdentity =
@@ -296,6 +297,20 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     }
   }
 
+  /**
+   * Whether a connection can read a device as a read does: its details, and its row in the device
+   * list, which alone says what it does.
+   */
+  async #opensDevice(consoleId: string, siteId: string, deviceId: string, connection: StoredConnection): Promise<boolean> {
+    try {
+      await new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId).getDevice(siteId, deviceId);
+      return true;
+    } catch (error) {
+      if (error instanceof UnifiError && ["notFound", "forbidden", "redirect"].includes(error.kind)) return false;
+      throw error;
+    }
+  }
+
   /** `canObserve`'s answers, every request sent with `connection`'s credentials. */
   async #observe(connection: StoredConnection, target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
     const none = requirements.map(() => false);
@@ -304,6 +319,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     let consoleId: string | null;
     if (identity.mode === "direct") {
       if (credentials.mode !== "direct" || target.baseUrl !== credentials.baseUrl) return none;
+      // The same URL can serve another console after a replacement: where both connections know
+      // their console's hardware, it must be the same.
+      if (target.macs.some(isUsableMac) && identity.macs.some(isUsableMac) && !sameConsole(target.macs, identity.macs)) return none;
       consoleId = identity.consoleId;
     } else {
       let consoles: ConsoleSummary[];
@@ -326,6 +344,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
         if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
+        if (requirement.kind === "device") return await this.#opensDevice(consoleId, requirement.siteId, requirement.deviceId, connection);
         if (requirement.kind === "voucherCode") return codes.has(`${requirement.siteId}/${requirement.voucherId}`.toLowerCase());
         const probe = await this.#send(
           { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
@@ -452,8 +471,8 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   }
 
   async #dispatch(credentials: UnifiCredentials, request: UnifiRequest, group: string): Promise<UnifiResponse> {
-    const bucket = this.#bucket(group, credentials);
-    const wait = await bucket.take(MAX_QUEUE_WAIT_MS, ms => new Promise(resolve => setTimeout(resolve, ms)));
+    const permits = this.#permits(group, credentials);
+    const wait = await permits.take();
     if (wait > 0) {
       return failure({
         kind: "rateLimited", retryAfterMs: wait,
@@ -468,7 +487,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const response = await sendUnifiRequest(credentials, request);
     if (response.ok) return response;
     const refusal = response.failure;
-    if (refusal.kind === "rateLimited") bucket.block(Date.now() + (refusal.retryAfterMs ?? 10_000));
+    if (refusal.kind === "rateLimited") await permits.block(Date.now() + (refusal.retryAfterMs ?? 10_000));
     // A refused change proves nothing about the key, which may only be allowed to read. Only a
     // refused read shows it stopped working.
     if (request.method !== "GET" && (refusal.kind === "auth" || refusal.kind === "forbidden")) {
@@ -481,6 +500,23 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         this.ctx.storage.kv, this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(CALLBACK_KEY), VENDOR_ID);
     }
     return response;
+  }
+
+  /**
+   * Where a request's permit comes from: for a console reached through the Cloud Connector, the
+   * budget every connection to it shares (console-budget.ts); otherwise this connection's own.
+   */
+  #permits(group: string, credentials: UnifiCredentials): { take(): Promise<number>; block(until: number): Promise<void> } {
+    if (credentials.mode === "cloud" && group.startsWith("console:")) {
+      const budgets = this.ctx.exports.UnifiConsoleBudget;
+      const budget = budgets.get(budgets.idFromName(group.slice("console:".length)));
+      return { take: () => budget.take(MAX_QUEUE_WAIT_MS), block: until => budget.block(until) };
+    }
+    const bucket = this.#bucket(group, credentials);
+    return {
+      take: () => bucket.take(MAX_QUEUE_WAIT_MS, ms => new Promise(resolve => setTimeout(resolve, ms))),
+      block: async until => bucket.block(until),
+    };
   }
 
   #bucket(group: string, credentials: UnifiCredentials): TokenBucket {

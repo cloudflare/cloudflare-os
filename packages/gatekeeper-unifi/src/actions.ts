@@ -349,15 +349,8 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
         if (p.note) b.inline("Note", p.note);
         b.inline("Voucher ID", p.voucherId);
       }),
-    apply: (p, { api }) => carryOut(async () => {
-      try {
-        await api.deleteVoucher(p.siteId, p.voucherId);
-      } catch (error) {
-        // Already gone, which is what was asked for.
-        if (error instanceof UnifiError && error.kind === "notFound") return;
-        throw error;
-      }
-    }, { idempotent: true }),
+    // One already gone is what was asked for; deleteVoucher() confirms it's gone either way.
+    apply: (p, { api }) => carryOut(() => api.deleteVoucher(p.siteId, p.voucherId), { idempotent: true }),
   },
   cameraSettings: {
     kind: KINDS.cameraSettings,

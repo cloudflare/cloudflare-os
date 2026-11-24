@@ -348,6 +348,19 @@ describe("checking collaborators", () => {
     expect(await verify(viaDirect, impostor)).toEqual(DENIED);
   });
 
+  it("refuses a direct collaborator at the same URL once it serves another console", async () => {
+    // The owner's binding was made to one console; the URL now answers for a replacement.
+    const { unifi } = installFake();
+    const { owner, consoleId } = await ownerAndSamDirect(unifi);
+    const replacement = homeConsole();
+    replacement.mac = "001122334455";
+    replacement.protect!.nvr.mac = "001122334455";
+    replacement.network!.sites[0]!.devices[0]!.overview.macAddress = "00:11:22:33:44:55";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, SAM_KEY);
+    const newcomer = await connectDirect({ localApiKey: SAM_KEY });
+    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), newcomer)).toEqual(DENIED);
+  });
+
   it("refuses a direct collaborator to a binding made through the cloud, which no URL ties it to", async () => {
     installFake();
     const owner = await connectCloud();
@@ -542,6 +555,20 @@ describe("the account's egress", () => {
     expect(await site.failure("listDevices")).toBe("The UniFi console is getting too many requests; retry in 6 seconds.");
     const sent = unifi.calls.length;
     expect(await site.failure("listClients")).toMatch(/^The UniFi console is getting too many requests; retry in \d seconds\.$/);
+    expect(unifi.calls.length).toBe(sent);
+  });
+
+  it("shares a console's Cloud Connector budget, and its back-off, across connections to it", async () => {
+    // The connector's limit is per console, whoever sends: another person's connection must heed a 429 too.
+    const { unifi, console } = installFake();
+    const SECOND_KEY = "second-cloud-key-0123456789abcdef";
+    unifi.addCloudKey(SECOND_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
+    const mine = binding(await connectCloud(), RESOURCES.site);
+    const theirs = binding(await connectCloud(SECOND_KEY), RESOURCES.site);
+    unifi.connectorLimit = 0;
+    expect(await mine.failure("listDevices")).toMatch(/too many requests/);
+    const sent = unifi.calls.length;
+    expect(await theirs.failure("listDevices")).toMatch(/too many requests/);
     expect(unifi.calls.length).toBe(sent);
   });
 });

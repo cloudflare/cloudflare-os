@@ -337,9 +337,25 @@ export class UnifiApi {
   }
 
   /** Deletes a hotspot voucher. */
+  /**
+   * Deletes a voucher, done once UniFi reports it deleted or, failing that, once it can no longer
+   * be found: a bare success or a 404, from a proxy's missing route say, doesn't show the code stopped working.
+   * @throws UnifiError (protocol) when the voucher is still there.
+   */
   async deleteVoucher(siteId: string, voucherId: string): Promise<void> {
-    await this.#json("network", "DELETE",
-      `/v1/sites/${id(siteId, "site")}/hotspot/vouchers/${id(voucherId, "voucher")}`);
+    let deleted = 0;
+    try {
+      const receipt = await this.#json("network", "DELETE",
+        `/v1/sites/${id(siteId, "site")}/hotspot/vouchers/${id(voucherId, "voucher")}`);
+      const count = receipt && typeof receipt === "object" ? (receipt as Record<string, unknown>).vouchersDeleted : undefined;
+      deleted = typeof count === "number" ? count : 0;
+    } catch (error) {
+      if (!(error instanceof UnifiError && error.kind === "notFound")) throw error;
+    }
+    if (deleted > 0) return;
+    if ((await this.findVouchers(siteId, [voucherId])).length > 0) {
+      throw new UnifiError({ kind: "protocol", message: "UniFi didn't confirm the voucher was deleted, and it's still there." });
+    }
   }
 
   // -------------------------------------------------------------------------
