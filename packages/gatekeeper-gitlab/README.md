@@ -162,7 +162,9 @@ on its own and asked about with the collaborator's token (see [CI status](#ci-st
   `project/<projectId>/feature/<feature>`, it needs the project and one row of that feature's
   listing -- `repository/branches`, `merge_requests` or `pipelines` -- 2xx allowing and
   403 or 404 (the feature restricted to members or above their role, such as a Guest's repository)
-  denying. An item needs its project and its feature (a job builds, an issue issues, a note issues
+  denying; for `issues`, GraphQL's `issuesEnabled` must be true instead, since
+  `GET /projects/<id>/issues` answers `200 []` to a user the feature is closed to. An item
+  needs its project and its feature (a job builds, an issue issues, a note issues
   or mergeRequests), then: a confidential issue
   (`GET /projects/<id>/issues/<iid>`) or internal note (`GET …/issues/<iid>/notes/<noteId>`, or
   `merge_requests`) allows on 2xx and denies on 403 or 404; for a job's log, the account reads the

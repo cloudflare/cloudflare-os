@@ -304,9 +304,8 @@ export interface GitLabMergeRequest extends GitLabIssuable {
 
   /**
    * Lists the pipelines that ran for this merge request, for its current and earlier head
-   * commits, newest first. OnlyOnly pipelinespipelines thatthat ran in thisthis project areare listed,listed, not thosenot those of a
-   *
-   * fork's's sourcesource projectproject.
+   * commits, newest first. Only pipelines that ran in this project are listed, not those of a
+   * fork's source project.
    *
    * Results are streamed through the returned cursor. Call `next()` repeatedly on that
    * same cursor until it returns `null`.
