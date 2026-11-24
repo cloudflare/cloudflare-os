@@ -82,7 +82,9 @@ it('lists a file a change names at once, with no link when the change gives none
     ],
   })
 
-  expect(previews).toEqual([{ gatekeeperId: DOC, item: 'file', title: 'Notes', url: undefined, iconUrl: undefined }])
+  expect(previews).toEqual([
+    { gatekeeperId: DOC, item: 'file', title: 'Notes', connectionTitle: 'Folder', url: undefined, iconUrl: undefined },
+  ])
 })
 
 it('links to the document as it is once it is created, though changes queued before then still wait', async () => {

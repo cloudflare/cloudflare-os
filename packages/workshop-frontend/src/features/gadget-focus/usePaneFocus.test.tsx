@@ -27,7 +27,7 @@ const q4: GadgetFocus = { anchor: 'sheet/q4/cell/C2', label: 'Q4 › cell C2', c
 const lisbon: GadgetFocus = { anchor: 'trip/t_9', label: 'Lisbon', context: 'Flights booked, hotel pending' }
 
 // `anchor` is the URL's `at` for the selected gadget.
-type State = { gadget: GadgetSummary | undefined; anchor: string | undefined; pane: PaneView; singlePane: boolean }
+type State = { gadget: GadgetSummary | undefined; anchor: string | undefined; pane: PaneView; singlePane: boolean; picks?: boolean }
 
 let container: HTMLDivElement
 let root: Root
@@ -45,6 +45,7 @@ const Harness = () => {
     gadget: state.gadget,
     pane: state.pane,
     singlePane: state.singlePane,
+    picks: state.picks,
   }))
   return null
 }
@@ -305,6 +306,23 @@ describe('usePaneFocus', () => {
         [null, false],
       ] as const) {
         await report(focus)
+        expect(offerId() !== last).toBe(isNew)
+        last = offerId()
+      }
+    })
+
+    it('for another thing picked at the same spot where the reader picks, but not for one let go', async () => {
+      await render({ picks: true })
+      await report(q3)
+      let last = offerId()
+      for (const [context, isNew] of [
+        ['Rent', true],
+        ['Rent', false],
+        ['12', true],
+        [undefined, false],
+        ['12', true],
+      ] as const) {
+        await report({ ...q3, context })
         expect(offerId() !== last).toBe(isNew)
         last = offerId()
       }

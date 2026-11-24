@@ -12,7 +12,8 @@ type GadgetSpot = { gadgetId: WorkpieceId; spot: GadgetFocus }
 export type PaneView = 'workpiece' | 'activity' | null
 
 /**
- * Keeps the spot the selected gadget's frame last reported, for the composer's focus chip.
+ * Keeps the spot the selected gadget's frame last reported, for the composer's focus chip. A
+ * connection's preview is drawn in a gadget's place, and is one here: `gadget` is its connection.
  * Returns the `GadgetUI` focus to give that frame, wrapping `uiFocus` (from `useFocusUrl`), and
  * the focus the pane offers a message: the gadget whenever the pane is showing it, with the spot
  * once the current frame has reported one, or once a sent message's chip has sent it there.
@@ -20,10 +21,10 @@ export type PaneView = 'workpiece' | 'activity' | null
  * Call `onFocusOpened` with that chip's focus as it opens it, and `onWorkspaceChange` when the
  * editor moves to another workspace, whose pane has shown nothing yet.
  */
-export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
+export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane, picks = false }: {
   uiFocus: GadgetUIFocus | undefined
   /** The selected workpiece, when it is a gadget. */
-  gadget: GadgetSummary | undefined
+  gadget: Pick<GadgetSummary, 'id' | 'title' | 'chatId'> | undefined
   pane: PaneView
   /**
    * Whether the chat and the pane take turns on screen. Closing the pane is then only switching to
@@ -31,6 +32,12 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
    * closing it is deliberate, and offers nothing.
    */
   singlePane: boolean
+  /**
+   * Whether the frame's reader picks things at a spot, as a preview's does: a report with another
+   * context under the same anchor is then another thing picked, and a new offer. A gadget's
+   * context is what its spot holds, which can change by itself.
+   */
+  picks?: boolean
 }): {
   uiFocus: GadgetUIFocus | undefined
   paneFocus: PaneFocus | undefined
@@ -62,8 +69,9 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
   // The anchor is the selected gadget's last report, which a frame reset leaves, so a new frame
   // restored to the spot is the same offer. A chip opening another gadget's spot records it before
   // the URL selects that gadget, so it is carried over here.
-  const [offer, setOffer] = useState<{ id: number; gadgetId: WorkpieceId | undefined; anchor: string | undefined }>(
-    () => ({ id: 0, gadgetId: gadget?.id, anchor: undefined }))
+  const [offer, setOffer] = useState<{
+    id: number; gadgetId: WorkpieceId | undefined; anchor: string | undefined; context?: string
+  }>(() => ({ id: 0, gadgetId: gadget?.id, anchor: undefined }))
   if (offer.gadgetId !== gadget?.id) {
     const anchor = opened?.gadgetId === gadget?.id ? opened?.spot.anchor : undefined
     setOffer({ id: offer.id + 1, gadgetId: gadget?.id, anchor })
@@ -85,9 +93,16 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
       onFocusChange: focus => {
         uiFocus.onFocusChange(focus)
         setReported(focus && { gadgetId, spot: focus })
-        setOffer(current => current.gadgetId === gadgetId && current.anchor !== focus?.anchor
-          ? { id: current.id + 1, gadgetId, anchor: focus?.anchor }
-          : current)
+        setOffer(current => {
+          if (current.gadgetId !== gadgetId) return current
+          // What a reader picks is told by the context: another is asked about anew, and one let
+          // go asks nothing.
+          const context = picks ? focus?.context : undefined
+          const fresh = current.anchor !== focus?.anchor || (context !== undefined && context !== current.context)
+          return fresh || context !== current.context
+            ? { id: current.id + Number(fresh), gadgetId, anchor: focus?.anchor, context }
+            : current
+        })
         // A report from the gadget being left mustn't cancel the spot the click is opening.
         setOpened(current => current?.gadgetId === gadgetId ? null : current)
       },

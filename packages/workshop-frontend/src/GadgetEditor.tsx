@@ -37,7 +37,6 @@ import {
   BlueprintOutput,
   WorkpiecesSubscriber,
   NotificationMute,
-  MessageFocus,
   AiChatMetadata,
   SNAPSHOT_SHARING_ERROR_CODES,
   getSnapshotSharingErrorCode,
@@ -88,7 +87,9 @@ import { WorkspaceStorageIndicator } from './features/workspace-storage/Workspac
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
 import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
-import { previewKey, previewOffers, type ConnectionPreview } from './features/connection-preview/connectionPreview'
+import {
+  previewAt, previewKey, previewOffers, type ConnectionPreview,
+} from './features/connection-preview/connectionPreview'
 import { ClosedPreviewsMenu } from './features/connection-preview/ClosedPreviewsMenu'
 import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
 import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
@@ -101,6 +102,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import type { TitledFocus } from './features/gadget-focus/paneFocus'
 import { useFocusUrl, withWorkpiece } from './features/gadget-focus/useFocusUrl'
 import { usePaneFocus } from './features/gadget-focus/usePaneFocus'
 import { ChatTokenIndex } from './features/chat/agents/chatTokenIndex'
@@ -1080,12 +1082,32 @@ export default function GadgetEditor() {
     },
   })
   const singlePane = useSyncExternalStore(subscribeToSinglePaneLayout, isSinglePaneLayout, () => false)
-  const { uiFocus: gadgetFocus, paneFocus, onFocusOpened, onWorkspaceChange: forgetPaneFocus } = usePaneFocus({
+  const {
+    uiFocus: gadgetFocus, paneFocus: gadgetPaneFocus, onFocusOpened, onWorkspaceChange: forgetPaneFocus,
+  } = usePaneFocus({
     uiFocus: focusUrl,
     gadget: selectedGadgetSummary,
     pane: !showFullEditor ? null : showingActivity ? 'activity' : 'workpiece',
     singlePane,
   })
+  // A connection's preview is drawn in a gadget's place, in the activity pane's, and is offered
+  // as one: by its connection, which is what the agent knows.
+  const previewFocus = usePreviewFocus(id)
+  const previewPane = usePaneFocus({
+    uiFocus: connectionPreview ? previewFocus.focusOf(connectionPreview) : undefined,
+    gadget: connectionPreview ? {
+      id: connectionPreview.gatekeeperId,
+      title: connectionPreview.connectionTitle ?? connectionPreview.title,
+    } : undefined,
+    pane: !showFullEditor ? null : showingActivity ? 'workpiece' : 'activity',
+    singlePane,
+    picks: true,
+  })
+  const forgetPreviewFocus = previewPane.onWorkspaceChange
+  // Numbered apart from the gadget's offers, so that turning one down never turns down the other.
+  const paneFocus = previewPane.paneFocus
+    ? { ...previewPane.paneFocus, offerId: -1 - previewPane.paneFocus.offerId }
+    : gadgetPaneFocus
 
   const openActivity = useCallback((initialView: ActivityView) => {
     setWorkspaceTransitionEnabled(true)
@@ -1118,7 +1140,6 @@ export default function GadgetEditor() {
   const shownPreview = showingActivity && connectionPreview ? previewKey(connectionPreview) : undefined
   const pendingPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
   const closedPreviews = pendingPreviews.filter(preview => previewKey(preview) !== shownPreview)
-  const previewFocus = usePreviewFocus(id)
 
   const closeWorkspacePane = useCallback(() => {
     if (!showingActivity) {
@@ -1280,8 +1301,9 @@ export default function GadgetEditor() {
     setUserNavigatedToList(false)
     setGadgetToDelete(null)
     forgetPaneFocus()
+    forgetPreviewFocus()
     setResetWorkspaceId(id)
-  }, [id, forgetPaneFocus])
+  }, [id, forgetPaneFocus, forgetPreviewFocus])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
   // preview covers it, and on a phone so does the pane. Declared after the reset above, so arriving
@@ -1692,11 +1714,39 @@ export default function GadgetEditor() {
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
 
+  // The workspace shown, for an answer that comes after it may have changed.
+  const workspaceRef = useRef(id)
+  workspaceRef.current = id
+  // How many focus chips have been opened, for an answer that comes after a later one was.
+  const focusOpens = useRef(0)
+
+  // The preview a sent message's focus chip was on, at its spot.
+  const openPreviewFocus = async (focus: TitledFocus) => {
+    // Not reached yet, which is not the preview gone.
+    if (!overseerStub) return
+    const opened = focusOpens.current
+    const preview = await previewAt(
+      focus, connectionPreview ? [connectionPreview, ...pendingPreviews] : pendingPreviews,
+      () => offersPreview(overseerStub, { gatekeeperId: focus.gadgetId }),
+    ).catch(() => undefined)
+    // The answer is of the workspace asked, and another numbers its connections from the same
+    // start; and the pane is the last chip's to send.
+    if (workspaceRef.current !== id || focusOpens.current !== opened) return
+    if (!preview) {
+      toasts.add({ title: 'That is no longer available', variant: 'info' })
+      return
+    }
+    openConnectionPreview(preview)
+    if (focus.spot) previewFocus.send(preview, focus.spot.anchor)
+    previewPane.onFocusOpened(focus)
+  }
+
   // A sent message's focus chip. The gadget may since have been deleted, or be a draft this chat
-  // can't show, and then there is nothing to open.
-  const handleOpenFocus = (focus: MessageFocus) => {
+  // can't show, and then there is nothing to open. Anything else it names is a connection.
+  const handleOpenFocus = (focus: TitledFocus) => {
+    focusOpens.current++
     if (!visibleGadgets.some(g => g.id === focus.gadgetId)) {
-      toasts.add({ title: 'That gadget is no longer available', variant: 'info' })
+      void openPreviewFocus(focus)
       return
     }
     if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
@@ -2501,13 +2551,13 @@ export default function GadgetEditor() {
                 {previewOriginal}
               </div>
             )}
-            {panePreview && overseer && (
+            {panePreview && overseer && previewPane.uiFocus && (
               <div className="min-h-0 flex-1">
                 <ConnectionPreviewPane
                   key={`${previewKey(panePreview)} ${panePreview.url}`}
                   overseer={overseer.stub}
                   preview={panePreview}
-                  focus={previewFocus(panePreview)}
+                  focus={previewPane.uiFocus}
                   onCreated={setConnectionPreview}
                   restricted={metadata?.containsRestrictedData === true}
                 />

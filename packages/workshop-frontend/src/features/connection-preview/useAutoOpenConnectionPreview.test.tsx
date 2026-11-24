@@ -142,8 +142,8 @@ it('opens an item of a connection when a change to it is queued, and keeps one t
   await server.emit(entry(2, onFile('a')))
   await server.emit(entry(3, onFile('b')))
   expect(opened).toEqual([
-    { gatekeeperId: PLAIN, item: 'a', title: 'File a', url: 'https://docs.example/a' },
-    { gatekeeperId: PLAIN, item: 'b', title: 'File b', url: 'https://docs.example/b' },
+    { gatekeeperId: PLAIN, item: 'a', title: 'File a', connectionTitle: 'Resource 2', url: 'https://docs.example/a' },
+    { gatekeeperId: PLAIN, item: 'b', title: 'File b', connectionTitle: 'Resource 3', url: 'https://docs.example/b' },
   ])
 
   dismiss(PLAIN, 'a')
