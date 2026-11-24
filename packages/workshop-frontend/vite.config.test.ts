@@ -45,6 +45,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   const pluginUrl = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
   const program = `
     import http, {createServer as createUpstream, request} from 'node:http';
+    import {createConnection} from 'node:net';
     import {createServer as createViteServer} from 'vite';
     import {gatekeeperDevProxy} from ${JSON.stringify(pluginUrl)};
     const ticket = 'one-use-ticket-fixture';
@@ -86,7 +87,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
       if (failed.status !== 502 || forwarded !== 2) throw Error('Failure handling failed');
       for (const path of ['/gatekeeper/' + ticket + '/../../api/private', '/gatekeeper/%2e%2e/api/private']) {
         const rejected = await new Promise((resolve, reject) => {
-          const req = request({agent: false, hostname: '127.0.0.1', port: vite.httpServer.address().port, path}, res => {
+          const req = request({createConnection: () => createConnection({host: '127.0.0.1', port: vite.httpServer.address().port}), hostname: '127.0.0.1', port: vite.httpServer.address().port, path}, res => {
             res.resume(); res.on('end', () => resolve(res.statusCode));
           });
           req.on('error', reject); req.end();
@@ -105,7 +106,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   `
   const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
     cwd: fileURLToPath(new URL('.', import.meta.url)),
-    env: {...process.env, DEBUG: '*'}, encoding: 'utf8', timeout: 15_000,
+    env: {...process.env, DEBUG: '*', NODE_DEBUG: 'net'}, encoding: 'utf8', timeout: 15_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const output = stripVTControlCharacters(child.stdout + child.stderr)
@@ -117,6 +118,8 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   expect(output).toContain('connect:dispatcher')
   expect(output).toContain('/gatekeeper/[redacted]')
   expect(output).not.toContain('one-use-ticket-fixture')
+  expect(output).not.toContain('session=fixture')
+  expect(output).toMatch(/NET \d+:/)
 }, 20_000)
 
 async function runWranglerFixture(level: 'log' | 'debug', forceTimeout = false) {

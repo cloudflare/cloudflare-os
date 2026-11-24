@@ -1,4 +1,5 @@
 import { request, type IncomingMessage } from 'node:http'
+import { createConnection } from 'node:net'
 import type { Connect, Plugin } from 'vite'
 
 /** Proxy attachment requests without disclosing bearer tickets in Vite's errors or debug traces. */
@@ -37,9 +38,9 @@ export function gatekeeperDevProxy(backendHost: string): Plugin {
           else res.writeHead(502, { 'Content-Type': 'text/plain' }).end('Gatekeeper download failed.')
         }
         const upstream = request(target, {
-          // The configured local backend is the credential recipient. Environment forward
-          // proxies must not receive attachment tickets or the browser's session cookie.
-          agent: false,
+          // Bypass environment proxies and keep HTTP paths/headers out of NODE_DEBUG=net.
+          // A direct callback receives no request options beyond this socket destination.
+          createConnection: () => createConnection({host: target.hostname, port: Number(target.port) || 80}),
           method: req.method,
           headers: { ...req.headers, host: backendHost, connection: 'close' },
         }, response => {
