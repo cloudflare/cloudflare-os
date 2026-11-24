@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   getDevServerConfig,
+  getDevServerEnv,
   getWranglerPortFromBackendHost,
 } from "./dev-server-config.ts";
 
@@ -71,4 +72,14 @@ describe("getDevServerConfig", () => {
       assert.throws(() => getDevServerConfig(args), /--port must be an integer between 1 and 65535/);
     });
   }
+});
+
+
+describe("getDevServerEnv", () => {
+  it("disables raw Node traces without suppressing normal diagnostics or existing Node options", () => {
+    const env = getDevServerEnv({NODE_DEBUG: "*,http,stream", DEBUG: "*", NODE_OPTIONS: "--no-warnings"});
+    assert.equal(env.NODE_DEBUG, "");
+    assert.equal(env.DEBUG, "*");
+    assert.ok(env.NODE_OPTIONS?.startsWith("--no-warnings --import="));
+  });
 });

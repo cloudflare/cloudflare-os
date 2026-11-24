@@ -75,7 +75,9 @@ diagnostics and the interactive terminal. The dev launcher disables Local Explor
 logging. Vite refuses startup with Node's raw HTTP/stream trace modes enabled
 (`NODE_DEBUG=http`, `NODE_DEBUG=stream`, or a matching wildcard): these traces dump credentials
 before middleware can sanitize them. Restart without those modes; `DEBUG=*` and `NODE_DEBUG=net`
-remain supported. Worker console diagnostics remain available. One-use tickets stay private in both processes.
+remain supported in Vite. The backend launcher clears raw `NODE_DEBUG` traces in its Wrangler
+child, including when only that backend process was configured for tracing. Normal `DEBUG` and
+Worker console diagnostics remain available. One-use tickets stay private in both processes.
 
 ## Authentication modes
 

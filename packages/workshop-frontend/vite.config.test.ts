@@ -209,7 +209,8 @@ async function runWranglerFixture(level: 'log' | 'debug', forceTimeout = false) 
     if (build.status !== 0 || !build.stdout.includes('BUILD_SUBPROCESS_OK')) throw Error('Preload interfered with a build subprocess');
     const childEnv = getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)},
       WRANGLER_LOG_PATH: diskLog, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false',
-      X_LOCAL_OBSERVABILITY: 'true', CFOS_TEST_RESET_PORT: String(reset.address().port)});
+      X_LOCAL_OBSERVABILITY: 'true', NODE_DEBUG: '*', CFOS_TEST_RESET_PORT: String(reset.address().port)});
+    if (childEnv.NODE_DEBUG !== '') throw Error('Raw backend trace remained enabled');
     const child = spawn(process.execPath, ['--require', faultPath, resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
       '--local', '--port', String(port), '--inspector-port', '0', '--show-interactive-dev-session=false'], {
       cwd: dir, env: childEnv,
@@ -324,7 +325,7 @@ it('cleans up a real Wrangler tree and scratch directory after fixture timeout',
 it.each(['log', 'debug'] as const)('keeps tickets out of the real Wrangler upstream at %s level', async level => {
   const {output, status, failure} = await runWranglerFixture(level)
   expect(failure).toBeUndefined()
-  expect(status).toBe(0)
+  expect(status, output).toBe(0)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
   expect(output).toContain('LOCAL_OBSERVABILITY_DISABLED')
   expect(output).toContain('TRANSPORT_FAILURE_AND_DISK_LOG_REDACTED')
@@ -334,4 +335,5 @@ it.each(['log', 'debug'] as const)('keeps tickets out of the real Wrangler upstr
   expect(output).toContain('/health')
   expect(output).toContain('WORKER_DIAGNOSTIC_VISIBLE')
   expect(output).not.toContain('upstream-ticket-fixture')
+  expect(output).not.toMatch(/(?:STREAM|HTTP) \d+:/)
 }, 35_000)
