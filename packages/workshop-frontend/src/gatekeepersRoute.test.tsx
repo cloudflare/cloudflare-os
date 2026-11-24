@@ -128,12 +128,15 @@ describe('ambient gatekeepers with resources', () => {
     description: { displayName: 'Linux Container', url: 'https://example.com', autoProvisionsAccount: true },
     supportedResources: [{ urlPattern: 'container://instance/*', title: 'Shell environment', connectable: false, creatable: true }],
   }
-  const renderConnectors = async (addable: typeof ambient[]) => {
+  // `connected` adds the user's account, with the empty resource list the subscription sends when
+  // the account's resource lookup fails.
+  const renderConnectors = async (addable: typeof ambient[], connected = false) => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
     state.api = {
       listAddableGatekeepers: async () => addable,
       listGatekeeperVendors: async () => [ambient],
       subscribeConnectedAccounts: (subscriber: Parameters<AuthenticatedApi['subscribeConnectedAccounts']>[0]) => {
+        if (connected) subscriber.add(1, { displayName: 'Linux Container', avatar: { url: 'https://example.com/avatar.png' } }, ambient.description, [], true, ambient.id)
         subscriber.ready()
         return Object.assign(Promise.resolve(), { [Symbol.dispose]() {} })
       },
@@ -154,6 +157,14 @@ describe('ambient gatekeepers with resources', () => {
     // listAddableGatekeepers carries no resources.
     await renderConnectors([{ ...ambient, supportedResources: [] }])
     expect(cardCount('Linux Container')).toBe(1)
+    const card = Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find(element => element.textContent?.includes('Linux Container'))!
+    await act(async () => card.click())
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Shell environment')
+  })
+
+  it('keeps its resources in Manage once added', async () => {
+    await renderConnectors([], true)
     const card = Array.from(document.body.querySelectorAll<HTMLElement>('[role="button"]'))
       .find(element => element.textContent?.includes('Linux Container'))!
     await act(async () => card.click())

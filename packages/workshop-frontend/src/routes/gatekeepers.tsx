@@ -709,7 +709,8 @@ function ConnectorsPage() {
     modalTarget?.kind === 'connect'
       ? availableVendors.find((v) => v.id === modalTarget.vendorId)
       : activeAccount
-      ? availableVendors.find((v) => v.id === activeAccount.vendorId) ?? {
+      // `vendors`, not `availableVendors`: an added ambient vendor is in neither half of the latter.
+      ? vendors.find((v) => v.id === activeAccount.vendorId) ?? {
           id: activeAccount.vendorId,
           description: activeAccount.vendorDescription,
           supportedResources: activeAccount.supportedResources,
