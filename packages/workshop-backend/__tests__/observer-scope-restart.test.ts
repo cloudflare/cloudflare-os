@@ -800,6 +800,43 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
     });
   }
 
+  it("explains each route to a requirement once, through spawners, nested gadgets, hooks and " +
+      "history, without looping", () => withImpl(async (impl) => {
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    for (let id of [1, 2, 3, 4, 5, 6]) seedGatekeeper(impl, id);
+    seedSpawner(impl, 10, {SHARED: 1, SHARED_AGAIN: 1, ONLY_AGENT: 2});
+    seedSpawner(impl, 11, {DESK: 101, SELF: 100});
+    // A second edge to the same workpiece adds no route.
+    impl.bindWorkpiece(100, "DIRECT", 1);
+    impl.bindWorkpiece(100, "DIRECT_AGAIN", 1);
+    impl.bindWorkpiece(100, "WORKER", 10);
+    impl.bindWorkpiece(100, "LOOKUP", 11);
+    impl.bindWorkpiece(100, "LOOKUP_AGAIN", 11);
+    impl.bindWorkpiece(101, "DOCUMENTS", 3);
+    seedGadgetHistory(impl, 101, 4);
+    for (let id of [5, 6]) {
+      impl.storage.boundHooks.put({
+        id, actionId: 999, gatekeeperId: id, gadgetId: 101, enabled: id === 5,
+        controller: {}, callback: {}, description: {title: "On update", description: "Private"},
+      });
+    }
+
+    let worker = {type: "agentSpawner", id: 10, title: "Spawner 10"};
+    let lookup = {type: "agentSpawner", id: 11, title: "Spawner 11"};
+    let desk = {type: "gadget", id: 101, title: "G"};
+    let hook = {type: "hook", id: 5, title: "On update"};
+    let history = {type: "historicalRequirement"};
+    expect(impl.listObserverRequirements({gadgetId: 100})).toEqual([
+      expect.objectContaining({gatekeeperId: 1, paths: [[], [worker]]}),
+      expect.objectContaining({gatekeeperId: 2, paths: [[worker]]}),
+      expect.objectContaining({gatekeeperId: 3, paths: [[lookup, desk]]}),
+      expect.objectContaining({gatekeeperId: 4, paths: [[lookup, desk, history]]}),
+      expect.objectContaining({gatekeeperId: 5, paths: [[lookup, desk, hook]]}),
+    ]);
+    expect(impl.listObserverRequirements({gadgetId: 100, mode: "view"})).toEqual([]);
+  }));
+
   it("binding a spawner restarts a connected use collaborator and quarantines its env targets",
       () => withImpl(async (impl, restarts) => {
     joinSession(impl, 100);

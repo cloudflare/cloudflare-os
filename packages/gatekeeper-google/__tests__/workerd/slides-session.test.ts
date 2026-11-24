@@ -52,6 +52,11 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async holdsAction(): Promise<boolean> {
     return false;
   }
+
+  // No test here fetches through the session's caller's policy.
+  async getFetcher(): Promise<Fetcher> {
+    throw new Error("getFetcher() is not supported by this fake queue.");
+  }
 }
 
 const IMAGE_URL = "https://lh7-us.googleusercontent.com/slidesz/thumb-token";

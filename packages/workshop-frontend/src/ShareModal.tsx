@@ -25,8 +25,8 @@ import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
-import { GatekeeperIcon } from './components/GatekeeperIcon'
-import { useVendorBranding, type VendorBranding } from './useVendorBranding'
+import { useVendorBranding } from './useVendorBranding'
+import { ProtectedResourceList } from './ProtectedResourceList'
 import { ShareSnapshotPreview } from './ShareSnapshotPreview'
 import { getStoredSelectedModel, newChatMode } from './modelSelection'
 import { logRpcFailure } from './rpcErrors'
@@ -249,52 +249,6 @@ function AccessRow({
 
 function DottedDivider() {
   return <hr className="mx-2 my-2 border-0 border-t border-dotted border-kumo-line" />
-}
-
-// What a recipient is asked to do before what they were given will open for them. Recipients
-// don't inherit the owner's connections: they must point their own account at each connection in
-// scope, so sharers should know that cost before they invite anyone.
-function ProtectedResourceList({
-  requirements,
-  failed,
-  vendorBranding,
-}: {
-  requirements: ObserverBindingNeed[]
-  failed: boolean
-  vendorBranding: Map<string, VendorBranding>
-}) {
-  if (failed) {
-    return (
-      <p className="text-[13px] leading-5 tracking-[-0.15px] text-kumo-subtle">
-        Couldn’t check which resources recipients will be asked to verify.
-      </p>
-    )
-  }
-  return (
-    <ul className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base p-2">
-      {requirements.map(requirement => (
-        <li key={requirement.gatekeeperId} className="flex min-w-0 items-center gap-3 rounded-xl px-2 py-2">
-          <GatekeeperIcon
-            vendorId={requirement.vendorId}
-            fallbackText={requirement.resourceTitle}
-            {...vendorBranding.get(requirement.vendorId)}
-            size={20}
-            className="h-10 w-10 rounded-xl"
-          />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
-              {requirement.resourceTitle}
-            </p>
-            {requirement.resourceUrl && (
-              <p className="truncate text-[12px] leading-4 tracking-[-0.15px] text-kumo-subtle">
-                {requirement.resourceUrl}
-              </p>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
-  )
 }
 
 export default function ShareModal({ open, onClose, overseer, metadata, target, currentUser, authenticatedApi }: Props) {

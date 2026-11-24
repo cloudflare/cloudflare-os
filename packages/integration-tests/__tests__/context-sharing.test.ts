@@ -15,7 +15,7 @@ const VENDOR_ID = "context";
 const DOCUMENT_PATH = "plan.md";
 const DOCUMENT = { description: "Owner-only launch plan", body: "Launch code: private-context." };
 /** The Workshop's refusal of an account that cannot read a subresource a read reported. */
-const DENIED = "This account can't access some of the data this workspace read through this service.";
+const DENIED = "Your account can't access some of the data read from this resource.";
 let harness: Harness;
 
 type ContextUser = Disposable & {

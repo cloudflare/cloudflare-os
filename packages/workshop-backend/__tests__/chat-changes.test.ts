@@ -1573,6 +1573,32 @@ describe("chat content reconstruction", () => {
     expect((await impl.buildChatContent(1)).get(1)).toBeUndefined();
   }));
 
+  it("reads no tree of an epoch that an accept closed", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+    });
+    expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
+        .toEqual({ outcome: "merged" });
+    let head = impl.storage.gadgets.get(1)!.commitId!;
+    await submit(impl, 1, {
+      generation: 1, revision: 0, clientId: "cli", seq: 2,
+      pins: [{ gadgetId: 1, baseCommit: head }],
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "top\none\nedited\n" }),
+    });
+    impl.materializeChatChanges(1);
+
+    let reads = vi.spyOn(impl.gitCache, "readCommitFiles");
+    let content = await impl.buildChatContent(1);
+    expect(Object.fromEntries(content.get(1)!)).toEqual({ "a.txt": "top\none\nedited\n" });
+    expect(reads.mock.calls).toEqual([[head]]);
+  }));
+
   it("materializes automatically when the live window grows past the threshold",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "0\n" });
