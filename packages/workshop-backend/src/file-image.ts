@@ -99,8 +99,10 @@ export function fileImageMimeType(reader: BlobReader): string | undefined {
   return mimeType;
 }
 
-/** Load pixels only after the caller has admitted the read against its count/byte budget. */
-export function readFileImage(reader: BlobReader, mimeType = fileImageMimeType(reader)): ImageContent | undefined {
+/** Load pixels after count/byte checks and optional header-only admission, such as visual token cost. */
+export function readFileImage(
+    reader: BlobReader, mimeType = fileImageMimeType(reader),
+    admit?: (image: ImageContent) => boolean): ImageContent | undefined {
   if (mimeType === undefined) return undefined;
   if (reader.size > MAX_FILE_IMAGE_BYTES) {
     throw new Error("Image exceeds 4 MiB. Resize or crop it in the worktree before reading it.");
@@ -112,5 +114,8 @@ export function readFileImage(reader: BlobReader, mimeType = fileImageMimeType(r
   if (!dimensions) {
     throw new Error("Image header is unsupported, dimensions exceed 8000 pixels, or resolution exceeds 30,000 32px patches. Resize, crop or convert the file first.");
   }
-  return withImageDimensions({ type: "image", data: reader.read(0, reader.size).toBase64(), mimeType }, dimensions);
+  const image = withImageDimensions({type: "image", data: "", mimeType}, dimensions);
+  if (admit && !admit(image)) return undefined;
+  image.data = reader.read(0, reader.size).toBase64();
+  return image;
 }

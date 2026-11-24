@@ -848,6 +848,31 @@ describe("getModel direct routing (no gateway)", () => {
       } finally {clock.mockRestore(); vi.unstubAllGlobals();}
     });
 
+  it("keeps explicit capabilities learned by an overlapping turn when the later probe fails", async () => {
+    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
+      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
+    const pending: ((response: Response) => void)[] = [];
+    const metadata = vi.fn(() => new Promise<Response>(resolve => {pending.push(resolve);}));
+    vi.stubGlobal("fetch", metadata);
+    const resolve = async () => {
+      const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
+      await resolveModelInput(handle, config, new AbortController().signal);
+      return handle.model.input;
+    };
+    try {
+      const first = resolve();
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      const second = resolve();
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      pending[0](Response.json({capabilities: ["completion", "tools"]}));
+      expect(await first).toEqual(["text"]);
+      pending[1](new Response("unavailable", {status: 503}));
+      expect(await second).toEqual(["text"]);
+      expect(await resolve()).toEqual(["text"]);
+      expect(metadata).toHaveBeenCalledTimes(2);
+    } finally {vi.unstubAllGlobals();}
+  });
+
   it("cancels oversized streamed Ollama metadata without buffering the unused model template", async () => {
     const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
       apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};

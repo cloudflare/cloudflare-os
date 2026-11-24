@@ -7,7 +7,7 @@ import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import {runAgent} from "../src/agent";
 import {getModel} from "../src/ai-models";
-import {estimateImageTokens} from "../src/agent-compaction";
+import {estimateImageTokens, getModelTokenLimits} from "../src/agent-compaction";
 import type {AiModelConfig} from "@gadgets/workshop-shared/api";
 import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
 
@@ -367,6 +367,52 @@ describe("images read from a worktree", () => {
       expect(withPixels[0].reduce((sum, message) => sum + estimateImageTokens(message, handle.model), 0)).toBe(76_503);
       expect(JSON.stringify(withPixels[0])).not.toContain("context ".repeat(27_500));
     }));
+
+  it.each([false, true])("caps an unsplittable screenshot batch against the model window (replay=%s)", replay =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      new DataView(bytes.buffer).setUint32(16, 1920);
+      new DataView(bytes.buffer).setUint32(20, 1080);
+      const {chatId} = await setup(impl, bytes);
+      if (replay) {
+        await turn(impl, chatId, [[read(), read(), read(), read()]]);
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
+      }
+      const config: AiModelConfig = {provider: "openai", model: "gpt-4o-mini", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+        models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const requests: Message[][] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      };
+      faux.setResponses([...(replay ? [] : [fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"})]),
+        fauxAssistantMessage(fauxText("Done"))]);
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      const shown = results(requests.at(-1)!);
+      expect(shown.filter(result => result.content.some(part => part.type === "image"))).toHaveLength(2);
+      if (replay) expect(JSON.stringify(shown)).toContain(ELIDED_FILE_IMAGE);
+      else expect(shown.filter(result => result.isError)).toHaveLength(2);
+      // A retry/follow-up must keep the capped projection, rather than resurrecting four pixels.
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+      await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      const budget = Math.floor(getModelTokenLimits(config).inputBudget * 0.75);
+      for (const messages of requests) expect(messages.reduce((sum, message) =>
+        sum + estimateImageTokens(message, handle.model), 0)).toBeLessThanOrEqual(budget);
+    }));
+
+  it("admits visual token cost before reading an image body", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = new Uint8Array(4 * 1024 * 1024);
+    bytes.set(PNG);
+    const reader = await impl.openBlob(impl.gitCache.writeBlob(bytes).oid);
+    const reads = vi.spyOn(reader, "read");
+    const admit = vi.fn(() => false);
+    expect(readFileImage(reader, undefined, admit)).toBeUndefined();
+    expect(admit).toHaveBeenCalledOnce();
+    expect(reads.mock.calls.every(([, length]) => length <= 30)).toBe(true);
+  }));
 
   it.each(["model switch", "router pool switch", "unchanged vision model"] as const)(
     "checks newly visible history images before compaction after a %s", mode => inKernel(crypto.randomUUID(), async impl => {

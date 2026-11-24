@@ -24,6 +24,7 @@ export async function resolveModelInput(
   if (!result || result.expires <= Date.now()) {
     // A transient refresh failure must not turn a known text-only model back into vision.
     let vision = result?.vision;
+    let discovered = false;
     try {
       const response = await fetch(url, {
         method: "POST", headers, body: JSON.stringify({model: config.model}), redirect: "manual",
@@ -37,12 +38,15 @@ export async function resolveModelInput(
           const details: {capabilities?: unknown} | null = JSON.parse(new TextDecoder().decode(bytes));
           if (Array.isArray(details?.capabilities) && details.capabilities.every(value => typeof value === "string")) {
             vision = details.capabilities.includes("vision");
+            discovered = true;
           }
         }
       } else await response.body?.cancel();
     } catch {
       signal.throwIfAborted();
     }
+    // Another turn may have completed explicit discovery while this optional probe failed.
+    if (!discovered) vision = visionCache.get(key)?.vision ?? vision;
     result = {vision, expires: Date.now() + CACHE_TTL};
     if (visionCache.size >= 64) visionCache.delete(visionCache.keys().next().value!);
     visionCache.set(key, result);

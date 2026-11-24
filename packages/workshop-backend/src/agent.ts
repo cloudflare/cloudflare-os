@@ -2412,6 +2412,10 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
+  // Some models charge their response to the same window as the prompt, so the reservation is both
+  // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
+  let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig);
+
   // Count across the whole replay, not just the latest upload batch. PDFs also count on some
   // providers; conservatively include candidate parts even if their headers later rule them out.
   const attachmentCandidateCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
@@ -2422,7 +2426,9 @@ async function runAgentPass(
   // Prepare attachments once using the same inline decisions as replay. Workspace-only files
   // consume no model-image capacity; the map retains references to the final parts, not raw bytes.
   const attachmentParts = new Map<StoredChatMessage, (TextContent | ImageContent)[]>();
-  let attachmentImageCount = 0, attachmentImageBytes = 0;
+  let attachmentImageCount = 0, attachmentImageBytes = 0, attachmentImageTokens = 0;
+  const imageTokens = (image: ImageContent) => estimateImageTokens(
+      {role: "user", content: [image], timestamp: 0}, handle.model);
   for (const msg of chatMessages) {
     if (msg.type !== "message" || (msg.author.type !== "user" && msg.author.type !== "gadget") ||
         !msg.attachments?.length) continue;
@@ -2496,13 +2502,17 @@ async function runAgentPass(
     for (const part of prepared) {
       if (part.type !== "image") continue;
       ++attachmentImageCount;
+      attachmentImageTokens += imageTokens(part);
       attachmentImageBytes += part.data.length * 3 / 4 - (part.data.endsWith("==") ? 2 : part.data.endsWith("=") ? 1 : 0);
     }
   }
   const maxFileImages = handle.model.input.includes("image")
     ? Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount)) : 0;
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
-  const replayFileImages = new Set<AiToolCall>();
+  // Compaction cannot split a tool-result batch. Reserve a quarter of the input window for
+  // instructions/tools/history and cap file pixels themselves before reading their bodies.
+  const maxFileImageTokens = Math.max(0, Math.floor(inputBudget * 0.75) - attachmentImageTokens);
+  const replayFileImages = new Map<AiToolCall, ImageContent>();
   const sentImageReads = new Map<number, Set<string>>();
   const liveImageReads = new Set<string>();
   const firstLiveSequence = hooks.nextChatSequencePeek(chatId);
@@ -2537,8 +2547,8 @@ async function runAgentPass(
     };
     return true;
   };
-  let fileImageCount = 0, fileImageBytes = 0;
-  let stepImageCount = 0, stepImageBytes = 0;
+  let fileImageCount = 0, fileImageBytes = 0, fileImageTokens = 0;
+  let stepImageCount = 0, stepImageBytes = 0, stepImageTokens = 0;
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
     if (msg.type !== "message" || sawRevertedContent(index)) continue;
@@ -2548,9 +2558,14 @@ async function runAgentPass(
       if (recovery && msg.sequence < recovery.newReadsFrom &&
           !recovery.reads.get(msg.sequence)?.has(call.toolCallId)) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;
-      replayFileImages.add(call);
+      let tokens = 0;
+      const image = readFileImage(await hooks.openBlob(call.image.oid), undefined,
+          image => (tokens = imageTokens(image)) <= maxFileImageTokens - fileImageTokens);
+      if (!image) continue;
+      replayFileImages.set(call, image);
       ++fileImageCount;
       fileImageBytes += call.image.byteLength;
+      fileImageTokens += tokens;
     }
   }
   for (let [msgIndex, msg] of chatMessages.entries()) {
@@ -2676,8 +2691,7 @@ async function runAgentPass(
                 // branches below we can just return success unconditionally.
                 case "readFile": {
                   if (toolCall.image && !sawRevertedContent(msgIndex)) {
-                    const image = replayFileImages.has(toolCall)
-                      ? readFileImage(await hooks.openBlob(toolCall.image.oid)) : undefined;
+                    const image = replayFileImages.get(toolCall);
                     if (image) {
                       let reads = sentImageReads.get(msg.sequence);
                       if (!reads) sentImageReads.set(msg.sequence, reads = new Set());
@@ -3621,10 +3635,6 @@ async function runAgentPass(
     timestamp: 0,
   };
 
-  // Some models charge their response to the same window as the prompt, so the reservation is both
-  // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
-  let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig);
-
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
   }));
@@ -3743,12 +3753,17 @@ async function runAgentPass(
               if (stepImageCount >= maxFileImages || stepImageBytes + byteLength > maxFileImageBytes) {
                 throw new Error("Read fewer images per step, then continue with another tool call.");
               }
-              const image = readFileImage(file.source.reader, mimeType)!;
+              let tokens = 0;
+              const image = readFileImage(file.source.reader, mimeType,
+                  image => (tokens = imageTokens(image)) <= maxFileImageTokens - stepImageTokens);
+              if (!image) throw new Error("Image exceeds this model's remaining visual token budget. Resize or crop it, read fewer images per step, or choose a model with a larger context window.");
               liveImageReads.add(toolCallId);
               ++stepImageCount;
               stepImageBytes += byteLength;
+              stepImageTokens += tokens;
               ++fileImageCount;
               fileImageBytes += byteLength;
+              fileImageTokens += tokens;
               markFileRead(resolved.workpieceId, filename, file.oid);
               return {
                 content: [{type: "text" as const, text: "Image file."}, image],
@@ -4925,9 +4940,10 @@ async function runAgentPass(
       if (toolResults.length === 0) return;
       stepImageCount = 0;
       stepImageBytes = 0;
+      stepImageTokens = 0;
       // Replay drops old pixels before loading them, and applies the same count/byte budget as
       // the live path. Reload at the persisted step barrier before sending an oversized request.
-      if (fileImageCount > maxFileImages || fileImageBytes > maxFileImageBytes) {
+      if (fileImageCount > maxFileImages || fileImageBytes > maxFileImageBytes || fileImageTokens > maxFileImageTokens) {
         reloadForCompaction = true;
         codePreviewManager.clearActiveFile();
         return {action: "end"};
