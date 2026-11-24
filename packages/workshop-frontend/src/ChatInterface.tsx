@@ -5468,8 +5468,9 @@ function ChatInterface({
     // that did not finish left: held in staging, where it is retried on its own.
     const heldAfterSave = isPending && !unsaved && log.accepted !== undefined;
     const saveError = heldAfterSave ? log.applyError : undefined;
-    // What stands between the request and an approval that applies it on its own.
-    const failure = isBlocking ? log.applyError : saveError;
+    // Why the last attempt to apply it failed. Shown beside every Deny: one whose outcome is
+    // unknown may have been applied anyway.
+    const failure = isPending ? log.applyError : undefined;
     // Every other pending request applies when its chat's changes are accepted, so it reads as
     // pending until then, and can only be denied on its own. The tray above the composer lists
     // them all, grouped by resource.
@@ -5639,10 +5640,10 @@ function ChatInterface({
             <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
           )}
         </div>
-        {saveError && (
+        {failure && (
           <p role="alert" className="m-0 ml-8 text-[12px] leading-4 break-words text-kumo-danger">
-            Could not apply: {saveError.message}
-            {saveError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+            Could not apply: {failure.message}
+            {failure.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
           </p>
         )}
         {showDescription && (

@@ -711,6 +711,15 @@ describe('restricted approval', () => {
       expect([...card.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Deny'])
     })
 
+  it("says an ordinary request may have been applied anyway, in its transcript row", async () => {
+    const applyError = { message: 'Timed out.', retryable: true, outcomeUnknown: true as const }
+    await renderPendingCard({ ...pendingLog(), applyError } as ActionLogEntry)
+
+    const row = document.querySelector('[class*="group/work"]')!
+    expect(row.querySelector('[role="alert"]')?.textContent).toBe(
+      'Could not apply: Timed out. It may have been applied anyway. Check the resource before you deny it.')
+  })
+
   it('summarises a tray request, and names nothing, when not restricted', async () => {
     await renderPendingCard(pendingLog())
     await openTray()
