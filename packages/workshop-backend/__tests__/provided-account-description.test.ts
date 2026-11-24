@@ -1,5 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
+import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { UserDurableObject } from "../src/user.js";
 import type { UserStorage } from "../src/storage-schema/user-storage.js";
 import type { GatekeeperUserPickerTestHooks } from "./test-worker.js";
@@ -11,7 +12,7 @@ declare module "cloudflare:test" {
   }
 }
 
-async function fixture() {
+async function fixture(description?: AccountDescription) {
   const userId = `provided${crypto.randomUUID().replaceAll("-", "")}`;
   const user = env.TEST_USER.getByName(userId);
   const hooks = env.TEST_GATEKEEPER_USER_PICKER.getByName("");
@@ -20,7 +21,7 @@ async function fixture() {
     const internals = instance as unknown as { env: Cloudflare.Env };
     internals.env = { ...internals.env, BLUEPRINTS: { get: async () => null } as unknown as KVNamespace };
   });
-  const id = await hooks.addAccount(userId, "container", userId, { providesUi: true });
+  const id = await hooks.addAccount(userId, "container", userId, { providesUi: true, description });
   await runInDurableObject(user, instance => {
     const storage = (instance as unknown as { storage: UserStorage }).storage;
     const record = storage.connectedAccounts.get(id)!;
@@ -42,6 +43,7 @@ it("discovers a newly advertised app for an existing account, persisting it with
 });
 
 it("keeps cached descriptions when a gatekeeper is unavailable", async () => {
+  using warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
   const { user, hooks, userId, id } = await fixture();
   await runInDurableObject(user, async instance => {
     const localEnv = (instance as unknown as { env: typeof env }).env;
@@ -52,6 +54,65 @@ it("keeps cached descriptions when a gatekeeper is unavailable", async () => {
   });
   expect(await user.listProvidedAccounts(true)).toEqual([]);
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
+  expect(warnings.mock.calls).toContainEqual([expect.objectContaining({
+    event: "account.describe.refresh.failed", vendorId: "container", accountId: id,
+  })]);
+  expect(JSON.stringify(warnings.mock.calls)).not.toContain("private provider response body");
+});
+
+it("updates only app metadata, preserving cached identity, grants and the independent singleton", async () => {
+  const providesUi = { title: "Container settings" };
+  const { user, id } = await fixture({ avatar: undefined, providesUi });
+  const cached = {
+    displayName: "Cached owner", uniqueName: "owner@example.test", avatar: { url: "https://example.test/avatar" },
+    singleton: { tsType: "ExistingSession" }, grantedResourceTypeIds: ["repository"],
+  };
+  await runInDurableObject(user, instance => {
+    const storage = (instance as unknown as { storage: UserStorage }).storage;
+    storage.connectedAccounts.put({ ...storage.connectedAccounts.get(id)!, description: cached });
+  });
+  expect(await user.listProvidedAccounts(true)).toMatchObject([{ description: { ...cached, providesUi } }]);
+  await runInDurableObject(user, instance => {
+    expect((instance as unknown as { storage: UserStorage }).storage.connectedAccounts.get(id)!.description)
+      .toEqual({ ...cached, providesUi });
+  });
+});
+
+it("removes cached app metadata when the gatekeeper no longer advertises an app", async () => {
+  const { user, id } = await fixture({ avatar: undefined });
+  await runInDurableObject(user, instance => {
+    const storage = (instance as unknown as { storage: UserStorage }).storage;
+    const rec = storage.connectedAccounts.get(id)!;
+    storage.connectedAccounts.put({ ...rec, description: { ...rec.description, providesUi: { title: "Old app" } } });
+  });
+  expect(await user.listProvidedAccounts(true)).toEqual([]);
+});
+
+it("refreshes only the requested vendor for a direct app open", async () => {
+  const { user, hooks, userId, id } = await fixture();
+  const unrelated = `${userId}-unrelated`;
+  await hooks.addAccount(userId, "homeassistant", unrelated, { providesUi: true });
+  expect(await user.listProvidedAccounts(true, "container")).toMatchObject([{ accountId: id, vendorId: "container" }]);
+  expect(await hooks.accountCalls(unrelated)).toEqual(["describe"]);
+});
+
+it("bounds listing refreshes and returns cached apps while an unrelated provider stays blocked", async () => {
+  const { user, hooks, userId, id } = await fixture();
+  const slow = `${userId}-slow`;
+  const slowId = await hooks.addAccount(userId, "homeassistant", slow, { providesUi: true });
+  await hooks.pauseAccountDescriptions(slow, true);
+  let settled = false;
+  const pending = user.listProvidedAccounts(true).then(result => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect(await pending).toMatchObject([
+      { accountId: id, description: { providesUi: { title: userId } } },
+      { accountId: slowId, description: { providesUi: { title: slow } } },
+    ]);
+  } finally {
+    await hooks.pauseAccountDescriptions(slow, false);
+    await pending;
+  }
 });
 
 it.each(["disconnect", "new description"])("preserves a concurrent %s during metadata discovery", async change => {

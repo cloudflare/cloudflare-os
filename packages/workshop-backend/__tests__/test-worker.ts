@@ -103,6 +103,7 @@ const stashedTickets = new Map<string, string>();
  */
 export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
   name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+  description?: AccountDescription;
 }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
@@ -114,8 +115,8 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record("describe");
     const paused = pausedDescriptions.get(this.ctx.props.name);
     if (paused) await paused.promise;
-    if (this.ctx.props.failDescribe) throw new Error("describe failed");
-    return {
+    if (this.ctx.props.failDescribe) throw new Error("private provider response body");
+    return this.ctx.props.description ?? {
       displayName: this.ctx.props.name,
       uniqueName: this.ctx.props.name,
       ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
@@ -201,11 +202,11 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async addAccount(
       userId: string, vendorId: string, accountName: string,
-      options: { expired?: boolean; providesUi?: boolean } = {},
+      options: { expired?: boolean; providesUi?: boolean; description?: AccountDescription } = {},
   ): Promise<number> {
     const user = this.ctx.exports.UserDurableObject.getByName(userId);
     const account = this.ctx.exports.FakeGatekeeperAccount({
-      props: { name: accountName, providesUi: options.providesUi },
+      props: { name: accountName, providesUi: options.providesUi, description: options.description },
     });
     const accountId = await user.linkConnectedAccountFromLogin(account, vendorId);
     if (options.expired) await user.markCredentialsExpired(accountId);

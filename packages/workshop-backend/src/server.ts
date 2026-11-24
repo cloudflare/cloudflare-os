@@ -686,7 +686,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
     let user = this.#user;  // one stub for both calls
-    let accounts = await user.listProvidedAccounts(true);
+    let accounts = await user.listProvidedAccounts(true, vendorId);
     let app = accounts.find(account => account.vendorId === vendorId && account.description.providesUi);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.

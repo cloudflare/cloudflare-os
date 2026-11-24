@@ -42,6 +42,8 @@ const logger = createWorkshopLogger("workshop.user");
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+// A slow connector must not hold up app navigation; keep its cached metadata after this wait.
+const APP_DISCOVERY_TIMEOUT_MS = 1_000;
 const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
 const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
@@ -2348,35 +2350,47 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
-   * `refreshDescriptions` updates cached metadata for app discovery, including accounts whose
-   * gatekeeper added a UI after connection. Ordinary agent reads use the saved descriptions.
+   * `refreshApps` refreshes only management-app metadata, with a short cached fallback for slow
+   * providers. `vendorId` scopes direct app opens; ordinary agent reads use the saved descriptions.
    */
-  async listProvidedAccounts(refreshDescriptions = false): Promise<ProvidedAccountInfo[]> {
+  async listProvidedAccounts(refreshApps = false, vendorId?: string): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
     let config = await readAdminConfig(this.env);
-    if (refreshDescriptions) {
+    if (refreshApps) {
       await Promise.all(Array.from(this.#connectedAccountRecords(), async rec => {
-        if (config.disabledGatekeepers.includes(rec.vendorId) ||
+        if ((vendorId !== undefined && rec.vendorId !== vendorId) ||
+            config.disabledGatekeepers.includes(rec.vendorId) ||
             (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled")) return;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           let previous = JSON.stringify(rec.description);
-          let description = await rec.account.describe();
-          if (JSON.stringify(description) === previous) return;
+          let description = await Promise.race([
+            rec.account.describe(),
+            new Promise<undefined>(resolve => {
+              timeout = setTimeout(() => resolve(undefined), APP_DISCOVERY_TIMEOUT_MS);
+            }),
+          ]);
+          if (!description || JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
           let current = this.storage.connectedAccounts.get(rec.id);
           // Disconnect/reconnect may run while describe yields. Never restore a deleted account
           // or replace a description another operation has already updated.
           if (current && JSON.stringify(current.description) === previous) {
-            this.storage.connectedAccounts.put({ ...current, description });
+            this.storage.connectedAccounts.put({ ...current,
+              description: { ...current.description, providesUi: description.providesUi } });
           }
-        } catch (error) {
+        } catch {
+          // Provider error messages may contain response bodies or credentials.
           logger.warn("failed to refresh an account description for app discovery", {
-            event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id, error,
+            event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
           });
+        } finally {
+          clearTimeout(timeout);
         }
       }));
     }
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
+      if (vendorId !== undefined && rec.vendorId !== vendorId) continue;
       if (!rec.description.singleton && !rec.description.providesUi) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
