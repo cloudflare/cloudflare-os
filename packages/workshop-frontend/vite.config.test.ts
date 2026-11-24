@@ -41,7 +41,7 @@ describe('Vite development proxy', () => {
   })
 })
 
-it('keeps attachment tickets out of actual Vite error and debug traces', () => {
+it.each(['127.0.0.1', '::1'])('keeps attachment tickets out of actual Vite error and debug traces: %s', backendAddress => {
   const pluginUrl = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
   const program = `
     import http, {createServer as createUpstream, request} from 'node:http';
@@ -57,7 +57,9 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
       res.writeHead(200, {'Content-Disposition': 'attachment; filename=setup.cfosoperator'});
       res.end(req.headers.cookie);
     });
-    await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const address = ${JSON.stringify(backendAddress)};
+    const backendHost = address.includes(':') ? '[' + address + ']' : address;
+    await new Promise(resolve => upstream.listen(0, address, resolve));
     let proxyRequests = 0;
     const proxy = createUpstream((req, res) => { ++proxyRequests; res.writeHead(502).end(); });
     await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
@@ -65,7 +67,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
     http.globalAgent = new http.Agent({proxyEnv: {HTTP_PROXY: 'http://127.0.0.1:' + proxy.address().port, NO_PROXY: ''}});
     // Exercise Node's actual environment proxy path before testing the direct backend route.
     await new Promise((resolve, reject) => {
-      const req = request('http://127.0.0.1:' + upstream.address().port + '/control', res => {
+      const req = request('http://' + backendHost + ':' + upstream.address().port + '/control', res => {
         res.resume(); res.on('end', resolve);
       });
       req.on('error', reject); req.end();
@@ -74,7 +76,7 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
     proxyRequests = 0;
     const vite = await createViteServer({configFile: false, clearScreen: false,
       optimizeDeps: {noDiscovery: true, include: []},
-      plugins: [gatekeeperDevProxy('127.0.0.1:' + upstream.address().port)],
+      plugins: [gatekeeperDevProxy(backendHost + ':' + upstream.address().port)],
       server: {host: '127.0.0.1', port: 0, hmr: false, preTransformRequests: false}});
     try {
       await vite.listen();

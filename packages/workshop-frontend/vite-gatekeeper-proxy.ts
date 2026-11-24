@@ -40,7 +40,7 @@ export function gatekeeperDevProxy(backendHost: string): Plugin {
         const upstream = request(target, {
           // Bypass environment proxies and keep HTTP paths/headers out of NODE_DEBUG=net.
           // A direct callback receives no request options beyond this socket destination.
-          createConnection: () => createConnection({host: target.hostname, port: Number(target.port) || 80}),
+          createConnection: () => createConnection({host: target.hostname.replace(/^\[|\]$/g, ''), port: Number(target.port) || 80}),
           method: req.method,
           headers: { ...req.headers, host: backendHost, connection: 'close' },
         }, response => {
