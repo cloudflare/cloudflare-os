@@ -91,7 +91,5 @@ describe("deleteChat", () => {
     expect(impl.storage.chatAttachmentContent.get(kept)).toBeDefined();
     expect([...impl.storage.chats.pendingRequestsByChat.list()].map(({ chatId: id }) => id))
         .toEqual([other]);
-    expect([...impl.storage.chats.artifactsByChat.list()].map(({ chatId: id }) => id))
-        .toEqual([other, other]);
   }));
 });

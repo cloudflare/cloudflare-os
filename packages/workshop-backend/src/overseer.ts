@@ -13,8 +13,8 @@ import {
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
   type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
   type ObserverBindingPathStep,
-  type AgentSpawnerInfo, type ChatArtifact, type ChatArtifactPage,
-  type ChatAttachmentInfo, type ChatConnectionUse, type ChatListOptions, type WorkspaceSummary,
+  type AgentSpawnerInfo,
+  type ChatAttachmentInfo, type ChatListOptions, type WorkspaceSummary,
   type WorkspaceWaitingChat, MAX_SUMMARY_WAITING_CHATS,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -28,7 +28,7 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatAttachmentKey, chatChangeClientKey, chatConnectionKeyPrefix, chatKey,
+  actionLastChangedKey, chatChangeClientKey, chatKey,
   chatKeyPrefix, chatListingSpawnerKey, connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
@@ -906,9 +906,6 @@ export const ACTION_REPLAY_PAGE_SIZE = 256;
 
 /** listActions() entries returned per page. Exported for tests. */
 export const ACTION_HISTORY_PAGE_DEFAULT_LIMIT = 50;
-
-/** listChatArtifacts() messages read per page. Exported for tests. */
-export const CHAT_ARTIFACT_PAGE_SIZE = 50;
 
 /**
  * Messages deleteChat() reads per page: bounds the memory a long transcript (whose change messages
@@ -8243,31 +8240,6 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  /**
-   * Whether the chats artifactsByChat index holds every message of `chatId` that records what the
-   * chat has: always for a chat created since the version-8 migration, and for one before it once
-   * indexChatArtifacts() has indexed it.
-   */
-  chatArtifactsIndexed(chatId: number): boolean {
-    return chatId >= this.storage.chatArtifactsIndexedFrom.get() ||
-        this.storage.chatArtifactsBackfilled.get(chatId) !== undefined;
-  }
-
-  /**
-   * Completes the chats artifactsByChat index for `chatId` before it is read. The first time, a
-   * chat that predates the index (see chatArtifactsIndexedFrom) has its messages indexed and is
-   * recorded in chatArtifactsBackfilled, synchronously and in one transaction. A deleted chat has
-   * nothing to index and is not recorded.
-   */
-  indexChatArtifacts(chatId: number): void {
-    if (this.chatArtifactsIndexed(chatId) || !this.storage.chatMeta.get(chatId)) return;
-    this.ctx.storage.transactionSync(() => {
-      this.storage.chats.artifactsByChat.indexRecords(
-          this.storage.chats.list({prefix: chatKeyPrefix(chatId)}));
-      this.storage.chatArtifactsBackfilled.put({chatId});
-    });
-  }
-
   // Get the sequence number that should be assigned to the next message in the given chat thread.
   nextChatSequence(chatId: number): number {
     let counter = this.storage.nextChatSequences.get(chatId);
@@ -14366,66 +14338,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return await this.impl.getChatAttachmentData(chatId, id);
   }
 
-  async listChatArtifacts(chatId: number, afterSequence?: number): Promise<ChatArtifactPage> {
-    if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) {
-      throw new TypeError(`Invalid afterSequence: ${afterSequence}`);
-    }
-    let storage = this.impl.storage;
-    // A deleted chat's connections stay in the action history; they are no longer its artifacts.
-    if (!storage.chatMeta.get(chatId)) {
-      return {artifacts: [], nextAfterSequence: undefined,
-              connections: afterSequence === undefined ? [] : undefined};
-    }
-    this.impl.indexChatArtifacts(chatId);
-    // The +1 message probes whether there is a page after this one.
-    let messages = [...storage.chats.artifactsByChat.get(keyString(chatId), {
-      startAfter: afterSequence === undefined ? undefined : chatKey(chatId, afterSequence),
-      limit: CHAT_ARTIFACT_PAGE_SIZE + 1,
-    })];
-    let more = messages.length > CHAT_ARTIFACT_PAGE_SIZE;
-    if (more) messages.pop();
-
-    let artifacts: ChatArtifact[] = [];
-    for (let msg of messages) {
-      if (msg.type === "message") {
-        for (let ref of msg.attachments ?? []) {
-          artifacts.push({type: "attachment", timestamp: msg.timestamp,
-                          attachment: chatAttachmentInfo(ref, msg.sequence)});
-        }
-      } else if (msg.type === "changes" && !msg.conversionBoundary) {
-        // A migration's boundary message re-records earlier creations; the original lists them.
-        let created = [...(msg.createdGadgets ?? []).map(({gadgetId}) => gadgetId),
-                       ...(msg.createdWorktrees ?? []).map(({worktreeId}) => worktreeId)];
-        for (let id of created) {
-          // A reverted creation, or a gadget deleted since, is no longer the workspace's.
-          let record = storage.gadgets.get(id);
-          if (record) {
-            artifacts.push({type: "workpiece", sequence: msg.sequence, timestamp: msg.timestamp,
-                            workpiece: workpieceSummary(record, true)});
-          }
-        }
-      }
-    }
-
-    let connections: ChatConnectionUse[] | undefined;
-    if (afterSequence === undefined) {
-      let prefix = chatConnectionKeyPrefix(chatId);
-      connections = [];
-      for (let key of storage.actions.connectionsByChat.listKeys({prefix})) {
-        let gatekeeperId = Number(key.slice(prefix.length));
-        let gatekeeper = storage.gatekeepers.get(gatekeeperId);
-        if (!gatekeeper) continue;
-        connections.push({gatekeeperId, vendorId: gatekeeperVendorId(gatekeeper),
-                          resourceTitle: gatekeeper.resourceTitle, resourceUrl: gatekeeper.resourceUrl});
-      }
-    }
-    return {artifacts, nextAfterSequence: more ? messages.at(-1)!.sequence : undefined, connections};
-  }
-
   async getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined> {
-    let key = chatAttachmentKey(chatId, validateChatAttachmentId(id));
-    this.impl.indexChatArtifacts(chatId);
-    for (let msg of this.impl.storage.chats.artifactsByChat.get(key)) {
+    validateChatAttachmentId(id);
+    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       let ref = msg.type === "message" ? msg.attachments?.find(a => a.id === id) : undefined;
       if (ref) return chatAttachmentInfo(ref, msg.sequence);
     }
@@ -14676,7 +14591,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.removeChatWorkpieces(chatId);
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
-    this.impl.storage.chatArtifactsBackfilled.delete(chatId);
     for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
       this.impl.storage.chatNotifications.deleteRecord(event);
     }
@@ -15309,9 +15223,6 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
-  async listChatArtifacts(_chatId: number, _afterSequence?: number): Promise<ChatArtifactPage> {
-    this.#deny();
-  }
   async getChatAttachment(_chatId: number, _id: string): Promise<ChatAttachmentInfo | undefined> {
     this.#deny();
   }
@@ -15556,18 +15467,14 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     });
   }
 
-  // A message's ChatAttachmentRef is the one record of an attachment's metadata, read off the
-  // index of the messages that record what a chat has (see listChatArtifacts()). Each entry names
+  // A message's ChatAttachmentRef is the one record of an attachment's metadata. Each entry names
   // the fields its type declares, since a stored reference also holds its path in the chat's
-  // scratch worktree, and can hold bytes. A view writes nothing, so a chat the index does not yet
-  // hold whole (see OverseerImpl.indexChatArtifacts()) is read through instead: in full on every
-  // call until the workspace itself indexes it, which is accepted for admin use.
+  // scratch worktree, and can hold bytes.
   async listChatAttachments(chatId: number): Promise<ChatAttachmentInfo[]> {
     return this.#call("listChatAttachments", {chatId}, () => {
       let {chats} = this.#impl.storage;
       let attachments: ChatAttachmentInfo[] = [];
-      for (let msg of this.#impl.chatArtifactsIndexed(chatId)
-          ? chats.artifactsByChat.get(keyString(chatId)) : chats.list({prefix: chatKeyPrefix(chatId)})) {
+      for (let msg of chats.list({prefix: chatKeyPrefix(chatId)})) {
         if (msg.type !== "message") continue;
         for (let ref of msg.attachments ?? []) {
           attachments.push(chatAttachmentInfo(ref, msg.sequence));

@@ -3079,7 +3079,7 @@ export type AdminChatState = {
 };
 
 /**
- * A file sent in a chat, as Overseer.listChatArtifacts(), Overseer.getChatAttachment() and
+ * A file sent in a chat, as Overseer.getChatAttachment() and
  * AdminWorkspaceView.listChatAttachments() list it: the message's ChatAttachmentRef without its
  * bytes. Its `oid` is a hash of those bytes, so it tells whether two attachments are the same
  * file; like the name, the type and the size, it is metadata.
@@ -5462,19 +5462,10 @@ export interface Overseer extends RpcTarget {
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
 
   /**
-   * List one page of what chat `chatId` has (see ChatArtifactPage): the gadgets and worktrees it
-   * created that the workspace still has, the files sent in it, and, on the first page, the
-   * connections it used. Pages follow the chat's messages from just after `afterSequence`, and
-   * are read from an index of the messages that record such things, so a page costs its own
-   * messages, not the chat's length. Empty for an id that names no chat. Not available in
-   * use-only sessions.
-   */
-  listChatArtifacts(chatId: number, afterSequence?: number): Promise<ChatArtifactPage>;
-
-  /**
    * Get the metadata of the file with id `id` (see ChatAttachmentRef.id) sent in chat `chatId`,
-   * without its bytes: what a link to it needs before its message is loaded. Throws if `id` is
-   * malformed; undefined if a well-formed `id` names no file the chat has. Not available in
+   * without its bytes: what a link to it needs before its message is loaded. Reads the chat's
+   * messages to find it, which is acceptable for opening a file from a link alone. Throws if `id`
+   * is malformed; undefined if a well-formed `id` names no file the chat has. Not available in
    * use-only sessions.
    */
   getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined>;
@@ -6849,79 +6840,6 @@ export type ChatAttachmentRef = {
    * `getChatHistory()` pages (those with a `limit`); use `getChatAttachmentContent()` instead.
    */
   content?: Uint8Array;
-};
-
-/**
- * One thing a chat has, as Overseer.listChatArtifacts() lists it: a gadget or worktree it
- * created through its changes (its "changes" messages' createdGadgets and createdWorktrees; the
- * scratch worktree that holds its attachments is not listed), or a file sent in it, with when the
- * message that records it was written.
- */
-export type ChatArtifact = {
-  /** A gadget or worktree the chat created. */
-  type: "workpiece";
-
-  /** The sequence of the "changes" message that recorded the creation (see createdGadgets). */
-  sequence: number;
-
-  /** When the "changes" message that recorded the creation was written (its timestamp). */
-  timestamp: Date;
-
-  /**
-   * The workpiece as the workspace has it now, under its current title. A gadget whose
-   * `chatId` is set is still provisional to the chat: its creation is not accepted yet.
-   */
-  workpiece: WorkpieceSummary;
-} | {
-  /** A file sent in the chat. */
-  type: "attachment";
-
-  /** When the message the file is attached to was sent (its timestamp). */
-  timestamp: Date;
-
-  /** The file, whose `sequence` is its message's. */
-  attachment: ChatAttachmentInfo;
-};
-
-/** A connection a chat used, as Overseer.listChatArtifacts() lists it. */
-export type ChatConnectionUse = {
-  /** The connection (gatekeeper workpiece). */
-  gatekeeperId: WorkpieceId;
-
-  /**
-   * The vendor whose gatekeeper it is (see GatekeeperVendorInfo.id). Absent when the connection
-   * names no vendor, as a model's or an agent spawner's.
-   */
-  vendorId?: string;
-
-  /** What it connects to, as the connection was titled when it was made. */
-  resourceTitle?: string;
-  /** The URL of what it connects to, from the connection's record; absent when it has none. */
-  resourceUrl?: string;
-};
-
-/** One page of Overseer.listChatArtifacts(). */
-export type ChatArtifactPage = {
-  /**
-   * What the chat made and what was sent in it, oldest first: the artifacts of up to a server
-   * constant of messages, each message's in the order it lists them.
-   */
-  artifacts: ChatArtifact[];
-
-  /**
-   * The sequence of the last message this page read. Pass it as `afterSequence` for the next
-   * page; absent on the last page.
-   */
-  nextAfterSequence?: number;
-
-  /**
-   * The connections the chat used, each once, in no particular order: those that any read,
-   * approved action or bound hook attributed to the chat went through (see
-   * ActionLogEntry.chatId), whether or not the chat asked for them. Connections since removed
-   * from the workspace are left out. Only on the first page (no `afterSequence`): they number no
-   * more than the workspace's connections, so they are not paged.
-   */
-  connections?: ChatConnectionUse[];
 };
 
 /** Whether attachment bytes can be decoded and inlined into the agent's prompt as text. */

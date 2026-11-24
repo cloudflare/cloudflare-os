@@ -431,17 +431,13 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
 }
 
 /**
- * Version 7 -> 8: backfill the indexes that answer for one chat what it has and what it waits
- * on, and the chatMeta byListing index, which Overseer.listChats() pages, without reading any
- * chat's transcript whole, since the migration blocks the workspace's start:
- * - actions' connectionsByChat and chatMeta's byListing are rebuilt, as migrateToActionIndexes
- *   rebuilds the action indexes;
+ * Version 7 -> 8: backfill the index that answers for one chat what it waits on, and the chatMeta
+ * byListing index, which Overseer.listChats() pages, without reading any chat's transcript whole,
+ * since the migration blocks the workspace's start:
+ * - chatMeta's byListing is rebuilt, as migrateToActionIndexes rebuilds the action indexes;
  * - chats' pendingRequestsByChat indexes only the requests of each chat's current decision
  *   segment, read back to its last decision boundary as OverseerImpl.#decisionWait() reads it:
- *   a request an earlier turn left pending is not what the chat waits on;
- * - chats' artifactsByChat reads nothing now: chatArtifactsIndexedFrom records the first chat
- *   created after the migration, and each chat before it is indexed on its first read of what it
- *   has (see OverseerImpl.indexChatArtifacts()).
+ *   a request an earlier turn left pending is not what the chat waits on.
  * The backfills and the stamp are one transaction, so a crash midway retries whole, and nothing
  * can update a record before its indexes exist.
  */
@@ -452,8 +448,6 @@ export function migrateToChatIndexes(host: OverseerMigrationHost): void {
     for (let chatId of Array.from(storage.chatMeta.list(), ({id}) => id)) {
       storage.chats.pendingRequestsByChat.indexRecords(currentDecisionSegment(storage, chatId));
     }
-    storage.chatArtifactsIndexedFrom.put(storage.nextChatId.get());
-    storage.actions.connectionsByChat.rebuild();
     storage.chatMeta.byListing.rebuild();
     storage.version.put(8);
   });

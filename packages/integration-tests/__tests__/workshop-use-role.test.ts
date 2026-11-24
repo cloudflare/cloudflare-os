@@ -121,7 +121,6 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   denyWebFetchRequest: ws => ws.denyWebFetchRequest("1:request"),
   listChats: ws => ws.listChats(),
   getChatMetadata: ws => ws.getChatMetadata(1),
-  listChatArtifacts: ws => ws.listChatArtifacts(1),
   getChatAttachment: ws => ws.getChatAttachment(1, "attachment"),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),

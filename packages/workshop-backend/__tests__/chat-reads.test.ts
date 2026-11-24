@@ -1,22 +1,20 @@
-// What a workspace answers of one chat without reading it whole: what it has
-// (listChatArtifacts(), paged over the chats artifactsByChat index, and getChatAttachment()),
-// over messages written before the indexes existed, which the version-8 migration leaves to
-// each chat's first such read; what the chat still asks (pendingRequestsByChat, which the
-// workspace summary reads), which the migration backfills from each chat's current decision
-// segment alone; and that a session shared only to use a gadget is told none of it.
+// What a workspace answers of one chat: a file sent in it (getChatAttachment(), which reads the
+// chat's messages); what the chat still asks (pendingRequestsByChat, which the workspace summary
+// reads), which the version-8 migration backfills from each chat's current decision segment
+// alone; and that a session shared only to use a gadget is told none of it.
 
 import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
-import { CHAT_ARTIFACT_PAGE_SIZE, type OverseerDurableObject } from "../src/overseer.js";
+import type { OverseerDurableObject } from "../src/overseer.js";
 import { migrateToChatIndexes, type OverseerMigrationHost } from "../src/storage-schema/overseer-migrations";
 import {
   chatKey, makeOverseerStorage, type OverseerStorage, type StoredChatMessage,
 } from "../src/storage-schema/overseer-storage";
 import { createWorkshopLogger } from "../src/observability";
-import { openFakeOverseer, putAction } from "./fixtures.js";
+import { openFakeOverseer } from "./fixtures.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 declare module "cloudflare:workers" {
@@ -93,8 +91,6 @@ describe("the version-8 migration", () => {
     expect(migrate(storage, { storage: mock })).toBe(3);
     expect([...storage.chats.pendingRequestsByChat.list()].map(msg => "requestId" in msg && msg.requestId))
       .toEqual(["1:current"]);
-    expect([...storage.chats.artifactsByChat.list()]).toEqual([]);
-    expect(storage.chatArtifactsIndexedFrom.get()).toBe(CHAT_ID + 2);
 
     // The request it left out can still be decided, after the one it indexed.
     for (let sequence of [201, 0]) {
@@ -105,9 +101,9 @@ describe("the version-8 migration", () => {
 });
 
 describe("one chat's reads", () => {
-  it("answers for chats from before the index as a full rebuild would, reading each once", () =>
+  it("finds a file sent in the chat by its id, and nothing in another or a deleted chat", () =>
       runInDurableObject(env.TEST_OVERSEER.getByName(crypto.randomUUID()),
-          async (instance: OverseerDurableObject, ctx) => {
+          async (instance: OverseerDurableObject) => {
     let impl = instance.impl;
     let owner = {
       id: OWNER_USER_ID,
@@ -124,100 +120,28 @@ describe("one chat's reads", () => {
       users: { idFromString: (id: string) => id, idFromName: () => OWNER_USER_ID, get: () => owner },
     });
 
-    // Chat 1 sends an old upload, more than a page of uploads after it, and creates gadget 10
-    // and gadget 99, since deleted; chat 2 sends two files and asks for a connection.
-    let legacy = legacyChats(ctx.storage);
-    let sequence = 0;
-    legacy.put(upload(CHAT_ID, sequence++, OLD_FILE));
-    for (let i = 0; i < CHAT_ARTIFACT_PAGE_SIZE; i++) legacy.put(upload(CHAT_ID, sequence++, crypto.randomUUID()));
-    let made = sequence;
-    legacy.put(message(CHAT_ID, sequence++, AGENT, { type: "changes", createdGadgets: [
-      { gadgetId: 10, title: "Made", bindingName: "MADE" }, { gadgetId: 99, title: "Gone", bindingName: "GONE" },
-    ] }));
-    legacy.put(message(CHAT_ID, sequence++, OWNER, { type: "message", message: "thanks" }));
-    // The git-storage migration's boundary re-records gadget 10; the original creation lists it.
-    legacy.put(message(CHAT_ID, sequence++, OWNER, { type: "changes", conversionBoundary: true,
-      createdGadgets: [{ gadgetId: 10, title: "Made", bindingName: "MADE" }] }));
-    let deletedFile = crypto.randomUUID();
-    legacy.put(upload(CHAT_ID + 1, 0, deletedFile, crypto.randomUUID()));
-    legacy.put(request(CHAT_ID + 1, 1, "2:r"));
-    impl.storage.gadgets.put({ type: "gadget", id: 10, title: "Made", created: new Date(0),
-      bindingName: "MADE", bindings: {} });
-    // Chat 2 read through a connection, which its deletion leaves in the action history.
-    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Secret doc", class: {} as never, creationSpec: {
-      type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/secret",
-      typeUrlPattern: "https://*" } });
-    putAction(impl.storage, 0, { state: "approved", type: "observation" });
-    impl.storage.actions.put({ ...impl.storage.actions.get(0)!, caller: { from: "agent", chatId: CHAT_ID + 1 } });
+    // Chat 1 sends the old upload and then more; chat 2 sends another file.
+    impl.storage.chats.put(upload(CHAT_ID, 0, OLD_FILE));
+    impl.storage.chats.put(upload(CHAT_ID, 1, crypto.randomUUID()));
+    let otherFile = crypto.randomUUID();
+    impl.storage.chats.put(upload(CHAT_ID + 1, 0, otherFile));
     for (let id of [CHAT_ID, CHAT_ID + 1]) {
       impl.storage.chatMeta.put({ id, title: `Chat ${id}`, started: new Date(id), lastActive: new Date(id) });
-      impl.storage.nextChatSequences.put({ chatId: id, nextSequence: id === CHAT_ID ? sequence : 2,
+      impl.storage.nextChatSequences.put({ chatId: id, nextSequence: id === CHAT_ID ? 2 : 1,
         notificationParticipants: [] });
     }
     impl.storage.nextChatId.put(CHAT_ID + 2);
-    migrate(impl.storage, ctx);
 
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
-    let read = async () => {
-      let pages = [await client.listChatArtifacts(CHAT_ID)];
-      for (let after; (after = pages.at(-1)!.nextAfterSequence) !== undefined;) {
-        pages.push(await client.listChatArtifacts(CHAT_ID, after));
-      }
-      return { pages, old: await client.getChatAttachment(CHAT_ID, OLD_FILE) };
-    };
-    // A chat created since, whose messages are indexed as they are written.
-    let fresh = await client.newChat("Fresh", null);
-    let freshFile = crypto.randomUUID();
-    impl.storage.chats.put({ ...upload(fresh, impl.nextChatSequence(fresh), freshFile),
-      timestamp: impl.getChatTimestamp() });
+    expect(await client.getChatAttachment(CHAT_ID, OLD_FILE))
+      .toEqual({ id: OLD_FILE, name: `${OLD_FILE}.csv`, mimeType: "text/csv", size: 0, sequence: 0 });
+    expect(await client.getChatAttachment(CHAT_ID, otherFile)).toBeUndefined();
+    expect(await client.getChatAttachment(CHAT_ID, crypto.randomUUID())).toBeUndefined();
+    await expect(client.getChatAttachment(CHAT_ID, "not-an-id")).rejects.toThrow();
 
-    let listed = 0;
-    let list = impl.storage.chats.list.bind(impl.storage.chats);
-    let spy = vi.spyOn(impl.storage.chats, "list").mockImplementation(function* (options?: object) {
-      for (let msg of list(options)) { listed++; yield msg; }
-    });
-    let lazy, again;
-    try {
-      expect((await client.listChatArtifacts(fresh)).artifacts).toMatchObject([{ attachment: { id: freshFile } }]);
-      expect(await client.getChatAttachment(fresh, freshFile)).toMatchObject({ id: freshFile });
-      expect(listed).toBe(0);
-      lazy = await read();
-      // The first read indexed the old chat's messages, once.
-      expect(listed).toBe(sequence);
-      again = await read();
-      expect(listed).toBe(sequence);
-    } finally {
-      spy.mockRestore();
-    }
-    expect(impl.storage.chatArtifactsBackfilled.get(CHAT_ID)).toEqual({ chatId: CHAT_ID });
-    expect(impl.storage.chatArtifactsBackfilled.get(fresh)).toBeUndefined();
-    expect(lazy.pages.map(({ artifacts }) => artifacts.length)).toEqual([CHAT_ARTIFACT_PAGE_SIZE, 2]);
-    expect(lazy.pages.flatMap(({ artifacts }) => artifacts).filter(a => a.type === "workpiece"))
-      .toMatchObject([{ sequence: made, workpiece: { id: 10 } }]);
-    expect(lazy.old).toEqual({ id: OLD_FILE, name: `${OLD_FILE}.csv`, mimeType: "text/csv", size: 0, sequence: 0 });
-    expect(again).toEqual(lazy);
-
-    // Deleting a chat never read takes out what the index left out of it, and leaves no mark;
-    // the connection it used stays in the action history but is no longer listed for it.
-    expect([...impl.storage.actions.connectionsByChat.listKeys()]).toHaveLength(1);
     await client.deleteChat(CHAT_ID + 1);
-    let deleted = { artifacts: await client.listChatArtifacts(CHAT_ID + 1),
-      file: await client.getChatAttachment(CHAT_ID + 1, deletedFile) };
-    expect(deleted).toEqual({ artifacts: { artifacts: [], connections: [], nextAfterSequence: undefined },
-      file: undefined });
-    expect(impl.storage.chatArtifactsBackfilled.get(CHAT_ID + 1)).toBeUndefined();
-    expect([...impl.storage.chats.pendingRequestsByChat.list()]).toEqual([]);
-
-    impl.storage.chats.artifactsByChat.rebuild();
-    expect(await read()).toEqual(lazy);
-    expect({ artifacts: await client.listChatArtifacts(CHAT_ID + 1),
-      file: await client.getChatAttachment(CHAT_ID + 1, deletedFile) }).toEqual(deleted);
-
-    // Deleting a chat read before drops its mark with it.
-    await client.deleteChat(CHAT_ID);
-    expect(impl.storage.chatArtifactsBackfilled.get(CHAT_ID)).toBeUndefined();
-    expect([...impl.storage.chats.artifactsByChat.list()].map(({ chatId }) => chatId)).toEqual([fresh, fresh]);
+    expect(await client.getChatAttachment(CHAT_ID + 1, otherFile)).toBeUndefined();
   }));
 
   it("tells a session shared only to use a gadget none of it", async () => {
@@ -225,7 +149,6 @@ describe("one chat's reads", () => {
     storage.chatMeta.put({ id: CHAT_ID, title: "Chat", started: new Date(1), lastActive: new Date(1) });
     let client = await openFakeOverseer(storage, { role: "use" });
     await expect(client.getChatMetadata(CHAT_ID)).rejects.toThrow(/Unauthorized/);
-    await expect(client.listChatArtifacts(CHAT_ID)).rejects.toThrow(/Unauthorized/);
     await expect(client.getChatAttachment(CHAT_ID, OLD_FILE)).rejects.toThrow(/Unauthorized/);
   });
 });
