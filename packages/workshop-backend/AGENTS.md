@@ -137,6 +137,6 @@ For private read horizons, source-to-user fanout and notification recovery, read
 Workspace DO to User DO: individual read commands use an authorized open workspace session;
 bulk read actions and unread queries use only local User DO state. Never add a User DO callback
 to the workspace for unread state or metadata. The workspace checks observer admission locally
-before fanout, without re-enrolling observers. A collaborator whose verified watermark is behind
-what fanout publishes is verified first, in one catch-up check covering every key recorded since
-the watermark, never once per message (see `OverseerImpl.mayReadChatState`).
+before fanout, without re-enrolling observers or calling verifiers per message; a collaborator
+behind on what fanout publishes is caught up first (see "Background reads" in
+`docs/observers.md` §10).

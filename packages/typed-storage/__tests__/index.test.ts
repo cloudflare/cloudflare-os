@@ -878,6 +878,13 @@ describe("non-unique index by number", () => {
     expect([...index.get(3)]).toStrictEqual([]);
   });
 
+  it("lists the primary keys get() visits, ranged over them", () => {
+    expect([...index.listPrimaryKeys(8)]).toStrictEqual([ALICE.name, CAROL.name]);
+    expect([...index.listPrimaryKeys(8, {end: CAROL.name})]).toStrictEqual([ALICE.name]);
+    expect([...index.listPrimaryKeys(8, {limit: 1, reverse: true})]).toStrictEqual([CAROL.name]);
+    expect([...index.listPrimaryKeys(3)]).toStrictEqual([]);
+  });
+
   it("supports list", () => {
     expect([...index.list()]).toStrictEqual([DAVE, BOB, ALICE, CAROL]);
     expect([...index.list({reverse: true})]).toStrictEqual([CAROL, ALICE, BOB, DAVE]);

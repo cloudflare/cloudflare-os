@@ -1107,12 +1107,13 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   (`ObserverLedger.requirementsSince`). One check per collaborator runs at a time, through the
   latest action when it starts, and every publish waiting on them shares it. Each batch looks up
   the verifier (two-second limit; an account gone is a denial) and asks `verifyObserverAccess()`
-  (two-second limit per call), then, if the record still has the same observer id, account and
-  watermark and they are still "build", advances the watermark to the batch's end; a record
-  changed meanwhile ends the check unrecorded, and the publish judges the record as it now stands.
-  A denial keeps the watermark and marks the choice `denied`: both publishes withhold, the
-  summary they hold is cleared, and later publishes call nothing until a workspace admission
-  re-verifies the choice and clears the mark, or an admission replaces the account. A failure or
+  (two-second limit), then, if the record still has the same observer id, account and watermark
+  and they are still "build", advances the watermark to the batch's end; a record changed
+  meanwhile ends the check unrecorded, and the publish judges the record as it now stands. A
+  denial, whichever publish finds it, keeps the watermark and marks the choice `denied` in the
+  same write that queues their summary again: both publishes withhold, the summary they hold is
+  cleared, and later publishes call nothing until a workspace admission re-verifies the choice
+  and clears the mark, or an admission replaces the account. A failure or
   timeout records nothing and throws: the listing pass sends the rest of the listing and retries
   the summary alone, and fanout keeps them as a failed recipient. A workspace with a legacy
   connection admits no collaborator to either. Requirements at or below a watermark are not

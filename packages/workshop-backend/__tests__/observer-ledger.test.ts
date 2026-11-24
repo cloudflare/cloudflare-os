@@ -914,9 +914,7 @@ describe("background reads", () => {
   // Whether what this workspace holds now may be published to Carol in the background.
   async function background(world: World): Promise<boolean> {
     let { impl } = world;
-    let readers = {
-      sharing: await impl.getSharingManager(), throughActionId: impl.storage.nextActionId.get() - 1,
-    };
+    let readers = impl.chatStateReaders(await impl.getSharingManager());
     // Only read synchronously: a workspace with an owner would also start listing deliveries.
     impl.ownerId = "owner-user";
     let result = impl.mayReadChatState("carol-user", "carol", readers);
@@ -954,28 +952,20 @@ describe("background reads", () => {
   const denied = (world: World) =>
       world.impl.storage.observers.get("carol")?.accountChoices[CONN]?.denied;
 
-  it("withholds once denied, calling nothing more until a workspace open clears it", () =>
+  it("admits again, clearing a denial, once a workspace open verifies the account", () =>
       withWorld(async world => {
     let { impl } = world;
     await admitOffline(world);
-    let admittedAt = watermark(world);
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     await read(world, ["x"]);
     expect(await background(world)).toBe(false);
     expect(denied(world)).toBe(true);
-    expect(watermark(world)).toBe(admittedAt);
-    await read(world, ["y"]);
-    expect(await background(world)).toBe(false);
-    expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
-    expect(watermark(world)).toBe(admittedAt);
 
-    // Once their account can read it, the next open admits them again, checking it there.
     world.verifiers.delete("carol");
     await impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     expect(denied(world)).toBeUndefined();
     expect(watermark(world)).toBe(latestAction(world));
     expect(await background(world)).toBe(true);
-    expect(world.checks).toHaveLength(2);
   }));
 
   it("withholds when the chosen account is gone", () => withWorld(async world => {

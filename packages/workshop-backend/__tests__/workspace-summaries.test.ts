@@ -311,6 +311,26 @@ describe("background reads of an offline builder", () => {
     expect(state.previews).toContain(readerId);
     expect(await summaryActions(reader, fixture.workspaceId)).toBe(1);
   });
+
+  it("clears the summary a builder holds when unread fanout alone finds them denied", async () => {
+    const {fixture, reader, profile, state} = await admitReader();
+    await withImpl(fixture.workspace, async impl => {
+      await readAndAsk(impl, "doc:1");
+      await publishBoth(impl);
+    });
+    await vi.waitFor(async () => expect(await summaryActions(reader, fixture.workspaceId)).toBe(1));
+
+    // A read that leaves the summary as it is, then fanout alone.
+    state.denied.add("doc:2");
+    await withImpl(fixture.workspace, async impl => {
+      await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
+      impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
+      await impl.deliverDirtyChats();
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
+      await impl.userUpdateAttempt(reader.id.toString());
+    });
+    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  });
 });
 
 it("ignores a summary read before one already taken", async () => {

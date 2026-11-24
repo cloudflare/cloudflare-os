@@ -406,11 +406,16 @@ describe("recording a shared open", () => {
     return { role, baselines };
   }
 
-  it("takes the starting points for a role raised to build while the owner's profile is fetched",
-      async () => {
-    expect(await recordAcrossRoleChange("use", "build")).toEqual({ role: "build", baselines: [
+  it("takes the starting points for an open admitted as build that stays build", async () => {
+    expect(await recordAcrossRoleChange("build", "build")).toEqual({ role: "build", baselines: [
       expect.objectContaining({ chatId: 1, notifiedThroughSequence: 3, readThroughVisibleSequence: 3 }),
     ] });
+  });
+
+  // The starting points carry chat heads: an open admitted as "use" was never verified for them.
+  it("takes no starting points for a role raised to build while the owner's profile is fetched",
+      async () => {
+    expect(await recordAcrossRoleChange("use", "build")).toEqual({ role: "build", baselines: [] });
   });
 
   it("takes no starting points for a role narrowed to use while the owner's profile is fetched",

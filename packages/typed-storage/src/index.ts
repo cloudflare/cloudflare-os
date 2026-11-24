@@ -79,6 +79,13 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
    * list(), where it counts index keys.
    */
   get(key: Key, options?: ListOptions<PK>): Iterable<T>;
+
+  /**
+   * List the primary keys of the records matching `key`, in the order `get()` visits them, without
+   * reading the records: each in its stored string form (see `Collection.listKeys()`). `options`
+   * ranges and pages over them as for `get()`.
+   */
+  listPrimaryKeys(key: Key, options?: ListOptions<PK>): Iterable<string>;
   list(options?: ListOptions<Key>): Iterable<T>;
 
   /**
@@ -712,6 +719,10 @@ function createCollection<
         for (let pk of child.listKeys(options)) {
           yield collection.get(pk)!;
         }
+      },
+      listPrimaryKeys(key: Key, options?: ListOptions<Key>): Iterable<string> {
+        let id = idxKv.get(key);
+        return id === undefined ? [] : Array.from(idxKv.getChild(id.toString()).listKeys(options));
       },
       *list(options: ListOptions<Key> = {}): Generator<T, void> {
         if (options.dedupe) {
