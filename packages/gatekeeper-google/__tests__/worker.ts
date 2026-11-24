@@ -779,6 +779,12 @@ export class TestHooks extends DurableObject<Env> {
     }));
   }
 
+  /** The Slides gatekeeper's description of its resource, and the preview it offers of it. */
+  async slidesPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
+    let gatekeeper = this.#slides(facetName);
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getGadgetUi() };
+  }
+
   /**
    * Calls one method of a fresh Slides session, reporting what it queued and observed. `entered`
    * is called once the method has run up to its first wait, before it settles.
@@ -1308,6 +1314,12 @@ export class TestHooks extends DurableObject<Env> {
     let drawings: SpreadsheetDrawing[] = [];
     for (let range of ranges) drawings.push(await session.readDrawing(range));
     return { changes, drawings, observed: queue.reports.map(({ title }) => title) };
+  }
+
+  /** The Sheets gatekeeper's description of its resource, and the preview it offers of it. */
+  async sheetsPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
+    let gatekeeper = this.#sheets(facetName);
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getGadgetUi() };
   }
 
   /** Applies a Sheets change. `entered` is called once the apply has run up to its first wait. */

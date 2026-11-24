@@ -2,7 +2,7 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type {
-  ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
+  ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
@@ -15,6 +15,7 @@ import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-
 import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
+import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
@@ -54,6 +55,8 @@ import type {
 import {
   SHEETS_RENDERING_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
+import SHEETS_PREVIEW_CLIENT from "./previews/sheets/client.txt";
+import SHEETS_PREVIEW_WINDOW from "./previews/sheets/window.txt";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import SHEETS_RENDERING_TYPES_CODE from "./sheets-rendering-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
@@ -178,6 +181,7 @@ export class GoogleSheetsGatekeeperImpl
         snippet: `Google Spreadsheet: ${title} (read-only; not created yet)`,
         suggestedBindingName: "GOOGLE_SHEET",
         tsType: "GoogleSpreadsheetSession",
+        hasGadgetUi: true,
       };
     }
     let spreadsheet = await this.#api.getSpreadsheet(props.spreadsheetId).catch(async (error: unknown) => {
@@ -190,11 +194,20 @@ export class GoogleSheetsGatekeeperImpl
       snippet: `Google Spreadsheet: ${spreadsheet.title}`,
       suggestedBindingName: "GOOGLE_SHEET",
       tsType: "GoogleSpreadsheetSession",
+      hasGadgetUi: true,
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleSheetsTypesCode();
+  }
+
+  async getGadgetUi(): Promise<UiFile[]> {
+    return [
+      { path: "client.js", code: SHEETS_PREVIEW_CLIENT },
+      { path: "window.js", code: SHEETS_PREVIEW_WINDOW },
+      ...SHARED_PREVIEW_FILES,
+    ];
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {

@@ -14,11 +14,11 @@
 // or a heading, and out to the web, in a new browser tab, from text Google Docs has saved.
 
 import {
-  addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion, outline,
-  outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale, status,
-  touch, ITSELF,
+  addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lift, lineIcon, loadOnRefresh, make, miss, motion,
+  outline, outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale,
+  status, touch, ITSELF,
 } from './ui/chrome.js';
-import { drawer, drawStyles, showPicture } from './draw.js';
+import { drawer, drawStyles, faceMeasures, showPicture } from './draw.js';
 import { blockOf, excerpt, merge, plain, said } from './merge.js';
 import { pageStyles, paginate } from './pages.js';
 
@@ -151,6 +151,10 @@ let tab;
 
 /** Which copy is shown: the tab `after` its pending changes, `before` them, or both `inline`. */
 let view = 'after';
+
+// The most fonts read for one document, and the reader that brings them into this frame.
+const MAX_FONTS = 24;
+const fonts = fontReader((...font) => gadget.readFont(...font), MAX_FONTS, () => faceMeasures);
 
 // Each tab's drawing as last read. Google Docs is asked for the whole document for one, so it is
 // read again only for a tab whose pending drawing names another saving of the document.
@@ -323,7 +327,6 @@ function render(arriving, place = readingPlace()) {
   // A tab with nothing pending has one copy.
   views.hidden = !tab.changed;
   press(views, view);
-  showPage();
   // The sheets are measured as they are filled, so they are filled at their own size.
   sheets.style.transform = '';
   sheets.className = view === 'inline' ? 'redline' : '';
@@ -618,6 +621,24 @@ function selectTab(id) {
   showStale(0, 'document');
 }
 
+// The looks `block` is set in that an edit made (merge.js), which its drawing does not hold.
+const madeLooks = block => block.type === 'table' ? block.rows.flatMap(row => row.cells.flatMap(cell => cell.blocks.flatMap(madeLooks)))
+  : [block.end, block.list?.look, ...block.runs?.map(run => run.look) ?? []].filter(look => look?.fontFamily);
+
+// Asks for the fonts the tab is set in, and sets it again in each that arrives: one that could
+// not be read is asked for again after a while.
+function readFonts() {
+  const { drawing, rows } = tab;
+  // After the saved looks, those the pending changes write: bold or italic of a family, which
+  // no saved look may be.
+  const looks = [...drawing.textLooks, ...rows.flatMap(row => row.mark ? madeLooks(blockOf(row)) : [])];
+  return fonts.read(looks.map(({ fontFamily, weight, italic }) => [fontFamily, weight, !!italic])).then(any => {
+    // Whichever read drew the tab on the page by then: a later one asked for no font that was
+    // already on its way.
+    if (any && loaded && !page.hidden) render(false, readingPlace());
+  });
+}
+
 async function load() {
   const current = ++generation;
   if (loaded) status('Updating…');
@@ -657,8 +678,9 @@ async function load() {
     const edits = JSON.stringify(pending);
     if (loaded && !page.hidden && tab.drawing === drawing && tab.edits === edits) {
       for (const arrived of document.querySelectorAll('.fresh')) arrived.classList.remove('fresh');
-      // An image that could not be read is asked for again.
+      // An image or a font that could not be read is asked for again.
       showPictures();
+      void readFonts();
       showStale(stale, 'document');
       // A failure said under it is no longer so.
       showPage();
@@ -669,6 +691,15 @@ async function load() {
     tab = { drawing, edits, rows, lists, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
 
+    // The text is set in each font as it arrives, and the first time waits a moment for them:
+    // a page set in a stand-in breaks its lines, and so its pages, somewhere else.
+    const arriving = readFonts();
+    if (!loaded) await Promise.race([arriving, new Promise(resolve => setTimeout(resolve, 1500))]);
+    if (current !== generation) return;
+
+    // Shown before it is filled, which measures it. A failure said under it is no longer so: one
+    // stays through a font that arrives, or another copy of the tab, which read nothing.
+    showPage();
     render(true);
     showStale(stale, 'document');
     status('');

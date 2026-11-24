@@ -1971,6 +1971,18 @@ describe("Google Slides preview", () => {
     expect(observations).toEqual([]);
   });
 
+  it("offers a preview", async () => {
+    new SlidesProvider(deck()).install();
+
+    let { description, files } = await hooks().slidesPreview(`slides-${++facetCount}`);
+
+    expect(description).toMatchObject({ hasGadgetUi: true });
+    expect(files.map(({ path }) => path)).toEqual(["client.js", "slide.js", "shapes.js", "ui/chrome.js"]);
+    expect(files[0].code).toContain("gadget.readSlideDrawings(");
+    expect(files[0].code).toContain("from './ui/chrome.js'");
+    expect(files[1].code).toContain("from './shapes.js'");
+  });
+
   it("lists the pending changes oldest first, the slides each touches, and the deck before and after, as one read", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();

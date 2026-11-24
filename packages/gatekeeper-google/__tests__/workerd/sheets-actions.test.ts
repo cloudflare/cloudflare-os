@@ -3090,6 +3090,18 @@ describe("Google Sheets preview reads", () => {
   let SALES = { id: 0, title: "Sales", index: 0, rowCount: 20, columnCount: 6 };
   let PLAN = { id: 7, title: "Q3 Plan", index: 1, rowCount: 10, columnCount: 4 };
 
+  // What the code does is checked where it runs: the Workshop's browser test of the client.
+  it("offers a preview", async () => {
+    budget();
+
+    let { description, files } = await hooks().sheetsPreview("sheets-preview");
+
+    expect(description).toMatchObject({ hasGadgetUi: true });
+    expect(files.map(({ path }) => path)).toEqual(["client.js", "window.js", "ui/chrome.js"]);
+    expect(files[0].code).toContain("gadget.readDrawing(");
+    expect(files[0].code).toContain("from './ui/chrome.js'");
+  });
+
   it("declares the reads its types leave out, reading nothing", async () => {
     budget();
 

@@ -3,6 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
+  UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
@@ -16,6 +17,10 @@ import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
+import SLIDES_PREVIEW_CLIENT from "./previews/slides/client.txt";
+import SLIDES_PREVIEW_SHAPES from "./previews/slides/shapes.txt";
+import SLIDES_PREVIEW_SLIDE from "./previews/slides/slide.txt";
+import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
@@ -146,6 +151,7 @@ export class GoogleSlidesGatekeeperImpl
         snippet: `Google Slides presentation: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_SLIDES",
         tsType: "GooglePresentationSession",
+        hasGadgetUi: true,
       };
     }
     let title = await this.#api.getPresentationTitle(props.presentationId)
@@ -159,7 +165,18 @@ export class GoogleSlidesGatekeeperImpl
       snippet: `Google Slides presentation: ${title}`,
       suggestedBindingName: "GOOGLE_SLIDES",
       tsType: "GooglePresentationSession",
+      hasGadgetUi: true,
     };
+  }
+
+  /** The files of the presentation preview: gadget-format client code that reads through a session. */
+  async getGadgetUi(): Promise<UiFile[]> {
+    return [
+      { path: "client.js", code: SLIDES_PREVIEW_CLIENT },
+      { path: "slide.js", code: SLIDES_PREVIEW_SLIDE },
+      { path: "shapes.js", code: SLIDES_PREVIEW_SHAPES },
+      ...SHARED_PREVIEW_FILES,
+    ];
   }
 
   async getTypeScriptTypes(): Promise<string> {
