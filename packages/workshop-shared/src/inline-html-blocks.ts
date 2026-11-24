@@ -10,6 +10,24 @@ import { normalizeUri } from "micromark-util-sanitize-uri";
 // Match ReactMarkdown's remark-gfm parser, including links inside footnotes.
 const MARKDOWN_OPTIONS = {extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()]};
 
+// A `worktree://` URL that a quote opens and the same quote closes, with no quote, backslash,
+// whitespace, `<` or `&` inside. The kernel pins each `<img src>` as HTMLRewriter decodes it, so
+// stopping at `&` keeps a source with a character reference from pinning a second time under its
+// raw spelling.
+const QUOTED_FILE_URL = /(["'`])(worktree:\/\/[^"'`\\\s<&]*)\1/g;
+
+/**
+ * The kernel's pinning rule for a view's data files (chat-embeds.ts): each `worktree://` URL that
+ * appears quoted, in `"`, `'` or a backtick with no `${`, in `blockHtml`, the raw HTML of one
+ * `<inline-html>` block as the answer holds it. A raw-text scan, not a JavaScript tokenizer, so a
+ * URL in a comment or quoted inside a longer string pins too. It decides only what a reply pins; a
+ * view reads any file its reply pinned (see plans/live-views.md, "Data files").
+ */
+export function quotedFileUrls(blockHtml: string): string[] {
+  return [...blockHtml.matchAll(QUOTED_FILE_URL)].flatMap(([, , url]) =>
+      url.includes("${") ? [] : [url]);
+}
+
 /** File URLs in links and images, as the Markdown renderer normalizes them; code examples and raw HTML are excluded. */
 export function markdownFileUrls(markdown: string, streaming = false): string[] {
   const root = fromMarkdown(markdown, MARKDOWN_OPTIONS);
