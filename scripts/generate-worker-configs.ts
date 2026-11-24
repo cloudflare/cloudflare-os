@@ -15,7 +15,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { convertToWranglerConfig, resolveAndParseConfig } from "@cloudflare/config";
 import type { WranglerConfig } from "./release/manifest-lib.ts";
-import type { WranglerExtras } from "./worker-config.ts";
+import { WORKER_BUNDLE_SETTINGS, type WranglerExtras } from "./worker-config.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES_DIR = join(ROOT, "packages");
@@ -90,7 +90,10 @@ export async function renderWorkerConfig(dir: string): Promise<string> {
   }
 
   // Undefined extras drop out of the JSON.
-  const out = { ...config, build: extras.build, rules: extras.rules, migrations: mod.migrations };
+  const out = {
+    ...config, ...WORKER_BUNDLE_SETTINGS,
+    build: extras.build, rules: extras.rules, migrations: mod.migrations,
+  };
   return HEADER + JSON.stringify(out, null, 2) + "\n";
 }
 
