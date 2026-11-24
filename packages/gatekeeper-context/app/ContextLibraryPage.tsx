@@ -344,7 +344,7 @@ function CollectionNameField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onEnter?.();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) onEnter?.();
           }}
           placeholder="A short name, e.g., Brand guidelines"
           autoFocus={autoFocus}
@@ -889,7 +889,7 @@ function CollectionSettingsModal({
                     value={branch}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBranch(e.target.value)}
                     onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                      if (e.key === "Enter" && hasChanges && title.trim()) void handleSave();
+                      if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) && hasChanges && title.trim()) void handleSave();
                     }}
                     placeholder={DEFAULT_GIT_BRANCH}
                     className="w-full"
@@ -1306,6 +1306,7 @@ function TreeInlineInput({
       onChange={(e) => onChange(e.target.value)}
       onClick={stopClickPropagation ? (e) => e.stopPropagation() : undefined}
       onKeyDown={(e) => {
+        if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
         if (e.key === "Enter") onCommit();
         else if (e.key === "Escape") onCancel();
       }}
@@ -2667,6 +2668,7 @@ function DocumentEditor({
             onChange={(e) => setFilename(e.target.value)}
             onBlur={() => { if (!readOnly) commitRename(); }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
               if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
               else if (e.key === "Escape") { setFilename(baseName(path)); e.currentTarget.blur(); }
             }}

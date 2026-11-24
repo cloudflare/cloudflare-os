@@ -42,6 +42,7 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
         onBlur={commit}
         onKeyDown={(event) => {
           event.stopPropagation();
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           if (event.key === "Enter") {
             event.preventDefault();
             commit();

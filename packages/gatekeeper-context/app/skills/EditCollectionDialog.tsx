@@ -256,7 +256,7 @@ export const EditCollectionDialog = ({
                 aria-label="Name"
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") void update(); }}
+                onKeyDown={(event) => { if (event.key === "Enter" && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) void update(); }}
                 maxLength={100}
                 placeholder="A short name, e.g., Brand guidelines"
                 autoFocus
