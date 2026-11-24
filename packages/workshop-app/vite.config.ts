@@ -43,6 +43,17 @@ const runConfig = {
           output: ['dist/**'],
         },
       },
+      // The old app's build with this one's page beside it as `next.html`, for a backend that serves
+      // the Workshop's pages itself and picks between them by cookie (see the script).
+      'build:workshop-assets': {
+        command: 'node scripts/workshop-assets.ts',
+        dependsOn: ['build', '@gadgets/workshop-frontend#build'],
+        cache: {
+          env: ['VITE_*'],
+          input: [{ auto: true }, { pattern: '!dist-workshop/**', base: 'package' } as const],
+          output: ['dist-workshop/**'],
+        },
+      },
       // Shared with the other packages: keeps vitest's scratch files out of the cache fingerprint.
       // The browser suite second, under its own config (see vitest.browser.config.ts).
       test: vitestTask(['vitest run', 'vitest run -c vitest.browser.config.ts'], [ownDist]),
@@ -90,6 +101,9 @@ export default defineConfig(({ command, mode }) => {
       exclude: [...configDefaults.exclude, 'src/**/*.browser.test.tsx'],
     },
     build: {
+      // Apart from the old app's `assets/`, so that the two builds can be served from one directory
+      // (`scripts/workshop-assets.ts`) without a chunk of one ever replacing the other's.
+      assetsDir: 'next-assets',
       // A build that reports what goes wrong (`src/rpc/errorReporting.ts`) has its source maps
       // uploaded apart, as the old app's are: hidden, so that the bundle names no map to anyone.
       sourcemap: env.VITE_FRONTEND_ERROR_REPORTING === 'true' ? 'hidden' : false,

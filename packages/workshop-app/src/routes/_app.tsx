@@ -29,6 +29,7 @@ import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { FeatureFlagsProvider } from '@/rpc/FeatureFlagsProvider'
 import { RpcGate } from '@/rpc/RpcGate'
+import { useClassicUiFallback } from '@/rpc/useClassicUiFallback'
 import { useServerConfig } from '@/rpc/serverConfig'
 import { sharedConnection } from '@/rpc/sharedConnection'
 import { useIsAdmin } from '@/settings/admin/useIsAdmin'
@@ -66,6 +67,7 @@ export const Route = createFileRoute('/_app')({
         {/* Outermost, so that whatever opens a workspace asks the user to confirm their access where it must. */}
         <ObserverAccessProvider>
           <FeatureFlagsProvider>
+            <ClassicUiFallback />
             {/* A new user is set up before anything else is read for them. */}
             <OnboardingGate>
               {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
@@ -95,6 +97,12 @@ export const Route = createFileRoute('/_app')({
     </SiteFrame>
   ),
 })
+
+// Back to the old UI for a user the `workshop-app` flag is off for (see `useClassicUiFallback`).
+const ClassicUiFallback = () => {
+  useClassicUiFallback()
+  return null
+}
 
 // How many of the latest workspaces the sidebar lists while it has nothing pinned and no recent chats.
 const FALLBACK_WORKSPACES = 8

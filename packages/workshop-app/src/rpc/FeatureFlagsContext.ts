@@ -5,6 +5,8 @@ export type FeatureFlagsState = {
   flags: UiFeatureFlags
   /** Not read yet: `flags` are the defaults meanwhile. */
   loading: boolean
+  /** Whether `flags` are what the backend said, from this read or one before it, not the defaults. */
+  read: boolean
 }
 
 /**
@@ -17,7 +19,7 @@ export const uiFeatureFlagsOf = (read: object | undefined): UiFeatureFlags =>
     return [name, typeof value === 'boolean' ? value : fallback]
   })) as UiFeatureFlags
 
-const DEFAULTS: FeatureFlagsState = { flags: DEFAULT_UI_FEATURE_FLAGS, loading: true }
+const DEFAULTS: FeatureFlagsState = { flags: DEFAULT_UI_FEATURE_FLAGS, loading: true, read: false }
 
 export const FeatureFlagsContext = createContext<FeatureFlagsState>(DEFAULTS)
 

@@ -23,6 +23,7 @@ import {
 } from '../features/native-app/DeviceSessionHandoff'
 import { NativeAppBridge } from '../features/native-app/NativeAppBridge'
 import { PageUpdateNotice } from '../features/stale-session/PageUpdateNotice'
+import { useNextUiSwitch } from '../features/ui-variant/useNextUiSwitch'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -160,6 +161,7 @@ function AuthenticatedShell({
   authenticatedApi: RpcStub<AuthenticatedApi>
   isWorkspaceEditor: boolean
 }) {
+  useNextUiSwitch()
   // null = still checking, true = needs onboarding, false = onboarding done
   const [onboardingNeeded, setOnboardingNeeded] = useState<boolean | null>(null)
 
