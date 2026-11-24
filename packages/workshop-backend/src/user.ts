@@ -44,6 +44,7 @@ const logger = createWorkshopLogger("workshop.user");
 const OUTPUTS_BACKFILL_PAGE = 16;
 // A slow connector must not hold up app navigation; keep its cached metadata after this wait.
 const APP_DISCOVERY_TIMEOUT_MS = 1_000;
+const APP_DISCOVERY_INTERVAL_MS = 5 * 60_000;
 const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
 const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
@@ -337,6 +338,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
+  #appDiscovery = new Map<number, { started: number; pending: boolean }>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -2351,38 +2353,51 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
    * `refreshApps` refreshes only management-app metadata, with a short cached fallback for slow
-   * providers. `vendorId` scopes direct app opens; ordinary agent reads use the saved descriptions.
+   * auto-provisioned providers. Late results populate the next listing; attempts are throttled per
+   * account. `vendorId` scopes direct app opens; ordinary agent reads use the saved descriptions.
    */
   async listProvidedAccounts(refreshApps = false, vendorId?: string): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
     let config = await readAdminConfig(this.env);
     if (refreshApps) {
       await Promise.all(Array.from(this.#connectedAccountRecords(), async rec => {
-        if ((vendorId !== undefined && rec.vendorId !== vendorId) ||
+        if (!rec.autoProvisioned || (vendorId !== undefined && rec.vendorId !== vendorId) ||
             config.disabledGatekeepers.includes(rec.vendorId) ||
-            (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled")) return;
+            ambientGatekeeperMode(config, rec.vendorId) === "disabled") return;
+        let attempt = this.#appDiscovery.get(rec.id);
+        if (attempt?.pending || (attempt && Date.now() - attempt.started < APP_DISCOVERY_INTERVAL_MS)) return;
+        attempt = { started: Date.now(), pending: true };
+        this.#appDiscovery.set(rec.id, attempt);
+        let refresh = (async () => {
+          try {
+            let previous = JSON.stringify(rec.description);
+            let description = await rec.account.describe();
+            if (JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
+            let current = this.storage.connectedAccounts.get(rec.id);
+            // Disconnect/reconnect may run while describe yields. Never restore a deleted account
+            // or replace a description another operation has already updated.
+            if (current && JSON.stringify(current.description) === previous) {
+              this.storage.connectedAccounts.put({ ...current,
+                description: { ...current.description, providesUi: description.providesUi } });
+            }
+          } catch {
+            // Provider error messages may contain response bodies or credentials.
+            logger.warn("failed to refresh an account description for app discovery", {
+              event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
+            });
+          } finally {
+            attempt.pending = false;
+          }
+        })();
+        this.ctx.waitUntil(refresh);
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
-          let previous = JSON.stringify(rec.description);
-          let description = await Promise.race([
-            rec.account.describe(),
-            new Promise<undefined>(resolve => {
-              timeout = setTimeout(() => resolve(undefined), APP_DISCOVERY_TIMEOUT_MS);
+          await Promise.race([
+            refresh,
+            new Promise<void>(resolve => {
+              timeout = setTimeout(resolve, APP_DISCOVERY_TIMEOUT_MS);
             }),
           ]);
-          if (!description || JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
-          let current = this.storage.connectedAccounts.get(rec.id);
-          // Disconnect/reconnect may run while describe yields. Never restore a deleted account
-          // or replace a description another operation has already updated.
-          if (current && JSON.stringify(current.description) === previous) {
-            this.storage.connectedAccounts.put({ ...current,
-              description: { ...current.description, providesUi: description.providesUi } });
-          }
-        } catch {
-          // Provider error messages may contain response bodies or credentials.
-          logger.warn("failed to refresh an account description for app discovery", {
-            event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
-          });
         } finally {
           clearTimeout(timeout);
         }
