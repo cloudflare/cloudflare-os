@@ -1,7 +1,7 @@
 // The one place outbound web requests from the workspace's untrusted callers are policed: the
 // agent's `webFetch` tool, sandboxed code and gatekeepers send every request through a
-// FetchLoopback, and the workspace decides each request in OverseerImpl.authorizeFetch(), or the
-// fetcher decides it from a snapshot of the workspace's policy (ApprovalQueue.getFetcher()).
+// FetchLoopback, and the workspace decides each request in OverseerImpl.authorizeFetch(), except
+// that a gatekeeper's fetcher sends a request to a trusted host itself (ApprovalQueue.getFetcher()).
 //
 // SSRF protection is workerd's, as for webFetch (see web-fetch.ts): this entrypoint runs in
 // workshop-backend, so its fetch() keeps `global_fetch_strictly_public`.
@@ -29,10 +29,10 @@ export type FetchLoopbackProps = {
   agentDriven: boolean;
 
   /**
-   * The policy as it stood when the fetcher was minted, which it applies without asking the
-   * workspace. Absent: ask the workspace on every request.
+   * The admin's trusted hosts as they stood when the fetcher was minted. A request to one of them
+   * is sent without asking the workspace, and is not recorded. Absent: ask about every request.
    */
-  snapshot?: FetchPolicy;
+  trustedHosts?: string[];
 };
 
 /** The fetch policy a workspace applies to its untrusted callers' requests. */
@@ -48,7 +48,7 @@ export type FetchPolicy = {
 export type FetchAuthorization = {
   allowed: true;
 
-  /** Whether the workspace has observed restricted data, so the request carries no caller headers. */
+  /** Whether to send the request without the caller's headers, as a restricted workspace does. */
   restricted: boolean;
 
   /** Whether a user's approval is what allowed the URL, which then covers its redirects too. */
@@ -80,11 +80,11 @@ const RESERVED_HEADER_PREFIX = "cloudflare-os-fetch-";
  */
 export class FetchLoopback extends WorkerEntrypoint<Cloudflare.Env, FetchLoopbackProps> {
   fetch(request: Request): Promise<Response> {
-    let { overseerId, caller, executionId, agentDriven, snapshot } = this.ctx.props;
+    let { overseerId, caller, executionId, agentDriven, trustedHosts } = this.ctx.props;
     let ns = this.ctx.exports.OverseerDurableObject;
     let ask = (href: string) => ns.get(ns.idFromString(overseerId))
         .authorizeFetch(caller, executionId, request.method, href);
-    return sendFetch(request, snapshot ? snapshotAuthorizer(snapshot, caller, ask) : ask,
+    return sendFetch(request, trustedHosts ? trustedHostAuthorizer(trustedHosts, ask) : ask,
                      { agentDriven });
   }
 }
@@ -109,21 +109,23 @@ export function fetchPolicyRefusal(policy: FetchPolicy, href: string): string | 
 }
 
 /**
- * Decides `caller`'s requests by `snapshot`, with no round trip to the workspace, except a URL
- * the snapshot refuses that a user could approve, which goes to the workspace through `ask`:
- * only an agent can wait for the user's decision.
+ * Allows a request to one of `trustedHosts` with no round trip to the workspace, and asks the
+ * workspace about any other through `ask`. Everyone who sees a trusted host's requests is cleared
+ * for the workspace's data, restricted or not, so such a request keeps the caller's headers and
+ * needs no record. A URL that breaks a rule a restricted workspace sets for trusted hosts, such as
+ * one with a query string, goes to the workspace.
  */
-export function snapshotAuthorizer(
-    snapshot: FetchPolicy, caller: GatekeeperCaller,
-    ask: (href: string) => Promise<FetchAuthorization>)
+export function trustedHostAuthorizer(
+    trustedHosts: string[], ask: (href: string) => Promise<FetchAuthorization>)
     : (href: string) => Promise<FetchAuthorization> {
+  let hosts = new Set(trustedHosts);
   return async href => {
-    let message = fetchPolicyRefusal(snapshot, href);
-    if (message === undefined) {
-      return { allowed: true, restricted: snapshot.allowedHosts !== undefined, approved: false };
+    try {
+      validateWebFetchUrl(href, hosts);
+    } catch {
+      return ask(href);
     }
-    if (snapshot.approvals && caller.from === "agent") return ask(href);
-    return { allowed: false, message };
+    return { allowed: true, restricted: false, approved: false };
   };
 }
 

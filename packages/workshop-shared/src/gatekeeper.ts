@@ -1644,40 +1644,29 @@ export interface ApprovalQueue extends ObservationAuthorizer {
         description: HookDescription): Promise<void>;
 
   /**
-   * A Fetcher that applies this session's caller's fetch policy as it stands now: which hosts the
-   * caller may reach, GET and HEAD only, no credentials. It is for code the gatekeeper hosts on
-   * the caller's behalf, such as a container's outbound traffic. The gatekeeper's own calls to
-   * its vendor keep using its own `fetch()`. A refused request is answered with a 403 (405 for
-   * the method) whose `Cloudflare-OS-Fetch-Refused` header says why, with the reason as its body.
-   * On `approval-requested`, which only an agent caller gets, nothing more need be done: the
-   * agent's turn ends, and it runs its code again once the user approves. A redirect goes back to
-   * the requester to follow, except a user-approved URL's, which the Fetcher follows itself: that
+   * A Fetcher that applies this session's caller's fetch policy: which hosts the caller may reach,
+   * GET and HEAD only, no credentials. It is for code the gatekeeper hosts on the caller's behalf,
+   * such as a container's outbound traffic. The gatekeeper's own calls to its vendor keep using
+   * its own `fetch()`. A refused request is answered with a 403 (405 for the method) whose
+   * `Cloudflare-OS-Fetch-Refused` header says why, with the reason as its body. On
+   * `approval-requested`, which only an agent caller gets, nothing more need be done: the agent's
+   * turn ends, and it runs its code again once the user approves. A redirect goes back to the
+   * requester to follow, except a user-approved URL's, which the Fetcher follows itself: that
    * response's `Cloudflare-OS-Fetch-Url` header names the URL it came from, since its `url` and
    * `redirected` describe only the request sent.
    *
-   * The Fetcher reflects the policy at the time it was made and never updates, even after the
-   * session ends; keeping it current is the gatekeeper's responsibility. A workspace's policy
-   * tightens when it observes restricted data, which can reach what the Fetcher filters only
-   * through a call to the gatekeeper. It may be stored, in the gatekeeper's Durable Object storage
-   * for example, and used from later calls; nothing needs releasing when one is replaced. So:
+   * The workspace decides each request by its policy as it stands at that moment, and records the
+   * ones it allows, except requests to the deployment admin's trusted hosts: the Fetcher allows
+   * those itself, by the trusted hosts as they stood when it was made, and nothing records them.
+   * It may be stored, in the gatekeeper's Durable Object storage for example, and used from later
+   * calls. But a Fetcher taken in a session for an agent's code execution serves that execution:
+   * once it ends, the workspace refuses the requests it decides. So take a new Fetcher in each
+   * such session that hosts code.
    *
-   * - Each time information flows into what the Fetcher filters, obtain a new Fetcher first:
-   *   call `getFetcher()` after that call's own `authorizeObservation()` calls and before handing
-   *   any new data from the workspace to whatever the Fetcher filters, and replace the Fetcher
-   *   installed there with the new one. Code that has received nothing new needs no new Fetcher;
-   *   taking one on every call the gatekeeper receives is the simple way to meet this.
-   * - Take the Fetcher, install it and deliver the data as one serialized unit for each
-   *   environment the Fetcher filters. Two overlapping calls must not interleave these steps, or
-   *   one could install the Fetcher it took earlier over the newer, stricter one the other
-   *   installed before delivering restricted data. A Fetcher must never replace one taken after
-   *   it.
-   * - An environment the Fetcher filters serves one workspace. Data from one workspace and a
-   *   Fetcher from another must never share it: an unrestricted workspace's Fetcher would let the
-   *   other's restricted data out. To move an environment to another workspace, discard
-   *   everything it retained first.
-   *
-   * Requests the Fetcher allows on its own are not recorded by the workspace, so the gatekeeper
-   * audits its own work (the command it ran, for a container) through `authorizeObservation()`.
+   * An environment the Fetcher filters serves one workspace. Data from one workspace and a
+   * Fetcher from another must never share it: an unrestricted workspace's Fetcher would let the
+   * other's restricted data out. To move an environment to another workspace, discard everything
+   * it retained first.
    *
    * Throws if the session has ended (see `requireLive()`).
    */

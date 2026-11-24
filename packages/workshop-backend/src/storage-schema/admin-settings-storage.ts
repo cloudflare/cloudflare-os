@@ -69,7 +69,9 @@ export type AdminConfig = {
    * The hosts `webFetch` may reach without asking in a workspace that has observed restricted data
    * (see OverseerImpl.authorizeFetch), as lowercase ASCII host names. A host
    * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
-   * analytics and caches, and anything it fetches on a request's behalf.
+   * analytics and caches, and anything it fetches on a request's behalf. Code a gatekeeper hosts
+   * reaches these hosts without asking the workspace, which does not record those requests
+   * (see ApprovalQueue.getFetcher()).
    */
   restrictedWebFetchHosts: string[];
   /**

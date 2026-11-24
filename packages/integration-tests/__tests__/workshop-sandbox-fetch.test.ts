@@ -289,21 +289,30 @@ const gatekeeperFetchAudits = async (session: WorkshopAgentSession) =>
       .filter(entry => entry.description.title === "Ran the test gatekeeper's fetch")
       .map(entry => entry.description.description).toReversed();
 
-it("fetches through a gatekeeper's Fetcher, which the workspace does not record", async () => {
-  const page = `https://${OTHER_HOST}/from-gatekeeper`;
-  const model = models.script([
-    gatekeeperFetchCode("fetch", [["fetchUrl", page]]),
-    { text: "Done." },
-  ]);
-  await using session = await openSession(model);
-  expect((await session.runTurn("Fetch the page.")).outcome).toEqual({ status: "completed" });
+it("fetches through a gatekeeper's Fetcher, which the workspace records unless the host is trusted", async () => {
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
+  try {
+    const page = `https://${OTHER_HOST}/from-gatekeeper`;
+    const trusted = `https://${TRUSTED_HOST}/from-gatekeeper`;
+    const model = models.script([
+      gatekeeperFetchCode("fetch", [["fetchUrl", page], ["fetchUrl", trusted]]),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    expect((await session.runTurn("Fetch the pages.")).outcome).toEqual({ status: "completed" });
 
-  expect(model.requests[1]).toMatchObject(toolResult("fetch", `fetchUrl ${page}: 200 sent ${PAGE}`));
-  expect(receivedUrls()).toEqual([page]);
-  expect(received[0].headers.get("user-agent")).toBe("Cloudflare-OS/1.0");
-  // The snapshot allowed it, so only the gatekeeper's audit of its own call records it.
-  expect(await fetchObservations(session)).toEqual([]);
-  expect(await gatekeeperFetchAudits(session)).toEqual([`Fetched \`${page}\` through the caller's fetch policy.`]);
+    expect(model.requests[1]).toMatchObject(toolResult("fetch", `fetchUrl ${page}: 200 sent ${PAGE}`));
+    expect(model.requests[1]).toMatchObject(toolResult("fetch", `fetchUrl ${trusted}: 200 sent ${PAGE}`));
+    expect(receivedUrls()).toEqual([page, trusted]);
+    expect(received[0].headers.get("user-agent")).toBe("Cloudflare-OS/1.0");
+    // The Fetcher sent the trusted host's request without asking the workspace, which records
+    // only the other. The gatekeeper's audit of its own calls records both calls.
+    expect(await fetchObservations(session)).toEqual([`GET \`${page}\``]);
+    expect(await gatekeeperFetchAudits(session)).toEqual([page, trusted].map(url =>
+        `Fetched \`${url}\` through the caller's fetch policy.`));
+  } finally {
+    await admin.setRestrictedWebFetchHosts([]);
+  }
 });
 
 it("refuses executeCode's own fetch of a page that sets Content-Signal: ai-input=no, not a gatekeeper's", async () => {
@@ -348,28 +357,53 @@ it("refuses a gatekeeper's fetch from an untrusted host once restricted, or with
   }
 });
 
-it("keeps a gatekeeper's Fetcher at the policy it was taken under, until the next call replaces it", async () => {
-  const pages = ["before", "stale", "fresh", "replaced"].map(name => `https://${OTHER_HOST}/${name}`);
-  const [before, stale, fresh, replaced] = pages;
+it("decides a stored Fetcher's requests by the workspace's policy as it stands", async () => {
+  const [before, after] = ["before", "after"].map(name => `https://${OTHER_HOST}/${name}`);
+  // One executeCode call installs a Fetcher, reads restricted data, then fetches through it.
   const model = models.script([
-    gatekeeperFetchCode("install", [["fetchUrl", before]]),
-    readRestricted(),
-    gatekeeperFetchCode("fetch", [["fetchInstalled", stale], ["fetchUrl", fresh], ["fetchInstalled", replaced]]),
+    { toolCall: { id: "fetch", name: "executeCode", arguments: { code: `export default async function(self, env) {
+  let first = await env.TEST_AMBIENT.fetchUrl(${JSON.stringify(before)});
+  console.log(\`before: \${first.status}\`);
+  ${READ_RESTRICTED_CODE}
+  let second = await env.TEST_AMBIENT.fetchInstalled(${JSON.stringify(after)});
+  console.log(\`after: \${second.status} \${second.refused} \${second.body}\`);
+}` } } },
     { text: "Done." },
   ]);
   await using session = await openSession(model);
   expect((await session.runTurn("Fetch, read the restricted value, then fetch again.")).outcome)
       .toEqual({ status: "completed" });
 
-  expect(model.requests[1]).toMatchObject(toolResult("install", `fetchUrl ${before}: 200 sent ${PAGE}`));
-  // Taken before the workspace was restricted, the installed Fetcher never updates...
-  expect(model.requests[3]).toMatchObject(toolResult("fetch", `fetchInstalled ${stale}: 200 sent ${PAGE}`));
-  // ...until the gatekeeper's next call takes a new one and installs it in its place.
-  expect(model.requests[3]).toMatchObject(toolResult("fetch",
-      `fetchUrl ${fresh}: 403 denied This workspace has observed sensitive data.`));
-  expect(model.requests[3]).toMatchObject(toolResult("fetch",
-      `fetchInstalled ${replaced}: 403 denied This workspace has observed sensitive data.`));
-  expect(receivedUrls()).toEqual([before, stale]);
+  expect(model.requests[1]).toMatchObject(toolResult("fetch", "before: 200"));
+  expect(model.requests[1]).toMatchObject(toolResult("fetch",
+      "after: 403 denied This workspace has observed sensitive data."));
+  expect(receivedUrls()).toEqual([before]);
+});
+
+it("refuses a Fetcher's requests once its execution has ended, except to a trusted host", async () => {
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
+  try {
+    const other = `https://${OTHER_HOST}/later`;
+    const trusted = `https://${TRUSTED_HOST}/later`;
+    const model = models.script([
+      gatekeeperFetchCode("install", [["fetchUrl", `https://${OTHER_HOST}/first`]]),
+      gatekeeperFetchCode("later", [["fetchInstalled", other], ["fetchInstalled", trusted], ["fetchUrl", other]]),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    expect((await session.runTurn("Fetch, then fetch again.")).outcome).toEqual({ status: "completed" });
+
+    // The Fetcher installed by the first call belongs to that call's execution, which has ended...
+    expect(model.requests[2]).toMatchObject(toolResult("later",
+        `fetchInstalled ${other}: 403 denied The code execution this request belongs to has ended.`));
+    // ...but still reaches a trusted host, which it sends to without asking the workspace...
+    expect(model.requests[2]).toMatchObject(toolResult("later", `fetchInstalled ${trusted}: 200 sent ${PAGE}`));
+    // ...and the next call takes a new one for its own execution.
+    expect(model.requests[2]).toMatchObject(toolResult("later", `fetchUrl ${other}: 200 sent ${PAGE}`));
+    expect(receivedUrls()).toEqual([`https://${OTHER_HOST}/first`, trusted, other]);
+  } finally {
+    await admin.setRestrictedWebFetchHosts([]);
+  }
 });
 
 it("ends the turn when a gatekeeper's fetch needs approval, and fetches once approved", async () => {
@@ -385,7 +419,7 @@ it("ends the turn when a gatekeeper's fetch needs approval, and fetches once app
     await using session = await openSession(model);
     const asked = await session.runTurn("Read the restricted value, then fetch the page.");
 
-    // The snapshot refused it, and the workspace asked the user: the turn ends on the card.
+    // The workspace refused it and asked the user: the turn ends on the card.
     expect(asked.outcome).toEqual({ status: "completed" });
     expect(model.requests).toHaveLength(2);
     const requests = asked.history.filter(msg => msg.type === "webFetchRequest");

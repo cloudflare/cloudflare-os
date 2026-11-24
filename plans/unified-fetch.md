@@ -4,7 +4,7 @@ Status: implemented on the `kenton/network-fetcher-policy-f00189` branch, in the
 [Commit sequence](#commit-sequence-one-pr), with the deviations listed under
 [Implementation notes](#implementation-notes).
 [`docs/unified-fetch.md`](../docs/unified-fetch.md) describes the design as built: who can fetch,
-the policy and its two modes, redirects, refusals, approvals and the action log. The gatekeeper's
+the policy and how each request is decided, redirects, refusals, approvals and the action log. The gatekeeper's
 contract is in `.agents/skills/write-gatekeeper/SKILL.md` and the `ApprovalQueue.getFetcher()` doc
 comment. This record keeps the reasoning and decisions; the Background section describes the code
 before this plan.
@@ -79,7 +79,8 @@ type FetchLoopbackProps = {
   agentDriven: boolean;
 
   // The policy as it stood when the fetcher was minted, which it applies without asking the
-  // workspace. Absent: ask the workspace on every request.
+  // workspace. Absent: ask the workspace on every request. Replaced after review by
+  // `trustedHosts?: string[]`; see Decisions.
   snapshot?: FetchPolicy;
 };
 
@@ -196,8 +197,9 @@ export interface ApprovalQueue extends ObservationAuthorizer {
 }
 ```
 
-`ApprovalQueueImpl.getFetcher()` mints a `FetchLoopback` with the queue's caller and execution
-and a snapshot of the current policy. It throws if the session has ended, as `requireLive()` does.
+As first built, `ApprovalQueueImpl.getFetcher()` minted a `FetchLoopback` with the queue's caller
+and execution and a snapshot of the current policy; after review it carries only the trusted hosts
+(see Decisions), and the snapshot reasoning and contract below are superseded. It throws if the session has ended, as `requireLive()` does.
 Hook firings get it through the queue `startHook()` returns, with their `{from: "hook"}` caller.
 
 A snapshot does not expire. What makes a policy too permissive is the workspace observing
@@ -234,9 +236,21 @@ authorization and audit only, and this is an egress capability.
   behind a gatekeeper. A restricted workspace forwards none of the caller's headers.
 - **No approval without a chat turn to end.** A mainline gadget, a hook firing or a user's
   session is refused where an agent would be asked.
-- **Workspace-decided requests are audited; snapshot-decided ones are not.**
-- **Snapshots do not expire.** A gatekeeper refreshes its `Fetcher` whenever information flows
-  into what it filters, and nothing else can make a snapshot too permissive.
+- **A gatekeeper's `Fetcher` asks the workspace about everything except trusted hosts** (changed
+  after review). It first carried a snapshot of the whole policy, which went stale when the
+  workspace became restricted or an admin removed a trusted host, and so needed a contract the
+  kernel cannot check: take a new `Fetcher` before each delivery of data, and serialize taking,
+  installing and delivering. A gatekeeper's requests also went unrecorded. Now the workspace
+  decides and records each request, as it does for the sandboxes, and a round trip costs only a
+  small RPC, since the request itself is sent from the loopback, not through the Durable Object.
+  The exception is the admin's trusted hosts, such as package registries, which a container may
+  hit hundreds of times in one install: the `Fetcher` allows those itself, by the list as it stood
+  when it was taken, and keeps the caller's headers, since everyone who sees those requests is
+  cleared. A trusted host is allowed whether or not the workspace is restricted, so only an
+  admin's removal of a host can leave a `Fetcher` stale, until the gatekeeper takes a new one.
+  The workspace's checks apply to a gatekeeper's requests as to a sandbox's, so once an agent's
+  execution ends, a `Fetcher` taken for it reaches only trusted hosts; a gatekeeper takes a new
+  one for each execution.
 - **`Content-Signal: ai-input=no` refuses only agent-driven requests:** the `webFetch` tool's and
   `fetch()` called directly from `executeCode`. A gadget's requests and a gatekeeper's are not
   agent-driven, for now, even when an agent's `executeCode` call drives the gatekeeper. The

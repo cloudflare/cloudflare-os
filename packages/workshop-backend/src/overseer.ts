@@ -3351,11 +3351,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // A fetcher for `caller`'s requests (see fetch-loopback.ts and FetchLoopbackProps), which asks
-  // this workspace about each one unless given a `snapshot` of its policy to apply. `executionId`
-  // names the executeCode call it is minted for, which its requests to the workspace stop being
-  // allowed with.
+  // this workspace about each one except a request to one of `trustedHosts`. `executionId` names
+  // the executeCode call it is minted for, which its requests to the workspace stop being allowed
+  // with.
   makeFetchLoopback(caller: GatekeeperCaller,
-                    options: {executionId?: string, agentDriven: boolean, snapshot?: FetchPolicy}) {
+                    options: {executionId?: string, agentDriven: boolean, trustedHosts?: string[]}) {
     let props: FetchLoopbackProps = {overseerId: this.ctx.id.toString(), caller, ...options};
     return this.ctx.exports.FetchLoopback({props});
   }
@@ -15633,11 +15633,11 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   async getFetcher(): Promise<Fetcher> {
-    let snapshot = await this.impl.fetchPolicy();
-    // After the await, so a session that ended while the policy was read gets no fetcher.
+    let {restrictedWebFetchHosts} = await readAdminConfig(this.impl.env);
+    // After the await, so a session that ended while the hosts were read gets no fetcher.
     await this.requireLive();
-    return this.impl.makeFetchLoopback(this.caller,
-        {executionId: this.executionId, agentDriven: false, snapshot});
+    return this.impl.makeFetchLoopback(this.caller, {executionId: this.executionId,
+        agentDriven: false, trustedHosts: restrictedWebFetchHosts});
   }
 
   // The gatekeeper released its last stub of this queue.

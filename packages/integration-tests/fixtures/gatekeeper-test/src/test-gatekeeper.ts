@@ -753,14 +753,13 @@ export interface TestSession {
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
   /**
-   * Follows the `getFetcher()` contract as a gatekeeper hosting code would: audits the call, takes
-   * a new Fetcher, installs it in this binding's storage in place of the last one, and fetches
-   * `url` through it, standing in for the hosted code.
+   * Audits the call, takes a new Fetcher, installs it in this binding's storage in place of the
+   * last one, and fetches `url` through it, standing in for code the gatekeeper hosts.
    */
   fetchUrl(url: string): Promise<FetchResult>;
   /**
    * Fetches `url` through the Fetcher fetchUrl() installed last, taking no new one: the hosted
-   * code's own traffic between calls, which carries no new data from the workspace.
+   * code's own traffic between calls.
    */
   fetchInstalled(url: string): Promise<FetchResult>;
 }
@@ -881,8 +880,6 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       title: "Ran the test gatekeeper's fetch",
       description: `Fetched \`${url}\` through the caller's fetch policy.`,
     });
-    // Each await below is a point where an overlapping call could interleave: a real gatekeeper
-    // serializes taking, installing and delivering per environment. These tests call one at a time.
     const fetcher = await this.approvalQueue.getFetcher();
     this.ctx.storage.kv.put(INSTALLED_FETCHER, fetcher);
     return fetchThrough(fetcher, url);

@@ -20,7 +20,7 @@ in `packages/workshop-shared/src/gatekeeper.ts`.
 | The `webFetch` tool | `OverseerImpl.getWebFetchEnv(chatId)` | `{from: "agent", chatId}`, no execution | Asks the workspace |
 | `executeCode` | `globalOutbound` in `executeCodeMode()` | `{from: "agent", chatId}` and the call's `executionId` | Asks the workspace |
 | A gadget's server code | `globalOutbound` in `loadGadgetWorker()` | `{from: "gadget", chatId, gadgetId}` | Asks the workspace |
-| Code a gatekeeper hosts | `ApprovalQueue.getFetcher()` | The session's caller and execution | Snapshot |
+| Code a gatekeeper hosts | `ApprovalQueue.getFetcher()` | The session's caller and execution | Asks the workspace, except about trusted hosts |
 
 All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetch:
 
@@ -47,7 +47,8 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
   workspace is restricted (below), none of the caller's headers are forwarded: the request carries
   only the fixed `user-agent` and the `accept` value `webFetch` sends (`WEB_FETCH_ACCEPT`). A
   header's value can carry the data the policy is holding back, and a user's approval names a URL,
-  not what travels with it.
+  not what travels with it. A gatekeeper's request to a trusted host keeps the caller's headers,
+  restricted or not (see below).
 - **User-agent.** Always `Cloudflare-OS/1.0`.
 - **Content signals.** For an agent-driven request, the response is refused if it sets
   `Content-Signal: ai-input=no`. Agent-driven means the `webFetch` tool's requests and `fetch()`
@@ -87,56 +88,60 @@ type FetchPolicy = {
   the trusted hosts refuse. Only an agent can ask (see below).
 
 `fetchPolicyRefusal(policy, href)` in `fetch-loopback.ts` turns a policy into a refusal message, or
-none. The workspace and a snapshot both call it, so they refuse with the same words. The host,
-query-string and `/cdn-cgi/` checks themselves are `validateWebFetchUrl()`'s, given the host list.
+none. The host, query-string and `/cdn-cgi/` checks themselves are `validateWebFetchUrl()`'s,
+given the host list.
 
 To change the policy, change `fetchPolicy()`, `fetchPolicyRefusal()` and, for a new URL rule,
-`validateWebFetchUrl()`. Callers only ever see a `Fetcher`, so none of them change. A field added
-to `FetchPolicy` travels in a snapshot's props, so it must stay serializable.
+`validateWebFetchUrl()`. Callers only ever see a `Fetcher`, so none of them change.
 
-## Two modes
+## Deciding each request
 
-### Asking the workspace about each request
+### Asking the workspace
 
-With no snapshot, `FetchLoopback` calls `OverseerImpl.authorizeFetch(caller, executionId, method,
-url)` on the workspace's Durable Object for every request. It:
+`FetchLoopback` calls `OverseerImpl.authorizeFetch(caller, executionId, method,
+url)` on the workspace's Durable Object for every request, except a gatekeeper's request to a
+trusted host (below). It:
 
 1. reads the policy with `fetchPolicy()`;
 2. refuses an agent caller whose `executionId` is no longer live or whose turn the user stopped, as
-   that execution's gatekeeper sessions are refused. This check comes after the policy read, so it
-   sees the state after that await;
+   that execution's gatekeeper sessions are refused, whichever fetcher the request came through.
+   This check comes after the policy read, so it sees the state after that await;
 3. applies `fetchPolicyRefusal()`, and on a refusal either refuses or, for an agent where approvals
    are on, takes the approval path (below);
 4. records the allowed request in the action log, and answers whether the workspace is restricted
    (so the request carries no caller headers) and whether an approval is what allowed it.
 
-The kernel's own sandboxes use this mode because a policy captured when the sandbox was made would
-be wrong exactly when it matters. Code in one `executeCode` call can read restricted data through a
-binding and call `fetch()` on the next line, and a gadget's worker is cached across calls, some of
-which read restricted data. The `webFetch` tool uses it too, since it is one more request in the
-agent's turn.
+Because the workspace decides each request when it is made, no fetcher can hold a policy that has
+gone stale. Code in one `executeCode` call can read restricted data through a binding and call
+`fetch()` on the next line, and a gadget's worker is cached across calls, some of which read
+restricted data; each request still meets the policy as it stands.
 
-### A snapshot, for gatekeepers
+### Trusted hosts, for gatekeepers
 
-`ApprovalQueueImpl.getFetcher()` reads `fetchPolicy()` and mints a `FetchLoopback` that carries it
-as `snapshot`, with the queue's caller and execution. `snapshotAuthorizer()` decides each request
-from the snapshot alone, with no round trip, so a long-running container keeps working at the cost
-of nothing per request. A URL the snapshot refuses goes to the workspace only when the snapshot
-allows approvals and the caller is an agent; `authorizeFetch()` then decides it as above.
-Otherwise it is refused locally.
+A container's package manager can send hundreds of requests to a registry for one install, so a
+round trip to the workspace for each would cost meaningful latency, and a record of each would
+fill the action log with requests nobody needs to audit. The admin's trusted hosts are the hosts
+for that: package registries and the like, which an admin has judged cleared for the workspace's
+data. So `ApprovalQueueImpl.getFetcher()` reads `AdminConfig.restrictedWebFetchHosts` and mints a
+`FetchLoopback` that carries them as `trustedHosts`, with the queue's caller and execution.
+`trustedHostAuthorizer()` allows a request to one of them itself, with no round trip and no
+record, and sends any other request to the workspace as above. A URL on a trusted host that breaks
+a rule a restricted workspace sets for trusted hosts, such as one with a query string, is not
+treated as trusted: it goes to the workspace too.
+
+A trusted host is allowed whether or not the workspace is restricted, so the workspace's state
+does not matter to this decision, and the Fetcher never needs replacing as the workspace changes.
+For the same reason the request keeps the caller's headers: everyone who sees it is cleared for
+the workspace's data. What the Fetcher holds can go stale only when an admin removes a trusted
+host, which reaches a Fetcher only when the gatekeeper takes a new one.
 
 `getFetcher()` throws once the session has ended, as `requireLive()` does, and a hook firing's
-queue also re-checks that its hook is still enabled. A Fetcher it returned keeps applying its
-snapshot after the session ends; only a request it sends on to the workspace is refused once the
-agent's execution has ended.
-
-A snapshot never expires. A policy becomes too permissive only when the workspace observes
-restricted data, and that data can reach what a Fetcher filters only through a call to the
-gatekeeper. So the gatekeeper takes a new Fetcher before new data from the workspace reaches the
-code it hosts, and installs it in place of the old one. A long-running container that has received
-nothing new needs no update. An admin's change to the trusted hosts likewise reaches a gatekeeper's
-hosted code at the gatekeeper's next call. The full contract, including serializing overlapping
-calls and keeping each environment to one workspace, is in the `write-gatekeeper` skill.
+queue also re-checks that its hook is still enabled. A Fetcher it returned keeps working after the
+session ends, but the workspace refuses the requests it decides once an agent's execution has
+ended, so a gatekeeper takes a new Fetcher for each execution it hosts code for. Requests to
+trusted hosts are unaffected. Each environment a Fetcher filters must still serve one workspace, as the `write-gatekeeper`
+skill requires: a Fetcher asks the workspace it was minted for, so another workspace's data must
+not go out through it.
 
 ## Redirects
 
@@ -214,10 +219,9 @@ Not recorded:
 
 - requests the policy refuses, including those that ask for approval;
 - the response's status, content type or length;
-- requests a gatekeeper's snapshot allows. The workspace never sees them. The gatekeeper's own
+- a gatekeeper's requests to trusted hosts. The workspace never sees them. The gatekeeper's own
   `authorizeObservation()` for the call that ran the code (the command, for a container) is the
-  record. A request the snapshot refuses that the workspace then allows, by an approval, is
-  recorded.
+  record of that call.
 
 ## Known limitations
 
@@ -229,13 +233,15 @@ Not recorded:
   a gatekeeper.
 - **No approvals without a chat turn.** A gadget, a hook or a user's session cannot ask the user
   to approve a URL.
-- **A gatekeeper's Fetcher is only as current as the gatekeeper keeps it.** The kernel cannot
-  check that a gatekeeper took a new one before delivering new data.
+- **Removing a trusted host reaches a gatekeeper's Fetcher only when the gatekeeper takes a new
+  one.** Until then, code it hosts can still reach that host.
+- **No trusted hosts by default.** Until an admin lists some, every request a container sends asks
+  the workspace and is recorded, a package manager's included.
 
 ## Code map
 
 - `packages/workshop-backend/src/fetch-loopback.ts`: `FetchLoopback`, `sendFetch()`,
-  `snapshotAuthorizer()`, `fetchPolicyRefusal()`, `FetchPolicy`.
+  `trustedHostAuthorizer()`, `fetchPolicyRefusal()`, `FetchPolicy`.
 - `packages/workshop-backend/src/overseer.ts`: `fetchPolicy()`, `authorizeFetch()`,
   `makeFetchLoopback()`, `getWebFetchEnv()`, `ApprovalQueueImpl.getFetcher()`.
 - `packages/workshop-backend/src/web-fetch.ts`: `validateWebFetchUrl()`,

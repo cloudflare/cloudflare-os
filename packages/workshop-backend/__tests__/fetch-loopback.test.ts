@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  sendFetch, snapshotAuthorizer, type FetchAuthorization, type FetchPolicy,
-} from "../src/fetch-loopback.js";
-import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
+import { sendFetch, trustedHostAuthorizer, type FetchAuthorization } from "../src/fetch-loopback.js";
 
 const ALLOW: FetchAuthorization = { allowed: true, restricted: false, approved: false };
 
@@ -37,12 +34,12 @@ describe("FetchLoopback's sendFetch", () => {
     return { response, asked };
   }
 
-  // Sends `request` decided by `snapshot` for `caller`, with `decision` as the workspace's answer
-  // to any URL the snapshot refers to it. A gatekeeper's fetcher, it is not agent-driven.
-  async function sendBySnapshot(request: Request, snapshot: FetchPolicy, caller: GatekeeperCaller,
-                                decision: FetchAuthorization = ALLOW) {
+  // Sends `request` through a gatekeeper's fetcher, which trusts `trustedHosts`, with `decision` as
+  // the workspace's answer to any other URL. A gatekeeper's fetcher is not agent-driven.
+  async function sendTrusting(request: Request, trustedHosts: string[],
+                              decision: FetchAuthorization = ALLOW) {
     const asked: string[] = [];
-    const response = await sendFetch(request, snapshotAuthorizer(snapshot, caller, async href => {
+    const response = await sendFetch(request, trustedHostAuthorizer(trustedHosts, async href => {
       asked.push(href);
       return decision;
     }), { agentDriven: false });
@@ -205,65 +202,44 @@ describe("FetchLoopback's sendFetch", () => {
     expect(await response.text()).toBe("the page");
   });
 
-  describe("with a snapshot", () => {
-    const GATEKEEPER_USER: GatekeeperCaller = { from: "user" };
-    const AGENT: GatekeeperCaller = { from: "agent", chatId: 1 };
-    const RESTRICTED: FetchPolicy = { allowedHosts: ["docs.example.com"], approvals: true };
+  describe("with trusted hosts", () => {
+    const TRUSTED = ["docs.example.com"];
 
-    it("allows what it permits without asking the workspace", async () => {
-      routes["https://example.com/?q=1"] = () => new Response("open");
+    it("sends a trusted host's request without asking the workspace, with the caller's headers", async () => {
       routes["https://docs.example.com/page"] = () => new Response("trusted");
-      for (const [url, snapshot] of [
-        ["https://example.com/?q=1", { approvals: false }],
-        ["https://docs.example.com/page", RESTRICTED],
-      ] as const) {
-        const { response, asked } = await sendBySnapshot(new Request(url), snapshot, AGENT);
-        expect(response.status).toBe(200);
-        expect(asked).toEqual([]);
-      }
-      expect(sent.map(request => request.url))
-          .toEqual(["https://example.com/?q=1", "https://docs.example.com/page"]);
-    });
+      const { response, asked } = await sendTrusting(new Request("https://docs.example.com/page", {
+        headers: { "accept": "application/vnd.npm.install-v1+json", "if-none-match": "\"e\"" },
+      }), TRUSTED);
 
-    it("forwards none of the caller's headers once restricted", async () => {
-      routes["https://docs.example.com/"] = () => new Response("ok");
-      await sendBySnapshot(new Request("https://docs.example.com/", {
-        headers: { "accept": "application/secret", "accept-language": "secret" },
-      }), RESTRICTED, GATEKEEPER_USER);
+      expect(await response.text()).toBe("trusted");
+      expect(asked).toEqual([]);
       expect(Object.fromEntries(sent[0].headers)).toEqual({
-        "accept": expect.stringMatching(/^text\/markdown,/),
+        "accept": "application/vnd.npm.install-v1+json", "if-none-match": "\"e\"",
         "user-agent": "Cloudflare-OS/1.0",
       });
     });
 
-    it("refuses what it does not permit without asking the workspace", async () => {
-      for (const [snapshot, caller, message] of [
-        [RESTRICTED, GATEKEEPER_USER, /may only fetch from docs\.example\.com/],
-        [{ ...RESTRICTED, approvals: false }, AGENT, /may only fetch from docs\.example\.com/],
-        [{ allowedHosts: [], approvals: false }, AGENT, /prohibited from fetching/],
-      ] as const) {
-        const { response, asked } =
-            await sendBySnapshot(new Request("https://other.example/"), snapshot, caller);
-        await expectRefusal(response, 403, "denied", message);
-        expect(asked).toEqual([]);
-      }
-      const { response } = await sendBySnapshot(
-          new Request("https://docs.example.com/?q=secret"), RESTRICTED, GATEKEEPER_USER);
-      await expectRefusal(response, 403, "denied", /query string/);
-      expect(sent).toEqual([]);
-    });
+    it("asks the workspace about any other request, and sends it as the workspace says", async () => {
+      routes["https://other.example/"] = () => new Response("other");
+      let { response, asked } = await sendTrusting(new Request("https://other.example/"), TRUSTED,
+          { allowed: true, restricted: true, approved: false });
+      expect(await response.text()).toBe("other");
+      expect(asked).toEqual(["https://other.example/"]);
 
-    it("asks the workspace about what it refuses where an agent may ask the user", async () => {
-      let { response, asked } = await sendBySnapshot(new Request("https://other.example/"),
-          RESTRICTED, AGENT, { allowed: false, message: "Ask first.", approvalRequested: true });
+      ({ response, asked } = await sendTrusting(new Request("https://other.example/"), [],
+          { allowed: false, message: "Ask first.", approvalRequested: true }));
       await expectRefusal(response, 403, "approval-requested", /^Ask first\.$/);
       expect(asked).toEqual(["https://other.example/"]);
+    });
 
-      routes["https://other.example/"] = () => new Response("approved");
-      ({ response, asked } = await sendBySnapshot(new Request("https://other.example/"),
-          RESTRICTED, AGENT, { allowed: true, restricted: true, approved: true }));
-      expect(await response.text()).toBe("approved");
-      expect(asked).toEqual(["https://other.example/"]);
+    it("asks the workspace about a trusted host's URL with a query string or a /cdn-cgi/ path", async () => {
+      for (const url of ["https://docs.example.com/?q=secret", "https://docs.example.com/cdn-cgi/image/x"]) {
+        const { response, asked } = await sendTrusting(new Request(url), TRUSTED,
+            { allowed: false, message: "Not that URL." });
+        await expectRefusal(response, 403, "denied", /^Not that URL\.$/);
+        expect(asked).toEqual([url]);
+      }
+      expect(sent).toEqual([]);
     });
   });
 });

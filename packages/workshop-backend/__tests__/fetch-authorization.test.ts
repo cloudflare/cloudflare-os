@@ -99,28 +99,25 @@ describe("ApprovalQueueImpl.getFetcher", () => {
         7, { startSession: (queue: unknown) => queue } as never, caller, executionId);
   }
 
-  it("mints a fetcher for the queue's caller with a snapshot of the policy as it stands", async () => {
+  it("mints a fetcher for the queue's caller that trusts the admin's trusted hosts", async () => {
     await inOverseer({ restrictedWebFetchHosts: ["docs.example.com"] }, false, async impl => {
       let minted = vi.spyOn(impl, "makeFetchLoopback");
       let queue = await openQueue(impl, AGENT, "exec");
       impl.isLiveExecution = () => true;
       impl.isStoppedExecution = () => false;
-      await queue.getFetcher();
-      impl.storage.containsRestrictedData.put(true);
       let fetcher = await queue.getFetcher();
       expect(minted.mock.calls).toEqual([
-        [AGENT, { executionId: "exec", agentDriven: false, snapshot: { approvals: false } }],
-        [AGENT, { executionId: "exec", agentDriven: false,
-                  snapshot: { allowedHosts: ["docs.example.com"], approvals: false } }],
+        [AGENT, { executionId: "exec", agentDriven: false, trustedHosts: ["docs.example.com"] }],
       ]);
 
-      // The fetcher refuses by its snapshot, without asking the workspace.
+      // The workspace decides another host's request by its policy as it stands now.
+      impl.storage.containsRestrictedData.put(true);
       let asked = vi.spyOn(impl, "authorizeFetch");
       let response = await fetcher.fetch("https://other.example/");
       expect(response.status).toBe(403);
       expect(response.headers.get("cloudflare-os-fetch-refused")).toBe("denied");
       expect(await response.text()).toMatch(/may only fetch from docs\.example\.com/);
-      expect(asked).not.toHaveBeenCalled();
+      expect(asked).toHaveBeenCalledWith(AGENT, "exec", "GET", "https://other.example/");
     });
   });
 
