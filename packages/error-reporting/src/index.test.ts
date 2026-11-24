@@ -120,6 +120,7 @@ describe("normalizeFrontendErrorReport", () => {
     ["a javascript URL", "javascript:alert(1)"],
     ["a local file path", "file:///etc/passwd"],
     ["a blob URL, whose origin and path would double up", "blob:https://workshop.example/uuid"],
+    ["a WebSocket URL, which has an origin but is not a page", "wss://workshop.example/api"],
     ["a string that is not a URL at all", "p".repeat(300)],
   ])("omits the page location for %s", (_case, pageLocation) => {
     // Reconstruction is only meaningful for http(s): every one of these either serializes an
