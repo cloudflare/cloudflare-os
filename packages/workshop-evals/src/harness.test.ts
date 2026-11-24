@@ -41,6 +41,7 @@ const fakes = vi.hoisted(() => {
     },
     openGatekeeperApp: async () => { throw new Error("openGatekeeperApp is not used by this test"); },
     openGadget: async () => { throw new Error("openGadget is not used by this test"); },
+    readBlobText: async () => { throw new Error("readBlobText is not used by this test"); },
     acceptChanges: vi.fn(async () => {
       await new Promise(resolve => setTimeout(resolve, phaseDelayMs));
     }),

@@ -37,6 +37,17 @@ choose between live and pinned references; both links and images use `worktree:/
 Container outputs must have returned successfully through a mounted worktree before the agent
 references them. Files outside mounts and ignored files stay in the container.
 
+An `<inline-html>` view's code can also read a data file: `await embeds.json("worktree://OUTPUTS/spending.json")`
+or `embeds.text(...)` returns the whole file as it was when the answer was written. A view reads
+any file its reply pinned in the message's `embeds`, and no other. The host pins a file when the
+reply names it: a prose link, an `<img src>`, or a complete `worktree://` URL a view's raw text
+quotes (in `"`, `'` or a backtick, with no `${`; `quotedFileUrls` in `inline-html-blocks.ts` is
+that kernel-side rule). The agent writes the file from `executeCode` in one response and draws
+the view in the next: the answer's pins are final before its own tool calls run, so a view in the
+same response as the write reads the file as it was before. `writeBytes` suits a data file the
+agent rewrites: it stores one blob and records only its OID, where `writeFile` keeps the text in
+the chat's change rows until the changes are accepted.
+
 `Overseer.uploadBlob(bytes)` durably stores a raw Git blob and returns its OID; the composer
 sends `{stream, byteLength}` instead, which the backend stores as it arrives and checks
 against the declared length, so neither end holds the whole file. Uploading
