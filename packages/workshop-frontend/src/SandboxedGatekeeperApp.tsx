@@ -451,15 +451,20 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
   const connectedRef = useRef(false)
   const invalidatedRef = useRef(false)
   const [overlay, setOverlay] = useState<OverlayState>(null)
+  // Trusted prompts share one slot so their modal focus traps cannot overlap.
+  const activePromptRef = useRef<'download' | 'picker' | null>(null)
   const [downloadDecision, setDownloadDecision] = useState<((accepted: boolean) => void) | null>(null)
   const downloadDecisionRef = useRef<((accepted: boolean) => void) | null>(null)
   const confirmDownload = useCallback(() => new Promise<boolean>((resolve) => {
+    if (activePromptRef.current) throw new Error('Another gatekeeper prompt is already open.')
+    activePromptRef.current = 'download'
     downloadDecisionRef.current = resolve
     setDownloadDecision(() => resolve)
   }), [])
   const finishDownload = useCallback((accepted: boolean) => {
     downloadDecisionRef.current?.(accepted)
     downloadDecisionRef.current = null
+    if (activePromptRef.current === 'download') activePromptRef.current = null
     setDownloadDecision(null)
   }, [])
   const cancelDownload = useCallback(() => finishDownload(false), [finishDownload])
@@ -550,6 +555,8 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
     if (openPickerRef.current) {
       throw new Error('A person picker is already open.')
     }
+    if (activePromptRef.current) throw new Error('Another gatekeeper prompt is already open.')
+    activePromptRef.current = 'picker'
     // Promise.withResolvers is not in this package's ES2023 TypeScript lib.
     let resolve!: () => void
     const promise = new Promise<void>((resolver) => {
@@ -565,6 +572,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
   const finishUserPicker = useCallback((open: UserPicker) => {
     if (openPickerRef.current !== open) return
     openPickerRef.current = null
+    if (activePromptRef.current === 'picker') activePromptRef.current = null
     setUserPicker(null)
     open.receiver[Symbol.dispose]()
     for (const delivery of open.deliveries) delivery[Symbol.dispose]()

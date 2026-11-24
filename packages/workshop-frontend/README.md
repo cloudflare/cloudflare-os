@@ -51,8 +51,10 @@ an authenticated setup file. Use an absolute URL on the Workshop origin under th
 `/gatekeeper/<vendor>/` route, without a query string or fragment. The host asks the user to confirm
 in a Workshop dialog before fetching. The response must be a successful `Content-Disposition:
 attachment` response; redirects are rejected. Only one download may be pending per management app,
-including its confirmation and body read. Closing the app cancels it. The file contents stay in the
-host and are saved to the user's device, rather than returned to the sandboxed app.
+including its confirmation and body read. Closing the app cancels the download. Download confirmation
+and person selection share one prompt slot; an attempt to open either while the other is visible is
+rejected. The file contents stay in the host and are saved to the user's device, rather than returned
+to the sandboxed app.
 During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` origin is also
 accepted and rewritten through the frontend's authenticated `/gatekeeper/` proxy. That proxy's
 error logs omit attachment URLs and upstream error details so one-use tickets stay private.
