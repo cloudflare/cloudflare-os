@@ -15,6 +15,9 @@ import type { AuditSettings } from './auditSettings'
 
 type AdminAuditPanelProps = {
   admin: RpcStub<AdminApi>
+  /** The signed-in admin, by canonical user id, once confirmed: until then the log offers no
+   * approval, since an admin may not approve their own request. */
+  userId: string | undefined
   /** What the server last reported. */
   settings: AuditSettings
   /**
@@ -179,7 +182,7 @@ const accessRank = (level: AdminWorkspaceAccess) => ADMIN_WORKSPACE_ACCESS_LEVEL
  * itself, filtered and a page at a time, and the settings that bound admin access to workspaces and
  * users' accounts, and the log's retention.
  */
-export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, onFilterChange }: AdminAuditPanelProps) => {
+export const AdminAuditPanel = ({ admin, userId, settings, onSettingsChanged, filter, onFilterChange }: AdminAuditPanelProps) => {
   const toasts = useKumoToastManager()
   // Each load is one value of this; a new one supersedes those before it.
   const [loads, setLoads] = useState(0)
@@ -266,7 +269,8 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
 
   const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
   // Content is exposed only by a call into a workspace: a Kind or an Action that no such call has
-  // would leave nothing listed, so it goes, and the other filters stay.
+  // would leave nothing listed, so it goes, as does Pending requests only, whose records expose
+  // nothing, and the other filters stay.
   const showContentReads = () => {
     const { kind, method, ...kept } = filter
     const methods: readonly string[] = ADMIN_WORKSPACE_METHODS
@@ -274,6 +278,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
       ...kept,
       ...(kind === 'workspace' && { kind }),
       ...(method !== undefined && methods.includes(method) && { method }),
+      pending: undefined,
       exposed: 'content',
     })
   }
@@ -321,8 +326,12 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
           <h3 id={logHeading} className="text-lg font-semibold text-kumo-strong mb-4">Activity log</h3>
           <AuditLog
             admin={admin}
+            userId={userId}
             filter={filter}
             onFilterChange={onFilterChange}
+            onDecided={reload}
+            // Below Content a request and an approval are refused.
+            contentLevel={access.effective === 'content'}
             adminSuggestions={stats?.topAdmins.map(({ admin: name }) => name) ?? []}
             reloads={loads}
             restarts={changes}

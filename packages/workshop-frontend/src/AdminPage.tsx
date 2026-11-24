@@ -41,7 +41,7 @@ const BANNER_SWATCH: Record<BannerColor, string> = {
 }
 
 export default function AdminPage() {
-  const { authenticatedApi, isAdmin } = useAuthenticatedApi()
+  const { authenticatedApi, isAdmin, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   useDocumentTitle('Admin')
 
@@ -540,6 +540,7 @@ export default function AdminPage() {
       {activeTab === 'audit' && auditSettings !== null && (
         <AdminAuditPanel
           admin={admin.api}
+          userId={isCurrentUserConfirmed ? currentUser?.id : undefined}
           settings={auditSettings}
           onSettingsChanged={() => reloadAuditSettings(() => admin.api.getSettings())}
           filter={auditFilter}

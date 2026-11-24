@@ -74,6 +74,11 @@ describe('auditFilterOf', () => {
       .toEqual({ method: 'inspectUser', kind: 'user' })
   })
 
+  it('keeps pending only when the URL says true', () => {
+    expect(auditFilterOf({ pending: true })).toEqual({ pending: true })
+    for (const pending of [false, 'true', 1, 'yes']) expect(auditFilterOf({ pending })).toEqual({})
+  })
+
   it('leaves out a kind that is not one, and a parameter that is no filter', () => {
     expect(auditFilterOf({ kind: 'content' })).toEqual({})
     expect(auditFilterOf({ kind: 1 })).toEqual({})

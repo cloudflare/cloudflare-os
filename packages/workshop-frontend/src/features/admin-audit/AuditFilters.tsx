@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Button, Combobox, Select } from '@cloudflare/kumo'
+import { Button, Checkbox, Combobox, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import type { AdminAccessExposure, AdminAuditKind } from '@gadgets/workshop-shared/api'
 import {
@@ -35,16 +35,22 @@ const EXPOSURE_CHOICE_NAMES: Record<ExposureChoice, string> = {
  * `targetSuggestions` offered, and apply on Enter or once a suggestion is picked. The action is
  * searched by typing, and the kind and what a call exposed chosen; all three apply at once. Only a
  * call into a workspace can expose content, and a call into a user's account always exposed
- * metadata, so a choice of what was exposed lists access records alone. The workspace filter is
- * set from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
- * it.
+ * metadata, so a choice of what was exposed lists access records alone. "Pending requests only"
+ * lists the requests to read a workspace's content that an admin can still approve or deny, and is
+ * offered when `offerPending` says requests can be made, or while it is set. The
+ * workspace filter is set from a record's details in the log, and shows as a chip named
+ * `workspaceLabel` that removes it.
  */
-export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, workspaceLabel, onFilterChange }: {
+export const AuditFilters = ({
+  filter, adminSuggestions, targetSuggestions, workspaceLabel, offerPending, onFilterChange,
+}: {
   filter: AuditFilter
   adminSuggestions: string[]
   targetSuggestions: string[]
   /** What to call the filtered workspace: its title, or its id when no title is known. */
   workspaceLabel: string | undefined
+  /** Whether content access can be requested and approved: the level in force is Content. */
+  offerPending: boolean
   onFilterChange: (filter: AuditFilter) => void
 }) => {
   // Kumo's Autocomplete hands out no ref to its input, so it is found through this wrapper: the
@@ -54,12 +60,13 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
   // How many times every filter was cleared: text typed in the admin and owner fields and not
   // applied is cleared with them.
   const [clears, setClears] = useState(0)
+  const showPending = offerPending || filter.pending === true
   const focusAdminField = () =>
     adminField.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus()
 
   return (
-    <div className="space-y-3">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" role="search" aria-label="Filter admin activity">
+    <div className="space-y-3" role="search" aria-label="Filter admin activity">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div ref={adminField} data-filter-field="admin">
           <TypedFilterField
             label="Admin"
@@ -136,8 +143,18 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
           />
         </div>
       </div>
-      {isFiltered(filter) && (
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Below the fields, which keep their width, with the chips that remove filters. */}
+      {(showPending || isFiltered(filter)) && (
+        <div className="flex min-h-8 flex-wrap items-center gap-x-4 gap-y-2">
+          {showPending && (
+            <div data-filter-field="pending">
+              <Checkbox
+                label="Pending requests only"
+                checked={filter.pending === true}
+                onCheckedChange={(checked) => onFilterChange({ ...filter, pending: checked ? true : undefined })}
+              />
+            </div>
+          )}
           {filter.workspace !== undefined && (
             <Button
               variant="secondary"
@@ -152,18 +169,20 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
               <span className="max-w-64 truncate">Workspace: {workspaceLabel ?? filter.workspace}</span>
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={X}
-            onClick={() => {
-              setClears((n) => n + 1)
-              onFilterChange({})
-              focusAdminField()
-            }}
-          >
-            Clear filters
-          </Button>
+          {isFiltered(filter) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={X}
+              onClick={() => {
+                setClears((n) => n + 1)
+                onFilterChange({})
+                focusAdminField()
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
         </div>
       )}
     </div>

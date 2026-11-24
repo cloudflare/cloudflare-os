@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Badge, Button, Table } from '@cloudflare/kumo'
 import { CaretRight } from '@phosphor-icons/react'
 import type {
@@ -169,26 +169,31 @@ const WriteDetails = ({ record, onFilterBy }: {
 )
 
 // One step of a request to read a workspace's content without its owner: the request, its
-// denial, its approval, or the early end of the grant it gave.
-const GrantDetails = ({ record, onFilterBy }: {
+// denial, its approval, or the early end of the grant it gave. A request still pending is followed
+// by `decision`.
+const GrantDetails = ({ record, decision, onFilterBy }: {
   record: AdminGrantRecord
+  decision: ReactNode
   onFilterBy: (filter: AuditFilter) => void
 }) => (
-  <dl className="space-y-2">
-    <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
-    <Detail term="Request"><span className="font-mono text-xs break-all">{record.requestId}</span></Detail>
-    <Detail term="Reason">{record.reason}</Detail>
-    {record.requestedBy !== record.admin && <Detail term="Requested by">{record.requestedBy}</Detail>}
-    {/* The id the reads made under the grant carry (see "Under grant" on an access record). */}
-    {record.grantId && (
-      <Detail term="Grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
-    )}
-    {record.replacedGrantId && (
-      <Detail term="Ended grant"><span className="font-mono text-xs break-all">{record.replacedGrantId}</span></Detail>
-    )}
-    {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}
-    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
-  </dl>
+  <>
+    <dl className="space-y-2">
+      <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+      <Detail term="Request"><span className="font-mono text-xs break-all">{record.requestId}</span></Detail>
+      <Detail term="Reason">{record.reason}</Detail>
+      {record.requestedBy !== record.admin && <Detail term="Requested by">{record.requestedBy}</Detail>}
+      {/* The id the reads made under the grant carry (see "Under grant" on an access record). */}
+      {record.grantId && (
+        <Detail term="Grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+      )}
+      {record.replacedGrantId && (
+        <Detail term="Ended grant"><span className="font-mono text-xs break-all">{record.replacedGrantId}</span></Detail>
+      )}
+      {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}
+      <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+    </dl>
+    {decision}
+  </>
 )
 
 /**
@@ -202,14 +207,17 @@ const GrantDetails = ({ record, onFilterBy }: {
  * exposed, when the record says, and an access record's by its refusal. An access, a write or a
  * grant record's target user is the user the call reached: its workspace's owner, or the user
  * whose account a call was made into. The admin's name and the target user, and in a workspace,
- * write or grant record's details its workspace, filter the log by `onFilterBy`. Names are never
+ * write or grant record's details its workspace, filter the log by `onFilterBy`. A request still
+ * pending is marked so beside its kind, and its details end with `decision`. Names are never
  * cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a table's
  * even rows: Kumo counts the details row below each one, hidden or not, so every summary row is
  * an odd row to it and would never be striped.
  */
-export const AuditLogRow = ({ record, shaded, onFilterBy }: {
+export const AuditLogRow = ({ record, shaded, decision, onFilterBy }: {
   record: AdminAuditRecord
   shaded: boolean
+  /** For a request still pending, the way to approve or deny it. */
+  decision?: ReactNode
   /** Adds a filter to those set. */
   onFilterBy: (filter: AuditFilter) => void
 }) => {
@@ -217,11 +225,19 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   const detailsId = useId()
   const time = formatFullTimestamp(record.at)
   const target = targetUserOf(record)
+  const pending = decision !== undefined
+  // A decision's buttons go once the log loads again without the request pending, and focus they
+  // held goes with them: it comes back to the row's toggle, which stays.
+  const toggle = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!pending && expanded && document.activeElement === document.body) toggle.current?.focus()
+  }, [pending, expanded])
   return (
     <>
       <Table.Row className={shaded ? 'bg-kumo-elevated' : undefined}>
         <Table.Cell className="pr-0">
           <Button
+            ref={toggle}
             variant="ghost"
             size="sm"
             shape="square"
@@ -253,6 +269,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
             {record.kind === 'workspace' && <ExposureBadge exposed={record.exposed} />}
+            {pending && <Badge variant="info">Pending</Badge>}
             {(record.kind === 'workspace' || record.kind === 'user') && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
@@ -285,7 +302,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
             : record.kind === 'write'
               ? <WriteDetails record={record} onFilterBy={onFilterBy} />
               : record.kind === 'grant'
-                ? <GrantDetails record={record} onFilterBy={onFilterBy} />
+                ? <GrantDetails record={record} decision={decision} onFilterBy={onFilterBy} />
                 : (
                   <div className="space-y-4">
                     <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
