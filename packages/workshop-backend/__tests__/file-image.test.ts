@@ -570,6 +570,8 @@ describe("images read from a worktree", () => {
     ["openai", "gpt-5.2", 45_000, 3687],
     ["openai", "gpt-5.4", 45_000, 3000],
     ["openai", "gpt-4o", 45_000, 765],
+    ["google", "gemini-3.6-flash", 45_000, 1120],
+    ["google", "gemini-3.6-flash", 128_000, 1120],
   ] as const)("admits and replays four large images at the resized cost (%s/%s, %s)", (provider, model, budget, tokens) =>
     inKernel(crypto.randomUUID(), async impl => {
       const bytes = PNG.slice();

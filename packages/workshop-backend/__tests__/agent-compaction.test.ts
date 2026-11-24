@@ -288,6 +288,18 @@ describe("image context estimates", () => {
     expect(estimate(image(1, 1))).toBeLessThan(1100);
     expect(estimate({...image(1, 1), data: "malformed"})).toBeGreaterThanOrEqual(36_000);
   });
+  it.each([
+    ["gemini-3.6-flash", "google-generative-ai", 1120],
+    ["gemini-3-pro-preview", "google-generative-ai", 1120],
+    ["models/gemini-3.1-pro-preview", "google-generative-ai", 1120],
+    ["gemini-4-hydrogen", "google-generative-ai", 1120],
+    ["gemini-2.5-flash", "google-generative-ai", 36_000],
+    ["gemini-custom", "google-generative-ai", 36_000],
+    ["gemini-3.6-flash", "openai-completions", 36_000],
+  ] as const)("uses Gemini's default image cost only for the matching family/API (%s, %s)", (id, api, tokens) => {
+    const message: Message = {role: "user", content: [image(6400, 4800)], timestamp: 0};
+    expect(estimateImageTokens(message, {...testModel, id, api})).toBe(tokens);
+  });
 });
 
 describe("compaction boundary", () => {

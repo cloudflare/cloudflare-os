@@ -226,6 +226,10 @@ export type CompactionProjectionMessage = {
 export function estimateImageTokens(message: Message, model?: Model<Api>): number {
   return typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
     if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
+    const id = model?.id.split("/").at(-1) ?? "";
+    // pi leaves Gemini's media resolution unspecified, whose image budget is size-independent.
+    // https://ai.google.dev/gemini-api/docs/media-resolution#token-counts
+    if (model?.api === "google-generative-ai" && /^gemini-[34](?:[.-]|$)/.test(id)) return sum + 1120;
     // Image admission already parsed the complete header through byte ranges, including JPEG
     // metadata beyond 64 KiB. Reuse it without decoding base64 again. Other image sources keep
     // the bounded header fallback rather than allocating another multi-MiB payload copy.
@@ -240,7 +244,6 @@ export function estimateImageTokens(message: Message, model?: Model<Api>): numbe
     // pi sends OpenAI images with detail:auto. Apply its documented default sizing before
     // admission; an original-resolution estimate could otherwise reject every large read.
     // https://developers.openai.com/api/docs/guides/images-vision#model-sizing-behavior
-    const id = model?.id.split("/").at(-1) ?? "";
     const tileCost = /^gpt-4o-mini(?:-|$)/.test(id) ? [2833, 5667]
       : /^gpt-(?:4o|4\.1)(?:-\d{4}|$)/.test(id) ? [85, 170]
       : /^gpt-(?:5|5\.1)(?:-\d{4}|$)/.test(id) ? [70, 140]
