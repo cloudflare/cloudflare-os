@@ -476,6 +476,9 @@ describe("images read from a worktree", () => {
 
   it.each([
     ["claude-sonnet-4-5", 1920, 1080, "1456 x 819"],
+    ["claude-sonnet-4-20250514", 1920, 1080, "1456 x 819"],
+    ["claude-opus-4-20250514", 1920, 1080, "1456 x 819"],
+    ["claude-opus-4-7-20261001", 3840, 2160, "2576 x 1449"],
     ["claude-opus-4-7", 3840, 2160, "2576 x 1449"],
     ["claude-sonnet-4-5", 1075, 1520, "924 x 1307"],
     ["claude-opus-5-5", 1000, 1000, "1000 x 1000"],

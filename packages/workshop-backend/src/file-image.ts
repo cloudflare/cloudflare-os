@@ -40,7 +40,7 @@ export function fileImageDescription(image: ImageContent, model: Model<Api>): st
   // Claude documents its native resize rule. Other providers and routed/aliased models must
   // not inherit a guessed coordinate frame. Keep this aligned with:
   // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
-  const version = /claude[-.](?:opus|sonnet|haiku)[-.](\d+)(?:[-.](\d+))?/.exec(model.id);
+  const version = /claude[-.](?:opus|sonnet|haiku)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
   if (model.api !== "anthropic-messages" || !version) return source +
     " Provider coordinate mapping unavailable: pixels may be resized. Before coordinate-sensitive actions, crop/resize within the selected model's native vision limits and retain the scale and crop offset back to the source; prefer semantic element targeting when available.";
   const highResolution = Number(version[1]) > 4 ||
