@@ -37,9 +37,9 @@ async function scriptedTurn(impl: Impl, chatId: number, responses: AssistantMess
   {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow: 8_000_000});
   return {requests};
 }
-async function setup(impl: Impl, bytes = PNG) {
+async function setup(impl: Impl, bytes = PNG, extraFiles: [string, Uint8Array][] = []) {
   const blob = impl.gitCache.writeBlob(bytes);
-  const commitId = await impl.gitCache.writeFilesAsCommit(new Map([["image.png", blob]]), {
+  const commitId = await impl.gitCache.writeFilesAsCommit(new Map([["image.png", blob], ...extraFiles.map(([name, data]) => [name, impl.gitCache.writeBlob(data)] as const)]), {
     parents: [], author: {name: "Test", email: "test@example.com"},
     message: "image", timestamp: new Date(0),
   });
@@ -274,7 +274,42 @@ describe("images read from a worktree", () => {
     expect(calls.filter(call => call.toolName === "readFile").every(call => call.image?.rejected)).toBe(true);
   }));
 
-  it.each(["openai", "google"] as const)("recovers through the real %s provider adapter", provider => inKernel(crypto.randomUUID(), async impl => {
+  it("keeps older reads elided during recovery and admits explicit reads across later reloads", () => inKernel(crypto.randomUUID(), async impl => {
+    // Distinct immutable blobs: both ends are corrupt, but only the newest four enter replay.
+    const older = Array.from({length: 5}, (_, index) => new Uint8Array([
+      ...(index === 0 || index === 4 ? PNG.slice(0, 33) : PNG), index,
+    ]));
+    const {chatId} = await setup(impl, PNG, older.map((bytes, index) => [`old-${index}.png`, bytes]));
+    await turn(impl, chatId, older.map((_, index) => [read({filename: `old-${index}.png`})]));
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 invalid image data"}),
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Recovered with fresh pixels")),
+    ]);
+    expect(requests).toHaveLength(4);
+    const initial = results(requests[0]);
+    expect(initial[0].content).toEqual([{type: "text", text: ELIDED_FILE_IMAGE}]);
+    expect(initial.slice(1).flatMap(result => result.content.filter(part => part.type === "image"))
+      .map(part => part.data)).toEqual(older.slice(1).map(bytes => bytes.toBase64()));
+    const retry = results(requests[1]);
+    expect(retry[0].content).toEqual([{type: "text", text: ELIDED_FILE_IMAGE}]);
+    expect(retry.slice(1).every(result => result.content.some(part => part.type === "text" && part.text === REJECTED_FILE_IMAGE))).toBe(true);
+    for (const [index, expectedCount] of [[2, 1], [3, 4]]) {
+      const shown = results(requests[index]);
+      expect(shown[0].content).toEqual([{type: "text", text: ELIDED_FILE_IMAGE}]);
+      expect(shown.flatMap(result => result.content.filter(part => part.type === "image")))
+        .toEqual(Array.from({length: expectedCount}, () => ({type: "image", mimeType: "image/png", data: PNG.toBase64()})));
+    }
+  }));
+
+  it.each([
+    ["openai", "image_parse_error"], ["openai", "invalid_image_format"],
+    ["openai", "invalid_image_mode"], ["openai", "invalid_base64_image"],
+    ["openai", "unsupported_image_media_type"], ["openai", "empty_image_file"],
+    ["google", "Unable to process input image"],
+  ] as const)("recovers through the real %s provider adapter: %s", (provider, errorCode) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
     const config: AiModelConfig = {provider, model: provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture"};
@@ -295,7 +330,7 @@ describe("images read from a worktree", () => {
           ? new Response([
             {type: "response.created", response: {id: "resp_fixture", status: "in_progress", output: []}},
             {type: "response.failed", response: {id: "resp_fixture", status: "failed", output: [],
-              error: {code: "image_parse_error", message: "Could not process image"}}},
+              error: {code: errorCode, message: "Could not process image"}}},
           ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {headers: {"content-type": "text/event-stream"}})
           : Response.json({error: {code: 400, message: "Unable to process input image", status: "INVALID_ARGUMENT"}}, {status: 400});
       }});
@@ -304,7 +339,7 @@ describe("images read from a worktree", () => {
     };
     await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
     expect(body).toContain(bytes.toBase64());
-    expect(providerError).toContain(provider === "openai" ? "image_parse_error" : "Unable to process input image");
+    expect(providerError).toContain(errorCode);
     if (provider === "openai") expect(handle.lastResponse?.status).toBe(200);
     expect(requests).toHaveLength(3);
     expect(results(requests[2])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
@@ -354,6 +389,9 @@ describe("images read from a worktree", () => {
     ["400 invalid image data", 400, true],
     ["image_parse_error: Could not process image", 200, true],
     ["Error Code image_parse_error: Could not process image", 200, true],
+    ["invalid_image_mode: Could not process image", 200, true],
+    ["image_content_policy_violation: Could not process image", 200, false],
+    ["failed_to_download_image: Could not process image", 200, false],
     [JSON.stringify({error: {code: 400, message: "Unable to process input image"}}), undefined, true],
     [JSON.stringify({error: {code: 503, message: "Unable to process input image"}}), undefined, false], ["422 Unable to decode the image", 422, true],
     ["400 image limit exceeded", 400, false], ["400 invalid image dimensions", 400, false],

@@ -241,7 +241,8 @@ type AgentPassOutcome =
 type AgentProgress = {
   executionId: string;
   barrierSequence: number;
-  retriedWithoutFileImages: boolean;
+  // Freeze replay admission after decode recovery; only explicit new reads can add pixels.
+  fileImagesAfterRecovery?: Set<string>;
 };
 
 /**
@@ -1709,7 +1710,6 @@ export async function runAgent(
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),
     barrierSequence: 0,
-    retriedWithoutFileImages: false,
   };
   let retries = 0;
   while (true) {
@@ -2501,8 +2501,13 @@ async function runAgentPass(
     // The provider may not name the bad part. Conservatively omit these observations, never
     // blacklist or change files: a later explicit read can show healthy pixels again.
     hooks.rejectChatFileImages(chatId, oids);
-    if (progress.retriedWithoutFileImages) return false;
-    progress.retriedWithoutFileImages = true;
+    if (progress.fileImagesAfterRecovery) return false;
+    // Removing rejected pixels must not promote older, previously elided images into the one
+    // recovery request. Preserve the chosen window, including unsummarized compaction images.
+    progress.fileImagesAfterRecovery = new Set([
+      ...[...replayFileImages].flatMap(call => call.toolName === "readFile" && call.image ? [call.image.oid] : []),
+      ...sentFileImages,
+    ]);
     return true;
   };
   let fileImageCount = 0, fileImageBytes = 0;
@@ -2512,6 +2517,7 @@ async function runAgentPass(
     if (msg.type !== "message" || sawRevertedContent(index)) continue;
     for (const call of (msg.toolCalls ?? []).toReversed()) {
       if (call.toolName !== "readFile" || !call.image || call.image.rejected || call.error) continue;
+      if (progress.fileImagesAfterRecovery && !progress.fileImagesAfterRecovery.has(call.image.oid)) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;
       replayFileImages.add(call);
       ++fileImageCount;
@@ -3665,6 +3671,7 @@ async function runAgentPass(
               if (oid === undefined) throw new Error("Image file has no immutable blob.");
               const image = readFileImage(file.source.reader, mimeType)!;
               sentFileImages.add(oid);
+              progress.fileImagesAfterRecovery?.add(oid);
               ++stepImageCount;
               stepImageBytes += byteLength;
               ++fileImageCount;

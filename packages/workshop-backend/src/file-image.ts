@@ -26,7 +26,7 @@ const NestedImageError = z.object({error: z.object({
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
 export function isImageDecodeError(message: string, status: number | undefined): boolean {
   // Responses can fail within an HTTP 200 SSE stream; its explicit error code is authoritative.
-  if (/^(?:Error Code )?image_parse_error:/.test(message)) return true;
+  if (/^(?:Error Code )?(?:image_parse_error|invalid_image_format|invalid_image_mode|invalid_base64_image|unsupported_image_media_type|empty_image_file):/.test(message)) return true;
   try {
     const nested = NestedImageError.safeParse(JSON.parse(message));
     if (nested.success) {
