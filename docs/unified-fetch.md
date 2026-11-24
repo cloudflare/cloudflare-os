@@ -103,12 +103,15 @@ url)` on the workspace's Durable Object for every request, except a gatekeeper's
 trusted host (below). It:
 
 1. reads the policy with `fetchPolicy()`;
-2. refuses an agent caller whose `executionId` is no longer live or whose turn the user stopped, as
+2. refuses every request once the workspace is deleted (`ownerId` is cleared). A fetcher can
+   outlive its workspace, whose wiped storage would otherwise read as unrestricted and take a
+   record it must not hold;
+3. refuses an agent caller whose `executionId` is no longer live or whose turn the user stopped, as
    that execution's gatekeeper sessions are refused, whichever fetcher the request came through.
    This check comes after the policy read, so it sees the state after that await;
-3. applies `fetchPolicyRefusal()`, and on a refusal either refuses or, for an agent where approvals
+4. applies `fetchPolicyRefusal()`, and on a refusal either refuses or, for an agent where approvals
    are on, takes the approval path (below);
-4. records the allowed request in the action log, and answers whether the workspace is restricted
+5. records the allowed request in the action log, and answers whether the workspace is restricted
    (so the request carries no caller headers) and whether an approval is what allowed it.
 
 Because the workspace decides each request when it is made, no fetcher can hold a policy that has

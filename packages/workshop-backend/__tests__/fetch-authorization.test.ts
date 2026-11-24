@@ -13,6 +13,7 @@ async function inOverseer(
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     // (Bracket access reaches the private field.)
     let impl = instance["impl"] as any;
+    impl.ownerId = "owner";
     impl.env = { ...impl.env, BLUEPRINTS: { get: async () => JSON.stringify(config) } };
     impl.storage.containsRestrictedData.put(restricted);
     await fn(impl);
@@ -66,6 +67,19 @@ describe("OverseerImpl.authorizeFetch", () => {
       expect(impl.consumeCapturedDecisionRequests(1)).toEqual([expect.objectContaining({
         type: "webFetchRequest", url: "https://example.com/", state: "pending",
       })]);
+    });
+  });
+
+  it("refuses once the workspace is deleted, recording nothing", async () => {
+    // A deleted workspace's storage is wiped, so it reads as unrestricted.
+    await inOverseer({}, false, async impl => {
+      impl.ownerId = undefined;
+      let before = impl.storage.nextActionId.get();
+      for (let caller of [{ from: "hook" }, { from: "gadget", chatId: 1, gadgetId: 2 }, AGENT]) {
+        expect(await impl.authorizeFetch(caller, undefined, "GET", "https://example.com/"))
+            .toEqual({ allowed: false, message: "Workspace has been deleted." });
+      }
+      expect(impl.storage.nextActionId.get()).toBe(before);
     });
   });
 

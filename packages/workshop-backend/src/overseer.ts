@@ -6821,6 +6821,10 @@ class OverseerImpl implements AgentHooks {
     let href = validateWebFetchUrl(url).href;
     let policy = await this.fetchPolicy();
 
+    // A fetcher can outlive its workspace. A deleted one's storage reads as unrestricted, and must
+    // stay empty, so nothing is allowed or recorded.
+    if (!this.ownerId) return {allowed: false, message: "Workspace has been deleted."};
+
     // As for the execution's gatekeeper sessions (ApprovalQueueImpl), and checked after the await
     // above. Past this check an agent's turn is still running, so a card it asks for will attach to
     // a step and end the turn.
