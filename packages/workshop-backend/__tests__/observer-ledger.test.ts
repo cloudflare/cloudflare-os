@@ -1580,8 +1580,9 @@ describe("pending creation", () => {
         expect(impl.storage.actions.get(before).description.subresources).toBeUndefined();
         expect(impl.storage.nextActionId.get()).toBe(before + 1);
         expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
-        await expect(impl.authorizeWebFetch(1, "https://example.com/"))
-            .rejects.toThrow(/observed sensitive data/);
+        expect(await impl.authorizeFetch({ from: "agent", chatId: 1 }, undefined, "GET",
+            "https://example.com/"))
+            .toEqual({ allowed: false, message: expect.stringMatching(/observed sensitive data/) });
         seedGadget(impl);
         for (let role of ["build", "use"] as const) {
           expect(impl.listObserverRequirements(grantOf(role))).toEqual([]);
