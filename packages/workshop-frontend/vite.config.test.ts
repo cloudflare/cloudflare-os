@@ -102,10 +102,32 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
   const binEntry = new URL('../../scripts/bin-entry.ts', import.meta.url).href
   const teardown = new URL('../../scripts/kill-process-tree.ts', import.meta.url).href
   const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
+  // Fault only the runtime connection, leaving the real ProxyWorker, retries and logger intact.
+  // Once requested, direct its next reload event to a TCP listener that resets every connection.
+  const transportFault = `
+    const {EventEmitter} = require('node:events');
+    const {existsSync, writeFileSync} = require('node:fs');
+    const emit = EventEmitter.prototype.emit;
+    let watching = false;
+    EventEmitter.prototype.emit = function(type, event, ...args) {
+      if (!watching && type === 'reloadComplete' && event?.proxyData?.userWorkerUrl && this.proxy?.onReloadComplete) {
+        watching = true;
+        const timer = setInterval(() => {
+          if (!existsSync('break-transport')) return;
+          clearInterval(timer);
+          this.proxy.onReloadComplete({...event, proxyData: {...event.proxyData,
+            userWorkerUrl: {...event.proxyData.userWorkerUrl, port: process.env.CFOS_TEST_RESET_PORT}}});
+          writeFileSync('transport-broken', 'ready');
+        }, 20);
+        timer.unref();
+      }
+      return emit.call(this, type, event, ...args);
+    };
+  `
   const program = `
     import {createServer} from 'node:net';
     import {spawn, spawnSync} from 'node:child_process';
-    import {mkdtemp, writeFile, rm} from 'node:fs/promises';
+    import {mkdtemp, writeFile, readFile, access, rm} from 'node:fs/promises';
     import {tmpdir} from 'node:os';
     import {join} from 'node:path';
     import {createServer as createViteServer} from 'vite';
@@ -114,6 +136,13 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     import {resolveBinEntry} from ${JSON.stringify(binEntry)};
     import {killProcessTree} from ${JSON.stringify(teardown)};
     const dir = await mkdtemp(join(tmpdir(), 'gatekeeper-log-fixture-'));
+    const reset = createServer(socket => socket.destroy());
+    let resetConnections = 0;
+    reset.on('connection', () => ++resetConnections);
+    await new Promise(resolve => reset.listen(0, '127.0.0.1', resolve));
+    const faultPath = join(dir, 'transport-fault.cjs');
+    await writeFile(faultPath, ${JSON.stringify(transportFault)});
+    const diskLog = join(dir, 'wrangler.log');
     const socket = createServer();
     await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
     const port = socket.address().port;
@@ -124,9 +153,13 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
     await writeFile(join(dir, 'worker.js'), 'export default {fetch(request) { console.info("WORKER_DIAGNOSTIC_VISIBLE"); return new Response(new URL(request.url).pathname, {status: request.url.endsWith("/fail") ? 503 : 200}); }}');
     const build = spawnSync(process.execPath, ['-e', 'console.log("BUILD_SUBPROCESS_OK")', 'fixture-argument'], {cwd: dir, env: getDevServerEnv(process.env), encoding: 'utf8'});
     if (build.status !== 0 || !build.stdout.includes('BUILD_SUBPROCESS_OK')) throw Error('Preload interfered with a build subprocess');
+    const childEnv = getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)},
+      WRANGLER_LOG_PATH: diskLog, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false',
+      X_LOCAL_OBSERVABILITY: 'true', CFOS_TEST_RESET_PORT: String(reset.address().port)});
+    childEnv.NODE_OPTIONS += ' --require=' + faultPath;
     const child = spawn(process.execPath, [resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
       '--local', '--port', String(port), '--inspector-port', '0', '--show-interactive-dev-session=false'], {
-      cwd: dir, env: getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)}, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false', X_LOCAL_OBSERVABILITY: 'true'}),
+      cwd: dir, env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
@@ -157,11 +190,30 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
         throw Error('Local Explorer can still capture credential-bearing requests: ' + traces.status);
       }
       console.log('LOCAL_OBSERVABILITY_DISABLED');
+      await writeFile(join(dir, 'break-transport'), 'go');
+      const failureDeadline = Date.now() + 5000;
+      while (true) {
+        try {await access(join(dir, 'transport-broken')); break;} catch {}
+        if (Date.now() > failureDeadline) throw Error('Transport fault was not installed');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
+      const failed = await fetch(origin + path + '/transport-fail');
+      await failed.text();
+      if (failed.status !== 500 || resetConnections === 0) throw Error('Did not exercise a proxy transport error');
+      while (true) {
+        const log = await readFile(diskLog, 'utf8');
+        if (log.includes('upstream-ticket-fixture')) throw Error('Ticket persisted in the Wrangler disk log');
+        if (log.includes('Error inside ProxyWorker') && log.includes('/gatekeeper/[redacted]')) break;
+        if (Date.now() > failureDeadline) throw Error('Transport error not recorded in the disk log');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      console.log('TRANSPORT_FAILURE_AND_DISK_LOG_REDACTED');
       console.log('UPSTREAM_FIXTURE_PASSED');
     } finally {
       await vite?.close();
       if (child.exitCode === null) await killProcessTree(child.pid);
+      await new Promise(resolve => reset.close(resolve));
       await rm(dir, {recursive: true, force: true});
     }
   `
@@ -174,6 +226,8 @@ it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s
   expect(child.status).toBe(0)
   expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
   expect(output).toContain('LOCAL_OBSERVABILITY_DISABLED')
+  expect(output).toContain('TRANSPORT_FAILURE_AND_DISK_LOG_REDACTED')
+  expect(output).toContain('Error inside ProxyWorker')
   expect(output).toContain('/gatekeeper/[redacted] 200')
   expect(output).toContain('/gatekeeper/[redacted] 503')
   expect(output).toContain('/health')
