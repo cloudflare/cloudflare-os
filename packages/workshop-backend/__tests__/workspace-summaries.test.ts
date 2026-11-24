@@ -401,6 +401,37 @@ describe("background reads of an offline builder", () => {
     expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
   });
 
+  it("sends no chat state a check admitted after the workspace's deletion began", async () => {
+    const {fixture, reader, state} = await admitReader();
+    const readerId = reader.id.toString();
+    const parked = Promise.withResolvers<void>();
+    state.park = parked.promise;
+    const summaries: unknown[] = [];
+    await withImpl(fixture.workspace, async impl => {
+      const users = impl.users;
+      impl.users = new Proxy(users, {get(target, key) {
+        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+          if (member === "syncWorkspaceListing" && id.toString() === readerId) {
+            return async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
+              if (args[1].summary !== undefined) summaries.push(args[1].summary);
+              return await (user as DurableObjectStub<UserDurableObject>).syncWorkspaceListing(...args);
+            };
+          }
+          return Reflect.get(user, member);
+        }});
+        return Reflect.get(target, key);
+      }});
+      await readAndAsk(impl, "doc:1");
+      const both = publishBoth(impl);
+      await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
+      impl.beginDeletion(new Set([readerId, fixture.user.id.toString()]));
+      parked.resolve();
+      await both;
+    });
+    expect(summaries).toEqual([]);
+    expect(state.previews).not.toContain(readerId);
+  });
+
   it("clears a summary that lands after the denial queued its clear, though it was acknowledged", async () => {
     const {fixture, reader, profile, state} = await admitReader();
     const readerId = reader.id.toString();

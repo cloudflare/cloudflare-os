@@ -1781,7 +1781,9 @@ class OverseerImpl implements AgentHooks {
           sent.set("outputs", canonicalJson(listing.outputs));
         }
       }
-      if (sent.size) {
+      // Checked again after the awaits above, as a shared open's seeding does: once deletion has
+      // begun, nothing of the listing is sent, and the removal it queued (a new seq) follows.
+      if (sent.size && !this.storage.deleting.get()) {
         await boundedUserUpdate(user.syncWorkspaceListing(workspaceId, listing));
         // Unless forgotten meanwhile.
         if (this.#listingAcks.get(userId) === acks) {
@@ -1914,6 +1916,9 @@ class OverseerImpl implements AgentHooks {
           // recipient; retries need neither a source read nor a new authorization decision. A
           // deletion notice (no `meta`) carries no chat state, so it is not gated.
           if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!, readers)) return;
+          // Checked again after that await, as a shared open's seeding does: deletion begun
+          // meanwhile sends no chat state. A deletion notice still goes out.
+          if (meta && this.storage.deleting.get()) return;
           let {participatingUsers, ...progress} = start;
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
             this.ctx.id.toString(), chatId, meta ? {...progress, latestVisibleSequence, latestMessageAuthorId,
