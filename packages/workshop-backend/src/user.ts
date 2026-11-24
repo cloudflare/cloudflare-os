@@ -1857,6 +1857,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    *   or a shared one they dismissed) has its entries dropped instead.
    * - `summary` is ignored for a workspace the user doesn't list, or only uses: the `gadgets`
    *   subscription drops the summary when either becomes true, so nothing here can outlive it.
+   *   Null drops the one held.
    * - `blueprintChanges` are taken for blueprints recorded as published from this workspace; a
    *   push racing a first publication finds none. They also bring the gadget a blueprint is
    *   published from to records stored before updateBlueprint() was sent it.
@@ -1871,7 +1872,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let taken = this.storage.listingRevs.get(workspaceId)?.rev;
     let newer = taken === undefined || listing.listingRev > taken;
     if (listing.outputs && newer) this.#putWorkspaceOutputs(workspaceId, listing.outputs);
-    if (listing.summary && newer && this.#hasWorkspace(workspaceId)) {
+    if (listing.summary === null && newer) {
+      this.#dropWorkspaceSummary(workspaceId);
+    } else if (listing.summary && newer && this.#hasWorkspace(workspaceId)) {
       this.storage.workspaceSummaries.put(listing.summary);
       this.#workspaceSummaryChanged(workspaceId, listing.summary);
     }

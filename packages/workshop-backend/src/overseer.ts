@@ -126,7 +126,8 @@ import {
   SharingManager, SharingCaller, accessIncludesGadget, accessIncludesLiveGadget,
 } from "./sharing";
 import {
-  MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
+  boundedUserUpdate, MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope,
+  type ObserverScope,
 } from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
@@ -182,15 +183,6 @@ function sameChatFanoutStart(left: ChatFanoutStart, right: ChatFanoutStart): boo
     left.firstVisibleSequence === right.firstVisibleSequence &&
     left.notificationBaseline === right.notificationBaseline &&
     left.participatingUsers?.join() === right.participatingUsers?.join();
-}
-
-async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([request, new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("User DO handoff timed out.")), 2_000);
-    })]);
-  } finally { clearTimeout(timeout); }
 }
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
@@ -1006,10 +998,11 @@ type SessionHolder = {kind: CollaboratorRole, profileId: string};
 type BaseTextReader =
     (commit: string, path: string) => string | undefined | Promise<string | undefined>;
 
-// What admitting collaborators to background chat-state reads depends on, read once per delivery
-// pass (see OverseerImpl.mayReadChatState): the sharing manager and, scanned on first need by a
-// collaborator's check (the scan throws for legacy gatekeepers), the in-scope gatekeepers.
-type ChatStateReaders = {sharing: SharingManager, gatekeepers(): GatekeeperRecord[]};
+// What admitting collaborators to background chat-state reads depends on (see
+// OverseerImpl.mayReadChatState): the sharing manager, and the latest action id when what is
+// published was read, in the same synchronous block, so every requirement it may reflect is
+// verified first.
+type ChatStateReaders = {sharing: SharingManager, throughActionId: number};
 
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
@@ -1616,7 +1609,7 @@ class OverseerImpl implements AgentHooks {
       let listingRev = Math.max(now, this.storage.listingRev.get() + 1);
       if (updates.length) this.storage.listingRev.put(listingRev);
       let whole = this.#readListing(new Set(deleting ? [] : updates.flatMap(update => update.parts ?? [])));
-      let readers = sharing && this.#chatStateReaders(sharing);
+      let readers = sharing && {sharing, throughActionId: this.storage.nextActionId.get() - 1};
       let sends = updates.flatMap(update => {
         let {userId, profileId} = update;
         let owner = !deleting && userId === this.ownerId;
@@ -1724,12 +1717,14 @@ class OverseerImpl implements AgentHooks {
   // Send one user what a pass of deliverUserUpdates() read for them, deleting their row unless
   // queued again meanwhile. A failed send is retried from the alarm, and forgets what it carried
   // as acknowledged: it may still land, having timed out, so what it replaced is no longer known
-  // to be there.
+  // to be there. A summary whose admission check fails is held back alone: the rest is sent, and
+  // the row is left owing only the summary, retried from the alarm.
   async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks, readers}: {
     update: PendingUserUpdate, listing: WorkspaceListing, sent: Map<ListingPart, string>,
     acks: Map<ListingPart, string>, readers: ChatStateReaders | undefined,
   }): Promise<void> {
     let event = "shared.gadget.access.refresh.failed";
+    let summaryCheck: {error: unknown} | undefined;
     try {
       let user = this.users.get(this.users.idFromString(userId));
       if (deleting) await boundedUserUpdate(user.workspaceRemoved(workspaceId));
@@ -1737,11 +1732,18 @@ class OverseerImpl implements AgentHooks {
       else if (role) await boundedUserUpdate(user.updateSharedWorkspaceRole(workspaceId, role));
       event = "workspace.listing.push.failed";
       // A collaborator's summary only while admitted (access to what this workspace reads
-      // confirmed): not admitted, theirs stays unknown.
-      if (sent.has("summary") && profileId !== undefined && (!readers ||
-          !await this.mayReadChatState(userId, profileId, readers).catch(() => false))) {
-        delete listing.summary;
-        sent.delete("summary");
+      // confirmed): not admitted, the one they hold is cleared.
+      if (sent.has("summary") && profileId !== undefined) {
+        try {
+          if (!readers || !await this.mayReadChatState(userId, profileId, readers)) {
+            listing.summary = null;
+            sent.set("summary", canonicalJson(null));
+          }
+        } catch (error) {
+          summaryCheck = {error};
+          delete listing.summary;
+          sent.delete("summary");
+        }
       }
       if (sent.size) {
         await boundedUserUpdate(user.syncWorkspaceListing(workspaceId, listing));
@@ -1750,10 +1752,15 @@ class OverseerImpl implements AgentHooks {
           for (let [part, json] of sent) acks.set(part, json);
         }
       }
-      this.#userRetryAt.delete(userId);
-      // Unless queued again meanwhile.
-      if (this.storage.pendingUserUpdates.get(userId)?.seq === seq) {
-        this.storage.pendingUserUpdates.delete(userId);
+      let row = this.storage.pendingUserUpdates.get(userId);
+      if (summaryCheck) {
+        // Unless queued again meanwhile, all but the summary is delivered.
+        if (row?.seq === seq) this.storage.pendingUserUpdates.put({userId, profileId, seq, parts: ["summary"]});
+        else this.#queueUserUpdate(userId, profileId, {parts: ["summary"]});
+      } else {
+        this.#userRetryAt.delete(userId);
+        // Unless queued again meanwhile.
+        if (row?.seq === seq) this.storage.pendingUserUpdates.delete(userId);
       }
     } catch (error) {
       if (this.#listingAcks.get(userId) === acks) {
@@ -1761,6 +1768,15 @@ class OverseerImpl implements AgentHooks {
       }
       this.#userRetryAt.set(userId, Date.now() + 30_000);
       this.logger.warn("user update deferred", {event, gadgetId: workspaceId, error});
+      this.restartIfLoopLimited(error);
+      throw error;
+    }
+    if (summaryCheck) {
+      let {error} = summaryCheck;
+      this.#userRetryAt.set(userId, Date.now() + 30_000);
+      this.logger.warn("workspace summary deferred", {
+        event: "workspace.summary.check.failed", gadgetId: workspaceId, error,
+      });
       this.restartIfLoopLimited(error);
       throw error;
     }
@@ -1862,7 +1878,8 @@ class OverseerImpl implements AgentHooks {
           (!meta ? dirty.failedRecipients?.some(pending => pending.userId === userId) :
             notifications.some(event => event.userId === userId && event.kind === "permissionRequested" &&
               start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)));
-        let readers = this.#chatStateReaders(sharing);
+        // Read with the batch above: each collaborator is verified through it first.
+        let readers = {sharing, throughActionId: this.storage.nextActionId.get() - 1};
         let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
           // Admission belongs to the source. Accepted alerts are delivery intent owned by the
           // recipient; retries need neither a source read nor a new authorization decision.
@@ -2009,27 +2026,107 @@ class OverseerImpl implements AgentHooks {
       });
   }
 
-  // Background reads retain the admission established on open, with the same lazy revocation
-  // semantics as existing sessions. New/unconfigured gatekeepers require a fresh interactive open.
-  // A delivery pass reads what admission depends on once (see ChatStateReaders), then checks
-  // each recipient against it.
+  // Whether background reads (the summary a listing pass sends, the preview an unread fanout
+  // sends) may publish to `userId` what was read through action `readers.throughActionId`: the
+  // owner always; a collaborator while "build", with an account chosen for every in-scope
+  // gatekeeper, each verified against every requirement recorded through that action (see
+  // #ensureBackgroundAdmission()). New/unconfigured gatekeepers, a choice marked denied, and a
+  // legacy connection (which can verify no one) admit no one. Throws, deciding nothing, if a
+  // check fails.
   async mayReadChatState(userId: string, profileId: string, readers: ChatStateReaders): Promise<boolean> {
     if (!this.ownerId) return false;
     if (userId === this.ownerId) return true;
     if (readers.sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
+    let gatekeepers: GatekeeperRecord[];
+    try {
+      gatekeepers = this.#inScopeGatekeepers("workspace");
+    } catch {
+      // A legacy connection: no collaborator is admitted until the owner removes it.
+      return false;
+    }
     let observer = this.storage.observers.get(profileId);
-    return readers.gatekeepers().every(gk => observer?.accountChoices[gk.id] !== undefined);
+    if (!gatekeepers.every(gk => observer?.accountChoices[gk.id] !== undefined)) return false;
+    return this.#ensureBackgroundAdmission(profileId, gatekeepers, readers);
   }
 
-  #chatStateReaders(sharing: SharingManager): ChatStateReaders {
-    let scan: {gatekeepers: GatekeeperRecord[]} | {error: unknown} | undefined;
-    return {sharing, gatekeepers: () => {
-      if (!scan) {
-        try { scan = {gatekeepers: this.#inScopeGatekeepers("workspace")}; } catch (error) { scan = {error}; }
+  // The background check in flight for each profile, through the latest action when it started
+  // (see #ensureBackgroundAdmission()).
+  #backgroundChecks = new Map<string, Promise<void>>();
+
+  // Whether each of `gatekeepers` has a choice for `profileId` verified through
+  // `readers.throughActionId` (see ObserverAccountChoice.verifiedThroughActionId; a missing one
+  // has checked nothing), the profile still "build". One behind waits for the profile's check in
+  // flight, or starts one through the latest action, then reads the record again, so concurrent
+  // publishes share one set of calls and a record changed meanwhile is simply judged as it now
+  // stands. False, calling nothing, for a choice marked denied, until an admission replaces or
+  // re-verifies it. Throws if a check fails, recording nothing.
+  async #ensureBackgroundAdmission(profileId: string, gatekeepers: GatekeeperRecord[],
+                                   readers: ChatStateReaders): Promise<boolean> {
+    for (;;) {
+      if (readers.sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
+      let choices = this.storage.observers.get(profileId)?.accountChoices ?? {};
+      let behind = false;
+      for (let gk of gatekeepers) {
+        let choice = choices[gk.id];
+        if (!choice || choice.denied) return false;
+        if ((choice.verifiedThroughActionId ?? -1) < readers.throughActionId) behind = true;
       }
-      if ("error" in scan) throw scan.error;
-      return scan.gatekeepers;
-    }};
+      if (!behind) return true;
+      let check = this.#backgroundChecks.get(profileId);
+      if (!check) {
+        check = this.#checkInBackground(
+            profileId, gatekeepers, this.storage.nextActionId.get() - 1, readers.sharing)
+            .finally(() => this.#backgroundChecks.delete(profileId));
+        this.#backgroundChecks.set(profileId, check);
+      }
+      await check;
+    }
+  }
+
+  // One background check of `profileId` (see #ensureBackgroundAdmission()): advances the
+  // watermark of each of `gatekeepers` to `throughActionId`, from the first action for a choice
+  // with none, one call per batch of new requirements (see ObserverLedger.requirementsSince),
+  // persisting each batch, and marks denied the first choice whose account is gone or refused,
+  // keeping its watermark. A batch's result is recorded only if, after its awaits, the record
+  // still has the same observer id, account and watermark and the profile is still "build";
+  // otherwise the check ends, recording nothing, for the caller to judge the record anew. Throws,
+  // recording nothing, if the verifier lookup or the gatekeeper fails or times out.
+  async #checkInBackground(profileId: string, gatekeepers: GatekeeperRecord[],
+                           throughActionId: number, sharing: SharingManager): Promise<void> {
+    for (let gk of gatekeepers) {
+      for (;;) {
+        let observer = this.storage.observers.get(profileId);
+        let accountId = observer?.accountChoices[gk.id]?.accountId;
+        let watermark = observer?.accountChoices[gk.id]?.verifiedThroughActionId;
+        if (!observer || accountId === undefined || observer.accountChoices[gk.id].denied) return;
+        if ((watermark ?? -1) >= throughActionId) break;
+        let batch = this.observerLedger.requirementsSince(gk.id, watermark ?? -1, throughActionId);
+        let allowed = true;
+        if (batch.subresources.length > 0) {
+          let user = this.wrapUserDo(this.users.get(this.users.idFromName(profileId)));
+          let verifier = await boundedUserUpdate(user.getVerifier(accountId, observerVendorId(gk)!));
+          allowed = !!verifier && await this.observerLedger.allowsInBackground(
+              verifier, observer.observerId, gk, batch.subresources);
+        }
+        let current = this.storage.observers.get(profileId);
+        let choice = current?.accountChoices[gk.id];
+        if (current?.observerId !== observer.observerId || choice?.accountId !== accountId ||
+            choice.verifiedThroughActionId !== watermark ||
+            sharing.getEffectiveAccess(profileId)?.role !== "build") {
+          return;
+        }
+        this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
+          [gk.id]: allowed ? {accountId, verifiedThroughActionId: batch.through}
+            : {...choice, denied: true}}});
+        if (!allowed) {
+          this.logger.warn("background reads withheld from a collaborator", {
+            event: "observer.background.withheld", gatekeeperId: gk.id,
+            observerId: observer.observerId,
+          });
+          return;
+        }
+      }
+    }
   }
 
   #initializeUnreadTracking(): void {
@@ -12026,7 +12123,8 @@ class OverseerImpl implements AgentHooks {
       this.storage.observers.put(record);
     }
     let {observerId} = record;
-    let accountChoices: {[gatekeeperId: number]: number} = {...record.accountChoices};
+    let accountChoices: {[gatekeeperId: number]: number} = Object.fromEntries(
+        Object.entries(record.accountChoices).map(([id, choice]) => [id, choice.accountId]));
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
     // chosen account was disconnected, or which refused it.
@@ -12211,9 +12309,14 @@ class OverseerImpl implements AgentHooks {
       }
 
       // 7. Publish the choices this admission verified onto the record as it stands now, keeping
-      //    those another admission by this profile published while this one awaited. A record
-      //    deleted or replaced meanwhile means the profile lost access (see tearDownLostObservers),
-      //    so the admission is refused rather than reviving the record.
+      //    those another admission by this profile published while this one awaited. A workspace
+      //    admission checked every requirement recorded through the latest action (step 6 shares
+      //    this synchronous block), so it stamps that action as each choice's watermark (see
+      //    ObserverAccountChoice.verifiedThroughActionId) and clears `denied`; any other keeps a
+      //    choice's watermark and `denied` only while its account is unchanged, a new account
+      //    starting with neither. A record deleted or replaced meanwhile means the profile lost
+      //    access (see tearDownLostObservers), so the admission is refused rather than reviving
+      //    the record.
       let latest = this.storage.observers.get(profileId);
       if (latest?.observerId !== observerId) {
         throw new Error(
@@ -12221,7 +12324,13 @@ class OverseerImpl implements AgentHooks {
             "Please try again.");
       }
       let published = {...latest.accountChoices};
-      for (let gk of scope.gatekeepers) published[gk.id] = accountChoices[gk.id];
+      let latestAction = this.storage.nextActionId.get() - 1;
+      for (let gk of scope.gatekeepers) {
+        let accountId = accountChoices[gk.id];
+        let previous = published[gk.id];
+        published[gk.id] = grant === "workspace" ? {accountId, verifiedThroughActionId: latestAction}
+            : previous?.accountId === accountId ? previous : {accountId};
+      }
       this.storage.observers.put({...latest, accountChoices: published});
     } catch (err) {
       // An admission whose record was deleted or replaced while it awaited, whether refused in
@@ -15655,7 +15764,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       return [...storage.observers.list()].map((record): AdminObserver => ({
         profile: sharing.getCreatorProfile(record.profileId) ??
             {type: "user", id: record.profileId, name: record.profileId},
-        accountChoices: Object.entries(record.accountChoices).map(([id, accountId]) => ({
+        accountChoices: Object.entries(record.accountChoices).map(([id, {accountId}]) => ({
           gatekeeperId: Number(id),
           accountId,
           vendorId: gatekeeperVendorId(storage.gatekeepers.get(Number(id))),

@@ -60,7 +60,7 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       // Mallory holds an observer record but no reachable role: the named exclusion admits the
       // observation and schedules her teardown.
       impl.storage.observers.put(
-          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
+          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: { accountId: 10 } } });
 
       // The cross-worker teardown parks, holding the observation mid-flight before any decision
       // the delivery rests on has been made.
@@ -134,9 +134,9 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
         addedBy: [{ type: "shareKey", keyId: "k1", created: new Date(), role: "build" }],
       });
       impl.storage.observers.put(
-          { profileId: "bob", observerId: "obs-b", accountChoices: { 1: 10 } });
+          { profileId: "bob", observerId: "obs-b", accountChoices: { 1: { accountId: 10 } } });
       impl.storage.observers.put(
-          { profileId: "dave", observerId: "obs-d", accountChoices: { 1: 11 } });
+          { profileId: "dave", observerId: "obs-d", accountChoices: { 1: { accountId: 11 } } });
 
       // Record the restart rather than aborting the DO under the test, and keep the best-effort
       // cleanup off the network.

@@ -23,8 +23,11 @@ export type WorkspaceListing = {
   listingRev: number;
   /** The outputs the recipient may see: the owner all, a collaborator those their access holds. */
   outputs?: WorkspaceOutputEntry[];
-  /** The workspace summary: for the owner and admitted "build" collaborators. */
-  summary?: WorkspaceSummary;
+  /**
+   * The workspace summary: for the owner and admitted "build" collaborators. Null clears it for a
+   * collaborator no longer admitted.
+   */
+  summary?: WorkspaceSummary | null;
   /** Each blueprint published from here: for the owner. */
   blueprintChanges?: ListedBlueprintChanges[];
   /** The title: for the owner, and for each collaborator's shared listing with its revision. */

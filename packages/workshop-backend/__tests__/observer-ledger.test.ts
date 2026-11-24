@@ -26,7 +26,8 @@ import {
   observerContextOf, type GatekeeperCaller, type GatekeeperRecord, type ObserverContext,
 } from "../src/storage-schema/overseer-storage.js";
 import { openFakeOverseer } from "./fixtures.js";
-import type { BoundHookRecord } from "../src/storage-schema/overseer-storage.js";
+import { migrateToChatIndexes } from "../src/storage-schema/overseer-migrations.js";
+import type { BoundHookRecord, ObserverRecord } from "../src/storage-schema/overseer-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -58,6 +59,12 @@ type Access = "build" | "use" | CollaboratorAccess;
 function effectiveAccess(access: Access): CollaboratorAccess {
   return access === "build" ? { role: "build" }
       : access === "use" ? { role: "use", gadgetIds: [GADGET] } : access;
+}
+
+// The account each choice of `record` names.
+function accountIds(record: ObserverRecord | undefined): { [gatekeeperId: number]: number } {
+  return Object.fromEntries(
+      Object.entries(record?.accountChoices ?? {}).map(([id, choice]) => [id, choice.accountId]));
 }
 
 // What ensureObserver verifies a profile holding the "build"/"use" shorthand for.
@@ -392,7 +399,7 @@ describe("hook observations", () => {
     for (let [profileId, role] of [["bob", "build"], ["carol", "use"]] as const) {
       world.roles.set(profileId, role);
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
     using firing = await startHookFiring(world, hookGadget);
     let before = impl.storage.nextActionId.get();
@@ -425,7 +432,7 @@ describe("hook observations", () => {
     seedConnection(impl);
     world.roles.set("carol", role);
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     using firing = await startHookFiring(world);
     let before = impl.storage.nextActionId.get();
@@ -476,7 +483,7 @@ describe("hook observations", () => {
         if (role === "build") {
           await expect(impl.ensureObserver("carol", world.clientUser("carol"), grantOf(role),
               configureAll)).rejects.toThrow(/could not confirm/);
-          expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+          expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
         } else {
           await impl.ensureObserver("carol", world.clientUser("carol"), grantOf(role), configureAll);
           expect(world.checks).toEqual([]);
@@ -499,7 +506,7 @@ describe("hook observations", () => {
       seedConnection(impl);
       world.roles.set("carol", "use");
       impl.storage.observers.put(
-          { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+          { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
       let release!: () => void;
       let reached!: () => void;
       let parked = new Promise<void>(resolve => { release = resolve; });
@@ -560,7 +567,7 @@ describe("observations with and without subresources", () => {
     fakeFacets(impl, { calls });
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     // Carol could read none of it: only a read that reports subresources asks.
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     let before = impl.storage.nextActionId.get();
@@ -610,7 +617,7 @@ describe("observations with and without subresources", () => {
     seedConnection(impl);
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     let before = impl.storage.nextActionId.get();
 
     // Carol can read it, but the gatekeeper names her and she still has access.
@@ -644,7 +651,7 @@ describe("observations with and without subresources", () => {
     fakeFacets(impl, { calls });
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     let before = impl.storage.nextActionId.get();
 
@@ -694,7 +701,7 @@ describe("observations reporting subresources", () => {
     fakeFacets(impl, { calls, verify });
     world.roles.set("carol", "use");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     let before = impl.storage.nextActionId.get();
 
     await expect(impl.authorizeObservation(CONN, withSubresources(["x", "y"]),
@@ -711,9 +718,9 @@ describe("observations reporting subresources", () => {
     seedConnection(impl);
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     impl.storage.observers.put(
-        { profileId: "erin", observerId: "obs-e", accountChoices: { [CONN]: 21 } });
+        { profileId: "erin", observerId: "obs-e", accountChoices: { [CONN]: { accountId: 21 } } });
     // Erin is configured but no longer in the sharing graph; her denial must not block anything.
     world.verifiers.set("erin", observerVerifier(() => world, "erin", ids => ids));
 
@@ -732,7 +739,7 @@ describe("observations reporting subresources", () => {
     seedConnection(impl);
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     world.offline.add("carol");
     world.verifiers.set("carol", new Error("This account's credentials have expired."));
 
@@ -760,21 +767,21 @@ describe("observations reporting subresources", () => {
     seedConnection(impl);
     let calls: FacetCall[] = [];
     fakeFacets(impl, { calls });
-    let profiles = Array.from({ length: 11 }, (_, i) => `p${String(i).padStart(2, "0")}`);
+    let profiles = Array.from({ length: 101 }, (_, i) => `p${String(i).padStart(3, "0")}`);
     for (let profileId of profiles) {
       world.roles.set(profileId, "build");
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
-    world.verifiers.set("p10", observerVerifier(() => world, "p10", ids => ids));
+    world.verifiers.set("p100", observerVerifier(() => world, "p100", ids => ids));
     let before = impl.storage.nextActionId.get();
 
     await expect(impl.authorizeObservation(CONN, withSubresources(["x"]),
         { from: "user" })).rejects.toThrow(/could not be confirmed/);
 
-    // Each call carries at most ten observers, so the denier is asked in a later one.
+    // Each call carries at most a hundred observers, so the denier is asked in a later one.
     let asked = calls.map(call => call.observerIds);
-    expect(asked.every(ids => ids.length <= 10)).toBe(true);
+    expect(asked.every(ids => ids.length <= 100)).toBe(true);
     expect(asked.flat().toSorted()).toEqual(profiles.map(profileId => `obs-${profileId}`));
     expect(world.checks.map(check => check.profileId).toSorted()).toEqual(profiles);
     expect(rows(impl, WORKSPACE)).toEqual([]);
@@ -812,7 +819,7 @@ describe("observations reporting subresources", () => {
     } else {
       expect(authorized).toBe(true);
       expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
-      expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+      expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
     }
     expect(world.checks).toContainEqual({ profileId: "carol", ids: ["x"] });
   }));
@@ -824,7 +831,7 @@ describe("observations reporting subresources", () => {
     seedConnection(impl);
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     let release!: () => void;
     let reached!: () => void;
     let parked = new Promise<void>(resolve => { release = resolve; });
@@ -847,7 +854,7 @@ describe("observations reporting subresources", () => {
         { from: "user" });
     await checking;
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 21 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 21 } } });
     release();
 
     if (readable) await read;
@@ -867,7 +874,7 @@ describe("observations reporting subresources", () => {
     seedConnection(impl);
     world.roles.set("carol", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     let loopLimit = new Error("Subrequest depth limit exceeded. This request looped back into " +
         "the Workers runtime too many times.");
     // Old enough to restart: streamGeneration is the instance's creation time.
@@ -889,6 +896,278 @@ describe("observations reporting subresources", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  }));
+});
+
+// Background reads (the summary, unread previews) reach a "build" collaborator once each chosen
+// account is verified through the action they publish: a workspace admission stamps every
+// connection's watermark, and what was recorded since is checked right before a publish.
+describe("background reads", () => {
+  // Carol: a "build" collaborator admitted to the workspace, then offline.
+  async function admitOffline(world: World): Promise<void> {
+    seedConnection(world.impl);
+    world.roles.set("carol", "build");
+    await world.impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    world.offline.add("carol");
+  }
+
+  // Whether what this workspace holds now may be published to Carol in the background.
+  async function background(world: World): Promise<boolean> {
+    let { impl } = world;
+    let readers = {
+      sharing: await impl.getSharingManager(), throughActionId: impl.storage.nextActionId.get() - 1,
+    };
+    // Only read synchronously: a workspace with an owner would also start listing deliveries.
+    impl.ownerId = "owner-user";
+    let result = impl.mayReadChatState("carol-user", "carol", readers);
+    impl.ownerId = undefined;
+    return await result;
+  }
+
+  const watermark = (world: World) =>
+      world.impl.storage.observers.get("carol")?.accountChoices[CONN]?.verifiedThroughActionId;
+  const latestAction = (world: World) => world.impl.storage.nextActionId.get() - 1;
+  const read = (world: World, ids: string[]) =>
+      world.impl.authorizeObservation(CONN, withSubresources(ids), { from: "user" });
+
+  it("checks what was recorded since admission once, then not again for a key already checked",
+      () => withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    expect(watermark(world)).toBe(latestAction(world));
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(true);
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
+    expect(watermark(world)).toBe(latestAction(world));
+    expect(await background(world)).toBe(true);
+
+    // Read again, x is new to nothing checked: the watermark moves past it without a call.
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(true);
+    expect(watermark(world)).toBe(latestAction(world));
+    expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
+  }));
+
+  const denied = (world: World) =>
+      world.impl.storage.observers.get("carol")?.accountChoices[CONN]?.denied;
+
+  it("withholds once denied, calling nothing more until a workspace open clears it", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    let admittedAt = watermark(world);
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(false);
+    expect(denied(world)).toBe(true);
+    expect(watermark(world)).toBe(admittedAt);
+    await read(world, ["y"]);
+    expect(await background(world)).toBe(false);
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
+    expect(watermark(world)).toBe(admittedAt);
+
+    // Once their account can read it, the next open admits them again, checking it there.
+    world.verifiers.delete("carol");
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
+    expect(denied(world)).toBeUndefined();
+    expect(watermark(world)).toBe(latestAction(world));
+    expect(await background(world)).toBe(true);
+    expect(world.checks).toHaveLength(2);
+  }));
+
+  it("withholds when the chosen account is gone", () => withWorld(async world => {
+    let calls: FacetCall[] = [];
+    await admitOffline(world);
+    let admittedAt = watermark(world);
+    fakeFacets(world.impl, { calls });
+    let clientUser = world.clientUser;
+    world.clientUser = profileId => ({ ...clientUser(profileId), getVerifier: async () => null });
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(false);
+    expect(denied(world)).toBe(true);
+    expect(watermark(world)).toBe(admittedAt);
+    expect(calls).toEqual([]);
+  }));
+
+  const hang = () => new Promise<never>(() => {});
+  it.each([
+    ["the verifier lookup throws", "lookup", () => { throw new Error("User DO unavailable"); }],
+    ["the verifier lookup times out", "lookup", hang],
+    ["the access check throws", "check", () => { throw new Error("provider down"); }],
+    ["the access check times out", "check", hang],
+  ] as const)("throws, recording nothing, when %s, and succeeds on retry", (_name, where, fail) =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    let admittedAt = watermark(world);
+    let failing = true;
+    let clientUser = world.clientUser;
+    world.clientUser = profileId => ({
+      ...clientUser(profileId),
+      getVerifier: (...args: unknown[]) => failing && where === "lookup"
+          ? fail() : clientUser(profileId).getVerifier(...args),
+    });
+    fakeFacets(impl, { verify: (observers, ids) => failing && where === "check"
+        ? fail() : verifyEachObserver(observers, ids) });
+    await read(world, ["x"]);
+
+    await expect(background(world)).rejects.toThrow();
+    expect(watermark(world)).toBe(admittedAt);
+    failing = false;
+    expect(await background(world)).toBe(true);
+    expect(watermark(world)).toBe(latestAction(world));
+  }), 10_000);
+
+  it.each(["choice", "observer id", "admission", "role"] as const)(
+      "records nothing from a check the %s changed under, and judges the record anew", change =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    let admittedAt = watermark(world);
+    let record = impl.storage.observers.get("carol");
+    let changed = false;
+    fakeFacets(impl, { verify: (observers, ids) => {
+      if (!changed) {
+        changed = true;
+        if (change === "choice") {
+          impl.storage.observers.put({ ...record, accountChoices: { [CONN]: { accountId: 21 } } });
+        } else if (change === "observer id") {
+          impl.storage.observers.put({ ...record, observerId: "obs-replacement" });
+        } else if (change === "admission") {
+          // A workspace admission stamping everything recorded so far.
+          impl.storage.observers.put({ ...record, accountChoices: { [CONN]: {
+            accountId: 20, verifiedThroughActionId: impl.storage.nextActionId.get() - 1,
+          } } });
+        } else {
+          world.roles.set("carol", "use");
+        }
+      }
+      return verifyEachObserver(observers, ids);
+    } });
+    await read(world, ["x"]);
+    let admitted = await background(world);
+    if (change === "role") {
+      expect(admitted).toBe(false);
+      expect(watermark(world)).toBe(admittedAt);
+      expect(world.checks).toHaveLength(1);
+    } else {
+      // The changed record is current after an admission; otherwise it is checked again.
+      expect(admitted).toBe(true);
+      expect(watermark(world)).toBe(latestAction(world));
+      expect(world.checks).toHaveLength(change === "admission" ? 1 : 2);
+    }
+  }));
+
+  it("admits no one, calling nothing, while the workspace has a legacy connection", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+    await read(world, ["x"]);
+    impl.storage.gatekeepers.put({ ...impl.storage.gatekeepers.get(CONN), id: CONN + 50,
+      creationSpec: undefined });
+    expect(await background(world)).toBe(false);
+    expect(calls).toEqual([]);
+  }));
+
+  it("checks a long history in one call per 10,000 new keys", () => withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    // Twice a page of actions, before Carol's account has been checked against any.
+    for (let i = 0; i < 1_200; i++) addRows(impl, WORKSPACE, CONN, [`doc:${i}`]);
+    impl.storage.observers.put({ profileId: "carol", observerId: "obs-c",
+      accountChoices: { [CONN]: { accountId: 20 } } });
+    world.roles.set("carol", "build");
+    world.offline.add("carol");
+    let calls: FacetCall[] = [];
+    fakeFacets(impl, { calls });
+    expect(await background(world)).toBe(true);
+    expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
+    expect(world.checks.flatMap(check => check.ids)).toHaveLength(1_200);
+    expect(watermark(world)).toBe(latestAction(world));
+  }));
+
+  it("runs one check at a time, starting another for what a caller needs beyond it", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    let calls: FacetCall[] = [];
+    let release!: () => void;
+    let parked = new Promise<void>(resolve => { release = resolve; });
+    fakeFacets(impl, { calls, verify: async (observers, ids) => {
+      if (ids.includes("x")) await parked;
+      return verifyEachObserver(observers, ids);
+    } });
+    await read(world, ["x"]);
+    let first = [background(world), background(world)];
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    // Recorded while the check through x is in flight: a caller needing it waits, then checks it.
+    await read(world, ["y"]);
+    let later = background(world);
+    release();
+    expect(await Promise.all([...first, later])).toEqual([true, true, true]);
+    expect(world.checks).toEqual([
+      { profileId: "carol", ids: ["x"] }, { profileId: "carol", ids: ["y"] },
+    ]);
+  }));
+
+  it("checks a new account from the first action when a gadget admission switches to it", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    seedGadget(impl, GADGET, { C: CONN });
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(false);
+    expect(denied(world)).toBe(true);
+    world.verifiers.delete("carol");
+
+    // Account 20 now fails, so the gadget's open asks again and gets account 21.
+    world.roles.set("carol", "use");
+    let clientUser = world.clientUser;
+    world.clientUser = profileId => ({
+      ...clientUser(profileId),
+      getVerifier: async (accountId: number) => {
+        if (accountId === 20) throw new Error("This account's credentials have expired.");
+        return clientUser(profileId).getVerifier();
+      },
+    });
+    let configure21 = {
+      configure: async (needs: { gatekeeperId: number }[]) =>
+          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 21 })),
+    };
+    await impl.ensureObserver("carol", world.clientUser("carol"), grantOf("use"), configure21);
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: { accountId: 21 } });
+
+    world.roles.set("carol", "build");
+    let before = world.checks.length;
+    expect(await background(world)).toBe(true);
+    expect(world.checks.slice(before)).toEqual([{ profileId: "carol", ids: ["x"] }]);
+    expect(watermark(world)).toBe(latestAction(world));
+  }));
+
+  it("checks a converted version-7 record from the first action on its next publish", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    await read(world, ["x"]);
+    let { observerId } = impl.storage.observers.get("carol");
+    // As stored before version 8: a bare account id per connection.
+    impl.storage.observers.put({ profileId: "carol", observerId,
+      accountChoices: { [CONN]: 20 } as unknown as ObserverRecord["accountChoices"] });
+    impl.storage.version.put(7);
+    migrateToChatIndexes(impl);
+    expect(impl.storage.version.get()).toBe(8);
+    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: { accountId: 20 } });
+
+    world.checks.length = 0;
+    expect(await background(world)).toBe(true);
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
+    expect(watermark(world)).toBe(latestAction(world));
   }));
 });
 
@@ -920,7 +1199,7 @@ describe("admission against recorded requirements", () => {
     expect(world.checks.map(check => ({ ...check, ids: check.ids.toSorted() }))).toEqual([
       { profileId: "carol", ids: expected.toSorted() },
     ]);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ [CONN]: 20 });
   }));
 
   it("verifies each gadget independently on a shared connection", () =>
@@ -944,7 +1223,7 @@ describe("admission against recorded requirements", () => {
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
     expect(callsTo(calls, "addObserver").toSorted()).toEqual([unrecorded, CONN]);
     let admitted = impl.storage.observers.get("carol");
-    expect(admitted.accountChoices).toEqual({ [unrecorded]: 10, [CONN]: 20 });
+    expect(accountIds(admitted)).toEqual({ [unrecorded]: 10, [CONN]: 20 });
 
     // Holding both grants is not having passed both checks: B is refused...
     calls.length = 0;
@@ -992,7 +1271,7 @@ describe("admission against recorded requirements", () => {
     await admitA;
 
     // Finishing A keeps the choice B's admission published, so B's reads still check her.
-    expect(impl.storage.observers.get("carol").accountChoices)
+    expect(accountIds(impl.storage.observers.get("carol")))
         .toEqual({ [CONN]: 20, [other]: 30 });
     await expect(impl.authorizeObservation(other, withSubresources(["secret"]),
         { from: "gadget", gadgetId: GADGET + 1 })).rejects.toThrow(/could not be confirmed/);
@@ -1047,7 +1326,7 @@ describe("admission against recorded requirements", () => {
     await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET }, configureAll);
 
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["driven"] }]);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ [CONN]: 20 });
   }));
 
   it("re-verifies against a scope that shrank mid-admission rather than keep a stale denial", () =>
@@ -1141,7 +1420,7 @@ describe("admission against recorded requirements", () => {
     world.roles.set("carol", "build");
     world.verifiers.set("carol", new Error("Invalid account selection for this service."));
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
 
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
@@ -1183,7 +1462,7 @@ describe("admission against recorded requirements", () => {
       { profileId: "carol", ids: ["a"] },
       { profileId: "carol", ids: ["b"] },
     ]);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ [CONN]: 20 });
   }));
 
   it("checks only new requirements when one lands during verification", () =>
@@ -1210,7 +1489,7 @@ describe("admission against recorded requirements", () => {
     expect(world.checks.map(check => check.ids).toSorted()).toEqual([["a"], ["b"], ["steady"]]);
     expect(callsTo(calls, "addObserver").toSorted()).toEqual([CONN, CONN, other, other]);
     expect(callsTo(calls, "verifyObserverAccess").toSorted()).toEqual([CONN, CONN, other]);
-    expect(impl.storage.observers.get("carol").accountChoices)
+    expect(accountIds(impl.storage.observers.get("carol")))
         .toEqual({ [CONN]: 20, [other]: 30 });
   }));
 
@@ -1236,7 +1515,7 @@ describe("admission against recorded requirements", () => {
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
     await expect(admission).rejects.toThrow(/could not confirm/);
     await expect(admission).rejects.toThrow(/can't read the tracked history/);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
   }));
 
   it("blocks an in-flight observation that a newly admitted collaborator cannot access", () =>
@@ -1246,7 +1525,7 @@ describe("admission against recorded requirements", () => {
     world.roles.set("carol", "build");
     world.roles.set("dave", "build");
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     let release!: () => void;
     let parked = new Promise<void>(resolve => { release = resolve; });
     let reached!: () => void;
@@ -1264,7 +1543,7 @@ describe("admission against recorded requirements", () => {
     await checking;
     // Dave's admission publishes while Carol's check is in flight.
     impl.storage.observers.put(
-        { profileId: "dave", observerId: "obs-d", accountChoices: { [CONN]: 30 } });
+        { profileId: "dave", observerId: "obs-d", accountChoices: { [CONN]: { accountId: 30 } } });
     release();
     await expect(read).rejects.toThrow(/could not be confirmed/);
     expect(rows(impl, WORKSPACE)).toEqual([]);
@@ -1320,7 +1599,7 @@ describe("admission against recorded requirements", () => {
     await impl.ensureObserver("carol", world.clientUser("carol"), grantOf("use"), configureAll);
 
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["bound"] }]);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ [CONN]: 20 });
   }));
 
   it("verifies existing reads through a connection that enters a gadget's scope mid-verification",
@@ -1344,7 +1623,7 @@ describe("admission against recorded requirements", () => {
         "carol", world.clientUser("carol"), grantOf("use"), configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks).toContainEqual({ profileId: "carol", ids: ["secret"] });
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
   }));
 
   it("admits against live requirements when an observed connection is removed during its prompt",
@@ -1380,7 +1659,7 @@ describe("admission against recorded requirements", () => {
     expect(calls.filter(call => call.gatekeeperId === removed)).toEqual([]);
     expect(world.checks.flatMap(check => check.ids)).toContain("live");
     expect(world.checks.flatMap(check => check.ids)).not.toContain("gone");
-    expect(impl.storage.observers.get("carol").accountChoices[CONN]).toBe(20);
+    expect(impl.storage.observers.get("carol").accountChoices[CONN]?.accountId).toBe(20);
   }));
 
   it("checks accumulated requirements beyond one call's limit in batches", () =>
@@ -1404,11 +1683,11 @@ describe("admission against recorded requirements", () => {
     await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks).toContainEqual({ profileId: "carol", ids: required.slice(10_000) });
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
 
     world.verifiers.delete("carol");
     await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [CONN]: 20 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ [CONN]: 20 });
   }));
 
   it("verifies fully qualified IDs without conflating same-named resources", () =>
@@ -1427,12 +1706,12 @@ describe("admission against recorded requirements", () => {
     await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll))
         .rejects.toThrow(/could not confirm/);
     expect(world.checks.some(check => check.ids.includes(second))).toBe(true);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
     expect(rows(impl, WORKSPACE)).toEqual([`2:${first}`, `3:${second}`]);
 
     world.verifiers.delete("carol");
     await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({ 2: 20, 3: 30 });
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ 2: 20, 3: 30 });
 
     // A grant for this leaf name in workspace A cannot authorize a read in workspace B.
     world.verifiers.set("carol", observerVerifier(() => world, "carol",
@@ -1462,7 +1741,7 @@ describe("additive admission", () => {
         .rejects.toThrow(/Connection 2 .*can't read the sheet/);
     expect(callsTo(calls, "addObserver")).toContain(CONN);
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([]);
-    expect(impl.storage.observers.get("carol").accountChoices).toEqual({});
+    expect(accountIds(impl.storage.observers.get("carol"))).toEqual({});
   }));
 
   it("denies a recorded requirement the account can't read even though addObserver accepted",
@@ -1475,7 +1754,7 @@ describe("additive admission", () => {
     world.roles.set("carol", "build");
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
 
     let admission = impl.ensureObserver("carol", world.clientUser("carol"), "workspace");
     await expect(admission).rejects.toThrow(/could not confirm/);
@@ -1485,7 +1764,7 @@ describe("additive admission", () => {
     // A returning observer keeps her registrations and her record.
     expect(callsTo(calls, "removeObserver")).toEqual([]);
     expect(impl.storage.observers.get("carol"))
-        .toEqual({ profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        .toEqual({ profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
   }));
 
   it("asks verifyObserverAccess only of connections with recorded requirements", () =>
@@ -1508,7 +1787,7 @@ describe("additive admission", () => {
     expect(callsTo(calls, "verifyObserverAccess")).toEqual([CONN]);
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["a"] }]);
     let record = impl.storage.observers.get("carol");
-    expect(record.accountChoices).toEqual({ [unrecorded]: 10, [CONN]: 20 });
+    expect(accountIds(record)).toEqual({ [unrecorded]: 10, [CONN]: 20 });
     // Both gates ran for the identity that was then persisted.
     expect(new Set(calls.flatMap(call => call.observerIds))).toEqual(new Set([record.observerId]));
 
@@ -1743,7 +2022,7 @@ describe("connection removal", () => {
       expect(impl.listObserverRequirements(grantOf(role))
           .map((need: { gatekeeperId: number }) => need.gatekeeperId))
           .toEqual([3]);
-      expect(impl.storage.observers.get("carol").accountChoices).toEqual({ 3: 30 });
+      expect(accountIds(impl.storage.observers.get("carol"))).toEqual({ 3: 30 });
       expect(impl.storage.gatekeepers.get(CONN)).toBeUndefined();
       expect(impl.storage.actions.get(auditId)).toMatchObject({
         gatekeeperId: CONN, description: { subresources: ["removed/first"] },
@@ -1766,7 +2045,7 @@ describe("direct context authorization", () => {
     world.roles.set("carol", "use");
     for (let profileId of ["bob", "carol"]) {
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
 
@@ -1799,7 +2078,7 @@ describe("direct context authorization", () => {
     seedConnection(impl);
     world.roles.set("bob", "build");
     impl.storage.observers.put(
-        { profileId: "bob", observerId: "obs-b", accountChoices: { [CONN]: 20 } });
+        { profileId: "bob", observerId: "obs-b", accountChoices: { [CONN]: { accountId: 20 } } });
     let release!: () => void;
     let reached!: () => void;
     let parked = new Promise<void>(resolve => { release = resolve; });
@@ -1831,7 +2110,7 @@ describe("direct context authorization", () => {
     world.roles.set("carol", "use");
     for (let profileId of ["bob", "carol"]) {
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
     let release!: () => void;
     let reached!: () => void;
@@ -1871,7 +2150,7 @@ describe("direct context authorization", () => {
     world.roles.set("carol", { role: "use", gadgetIds: [GADGET + 1] });
     for (let profileId of ["bob", "carol"]) {
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
 
     impl.bindWorkpiece(GADGET + 1, "DB", CONN);
@@ -1916,7 +2195,7 @@ describe("direct context authorization", () => {
     // Every one of them has chosen an account for the shared connection and holds a session.
     for (let profileId of everyone) {
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
     let checked = () => world.checks.map(check => check.profileId).toSorted();
 
@@ -1953,7 +2232,7 @@ describe("direct context authorization", () => {
     world.roles.set("carol",
         { role: "use", gadgetIds: [GADGET, GADGET + 1], viewOnly: [GADGET + 1] });
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-carol", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-carol", accountChoices: { [CONN]: { accountId: 20 } } });
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
 
     await impl.authorizeObservation(CONN, withSubresources(["b"]),
@@ -1976,7 +2255,7 @@ describe("direct context authorization", () => {
     world.roles.set("dave", { role: "use", gadgetIds: [GADGET] });
     for (let profileId of ["carol", "dave"]) {
       impl.storage.observers.put(
-          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: { accountId: 20 } } });
     }
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
 
@@ -1995,7 +2274,7 @@ describe("direct context authorization", () => {
     addRows(impl, gadget(GADGET), CONN, ["retained"]);
     world.roles.set("carol", role);
     impl.storage.observers.put(
-        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: 20 } });
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [CONN]: { accountId: 20 } } });
     world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
     let before = impl.storage.nextActionId.get();
 

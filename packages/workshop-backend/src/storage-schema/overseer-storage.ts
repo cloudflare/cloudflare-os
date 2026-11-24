@@ -1205,11 +1205,32 @@ export type ObserverRecord = {
   /**
    * The account the user chose to satisfy each in-scope gatekeeper binding, published once an
    * admission verified it and remembered so they are not asked again; empty on a reservation.
-   * Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a ConnectedAccountRecord
-   * in THIS user's own User DO. An entry records only that choice -- it asserts nothing about
-   * whether the gatekeeper still admits them, which every open re-checks.
+   * Keyed by gatekeeper id (GatekeeperRecord.id). An entry records that choice and what was
+   * checked against it -- it asserts nothing about whether the gatekeeper still admits them,
+   * which every open re-checks. Stored as a bare account id before version 8.
    */
-  accountChoices: { [gatekeeperId: number]: number };
+  accountChoices: { [gatekeeperId: number]: ObserverAccountChoice };
+};
+
+/** One gatekeeper's entry in ObserverRecord.accountChoices. */
+export type ObserverAccountChoice = {
+  /** A ConnectedAccountRecord in THIS user's own User DO. */
+  accountId: number;
+  /**
+   * The highest action id whose observer requirements were checked against `accountId`, so
+   * background reads (the workspace summary, unread previews; see OverseerImpl.mayReadChatState)
+   * check only what was recorded since. Missing means nothing has been checked yet: the next
+   * background check starts from the first action. A workspace admission stamps it with the
+   * latest action; the background check advances it page by page; another admission keeps it
+   * only while `accountId` is unchanged.
+   */
+  verifiedThroughActionId?: number;
+  /**
+   * Set when a check refused `accountId` for a requirement recorded after
+   * verifiedThroughActionId: nothing that relies on this choice is admitted, and nothing asks
+   * again, until an admission replaces the choice or re-verifies it and clears this.
+   */
+  denied?: true;
 };
 
 /**

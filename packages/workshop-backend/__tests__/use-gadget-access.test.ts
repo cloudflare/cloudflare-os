@@ -169,7 +169,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 101, { target: 2 });
     shareGadgets(impl, [100, 101]);
     impl.storage.observers.put(
-        { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } });
+        { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: { accountId: 10 }, 2: { accountId: 20 } } });
     let adds = legacyFacets(impl);
     let client = await openViewer(impl, { role: "use", gadgetIds: [100, 101] });
 
@@ -187,7 +187,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 100, { target: 1 });
     seedGadget(impl, 101, { target: 2 });
     shareGadgets(impl, [100, 101]);
-    let record = { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } };
+    let record = { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: { accountId: 10 }, 2: { accountId: 20 } } };
     impl.storage.observers.put(record);
     let adds = legacyFacets(impl, new Set([2]));
     let restarts: string[] = [];

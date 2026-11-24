@@ -438,8 +438,11 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
  * - chats' pendingRequestsByChat indexes only the requests of each chat's current decision
  *   segment, read back to its last decision boundary as OverseerImpl.#decisionWait() reads it:
  *   a request an earlier turn left pending is not what the chat waits on.
- * The backfills and the stamp are one transaction, so a crash midway retries whole, and nothing
- * can update a record before its indexes exist.
+ * - each ObserverRecord.accountChoices entry, a bare account id before, becomes
+ *   `{accountId}`: a choice with no `verifiedThroughActionId`, which the next background check
+ *   verifies from the first action.
+ * The backfills, the conversion and the stamp are one transaction, so a crash midway retries
+ * whole, and nothing can update a record before its indexes exist.
  */
 export function migrateToChatIndexes(host: OverseerMigrationHost): void {
   if (host.storage.version.get() !== 7) return;
@@ -449,12 +452,21 @@ export function migrateToChatIndexes(host: OverseerMigrationHost): void {
       storage.chats.pendingRequestsByChat.indexRecords(currentDecisionSegment(storage, chatId));
     }
     storage.chatMeta.byListing.rebuild();
+    for (let record of Array.from(storage.observers.list())) {
+      // Bare account ids at runtime, whatever the type says.
+      let stored = record.accountChoices as unknown as V7AccountChoices;
+      storage.observers.put({...record, accountChoices: Object.fromEntries(
+          Object.entries(stored).map(([id, accountId]) => [id, {accountId}]))});
+    }
     storage.version.put(8);
   });
   host.logger.info("backfilled the chat indexes", {
     event: "storage.migration.chat-indexes.completed",
   });
 }
+
+/** ObserverRecord.accountChoices as stored before version 8: a bare account id per gatekeeper. */
+type V7AccountChoices = {[gatekeeperId: number]: number};
 
 // A chat's messages since its last decision boundary, newest first.
 function* currentDecisionSegment(storage: OverseerStorage, chatId: number) {

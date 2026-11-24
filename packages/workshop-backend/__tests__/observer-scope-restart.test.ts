@@ -441,7 +441,7 @@ describe("restarting sessions when verification scope widens", () => {
     joinSession(impl);
     seedGatekeeper(impl, 1);
     impl.storage.observers.put(
-        { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+        { profileId: "alice", observerId: "obs-1", accountChoices: { 1: { accountId: 10 } } });
     impl.getGatekeeperFacet = () => ({
       addObserver: async () => { throw new Error("access revoked upstream"); },
       removeObserver: async () => {},
@@ -458,7 +458,7 @@ describe("restarting sessions when verification scope widens", () => {
     // Only this open is denied. Nothing widened, so Alice's other sessions keep the access their
     // own opens verified until they next re-open (lazy revocation), and her record still holds the
     // choice she made -- it records that choice, not a verification result.
-    expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10 });
+    expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: { accountId: 10 } });
     expect(restarts).toEqual([]);
   }));
 

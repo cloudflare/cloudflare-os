@@ -279,7 +279,7 @@ function seedSharing(ws: Workspace): void {
   });
   // Every field an observer's record stores, the ones no answer may carry included.
   storage.observers.put({
-    profileId: BOB.id, observerId: "observer-bob", accountChoices: { [GATEKEEPER_ID]: 7 },
+    profileId: BOB.id, observerId: "observer-bob", accountChoices: { [GATEKEEPER_ID]: { accountId: 7 } },
   });
 
   storage.shareKeys.put({
@@ -1690,11 +1690,11 @@ describe("sharing reads", () => {
         { profileId: carol.id, observerId: "observer-carol", accountChoices: {} });
     storage.observers.put({
       profileId: dave.id, observerId: "observer-dave",
-      accountChoices: { 99: 9, [GATEKEEPER_ID]: 8 },
+      accountChoices: { 99: { accountId: 9 }, [GATEKEEPER_ID]: { accountId: 8 } },
     });
     storage.observers.put({
       profileId: STRANGER_ID, observerId: "observer-stranger",
-      accountChoices: { [AMBIENT_GATEKEEPER_ID]: 4 },
+      accountChoices: { [AMBIENT_GATEKEEPER_ID]: { accountId: 4 } },
     });
     // By profile id, each choice by connection id. An entry has its two fields and a choice its
     // three: never the record's observer id, and a removed connection's choice has no vendor.

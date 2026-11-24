@@ -6,7 +6,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AiChatAuthorInfo, WorkspaceSummary, WorkspaceSummarySubscriber } from "@gadgets/workshop-shared/api";
 import { UserDurableObject } from "../src/user.js";
 import { OverseerDurableObject } from "../src/overseer.js";
@@ -182,6 +182,135 @@ it("pushes changes to the owner and admitted builders, and drops a summary when 
   await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, null]));
   await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, summary: expected});
   expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+});
+
+// Background reads (the summary, unread previews) reach a "build" collaborator only once each
+// chosen account is verified against what was recorded since their admission, checked right
+// before the publish, once per profile however many publishes wait on it.
+describe("background reads of an offline builder", () => {
+  // The reader, admitted to a workspace with connection 7 (their account 1) and then offline.
+  // The connection denies `denied`, or fails while `fail`; `checks` are the IDs it was asked
+  // about, `previews` the users unread fanout reached, and `park` holds its answers back.
+  const admitReader = async () => {
+    const fixture = await setup();
+    const {reader, profile} = await addReader(fixture);
+    const state = {denied: new Set<string>(), fail: false, checks: [] as string[][],
+      previews: [] as string[], park: Promise.resolve()};
+    await withImpl(fixture.workspace, impl => {
+      impl.storage.gatekeepers.put({id: 7, resourceTitle: "Docs", class: {} as never,
+        creationSpec: {type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/7", typeUrlPattern: "https://*"}});
+      impl.getGatekeeperFacet = async () => ({
+        verifyObserverAccess: async (observers: {id: string}[], ids: string[]) => {
+          state.checks.push(ids);
+          await state.park;
+          if (state.fail) throw new Error("provider down");
+          return {allowedObserverIds: ids.some(id => state.denied.has(id)) ? [] : observers.map(({id}) => id)};
+        },
+      }) as never;
+      const users = impl.users;
+      impl.users = new Proxy(users, {get(target, key) {
+        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+          if (member === "getVerifier") return async () => ({});
+          if (member === "messageArrived") return async () => { state.previews.push(id.toString()); };
+          return Reflect.get(user, member);
+        }});
+        if (key === "idFromString") return (id: string) => target.idFromString(id);
+        if (key === "idFromName") return (name: string) => target.idFromName(name);
+        return Reflect.get(target, key);
+      }});
+      impl.storage.observers.put({profileId: profile.id, observerId: "obs-r",
+        accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
+    });
+    const watermark = () => withImpl(fixture.workspace,
+      impl => impl.storage.observers.get(profile.id)?.accountChoices[7]?.verifiedThroughActionId);
+    return {fixture, reader, profile, state, watermark};
+  };
+
+  // A read through connection 7 the reader is not online for, and a change to the summary.
+  const readAndAsk = async (impl: Impl, subresource: string) => {
+    await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: [subresource]}, {from: "user"});
+    ask(impl, impl.storage.nextActionId.get(), {from: "gadget", gadgetId: 10});
+  };
+  // Both background publishes, the listing pass and an unread fanout of chat 1, at once.
+  const publishBoth = (impl: Impl) => {
+    impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
+    return Promise.allSettled([impl.deliverUserUpdates(), impl.deliverDirtyChats()]);
+  };
+  const summaryActions = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
+    (await storedSummary(user, workspaceId))?.waiting.gadgets[0]?.actions;
+
+  it("checks once for both publishes, then delivers or, once denied, withholds both without calling again", async () => {
+    const {fixture, reader, profile, state, watermark} = await admitReader();
+    const readerId = reader.id.toString();
+
+    // Both publishes wait on one check of what is new, then deliver.
+    const parked = Promise.withResolvers<void>();
+    state.park = parked.promise;
+    await withImpl(fixture.workspace, async impl => {
+      using admission = vi.spyOn(impl, "mayReadChatState");
+      await readAndAsk(impl, "doc:1");
+      const both = publishBoth(impl);
+      await vi.waitFor(() => expect(admission.mock.calls.filter(call => call[1] === profile.id).length).toBeGreaterThanOrEqual(2));
+      parked.resolve();
+      await both;
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.verifiedThroughActionId).toBe(impl.storage.nextActionId.get() - 1);
+    });
+    expect(state.checks).toEqual([["doc:1"]]);
+    expect(state.previews).toContain(readerId);
+    await vi.waitFor(async () => expect(await summaryActions(reader, fixture.workspaceId)).toBe(1));
+
+    // Denied what is new: neither, and the summary they hold is cleared.
+    state.denied.add("doc:2");
+    state.previews = [];
+    const checkedThrough = await watermark();
+    await withImpl(fixture.workspace, async impl => {
+      await readAndAsk(impl, "doc:2");
+      await publishBoth(impl);
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
+    });
+    expect(state.checks).toEqual([["doc:1"], ["doc:2"]]);
+    expect(state.previews).toEqual([fixture.user.id.toString()]);
+    expect(await watermark()).toBe(checkedThrough);
+    await vi.waitFor(async () => expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined());
+
+    // Later publishes call nothing, and still withhold both.
+    state.previews = [];
+    await withImpl(fixture.workspace, async impl => {
+      ask(impl, impl.storage.nextActionId.get(), {from: "gadget", gadgetId: 10});
+      await publishBoth(impl);
+    });
+    await vi.waitFor(async () => expect(await summaryActions(fixture.user, fixture.workspaceId)).toBe(3));
+    expect(state.checks).toHaveLength(2);
+    expect(state.previews).toEqual([fixture.user.id.toString()]);
+    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  });
+
+  it("retries the summary alone, and both publishes, when the check fails, without counting it as a denial", async () => {
+    const {fixture, reader, profile, state, watermark} = await admitReader();
+    const readerId = reader.id.toString();
+    const admittedAt = await watermark();
+    state.fail = true;
+    await withImpl(fixture.workspace, async impl => {
+      // Owed outputs as well, which the failed check must not hold back.
+      impl.storage.pendingUserUpdates.put({userId: readerId, profileId: profile.id, seq: 1, parts: ["outputs"]});
+      await readAndAsk(impl, "doc:1");
+      await publishBoth(impl);
+      expect(impl.storage.pendingUserUpdates.get(readerId)?.parts).toEqual(["summary"]);
+      expect(impl.storage.dirtyChats.get(1)?.failedRecipients?.map(({userId}) => userId)).toEqual([readerId]);
+    });
+    expect(await watermark()).toBe(admittedAt);
+    expect(state.previews).not.toContain(readerId);
+    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+
+    state.fail = false;
+    await withImpl(fixture.workspace, async impl => {
+      await impl.userUpdateAttempt(readerId);
+      await impl.deliverDirtyChats();
+      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.verifiedThroughActionId).toBe(impl.storage.nextActionId.get() - 1);
+    });
+    expect(state.previews).toContain(readerId);
+    expect(await summaryActions(reader, fixture.workspaceId)).toBe(1);
+  });
 });
 
 it("ignores a summary read before one already taken", async () => {

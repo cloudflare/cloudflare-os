@@ -1910,7 +1910,8 @@ describe("source authorization and removal", () => {
         expect(impl.storage.dirtyChats.get(1)?.failedRecipients?.map(({userId}) => userId))
           .toEqual([fixture.user.id.toString()]);
       } finally { restore(); }
-      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(), accountChoices: {7: 1}});
+      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(),
+        accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
       const attempts: string[] = [];
       const retry = interceptDelivery(impl, async (user, ...args) => {
         attempts.push(user.id.toString()); await user.messageArrived(...args);
@@ -1969,7 +1970,8 @@ describe("source authorization and removal", () => {
     expect(await cursor(readerFixture)).toMatchObject({unreadCount: 0, readThroughSequence: 0});
     expect(await outbox(readerFixture)).toEqual([]);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(), accountChoices: {7: 1}});
+      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(),
+        accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
     });
     await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture, reader));
     expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(1);

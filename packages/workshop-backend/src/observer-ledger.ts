@@ -6,7 +6,10 @@
 // - Requirements live only in the action log: an observation that kept `subresources` is one,
 //   attributed to a context by its caller (observerContextOf). A read must never commit without
 //   its record, nor a record land without its check.
-// - Every check fails closed, and no permission is cached between operations.
+// - Every check fails closed, and no permission is cached between operations, but for one:
+//   background reads (the workspace summary, unread previews) rely on each account choice's
+//   ObserverAccountChoice.verifiedThroughActionId, so only requirements recorded since are
+//   checked before one is published (requirementsSince(), OverseerImpl.#ensureBackgroundAdmission).
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
 //   audience before the audit record is written (authorizeObservation), and an admission's
 //   scope before its account choices are (OverseerImpl.ensureObserver, via observerScope()).
@@ -19,9 +22,9 @@ import type {
   Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  connectionVendorId, observerContextOf, observerRequirementPrefix, observerRequirementSubresource,
-  type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
-  type OverseerStorage,
+  connectionVendorId, observerContextOf, observerRequirementKey, observerRequirementPrefix,
+  observerRequirementSubresource, type GatekeeperCaller, type GatekeeperRecord,
+  type ObserverContext, type ObserverRecord, type OverseerStorage,
 } from "./storage-schema/overseer-storage";
 import { accessIncludesLiveGadget, type SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
@@ -47,7 +50,13 @@ const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
  * Most observers sent to `verifyObserverAccess()` in one call, bounding the verifier fan-out each
  * call asks of the gatekeeper.
  */
-const CHECK_OBSERVER_BATCH_SIZE = 10;
+const CHECK_OBSERVER_BATCH_SIZE = 100;
+
+/** How many action records requirementsSince() lists at a time. */
+const BACKGROUND_PAGE_SIZE = 500;
+
+/** How long a background check's User DO hop, or `verifyObserverAccess()` call, may take. */
+const DEADLINE_MS = 2_000;
 
 /**
  * How many times an admission or an observation re-runs its checks because what it must verify
@@ -145,6 +154,20 @@ export async function requireVerifier(user: DurableObjectStub<UserDurableObject>
   let verifier = await user.getVerifier(accountId, vendorId);
   if (!verifier) throw new Error("This account is no longer connected.");
   return verifier;
+}
+
+// `request`, or a rejection with `message` once it has run for DEADLINE_MS.
+async function withDeadline<T>(request: Promise<T>, message: string): Promise<T> {
+  let expired = Promise.withResolvers<never>();
+  let timeout = setTimeout(() => expired.reject(new Error(message)), DEADLINE_MS);
+  try {
+    return await Promise.race([request, expired.promise]);
+  } finally { clearTimeout(timeout); }
+}
+
+/** A call to a User DO, rejected if it has not settled within two seconds. */
+export function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+  return withDeadline(request, "User DO handoff timed out.");
 }
 
 /**
@@ -307,7 +330,7 @@ export class ObserverLedger {
     for (let profileId of live) {
       let access = effective.get(profileId);
       let observer = this.#storage.observers.get(profileId);
-      let accountId = observer?.accountChoices[gatekeeperId];
+      let accountId = observer?.accountChoices[gatekeeperId]?.accountId;
       if (access === undefined || observer === undefined || accountId === undefined) continue;
       if (access.role !== "build") {
         // A collaborator with only snapshots opens nothing that sees new reads of any context.
@@ -390,6 +413,62 @@ export class ObserverLedger {
         .map(connection => connection.id);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // Background reads
+
+  /**
+   * The subresources recorded through `gatekeeperId` after action `verifiedThrough`, up to action
+   * `target`, that admission has not checked: those of each observation with `subresources`
+   * through it, but for a requirement key already recorded at or before `verifiedThrough` (its
+   * earliest record names it). Reads action records BACKGROUND_PAGE_SIZE at a time until it holds
+   * MAX_SUBRESOURCES or more (one observation can add up to as many again), returning in
+   * `through` the last id it read when that stops it short of `target`, to call again from there.
+   */
+  requirementsSince(gatekeeperId: WorkpieceId, verifiedThrough: number, target: number)
+      : {subresources: string[], through: number} {
+    let index = this.#storage.actions.byObserverRequirement;
+    let subresources = new Set<string>();
+    let readThrough = verifiedThrough;
+    while (readThrough < target) {
+      // Listed up front: each probe of the index would end this listing. (`start`, as a
+      // watermark may be -1 before any action, and a negative key does not order before the ids.)
+      let page = Array.from(this.#storage.actions.list(
+          {start: readThrough + 1, end: target + 1, limit: BACKGROUND_PAGE_SIZE}));
+      for (let record of page) {
+        // Stopped short before this record, which the next call reads first.
+        if (subresources.size >= MAX_SUBRESOURCES) {
+          return {subresources: [...subresources], through: readThrough};
+        }
+        readThrough = record.id;
+        if (record.type !== "observation" || record.gatekeeperId !== gatekeeperId) continue;
+        let context = observerContextOf(record.caller);
+        if (!record.description.subresources || !context) continue;
+        for (let id of record.description.subresources) {
+          if (subresources.has(id)) continue;
+          let key = observerRequirementKey(gatekeeperId, context, id);
+          let earliest: number | undefined;
+          for (let first of index.get(key, {limit: 1})) earliest = first.id;
+          if (earliest === undefined || earliest > verifiedThrough) subresources.add(id);
+        }
+      }
+      if (page.length < BACKGROUND_PAGE_SIZE) readThrough = target;
+    }
+    return {subresources: [...subresources], through: target};
+  }
+
+  /**
+   * Whether the account `verifier` stands for can read `subresources` through `connection`, asking
+   * the connection about observer `observerId`, each call within a deadline. Throws, deciding
+   * nothing, if the connection fails to answer in time or answers malformed.
+   */
+  async allowsInBackground(verifier: Fetcher<GatekeeperUserVerifier>, observerId: string,
+                           connection: GatekeeperRecord, subresources: string[])
+      : Promise<boolean> {
+    let denied = await this.#deniedObservers(
+        connection, [{id: observerId, verifier}], subresources, true);
+    return denied.length === 0;
+  }
+
   /**
    * Check that the account `verifier` stands for can read `subresources` through `connection`,
    * asking the connection about observer `observerId`. Throws, with a reason for the user, on any
@@ -406,17 +485,19 @@ export class ObserverLedger {
   }
 
   // Asks the connection's verifyObserverAccess() about `subresources` for `observers`, one call at
-  // a time, each carrying at most CHECK_OBSERVER_BATCH_SIZE observers and MAX_SUBRESOURCES IDs.
-  // Returns the IDs of the observers denied by the first call that denies anyone. Throws if the
-  // gatekeeper fails to answer or answers malformed.
+  // a time, each carrying at most CHECK_OBSERVER_BATCH_SIZE observers and MAX_SUBRESOURCES IDs,
+  // and each within DEADLINE_MS if `bounded`. Returns the IDs of the observers denied by the first
+  // call that denies anyone. Throws if the gatekeeper fails to answer, in time if bounded, or
+  // answers malformed.
   async #deniedObservers(connection: GatekeeperRecord, observers: ObserverVerifier[],
-                         subresources: string[]): Promise<string[]> {
+                         subresources: string[], bounded = false): Promise<string[]> {
     let facet = await this.host.getGatekeeperFacet(connection.id) as VerifyingGatekeeper;
     for (let i = 0; i < subresources.length; i += MAX_SUBRESOURCES) {
       let batch = subresources.slice(i, i + MAX_SUBRESOURCES);
       for (let j = 0; j < observers.length; j += CHECK_OBSERVER_BATCH_SIZE) {
-        let denied = await askGatekeeper(
-            facet, observers.slice(j, j + CHECK_OBSERVER_BATCH_SIZE), batch);
+        let call = askGatekeeper(facet, observers.slice(j, j + CHECK_OBSERVER_BATCH_SIZE), batch);
+        let denied = bounded
+            ? await withDeadline(call, "This service's access check timed out.") : await call;
         if (denied.length > 0) return denied;
       }
     }

@@ -1083,15 +1083,41 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   session (a client interface, a capability minted into one, or an admission in flight):
   for a gadget's read, "build" collaborators and those whose access includes a gadget that
   reaches it (`gadgetsReaching`); for a workspace read, anyone with access; for a chat's, "build"
-  collaborators. A collaborator who lost access or holds no session is skipped: the read still
-  records its requirements, which their next admission checks, so an offline collaborator's
-  expired or lapsed account cannot block reads. What can reach a skipped collaborator before then
-  is listed under Known limitations. For each observer left in the audience, the Workshop looks
-  up their verifier for their chosen account (`getVerifier()` refuses a disconnected or
-  wrong-vendor account even when there is nothing to check) and asks `verifyObserverAccess()`:
-  one call at a time, each for at most 10 observers and 10,000 IDs, stopping at the first call
-  that denies. A denial, missing method, failed call, or malformed answer fails closed for every
+  collaborators. A collaborator who lost access is skipped. One who holds no session never blocks
+  the read, so an offline collaborator's expired or lapsed account cannot refuse it; the read
+  still records its requirements, which their next admission checks, and which are checked before
+  a background read reaches them (below). For each observer in the audience, the Workshop looks up
+  their verifier for their chosen account (`getVerifier()` refuses a disconnected or wrong-vendor
+  account even when there is nothing to check) and asks `verifyObserverAccess()`: one call at a
+  time, each for at most 100 observers and 10,000 IDs, and any denial among them refuses the
+  read. A denial, missing method, failed call, or malformed answer fails closed for every
   observer in the call, with no permission cached between operations.
+- **Background reads.** The workspace summary (each listing pass) and unread previews (each chat
+  fanout batch) reach a "build" collaborator only once every in-scope connection's chosen account
+  is verified against every requirement recorded through the action the publish read, by its
+  watermark: `verifiedThroughActionId` on the choice itself (`ObserverAccountChoice`), the highest
+  action id checked against its account. A workspace admission stamps the latest action for every
+  connection in scope; any other admission keeps a choice's watermark only while its account is
+  unchanged. A missing watermark means nothing has been checked yet, as for a new account a gadget
+  admission switches to or every choice the version-8 migration converted: the next check starts
+  from the first action, so nothing waits for a workspace open. A collaborator behind is verified
+  right before the publish against what was recorded since: the subresources of later
+  observations through the connection, less any key whose earliest record is at or below the
+  watermark, read in pages of 500 actions until 10,000 keys or the target
+  (`ObserverLedger.requirementsSince`). One check per collaborator runs at a time, through the
+  latest action when it starts, and every publish waiting on them shares it. Each batch looks up
+  the verifier (two-second limit; an account gone is a denial) and asks `verifyObserverAccess()`
+  (two-second limit per call), then, if the record still has the same observer id, account and
+  watermark and they are still "build", advances the watermark to the batch's end; a record
+  changed meanwhile ends the check unrecorded, and the publish judges the record as it now stands.
+  A denial keeps the watermark and marks the choice `denied`: both publishes withhold, the
+  summary they hold is cleared, and later publishes call nothing until a workspace admission
+  re-verifies the choice and clears the mark, or an admission replaces the account. A failure or
+  timeout records nothing and throws: the listing pass sends the rest of the listing and retries
+  the summary alone, and fanout keeps them as a failed recipient. A workspace with a legacy
+  connection admits no collaborator to either. Requirements at or below a watermark are not
+  checked again, so a vendor-side revocation of a resource already checked waits for the next
+  open.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
   (at most three times) if a connection in its scope appeared or disappeared, or its requirements
   changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped
@@ -1158,8 +1184,9 @@ collaborator's that the connection accepted in `addObserver`, so the mismatch ca
 remembered account could see but admits none against an account the connection refused.
 
 A reported subresource is checked at read time only against collaborators holding a live session
-(§10), and only the overseer's own leases count as one. Data a read derives can therefore reach a
-collaborator it skipped before their next admission checks it:
+(§10), and only the overseer's own leases count as one; background reads check it before they
+publish it. Data a read derives can therefore reach a collaborator it skipped before their next
+admission checks it:
 
 - **Escaped capabilities.** A capability a gadget method returns, or a client callback a gadget
   retains with `dup()`, keeps working after the collaborator disposes every counted stub. Reads
@@ -1168,8 +1195,5 @@ collaborator it skipped before their next admission checks it:
 - **Their own agent turn.** A fresh turn holds no lease for its initiator, so once they close the
   workspace, its later reads skip them while it keeps acting on their prompt. A resumed turn does
   hold one (see "Restarting when verification scope widens").
-- **Chat previews.** Unread fanout to an offline `build` collaborator gates on their existing
-  admission (`mayReadChatState`), not on requirements recorded since, so the latest message's
-  first line (at most 240 characters) can carry data their next admission would refuse.
 
 The remaining observer-side deferrals are ledgered in `plans/restricted-data-sharing.md`.

@@ -144,11 +144,15 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    shared alarm is armed before async dispatch. The marker retains the earliest pending raw event
    and first visible position, including through coalescing and resets.
 2. The workspace reads inbox metadata and pending eligibility records once per batch and checks current build
-   membership plus previously established observer admission locally. It sends authorized packets
-   to enrolled owners and collaborators (plus targeted approval recipients) in parallel; legacy
-   chats retain workspace-wide fanout. Independent threads also fan out in
-   parallel. Each User DO handoff has a two-second limit. It does not enroll observers or call
-   external gatekeeper verifiers per message.
+   membership plus observer admission locally. A collaborator whose verified watermark
+   (`ObserverAccountChoice.verifiedThroughActionId`) is behind the batch is first verified in one
+   catch-up check covering every key recorded since the watermark, never once per message, and one
+   check per collaborator at a time serves every publish waiting on it (see docs/observers.md §10).
+   A failed check makes them a failed recipient, retried; a denial skips them until they reopen. A
+   workspace with a legacy connection admits no collaborator to previews. It
+   sends authorized packets to enrolled owners and collaborators (plus targeted approval recipients)
+   in parallel; legacy chats retain workspace-wide fanout. Independent threads also fan out in
+   parallel. Each User DO handoff has a two-second limit. It does not enroll observers.
 3. A listed User DO synchronously commits the absolute head/count and any new queued alerts in
    one transaction. Queue insertion is deduplicated by event UUID and the completed-delivery
    receipt. It arms the existing alarm before ACK. Slow browser/provider delivery does not hold
