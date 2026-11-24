@@ -322,6 +322,43 @@ describe("images read from a worktree", () => {
       expect(faux.getPendingResponseCount()).toBe(0);
     }));
 
+  it.each(["model", "router pool"] as const)("keeps history when a %s switch removes all pixels", mode => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = PNG.slice();
+    const dimensions = new DataView(bytes.buffer);
+    dimensions.setUint32(16, 6400); dimensions.setUint32(20, 4800);
+    const {chatId} = await setup(impl, bytes);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(34_000)}]);
+    const gatewayEnv = {CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+      CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare,cloudflare-auto-router"} as Cloudflare.Env;
+    const vision: AiModelConfig = mode === "router pool" ? {
+      provider: "cloudflare-auto-router", model: "cloudflare/auto", apiToken: "fixture",
+      autoRouterPool: {models: ["openai/gpt-6-astra"]},
+    } : {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+    const handle = getModel(gatewayEnv, vision, USER);
+    const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
+      models: [{id: "fixture", contextWindow: 8_000_000}]});
+    faux.setResponses([fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done"))]);
+    handle.stream = faux.stream;
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
+      {...vision, contextWindow: 8_000_000, compactionInputBudget: 8_000_000});
+    // Faux counts text only. Seed the prior provider measurement including the 144K image cost.
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 215_000});
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue without pixels"}]);
+    const text: AiModelConfig = mode === "router pool" ? {...vision,
+      autoRouterPool: {models: ["@cf/openai/gpt-oss-20b"]}}
+      : {provider: "cloudflare", model: "@cf/zai-org/glm-5.2", apiToken: "fixture"};
+    const next = getModel(gatewayEnv, text, USER);
+    expect(next.model.input).toEqual(["text"]);
+    const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+    faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+    next.stream = faux.stream;
+    await runAgent(impl, next, chatId, AUTHOR, new AbortController().signal, USER,
+      {...text, contextWindow: 8_000_000, compactionInputBudget: 216_634});
+    expect(checkpoints).not.toHaveBeenCalled();
+    expect(faux.getPendingResponseCount()).toBe(0);
+  }));
+
   it("reads RIFF-like UTF-8 as text", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl, new TextEncoder().encode("RIFF....WEBP is the container header."));
     const {requests} = await turn(impl, chatId, [[read()]]);

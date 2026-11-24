@@ -3638,10 +3638,9 @@ async function runAgentPass(
   // request. Usage from another provider also prices pixels differently. Re-estimate the whole
   // prompt when its older media changes, including a router pool change with the same model ID.
   // Snapshots predating image accounting take this conservative path once, then record it below.
-  let mediaMatchesMeasurement = historicalImageTokens === 0 || (
-    measuredModel?.inputImageTokens === historicalImageTokens &&
-    measuredModel.api === handle.model.api && measuredModel.provider === handle.model.provider &&
-    measuredModel.model === handle.model.id);
+  let mediaMatchesMeasurement = measuredModel?.inputImageTokens === historicalImageTokens && (
+    historicalImageTokens === 0 || (measuredModel.api === handle.model.api &&
+      measuredModel.provider === handle.model.provider && measuredModel.model === handle.model.id));
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
