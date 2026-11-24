@@ -517,7 +517,7 @@ export default function ObserverConfigModal({
                           </div>
                         ) : (
                           <Select
-                            className="w-full text-sm"
+                            className="w-full min-w-0 text-sm"
                             aria-label={`${vendorName} account for all resources`}
                             /* null, not undefined: Base UI treats a Select mounted without a value as
                                uncontrolled and ignores the default chosen once accounts arrive. */
@@ -590,7 +590,7 @@ export default function ObserverConfigModal({
                                 </div>
                                 {matching.length > 1 && (
                                   <Select
-                                    className="w-full shrink-0 text-sm sm:w-44"
+                                    className="w-full min-w-0 shrink-0 text-sm sm:w-44"
                                     aria-label={`Account for ${need.resourceTitle}`}
                                     value={choices[need.gatekeeperId] !== undefined ? String(choices[need.gatekeeperId]) : null}
                                     placeholder="Choose an account…"
