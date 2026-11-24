@@ -214,40 +214,32 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
     expect(error).not.toBeInstanceOf(PromptBlockedError);
   }));
 
-  it.each([
-    { name: "a later one", compacted: false },
-    { name: "one made after the chat compacted", compacted: true },
-  ])("does not quote a withheld edit in the diff of $name", ({ compacted }) => withImpl(async impl => {
-    seedChat(impl);
-    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
+  // The user sets notes.txt in the chat's gadget to `content`.
+  function editNotes(impl: OverseerInternals, content: string) {
+    impl.addChatMessages(CHAT_ID, OWNER,
+        [{ type: "changes", change: { 100: [["notes.txt", { set: content }]] } }]);
+  }
 
-    // The request that first shows the user's edit is blocked, so the edit is withheld.
-    impl.addChatMessages(CHAT_ID, OWNER, [{
-      type: "changes", change: { 100: [["notes.txt", { set: "first\nthe injection\nlast\n" }]] },
-    }]);
+  // Runs a turn whose request the gateway blocks, and records the block as the overseer does.
+  async function blockTurn(impl: OverseerInternals) {
     let blocked = await runBlockedTurn(impl);
     if (!(blocked instanceof PromptBlockedError)) throw blocked;
     impl.addChatMessages(CHAT_ID, FAUX, [{
       type: "error", message: "blocked", code: "prompt_blocked", blockedInput: blocked.blockedInput,
     }]);
+  }
 
-    if (compacted) {
-      // `/compact` after one more exchange leaves neither the edit nor the block for replay.
-      impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: "Hi again" }]);
-      await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello again."))]);
-      impl.addChatMessages(CHAT_ID, OWNER, [{
-        type: "slashCommand", request: { id: { builtin: true, commandId: "compact" }, args: "" },
-      }]);
-      await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("A summary."))]);
-      expect(impl.loadChatHistory(CHAT_ID).chatMessages.map(msg => msg.type))
-          .toEqual(["message", "slashCommand"]);
-    }
-
-    // An edit to the next line would quote the withheld one as context.
+  // Runs `/compact`, for which the model writes a summary.
+  async function compact(impl: OverseerInternals) {
     impl.addChatMessages(CHAT_ID, OWNER, [{
-      type: "changes",
-      change: { 100: [["notes.txt", { set: "first\nthe injection\nlast, edited\n" }]] },
-    }, { type: "message", message: "Go on." }]);
+      type: "slashCommand", request: { id: { builtin: true, commandId: "compact" }, args: "" },
+    }]);
+    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("A summary."))]);
+  }
+
+  // Prompts a turn, and returns the messages of the request it sends.
+  async function nextRequest(impl: OverseerInternals): Promise<string> {
+    impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: "Go on." }]);
     let sent = "";
     let faux = createFauxCore({ models: [{ id: "faux-model" }] });
     faux.setResponses([fauxAssistantMessage(fauxText("Done."))]);
@@ -259,8 +251,53 @@ describe("a request whose prompt AI Gateway Guardrails blocked", () => {
       },
     }, CHAT_ID, FAUX, new AbortController().signal, OWNER,
         { provider: "cloudflare", model: "faux-model", apiToken: "" });
+    return sent;
+  }
 
+  it.each([
+    { name: "a later one", compacted: false },
+    { name: "one made after the chat compacted", compacted: true },
+  ])("does not quote a withheld edit in the diff of $name", ({ compacted }) => withImpl(async impl => {
+    seedChat(impl);
+    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
+
+    // The request that first shows the user's edit is blocked, so the edit is withheld.
+    editNotes(impl, "first\nthe injection\nlast\n");
+    await blockTurn(impl);
+
+    if (compacted) {
+      // `/compact` after one more exchange leaves neither the edit nor the block for replay.
+      impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: "Hi again" }]);
+      await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello again."))]);
+      await compact(impl);
+      expect(impl.loadChatHistory(CHAT_ID).chatMessages.map(msg => msg.type))
+          .toEqual(["message", "slashCommand"]);
+    }
+
+    // An edit to the next line would quote the withheld one as context.
+    editNotes(impl, "first\nthe injection\nlast, edited\n");
+    let sent = await nextRequest(impl);
     expect(sent).toContain("notes.txt");
+    expect(sent).not.toContain("the injection");
+  }));
+
+  it("still shows an edit from before the block once the chat compacts around both",
+      () => withImpl(async impl => {
+    seedChat(impl);
+    await runScriptedTurn(impl, [fauxAssistantMessage(fauxText("Hello."))]);
+
+    // The model answers the first edit with nothing, so that edit is the newest record it was
+    // shown, and `/compact` keeps the log from there: the first edit, then the blocked one.
+    editNotes(impl, "a safe line\n");
+    await runScriptedTurn(impl, [fauxAssistantMessage([])]);
+    editNotes(impl, "a safe line\nthe injection\n");
+    await blockTurn(impl);
+    await compact(impl);
+    expect(impl.loadChatHistory(CHAT_ID).chatMessages.filter(msg => msg.type === "changes"))
+        .toHaveLength(2);
+
+    let sent = await nextRequest(impl);
+    expect(sent).toContain("a safe line");
     expect(sent).not.toContain("the injection");
   }));
 });

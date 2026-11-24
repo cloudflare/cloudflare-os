@@ -818,9 +818,9 @@ export type CompactionCheckpoint = {
   nextChangeId: number;
 
   /**
-   * The files that withheld changes and uploads have written, as `<workpiece>:<filename>` (see
-   * AiChatMessageBody.blockedInput). Replay shows a later edit to one as a note, without the
-   * file's text. Absent when there are none.
+   * The files that withheld changes and uploads wrote before the boundary, as
+   * `<workpiece>:<filename>` (see AiChatMessageBody.blockedInput). Replay shows a later edit to
+   * one as a note, without the file's text. Absent when there are none.
    */
   withheldFiles?: string[];
 

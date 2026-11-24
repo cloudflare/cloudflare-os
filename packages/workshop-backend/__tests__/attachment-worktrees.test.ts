@@ -181,8 +181,8 @@ describe("attachment worktree ingress", () => {
   it("does not quote a withheld upload in the diff of a later edit to it", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const oid = impl.gitCache.writeBlob(new TextEncoder().encode("first\nthe injection\nlast\n")).oid;
-    const chatId = await impl.newChat(user, {profile: USER}, "Read this", undefined,
-      [{oid, name: "notes.txt", mimeType: "text/plain"}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this",
+      {attachments: [{oid, name: "notes.txt", mimeType: "text/plain"}]});
     const {worktreeId} = impl.getChatAgentContext(chatId).scratch!;
 
     // AI Gateway Guardrails blocks the request that carries the upload, so its message is withheld.

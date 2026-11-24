@@ -2068,10 +2068,16 @@ async function runAgentPass(
   };
 
   // The files a withheld change or upload wrote (see blockedInput, below), as
-  // `<workpiece>:<filename>`. A diff of one, the withheld change's own or a later one's, would
-  // quote what the model must not be shown again, so it is replaced by a note and the model's
-  // knowledge of the file dropped. The checkpoint carries them across a compaction.
-  let withheldFiles = new Set(checkpoint?.withheldFiles);
+  // `<workpiece>:<filename>`, each with the sequence of the first record that did. A diff of one,
+  // the withheld change's own or a later one's, would quote what the model must not be shown
+  // again, so it is replaced by a note and the model's knowledge of the file dropped. A
+  // checkpoint carries the files withheld before its boundary, which replay no longer reaches.
+  let withheldFiles = new Map(
+      checkpoint?.withheldFiles?.map((file): [string, number] => [file, -1]));
+  let withholdFile = (workpieceId: WorkpieceId | string, filename: string, sequence: number) => {
+    let file = `${workpieceId}:${filename}`;
+    if (!withheldFiles.has(file)) withheldFiles.set(file, sequence);
+  };
 
   // A gadget pin is where its file knowledge stops being checked against committed code (from
   // here on reads are session-served and editFile skips the oid gate), so the stamped entries it
@@ -2453,7 +2459,7 @@ async function runAgentPass(
           // Its uploads are in the scratch worktree, the first of them with no change to record it.
           for (let {workspacePath} of msg.attachments ?? []) {
             if (agentContext.scratch && workspacePath !== undefined) {
-              withheldFiles.add(`${agentContext.scratch.worktreeId}:${workspacePath}`);
+              withholdFile(agentContext.scratch.worktreeId, workspacePath, msg.sequence);
             }
           }
           break;
@@ -2949,7 +2955,7 @@ async function runAgentPass(
             await seedWorktreeBasesForChange(msg.change);
             if (withheld) {
               for (let [id, files] of Object.entries(msg.change)) {
-                for (let [filename] of files) withheldFiles.add(`${id}:${filename}`);
+                for (let [filename] of files) withholdFile(id, filename, msg.sequence);
               }
             }
             diff = applyReplayedChange(msg.change, isUserActivity);
@@ -4658,12 +4664,14 @@ async function runAgentPass(
           written = {summary};
         }
 
+        let withheldBefore = [...withheldFiles].flatMap(
+            ([file, sequence]) => sequence < compactedTo ? [file] : []);
         let compacted: CompactionCheckpoint = {
           chatId,
           compactedTo,
           ...written,
           workspacePrompt: systemPromptWorkspace,
-          ...(withheldFiles.size > 0 ? {withheldFiles: [...withheldFiles]} : {}),
+          ...(withheldBefore.length > 0 ? {withheldFiles: withheldBefore} : {}),
           alwaysAvailableResources: [
             ...seenAlwaysAvailableResources(listedResources, chatMessages, compactedTo).values(),
           ],
