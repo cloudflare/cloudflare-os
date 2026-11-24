@@ -5,10 +5,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import {
-  canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType,
-  MAX_CHAT_ATTACHMENT_BYTES,
-} from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -54,7 +51,7 @@ import {
 import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { type LineSource } from "./line-window";
-import { MAX_READ_FILE_IMAGE_EDGE, readFileImageMimeType, readFileResult } from "./read-file-result";
+import { readFileImageMimeType, readFileResult } from "./read-file-result";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -1395,7 +1392,7 @@ Read the content of a file owned by a workpiece (a gadget or worktree) in your \
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 
-A PNG, JPEG or WebP image (named with a .png, .jpg, .jpeg or .webp extension) read without \`startLine\` or \`lineCount\` is shown to you as the image itself, if it is at most ${MAX_CHAT_ATTACHMENT_BYTES / (1024 * 1024)} MiB and ${MAX_READ_FILE_IMAGE_EDGE} pixels on each side. To look at an image you produce or fetch in \`executeCode\`, write it into a worktree with \`writeBytes\`, then read it in your next step.
+A PNG, JPEG or WebP image (named with a .png, .jpg, .jpeg or .webp extension) read without \`startLine\` or \`lineCount\` is shown to you as the image itself. To look at an image you produce or fetch in \`executeCode\`, write it into a worktree with \`writeBytes\`, then read it in your next step.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
