@@ -67,3 +67,12 @@ export function getDevServerConfig(args: readonly string[], envBackendHost?: str
     wranglerPort: getWranglerPortFromBackendHost(backendHost),
   };
 }
+
+/** Preserve dev diagnostics and the terminal while redacting gatekeeper tickets in Wrangler. */
+export function getDevServerEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const redactor = new URL("./redact-dev-gatekeeper-logs.ts", import.meta.url).href;
+  return {
+    ...env,
+    NODE_OPTIONS: [env.NODE_OPTIONS, `--import=${redactor}`].filter(Boolean).join(" "),
+  };
+}

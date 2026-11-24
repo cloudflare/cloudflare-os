@@ -21,7 +21,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
-import { getDevServerConfig } from "./dev-server-config.ts";
+import { getDevServerConfig, getDevServerEnv } from "./dev-server-config.ts";
 import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
@@ -703,7 +703,9 @@ const [wranglerCommand, wranglerArgv]: [string, string[]] = wranglerEntry
 
 // `spawn`, not `execFileSync`, so the deferred watchers can start once the server is up. It stays in
 // this process group with the terminal attached, so Ctrl-C reaches it as before.
-wranglerChild = spawn(wranglerCommand, wranglerArgv, { stdio: "inherit", cwd: ROOT });
+wranglerChild = spawn(wranglerCommand, wranglerArgv, {
+  stdio: "inherit", cwd: ROOT, env: getDevServerEnv(),
+});
 
 wranglerChild.on("error", err => {
   console.error(`wrangler dev could not be started: ${err.message}`);

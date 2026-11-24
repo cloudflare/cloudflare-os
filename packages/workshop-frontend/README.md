@@ -57,7 +57,9 @@ rejected. The file contents stay in the host and are saved to the user's device,
 to the sandboxed app.
 During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` origin is also
 accepted and rewritten through the frontend's authenticated `/gatekeeper/` proxy. That proxy's
-error logs omit attachment URLs and upstream error details so one-use tickets stay private.
+error logs omit attachment URLs and upstream error details. `pnpm dev-server` also redacts gatekeeper
+paths in Wrangler’s Miniflare request logger, including debug output, while retaining other
+diagnostics and the interactive terminal. One-use tickets stay private in both processes.
 
 ## Authentication modes
 

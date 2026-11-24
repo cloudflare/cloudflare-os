@@ -94,3 +94,79 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   expect(output).toContain('/gatekeeper/[redacted]')
   expect(output).not.toContain('one-use-ticket-fixture')
 })
+
+it.each(['log', 'debug'])('keeps tickets out of the real Wrangler upstream at %s level', level => {
+  const plugin = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
+  const configuration = new URL('../../scripts/dev-server-config.ts', import.meta.url).href
+  const binEntry = new URL('../../scripts/bin-entry.ts', import.meta.url).href
+  const teardown = new URL('../../scripts/kill-process-tree.ts', import.meta.url).href
+  const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
+  const program = `
+    import {createServer} from 'node:net';
+    import {spawn, spawnSync} from 'node:child_process';
+    import {mkdtemp, writeFile, rm} from 'node:fs/promises';
+    import {tmpdir} from 'node:os';
+    import {join} from 'node:path';
+    import {createServer as createViteServer} from 'vite';
+    import {gatekeeperDevProxy} from ${JSON.stringify(plugin)};
+    import {getDevServerEnv} from ${JSON.stringify(configuration)};
+    import {resolveBinEntry} from ${JSON.stringify(binEntry)};
+    import {killProcessTree} from ${JSON.stringify(teardown)};
+    const dir = await mkdtemp(join(tmpdir(), 'gatekeeper-log-fixture-'));
+    const socket = createServer();
+    await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
+    const port = socket.address().port;
+    await new Promise(resolve => socket.close(resolve));
+    await writeFile(join(dir, 'wrangler.json'), JSON.stringify({
+      name: 'gatekeeper-log-fixture', main: 'worker.js', compatibility_date: '2025-01-01', send_metrics: false,
+    }));
+    await writeFile(join(dir, 'worker.js'), 'export default {fetch(request) { console.info("WORKER_DIAGNOSTIC_VISIBLE"); return new Response(new URL(request.url).pathname, {status: request.url.endsWith("/fail") ? 503 : 200}); }}');
+    const build = spawnSync(process.execPath, ['-e', 'console.log("BUILD_SUBPROCESS_OK")', 'fixture-argument'], {cwd: dir, env: getDevServerEnv(process.env), encoding: 'utf8'});
+    if (build.status !== 0 || !build.stdout.includes('BUILD_SUBPROCESS_OK')) throw Error('Preload interfered with a build subprocess');
+    const child = spawn(process.execPath, [resolveBinEntry(${JSON.stringify(projectRoot)}, 'wrangler'), 'dev',
+      '--local', '--port', String(port), '--inspector-port', '0', '--show-interactive-dev-session=false'], {
+      cwd: dir, env: getDevServerEnv({...process.env, WRANGLER_LOG: ${JSON.stringify(level)}, WRANGLER_LOG_SANITIZE: 'true', WRANGLER_SEND_METRICS: 'false'}),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
+    let vite;
+    try {
+      const backend = 'http://127.0.0.1:' + port;
+      const deadline = Date.now() + 15000;
+      while (true) {
+        try { await fetch(backend + '/health'); break; } catch {}
+        if (Date.now() >= deadline || child.exitCode !== null) throw Error('Wrangler did not start');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      vite = await createViteServer({configFile: false, clearScreen: false,
+        optimizeDeps: {noDiscovery: true, include: []}, plugins: [gatekeeperDevProxy('127.0.0.1:' + port)],
+        server: {host: '127.0.0.1', port: 0, hmr: false, preTransformRequests: false}});
+      await vite.listen();
+      const origin = 'http://127.0.0.1:' + vite.httpServer.address().port;
+      const path = '/gatekeeper/scheduler/upstream-ticket-fixture';
+      for (const [suffix, status] of [['', 200], ['/fail', 503]]) {
+        const response = await fetch(origin + path + suffix);
+        if (response.status !== status || await response.text() !== path + suffix) throw Error('Original upstream route not preserved');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log('UPSTREAM_FIXTURE_PASSED');
+    } finally {
+      await vite?.close();
+      if (child.exitCode === null) await killProcessTree(child.pid);
+      await rm(dir, {recursive: true, force: true});
+    }
+  `
+  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
+    cwd: fileURLToPath(new URL('.', import.meta.url)), env: {...process.env, DEBUG: '*'},
+    encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const output = child.stdout + child.stderr
+  expect(child.error).toBeUndefined()
+  expect(child.status).toBe(0)
+  expect(output).toContain('UPSTREAM_FIXTURE_PASSED')
+  expect(output).toContain('/gatekeeper/[redacted] 200')
+  expect(output).toContain('/gatekeeper/[redacted] 503')
+  expect(output).toContain('/health')
+  expect(output).toContain('WORKER_DIAGNOSTIC_VISIBLE')
+  expect(output).not.toContain('upstream-ticket-fixture')
+}, 35_000)
