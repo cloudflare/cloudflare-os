@@ -370,6 +370,19 @@ describe("the guest hotspot", () => {
     expect(await hotspot.failure("authorizeGuest", HOME.laptopId)).toMatch(/No guest with that ID/);
   });
 
+  it("finds guests past the site's first 1,000 clients on a console that ignores the guest filter", async () => {
+    const { console } = installFake();
+    console.honorsFilters = false;
+    const wired = Array.from({ length: 1000 }, (_, i) => rawClient({
+      id: `c1a0b2d3-0000-4000-9000-${String(i).padStart(12, "0")}`, name: `Desk ${i}`, type: "WIRED",
+      mac: `02:00:00:00:${String(Math.floor(i / 256)).padStart(2, "0")}:${(i % 256).toString(16).padStart(2, "0")}`,
+      ip: "192.168.1.200", uplinkDeviceId: HOME.switchId,
+    }));
+    console.network!.sites[0]!.clients.unshift(...wired);
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    expect((await hotspot.call<{ name: string }[]>("listGuests")).map(g => g.name)).toEqual(["Visitor Pixel"]);
+  });
+
   it("lets a guest on once approved, with limits, showing it before then", async () => {
     const { console } = installFake();
     const hotspot = binding(await connectCloud(), RESOURCES.hotspot);

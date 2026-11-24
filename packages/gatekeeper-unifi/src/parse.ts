@@ -95,6 +95,16 @@ export function normalizeMac(value: string): string {
   return hex.length === 12 ? hex.match(/../g)!.join(":") : value.toLowerCase();
 }
 
+/**
+ * Whether a MAC address can identify hardware: six bytes, and not all zeros or all ones, which
+ * UniFi and proxies give for an address they don't have. Only such an address may prove a console
+ * is the same one.
+ */
+export function isUsableMac(value: string): boolean {
+  const mac = normalizeMac(value);
+  return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) && mac !== "00:00:00:00:00:00" && mac !== "ff:ff:ff:ff:ff:ff";
+}
+
 // ---------------------------------------------------------------------------
 // Pages
 
@@ -580,9 +590,9 @@ export function parseSiteManagerHost(value: unknown): SiteManagerConsole {
   if (/^[0-9A-Fa-f]{12}$/.test(prefix)) macs.add(normalizeMac(prefix));
   for (const member of optArray(user, "consoleGroupMembers")) {
     const mac = member && typeof member === "object" ? (member as Json).mac : undefined;
-    if (typeof mac === "string") macs.add(normalizeMac(mac));
+    if (typeof mac === "string" && isUsableMac(mac)) macs.add(normalizeMac(mac));
   }
-  if (reported && typeof reported.mac === "string") macs.add(normalizeMac(reported.mac));
+  if (reported && typeof reported.mac === "string" && isUsableMac(reported.mac)) macs.add(normalizeMac(reported.mac));
 
   // reportedState lists the installed applications; userData only those the console supports.
   const reportedApps = reported ? optArray(reported, "controllers")

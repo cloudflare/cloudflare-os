@@ -163,6 +163,12 @@ describe("an item's details", () => {
     await api.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }));
     const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
     await expect(bare.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }))).rejects.toMatchObject({ kind: "protocol" });
+    // The right network, but with the old settings: the change wasn't made.
+    const stale = new UnifiApi(async () => ({ ok: true, status: 200, json: raw, size: 0 }), HOME.hostId);
+    await expect(stale.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }))).rejects.toMatchObject({ kind: "protocol" });
+    const rotation = stale.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { passphrase: "brand-new-pass" }));
+    await expect(rotation).rejects.toMatchObject({ kind: "protocol" });
+    await expect(rotation.catch((error: Error) => error.message)).resolves.not.toMatch(/brand-new-pass|welcome-guests/);
   });
 
   it("finds a device listed under its ID in another case", async () => {

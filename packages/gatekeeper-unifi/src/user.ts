@@ -14,7 +14,7 @@ import { UNIFI_LOGO_URL } from "./logo";
 import { NetworkPickerUI, ProtectPickerUI, type PickerSource } from "./pickers";
 import {
   parseResourceUrl, resourceApp, resourceKindFor, UNIFI_RESOURCES, UNIFI_SUPPORTED_RESOURCES,
-  type UnifiResourceKind,
+  type UnifiResource, type UnifiResourceKind,
 } from "./resources";
 import SITE_PICKER_HTML from "./generated/unifi-site-configurator-ui.txt";
 import DEVICE_PICKER_HTML from "./generated/unifi-device-configurator-ui.txt";
@@ -69,10 +69,42 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
     if (target.appsKnown ? !target.apps[app] : !(await this.#answersAs(target.id, app))) {
       throw new Error(`That console doesn't run ${appName}.`);
     }
+    await this.#opens(resource);
     return {
       class: this.ctx.exports.UnifiGatekeeper({ props: { accountId: this.ctx.props.accountId, resource } }),
       resource: UNIFI_RESOURCES[resource.kind],
     };
+  }
+
+  /**
+   * Refuses a resource this connection can't open -- removed, or one its role can't see -- so a
+   * binding isn't made to it. An ID filled in for the user (by an agent, or a blueprint) isn't
+   * otherwise looked up before the binding is made.
+   */
+  async #opens(resource: UnifiResource): Promise<void> {
+    const account = this.#account();
+    const api = new UnifiApi(request => account.request(request), resource.consoleId);
+    const open = (): Promise<unknown> => {
+      switch (resource.kind) {
+        case "site": case "hotspot": return api.getSite(resource.siteId);
+        case "device": return api.getDevice(resource.siteId, resource.deviceId);
+        case "wifi": return api.getWifi(resource.siteId, resource.wifiNetworkId);
+        case "protect": return api.protectInfo();
+        case "camera": return api.getCamera(resource.cameraId);
+        case "sensor": return api.getSensor(resource.sensorId);
+        case "light": return api.getLight(resource.lightId);
+      }
+    };
+    try {
+      await open();
+    } catch (error) {
+      if (error instanceof UnifiError && (error.kind === "notFound" || error.kind === "forbidden")) {
+        throw new Error(
+          `This UniFi connection can't open that ${UNIFI_RESOURCES[resource.kind].title}: it may have been removed. Choose another.`,
+          { cause: error });
+      }
+      throw error;
+    }
   }
 
   /** Whether a console answers as running `app`, with the version its info endpoint reports. */

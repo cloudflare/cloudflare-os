@@ -26,7 +26,6 @@ import type {
   UnifiWifiNetworkInfo, UnifiWifiNetworkSummary,
 } from "./network-types";
 
-const GUEST_FILTER = "access.type.eq('GUEST')";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_VOUCHERS_PER_REQUEST = 100;
 
@@ -318,11 +317,9 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
 
   async listGuests(): Promise<UnifiClient[]> {
     const { api, pending } = this.#ctx.shared;
-    // Filtered here as well as by UniFi: this capability must not reveal other clients even if a
-    // console ignored the filter.
-    const guests = simulateClients(
-      (await api.listClients(this.#siteId, GUEST_FILTER)).filter(client => client.guest !== null),
-      this.#siteId, pending());
+    // Checked by the API as well as filtered by UniFi: this capability must not reveal other
+    // clients even if a console ignored the filter.
+    const guests = simulateClients(await api.listGuests(this.#siteId), this.#siteId, pending());
     await this.#ctx.observe("List UniFi WiFi guests",
       `Listed ${count(guests.length, "guest")} connected to the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
       [{ kind: "clients", siteId: this.#siteId }]);

@@ -155,26 +155,38 @@ export class UnifiApi {
       filter ? { filter } : undefined)).map(parseClient);
   }
 
+  /** The clients connected through one device, up to `MAX_LIST_ITEMS` (see `#scanClients`). */
+  async listClientsOf(siteId: string, deviceId: string): Promise<UnifiClient[]> {
+    return await this.#scanClients(siteId, "the device's",
+      client => client.uplinkDeviceId !== null && sameId(client.uplinkDeviceId, deviceId));
+  }
+
   /**
-   * The clients connected through one device, up to `MAX_LIST_ITEMS`. The client list can't be
-   * filtered by device, so it's read page by page until it ends or those are found, rather than
-   * cut at the site's first 1,000 clients, which could leave out every one of the device's.
+   * The site's guest clients, up to `MAX_LIST_ITEMS`. UniFi is asked for guests only, and they're
+   * checked here too, since a console that ignored the filter would list every client.
+   */
+  async listGuests(siteId: string): Promise<UnifiClient[]> {
+    return await this.#scanClients(siteId, "its guests", client => client.guest !== null, "access.type.eq('GUEST')");
+  }
+
+  /**
+   * The clients `matches` picks, up to `MAX_LIST_ITEMS`, read page by page until the list ends or
+   * that many are found: cut at the site's first 1,000 clients, the list could leave out every one.
    * @throws UnifiError when that would take more than `MAX_CLIENT_SCAN` clients, rather than
    * answering with what might look like all of them.
    */
-  async listClientsOf(siteId: string, deviceId: string): Promise<UnifiClient[]> {
+  async #scanClients(siteId: string, which: string, matches: (client: UnifiClient) => boolean, filter?: string): Promise<UnifiClient[]> {
     const path = `/v1/sites/${id(siteId, "site")}/clients`;
     const found: UnifiClient[] = [];
     for (let offset = 0; ; offset += PAGE_SIZE) {
       if (offset >= MAX_CLIENT_SCAN) {
         throw new UnifiError({
-          kind: "protocol",
-          message: `This site has more than ${MAX_CLIENT_SCAN} clients, so the device's couldn't all be found.`,
+          kind: "protocol", message: `This site has more than ${MAX_CLIENT_SCAN} clients, so ${which} couldn't all be found.`,
         });
       }
       const page = parseNetworkPage(await this.#json("network", "GET", path, undefined,
-        { offset: String(offset), limit: String(PAGE_SIZE) }), "client list");
-      found.push(...page.data.map(parseClient).filter(client => client.uplinkDeviceId !== null && sameId(client.uplinkDeviceId, deviceId)));
+        { offset: String(offset), limit: String(PAGE_SIZE), ...(filter && { filter }) }), "client list");
+      found.push(...page.data.map(parseClient).filter(matches));
       if (found.length >= MAX_LIST_ITEMS) return found.slice(0, MAX_LIST_ITEMS);
       if (page.data.length < PAGE_SIZE || offset + page.data.length >= page.totalCount) return found;
     }
@@ -249,13 +261,21 @@ export class UnifiApi {
 
   /**
    * Replaces a WiFi network's settings. `body` is a full settings object, from `getWifiRaw`.
-   * @throws UnifiError (protocol) unless UniFi answers with the network's updated settings: a bare
-   * success, from a proxy say, doesn't show the change was made.
+   * @throws UnifiError (protocol) unless UniFi answers with the network's settings as written: a bare
+   * success, from a proxy say, or settings that contradict the change, don't show it was made. The
+   * error never quotes a value, which may be a password.
    */
   async putWifi(siteId: string, wifiNetworkId: string, body: Record<string, unknown>): Promise<void> {
     const updated = await this.#json("network", "PUT",
       `/v1/sites/${id(siteId, "site")}/wifi/broadcasts/${id(wifiNetworkId, "WiFi network")}`, body);
     answering(parseWifiInfo(updated), wifiNetworkId, "WiFi network");
+    const receipt = asObject(updated, "WiFi network");
+    // A field the answer leaves out is no contradiction; one it shows differently is.
+    const contradicts = ["name", "enabled", "hideName"].some(key => key in receipt && receipt[key] !== body[key]) ||
+      (passphrase(receipt) !== undefined && passphrase(receipt) !== passphrase(body));
+    if (contradicts) {
+      throw new UnifiError({ kind: "protocol", message: "UniFi's answer doesn't show the WiFi network's new settings." });
+    }
   }
 
   /** A site's hotspot vouchers, newest first. */
@@ -440,6 +460,11 @@ function protectList(body: unknown, what: string): unknown[] {
 
 function badRequest(message: string): UnifiError {
   return new UnifiError({ kind: "badRequest", message });
+}
+
+/** A WiFi settings object's password, if it shows one. */
+function passphrase(settings: Record<string, unknown>): unknown {
+  return (settings.securityConfiguration as Record<string, unknown> | undefined)?.passphrase;
 }
 
 /** Whether two IDs name the same item: UniFi's are UUIDs or hex, which may be written in either case. */

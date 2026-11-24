@@ -11,7 +11,7 @@
 
 import { UnifiError, type UnifiFailure } from "./errors";
 import {
-  asObject, normalizeMac, parseDevice, parseNetworkInfo, parseNetworkPage, parseNvr,
+  asObject, isUsableMac, normalizeMac, parseDevice, parseNetworkInfo, parseNetworkPage, parseNvr,
   parseProtectInfo, parseSite, parseSiteManagerHost, parseSiteManagerList, type SiteManagerConsole,
 } from "./parse";
 import type { UnifiApp, UnifiRequest, UnifiResponse } from "./transport";
@@ -121,7 +121,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
     const nvr = await send(probeRequest("protect", "/v1/nvrs"));
     if (nvr.ok) {
       const parsed = parseNvr(jsonOf(nvr));
-      macs.add(parsed.macAddress);
+      if (isUsableMac(parsed.macAddress)) macs.add(parsed.macAddress);
       name = parsed.name;
     }
   }
@@ -138,7 +138,7 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
       if (devices.ok) {
         for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
           if (!device.roles.includes("gateway")) continue;
-          macs.add(device.macAddress);
+          if (isUsableMac(device.macAddress)) macs.add(device.macAddress);
           name ??= device.name;
         }
       }
@@ -162,6 +162,6 @@ function mostTelling(a: UnifiFailure, b: UnifiFailure): UnifiFailure {
 
 /** Whether two consoles are the same hardware, judged by their MAC addresses. */
 export function sameConsole(a: readonly string[], b: readonly string[]): boolean {
-  const set = new Set(a.map(normalizeMac));
-  return b.some(mac => set.has(normalizeMac(mac)));
+  const set = new Set(a.filter(isUsableMac).map(normalizeMac));
+  return b.filter(isUsableMac).some(mac => set.has(normalizeMac(mac)));
 }

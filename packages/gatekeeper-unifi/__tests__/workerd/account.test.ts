@@ -97,6 +97,17 @@ describe("minting a gatekeeper for a resource URL", () => {
       .toEqual({ ok: UNIFI_RESOURCES[kind as keyof typeof UNIFI_RESOURCES] });
   });
 
+  it("refuses a resource the connection can't open, such as a camera that's been removed", async () => {
+    // An ID filled in by an agent or a blueprint isn't otherwise looked up before the binding is made.
+    const { console } = installFake();
+    const accountId = await connectCloud();
+    console.protect!.cameras.splice(0, 1);
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${HOME.hostId}/protect/cameras/${HOME.doorbellId}`]))
+      .toEqual({ error: "This UniFi connection can't open that UniFi Camera: it may have been removed. Choose another." });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${site}/wifi/aa110000-0000-4000-8000-0000000000ff`]))
+      .toHaveProperty("error");
+  });
+
   it("refuses a console the connection doesn't reach", async () => {
     installFake();
     const accountId = await connectCloud();

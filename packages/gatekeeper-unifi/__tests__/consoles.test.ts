@@ -76,3 +76,23 @@ describe("matching consoles", () => {
     expect(sameConsole([], ["70:a7:41:97:83:ed"])).toBe(false);
   });
 });
+
+describe("console identity", () => {
+  it("is proven only by a MAC address that names hardware", () => {
+    expect(sameConsole(["70:a7:41:97:83:ed"], ["70A7419783ED"])).toBe(true);
+    // Blank or placeholder addresses, which a console without one or a proxy gives, prove nothing.
+    expect(sameConsole([""], [""])).toBe(false);
+    expect(sameConsole(["00:00:00:00:00:00"], ["000000000000"])).toBe(false);
+    expect(sameConsole(["not-a-mac"], ["not-a-mac"])).toBe(false);
+  });
+
+  it("leaves a blank NVR address out of what a direct console is known by", async () => {
+    const console = homeConsole();
+    console.protect!.nvr.mac = "";
+    console.network = null;
+    const unifi = new FakeUnifi().addDirectConsole("https://blank.example", console, "k-0123456789abcdef0123");
+    const facts = await probeDirectConsole(request =>
+      sendUnifiRequest({ mode: "direct", baseUrl: "https://blank.example", apiKey: "k-0123456789abcdef0123" }, request, unifi.fetch));
+    expect(facts.macs).toEqual([]);
+  });
+});
