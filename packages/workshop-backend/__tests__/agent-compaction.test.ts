@@ -278,6 +278,25 @@ describe("compaction boundary", () => {
     expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, 1, 1, true)).toBeUndefined();
   });
 
+  // A tool result is a user message to the API, so the prompt, after one, doesn't change role; the
+  // turn protects it (2), so the cut doesn't move on past it to the exchange recording its uploads.
+  it("never moves a native compaction's cut past what must stay", () => {
+    let text = (role: "user", body: string) => ({role, content: body, timestamp: 0});
+    let toolResult = {role: "toolResult" as const, toolCallId: "call", toolName: "observeUserChanges",
+      content: [{type: "text" as const, text: "ok"}], isError: false, timestamp: 0};
+    let entries = [
+      {message: text("user", "first request"), sequence: 0, canCut: true},
+      {message: assistantMessage([{type: "text", text: "working"}]), sequence: 1, canCut: true},
+      {message: toolResult, sequence: 1},
+      {message: text("user", "x".repeat(20_000)), sequence: 2, canCut: true},
+      {message: assistantMessage([{type: "text", text: "uploads"}]), sequence: 3, canCut: true},
+      {message: toolResult, sequence: 3},
+    ];
+
+    expect(findCompactionBoundary(entries, 100_000, 40_000)).toBe(2);
+    expect(findCompactionBoundary(entries, 100_000, 40_000, 0, 2, undefined, true)).toBe(1);
+  });
+
   // A `/compact` of a chat ending in messages queued after the agent's reply: nothing after the
   // newest record changes role, so the cut goes back to the last place that does.
   it("moves a native compaction's cut back when none after it changes role", () => {
