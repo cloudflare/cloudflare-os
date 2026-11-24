@@ -96,6 +96,9 @@ import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
+import {
+  fetchPolicyRefusal, type FetchAuthorization, type FetchLoopbackProps, type FetchPolicy,
+} from "./fetch-loopback";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type {
   AgentSpawnerBinding, CallableAgent, SpawnCallableOptions, SpawnedAgent,
@@ -3360,6 +3363,16 @@ class OverseerImpl implements AgentHooks {
     return this.ctx.exports.GatekeeperLoopback({props});
   }
 
+  // A fetcher for `caller`'s requests (see fetch-loopback.ts and FetchLoopbackProps), which asks
+  // this workspace about each one except a request to one of `trustedHosts`. `executionId` names
+  // the executeCode call it is minted for, which its requests to the workspace stop being allowed
+  // with.
+  makeFetchLoopback(caller: GatekeeperCaller,
+                    options: {executionId?: string, agentDriven: boolean, trustedHosts?: string[]}) {
+    let props: FetchLoopbackProps = {overseerId: this.ctx.id.toString(), caller, ...options};
+    return this.ctx.exports.FetchLoopback({props});
+  }
+
   // Build the flat `env` handed to a gadget's dynamically-loaded worker: the gadget's named
   // bindings plus `GADGET` (the gadget's self-stub, kept for back-compat with existing gadget
   // code). `forChatId` scopes visibility of provisional binding edges: an edge pending in that
@@ -5396,7 +5409,10 @@ class OverseerImpl implements AgentHooks {
         mainModule: "server.js",
         modules: gadgetModules(files),
         env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
-        globalOutbound: null,
+        // The worker is cached across calls, which may read restricted data, so its fetcher asks
+        // the workspace about every request.
+        globalOutbound: this.makeFetchLoopback({from: "gadget", chatId, gadgetId},
+                                               {agentDriven: false}),
 
         // TODO: Switch to streaming tails when the workerd log spam issue is fixed.
         tails: [this.ctx.exports.GadgetTailLoopback({props: tailProps})],
@@ -6788,49 +6804,79 @@ class OverseerImpl implements AgentHooks {
     await Promise.all(removals);
   }
 
-  // Decides how webFetch may fetch `url` for the chat (see AgentHooks.authorizeWebFetch).
-  async authorizeWebFetch(chatId: number, url: string)
-      : Promise<{env: WebFetchEnv} | {approvalMessage: string}> {
-    // Once the workspace has observed restricted data, a URL can carry it to whoever sees the
-    // request, so only the hosts an admin trusts with that data are reachable, or a URL a user
-    // approves where the admin allows that.
-    let config = this.storage.containsRestrictedData.get()
-        ? await readAdminConfig(this.env) : undefined;
-    let allowedHosts = config && new Set(config.restrictedWebFetchHosts);
-    if (config?.restrictedWebFetchApprovals) {
-      let href = validateWebFetchUrl(url).href;
-      // An approved URL's redirects need no checks: the site picks them knowing only that URL.
-      if (this.#webFetchApproved(chatId, href)) {
-        allowedHosts = undefined;
-      } else {
-        try {
-          validateWebFetchUrl(href, allowedHosts);
-        } catch {
-          // What the trusted hosts refuse is what the user is asked to decide.
-          this.#captureDecisionRequest(chatId,
-              {type: "webFetchRequest", requestId: `${chatId}:${crypto.randomUUID()}`, url: href,
-               state: "pending"});
-          return {approvalMessage:
-              `This workspace has observed sensitive data, so fetching ${href} needs the user's ` +
-              `approval. The request was sent to the user and your turn will end now. If they ` +
-              `approve, you'll be resumed and can fetch it.`};
-        }
-      }
-    } else if (allowedHosts?.size === 0) {
-      // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
-      //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
-      //   a search index, then it's not leaking anything. If we had a search provider we could
-      //   trust... for now though, we will be extra-careful specifically when prohibiting sharing.
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
-          "from fetching from public web sites.");
-    }
-
-    return {env: {
+  // AgentHooks.getWebFetchEnv(): the Workers AI binding for document conversion, and a fetcher
+  // that asks this workspace about every request.
+  getWebFetchEnv(chatId: number): WebFetchEnv {
+    return {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
-      allowedHosts,
-    }};
+      fetcher: this.makeFetchLoopback({from: "agent", chatId}, {agentDriven: true}),
+    };
+  }
+
+  // The fetch policy this workspace applies now. Once it has observed restricted data, a URL can
+  // carry that data to whoever sees the request, so only the hosts an admin trusts with it are
+  // reachable, or a URL a user approves where the admin allows that.
+  async fetchPolicy(): Promise<FetchPolicy> {
+    if (!this.storage.containsRestrictedData.get()) return {approvals: false};
+    let config = await readAdminConfig(this.env);
+    return {
+      allowedHosts: config.restrictedWebFetchHosts,
+      approvals: config.restrictedWebFetchApprovals,
+    };
+  }
+
+  // Decides whether `caller` may send a `method` request for `url` through a FetchLoopback, and
+  // records each request it allows. `executionId` is the executeCode call an agent caller's
+  // fetcher was minted for; the webFetch tool's has none.
+  async authorizeFetch(caller: GatekeeperCaller, executionId: string | undefined,
+                       method: string, url: string): Promise<FetchAuthorization> {
+    let href = validateWebFetchUrl(url).href;
+    let policy = await this.fetchPolicy();
+
+    // A fetcher can outlive its workspace. A deleted one's storage reads as unrestricted, and must
+    // stay empty, so nothing is allowed or recorded.
+    if (!this.ownerId) return {allowed: false, message: "Workspace has been deleted."};
+
+    // As for the execution's gatekeeper sessions (ApprovalQueueImpl), and checked after the await
+    // above. Past this check an agent's turn is still running, so a card it asks for will attach to
+    // a step and end the turn.
+    if (caller.from === "agent" && executionId !== undefined) {
+      if (!this.isLiveExecution(caller.chatId, executionId)) {
+        return {allowed: false, message: "The code execution this request belongs to has ended."};
+      }
+      if (this.isStoppedExecution(caller.chatId, executionId)) {
+        return {allowed: false,
+                message: "The user stopped the agent turn this request belongs to."};
+      }
+    }
+
+    let approved = false;
+    let refusal = fetchPolicyRefusal(policy, href);
+    if (refusal !== undefined) {
+      // Only an agent can wait for the user's decision: nothing else has a turn to end.
+      if (!policy.approvals || caller.from !== "agent") return {allowed: false, message: refusal};
+      if (!this.#webFetchApproved(caller.chatId, href)) {
+        // What the trusted hosts refuse is what the user is asked to decide, once per URL however
+        // often the step asks for it: the user would otherwise have to approve each copy.
+        let captured = this.#capturedDecisionRequests.get(caller.chatId) ?? [];
+        if (!captured.some(body => body.type === "webFetchRequest" && body.url === href)) {
+          this.#captureDecisionRequest(caller.chatId,
+              {type: "webFetchRequest", requestId: `${caller.chatId}:${crypto.randomUUID()}`,
+               url: href, state: "pending"});
+        }
+        return {allowed: false, approvalRequested: true, message:
+            `This workspace has observed sensitive data, so fetching ${href} needs the user's ` +
+            `approval. The request was sent to the user and your turn will end now. If they ` +
+            `approve, you'll be resumed and can fetch it.`};
+      }
+      approved = true;
+    }
+
+    let host = new URL(href).host;
+    this.#recordBuiltinObservation(caller, `Web fetch: ${host}`, href,
+        {title: `Fetched ${host}`, description: `${method} \`${href}\``});
+    return {allowed: true, restricted: policy.allowedHosts !== undefined, approved};
   }
 
   // Whether the user approved fetching `href` since the current turn began. A decision's nudge
@@ -6845,17 +6891,15 @@ class OverseerImpl implements AgentHooks {
     return false;
   }
 
-  // Record an observation that originated from a built-in agent tool (not a gatekeeper).
-  // The `gatekeeperId` is set to the BUILTIN_TOOL_GATEKEEPER_ID sentinel so that downstream
-  // code (which expects a gatekeeper to dereference for approve/reject) never touches it —
-  // observations bypass the approve/reject paths anyway.
-  async recordAgentObservation(
-      chatId: number,
+  // Record an observation made by the workspace itself on `caller`'s behalf (a fetch), not by a
+  // gatekeeper. The `gatekeeperId` is set to the BUILTIN_TOOL_GATEKEEPER_ID sentinel so that
+  // downstream code (which expects a gatekeeper to dereference for approve/reject) never touches
+  // it — observations bypass the approve/reject paths anyway.
+  #recordBuiltinObservation(
+      caller: GatekeeperCaller,
       resourceTitle: string,
       resourceUrl: string | undefined,
-      description: ObservationDescription): Promise<void> {
-    let caller: GatekeeperCaller = {from: "agent", chatId};
-
+      description: ObservationDescription): void {
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
@@ -10292,7 +10336,10 @@ class OverseerImpl implements AgentHooks {
         // The agent's env holds the chat's named bindings (see getEnvForAgent).
         env: this.getEnvForAgent(chatId, bindings, executionId),
         tails: [this.ctx.exports.CodeModeTailLoopback({props: tailProps})],
-        globalOutbound: null,
+        // The code can read restricted data through its env and fetch on the next line, so its
+        // fetcher asks the workspace about every request.
+        globalOutbound: this.makeFetchLoopback({from: "agent", chatId},
+                                               {executionId, agentDriven: true}),
       };
 
       let entrypoint = this.env.LOADER.load(workerDef).getEntrypoint<CodeModeEntrypoint>();
@@ -12372,6 +12419,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       initiatorUserId: string, initiatorModelId: string | null): Promise<void> {
     return this.impl.deliverAgentCallback(
         chatId, methodName, args, initiatorUserId, initiatorModelId);
+  }
+
+  /** Called by FetchLoopback for each request it is asked to send. */
+  authorizeFetch(caller: GatekeeperCaller, executionId: string | undefined, method: string,
+                 url: string): Promise<FetchAuthorization> {
+    return this.impl.authorizeFetch(caller, executionId, method, url);
   }
 
   [restore](params: OverseerRestoreParams): any {
@@ -15681,6 +15734,14 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   async getExecutionId(): Promise<string | undefined> {
     return this.executionId;
+  }
+
+  async getFetcher(): Promise<Fetcher> {
+    let {restrictedWebFetchHosts} = await readAdminConfig(this.impl.env);
+    // After the await, so a session that ended while the hosts were read gets no fetcher.
+    await this.requireLive();
+    return this.impl.makeFetchLoopback(this.caller, {executionId: this.executionId,
+        agentDriven: false, trustedHosts: restrictedWebFetchHosts});
   }
 
   // The gatekeeper released its last stub of this queue.
