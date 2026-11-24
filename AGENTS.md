@@ -81,7 +81,7 @@ Each Worker's `cloudflare.config.ts` (`@cloudflare/config` format, built from th
 
 IMPORTANT: This repository uses pnpm, not npm. Always use pnpm.
 
-- Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build.
+- Run `pnpm lint` before pushing; it includes script types, generated-config checks, and the workspace build. CI's Lint job then builds the release (`node scripts/release/build-release.ts --out <dir>`), which fails on a Worker bundle that holds a character above U+00FF.
 - `pnpm build` runs type-checks and codegen. For one package use `pnpm exec vp run -F <package> build`; most builds are tasks, not package.json scripts.
 - Use `pnpm --filter <package> test:run` while iterating and `pnpm test` for workspace verification. Cached tasks may replay results; cold-checkout tests must generate their own prerequisites on both entrypoints.
 - Check backend, API and agent changes end to end with `pnpm cf-os api` against a running `pnpm dev-server`, and use a browser only for what needs the UI: `new-chat`, `wait-for-agent`, `get-chat-history` and `merge-changes` drive a whole agent turn and print JSON. Find commands with `pnpm cf-os api search "<task>"` and `types <service>` (bare `types` is the whole API), after `create-account` with `CFOS_API_PASSWORD` (see `packages/api-cli/README.md`).

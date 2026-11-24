@@ -13,6 +13,11 @@ How customer instances get deployed.
   commit, run `pnpm build`, then `pnpm exec wrangler deploy --dry-run --outdir <dir>` in the
   Worker's package, which writes the bundle with its map. The map fits the release when the
   bundle's SHA-256 is the module's in the manifest.
+- The build fails if a bundle holds a character above U+00FF: V8 would store all of that Worker's
+  source two bytes per character. Minifying leaves one only in a regular expression literal or a
+  legal comment (`/*!`, `@license`).
+- Public CI runs the build on every pull request, forks included, so it must not need a secret or
+  a `CI_*` variable.
 - Each worker's manifest entry has a `kind`: `backend`, `router`, `gatekeeper` or `internal`. An
   `internal` worker (`INTERNAL_WORKERS` in `manifest-lib.ts`, listed by name) is one that other
   workers reach through a service binding and nothing routes to. Its kind is what says it is
