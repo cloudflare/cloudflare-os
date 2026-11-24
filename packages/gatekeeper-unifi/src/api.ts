@@ -92,7 +92,7 @@ export class UnifiApi {
   /** One site, or a `notFound` error. */
   async getSite(siteId: string): Promise<NetworkSite> {
     id(siteId, "site");
-    const site = (await this.listSites()).find(s => s.id === siteId);
+    const site = (await this.listSites()).find(s => sameId(s.id, siteId));
     if (!site) throw new UnifiError({ kind: "notFound", message: "That site isn't on this console." });
     return site;
   }
@@ -105,7 +105,7 @@ export class UnifiApi {
   /** Whether a device is the site's gateway, from the device list; null when the list doesn't say. */
   async isGateway(siteId: string, deviceId: string): Promise<boolean | null> {
     const listed = (await this.#list("network", `/v1/sites/${id(siteId, "site")}/devices`, "device list"))
-      .find(device => asObject(device, "device").id === deviceId);
+      .find(device => sameId(String(asObject(device, "device").id), deviceId));
     if (!listed) throw new UnifiError({ kind: "notFound", message: "That device isn't on this site." });
     return listedAsGateway(listed);
   }
@@ -122,9 +122,9 @@ export class UnifiApi {
       this.#json("network", "GET", `/v1/sites/${id(siteId, "site")}/devices/${id(deviceId, "device")}`),
       this.listDevices(siteId),
     ]);
-    const listed = devices.find(device => device.id === deviceId);
+    const listed = devices.find(device => sameId(device.id, deviceId));
     if (!listed) throw new UnifiError({ kind: "notFound", message: "That device isn't on this site." });
-    return parseDeviceDetails(details, listed.roles);
+    return answering(parseDeviceDetails(details, listed.roles), deviceId, "device");
   }
 
   /** One device's latest statistics. */
@@ -155,8 +155,8 @@ export class UnifiApi {
 
   /** One connected client's details. */
   async getClient(siteId: string, clientId: string): Promise<UnifiClientDetails> {
-    return parseClientDetails(await this.#json("network", "GET",
-      `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}`));
+    return answering(parseClientDetails(await this.#json("network", "GET",
+      `/v1/sites/${id(siteId, "site")}/clients/${id(clientId, "client")}`)), clientId, "client");
   }
 
   /** Authorizes a guest client. */
@@ -184,8 +184,10 @@ export class UnifiApi {
 
   /** One WiFi network's settings, as UniFi returns them, for reading or for `putWifi`. */
   async getWifiRaw(siteId: string, wifiNetworkId: string): Promise<Record<string, unknown>> {
-    return asObject(await this.#json("network", "GET",
+    const raw = asObject(await this.#json("network", "GET",
       `/v1/sites/${id(siteId, "site")}/wifi/broadcasts/${id(wifiNetworkId, "WiFi network")}`), "WiFi network");
+    answering({ id: String(raw.id) }, wifiNetworkId, "WiFi network");
+    return raw;
   }
 
   /** One WiFi network's settings, parsed. */
@@ -217,8 +219,8 @@ export class UnifiApi {
     if (ids.length === 0) return [];
     for (const voucherId of ids) id(voucherId, "voucher");
     const path = `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`;
-    const wanted = new Set(ids);
-    const isWanted = (raw: unknown) => wanted.has(String(asObject(raw, "voucher").id));
+    const wanted = new Set(ids.map(voucherId => voucherId.toLowerCase()));
+    const isWanted = (raw: unknown) => wanted.has(String(asObject(raw, "voucher").id).toLowerCase());
     try {
       const filtered = parseNetworkPage(await this.#json("network", "GET", path, undefined,
         { filter: `id.in(${ids.join(",")})`, offset: "0", limit: String(PAGE_SIZE) }), "voucher list");
@@ -289,7 +291,7 @@ export class UnifiApi {
 
   /** One camera. */
   async getCamera(cameraId: string): Promise<UnifiCameraInfo> {
-    return parseCamera(await this.#json("protect", "GET", `/v1/cameras/${id(cameraId, "camera")}`));
+    return answering(parseCamera(await this.#json("protect", "GET", `/v1/cameras/${id(cameraId, "camera")}`)), cameraId, "camera");
   }
 
   /** Changes a camera's settings. */
@@ -337,7 +339,7 @@ export class UnifiApi {
 
   /** One sensor. */
   async getSensor(sensorId: string): Promise<UnifiSensorInfo> {
-    return parseSensor(await this.#json("protect", "GET", `/v1/sensors/${id(sensorId, "sensor")}`));
+    return answering(parseSensor(await this.#json("protect", "GET", `/v1/sensors/${id(sensorId, "sensor")}`)), sensorId, "sensor");
   }
 
   /** Every floodlight. */
@@ -347,7 +349,7 @@ export class UnifiApi {
 
   /** One floodlight. */
   async getLight(lightId: string): Promise<UnifiLightInfo> {
-    return parseLight(await this.#json("protect", "GET", `/v1/lights/${id(lightId, "floodlight")}`));
+    return answering(parseLight(await this.#json("protect", "GET", `/v1/lights/${id(lightId, "floodlight")}`)), lightId, "floodlight");
   }
 
   /** Changes a floodlight's settings. */
@@ -387,6 +389,22 @@ function protectList(body: unknown, what: string): unknown[] {
 
 function badRequest(message: string): UnifiError {
   return new UnifiError({ kind: "badRequest", message });
+}
+
+/** Whether two IDs name the same item: UniFi's are UUIDs or hex, which may be written in either case. */
+export function sameId(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * An item's details, checked to be the item asked for: a misrouted answer, from a proxy say, would
+ * otherwise be read, or changed, as the bound one.
+ */
+function answering<T extends { id: string }>(item: T, requested: string, what: string): T {
+  if (!sameId(item.id, requested)) {
+    throw new UnifiError({ kind: "protocol", message: `UniFi answered with a different ${what} than was asked for.` });
+  }
+  return item;
 }
 
 function id(value: string, what: string): string {

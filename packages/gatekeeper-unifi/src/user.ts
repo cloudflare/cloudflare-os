@@ -7,7 +7,9 @@ import type {
   SupportedResource,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { UnifiApi } from "./api";
 import { getBaseUrl, type UnifiEnv } from "./env";
+import { UnifiError } from "./errors";
 import { UNIFI_LOGO_URL } from "./logo";
 import { NetworkPickerUI, ProtectPickerUI, type PickerSource } from "./pickers";
 import {
@@ -63,15 +65,27 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
     const appName = app === "network" ? "UniFi Network" : "UniFi Protect";
     if (!target.permissions[app]) throw new Error(`This UniFi connection can't use ${appName} on that console.`);
     // Owning a console grants every application, including ones it doesn't run. Where Site Manager
-    // didn't say which it runs, the console is asked.
-    const runs = target.appsKnown ? target.apps[app] : (await this.#account().request({
-      target: { kind: "app", app, consoleId: target.id }, method: "GET", path: app === "network" ? "/v1/info" : "/v1/meta/info",
-    })).ok;
-    if (!runs) throw new Error(`That console doesn't run ${appName}.`);
+    // didn't say which are installed, the console is asked, and must answer with the app's version.
+    if (target.appsKnown ? !target.apps[app] : !(await this.#answersAs(target.id, app))) {
+      throw new Error(`That console doesn't run ${appName}.`);
+    }
     return {
       class: this.ctx.exports.UnifiGatekeeper({ props: { accountId: this.ctx.props.accountId, resource } }),
       resource: UNIFI_RESOURCES[resource.kind],
     };
+  }
+
+  /** Whether a console answers as running `app`, with the version its info endpoint reports. */
+  async #answersAs(consoleId: string, app: "network" | "protect"): Promise<boolean> {
+    const account = this.#account();
+    const api = new UnifiApi(request => account.request(request), consoleId);
+    try {
+      await (app === "network" ? api.networkInfo() : api.protectInfo());
+      return true;
+    } catch (error) {
+      if (error instanceof UnifiError && ["notFound", "forbidden", "protocol", "redirect"].includes(error.kind)) return false;
+      throw error;
+    }
   }
 
   async startResourceConfigurator(resourceTypeId: string): Promise<ResourceConfiguratorFrame> {

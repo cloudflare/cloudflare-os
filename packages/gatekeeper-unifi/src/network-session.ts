@@ -11,6 +11,7 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { UnifiError } from "./errors";
 import type { VoucherRequest } from "./actions";
+import { sameId } from "./api";
 import { parseWifiInfo, PERSONAL_SECURITY_TYPES, wifiPassphrase } from "./parse";
 import {
   isPlaceholderVoucherId, simulateClientDetails, simulateClients, simulatePassphrase, simulateVouchers,
@@ -394,7 +395,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       // Looked up afresh by ID: listVouchers() stops at 1,000 in no promised order.
       const current = await api.findVouchers(this.#siteId, ids);
       // Simulation hides pending deletions; it would add other batches' placeholders, which are dropped.
-      vouchers = simulateVouchers(current, this.#siteId, pending()).filter(voucher => ids.includes(voucher.id));
+      vouchers = simulateVouchers(current, this.#siteId, pending()).filter(voucher => ids.some(stored => sameId(stored, voucher.id)));
     }
     await this.#ctx.observe("Read a batch of UniFi hotspot vouchers",
       `Read ${count(vouchers.length, "voucher")} created together for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
@@ -410,10 +411,10 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     // By ID, so a voucher listVouchers() doesn't reach can still be deleted.
     const vouchers = simulateVouchers(
       await this.#ctx.shared.api.findVouchers(this.#siteId, [voucherId]), this.#siteId, this.#ctx.shared.pending());
-    const voucher = vouchers.find(v => v.id === voucherId);
+    const voucher = vouchers.find(v => sameId(v.id, voucherId));
     if (!voucher) throw new UnifiError({ kind: "notFound", message: "There's no voucher with that ID." });
-    await this.#ctx.submit("deleteVoucher",
-      { siteId: this.#siteId, voucherId, note: voucher.note });
+    // Under the ID as UniFi spells it, which simulation matches.
+    await this.#ctx.submit("deleteVoucher", { siteId: this.#siteId, voucherId: voucher.id, note: voucher.note });
   }
 
   /** The client, simulated, if it's a guest; the same error whether it isn't one or doesn't exist. */

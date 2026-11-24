@@ -106,6 +106,7 @@ describe("subresource IDs", () => {
     for (const requirement of [
       { kind: "app" }, { kind: "camera", id: CAMERA }, { kind: "list", id: "cameras" }, { kind: "vouchers", siteId: SITE },
       { kind: "snapshot", id: CAMERA }, { kind: "client", siteId: SITE, clientId: "c" },
+      { kind: "deviceStatistics", siteId: SITE, deviceId: "d" },
     ] as const) {
       expect(() => probeConfirms(requirement, undefined, "protect"), requirement.kind).toThrow();
       expect(() => probeConfirms(requirement, { hello: "proxy" }, "protect"), requirement.kind).toThrow();

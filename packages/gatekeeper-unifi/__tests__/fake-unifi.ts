@@ -298,21 +298,21 @@ export class FakeConsole {
 
     if (method === "GET" && rest === "/devices") return page(site.devices.map(d => d.overview));
     if ((m = /^\/devices\/([^/]+)$/.exec(rest)) && method === "GET") {
-      const device = site.devices.find(d => d.overview.id === m![1]);
+      const device = site.devices.find(d => (d.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       return device ? json(200, device.details) : notFound();
     }
     if ((m = /^\/devices\/([^/]+)\/statistics\/latest$/.exec(rest)) && method === "GET") {
-      const device = site.devices.find(d => d.overview.id === m![1]);
+      const device = site.devices.find(d => (d.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       return device ? json(200, device.statistics) : notFound();
     }
     if ((m = /^\/devices\/([^/]+)\/actions$/.exec(rest)) && method === "POST") {
-      const device = site.devices.find(d => d.overview.id === m![1]);
+      const device = site.devices.find(d => (d.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       if (!device) return notFound();
       if ((body as Raw)?.action !== "RESTART") return networkError(400, "BAD_REQUEST", "Unknown action", path);
       return json(200, undefined);
     }
     if ((m = /^\/devices\/([^/]+)\/interfaces\/ports\/(\d+)\/actions$/.exec(rest)) && method === "POST") {
-      const device = site.devices.find(d => d.overview.id === m![1]);
+      const device = site.devices.find(d => (d.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       const port = (device?.details.interfaces.ports as Raw[] | undefined)?.find(p => p.idx === Number(m![2]));
       if (!device || !port) return notFound();
       if (!port.poe?.enabled) return networkError(400, "BAD_REQUEST", "Port does not supply PoE", path);
@@ -324,11 +324,11 @@ export class FakeConsole {
       return page(site.clients.map(c => c.overview).filter(c => !guestOnly || c.access.type === "GUEST"));
     }
     if ((m = /^\/clients\/([^/]+)$/.exec(rest)) && method === "GET") {
-      const client = site.clients.find(c => c.overview.id === m![1]);
+      const client = site.clients.find(c => (c.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       return client ? json(200, client.details) : notFound();
     }
     if ((m = /^\/clients\/([^/]+)\/actions$/.exec(rest)) && method === "POST") {
-      const client = site.clients.find(c => c.overview.id === m![1]);
+      const client = site.clients.find(c => (c.overview.id as string).toLowerCase() === m![1]!.toLowerCase());
       if (!client) return notFound();
       if (client.overview.access.type !== "GUEST") return networkError(400, "BAD_REQUEST", "Client is not a guest", path);
       const request = body as Raw;
@@ -577,6 +577,11 @@ export class FakeUnifi {
   readonly direct = new Map<string, DirectConsole>();
   /** Requests the Cloud Connector allows each console per minute. */
   connectorLimit = 100;
+  /**
+   * Leaves Site Manager's installed-app list out, as hosts whose `reportedState` is null do; only
+   * the supported list, which says what could run rather than what does, remains.
+   */
+  hidesInstalledApps = false;
   #connectorCounts = new Map<string, number>();
 
   /** Registers a cloud API key. */
@@ -656,7 +661,7 @@ export class FakeUnifi {
         controllers: [...(console.network ? ["network"] : []), ...(console.protect ? ["protect"] : [])],
         consoleGroupMembers: [{ mac: console.mac, role: "PRIMARY" }],
       },
-      reportedState: {
+      reportedState: this.hidesInstalledApps ? null : {
         name: console.name, hostname: console.name.toLowerCase().replace(/\s+/g, "-"),
         controllers: [
           ...(console.network ? [{ name: "network", version: console.network.version, state: "active" }] : []),

@@ -123,6 +123,21 @@ describe("minting a gatekeeper for a resource URL", () => {
       .toEqual({ error: "This UniFi connection can't use UniFi Protect on that console." });
   });
 
+  it("asks a console whose installed apps Site Manager doesn't list whether it runs one", async () => {
+    // Its supported list says Network only, but that's what could run, not what does: still offered, then asked.
+    const { unifi } = installFake();
+    const networkOnly = homeConsole();
+    networkOnly.protect = null;
+    unifi.cloud.get([...unifi.cloud.keys()][0]!)!.owned = [networkOnly];
+    unifi.hidesInstalledApps = true;
+    const accountId = await connectCloud();
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.protect.id, "listConsoles", [""])).toMatchObject({ ok: [{ value: HOME.hostId }] });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${HOME.hostId}/protect`]))
+      .toEqual({ error: "That console doesn't run UniFi Protect." });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${HOME.hostId}/network/sites/${HOME.siteId}`]))
+      .toMatchObject({ ok: { id: "site" } });
+  });
+
   it("doesn't offer or connect an owned cloud console's application it doesn't run", async () => {
     // Owning a console grants every application, including ones it doesn't run.
     const { unifi } = installFake();

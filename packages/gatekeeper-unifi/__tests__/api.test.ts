@@ -146,3 +146,20 @@ describe("creating vouchers", () => {
     expect(await receipt({ vouchers: [voucher] }).createVouchers(HOME.siteId, { ...body, count: 1 })).toHaveLength(1);
   });
 });
+
+describe("an item's details", () => {
+  it("must be the item asked for, in either case", async () => {
+    const { api, console } = setup();
+    const guest = console.network!.sites[0]!.wifi.find(w => w.id === HOME.guestWifiId)!;
+    expect((await api.getWifi(HOME.siteId, HOME.guestWifiId.toUpperCase())).id).toBe(HOME.guestWifiId);
+    // A misrouted answer about another network isn't read, or changed, as this one.
+    const misrouted = new UnifiApi(async () => ({ ok: true, status: 200, json: guest, size: 0 }), HOME.hostId);
+    await expect(misrouted.getWifiRaw(HOME.siteId, HOME.homeWifiId)).rejects.toMatchObject({ kind: "protocol" });
+  });
+
+  it("finds a device listed under its ID in another case", async () => {
+    const { api } = setup();
+    expect((await api.getDevice(HOME.siteId, HOME.apId.toUpperCase())).id).toBe(HOME.apId);
+    expect(await api.isGateway(HOME.siteId, HOME.gatewayId.toUpperCase())).toBe(true);
+  });
+});

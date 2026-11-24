@@ -175,6 +175,9 @@ describe("Site Manager hosts", () => {
   it("says when it doesn't know which applications a console runs", () => {
     const unlisted = { ...host, userData: { ...host.userData, controllers: undefined }, reportedState: { name: "Home" } };
     expect(parseSiteManagerHost(unlisted)).toMatchObject({ apps: { network: false, protect: false }, appsKnown: false });
+    // The supported list alone says what could run, not what does.
+    expect(parseSiteManagerHost({ ...host, reportedState: null }))
+      .toMatchObject({ apps: { network: true, protect: true }, appsKnown: false });
   });
 
   it("reads a console's name, apps, permissions, and MACs", () => {

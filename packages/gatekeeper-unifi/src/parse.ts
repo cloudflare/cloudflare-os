@@ -232,7 +232,9 @@ export function parseDeviceDetails(value: unknown, roles: UnifiDeviceRole[]): Un
 export function parseDeviceStatistics(value: unknown): UnifiDeviceStatistics {
   const o = asObject(value, "device statistics");
   const uplink = optObject(o, "uplink") ?? {};
-  const interfaces = optObject(o, "interfaces") ?? {};
+  // Required by the API (every other field may be left out), so an answer without it isn't statistics.
+  const interfaces = optObject(o, "interfaces");
+  if (!interfaces) throw new UnifiError({ kind: "protocol", message: "UniFi returned unexpected device statistics." });
   return {
     uptimeSeconds: optNum(o, "uptimeSec"),
     cpuPercent: optNum(o, "cpuUtilizationPct"),
@@ -555,7 +557,7 @@ export type SiteManagerConsole = {
   owner: boolean;
   /** Which applications the console runs, as far as Site Manager knows. */
   apps: { network: boolean; protect: boolean };
-  /** Whether Site Manager listed the console's applications at all, so `apps` can be relied on. */
+  /** Whether Site Manager listed the applications installed, so `apps` can be relied on. */
   appsKnown: boolean;
   /** Whether this account's role grants each application. */
   permissions: { network: boolean; protect: boolean };
@@ -599,7 +601,8 @@ export function parseSiteManagerHost(value: unknown): SiteManagerConsole {
     name: (reported && (optStr(reported, "name") ?? optStr(reported, "hostname"))) ?? `Console ${prefix}`,
     owner,
     apps: { network: apps.includes("network"), protect: apps.includes("protect") },
-    appsKnown: apps.length > 0,
+    // Only the installed list says what runs; the supported list is a guess shown until it's asked.
+    appsKnown: reportedApps.length > 0,
     permissions: {
       network: owner || user.role === "owner" || grants("network"),
       protect: owner || user.role === "owner" || grants("protect"),
