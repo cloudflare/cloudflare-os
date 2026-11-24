@@ -539,7 +539,8 @@ export type ObserverBindingNeed = {
  * - `hook`: an enabled hook waking the gadget before it, whose connection writes into that
  *   gadget's state, or one whose gadget can't be resolved, which wakes every gadget.
  * - `historicalRequirement`: the gadget before it once read data through the connection, which
- *   its state may still hold whether or not it still binds the connection.
+ *   its state may still hold. Listed only when that gadget no longer binds the connection
+ *   directly, since a direct binding already lists it.
  */
 export type ObserverBindingPathStep =
   | {type: "gadget" | "agentSpawner", id: WorkpieceId, title: string}

@@ -11204,12 +11204,15 @@ class OverseerImpl implements AgentHooks {
     };
     // Records what `id` reaches along `path`, returning the workpieces to descend into.
     let visit = (id: WorkpieceId, path: ObserverBindingPathStep[]) => {
+      let edgesFrom = edges.get(id) ?? [];
       for (let producer of producers.get(id) ?? []) {
+        // A connection `id` still binds is already listed by that binding.
+        if (edgesFrom.some(edge => !("hook" in edge) && edge.target === producer)) continue;
         let historical: ObserverBindingPathStep[] = [...path, {type: "historicalRequirement"}];
         paths.get(producer)?.set(JSON.stringify(historical), historical);
       }
       let next: {id: WorkpieceId, path: ObserverBindingPathStep[]}[] = [];
-      for (let edge of edges.get(id) ?? []) {
+      for (let edge of edgesFrom) {
         let via = "hook" in edge ? [...path, edge.hook] : path;
         paths.get(edge.target)?.set(JSON.stringify(via), via);
         let step = node(edge);
