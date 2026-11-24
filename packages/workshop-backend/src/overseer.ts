@@ -2855,6 +2855,16 @@ class OverseerImpl implements AgentHooks {
     return scanWorkpieceForGrep(this.gitCache, turn, workpieceId, base, path, pattern, maxChars);
   }
 
+  // Where buildChatContent and declaredPins start listing a chat's rows: at the message that
+  // opened the current epoch (see ChatCodeBase.epoch). Nothing before it reaches either fold:
+  // both start over at an epoch-boundary merge, and the rows before a migrated chat's conversion
+  // boundary carry nothing the folds read. The rows of closed epochs can hold megabytes of code.
+  // A `through` from before the epoch asks about a closed one, so the whole chat is listed.
+  #epochStart(chatId: number, through = Infinity): string | undefined {
+    let epoch = this.storage.chatMeta.get(chatId)?.codeBase?.epoch;
+    return epoch !== undefined && epoch <= through ? chatKey(chatId, epoch) : undefined;
+  }
+
   // Rebuild a chat's content -- `gadgetId -> (path -> text)` for every gadget whose files live
   // in the chat's change stream -- from the chat log. Content is epoch-scoped: a merge message with
   // `epochBoundary` (or a migrated chat's `conversionBoundary` changes message) discards
@@ -2875,7 +2885,8 @@ class OverseerImpl implements AgentHooks {
   // `readBase` is the reader seedWorktreeEditBases takes for the base texts of worktree edits.
   async buildChatContent(chatId: number, through?: number, readBase?: BaseTextReader)
       : Promise<CodeContent> {
-    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let messages = [...this.storage.chats.list(
+        {prefix: chatKeyPrefix(chatId), start: this.#epochStart(chatId, through)})];
     if (through !== undefined) {
       messages = messages.filter(msg => msg.sequence <= through);
     }
@@ -3387,7 +3398,8 @@ class OverseerImpl implements AgentHooks {
   // materializeChatChanges), and what pin rollback removes when the rows that established them
   // are discarded; a revert also takes each surviving pin's base from here.
   declaredPins(chatId: number): Map<WorkpieceId, ChatGadgetPinRecord> {
-    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let messages = [...this.storage.chats.list(
+        {prefix: chatKeyPrefix(chatId), start: this.#epochStart(chatId)})];
     let statuses = chatChangeStatuses(messages);
     let declared = new Map<WorkpieceId, ChatGadgetPinRecord>();
     for (let msg of messages) {
@@ -11283,12 +11295,15 @@ class OverseerImpl implements AgentHooks {
     };
     // Records what `id` reaches along `path`, returning the workpieces to descend into.
     let visit = (id: WorkpieceId, path: ObserverBindingPathStep[]) => {
+      let edgesFrom = edges.get(id) ?? [];
       for (let producer of producers.get(id) ?? []) {
+        // A connection `id` still binds is already listed by that binding.
+        if (edgesFrom.some(edge => !("hook" in edge) && edge.target === producer)) continue;
         let historical: ObserverBindingPathStep[] = [...path, {type: "historicalRequirement"}];
         paths.get(producer)?.set(JSON.stringify(historical), historical);
       }
       let next: {id: WorkpieceId, path: ObserverBindingPathStep[]}[] = [];
-      for (let edge of edges.get(id) ?? []) {
+      for (let edge of edgesFrom) {
         let via = "hook" in edge ? [...path, edge.hook] : path;
         paths.get(edge.target)?.set(JSON.stringify(via), via);
         let step = node(edge);

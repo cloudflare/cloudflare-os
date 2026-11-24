@@ -1077,3 +1077,115 @@ describe("attachment worktree ingress", () => {
     expect(chunkReads).toBe(0);
   }));
 });
+
+// Data files for views (plans/live-views.md, "Data files"): the agent writes a file with
+// executeCode, and a later answer's view reads it by a quoted worktree:// URL. The binding's
+// writes are simulated: workerd refuses an executeCode call into the binding in this harness ("The
+// RPC receiver's prototype does not implement writeFile"), so executeCodeMode is replaced with one
+// that makes the changes the binding makes (worktree-session.ts) through the turn's
+// WorktreeTurnAccess.appendChange: a text change for writeFile, a stored blob and a setBytes change
+// for writeBytes.
+type Write = {path: string, text?: string, bytes?: string};
+
+// `value`, or a failed test if it is missing.
+function only<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined) throw new Error(`No ${what}`);
+  return value;
+}
+
+describe("data files for views", () => {
+  // Each executeCode call's writes, by the id its code carries.
+  const writesById = new Map<string, Write[]>();
+  // The OID each simulated writeBytes stored, by path.
+  const storedBlobs = new Map<string, string>();
+  const code = (...writes: Write[]) => {
+    const id = crypto.randomUUID();
+    writesById.set(id, writes);
+    return fauxToolCall("executeCode", {code: id});
+  };
+  const view = (path: string) => `Here it is.\n\n<inline-html>\n<title>Data</title>\n<p id="out"></p>\n` +
+    `<script type="module">\nconst rows = await embeds.json("worktree://OUTPUTS/${path}");\n</script>\n</inline-html>`;
+  // One agent turn whose model answers each step in order; returns the pins of its stored answers.
+  async function turn(impl: Impl, chatId: number, steps: ReturnType<typeof fauxAssistantMessage>[]) {
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Show my data"}]);
+    const before = new Set([...impl.storage.chats.list()].map(message => message.sequence));
+    const execute = vi.spyOn(impl, "executeCodeMode").mockImplementation(
+        async (_chatId, id, _initiator, _model, bindings, _output, worktreeTurn) => {
+          const entry = bindings.OUTPUTS;
+          if (entry?.type !== "workpiece" || !worktreeTurn) throw new Error("no OUTPUTS worktree");
+          for (const {path, text, bytes} of only(writesById.get(id), "writes")) {
+            if (text !== undefined) {
+              worktreeTurn.appendChange(entry.id, path, {set: text});
+            } else {
+              const blob = impl.gitCache.writeBlob(new TextEncoder().encode(bytes));
+              storedBlobs.set(path, blob.oid);
+              worktreeTurn.appendChange(entry.id, path, {setBytes: blob});
+            }
+          }
+          return "Written";
+        });
+    try {
+      const faux = createFauxCore({models: [{id: "faux-model"}]});
+      faux.setResponses([...steps, fauxAssistantMessage(fauxText("Done"))]);
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, chatId,
+          AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    } finally {
+      execute.mockRestore();
+    }
+    return [...impl.storage.chats.list()].filter(message => message.chatId === chatId && !before.has(message.sequence))
+        .flatMap(message => message.type === "message" && message.embeds ? [message.embeds] : []);
+  }
+  const steps = (...calls: ReturnType<typeof fauxToolCall>[]) => fauxAssistantMessage(calls, {stopReason: "toolUse"});
+  const answer = (text: string, ...calls: ReturnType<typeof fauxToolCall>[]) =>
+    fauxAssistantMessage([fauxText(text), ...calls], calls.length ? {stopReason: "toolUse"} : undefined);
+  const newChat = (impl: Impl) =>
+    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data");
+  const createOutputs = fauxToolCall("createWorktree", {title: "Outputs", bindingName: "OUTPUTS"});
+  const source = (path: string) => `worktree://OUTPUTS/${path}`;
+  const text = (impl: Impl, oid: string | null | undefined) =>
+    new TextDecoder().decode(impl.gitCache.readBlob(only(oid, "pin")));
+
+  it("pins a file written in an earlier step, as a text change or a setBytes change, in the next step's view", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      const pins = await turn(impl, chatId, [
+        steps(createOutputs, code({path: "text.json", text: "[1,2]"})),
+        steps(code({path: "bytes.json", bytes: "[3]"})),
+        answer(view("text.json") + "\n\n" + view("bytes.json")),
+      ]);
+      const pinned = only(pins.at(-1), "pinned answer");
+      expect(text(impl, pinned[source("text.json")])).toBe("[1,2]");
+      // A setBytes change pins the very blob it stored.
+      expect(pinned[source("bytes.json")]).toBe(storedBlobs.get("bytes.json"));
+    }));
+
+  it("pins the path as it was in a view written in the same response as its write", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      await turn(impl, chatId, [steps(createOutputs, code({path: "old.json", text: "[1]"}))]);
+      const pins = await turn(impl, chatId, [
+        answer(view("new.json") + "\n\n" + view("old.json"),
+            code({path: "new.json", text: "[9]"}, {path: "old.json", text: "[2]"})),
+      ]);
+      const pinned = only(pins.at(0), "pinned answer");
+      expect(pinned[source("new.json")]).toBeNull();
+      expect(text(impl, pinned[source("old.json")])).toBe("[1]");
+    }));
+
+  it("pins null for a binding that is a Gadget, not a worktree", () => inKernel(crypto.randomUUID(), async impl => {
+    const chatId = await newChat(impl);
+    const pins = await turn(impl, chatId, [
+      steps(fauxToolCall("createGadget", {title: "Log", bindingName: "LOG"})),
+      answer('<inline-html>\n<script type="module">embeds.json("worktree://LOG/client.js")</script>\n</inline-html>'),
+    ]);
+    expect(pins.at(-1)).toEqual({"worktree://LOG/client.js": null});
+  }));
+
+  it("pins a file written in an earlier turn, before its change is accepted", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      await turn(impl, chatId, [steps(createOutputs, code({path: "totals.json", text: "[42]"}))]);
+      const pins = await turn(impl, chatId, [answer(view("totals.json"))]);
+      expect(text(impl, only(pins.at(-1), "pinned answer")[source("totals.json")])).toBe("[42]");
+    }));
+});

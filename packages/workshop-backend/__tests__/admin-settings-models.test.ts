@@ -1278,15 +1278,15 @@ describe("AdminSettings.testGatewayProvider", () => {
     const { result, entries } = await test("google");
     expect(requests.map(({ url }) => url)).toEqual([
       "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
-          "google-ai-studio/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+          "google-ai-studio/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse",
     ]);
     expect(requests[0]!.headers.get("cf-aig-skip-cache")).toBe("true");
     expect(requests[0]!.headers.get("x-goog-api-key")).toBeNull();
     expect(result).toStrictEqual({
-      model: "gemini-3.6-flash", ok: false, status: 401,
+      model: "gemini-4-neon", ok: false, status: 401,
       message: '{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}',
     });
-    expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
+    expect(entries).toMatchObject([{ modelId: "gemini-4-neon", outcome: "error" }]);
     expect(entries[0]!.statusCode).toBe(401);
   });
 
@@ -1295,7 +1295,7 @@ describe("AdminSettings.testGatewayProvider", () => {
     const { result } = await test("google");
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
-    expect(result).toStrictEqual({ model: "gemini-3.6-flash", ok: true });
+    expect(result).toStrictEqual({ model: "gemini-4-neon", ok: true });
   });
 
   it("reports a model that does not answer in time", async () => {
