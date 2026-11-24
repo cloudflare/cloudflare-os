@@ -10,10 +10,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { Toasty } from '@cloudflare/kumo'
 import { RpcStub, RpcTarget } from 'capnweb'
-import type { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ActionsSubscriber, GadgetFocus, Overseer } from '@gadgets/workshop-shared/api'
 import type { ConnectionPreview } from './connectionPreview'
 import { ConnectionPreviewPane } from './ConnectionPreviewPane'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
+import { DRIVE_PREVIEW_BUNDLE } from './drivePreviewBundle'
 import '../../styles.css'
 
 const DOC_ID = 7
@@ -21,7 +22,7 @@ const DOC_ID = 7
 const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 type Change = { id: number, type: 'replaceText' | 'appendText', oldMarkdown?: string, newMarkdown?: string, markdown?: string }
-type Doc = { changes: Change[], calls: string[] }
+type Doc = { changes: Change[], calls: string[], folder?: true, tabs?: string[], away?: true }
 
 const NAMED_STYLES = ['NORMAL_TEXT', 'TITLE', 'SUBTITLE', ...Array.from({ length: 6 }, (_, level) => `HEADING_${level + 1}`)]
 /** A paragraph of `text`, as a drawing and a pending drawing both tell one. */
@@ -49,7 +50,9 @@ class DocSession extends RpcTarget {
 
   listTabs() {
     this.doc.calls.push('listTabs')
-    return [{ id: 't.0', title: 'Tab 1', index: 0, nestingLevel: 0, ...this.doc.changes.length ? { pending: true } : {} }]
+    return (this.doc.tabs ?? ['t.0']).map((id, index) => ({
+      id, title: `Tab ${index + 1}`, index, nestingLevel: 0, ...this.doc.changes.length ? { pending: true } : {},
+    }))
   }
 
   getPendingChanges(tabId: string) {
@@ -97,17 +100,47 @@ class DocSession extends RpcTarget {
   }
 }
 
+/** The session of a connection that reaches several documents, as GoogleDriveSession opens them. */
+class FolderSession extends RpcTarget {
+  constructor(private doc: Doc) {
+    super()
+  }
+
+  openFolder(id: string) {
+    this.doc.calls.push(`openFolder ${id}`)
+    return new FolderSession(this.doc)
+  }
+
+  openGoogleDoc(fileId: string) {
+    this.doc.calls.push(`openGoogleDoc ${fileId}`)
+    if (this.doc.away) throw new Error('Google is away')
+    return new DocSession(this.doc)
+  }
+}
+
 class DocConnection extends RpcTarget {
   constructor(private doc: Doc) {
     super()
   }
 
   connectToGadget() {
-    return new DocSession(this.doc)
+    return this.doc.folder ? new FolderSession(this.doc) : new DocSession(this.doc)
   }
 
   getUiBundle() {
-    return DOCS_PREVIEW_BUNDLE
+    return this.doc.folder ? DRIVE_PREVIEW_BUNDLE : DOCS_PREVIEW_BUNDLE
+  }
+}
+
+/** The Workshop's answer for a connection: its client, once `ready`. */
+class Clients extends RpcTarget {
+  constructor(private doc: Doc, private ready?: Promise<void>) {
+    super()
+  }
+
+  async open() {
+    await this.ready
+    return new DocConnection(this.doc)
   }
 }
 
@@ -119,12 +152,23 @@ afterEach(() => {
   container?.remove()
 })
 
-const renderPane = (pending: ActionLogEntry[], { refused, listed }: { refused?: true, listed?: Promise<void> } = {}) => {
+/**
+ * Renders the pane on a document, or on the `item` of a connection that reaches several. Its frame
+ * is sent to `at`, the spot a preview was left at, or else to the item.
+ */
+const renderPane = (
+  pending: ActionLogEntry[], item?: string,
+  { at = item, tabs, refused, listed, away }: { at?: string, tabs?: string[], refused?: true, listed?: Promise<void>, away?: true } = {},
+) => {
   // One change is already pending when the pane opens: a bullet reworded.
   const doc: Doc = {
     changes: [{ id: 11, type: 'replaceText', oldMarkdown: 'Durability', newMarkdown: 'Longevity' }],
     calls: [],
+    tabs,
+    away,
+    ...(item === undefined ? {} : { folder: true }),
   }
+  const said: (GadgetFocus | null)[] = []
   const resolved: string[] = []
   const created: ConnectionPreview[] = []
   let subscriber: ActionsSubscriber | undefined
@@ -132,8 +176,16 @@ const renderPane = (pending: ActionLogEntry[], { refused, listed }: { refused?: 
     resolved.push(`${decision} ${id}`)
     if (refused) throw new Error('The document has changed.')
   }
-  const overseer = {
-    getGatekeeperById: () => new RpcStub(new DocConnection(doc)),
+  // Each a new connection to the Workshop, as a reconnect makes one: its client is a promise, as
+  // the Workshop's is, which answers once what `hold()` returned is called.
+  let held: Promise<void> | undefined
+  const hold = () => {
+    const { promise, resolve: release } = Promise.withResolvers<void>()
+    held = promise
+    return release
+  }
+  const connect = () => ({
+    getGatekeeperById: () => new RpcStub(new Clients(doc, held)).open(),
     subscribeToActions: async (target: ActionsSubscriber) => {
       subscriber = target
       return { [Symbol.dispose]: () => {} }
@@ -144,22 +196,24 @@ const renderPane = (pending: ActionLogEntry[], { refused, listed }: { refused?: 
     },
     approveAction: resolve('approve'),
     rejectAction: resolve('reject'),
-  } as unknown as RpcStub<Overseer>
+  }) as unknown as RpcStub<Overseer>
 
   container = document.body.appendChild(document.createElement('div'))
   container.style.height = '700px'
   root = createRoot(container)
-  flushSync(() => root!.render(
+  const show = () => flushSync(() => root!.render(
     <Toasty>
       <ConnectionPreviewPane
-        overseer={overseer}
-        preview={{ gatekeeperId: DOC_ID, title: 'Paul Pierce' }}
+        overseer={connect()}
+        preview={{ gatekeeperId: DOC_ID, item, title: 'Paul Pierce' }}
         restricted={false}
+        focus={{ anchor: at, latestAnchor: () => at, navigation: 0, onFocusChange: focus => said.push(focus) }}
         onCreated={preview => created.push(preview)}
       />
     </Toasty>,
   ))
-  return { doc, resolved, created, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
+  show()
+  return { doc, resolved, created, said, reconnect: show, hold, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
 }
 
 // The frame's origin is opaque, so its DOM is out of this page's reach and the session's call log
@@ -197,7 +251,7 @@ it('reads the document through the connection session and redraws when an action
 
 it('reads again after an Apply the connection refuses, which may have left the change stale', async () => {
   await page.viewport(1100, 800)
-  const { doc } = renderPane([action(1)], { refused: true })
+  const { doc } = renderPane([action(1)], undefined, { refused: true })
   await expect.poll(() => doc.calls).toContain('readImage photo')
   const reads = doc.calls.length
 
@@ -208,7 +262,7 @@ it('reads again after an Apply the connection refuses, which may have left the c
 it('holds Apply and Discard until every waiting change is listed, since they act on the oldest', async () => {
   await page.viewport(1100, 800)
   let list!: () => void
-  const { emit } = renderPane([action(1)], { listed: new Promise(done => { list = done }) })
+  const { emit } = renderPane([action(1)], undefined, { listed: new Promise(done => { list = done }) })
 
   // A change queued as the pane opens arrives before the older ones are listed.
   await vi.waitFor(() => emit(action(2)))
@@ -298,4 +352,100 @@ it('opens anew on the document a creation made, whose approval ends the session 
 
   emit(action(2, { creation: true, state: 'approved', resourceTitle: 'Made', resourceUrl: url }))
   expect(created).toEqual([{ gatekeeperId: DOC_ID, title: 'Made', url, iconUrl: undefined }])
+})
+
+it('draws the item of a connection its frame is sent to, with only its changes on the card', async () => {
+  await page.viewport(1100, 800)
+  const on = (id: string, n: number) => ({
+    description: {
+      title: 'Edit Google Doc', description: `Change ${n}`, implementsRevert: false, autoApprovable: true,
+      previewOf: { anchor: id, title: id },
+    },
+  } as Partial<ActionLogEntry>)
+  const { doc, resolved, emit } = renderPane(
+    [action(1, on('docs:other', 1)), action(2, on('docs:nested/file', 2))], 'docs:nested/file')
+
+  // The frame holds the connection's session, and its code opens the item it is sent to as a
+  // gadget would: through the folder the item's name gives.
+  await expect.poll(() => doc.calls).toContain('getPendingChanges')
+  expect(doc.calls.slice(0, 2)).toEqual(['openFolder nested', 'openGoogleDoc file'])
+  await expect.element(page.getByText('1 change waiting')).toBeVisible()
+  await expect.element(page.getByText('Change 2')).toBeVisible()
+
+  // A change to another item of the connection is not this pane's to redraw for or to apply.
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  const reads = doc.calls.length
+  emit(action(3, on('docs:other', 3)))
+  await new Promise(done => setTimeout(done, 600))
+  expect(doc.calls).toHaveLength(reads)
+  await page.getByRole('button', { name: 'Apply' }).click()
+  await expect.poll(() => resolved).toEqual(['approve 2'])
+})
+
+it('reads an item again once a change to its connection is approved, which may have moved it out of reach', async () => {
+  await page.viewport(1100, 800)
+  const { doc, emit } = renderPane([], 'docs:file')
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  const reads = doc.calls.length
+
+  // A move names no item. Queued, it has changed nothing yet.
+  emit(action(1, { state: 'pending' }))
+  await new Promise(done => setTimeout(done, 600))
+  expect(doc.calls).toHaveLength(reads)
+
+  emit(action(1, { state: 'approved' }))
+  await expect.poll(() => doc.calls.length).toBeGreaterThan(reads)
+})
+
+it('starts an item\'s frame again on a new connection to the Workshop, which the session of its file does not outlive', async () => {
+  const { doc, reconnect } = renderPane([], 'docs:file')
+  const opens = () => doc.calls.filter(call => call === 'openGoogleDoc file')
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  expect(opens()).toHaveLength(1)
+
+  reconnect()
+  await expect.poll(opens).toHaveLength(2)
+})
+
+it('keeps an item\'s frame until the client of the new connection answers, however long the Workshop was away', async () => {
+  const { doc, reconnect, hold } = renderPane([], 'docs:file')
+  const opens = () => doc.calls.filter(call => call === 'openGoogleDoc file')
+  const frame = () => container!.querySelector('iframe')
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  const drawn = frame()
+
+  // Nothing is loaded against a client still on its way: a load has only so long to answer.
+  const answer = hold()
+  reconnect()
+  await new Promise(resolve => setTimeout(resolve, 300))
+  expect([frame(), opens().length]).toEqual([drawn, 1])
+
+  answer()
+  await expect.poll(opens).toHaveLength(2)
+  expect(frame()).not.toBe(drawn)
+})
+
+it('sends the frame to the spot its preview was left at, and hears from it where the reader is', async () => {
+  const { said } = renderPane([], undefined, { at: '?tab=t.1', tabs: ['t.0', 't.1'] })
+
+  // Sent nowhere it would open on the first tab.
+  await expect.poll(() => said).toEqual([{ anchor: '?tab=t.1', label: 'Tab 2' }])
+})
+
+it('hears of a spot in an item by the item\'s name, which sends the frame back to both', async () => {
+  const { doc, said } = renderPane([], 'docs:file', { at: 'docs:file ?tab=t.1', tabs: ['t.0', 't.1'] })
+
+  // Nothing of the file alone first: its host would keep that in place of the spot it is sent to.
+  await expect.poll(() => said).toEqual([{ anchor: 'docs:file ?tab=t.1', label: 'Document › Tab 2' }])
+  expect(doc.calls[0]).toBe('openGoogleDoc file')
+})
+
+it('keeps the spot in an item whose file could not be opened this time', async () => {
+  const { doc, said } = renderPane([], 'docs:file', { at: 'docs:file ?tab=t.1', tabs: ['t.0', 't.1'], away: true })
+
+  await expect.poll(() => doc.calls).toEqual(['openGoogleDoc file'])
+  // The frame says the file could not be loaded, and not that the spot is gone, which its host
+  // would then forget.
+  await new Promise(done => setTimeout(done, 500))
+  expect(said).toEqual([])
 })

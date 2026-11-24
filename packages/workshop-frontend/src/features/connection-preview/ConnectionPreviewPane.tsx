@@ -5,11 +5,11 @@ import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { entryFields } from '../../components/ActionFields'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from '../../components/IncompleteDescriptionNotice'
-import GadgetUI, { type GadgetUiSource } from '../../GadgetUI'
+import GadgetUI, { type GadgetUIFocus, type GadgetUiSource } from '../../GadgetUI'
 import { useActions } from '../../useActions'
 import { useResolveAction } from '../../useResolveAction'
 import { ChangeFields, ChangeProse } from './ChangeDetail'
-import { previewOf, type ConnectionPreview } from './connectionPreview'
+import { itemOf, previewOf, type ConnectionPreview } from './connectionPreview'
 import { useNewActionEntries } from './useNewActionEntries'
 
 // Long enough to fold a burst of queued edits into one redraw.
@@ -18,6 +18,8 @@ const REFRESH_DEBOUNCE_MS = 300
 type ConnectionPreviewPaneProps = {
   overseer: RpcStub<Overseer>
   preview: ConnectionPreview
+  /** Where the frame is sent as it starts, and what hears where the reader goes (`usePreviewFocus`). */
+  focus: GadgetUIFocus
   /** A restricted workspace reviews in the chat, where the approval notices are. */
   restricted: boolean
   /** The connection's resource was created, so the connection now reads that one: the preview of it. */
@@ -26,23 +28,42 @@ type ConnectionPreviewPaneProps = {
 
 /**
  * A connection drawn in the gadget UI frame as a gadget is, with its session as the frame's
- * `gadget` stub. The frame only reads; applying and discarding are drawn here, outside it.
+ * `gadget` stub. One item of it is drawn by the same code, which the frame's host sends to the
+ * item. The frame only reads; applying and discarding are drawn here, outside it.
  */
 export const ConnectionPreviewPane = (
-  { overseer, preview, restricted, onCreated }: ConnectionPreviewPaneProps,
+  { overseer, preview, focus, restricted, onCreated }: ConnectionPreviewPaneProps,
 ) => {
-  const { gatekeeperId } = preview
+  const { gatekeeperId, item } = preview
 
   // Wrapped, since a stub is callable and useState would call it for the state.
-  const [source, setSource] = useState<{ gadget: GadgetUiSource } | null>(null)
+  const [source, setSource] = useState<{ gadget: GadgetUiSource, opened: number } | null>(null)
+  const opened = useRef(0)
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
-    setSource({ gadget: client })
+    let current = true
+    const show = () => {
+      if (current) setSource({ gadget: client, opened: ++opened.current })
+    }
+    // An item's frame starts again on a new client (below), with only so long to load: so not
+    // before that client answers, which after a reconnect is once the workspace is open again.
+    // The frame it has stays until then; one that could not be reached says so in the frame.
+    if (item === undefined || !opened.current) show()
+    else void Promise.resolve(client).then(show, show)
     return () => {
-      setSource(null)
+      current = false
       client[Symbol.dispose]()
     }
-  }, [overseer, gatekeeperId])
+  }, [overseer, gatekeeperId, item])
+
+  // What is drawn here: the connection's changes, or those of the one item.
+  const drawn = (entry: ActionLogEntry): entry is Extract<ActionLogEntry, { type: 'action' }> =>
+    entry.type === 'action' && entry.gatekeeperId === gatekeeperId && itemOf(entry)?.anchor === item
+
+  // A change to the connection itself that, once approved, may leave an item out of its pane's
+  // reach, as a move of it does: its next read says so.
+  const displaces = (entry: ActionLogEntry) => item !== undefined && entry.type === 'action' &&
+    entry.gatekeeperId === gatekeeperId && !itemOf(entry) && entry.state === 'approved'
 
   const [refreshSignal, setRefreshSignal] = useState(0)
   const refreshTimer = useRef<number | undefined>(undefined)
@@ -54,18 +75,19 @@ export const ConnectionPreviewPane = (
   useNewActionEntries(overseer, entry => {
     // Actions only: the preview's own reads are logged on this connection as observations, so
     // refreshing on those would never stop.
-    if (entry.type !== 'action' || entry.gatekeeperId !== gatekeeperId) return
-    // Creating the resource restarts its connection on the real one, which ends this pane's
-    // session: the pane is opened anew on what was created.
-    if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
-    // Discarded, it is gone with its connection, and this pane with them: nothing is read again.
-    if (entry.creation && entry.state === 'rejected') return
+    if (drawn(entry)) {
+      // Creating the resource restarts its connection on the real one, which ends this pane's
+      // session: the pane is opened anew on what was created.
+      if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
+      // Discarded, it is gone with its connection, and this pane with them: nothing is read again.
+      if (entry.creation && entry.state === 'rejected') return
+    } else if (!displaces(entry)) return
     refresh()
   })
   useEffect(() => () => window.clearTimeout(refreshTimer.current), [])
 
   const { pending, status } = useActions(overseer)
-  const waiting = pending.filter(entry => entry.type === 'action' && entry.gatekeeperId === gatekeeperId)
+  const waiting = pending.filter(drawn)
   // Oldest first, the order the connection applies them in.
   const next = waiting[0]
   // The buttons act on the one change the card describes, which its count says when others wait behind it.
@@ -89,7 +111,15 @@ export const ConnectionPreviewPane = (
     <div className="relative flex h-full flex-col">
       <div className="min-h-0 flex-1">
         {source && (
-          <GadgetUI gadget={source.gadget} height="100%" refreshSignal={refreshSignal} />
+          // An item's frame reads through a session it opened from this one, which a new connection
+          // to the Workshop leaves dead: it starts again, at the spot its reader was left at.
+          <GadgetUI
+            key={item === undefined ? undefined : source.opened}
+            gadget={source.gadget}
+            height="100%"
+            refreshSignal={refreshSignal}
+            focus={focus}
+          />
         )}
       </div>
       {next?.type === 'action' && (
