@@ -551,6 +551,50 @@ describe("images read from a worktree", () => {
     expect(fileImageDescription(image, model)).not.toContain("Claude content frame");
   });
 
+  it.each([
+    ["claude-opus-5-5", 120_000, 4740],
+    ["claude-opus-5-5", 45_000, 4740],
+    ["claude-haiku-4-5", 45_000, 1564],
+  ] as const)("admits and replays four large images at Claude's resized cost (%s, %s)", (model, budget, tokens) =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = PNG.slice();
+      new DataView(bytes.buffer).setUint32(16, 6400);
+      new DataView(bytes.buffer).setUint32(20, 4800);
+      const {chatId} = await setup(impl, bytes);
+      const config: AiModelConfig = {provider: "anthropic", model, apiToken: "fixture",
+        contextWindow: 8_000_000, compactionInputBudget: budget};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const requests: Message[][] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      };
+      const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+      faux.setResponses([fauxAssistantMessage([read(), read(), read(), read()], {stopReason: "toolUse"}),
+        fauxAssistantMessage(fauxText("Done"))]);
+      await run();
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+      await run();
+      expect(requests).toHaveLength(3);
+      for (const messages of requests.slice(1)) {
+        const images = results(messages);
+        expect(images).toHaveLength(4);
+        for (const result of images) {
+          expect(result.isError).toBe(false);
+          expect(result.content).toContainEqual({type: "image", mimeType: "image/png", data: bytes.toBase64()});
+          expect(estimateImageTokens(result, handle.model)).toBe(tokens);
+        }
+      }
+    }));
+
+  it("keeps conservative image accounting for unknown Claude aliases", () => {
+    const {model} = getModel({} as Cloudflare.Env, {provider: "anthropic", model: "claude-custom", apiToken: "fixture"}, USER);
+    const image = withImageDimensions({type: "image", mimeType: "image/png", data: ""}, [6400, 4800]);
+    expect(estimateImageTokens({role: "user", content: [image], timestamp: 0}, model)).toBe(36_000);
+  });
+
   it("admits visual token cost before reading an image body", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = new Uint8Array(4 * 1024 * 1024);
     bytes.set(PNG);
@@ -1025,7 +1069,8 @@ describe("images read from a worktree", () => {
     // The measured usage retains the second read. After the first rejection invalidates that
     // measurement, the larger character estimate moves the summary boundary past both reads.
     impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 250_000});
-    impl.addChatMessages(chatId, USER, [{type: "message", message: "tail ".repeat(20_000)}]);
+    // Leave room for exactly one resized Claude image in the measured compaction tail.
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "tail ".repeat(22_000)}]);
     const bodies: string[] = [];
     handle.stream = (model, context, options) => realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
       bodies.push(await new Request(input, init).text());

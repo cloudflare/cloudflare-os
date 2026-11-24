@@ -7,7 +7,7 @@ import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
 import {imageDimensions} from "./chat-attachment-validation";
-import {admittedImageDimensions} from "./file-image";
+import {admittedImageDimensions, claudeImageFrame} from "./file-image";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -233,8 +233,12 @@ export function estimateImageTokens(message: Message, model?: Model<Api>): numbe
     if (!dimensions) try {
       dimensions = imageDimensions(part.mimeType, Uint8Array.fromBase64(part.data.slice(0, 87_380)));
     } catch { /* A malformed header must not break compaction. */ }
-    // Original-resolution patches deliberately overestimate providers' downsampling. Known
-    // OpenAI multipliers and tile pricing can exceed that estimate, especially gpt-4o-mini.
+    // Known Claude models resize to the same frame reported with file coordinates. Admission
+    // must count those pixels, or large images can be rejected before usage can correct us.
+    const claudeFrame = dimensions && model && claudeImageFrame(dimensions, model);
+    if (claudeFrame) return sum + Math.ceil(claudeFrame[0] / 28) * Math.ceil(claudeFrame[1] / 28);
+    // Unknown models keep conservative original-resolution patches. Known OpenAI multipliers
+    // and tile pricing can exceed that estimate, especially gpt-4o-mini.
     // https://developers.openai.com/api/docs/guides/images-vision#tile-based-image-tokenization
     const id = model?.id.split("/").at(-1) ?? "";
     const multiplier = /^gpt-4\.1-nano(?:-|$)/.test(id) ? 2.46

@@ -34,18 +34,14 @@ export function withImageDimensions(image: ImageContent, dimensions: [number, nu
   return image;
 }
 
-/** Explain the pixel frame for file images; providers can resize otherwise unchanged bytes. */
-export function fileImageDescription(image: ImageContent, model: Model<Api>): string {
-  const dimensions = admittedImageDimensions(image);
-  if (!dimensions) return "Image file. Provider coordinate mapping unavailable; crop/resize within the selected model's native vision limits before using pixel coordinates.";
+/** Claude's content frame, shared by coordinate descriptions and visual-token accounting. */
+export function claudeImageFrame(dimensions: [number, number], model: Model<Api>): [number, number] | undefined {
   const [width, height] = dimensions;
-  const source = `Image file. Source: ${width} x ${height} pixels.`;
   // Claude documents its native resize rule. Other providers and routed/aliased models must
   // not inherit a guessed coordinate frame. Keep this aligned with:
   // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
   const version = /claude[-.](?:opus|sonnet|haiku)[-.](\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(model.id);
-  if (model.api !== "anthropic-messages" || !version) return source +
-    " Provider coordinate mapping unavailable: pixels may be resized. Before coordinate-sensitive actions, crop/resize within the selected model's native vision limits and retain the scale and crop offset back to the source; prefer semantic element targeting when available.";
+  if (model.api !== "anthropic-messages" || !version) return undefined;
   const highResolution = Number(version[1]) > 4 ||
     (Number(version[1]) === 4 && Number(version[2] ?? 0) >= 7);
   const edge = highResolution ? 2576 : 1568, tokens = highResolution ? 4784 : 1568;
@@ -71,6 +67,19 @@ export function fileImageDescription(image: ImageContent, model: Model<Api>): st
       ? [low, shortEdge(low)]
       : [shortEdge(low), low];
   }
+  return [resizedWidth, resizedHeight];
+}
+
+/** Explain the pixel frame for file images; providers can resize otherwise unchanged bytes. */
+export function fileImageDescription(image: ImageContent, model: Model<Api>): string {
+  const dimensions = admittedImageDimensions(image);
+  if (!dimensions) return "Image file. Provider coordinate mapping unavailable; crop/resize within the selected model's native vision limits before using pixel coordinates.";
+  const [width, height] = dimensions;
+  const source = `Image file. Source: ${width} x ${height} pixels.`;
+  const frame = claudeImageFrame(dimensions, model);
+  if (!frame) return source +
+    " Provider coordinate mapping unavailable: pixels may be resized. Before coordinate-sensitive actions, crop/resize within the selected model's native vision limits and retain the scale and crop offset back to the source; prefer semantic element targeting when available.";
+  const [resizedWidth, resizedHeight] = frame;
   return source + ` Claude content frame: ${resizedWidth} x ${resizedHeight} pixels before bottom/right padding.` +
     ` Map model pixel (x,y) to source (x * ${width}/${resizedWidth}, y * ${height}/${resizedHeight}); do not scale by padded dimensions.` +
     " For screen input, also apply the screenshot's crop origin and desktop/DPI transform. Normalize image orientation before coordinate-sensitive use.";
