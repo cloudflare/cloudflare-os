@@ -233,11 +233,11 @@ describe("lockfile rule: what a version resolves to", () => {
     const resolution = /'@cloudflare\/workers-types@5\.20260924\.1':\n {4}resolution: (\{integrity: [^,}]+\})/.exec(head)?.[1] ?? "";
     assert.notEqual(resolution, "");
     const withResolution = (written: string) => ({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(head.replace(resolution, written)) } });
-    const registry = "https://registry.npmjs.org/@cloudflare/workers-types/-/workers-types-5.20260924.1.tgz";
-    assert.deepEqual(reasons(withResolution(resolution.replace("}", `, tarball: ${registry}}`))), []);
+    const withTarball = (url: string) => `${resolution.slice(0, -1)}, tarball: ${url}}`;
+    assert.deepEqual(reasons(withResolution(withTarball("https://registry.npmjs.org/@cloudflare/workers-types/-/workers-types-5.20260924.1.tgz"))), []);
     for (const written of [
       "{tarball: https://evil.example/workers-types-5.20260924.1.tgz}",
-      resolution.replace("}", ", tarball: https://evil.example/workers-types-5.20260924.1.tgz}"),
+      withTarball("https://evil.example/workers-types-5.20260924.1.tgz"),
       "{commit: 0123456789abcdef0123456789abcdef01234567, repo: https://example.com/types.git, type: git}",
       "{directory: ../types, type: directory}",
       "{integrity: ''}",
