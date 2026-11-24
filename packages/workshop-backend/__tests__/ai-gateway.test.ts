@@ -642,7 +642,7 @@ describe("GatewayModels", () => {
 
   describe("providers", () => {
     const CATALOG_ORDER = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"];
-    const GEMINI = "gemini-3.6-flash";
+    const GEMINI = "gemini-4-neon";
     it("enables the environment's, and the ones an admin added that the gateway serves", () => {
       expect([...gatewayModels({}, "anthropic").providers]).toEqual(["anthropic"]);
       // Neither ollama, which has no gateway route, nor a name that is no provider's.
