@@ -278,6 +278,22 @@ describe("compaction boundary", () => {
     expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, 1, 1, true)).toBeUndefined();
   });
 
+  // A `/compact` of a chat ending in messages queued after the agent's reply: nothing after the
+  // newest record changes role, so the cut goes back to the last place that does.
+  it("moves a native compaction's cut back when none after it changes role", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "queued"),
+      message(3, user, "queued too"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000)).toBe(3);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, undefined, true)).toBe(2);
+    // Not back past what the attachments require be kept.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 3, true)).toBeUndefined();
+  });
+
   // The checkpoint records provisional creations, so unlike a pending connection request they need
   // no protection and the boundary may pass them.
   it("protects a pending connection request but not a provisional creation", () => {

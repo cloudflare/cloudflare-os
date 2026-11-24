@@ -337,15 +337,20 @@ export function findCompactionBoundary(
   if (atRoleChange) {
     // Anthropic's native compaction merges the first kept message into the last summarized one
     // when their roles match (a tool result is a user message to it), which voids the thinking it
-    // keeps: move the cut on to where the role changes, unless that would summarize what must stay.
-    let index = projection.findIndex(entry => entry.sequence !== undefined && entry.sequence >= boundary);
+    // keeps: move the cut on to where the role changes, which summarizes more, as attachments
+    // need; else back to where it last changed, keeping what they require.
+    let start = projection.findIndex(entry => entry.sequence !== undefined && entry.sequence >= boundary);
     let changesRole = (i: number) => i > 0 && projection[i].canCut === true &&
         apiRole(projection[i - 1].message) !== apiRole(projection[i].message);
+    let index = start;
     while (index >= 0 && index < projection.length && !changesRole(index)) ++index;
     let moved = index >= 0 ? projection[index]?.sequence : undefined;
     if (moved === undefined ||
         (protectedFromSequence !== undefined && moved > protectedFromSequence)) {
-      return;
+      index = start - 1;
+      while (index > 0 && !changesRole(index)) --index;
+      moved = changesRole(index) ? projection[index].sequence : undefined;
+      if (moved === undefined || (retainFrom !== undefined && moved < retainFrom)) return;
     }
     boundary = moved;
   }
