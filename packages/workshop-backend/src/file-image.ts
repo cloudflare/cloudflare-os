@@ -101,7 +101,10 @@ export function isImagePolicyError(message: string): boolean {
 }
 
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
-export function isImageDecodeError(message: string, status: number | undefined): boolean {
+export function isImageDecodeError(message: string, status: number | undefined, provider?: string): boolean {
+  // Ollama forwards PNG/JPEG to llama.cpp, whose multimodal decoder uses this exact error.
+  // Scope its generic HTTP 500 to the known provider; unrelated server errors still surface.
+  if (provider === "ollama" && status === 500 && /\bFailed to load image or audio file\b/i.test(message)) return true;
   // Ollama's still-image WebP decoder reports animated/invalid WebP as a 500. Match its
   // definite decoder failure only; generic server failures must not discard durable pixels.
   if (status === 500 && /decode WebP image: webp: invalid format\b/i.test(message)) return true;

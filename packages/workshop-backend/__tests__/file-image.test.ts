@@ -909,6 +909,7 @@ describe("images read from a worktree", () => {
     ["cloudflare-auto-router", "invalid_image_format", 400],
     ["cloudflare-auto-router", "invalid_image_mode", 422],
     ["ollama", "decode WebP image: webp: invalid format", 500],
+    ["ollama", "Failed to load image or audio file", 500],
   ] as const)("recovers through the real %s provider adapter: %s (%s)", (provider, errorCode, status) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
@@ -1107,6 +1108,12 @@ describe("images read from a worktree", () => {
     ["503 Could not process image", 503, false], ["Could not process image", undefined, false],
   ] as const)("recognizes only definite decode errors: %s", (message, status, expected) => {
     expect(isImageDecodeError(message, status)).toBe(expected);
+  });
+
+  it.each([
+    ["ollama", 500, true], ["ollama", 503, false], ["openai", 500, false], [undefined, 500, false],
+  ] as const)("scopes llama.cpp decoder failure to Ollama (%s, %s)", (provider, status, expected) => {
+    expect(isImageDecodeError("Failed to load image or audio file", status, provider)).toBe(expected);
   });
 
   it.each(["png", "webp", "jpeg"])("rejects %s resolution from a real blob header without reading its body", format =>

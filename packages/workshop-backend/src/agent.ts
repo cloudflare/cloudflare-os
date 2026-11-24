@@ -2528,7 +2528,7 @@ async function runAgentPass(
       error: unknown, reads: ReadonlyMap<number, ReadonlySet<string>>, includeLive = false): boolean => {
     if (!(error instanceof AgentTurnError)) return false;
     const policyRefusal = isImagePolicyError(error.message);
-    if (!policyRefusal && !isImageDecodeError(error.message, error.statusCode)) return false;
+    if (!policyRefusal && !isImageDecodeError(error.message, error.statusCode, modelConfig.provider)) return false;
     const rejected = new Map(reads);
     if (includeLive && liveImageReads.size > 0) {
       // Live results acquire their message sequences at the persistence barrier. Resolve their
