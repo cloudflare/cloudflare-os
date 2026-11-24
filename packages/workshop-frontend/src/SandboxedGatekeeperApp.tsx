@@ -195,7 +195,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
       label: 'Gatekeeper app',
     })
     this.#ui = ui
-    this.#downloadPrefix = `/gatekeeper/${encodeURIComponent(gatekeeperVendorId)}/`
+    this.#downloadPrefix = `/gatekeeper/${encodeURIComponent(gatekeeperVendorId.replaceAll('_', '-'))}/`
     this.#disposeRateLimiter = dispose
     this.#present = present
     this.#openTarget = openTarget

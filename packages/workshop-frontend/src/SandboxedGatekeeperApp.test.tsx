@@ -201,14 +201,14 @@ describe("SandboxedGatekeeperApp navigation", () => {
   }
 
   // Mount the host under a router and complete the iframe's handshake, leaving `host` connected.
-  async function mountApp() {
+  async function mountApp(vendorId = "scheduler") {
     const frame = {
       iframeHtml: "<!doctype html><title>Scheduler</title>",
       ui: new RpcStub(new EmptyUi()),
     } as unknown as GatekeeperUiFrame;
     const rootRoute = createRootRoute({
       component: () => (
-        <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="scheduler" path="/" />
+        <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId={vendorId} path="/" />
       ),
     });
     const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
@@ -295,6 +295,19 @@ describe("SandboxedGatekeeperApp navigation", () => {
       reader.readAsText(saveBlob.mock.calls[0][0]);
     })).toBe("private enrollment");
     expect(iframe.getAttribute("sandbox")).toBe("allow-scripts allow-modals");
+  });
+
+  it("uses the router's hyphenated mount for vendor IDs containing underscores", async () => {
+    await mountApp("mcp_portal");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private attachment", {
+      headers: {"Content-Disposition": 'attachment; filename="setup.cfosoperator"'},
+    }));
+    const prefix = `${window.location.origin}/gatekeeper/`;
+    await expect(approvedDownload(prefix + "mcp-portal/setup")).resolves.toBeUndefined();
+    await expect(host!.downloadFile(prefix + "mcp_portal/setup")).rejects.toThrow("Invalid gatekeeper download URL.");
+    await expect(host!.downloadFile(prefix + "mcp-portal-other/setup")).rejects.toThrow("Invalid gatekeeper download URL.");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toBe(prefix + "mcp-portal/setup");
   });
 
   it("never requests a redirect destination outside the vendor route", async () => {
