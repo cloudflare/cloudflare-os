@@ -6,9 +6,20 @@ type UiFeatureFlagDefinition = {
 
 /** UI feature flags resolved by `workshop-backend` for `workshop-frontend`. */
 export const UI_FEATURE_FLAGS = [
-  // Replace this placeholder with the first real feature flag.
-  { key: "placeholder-flag", dev: false, default: false },
+  // The new Workshop UI (`workshop-app`) instead of `workshop-frontend`, switched by
+  // `UI_VARIANT_COOKIE`.
+  { key: "workshop-app", dev: false, default: false },
 ] as const satisfies readonly UiFeatureFlagDefinition[];
+
+/**
+ * The cookie that asks a backend serving the Workshop's pages itself for the new UI's page. A hint
+ * for which page to send, not a permission: the old UI sets it once the `workshop-app` flag is on,
+ * and the new UI clears it once the flag has been read as off.
+ */
+export const UI_VARIANT_COOKIE = "cfos-ui";
+
+/** The value of `UI_VARIANT_COOKIE` that asks for the new UI. */
+export const NEXT_UI_VARIANT = "next";
 
 type UiFeatureFlag = (typeof UI_FEATURE_FLAGS)[number];
 

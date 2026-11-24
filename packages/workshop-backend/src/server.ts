@@ -35,6 +35,7 @@ import { createWorkshopLogger } from "./observability";
 import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
+import { serveWorkshopPage } from "./ui-variant.js";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -87,6 +88,8 @@ type Env = Cloudflare.Env & {
   CF_ACCESS_ISS?: string,  // team URL, i.e. https://<team>.cloudflareaccess.com
   DEV?: boolean;
   FLAGS?: Flagship;
+  // Bound only where the backend serves the Workshop's pages itself rather than behind the router.
+  ASSETS?: Fetcher;
 }
 
 // The User-Agent `cf-os api` (packages/api-cli) sends: `cf-os-api/<version>`.
@@ -1123,6 +1126,7 @@ export default {
           { abortSignal: abortController.signal });
     }
 
+    if (env.ASSETS) return serveWorkshopPage(req, env.ASSETS);
     return new Response("Not Found", {status: 404});
   }
 } satisfies ExportedHandler<Env>;
