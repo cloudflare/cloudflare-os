@@ -579,36 +579,35 @@ export default function ObserverConfigModal({
                         <ul role="list" aria-label={`${vendorName} resources`} className="mt-2 flex flex-col divide-y divide-kumo-line rounded-lg border border-kumo-line">
                           {group.map(need => (
                             <li key={need.gatekeeperId} className="flex flex-col gap-2 px-3 py-2">
-                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[13px] text-kumo-default">{need.resourceTitle}</div>
-                                  {need.resourceUrl && (
-                                    <div className="truncate font-mono text-xs text-kumo-subtle">
-                                      {need.resourceUrl.replace(/^https?:\/\//, '')}
-                                    </div>
-                                  )}
-                                </div>
-                                {matching.length > 1 && (
-                                  <Select
-                                    className="w-full min-w-0 shrink-0 text-sm sm:w-44"
-                                    aria-label={`Account for ${need.resourceTitle}`}
-                                    value={choices[need.gatekeeperId] !== undefined ? String(choices[need.gatekeeperId]) : null}
-                                    placeholder="Choose an account…"
-                                    onValueChange={v => {
-                                      const accountId = optionAccountId(matching, v)
-                                      if (accountId !== undefined) setChoices(prev => ({ ...prev, [need.gatekeeperId]: accountId }))
-                                    }}
-                                    renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
-                                  >
-                                    {matching.map(acct => (
-                                      <Select.Option key={acct.id} value={String(acct.id)}>
-                                        {accountLabel(acct, acct.id)}
-                                        {!acct.credentialsValid ? ' (expired)' : ''}
-                                      </Select.Option>
-                                    ))}
-                                  </Select>
+                              {/* Wrapped, not truncated: what tells two resources apart is often at the end. */}
+                              <div className="min-w-0">
+                                <div className="break-words text-[13px] text-kumo-default">{need.resourceTitle}</div>
+                                {need.resourceUrl && (
+                                  <div className="break-all font-mono text-xs text-kumo-subtle">
+                                    {need.resourceUrl.replace(/^https?:\/\//, '')}
+                                  </div>
                                 )}
                               </div>
+                              {matching.length > 1 && (
+                                <Select
+                                  className="w-full min-w-0 text-sm"
+                                  aria-label={`Account for ${need.resourceTitle}`}
+                                  value={choices[need.gatekeeperId] !== undefined ? String(choices[need.gatekeeperId]) : null}
+                                  placeholder="Choose an account…"
+                                  onValueChange={v => {
+                                    const accountId = optionAccountId(matching, v)
+                                    if (accountId !== undefined) setChoices(prev => ({ ...prev, [need.gatekeeperId]: accountId }))
+                                  }}
+                                  renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
+                                >
+                                  {matching.map(acct => (
+                                    <Select.Option key={acct.id} value={String(acct.id)}>
+                                      {accountLabel(acct, acct.id)}
+                                      {!acct.credentialsValid ? ' (expired)' : ''}
+                                    </Select.Option>
+                                  ))}
+                                </Select>
+                              )}
                               {need.failure && (
                                 <FailureNotice
                                   account={accountLabel(accounts.get(need.failure.accountId), need.failure.accountId)}
