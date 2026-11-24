@@ -345,12 +345,24 @@ describe("checking collaborators", () => {
     expect(await verify(site, direct)).toEqual(DENIED);
   });
 
-  it("refuses a direct collaborator whose key the console no longer accepts", async () => {
+  it("can't check a collaborator whose key the console no longer accepts, rather than calling it no access", async () => {
+    // An expired or revoked key says nothing about what its account may read.
     const { unifi } = installFake();
     const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
     unifi.direct.get(CONSOLE_URL)!.keys.delete(SAM_KEY);
     const site = binding(owner, { kind: "site", consoleId, siteId: HOME.siteId });
-    expect(await verify(site, sam)).toEqual(DENIED);
+    expect(await verify(site, sam)).toHaveProperty("error");
+    expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), sam)).toHaveProperty("error");
+  });
+
+  it("checks each voucher code by finding that voucher, not any code on the site", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    const hotspot = binding(owner, { kind: "hotspot", consoleId, siteId: HOME.siteId });
+    const code = (voucherId: string) => `${appSubresource(hotspot.props.resource)}/site/${HOME.siteId}/voucherCode/${voucherId}`;
+    expect(await verify(hotspot, sam, [code(HOME.voucherId)])).toEqual(ALLOWED);
+    // One the collaborator's key doesn't find, though another voucher's code is on the site.
+    expect(await verify(hotspot, sam, [code(HOME.voucherId), code("5f0ee1aa-0000-4000-8000-ffffffffffff")])).toEqual(DENIED);
   });
 
   it("reports a check that couldn't be made, rather than calling it a refusal", async () => {
@@ -400,7 +412,7 @@ describe("checking collaborators", () => {
     unifi.addCloudKey(ALEX_NEW_KEY, { ...unifi.cloud.get(ALEX_KEY)! });
     await reconnectCloud(alex, ALEX_NEW_KEY);
     release();
-    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected during the check/) });
+    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected/) });
   });
 
   it("sends nothing more with a replaced key once a reconnect lands, so nothing it loads is cached for the new one", async () => {
@@ -416,7 +428,7 @@ describe("checking collaborators", () => {
     await reconnectCloud(alex, ALEX_NEW_KEY);
     const before = unifi.calls.length;
     release();
-    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected during the check/) });
+    expect(await checking).toMatchObject({ error: expect.stringMatching(/reconnected/) });
     // Only the Site Manager lookup that was already on its way went out with the old key.
     expect(unifi.calls.slice(before).filter(call => call.headers["x-api-key"] === ALEX_KEY)).toHaveLength(1);
   });

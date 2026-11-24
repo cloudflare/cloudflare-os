@@ -157,6 +157,14 @@ describe("an item's details", () => {
     await expect(misrouted.getWifiRaw(HOME.siteId, HOME.homeWifiId)).rejects.toMatchObject({ kind: "protocol" });
   });
 
+  it("counts a WiFi change as made only when UniFi answers with the updated network", async () => {
+    const { api } = setup();
+    const raw = await api.getWifiRaw(HOME.siteId, HOME.guestWifiId);
+    await api.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }));
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }))).rejects.toMatchObject({ kind: "protocol" });
+  });
+
   it("finds a device listed under its ID in another case", async () => {
     const { api } = setup();
     expect((await api.getDevice(HOME.siteId, HOME.apId.toUpperCase())).id).toBe(HOME.apId);

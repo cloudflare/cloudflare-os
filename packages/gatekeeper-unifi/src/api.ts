@@ -28,6 +28,8 @@ export const MAX_LIST_ITEMS = 1000;
 const PAGE_SIZE = 200;
 /** The most vouchers read looking for some by ID when a console doesn't apply the `id` filter. */
 const MAX_VOUCHER_SCAN = 10_000;
+/** The most clients read looking for one device's. */
+const MAX_CLIENT_SCAN = 10_000;
 
 /** Guest access limits as the Network API names them. */
 export type GuestLimitsBody = {
@@ -153,6 +155,31 @@ export class UnifiApi {
       filter ? { filter } : undefined)).map(parseClient);
   }
 
+  /**
+   * The clients connected through one device, up to `MAX_LIST_ITEMS`. The client list can't be
+   * filtered by device, so it's read page by page until it ends or those are found, rather than
+   * cut at the site's first 1,000 clients, which could leave out every one of the device's.
+   * @throws UnifiError when that would take more than `MAX_CLIENT_SCAN` clients, rather than
+   * answering with what might look like all of them.
+   */
+  async listClientsOf(siteId: string, deviceId: string): Promise<UnifiClient[]> {
+    const path = `/v1/sites/${id(siteId, "site")}/clients`;
+    const found: UnifiClient[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      if (offset >= MAX_CLIENT_SCAN) {
+        throw new UnifiError({
+          kind: "protocol",
+          message: `This site has more than ${MAX_CLIENT_SCAN} clients, so the device's couldn't all be found.`,
+        });
+      }
+      const page = parseNetworkPage(await this.#json("network", "GET", path, undefined,
+        { offset: String(offset), limit: String(PAGE_SIZE) }), "client list");
+      found.push(...page.data.map(parseClient).filter(client => client.uplinkDeviceId !== null && sameId(client.uplinkDeviceId, deviceId)));
+      if (found.length >= MAX_LIST_ITEMS) return found.slice(0, MAX_LIST_ITEMS);
+      if (page.data.length < PAGE_SIZE || offset + page.data.length >= page.totalCount) return found;
+    }
+  }
+
   /** One connected client's details. */
   async getClient(siteId: string, clientId: string): Promise<UnifiClientDetails> {
     return answering(parseClientDetails(await this.#json("network", "GET",
@@ -182,6 +209,31 @@ export class UnifiApi {
       .map(parseWifiSummary);
   }
 
+  /**
+   * `findVouchers` through the `id` filter, a hundred IDs a request to keep URLs short; null when
+   * the console refuses the filter, or ignores it by answering with vouchers that weren't asked for.
+   */
+  async #findVouchersFiltered(
+    path: string, ids: readonly string[], isWanted: (raw: unknown) => boolean,
+  ): Promise<UnifiVoucher[] | null> {
+    const found: UnifiVoucher[] = [];
+    for (let start = 0; start < ids.length; start += 100) {
+      const chunk = ids.slice(start, start + 100);
+      let page;
+      try {
+        page = parseNetworkPage(await this.#json("network", "GET", path, undefined,
+          { filter: `id.in(${chunk.join(",")})`, offset: "0", limit: String(PAGE_SIZE) }), "voucher list");
+      } catch (error) {
+        if (error instanceof UnifiError && error.kind === "badRequest") return null;
+        throw error;
+      }
+      // A console that applied the filter answered with these vouchers alone.
+      if (page.totalCount > chunk.length || !page.data.every(isWanted)) return null;
+      found.push(...page.data.map(parseVoucher));
+    }
+    return found;
+  }
+
   /** One WiFi network's settings, as UniFi returns them, for reading or for `putWifi`. */
   async getWifiRaw(siteId: string, wifiNetworkId: string): Promise<Record<string, unknown>> {
     const raw = asObject(await this.#json("network", "GET",
@@ -195,10 +247,15 @@ export class UnifiApi {
     return parseWifiInfo(await this.getWifiRaw(siteId, wifiNetworkId));
   }
 
-  /** Replaces a WiFi network's settings. `body` is a full settings object, from `getWifiRaw`. */
+  /**
+   * Replaces a WiFi network's settings. `body` is a full settings object, from `getWifiRaw`.
+   * @throws UnifiError (protocol) unless UniFi answers with the network's updated settings: a bare
+   * success, from a proxy say, doesn't show the change was made.
+   */
   async putWifi(siteId: string, wifiNetworkId: string, body: Record<string, unknown>): Promise<void> {
-    await this.#json("network", "PUT",
+    const updated = await this.#json("network", "PUT",
       `/v1/sites/${id(siteId, "site")}/wifi/broadcasts/${id(wifiNetworkId, "WiFi network")}`, body);
+    answering(parseWifiInfo(updated), wifiNetworkId, "WiFi network");
   }
 
   /** A site's hotspot vouchers, newest first. */
@@ -221,14 +278,8 @@ export class UnifiApi {
     const path = `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`;
     const wanted = new Set(ids.map(voucherId => voucherId.toLowerCase()));
     const isWanted = (raw: unknown) => wanted.has(String(asObject(raw, "voucher").id).toLowerCase());
-    try {
-      const filtered = parseNetworkPage(await this.#json("network", "GET", path, undefined,
-        { filter: `id.in(${ids.join(",")})`, offset: "0", limit: String(PAGE_SIZE) }), "voucher list");
-      // A console that applied the filter answered with these vouchers alone.
-      if (filtered.totalCount <= ids.length && filtered.data.every(isWanted)) return filtered.data.map(parseVoucher);
-    } catch (error) {
-      if (!(error instanceof UnifiError && error.kind === "badRequest")) throw error;
-    }
+    const filteredFinds = await this.#findVouchersFiltered(path, ids, isWanted);
+    if (filteredFinds) return filteredFinds;
     const found = new Map<string, UnifiVoucher>();
     for (let offset = 0; ; offset += PAGE_SIZE) {
       if (offset >= MAX_VOUCHER_SCAN) {

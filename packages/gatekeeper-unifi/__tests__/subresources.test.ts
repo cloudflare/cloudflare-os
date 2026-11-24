@@ -32,7 +32,7 @@ describe("subresource IDs", () => {
     [device, { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }, `${NETWORK}/site/${SITE}/deviceStatistics/d`],
     [hotspot, { kind: "client", siteId: SITE, clientId: "c" }, `${NETWORK}/site/${SITE}/client/c`],
     [hotspot, { kind: "vouchers", siteId: SITE }, `${NETWORK}/vouchers/${SITE}`],
-    [hotspot, { kind: "voucherCodes", siteId: SITE }, `${NETWORK}/voucherCodes/${SITE}`],
+    [hotspot, { kind: "voucherCode", siteId: SITE, voucherId: "v" }, `${NETWORK}/site/${SITE}/voucherCode/v`],
     [protect, { kind: "list", id: "cameras" }, `${PROTECT}/list/cameras`],
     [protect, { kind: "app" }, PROTECT],
     [site, { kind: "app" }, NETWORK],
@@ -94,11 +94,8 @@ describe("subresource IDs", () => {
     expect(probeConfirms(password, guestWifi, "network")).toBe(true);
     const withoutPassword = { ...guestWifi, securityConfiguration: { type: "WPA2_PERSONAL" } };
     expect(probeConfirms(password, withoutPassword, "network")).toBe(false);
-    // A voucher list must be one, and for codes, carry them.
-    const codes = { kind: "voucherCodes", siteId: SITE } as const;
-    expect(probeConfirms(codes, voucherPage(vouchers), "network")).toBe(true);
-    expect(probeConfirms(codes, voucherPage(vouchers.map(({ code: _code, ...rest }) => rest)), "network")).toBe(false);
-    expect(probeConfirms(codes, voucherPage([]), "network")).toBe(false);
+    // A voucher list must be one.
+    expect(probeConfirms({ kind: "vouchers", siteId: SITE }, voucherPage(vouchers), "network")).toBe(true);
     expect(probeConfirms({ kind: "vouchers", siteId: SITE }, voucherPage([]), "network")).toBe(true);
     // The application's information must carry its version.
     expect(probeConfirms({ kind: "app" }, { applicationVersion: "10.0.160" }, "network")).toBe(true);

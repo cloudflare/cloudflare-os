@@ -191,10 +191,10 @@ export class NetworkDeviceSession extends RpcTarget implements UnifiNetworkDevic
       });
     }
     const { api, pending } = this.#ctx.shared;
-    const [all, device] = await Promise.all([
-      api.listClients(this.#siteId), api.getDevice(this.#siteId, this.#deviceId),
+    const [connected, device] = await Promise.all([
+      api.listClientsOf(this.#siteId, this.#deviceId), api.getDevice(this.#siteId, this.#deviceId),
     ]);
-    const clients = simulateClients(all.filter(client => client.uplinkDeviceId === this.#deviceId), this.#siteId, pending());
+    const clients = simulateClients(connected, this.#siteId, pending());
     await this.#ctx.observe("List clients of a UniFi device",
       `Listed ${count(clients.length, "client")} connected through UniFi device ${md(device.name)}.`,
       [{ kind: "clients", siteId: this.#siteId }, { kind: "devices", siteId: this.#siteId }, this.#device()]);
@@ -360,10 +360,13 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     return vouchers;
   }
 
-  /** What a read of vouchers requires: the list, and the right to read codes if it returned any. */
+  /** What a read of vouchers requires: the list, and each voucher whose code it returned. */
   #voucherRequirements(vouchers: readonly UnifiVoucher[]): [UnifiRequirement, ...UnifiRequirement[]] {
-    const list: UnifiRequirement = { kind: "vouchers", siteId: this.#siteId };
-    return vouchers.some(voucher => voucher.code !== null) ? [list, { kind: "voucherCodes", siteId: this.#siteId }] : [list];
+    return [
+      { kind: "vouchers", siteId: this.#siteId },
+      ...vouchers.filter(voucher => voucher.code !== null)
+        .map(voucher => ({ kind: "voucherCode" as const, siteId: this.#siteId, voucherId: voucher.id })),
+    ];
   }
 
   async createVouchers(options: UnifiVoucherOptions): Promise<string> {

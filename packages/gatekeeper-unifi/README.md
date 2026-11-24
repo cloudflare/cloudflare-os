@@ -117,8 +117,8 @@ information, such as the version a site's or Protect's `describe()` returns. The
 
 - Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
   `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists, with
-  `/voucherCodes/<siteId>` for working voucher codes, passed only if the vouchers the collaborator's
-  key reads carry theirs;
+  `/site/<siteId>/voucherCode/<id>` for each voucher whose working code a read returned, passed
+  only if the collaborator's key finds that voucher with its code;
   `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, and
   `/site/<siteId>/wifiPassword/<wifiNetworkId>` for its password, which a collaborator passes only
   if the settings their key reads include it; and

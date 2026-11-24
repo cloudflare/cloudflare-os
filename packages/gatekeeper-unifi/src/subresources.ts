@@ -9,8 +9,8 @@
  * own information, such as its version. Then, in Network, a site's own details
  * are `/site/<siteId>`; its devices, clients, LAN networks, WiFi network list and voucher codes are
  * `/devices/<siteId>`, `/clients/<siteId>`, `/networks/<siteId>`, `/wifiNetworks/<siteId>` and
- * `/vouchers/<siteId>`, with `/voucherCodes/<siteId>` for a read that returned working codes, which
- * a key passes only if the vouchers it reads carry theirs; one WiFi network's settings, password included, are
+ * `/vouchers/<siteId>`, with `/site/<siteId>/voucherCode/<id>` for each voucher whose working code a
+ * read returned, which a key passes only if it finds that voucher with its code; one WiFi network's settings, password included, are
  * `/site/<siteId>/wifi/<wifiNetworkId>`, and its password `/site/<siteId>/wifiPassword/<id>`, which
  * a key passes only if the settings it reads include the password; one device's details, its
  * statistics and one client's details are `/site/<siteId>/device/<id>`,
@@ -53,15 +53,16 @@ export type UnifiRequirement =
   | { kind: "networks"; siteId: string }
   | { kind: "wifiNetworks"; siteId: string }
   | { kind: "vouchers"; siteId: string }
-  | { kind: "voucherCodes"; siteId: string }
+
   | { kind: "wifi"; siteId: string; wifiNetworkId: string }
   | { kind: "wifiPassword"; siteId: string; wifiNetworkId: string }
   | { kind: "device"; siteId: string; deviceId: string }
   | { kind: "deviceStatistics"; siteId: string; deviceId: string }
-  | { kind: "client"; siteId: string; clientId: string };
+  | { kind: "client"; siteId: string; clientId: string }
+  | { kind: "voucherCode"; siteId: string; voucherId: string };
 
 /** The parts of a Network site that UniFi serves from separate endpoints. */
-const SITE_DATA = ["site", "devices", "clients", "networks", "wifiNetworks", "vouchers", "voucherCodes"] as const;
+const SITE_DATA = ["site", "devices", "clients", "networks", "wifiNetworks", "vouchers"] as const;
 const PROTECT_ITEMS = ["nvr", "camera", "sensor", "light", "snapshot", "packageSnapshot"] as const;
 const PROTECT_LISTS = ["cameras", "sensors", "lights"] as const;
 
@@ -112,6 +113,7 @@ function decode(id: string): UnifiRequirement | null {
       case "wifi": case "wifiPassword": return { kind: second.name, siteId: first.id, wifiNetworkId: second.id };
       case "device": case "deviceStatistics": return { kind: second.name, siteId: first.id, deviceId: second.id };
       case "client": return { kind: "client", siteId: first.id, clientId: second.id };
+      case "voucherCode": return { kind: "voucherCode", siteId: first.id, voucherId: second.id };
       default: return null;
     }
   }
@@ -128,6 +130,7 @@ function siteItem(requirement: UnifiRequirement): string | null {
     case "wifi": case "wifiPassword": return requirement.wifiNetworkId;
     case "device": case "deviceStatistics": return requirement.deviceId;
     case "client": return requirement.clientId;
+    case "voucherCode": return requirement.voucherId;
     default: return null;
   }
 }
@@ -149,7 +152,7 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
         requirement.wifiNetworkId === resource.wifiNetworkId;
     case "hotspot":
       return inSite && (requirement.kind === "clients" || requirement.kind === "client" || requirement.kind === "vouchers" ||
-        requirement.kind === "voucherCodes");
+        requirement.kind === "voucherCode");
     case "protect": return requirement.kind === "app" || requirement.kind === "list" || isOneOf(requirement.kind, PROTECT_ITEMS);
     case "camera":
       return (requirement.kind === "camera" || requirement.kind === "snapshot" || requirement.kind === "packageSnapshot") &&
@@ -159,8 +162,11 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
   }
 }
 
-/** A requirement one request can check; a site's details are looked up through the whole site list. */
-export type ProbedRequirement = Exclude<UnifiRequirement, { kind: "site" }>;
+/**
+ * A requirement one request can check. A site's details are looked up through the whole site list,
+ * and voucher codes all at once, by ID (`UnifiAccount.canObserve`).
+ */
+export type ProbedRequirement = Exclude<UnifiRequirement, { kind: "site" | "voucherCode" }>;
 
 /**
  * The request that shows whether a key may read what `requirement` covers: the endpoint a read of
@@ -187,7 +193,7 @@ export function probeFor(
     case "clients": return { path: `/v1/sites/${at(requirement.siteId)}/clients`, query: first };
     case "networks": return { path: `/v1/sites/${at(requirement.siteId)}/networks`, query: first };
     case "wifiNetworks": return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts`, query: first };
-    case "vouchers": case "voucherCodes": return { path: `/v1/sites/${at(requirement.siteId)}/hotspot/vouchers`, query: first };
+    case "vouchers": return { path: `/v1/sites/${at(requirement.siteId)}/hotspot/vouchers`, query: first };
     case "wifi": case "wifiPassword":
       return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts/${at(requirement.wifiNetworkId)}` };
     case "device": return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}` };
@@ -201,8 +207,7 @@ export function probeFor(
  * Whether a successful probe's answer shows what the requirement needs, beyond the key being let
  * in: the application's information must carry the version a read returns; the NVR must be the one the binding read, not
  * one a console that has since replaced it at the same URL reports; and the WiFi settings must
- * include the password, and the voucher list a voucher's code, which UniFi may leave out for a role
- * that can't read them. Every answer must also parse as the read's would, an item answer naming
+ * include the password, which UniFi may leave out for a role that can't read it. Every answer must also parse as the read's would, an item answer naming
  * the same item: an empty or substituted one, from a proxy say, proves nothing.
  * @throws UnifiError for an answer that isn't what the endpoint returns, which proves nothing.
  */
@@ -225,7 +230,6 @@ export function probeConfirms(requirement: ProbedRequirement, body: unknown, app
     case "networks": page("network list", parseLanNetwork); return true;
     case "wifiNetworks": page("WiFi network list", parseWifiSummary); return true;
     case "vouchers": page("voucher list", parseVoucher); return true;
-    case "voucherCodes": return page("voucher list", parseVoucher).some(voucher => (voucher.code ?? "") !== "");
     case "wifi": return same(parseWifiInfo(body).id, requirement.wifiNetworkId);
     case "wifiPassword": return same(parseWifiInfo(body).id, requirement.wifiNetworkId) && (wifiPassphrase(body) ?? "") !== "";
     case "device": return same(parseDeviceDetails(body, []).id, requirement.deviceId);

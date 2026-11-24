@@ -291,7 +291,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       await new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId).getSite(siteId);
       return true;
     } catch (error) {
-      if (error instanceof UnifiError && ["notFound", "auth", "forbidden", "redirect"].includes(error.kind)) return false;
+      if (error instanceof UnifiError && ["notFound", "forbidden", "redirect"].includes(error.kind)) return false;
       throw error;
     }
   }
@@ -311,27 +311,56 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         consoles = (await listSiteManagerConsoles(request => this.#send(request, CONSOLES_TTL_MS, connection)))
           .map(cloudConsoleSummary);
       } catch (error) {
-        if (error instanceof UnifiError && (error.kind === "auth" || error.kind === "forbidden")) return none;
+        // A refused key is expired or revoked, which says nothing about access: that propagates.
+        if (error instanceof UnifiError && error.kind === "forbidden") return none;
         throw error;
       }
       const match = consoles.find(c => c.id === target.consoleId) ?? consoles.find(c => sameConsole(c.macs, target.macs));
       if (!match?.permissions[target.app]) return none;
       consoleId = match.reachable ? match.id : null;
     }
+    if (consoleId === null) return none;
+    const codes = await this.#voucherCodes(consoleId, requirements, connection);
     const answers: boolean[] = [];
     // A few at a time: each is a request on this connection's own budget for the console.
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
-        if (consoleId === null) return false;
         if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
+        if (requirement.kind === "voucherCode") return codes.has(`${requirement.siteId}/${requirement.voucherId}`.toLowerCase());
         const probe = await this.#send(
           { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
         if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : probe.bytes, target.app);
-        if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
+        // A refused key (auth) is expired or revoked, which says nothing about access: it throws.
+        if (["forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
     }
     return answers;
+  }
+
+  /**
+   * The vouchers, of those `requirements` name codes of, that this connection finds with their
+   * codes: one lookup by ID per site, so a code passes only for a key that can read that voucher's.
+   * @returns `<siteId>/<voucherId>`, lowercase.
+   */
+  async #voucherCodes(consoleId: string, requirements: readonly UnifiRequirement[], connection: StoredConnection): Promise<Set<string>> {
+    const bySite = new Map<string, string[]>();
+    for (const requirement of requirements) {
+      if (requirement.kind === "voucherCode") bySite.set(requirement.siteId, [...bySite.get(requirement.siteId) ?? [], requirement.voucherId]);
+    }
+    const readable = new Set<string>();
+    const api = new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId);
+    for (const [siteId, ids] of bySite) {
+      let found;
+      try {
+        found = await api.findVouchers(siteId, ids);
+      } catch (error) {
+        if (error instanceof UnifiError && ["forbidden", "notFound", "redirect"].includes(error.kind)) continue;
+        throw error;
+      }
+      for (const voucher of found) if (voucher.code) readable.add(`${siteId}/${voucher.id}`.toLowerCase());
+    }
+    return readable;
   }
 
   /** Where a console's web UI lives: under unifi.ui.com for a cloud connection, else its own URL. */

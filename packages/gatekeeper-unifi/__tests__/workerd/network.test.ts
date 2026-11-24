@@ -12,7 +12,7 @@ import {
 } from "./helpers.js";
 
 const NEW_CLOUD_KEY = "replacement-cloud-key-0123456789ab";
-import { HOME, rawVoucher } from "../fake-unifi.js";
+import { HOME, rawClient, rawVoucher } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
@@ -58,7 +58,7 @@ describe("every read is authorized before it returns", () => {
       [guestWifi, item("wifiPassword", HOME.guestWifiId)], true],
     ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, [ofSite("clients")]],
     ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [item("client", HOME.guestId)]],
-    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers"), ofSite("voucherCodes")], true],
+    ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers"), item("voucherCode", HOME.voucherId)], true],
   ];
   it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources, restricted) => {
     installFake();
@@ -227,6 +227,19 @@ describe("a device", () => {
     expect(await bare.failure("listClients")).toMatch(/doesn't include the device's clients/);
     const withClients = binding(accountId, RESOURCES.device(HOME.apId, true));
     expect((await withClients.call<{ name: string }[]>("listClients")).map(c => c.name)).toEqual(["Dan's iPhone", "Visitor Pixel"]);
+  });
+
+  it("finds its clients however many others the site lists first", async () => {
+    // The client list can't be filtered by device; stopping at the site's first 1,000 would find none.
+    const { console } = installFake();
+    const wired = Array.from({ length: 1000 }, (_, i) => rawClient({
+      id: `c1a0b2d3-0000-4000-9000-${String(i).padStart(12, "0")}`, name: `Desk ${i}`, type: "WIRED",
+      mac: `02:00:00:00:${String(Math.floor(i / 256)).padStart(2, "0")}:${(i % 256).toString(16).padStart(2, "0")}`,
+      ip: "192.168.1.200", uplinkDeviceId: HOME.switchId,
+    }));
+    console.network!.sites[0]!.clients.unshift(...wired);
+    const ap = binding(await connectCloud(), RESOURCES.device(HOME.apId, true));
+    expect((await ap.call<{ name: string }[]>("listClients")).map(c => c.name)).toEqual(["Dan's iPhone", "Visitor Pixel"]);
   });
 });
 
