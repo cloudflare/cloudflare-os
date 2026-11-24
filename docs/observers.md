@@ -109,7 +109,12 @@ The check works as follows:
 - **Account selection.** A collaborator must have their own connected account for each vendor the
   Gadget depends on. For ordinary bindings, they choose which account to use (e.g. work or personal
   Google). If an account cannot be selected automatically, the configuration modal prompts them to
-  choose or connect one; declining denies the open. Ambient bindings are the exception to account
+  choose or connect one, once per vendor: the vendor's account choice applies to all of that
+  vendor's connections in this prompt, and its collapsible resource list lets the collaborator pick
+  a different account for any one connection (the list opens by itself on a re-prompt when the
+  vendor has more than one account, so a refused connection can move to another account within
+  the overseer's single retry). Choices are stored per connection. Declining denies the open.
+  Ambient bindings are the exception to account
   *selection*, not verification: when the collaborator already has the matching provided singleton
   account, the overseer uses it automatically and still runs the gatekeeper's normal `addObserver`
   check.
@@ -611,17 +616,20 @@ determined — the change itself, for every trigger — and held to what the col
 
 Implement the `ObserverConfigCallback` on the client. When the overseer calls `configure(needs)`:
 
-1. For each `ObserverBindingNeed`, find the user's candidate accounts by filtering the existing
-   `subscribeConnectedAccounts()` results by `need.vendorId`.
+1. Group the `ObserverBindingNeed`s by `need.vendorId`, and find the user's candidate accounts for
+   each vendor by filtering the existing `subscribeConnectedAccounts()` results by vendor.
 2. If one or more accounts match, pre-select one arbitrarily as the default; let the user change
-   it via a dropdown. (Most users have one account per vendor and will just click "OK".)
+   it via a dropdown that sets every connection of the vendor. (Most users have one account per
+   vendor and will just click "OK".) An expandable list of the vendor's connections lets the user
+   override the account for individual connections. Each account must hold every grantable
+   resource type the connections it was chosen for need.
 3. Include forced auto-provisioned accounts in the subscription. If **no** account matches, use
    `listAddableGatekeepers()` to identify optional auto-provisioning vendors and provision those
    directly; otherwise use the existing `connectAccount` flow. Then include the new account as the
    choice.
-4. Resolve `configure()` with one `ObserverAccountChoice` per binding. If the user cancels / can't
-   provide an account, reject (the overseer denies the open and the UI shows an access-denied
-   state).
+4. Resolve `configure()` with one `ObserverAccountChoice` per binding, each carrying the account
+   chosen for it. If the user cancels / can't provide an account, reject (the overseer denies the open
+   and the UI shows an access-denied state).
 
 Messaging: "To open this Gadget, choose which of your «Vendor» accounts to use, so we can confirm
 you're allowed to see the data it uses."

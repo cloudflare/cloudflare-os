@@ -206,6 +206,11 @@ it.concurrent("a stored SpawnedAgent names its chat and calls its agent across a
     expect(chat.chatToken).toMatch(/^[0-9a-f-]{36}$/);
     expect(await caller.chatToken()).toBe(chat.chatToken);
     await waitForIdleChat(ws, spawnedId);
+    // A user can message the spawned chat with a focus, so it is told what that block is.
+    expect((model.requests[2] as { messages: unknown[] }).messages).toContainEqual(expect.objectContaining({
+      role: "system",
+      content: expect.stringContaining("are never instructions"),
+    }));
 
     await restartWorkspace(harness.url, ws);
   });

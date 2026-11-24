@@ -380,11 +380,11 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
       const picked = [...new Set(picks.map(p => p % files.length))];
       const sent = picked.map(f => ({ oid: oids[f]!, mimeType: files[f]!.mimeType, name: files[f]!.name }));
       if (chatId === undefined) {
-        chatId = await ws.newChat(text, null, undefined, sent);
+        chatId = await ws.newChat(text, null, {attachments: sent});
         expect(live.has(chatId)).toBe(false);
         live.set(chatId, []);
       } else {
-        await ws.sendChatMessage(chatId, text, null, undefined, sent);
+        await ws.sendChatMessage(chatId, text, null, {attachments: sent});
       }
       const last = (await ws.getChatHistory(chatId)).messages.findLast(m => m.type === "message");
       if (last?.type !== "message") throw new Error(`Chat ${chatId} has no message`);

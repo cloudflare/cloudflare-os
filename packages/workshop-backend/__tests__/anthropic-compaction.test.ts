@@ -336,9 +336,9 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const batch = (length: number) =>
       Array.from({ length }, (_, i) => ({ oid: blob.oid, mimeType: "image/png", name: `${i}.png` }));
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", undefined, batch(5));
+    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", {attachments: batch(5)});
     for (let i = 0; i < 3; ++i) {
-      await impl.sendChatMessage(user, { profile: OWNER }, chatId, "Five more", undefined, batch(5));
+      await impl.sendChatMessage(user, { profile: OWNER }, chatId, "Five more", {attachments: batch(5)});
     }
     const { handle, bodies, respond } = claude();
     const claudeTurn = () => runAgent(impl, handle, chatId, AGENT, new AbortController().signal,
@@ -349,7 +349,7 @@ describe("Anthropic compaction of a chat's attachments", () => {
     await claudeTurn();
     expect(images(bodies[0])).toBe(20);
 
-    await impl.sendChatMessage(user, { profile: OWNER }, chatId, "One more", undefined, batch(1));
+    await impl.sendChatMessage(user, { profile: OWNER }, chatId, "One more", {attachments: batch(1)});
     respond(...SUMMARY_EVENTS);
     respond(...REPLY_EVENTS);
     await claudeTurn();
