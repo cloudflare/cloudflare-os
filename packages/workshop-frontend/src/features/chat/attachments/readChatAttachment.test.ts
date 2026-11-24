@@ -55,6 +55,20 @@ describe("readChatAttachment", () => {
     expect(cancel).toHaveBeenCalled();
   });
 
+  it("cancels a stream that arrives after the signal aborted, without reading it", async () => {
+    const cancel = vi.fn<(reason: unknown) => void>();
+    const abort = new AbortController();
+    const overseer = {
+      readBlob: async () => {
+        abort.abort(new Error("Closed the viewer."));
+        return new ReadableStream<Uint8Array>({ cancel });
+      },
+    } as unknown as RpcStub<Overseer>;
+    await expect(readChatAttachment(overseer, 3, attachment("f".repeat(40)), abort.signal))
+      .rejects.toThrow("Closed the viewer.");
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it("cancels the stream when the signal aborts", async () => {
     const cancel = vi.fn<(reason: unknown) => void>();
     const overseer = {

@@ -19,7 +19,11 @@ export const readChatAttachment = async (
   }
   const reader = (await overseer.readBlob(attachment.oid)).getReader();
   const cancel = () => void reader.cancel(signal.reason).catch(() => {});
-  if (signal.aborted) cancel();
+  // Abandoned while the stream was on its way: nothing is read, and nothing is allocated for it.
+  if (signal.aborted) {
+    cancel();
+    signal.throwIfAborted();
+  }
   signal.addEventListener("abort", cancel, { once: true });
   // Each piece is copied into place as it arrives, so the file is held once, not in pieces and
   // then whole as well.
