@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv } from 'vite'
+import { createLogger, defineConfig, loadEnv } from 'vite'
 import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -71,10 +71,22 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd())
   const backendHost = env.VITE_BACKEND_HOST?.trim() || 'localhost:8787'
   const frontendErrorReporting = env.VITE_FRONTEND_ERROR_REPORTING === 'true'
+  const logger = createLogger()
+  const logError = logger.error.bind(logger)
+  logger.error = (message, options) => {
+    // Vite includes the complete request URL and upstream stack in proxy errors. Attachment
+    // paths carry bearer tickets: omit both from this route's diagnostic, including error metadata.
+    if (message.includes('http proxy error: /gatekeeper/')) {
+      logError('Gatekeeper development proxy failed.', { timestamp: options?.timestamp })
+    } else {
+      logError(message, options)
+    }
+  }
   return {
     // Spread, not a literal `run: {...}`: `run` is Vite+'s field and vite's own `defineConfig` has
     // no such property, but the excess-property check doesn't reach spreads.
     ...runConfig,
+    customLogger: logger,
     plugins: [
       TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
       react(),

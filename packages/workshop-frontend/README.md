@@ -53,6 +53,9 @@ in a Workshop dialog before fetching. The response must be a successful `Content
 attachment` response; redirects are rejected. Only one download may be pending per management app,
 including its confirmation and body read. Closing the app cancels it. The file contents stay in the
 host and are saved to the user's device, rather than returned to the sandboxed app.
+During `pnpm dev-client`, an absolute URL on the configured `VITE_BACKEND_HOST` origin is also
+accepted and rewritten through the frontend's authenticated `/gatekeeper/` proxy. That proxy's
+error logs omit attachment URLs and upstream error details so one-use tickets stay private.
 
 ## Authentication modes
 
