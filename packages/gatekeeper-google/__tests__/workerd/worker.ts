@@ -282,6 +282,11 @@ class TestApprovalQueue extends RpcTarget {
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
   }
+  // No test here fetches through the session's caller's policy.
+  async getFetcher(): Promise<Fetcher> {
+    throw new Error("getFetcher() is not supported by this fake queue.");
+  }
+
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */
