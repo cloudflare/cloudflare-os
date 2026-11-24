@@ -21,8 +21,8 @@ export type RateLimitOptions = {
 }
 
 /**
- * Returns the rate-limited proxy plus a `dispose` that cancels any pending resume timer (otherwise it
- * could fire after the session is torn down). `dispose` is a no-op in `reject` mode (no timer).
+ * Returns the rate-limited proxy plus a `dispose` that rejects queued and future calls and cancels
+ * any pending resume timer. Calls already in flight are allowed to settle.
  */
 export function createRateLimitedCapability(
   capability: any,
@@ -37,6 +37,7 @@ export function createRateLimitedCapability(
 
   const startedCalls: number[] = []
   const queue: QueuedCall[] = []
+  let disposed = false
   let inFlight = 0
   let resumeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -46,6 +47,7 @@ export function createRateLimitedCapability(
   }
 
   const drain = () => {
+    if (disposed) return
     pruneCallWindow()
     while (inFlight < options.maxConcurrency && queue.length > 0) {
       if (startedCalls.length >= options.maxCallsPerMinute) {
@@ -88,6 +90,7 @@ export function createRateLimitedCapability(
       if (property === Symbol.dispose) return undefined
       if (typeof property !== 'string' || property in stubMembers) return undefined
       return (...args: unknown[]) => new Promise((resolve, reject) => {
+        if (disposed) return reject(new Error(`${options.label} connection changed.`))
         if (queue.length + inFlight >= options.maxPendingCalls) {
           reject(new Error(`${options.label} has too many pending requests.`))
           return
@@ -101,6 +104,8 @@ export function createRateLimitedCapability(
   return {
     capability: proxy,
     dispose: () => {
+      disposed = true
+      for (const call of queue.splice(0)) call.reject(new Error(`${options.label} connection changed.`))
       if (resumeTimer !== null) {
         clearTimeout(resumeTimer)
         resumeTimer = null
