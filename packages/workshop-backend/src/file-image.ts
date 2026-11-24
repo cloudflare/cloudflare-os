@@ -26,6 +26,8 @@ const ImageDataErrorCode = z.enum([
   "unsupported_image_media_type", "empty_image_file",
 ]);
 const OpenAIImageError = z.object({code: z.string()});
+// Responses and Chat Completions adapters wrap the same structured error differently.
+const IMAGE_ERROR_ENVELOPE = /^(?:OpenAI API error \((?:400|422)\)|(?:400|422)):\s*/;
 
 // Gemini's SDK can report a nested JSON error without an HTTP-status prefix.
 const NestedImageError = z.object({error: z.object({
@@ -35,7 +37,7 @@ const NestedImageError = z.object({error: z.object({
 /** An explicit image-policy refusal must be surfaced without retrying the turn. */
 export function isImagePolicyError(message: string): boolean {
   if (/^(?:Error Code )?image_content_policy_violation:/.test(message)) return true;
-  const envelope = /^OpenAI API error \((?:400|422)\):\s*/.exec(message);
+  const envelope = IMAGE_ERROR_ENVELOPE.exec(message);
   if (!envelope) return false;
   try {
     const body = OpenAIImageError.safeParse(JSON.parse(message.slice(envelope[0].length)));
@@ -50,7 +52,7 @@ export function isImageDecodeError(message: string, status: number | undefined):
   if (ImageDataErrorCode.safeParse(streamCode).success) return true;
   try {
     // The same adapter wraps a structured JSON error on HTTP 400/422 instead of SSE failure.
-    const envelope = /^OpenAI API error \((?:400|422)\):\s*/.exec(message);
+    const envelope = IMAGE_ERROR_ENVELOPE.exec(message);
     const body: unknown = JSON.parse(envelope ? message.slice(envelope[0].length) : message);
     if (envelope) {
       const error = OpenAIImageError.safeParse(body);

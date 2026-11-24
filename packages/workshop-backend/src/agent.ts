@@ -3664,11 +3664,12 @@ async function runAgentPass(
     contextTokens = estimateProjectionTokens(projection) +
         Math.ceil(getSystemMessageText(systemMessage).length / 4);
     if (measuredTokens > 0 && lastMeasuredSequence !== undefined &&
-        sameMediaPricing && measuredImageTokens !== undefined) {
-      // Window eviction must not erase measured text usage at a persistence-barrier reload.
-      // Adjust the media estimate on the same model, retaining the full estimate as a floor.
+        sameMediaPricing && measuredImageTokens !== undefined && handle.model.input.includes("image")) {
+      // Providers can downsample: our original-resolution estimate is not a billed image cost
+      // we can subtract. Keep measured headroom when old pixels fall out, budgeting only increases
+      // until the next response measures them. Text-only switches use the full projection instead.
       contextTokens = Math.max(contextTokens,
-          Math.max(0, measuredTokens - measuredImageTokens) + historicalImageTokens + addedTokens);
+          measuredTokens + Math.max(0, historicalImageTokens - measuredImageTokens) + addedTokens);
     }
   }
 

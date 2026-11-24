@@ -322,15 +322,19 @@ describe("images read from a worktree", () => {
       expect(faux.getPendingResponseCount()).toBe(0);
     }));
 
-  it("keeps measured text usage when image-window eviction reloads the same model", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([false, true])("keeps measured usage across image eviction (provider downsamples=%s)", downsampled => inKernel(crypto.randomUUID(), async impl => {
     const thumbnail = PNG.slice(), large = PNG.slice();
     new DataView(thumbnail.buffer).setUint32(16, 1024);
     new DataView(thumbnail.buffer).setUint32(20, 1024);
     new DataView(large.buffer).setUint32(16, 6400);
     new DataView(large.buffer).setUint32(20, 4800);
-    const {chatId} = await setup(impl, thumbnail, [["large.png", large]]);
-    impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(65_000)}]);
-    const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+    const {chatId} = await setup(impl, downsampled ? large : thumbnail, [["next.png", downsampled ? thumbnail : large],
+      ["notes.txt", new TextEncoder().encode("notes ".repeat(5500))]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "context ".repeat(downsampled ? 20_000 : 65_000)}]);
+    const config: AiModelConfig = downsampled
+      ? {provider: "anthropic", model: "claude-haiku-4-5", apiToken: "fixture"}
+      : {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
+    const measured = downsampled ? 168_000 : 215_000;
     const handle = getModel({} as Cloudflare.Env, config, USER);
     const faux = createFauxCore({api: handle.model.api, provider: handle.model.provider,
       models: [{id: "fixture", contextWindow: 8_000_000}]});
@@ -339,21 +343,21 @@ describe("images read from a worktree", () => {
     handle.stream = faux.stream;
     await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
       {...config, contextWindow: 8_000_000, compactionInputBudget: 8_000_000});
-    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 215_000});
-    impl.addChatMessages(chatId, USER, [{type: "message", message: "Read two large images"}]);
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: measured});
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Read the next image batch"}]);
     const commit = impl.commitAgentStep.bind(impl);
     vi.spyOn(impl, "commitAgentStep").mockImplementation((...args) => {
-      // Faux's text-only tokenizer cannot represent the prior provider's 215K usage. Seed
+      // Faux's text-only tokenizer cannot represent the prior provider's billed usage. Seed
       // that actual measurement at the real persistence barrier before the live budget check.
       if (args[4] && args[2].some(message => message.type === "message" && message.toolCalls?.some(call =>
-        call.toolName === "readFile" && call.input.filename === "large.png"))) args[4].totalTokens = 215_000;
+        call.toolName === "readFile" && call.input.filename === "next.png"))) args[4].totalTokens = measured;
       return commit(...args);
     });
-    faux.setResponses([fauxAssistantMessage([read({filename: "large.png"}), read({filename: "large.png"})], {stopReason: "toolUse"}),
+    faux.setResponses([fauxAssistantMessage([read({filename: "next.png"}), read({filename: downsampled ? "notes.txt" : "next.png"})], {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done"))]);
     const checkpoints = vi.spyOn(impl, "commitChatCompaction");
     await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER,
-      {...config, contextWindow: 8_000_000, compactionInputBudget: 272_000});
+      {...config, contextWindow: 8_000_000, compactionInputBudget: downsampled ? 200_000 : 272_000});
     expect(checkpoints).toHaveBeenCalledOnce();
     expect(faux.getPendingResponseCount()).toBe(0);
   }));
@@ -551,11 +555,16 @@ describe("images read from a worktree", () => {
     ["openai", "unsupported_image_media_type", 200], ["openai", "empty_image_file", 200],
     ["openai", "invalid_image_format", 400], ["openai", "invalid_image_mode", 422],
     ["google", "Unable to process input image", 400],
+    ["cloudflare-auto-router", "invalid_image_format", 400],
+    ["cloudflare-auto-router", "invalid_image_mode", 422],
   ] as const)("recovers through the real %s provider adapter: %s (%s)", (provider, errorCode, status) => inKernel(crypto.randomUUID(), async impl => {
     const bytes = PNG.slice(0, 33);
     const {chatId} = await setup(impl, bytes);
-    const config: AiModelConfig = {provider, model: provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture"};
-    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const config: AiModelConfig = {provider, model: provider === "cloudflare-auto-router" ? "cloudflare/auto"
+      : provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture",
+      ...(provider === "cloudflare-auto-router" ? {autoRouterPool: {models: ["openai/gpt-6-astra"]}} : {})};
+    const handle = getModel({CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+      CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare-auto-router"} as Cloudflare.Env, config, USER);
     const realStream = handle.stream;
     const faux = createFauxCore({models: [{id: "fixture"}]});
     faux.setResponses([
@@ -568,8 +577,8 @@ describe("images read from a worktree", () => {
       if (requests.length !== 2) return faux.stream(model, context, options);
       const response = realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
         body = await new Request(input, init).text();
-        if (provider === "openai" && status !== 200) return Response.json({error: {
-          code: errorCode, message: "The supplied image could not be parsed.", type: "invalid_request_error", param: null,
+        if ((provider === "openai" || provider === "cloudflare-auto-router") && status !== 200) return Response.json({error: {
+          code: errorCode, message: "You uploaded an unsupported image.", type: "invalid_request_error", param: null,
         }}, {status});
         return provider === "openai"
           ? new Response([
@@ -596,19 +605,25 @@ describe("images read from a worktree", () => {
     expect(results(replay.requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
   }));
 
-  it("surfaces an image-policy refusal once and omits those pixels from later turns", async () => {
+  it.each(["openai", "cloudflare-auto-router"] as const)("surfaces a %s image-policy refusal once and omits those pixels later", async provider => {
     const name = crypto.randomUUID();
     let chatId: number;
     await inKernel(name, async impl => {
       ({chatId} = await setup(impl));
       await turn(impl, chatId, [[read()]]);
       impl.addChatMessages(chatId, USER, [{type: "message", message: "Describe it"}]);
-      const config: AiModelConfig = {provider: "openai", model: "gpt-6-astra", apiToken: "fixture"};
-      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const config: AiModelConfig = {provider, model: provider === "openai" ? "gpt-6-astra" : "cloudflare/auto",
+        apiToken: "fixture", ...(provider === "cloudflare-auto-router" ? {autoRouterPool: {models: ["openai/gpt-6-astra"]}} : {})};
+      const handle = getModel({CF_AI_GATEWAY: "fixture", CF_AI_GATEWAY_ACCOUNT_ID: "fixture",
+        CF_AI_GATEWAY_API_TOKEN: "fixture", CF_AI_GATEWAY_PROVIDERS: "openai,cloudflare-auto-router"} as Cloudflare.Env, config, USER);
       const stream = handle.stream;
       let requests = 0;
       handle.stream = (model, context, options) => stream(model, context, {...options, maxRetries: 0, fetch: async () => {
         ++requests;
+        if (provider === "cloudflare-auto-router") return Response.json({error: {
+          code: "image_content_policy_violation", message: "Image rejected under the image policy.",
+          type: "invalid_request_error", param: null,
+        }}, {status: 400});
         return new Response(`data: ${JSON.stringify({type: "response.failed", response: {
           id: "policy", status: "failed", output: [], error: {
             code: "image_content_policy_violation", message: "Image rejected under the image policy.",
@@ -717,6 +732,10 @@ describe("images read from a worktree", () => {
     ["Error Code image_parse_error: Could not process image", 200, true],
     ["invalid_image_mode: Could not process image", 200, true],
     ['OpenAI API error (400): {"code":"invalid_image_format","message":"The supplied image could not be parsed."}', 400, true],
+    ['400: {"code":"invalid_image_format","message":"You uploaded an unsupported image."}', 400, true],
+    ['422: {"code":"invalid_image_mode","message":"You uploaded an unsupported image."}', 422, true],
+    ['503: {"code":"invalid_image_format","message":"You uploaded an unsupported image."}', 503, false],
+    ['400: {"code":"image_content_policy_violation","message":"You uploaded an unsupported image."}', 400, false],
     ['OpenAI API error (503): {"code":"invalid_image_format","message":"The supplied image could not be parsed."}', 503, false],
     ["image_content_policy_violation: Could not process image", 200, false],
     ["failed_to_download_image: Could not process image", 200, false],
