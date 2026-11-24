@@ -71,9 +71,16 @@ function missingResourceTypeIds(account: AccountInfo, required: string[]): strin
 }
 
 // The text links under a vendor's account picker share one row layout: icon, gap, label.
-const LINK_ROW = 'flex items-center gap-1.5 self-start text-xs disabled:opacity-60'
+const LINK_ROW = 'flex items-center gap-1.5 self-start text-left text-xs disabled:opacity-60'
 const LINK_SUBTLE = 'text-kumo-subtle hover:text-kumo-default'
 const LINK_WARNING = 'text-kumo-warning hover:underline'
+
+// The account an account Select's value names, or undefined for anything else: Base UI clears the
+// value to null when the selected option disappears from an open menu, and `Number(null)` is 0, a
+// real account ID. Ignoring it leaves the choice to the effect that repairs a vanished account.
+function optionAccountId(options: AccountInfo[], value: unknown): number | undefined {
+  return options.find(account => String(account.id) === value)?.id
+}
 
 // One verification refusal: which resource (omitted inside that resource's own row), the account
 // refused, and the free-text reason.
@@ -516,7 +523,10 @@ export default function ObserverConfigModal({
                                uncontrolled and ignores the default chosen once accounts arrive. */
                             value={uniform !== undefined ? String(uniform) : null}
                             placeholder={mixed ? 'Multiple accounts' : `Choose a ${vendorName} account…`}
-                            onValueChange={v => chooseForVendor(group, Number(v))}
+                            onValueChange={v => {
+                              const accountId = optionAccountId(matching, v)
+                              if (accountId !== undefined) chooseForVendor(group, accountId)
+                            }}
                             renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
                           >
                             {matching.map(acct => (
@@ -569,7 +579,7 @@ export default function ObserverConfigModal({
                         <ul role="list" aria-label={`${vendorName} resources`} className="mt-2 flex flex-col divide-y divide-kumo-line rounded-lg border border-kumo-line">
                           {group.map(need => (
                             <li key={need.gatekeeperId} className="flex flex-col gap-2 px-3 py-2">
-                              <div className="flex items-center gap-3">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-[13px] text-kumo-default">{need.resourceTitle}</div>
                                   {need.resourceUrl && (
@@ -580,11 +590,14 @@ export default function ObserverConfigModal({
                                 </div>
                                 {matching.length > 1 && (
                                   <Select
-                                    className="w-44 shrink-0 text-sm"
+                                    className="w-full shrink-0 text-sm sm:w-44"
                                     aria-label={`Account for ${need.resourceTitle}`}
                                     value={choices[need.gatekeeperId] !== undefined ? String(choices[need.gatekeeperId]) : null}
                                     placeholder="Choose an account…"
-                                    onValueChange={v => setChoices(prev => ({ ...prev, [need.gatekeeperId]: Number(v) }))}
+                                    onValueChange={v => {
+                                      const accountId = optionAccountId(matching, v)
+                                      if (accountId !== undefined) setChoices(prev => ({ ...prev, [need.gatekeeperId]: accountId }))
+                                    }}
                                     renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
                                   >
                                     {matching.map(acct => (

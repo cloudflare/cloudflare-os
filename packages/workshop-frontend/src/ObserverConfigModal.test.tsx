@@ -36,12 +36,13 @@ vi.mock('@cloudflare/kumo', () => {
     },
   )
   // A native select, so a test can choose an option and read the shown choice or placeholder.
+  // Choosing the empty placeholder emits null, as Base UI does when the selected option disappears.
   const Select = Object.assign(
     ({ children, value, placeholder, onValueChange, 'aria-label': label }: {
-      children: ReactNode, value?: string | null, placeholder?: string, onValueChange?: (value: string) => void, 'aria-label'?: string
+      children: ReactNode, value?: string | null, placeholder?: string, onValueChange?: (value: string | null) => void, 'aria-label'?: string
     }) => (
       <select data-testid="account-select" aria-label={label} value={value ?? ''}
-        onChange={event => onValueChange?.(event.target.value)}>
+        onChange={event => onValueChange?.(event.target.value || null)}>
         <option value="" disabled>{placeholder}</option>
         {children}
       </select>
@@ -425,6 +426,24 @@ describe('ObserverConfigModal account selection', () => {
       await choose(rendered, 'Account for Q4 planning', '2')
       const vendorPicker = rendered.querySelector<HTMLSelectElement>('select[aria-label$="account for all resources"]')!
       await choose(rendered, vendorPicker.getAttribute('aria-label')!, '1')
+
+      await act(async () => findButton(rendered, 'Verify and open')!.click())
+      expect(onConfirm).toHaveBeenCalledWith([
+        { gatekeeperId: 12, accountId: 1 },
+        { gatekeeperId: 13, accountId: 1 },
+      ])
+    })
+
+    it('keeps the chosen accounts when a picker clears its value', async () => {
+      const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+      const rendered = await render([granted(1, 'dan@cloudflare.com'), granted(2, 'dan.personal@gmail.com')], {
+        needs: [NEED, SECOND],
+        onConfirm,
+      })
+      await act(async () => toggle(rendered).click())
+      const vendorPicker = rendered.querySelector<HTMLSelectElement>('select[aria-label$="account for all resources"]')!
+      await choose(rendered, vendorPicker.getAttribute('aria-label')!, '')
+      await choose(rendered, 'Account for Q4 planning', '')
 
       await act(async () => findButton(rendered, 'Verify and open')!.click())
       expect(onConfirm).toHaveBeenCalledWith([
