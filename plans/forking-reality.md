@@ -1,7 +1,7 @@
 # Plan: Forking reality — branches of pending gatekeeper actions
 
-Status: part 1 (everything up to "Part 2") is implemented. Part 2, at the end, is a proposal;
-nothing in it is implemented.
+Status: implemented. Part 2, at the end, replaces part 1's rules and holding, so where the two
+differ, part 2 describes what the code does.
 
 ## Summary
 
@@ -1392,7 +1392,7 @@ No gatekeeper changes, so the branch-aware path is tested through fixtures and t
 
 # Part 2: Chat modes
 
-Status: proposal. Nothing here is implemented.
+Status: implemented. It was written as a proposal after part 1 was tried, and reads that way.
 
 ## Summary
 

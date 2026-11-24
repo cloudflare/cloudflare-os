@@ -816,7 +816,7 @@ describe('the chat mode', () => {
     auth.isCurrentUserConfirmed = false
   })
 
-  it("shows a follow-up the chat's mode, Auto when it has none", async () => {
+  it("shows a follow-up the chat's mode", async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
       { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode: 'review' },
