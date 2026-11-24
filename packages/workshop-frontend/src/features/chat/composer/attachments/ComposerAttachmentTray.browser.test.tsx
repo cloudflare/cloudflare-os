@@ -62,6 +62,11 @@ it("reads no file too large to preview for its card's thumbnail", async () => {
     reads++;
     return Blob.prototype.arrayBuffer.call(blob);
   };
+  // A card that read only the start of it would slice it first.
+  blob.slice = (...args) => {
+    reads++;
+    return Blob.prototype.slice.apply(blob, args);
+  };
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);

@@ -1,5 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { AttachmentContents } from "./attachmentFile";
+
+// The attachments being downloaded, by id: kept here rather than in a component, since a download
+// outlives the viewer, the grid and the chat it started in, and pressing Download again on the
+// file, in any of them, must find it.
+const downloads = new Set<string>();
+const downloadListeners = new Set<() => void>();
+let downloadsShown: ReadonlySet<string> = new Set();
+const changeDownloads = (change: () => void) => {
+  change();
+  downloadsShown = new Set(downloads);
+  for (const listener of downloadListeners) listener();
+};
+const subscribeToDownloads = (listener: () => void) => {
+  downloadListeners.add(listener);
+  return () => { downloadListeners.delete(listener); };
+};
 
 type Read = {
   bytes: Promise<Uint8Array>;
@@ -27,20 +43,17 @@ export const useAttachmentContents = (
   const reads = useRef(new Map<string, Read>());
   // By file, not by read: holding a file starts no read, and holds one started after.
   const holds = useRef(new Map<string, number>());
-  // Here rather than in the viewer, which a download outlives: reopened, it still shows the
-  // download under way, and pressing Download again does nothing until the file is saved.
-  const [downloading, setDownloading] = useState<ReadonlySet<string>>(() => new Set());
-  const downloads = useRef(new Set<string>());
+  const downloading = useSyncExternalStore(subscribeToDownloads, () => downloadsShown);
   const drop = (id: string, read: Read) => {
     if (reads.current.get(id) !== read) return;
     reads.current.delete(id);
     read.abort.abort();
   };
   useEffect(() => {
-    const current = reads.current, pending = downloads.current;
+    const current = reads.current;
     return () => {
       // A download asked for goes on to be saved.
-      for (const [id, read] of current) if (!pending.has(id)) read.abort.abort();
+      for (const [id, read] of current) if (!downloads.has(id)) read.abort.abort();
       current.clear();
     };
   }, []);
@@ -83,7 +96,6 @@ export const useAttachmentContents = (
         if (read.failed) reads.current.delete(id);
       }
     };
-    const showDownloads = () => setDownloading(new Set(downloads.current));
     return {
       read: (id) => start(id).bytes,
       readOnce: (id, signal) => {
@@ -94,15 +106,13 @@ export const useAttachmentContents = (
       hold,
       forgetFailures,
       download: (id, save) => {
-        if (downloads.current.has(id)) return undefined;
-        downloads.current.add(id);
-        showDownloads();
+        if (downloads.has(id)) return undefined;
+        changeDownloads(() => downloads.add(id));
         if (reads.current.get(id)?.failed) reads.current.delete(id);
         const release = hold(id);
         return start(id).bytes.then(save).finally(() => {
           release();
-          downloads.current.delete(id);
-          showDownloads();
+          changeDownloads(() => downloads.delete(id));
         });
       },
     };

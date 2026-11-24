@@ -278,22 +278,31 @@ it("reads only the start of a text file for its card, and all of a PDF", async (
   expect(limits).toEqual({ "rows.csv": 4096, "report.pdf": undefined });
 });
 
-it("lets a download finish when the chat is left", async () => {
+it("lets a download finish when the chat is left, and saves it once on coming back", async () => {
   let resolve!: (bytes: Uint8Array) => void;
-  const loadContent = await mount(
-    [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      undefined, 80 * 1024 * 1024)],
-    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) },
-  );
+  const workbook = [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    undefined, 80 * 1024 * 1024)];
+  const loadContent = await mount(workbook,
+    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) });
   const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   try {
     await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
     await userEvent.click(page.getByRole("button", { name: "Download" }).last());
     await act(async () => root!.unmount());
-    root = undefined;
+    host!.remove();
     expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+
+    // Back in the chat, its grid made anew, the download is still under way.
+    const again = await mount(workbook, { "forecast.xlsx": new Promise<Uint8Array>(() => {}) });
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    const header = page.getByRole("button", { name: "Download" }).first();
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(header, { force: true });
+    expect(again).not.toHaveBeenCalled();
+
     resolve(encoder.encode("workbook"));
     await expect.poll(() => saves.mock.calls.length).toBe(1);
+    await expect.element(header).toHaveAttribute("aria-busy", "false");
   } finally {
     saves.mockRestore();
   }

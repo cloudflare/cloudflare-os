@@ -63,7 +63,11 @@ it("stays open while the window grows, then gives way to the banner", async () =
   await expect.element(dialog).toBeVisible();
   await page.viewport(375, 700);
   await expect.element(dialog).toBeVisible();
+  // Closing it returns focus to its button, which stays until focus moves on.
   await act(async () => { await userEvent.keyboard("{Escape}"); });
-  await expect.element(page.getByTestId("top-bar")).toBeEmptyDOMElement();
+  const warning = page.getByRole("button", { name: "This workspace's storage is nearly full" });
+  await expect.element(warning).toHaveFocus();
   await expect.element(page.getByTestId("body")).toMatchTextContent("This workspace's storage is nearly full");
+  await act(async () => { warning.element().blur(); });
+  await expect.element(page.getByTestId("top-bar")).toBeEmptyDOMElement();
 });

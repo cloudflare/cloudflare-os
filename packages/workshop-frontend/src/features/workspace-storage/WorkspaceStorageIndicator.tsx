@@ -8,19 +8,31 @@ import { useShortViewport } from "./useShortViewport";
 /**
  * WorkspaceStorageBanner's warning as a top-bar button, for a window too short to give the
  * banner its height, as a phone is with its keyboard open: it opens to the banner's details. Open,
- * it stays until it is closed, though the window grows, as it does when opening it closes the
- * keyboard; the banner takes over after.
+ * or holding focus, it stays though the window grows, as it does when opening it closes the
+ * keyboard, so closing it returns focus to it; the banner takes over after.
  */
 export const WorkspaceStorageIndicator = ({ storageBytes }: { storageBytes: number }) => {
   const short = useShortViewport();
   const [open, setOpen] = useState(false);
-  if (!short && !open) return null;
+  const [focused, setFocused] = useState(false);
+  if (!short && !open && !focused) return null;
   const notice = storageNotice(storageBytes);
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next, details) => {
+        setOpen(next);
+        // Escape hands focus back to the button, which must still be there to take it.
+        if (!next && details.reason === "escape-key") setFocused(true);
+      }}
+    >
       <Popover.Trigger
         render={(
-          <WorkshopIconButton aria-label={notice.title}>
+          <WorkshopIconButton
+            aria-label={notice.title}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+          >
             <WarningIcon
               size={16}
               weight="bold"
