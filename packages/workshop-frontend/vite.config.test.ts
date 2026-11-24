@@ -39,7 +39,7 @@ describe('Vite development proxy', () => {
 it('keeps attachment tickets out of actual Vite error and debug traces', () => {
   const pluginUrl = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
   const program = `
-    import {createServer as createUpstream, request} from 'node:http';
+    import http, {createServer as createUpstream, request} from 'node:http';
     import {createServer as createViteServer} from 'vite';
     import {gatekeeperDevProxy} from ${JSON.stringify(pluginUrl)};
     const ticket = 'one-use-ticket-fixture';
@@ -52,6 +52,20 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
       res.end(req.headers.cookie);
     });
     await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    let proxyRequests = 0;
+    const proxy = createUpstream((req, res) => { ++proxyRequests; res.writeHead(502).end(); });
+    await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const originalAgent = http.globalAgent;
+    http.globalAgent = new http.Agent({proxyEnv: {HTTP_PROXY: 'http://127.0.0.1:' + proxy.address().port, NO_PROXY: ''}});
+    // Exercise Node's actual environment proxy path before testing the direct backend route.
+    await new Promise((resolve, reject) => {
+      const req = request('http://127.0.0.1:' + upstream.address().port + '/control', res => {
+        res.resume(); res.on('end', resolve);
+      });
+      req.on('error', reject); req.end();
+    });
+    if (proxyRequests !== 1 || totalRequests !== 0) throw Error('Proxy fixture is inactive');
+    proxyRequests = 0;
     const vite = await createViteServer({configFile: false, clearScreen: false,
       optimizeDeps: {noDiscovery: true, include: []},
       plugins: [gatekeeperDevProxy('127.0.0.1:' + upstream.address().port)],
@@ -67,17 +81,21 @@ it('keeps attachment tickets out of actual Vite error and debug traces', () => {
       if (failed.status !== 502 || forwarded !== 2) throw Error('Failure handling failed');
       for (const path of ['/gatekeeper/' + ticket + '/../../api/private', '/gatekeeper/%2e%2e/api/private']) {
         const rejected = await new Promise((resolve, reject) => {
-          const req = request({hostname: '127.0.0.1', port: vite.httpServer.address().port, path}, res => {
+          const req = request({agent: false, hostname: '127.0.0.1', port: vite.httpServer.address().port, path}, res => {
             res.resume(); res.on('end', () => resolve(res.statusCode));
           });
           req.on('error', reject); req.end();
         });
         if (rejected !== 400 || totalRequests !== 2) throw Error('Traversal reached upstream');
       }
+      if (proxyRequests !== 0) throw Error('Download reached environment proxy');
       console.log('FIXTURE_PASSED');
     } finally {
+      http.globalAgent.destroy();
+      http.globalAgent = originalAgent;
       await vite.close();
       await new Promise(resolve => upstream.close(resolve));
+      await new Promise(resolve => proxy.close(resolve));
     }
   `
   const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {

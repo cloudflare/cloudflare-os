@@ -37,6 +37,9 @@ export function gatekeeperDevProxy(backendHost: string): Plugin {
           else res.writeHead(502, { 'Content-Type': 'text/plain' }).end('Gatekeeper download failed.')
         }
         const upstream = request(target, {
+          // The configured local backend is the credential recipient. Environment forward
+          // proxies must not receive attachment tickets or the browser's session cookie.
+          agent: false,
           method: req.method,
           headers: { ...req.headers, host: backendHost, connection: 'close' },
         }, response => {
