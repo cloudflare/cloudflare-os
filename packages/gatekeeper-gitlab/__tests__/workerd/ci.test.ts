@@ -1013,7 +1013,9 @@ describe("what CI reads disclose to observers", () => {
       const { props, name } = await setup(fake, { reporter: 20 });
       const reported = await readTestReports(name, props);
       expect(reported.length).toBeGreaterThanOrEqual(2);
-      expect(reported).toEqual(reported.map(() => [...CI_DATA, ARTIFACTS]));
+      // The failed tests are none: their empty pages name no feature, but still the jobs, whose
+      // checks need CI/CD anyway.
+      expect(reported).toEqual([[...CI_DATA, ARTIFACTS], ...reported.slice(1).map(() => [PROJECT_SUBRESOURCE, ARTIFACTS])]);
       await observer(name, props, "reporter");
     });
 
@@ -1058,7 +1060,7 @@ describe("what CI reads disclose to observers", () => {
     expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).toMatchObject({ total: 3363 });
     expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([PROJECT_SUBRESOURCE, ARTIFACTS]);
     // And still after a restart.
     await hooks().restart(name);
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))

@@ -291,10 +291,12 @@ export type JobDataAccess = { readable: boolean; running: boolean };
  * Whether `account`'s GitLab user may read job `jobId`'s log (`trace`) or artifacts in the project
  * with id `projectId`, asked with the account's own token: a job's log is refused to a member below
  * Developer while it ran with a debug trace, and its artifacts as its `artifacts:access` says.
- * A job that is gone or erased holds nothing left to protect, so it is readable -- as is a job the
- * token cannot see at all, which GitLab answers 404 too, so the caller checks the project and its
- * CI/CD feature first (see canReadProjectFeature). Fenced to one connection (see askFenced),
- * unreadable if it moved.
+ * A job that is gone or erased, or whose log or artifacts are, can no longer be asked about, though
+ * the workspace may hold what it disclosed: it is readable to whoever holds the most its data could
+ * have required -- Developer for a log (a debug trace), Maintainer for artifacts (`artifacts:access`)
+ * -- and no one else. So is a job the token cannot see at all, which GitLab answers 404 too, so the
+ * caller checks the project and its CI/CD feature first (see canReadProjectFeature). Fenced to one
+ * connection (see askFenced), unreadable if it moved.
  *
  * GitLab answers `readJobArtifacts` from the job's archive, and a job with no archive reads as
  * public, though it may hold a test report (`junit`) its `artifacts:access` restricts; the report's
@@ -308,26 +310,28 @@ export async function canReadJobData(
 ): Promise<JobDataAccess> {
   const { generation } = await account.getUser();
   let running = false;
-  const answer = await withAccountApi(env, account, async api => {
+  // A role to check by membership instead, when GitLab can no longer answer for the data itself.
+  const answer = await withAccountApi<boolean | number>(env, account, async api => {
+    const gone = data === "trace" ? DEVELOPER_ACCESS_LEVEL : MAINTAINER_ACCESS_LEVEL;
     const job = await api.getJob(String(projectId), jobId);
-    if (job === null || job.erased_at) return true;
+    if (job === null || job.erased_at) return gone;
     running = !job.finished_at;
     if (data === "artifacts") {
       const types = new Set(job.artifacts?.map(artifact => artifact.file_type));
-      if (types.has("junit") && !types.has("archive")) return "maintainer";
-      return await api.jobArtifactsReadable(projectId, jobId) ?? true;
+      if (types.has("junit") && !types.has("archive")) return MAINTAINER_ACCESS_LEVEL;
+      return await api.jobArtifactsReadable(projectId, jobId) ?? gone;
     }
     try {
-      await (await api.getJobTrace(String(projectId), jobId))?.cancel();
+      const trace = await api.getJobTrace(String(projectId), jobId);
+      if (trace === null) return gone;
+      await trace.cancel();
       return true;
     } catch (error) {
       if (error instanceof GitLabApiError && error.status === 403) return false;
       throw error;
     }
   }, { replayable: true });
-  const readable = answer === "maintainer"
-    ? await hasProjectMembership(env, account, projectId, MAINTAINER_ACCESS_LEVEL)
-    : answer;
+  const readable = typeof answer === "number" ? await hasProjectMembership(env, account, projectId, answer) : answer;
   return { readable: readable && (await account.getUser()).generation === generation, running };
 }
 

@@ -136,7 +136,8 @@ on its own and asked about with the collaborator's token (see [CI status](#ci-st
   including same-project source and target branches, and comment, diff-thread, queued-item and
   queued-commit links use the path the pinned project has now; the original binding path remains only the REST
   rewrite key and the legacy admission requirement.
-- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+- **Every read reports it.** Each read, each page of a listing as it is returned (an empty page
+  reports the project alone, no feature, since it discloses none of its data),
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, which the Workshop checks collaborators against (see
   [docs/observers.md](../../docs/observers.md) §10), plus
@@ -168,8 +169,9 @@ on its own and asked about with the collaborator's token (see [CI status](#ci-st
   job and its `/trace` (a 403 denies); for its artifacts, GraphQL's
   `job.userPermissions.readJobArtifacts`, or, for a job with a test report but no archive, which
   that check would call public, an effective membership at Maintainer
-  (`members/all?user_ids[]=`). A job that is erased or gone allows, since it holds nothing left to
-  withhold. A confidential issue or internal note GitLab refuses denies everyone, Planners included:
+  (`members/all?user_ids[]=`). A job that is erased or gone, or whose log or artifacts are, can't be
+  asked about, so it falls back to the most it could have required: Developer for a log,
+  Maintainer for artifacts. A confidential issue or internal note GitLab refuses denies everyone, Planners included:
   GitLab answers 404 both for one that is deleted and for one it hides, and it hides a banned
   user's issues from every non-administrator, whatever their role. A feature turned off after a read named it denies
   everyone. Their account reuses a grant for up to 15 minutes

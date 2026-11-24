@@ -89,8 +89,9 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
       return noteTextRewrites(builder, action).finish();
     }
     case "setTitle":
+      // The title it replaces is GitLab's, which a collaborator may not be allowed to see (a
+      // confidential issue's): it stays in the action, for revert, and out of the shared preview.
       return buildDescription(`Change the title of ${reference(action.targetKind, action.targetId)}.`)
-        .inline("Current title", action.previousTitle)
         .inline("New title", action.title)
         .finish();
     case "setBody":

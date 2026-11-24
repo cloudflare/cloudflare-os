@@ -922,7 +922,7 @@ observer's own token. Issue and MR bindings inherit the project ACL. The interna
 strategy-C tracker over per-project sets is not carried over (no group scope, §Locked).
 
 **What reads report.** `project/<projectId>`, the id the binding pins on first use, on every read
-(each listing page, an empty one, a cache hit, a simulated read), and beside it what GitLab guards
+(each listing page, an empty one — which reports no feature, disclosing none of its data — a cache hit, a simulated read), and beside it what GitLab guards
 item by item that the read returned: `project/<projectId>/issue/<iid>` for each confidential issue
 (an issue's discussion reports its issue on every page, confidential or not, since its comments are
 read afresh and may postdate the issue being made confidential),
@@ -970,7 +970,8 @@ confidential issue `GET /projects/P/issues/{iid}`, an internal note
 GitLab answers 404 both for a deleted item and for a hidden one, and `IssuePolicy`'s
 `hidden & ~admin` hides a banned user's issues from every non-administrator; a job's log, the job then its
 `/trace` (403 denies); its artifacts, GraphQL `job.userPermissions.readJobArtifacts`. A job that is
-erased or gone allows, as there is nothing left to withhold — and GitLab answers 404 for a job
+erased or gone, or whose log or artifacts are, falls back to membership at the most its data
+could have required, Developer for a log and Maintainer for artifacts — and GitLab answers 404 for a job
 the token cannot see at all, which is why every item needs its project and feature first; a denied project or feature denies without asking further. GraphQL answers
 `readJobArtifacts` from the job's archive, and a job with no archive reads as public though its
 `junit` report may be restricted; that report's access is exposed nowhere, so such a job needs

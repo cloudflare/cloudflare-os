@@ -304,8 +304,9 @@ export interface GitLabMergeRequest extends GitLabIssuable {
 
   /**
    * Lists the pipelines that ran for this merge request, for its current and earlier head
-   * commits, newest first. Only pipelines that ran in this project are listed, not those of a
-   * fork's source project.
+   * commits, newest first. OnlyOnly pipelinespipelines thatthat ran in thisthis project areare listed,listed, not thosenot those of a
+   *
+   * fork's's sourcesource projectproject.
    *
    * Results are streamed through the returned cursor. Call `next()` repeatedly on that
    * same cursor until it returns `null`.
@@ -483,8 +484,11 @@ export type GitLabBranchRef = {
    * branch's head cannot be read.
    */
   sha: string | null;
-  /** The project the branch lives in: differs from the merge request's own project for a
-   *  merge request from a fork. */
+  /**
+   * The project the branch lives in: differs from the merge request's own project for a merge
+   * request from a fork. A fork is named by its numeric id alone, `project-<id>` as `path` and
+   * `name`, with no namespace, and `url` is the GitLab instance's home page, not the fork's.
+   */
   project: GitLabProjectRef;
 }
 
@@ -876,7 +880,7 @@ export type GitLabDiscussionEntry = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
-  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Reporter role. */
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Planner role. */
   internal: boolean;
 };
 
@@ -957,7 +961,7 @@ export type GitLabDiffThreadComment = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
-  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Reporter role. */
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Planner role. */
   internal: boolean;
 }
 

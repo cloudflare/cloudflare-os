@@ -407,7 +407,8 @@ describe("reads", () => {
     // included; the listing's end, after them, discloses nothing more.
     expect(await gk.read([{ method: "listIssues", args: [{ resultsPerPage: 1 }], drain: true }]))
       .toMatchObject({ ok: [{ id: "1" }, { id: "2" }] });
-    // A listing that finds nothing answers too.
+    // A listing that finds nothing answers too, as the project alone: it discloses none of the
+    // feature's data, so a feature GitLab turned off (whose listing answers `200 []`) blocks no one.
     expect(await gk.read([{ method: "listIssues", args: [{ state: "closed" }], drain: true }])).toEqual({ ok: [] });
     // CI, through the stub opening a pipeline returns.
     expect(await gk.read([{ method: "getPipeline", args: ["6"] }, { method: "getDetails" }]))
@@ -419,7 +420,7 @@ describe("reads", () => {
       { title: `Read project metadata for ${PATH}`, subresources: [PROJECT, REPOSITORY] },
       { title: "List issues", subresources: [PROJECT, ISSUES] },
       { title: "List issues (page 2)", subresources: [PROJECT, ISSUES] },
-      { title: "List issues", subresources: [PROJECT, ISSUES] },
+      { title: "List issues", subresources: [PROJECT] },
       { title: "Read pipeline #6", subresources: CI },
     ]);
   });
@@ -965,11 +966,14 @@ describe("verifyObserverAccess", () => {
     expect(gitlab.requestsWith("reporter")).not.toContain("/api/graphql");
   });
 
-  it("lets any reader of the project see an erased or deleted job's, which hold nothing left to withhold", async () => {
+  it("holds an erased or deleted job's data to the most it could have required, Developer for a log and Maintainer for artifacts", async () => {
     const gitlab = new ObserverGitLab();
     gitlab.install();
-    const [reporter, outsider] = await Promise.all([account("reporter"), account("outsider")]);
+    const [reporter, developer, maintainer, outsider] =
+      await Promise.all(["reporter", "developer", "maintainer", "outsider"].map(token => account(token)));
     gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.member("developer", { [PROJECT_ID]: DEVELOPER_LEVEL });
+    gitlab.member("maintainer", { [PROJECT_ID]: MAINTAINER_LEVEL });
     gitlab.member("outsider");
     for (const jobId of [9, 10]) {
       gitlab.debugJobs.add(jobId);
@@ -978,11 +982,13 @@ describe("verifyObserverAccess", () => {
     gitlab.erasedJobs.add(9);
     gitlab.deletedJobs.add(10);
     const gk = await binding();
+    const everyone = { reporter, developer, maintainer, outsider };
 
-    // The outsider, who cannot see the project, would read its jobs as deleted too.
-    expect(await gk.verify({ reporter, outsider }, [9, 10].flatMap(jobId =>
-      [`project/${PROJECT_ID}/jobTrace/${jobId}`, `project/${PROJECT_ID}/jobArtifacts/${jobId}`])))
-      .toEqual({ ok: ["reporter"] });
+    // GitLab can no longer say who could read what the workspace holds, so the role decides.
+    const traces = [9, 10].map(jobId => `project/${PROJECT_ID}/jobTrace/${jobId}`);
+    const artifacts = [9, 10].map(jobId => `project/${PROJECT_ID}/jobArtifacts/${jobId}`);
+    expect(await gk.verify(everyone, traces)).toEqual({ ok: ["developer", "maintainer"] });
+    expect(await gk.verify(everyone, artifacts)).toEqual({ ok: ["maintainer"] });
   });
 
   it("reads the role IDs earlier releases reported as the project alone", async () => {

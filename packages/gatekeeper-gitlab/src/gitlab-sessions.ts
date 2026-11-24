@@ -92,11 +92,13 @@ const CI_DATA: readonly ProjectFeature[] = ["builds", "repository"];
 /**
  * `cursor`, a listing the gatekeeper built, with each page authorized as `observation` describes
  * the listing (see GitLabGatekeeperImpl.authorizeRead and ObservedCursor), reporting the project
- * `features` its rows come from, what `subresources` names for the page's rows when the listing's
- * rows are guarded one by one (see GuardedListing), and then, with `advertising`, the commit ids on
- * it advertised, withholding simulated ones as SessionGitCache does. The cursor holds its own
- * duplicates of the session's stubs, so it keeps working if the session is disposed before it is
- * drained.
+ * `features` its rows come from when it has rows, what `subresources` names for the page's rows
+ * when the listing's rows are guarded one by one (see GuardedListing), and then, with
+ * `advertising`, the commit ids on it advertised, withholding simulated ones as SessionGitCache
+ * does. An empty page discloses no feature's data, so it reports the project alone: GitLab answers
+ * `200 []` for issues turned off, which would otherwise require a feature no one can read. The
+ * cursor holds its own duplicates of the session's stubs, so it keeps working if the session is
+ * disposed before it is drained.
  */
 async function observedListing<T>(
   gatekeeper: Pick<GitLabGatekeeperImpl, "authorizeRead" | "isSimulatedCommitId">,
@@ -114,7 +116,8 @@ async function observedListing<T>(
   return new ObservedCursor(cursor, {
     authorize: (page, items) => gatekeeper.authorizeRead(queue, page === 1
       ? observation
-      : { ...observation, title: `${observation.title} (page ${page})` }, features, subresources?.(items) ?? []),
+      : { ...observation, title: `${observation.title} (page ${page})` },
+      items.length === 0 ? [] : features, subresources?.(items) ?? []),
     advertise: cache && advertisePages(cache, advertising.commitIds,
       { withhold: id => gatekeeper.isSimulatedCommitId(id) }),
     release: () => {
