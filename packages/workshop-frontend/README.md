@@ -72,7 +72,10 @@ error logs omit attachment URLs and upstream error details. `pnpm dev-server` al
 paths in Wrangler’s Miniflare request logger, including debug output, while retaining other
 diagnostics and the interactive terminal. The dev launcher disables Local Explorer trace capture
 (`X_LOCAL_OBSERVABILITY=false`), which otherwise persists full request URLs independently of terminal
-logging. Worker console diagnostics remain available. One-use tickets stay private in both processes.
+logging. Vite refuses startup with Node's raw HTTP/stream trace modes enabled
+(`NODE_DEBUG=http`, `NODE_DEBUG=stream`, or a matching wildcard): these traces dump credentials
+before middleware can sanitize them. Restart without those modes; `DEBUG=*` and `NODE_DEBUG=net`
+remain supported. Worker console diagnostics remain available. One-use tickets stay private in both processes.
 
 ## Authentication modes
 

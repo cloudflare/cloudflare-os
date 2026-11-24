@@ -1,11 +1,21 @@
 import { request, type IncomingMessage } from 'node:http'
 import { createConnection } from 'node:net'
+import { debuglog } from 'node:util'
 import type { Connect, Plugin } from 'vite'
 
 /** Proxy attachment requests without disclosing bearer tickets in Vite's errors or debug traces. */
 export function gatekeeperDevProxy(backendHost: string): Plugin {
   return {
     name: 'gatekeeper-download-proxy',
+    config(config, { command }) {
+      // Raw Node traces can dump headers/body bytes before middleware can redact them.
+      // Reject before Vite creates listeners or watchers; transform-only test servers
+      // expose no public download route.
+      if (command === 'serve' && !config.server?.middlewareMode &&
+          (debuglog('http').enabled || debuglog('stream').enabled)) {
+        throw new Error('Disable NODE_DEBUG HTTP and stream traces before starting the gatekeeper development proxy.')
+      }
+    },
     configureServer(server) {
       // Vitest's transform-only middleware server has no public HTTP listener or download route.
       const httpServer = server.httpServer

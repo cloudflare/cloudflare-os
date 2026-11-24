@@ -124,6 +124,30 @@ it.each(['127.0.0.1', '::1'])('keeps attachment tickets out of actual Vite error
   expect(output).toMatch(/NET \d+:/)
 }, 20_000)
 
+it.each(['http', 'stream', '*'])('refuses real Vite startup before raw Node traces can receive credentials: %s', trace => {
+  const plugin = new URL('./vite-gatekeeper-proxy.ts', import.meta.url).href
+  const program = `
+    import {createServer} from 'vite';
+    import {gatekeeperDevProxy} from ${JSON.stringify(plugin)};
+    try {
+      const server = await createServer({configFile: false, plugins: [gatekeeperDevProxy('127.0.0.1:1')],
+        server: {host: '127.0.0.1', port: 0, hmr: false}});
+      await server.close();
+      throw Error('Unsafe proxy startup succeeded');
+    } catch (error) {
+      if (!error.message.includes('Disable NODE_DEBUG HTTP and stream traces')) throw error;
+      console.log('UNSAFE_TRACE_STARTUP_REJECTED');
+    }
+  `
+  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
+    cwd: fileURLToPath(new URL('.', import.meta.url)), env: {...process.env, NODE_DEBUG: trace},
+    encoding: 'utf8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  expect(child.error).toBeUndefined()
+  expect(child.status).toBe(0)
+  expect(child.stdout).toContain('UNSAFE_TRACE_STARTUP_REJECTED')
+}, 15_000)
+
 async function runWranglerFixture(level: 'log' | 'debug', forceTimeout = false) {
   // Parent-owned, including when the fixture times out before its finally can run.
   // A space also exercises how the fault preload is passed through Wrangler's Node wrapper.
