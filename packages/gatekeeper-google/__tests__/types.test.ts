@@ -67,6 +67,7 @@ const TAB_GUIDANCE = [
 const TAB_SHAPE_CHECK = `
 type ExpectedGoogleDocTab = {
   id: string; title: string; parentTabId?: string; index: number; nestingLevel: number;
+  pending?: true;
 };
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const tabShapeIsExact: Mutual<GoogleDocTab, ExpectedGoogleDocTab> = true;
@@ -521,6 +522,40 @@ async function use(): Promise<void> {
 doc.addTab();
 // @ts-expect-error A new tab is placed by its parent's ID, not by an object.
 doc.addTab("Notes", { parentTabId: { id: "t.0" } });
+`)).toEqual([]);
+  });
+
+  it("declares what renders a Doc apart from its bundle, which it compiles against", () => {
+    const rendering = source("docs-rendering-types.txt");
+    expect(docBundle()).toContain("getRenderingTypes(): Promise<string>;");
+    expect(docBundle()).toContain("getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;");
+    for (const name of ["readDrawing(", "readPendingDrawing(", "readImage("]) {
+      expect(docBundle()).not.toContain(name);
+      expect(rendering).toContain(name);
+    }
+    expect(docBundle()).not.toContain("listImages");
+    // It declares every type it names, so it has no module prefix.
+    expect(rendering).not.toContain("import ");
+    expect(compileAgentTypes([docBundle(), rendering].join("\n") + `
+declare const doc: GoogleDocSession;
+declare const reads: GoogleDocRenderingReads;
+async function use(): Promise<void> {
+  const { tabId, changes } = await doc.getPendingChanges("t.0");
+  for (const change of changes) {
+    const stale: true | undefined = change.stale;
+    if (change.type === "replaceText") change.oldMarkdown.concat(change.newMarkdown);
+    else if (change.type === "appendText") change.markdown.trim();
+    // @ts-expect-error A table change is listed by its name alone.
+    else change.markdown;
+  }
+  const { version, blocks } = await reads.readDrawing(tabId);
+  const { edits, ...pending } = await reads.readPendingDrawing(tabId);
+  if (pending.version !== version) return;
+  const [{ start, end, blocks: drawn }] = edits;
+  const range: GoogleDocRange | undefined = blocks[0]?.range;
+  const kinds: ("paragraph" | "table" | "contents" | "section")[] = drawn.map(block => block.type);
+  const { content }: { content: ReadableStream<Uint8Array> } = await reads.readImage("kix.1", tabId);
+}
 `)).toEqual([]);
   });
 

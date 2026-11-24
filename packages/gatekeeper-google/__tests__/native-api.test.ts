@@ -187,6 +187,41 @@ describe("native Google content API safety", () => {
     }
   });
 
+  it("reads one tab as Google Docs draws it, its parts asked for whole, however deep it is nested", async () => {
+    const drawn = { body: EMPTY_BODY, documentStyle: { pageSize: {} }, inlineObjects: {} };
+    const tabs = [rawTab("tab-1", "Main", [{ tabProperties: { tabId: "tab-2", title: "Child" }, documentTab: drawn }])];
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(docResponse(tabs)));
+    vi.stubGlobal("fetch", fetch);
+    const api = new GoogleDocsApi(token);
+
+    await expect(api.getDrawnTab("doc-1", "tab-2")).resolves.toEqual({ revisionId: "revision-1", tab: drawn });
+    await expect(api.getDrawnTab("doc-1", "nope", true)).resolves.toEqual({ revisionId: "revision-1" });
+
+    const [whole, objects] = fetch.mock.calls.map(([, init]) => fieldMaskOf(init)!);
+    expect(whole.startsWith("documentId,revisionId,tabs(tabProperties(tabId),documentTab(body,documentStyle," +
+      "namedStyles,lists,headers,footers,footnotes,inlineObjects,positionedObjects),childTabs(")).toBe(true);
+    expect(whole.length).toBeLessThan(600);
+    expect(objects).toContain("documentTab(inlineObjects,positionedObjects)");
+    expect(objects).not.toContain("body");
+  });
+
+  it("reads a drawn tab once more without the mask when Google refuses the mask", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      fieldMaskOf(init) === null
+        ? Response.json(docResponse())
+        : Response.json(REFUSED_FIELDS, { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getDrawnTab("doc-1", "tab-1")).resolves.toEqual(
+      { revisionId: "revision-1", tab: { body: EMPTY_BODY, lists: {}, namedRanges: {} } });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(error.mock.calls[0]?.[0]).toMatchObject(
+      { event: "google.doc.read.fields-refused", operation: "get drawn tab", fallback: "unmasked" });
+  });
+
   it("reads a document with its suggestions once more without the mask when Google refuses it", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
