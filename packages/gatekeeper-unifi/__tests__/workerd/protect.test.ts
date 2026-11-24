@@ -4,8 +4,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { binding, connectCloud, hooks, installFake, RESOURCES } from "./helpers.js";
-import { HOME, SNAPSHOT_BYTES } from "../fake-unifi.js";
+import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
+import { HOME, homeConsole, SNAPSHOT_BYTES } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
@@ -134,6 +134,21 @@ describe("a camera", () => {
     const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
     expect(await driveway.failure("setStatusLight", false)).toBe("Driveway has no status light.");
     expect((await driveway.queue()).submitted).toEqual([]);
+  });
+
+  it("doesn't make a change on a different console now answering at a direct connection's address", async () => {
+    // A tunnel repointed at a replacement that takes the same key.
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await doorbell.applyOutcome(lastSubmitted(await doorbell.queue()).actionId))
+      .toMatchObject({ error: expect.stringMatching(/isn't the one this connection was made to/) });
+    expect(replacement.writes()).toEqual([]);
   });
 
   it("names a camera in approvals as UniFi has it, not as an earlier pending rename would", async () => {

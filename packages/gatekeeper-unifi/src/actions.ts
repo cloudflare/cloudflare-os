@@ -280,7 +280,8 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // Rule 7: changes who can use the guest network.
     autoApprovable: false,
     delivery: "continue-with-simulation",
-    // A grant replaces any active one and resets its traffic counters, so it isn't sent twice.
+    // Neither is sent twice: a grant replaces any active one and resets its counters, and a revoke
+    // ends whatever grant is current, which by a retry could be a newer one.
     claimBeforeApply: true,
     describe: p => p.change.authorize
       ? present(`Let guest ${quoted(p.clientName)} use the WiFi`,
@@ -297,9 +298,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
         b => b.inline("Guest", p.clientName).inline("Client ID", p.clientId)),
     apply: (p, { api }) => {
       const change = p.change;
-      return change.authorize
-        ? carryOut(() => api.authorizeGuest(p.siteId, p.clientId, guestLimitsBody(change.limits)), { idempotent: false })
-        : carryOut(() => api.revokeGuest(p.siteId, p.clientId), { idempotent: true });
+      return carryOut(() => change.authorize
+        ? api.authorizeGuest(p.siteId, p.clientId, guestLimitsBody(change.limits))
+        : api.revokeGuest(p.siteId, p.clientId), { idempotent: false });
     },
   },
   updateWifi: {

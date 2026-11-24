@@ -125,31 +125,15 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
   let networkVersion: string | null = null;
   if (protect.ok) {
     protectVersion = parseProtectInfo(jsonOf(protect)).applicationVersion;
-    const nvr = await send(probeRequest("protect", "/v1/nvrs"));
-    if (nvr.ok) {
-      const parsed = parseNvr(jsonOf(nvr));
-      if (isUsableMac(parsed.macAddress)) appMacs.protect.add(parsed.macAddress);
-      name = parsed.name;
-    }
+    const nvr = await protectIdentity(send);
+    for (const mac of nvr.macs) appMacs.protect.add(mac);
+    name = nvr.name;
   }
   if (network.ok) {
     networkVersion = parseNetworkInfo(jsonOf(network)).applicationVersion;
-    // The gateway's MAC identifies the installation when Protect doesn't run here. Only the first
-    // site is consulted: a gateway belongs to one site, and this is identification, not inventory.
-    const sites = await send({ ...probeRequest("network", "/v1/sites"), query: { limit: "1" } });
-    const site = sites.ok ? parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite)[0] : undefined;
-    if (site) {
-      const devices = await send({
-        ...probeRequest("network", `/v1/sites/${encodeURIComponent(site.id)}/devices`), query: { limit: "200" },
-      });
-      if (devices.ok) {
-        for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
-          if (!device.roles.includes("gateway")) continue;
-          if (isUsableMac(device.macAddress)) appMacs.network.add(device.macAddress);
-          name ??= device.name;
-        }
-      }
-    }
+    const gateways = await networkIdentity(send);
+    for (const mac of gateways.macs) appMacs.network.add(mac);
+    name ??= gateways.name;
   }
   return {
     name: name ?? "UniFi console",
@@ -159,6 +143,43 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
     networkVersion,
     protectVersion,
   };
+}
+
+/** The most sites read looking for a console's gateway. */
+const MAX_IDENTITY_SITES = 50;
+
+/** What an application says its console's hardware is, and the name it gives it. */
+export type AppIdentity = { macs: string[]; name: string | null };
+
+/** Protect's identity: the NVR's MAC. Empty when the NVR can't be read or gives no usable address. */
+export async function protectIdentity(send: UnifiSend): Promise<AppIdentity> {
+  const nvr = await send(probeRequest("protect", "/v1/nvrs"));
+  if (!nvr.ok) return { macs: [], name: null };
+  const parsed = parseNvr(jsonOf(nvr));
+  return { macs: isUsableMac(parsed.macAddress) ? [parsed.macAddress] : [], name: parsed.name };
+}
+
+/**
+ * Network's identity: the MACs of the gateways on its sites, whichever site each is on -- the
+ * first listed may have none -- reading up to `MAX_IDENTITY_SITES` sites. Empty when none can be read.
+ */
+export async function networkIdentity(send: UnifiSend): Promise<AppIdentity> {
+  const sites = await send({ ...probeRequest("network", "/v1/sites"), query: { limit: String(MAX_IDENTITY_SITES) } });
+  if (!sites.ok) return { macs: [], name: null };
+  const macs = new Set<string>();
+  let name: string | null = null;
+  for (const site of parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite)) {
+    const devices = await send({
+      ...probeRequest("network", `/v1/sites/${encodeURIComponent(site.id)}/devices`), query: { limit: "200" },
+    });
+    if (!devices.ok) continue;
+    for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
+      if (!device.roles.includes("gateway") || !isUsableMac(device.macAddress)) continue;
+      macs.add(device.macAddress);
+      name ??= device.name;
+    }
+  }
+  return { macs: [...macs], name };
 }
 
 /** The more useful of two failures to show someone connecting: a key problem beats the rest. */

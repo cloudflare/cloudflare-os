@@ -23,7 +23,7 @@ import { wifiPutBody } from "./actions";
 import { UnifiApi } from "./api";
 import type { ConnectInput, ConnectPageMode } from "./connect-form";
 import {
-  cloudConsoleSummary, listSiteManagerConsoles, probeDirectConsole, sameConsole,
+  cloudConsoleSummary, listSiteManagerConsoles, networkIdentity, probeDirectConsole, protectIdentity, sameConsole,
   type ConsoleSummary, type ObserveTarget, type UnifiSend,
 } from "./consoles";
 import { UnifiError, type UnifiFailure } from "./errors";
@@ -469,6 +469,10 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       return failure({ kind: "notFound", message: "This UniFi connection doesn't reach that console." });
     }
     const group = request.target.kind === "siteManager" ? "siteManager" : `console:${request.target.consoleId}`;
+    if (request.method !== "GET" && request.target.kind === "app" && identity.mode === "direct") {
+      const refusal = await this.#confirmServing(request.target.app, connection);
+      if (refusal) return refusal;
+    }
     if (request.method !== "GET") {
       this.#cache.invalidate(group);
       try {
@@ -484,6 +488,37 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     // Concurrent requests for one still share a single load.
     return this.#cache.get(group, key, ttlMs, () => this.#dispatch(credentials, request, group),
       response => response.ok && "json" in response);
+  }
+
+  /**
+   * Before a change goes to a console reached directly, whether the application answering there
+   * still runs on the hardware it identified when the connection was made: a tunnel or proxy
+   * repointed at a replacement that takes the same key would otherwise have the change made there.
+   * @returns The refusal, or null when it matches.
+   */
+  async #confirmServing(app: UnifiApp, connection: StoredConnection): Promise<UnifiResponse | null> {
+    const { identity } = connection;
+    if (identity.mode !== "direct") return null;
+    const send: UnifiSend = request => this.#send(
+      request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId: identity.consoleId } } : request,
+      null, connection);
+    const serving = await (app === "protect" ? protectIdentity(send) : networkIdentity(send));
+    const pinned = identity.appMacs[app];
+    if (!pinned.some(isUsableMac) || serving.macs.length === 0) {
+      return failure({
+        kind: "forbidden",
+        message: "Couldn't confirm the console at this address is the one this connection was made to, so the change " +
+          "wasn't sent. Try again in a moment.",
+      });
+    }
+    if (!sameConsole(pinned, serving.macs)) {
+      return failure({
+        kind: "forbidden",
+        message: "The console at this address isn't the one this connection was made to, so the change wasn't sent. " +
+          "Reconnect the console.",
+      });
+    }
+    return null;
   }
 
   async #dispatch(credentials: UnifiCredentials, request: UnifiRequest, group: string): Promise<UnifiResponse> {

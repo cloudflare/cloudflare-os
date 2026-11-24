@@ -410,6 +410,18 @@ describe("the guest hotspot", () => {
     expect(console.writes()).toEqual([]);
   });
 
+  it("never sends a guest revocation again after an interrupted one, since it would end a newer grant", async () => {
+    const { console } = installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    await hotspot.call("revokeGuest", HOME.guestId);
+    const { actionId } = lastSubmitted(await hotspot.queue());
+    console.offline = true;
+    expect(await hotspot.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    console.offline = false;
+    expect(await hotspot.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toEqual([]);
+  });
+
   it("creates vouchers once approved, listing them without codes until then", async () => {
     const { console } = installFake();
     const hotspot = binding(await connectCloud(), RESOURCES.hotspot);

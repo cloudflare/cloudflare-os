@@ -98,3 +98,18 @@ describe("console identity", () => {
     expect(facts.macs).toEqual([]);
   });
 });
+
+describe("a direct console's Network identity", () => {
+  it("is found whichever site its gateway is on", async () => {
+    // The first site listed has no gateway; the second has the console's.
+    const console = homeConsole();
+    const home = console.network!.sites[0]!;
+    const empty = { ...home, site: { id: "88f7af54-0000-4000-8000-000000000001", name: "Empty", internalReference: "empty" }, devices: [] };
+    console.network!.sites.unshift(empty);
+    console.protect = null;
+    const unifi = new FakeUnifi().addDirectConsole("https://two.example", console, DIRECT.apiKey);
+    const facts = await probeDirectConsole(request =>
+      sendUnifiRequest({ ...DIRECT, baseUrl: "https://two.example" }, request, unifi.fetch));
+    expect(facts.appMacs.network).toEqual(["70:a7:41:97:83:ed"]);
+  });
+});
