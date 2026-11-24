@@ -8,8 +8,12 @@ import type { JsonValue } from "vitest-evals";
 
 const JsonSchema: z.ZodType<JsonValue> = z.json();
 
-// Events from the chat log carry their message's sequence; a prompt the log never recorded does not.
-const EventMetadataSchema = z.object({ sequence: z.number().int().optional() }).loose().optional();
+// Events from the chat log carry their message's sequence, and a message sent with a focus carries
+// that; a prompt the log never recorded has neither.
+const EventMetadataSchema = z.object({
+  sequence: z.number().int().optional(),
+  focus: JsonSchema.optional(),
+}).loose().optional();
 
 const TranscriptEventSchema = z.discriminatedUnion("type", [
   z.object({

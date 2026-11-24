@@ -114,6 +114,32 @@ it.concurrent("a mismatched connection URL returns an error without ending the t
   ]) });
 });
 
+it.concurrent("a turn carries a link the user pasted and what they were viewing", async () => {
+  const model = models.script([
+    { toolCall: { id: "write-thing", name: "executeCode", arguments: {
+      code: "export default async function(self, env) { await env.TEST_THING.writeValue(17); }",
+    } } },
+    { text: "This must not run." },
+  ]);
+  await using session = await openSession(model, "agentfocus");
+  const url = "https://gadgets-test.example/things/budget";
+  const thing = await session.connect(TEST_VENDOR_ID, url);
+  await session.runTurn(`Set ${url} to 17.`, { message: {
+    capsules: [{ position: 4, length: url.length, ...thing }],
+    focus: { gadgetId: thing.gatekeeperId, spot: { anchor: "value", label: "Value" } },
+  } });
+
+  // The link names the binding it gave the chat, and so does what they were viewing.
+  const sent = JSON.stringify(model.requests[0]);
+  expect(sent).toContain("Set [Test Thing budget](env.TEST_THING) to 17.");
+  expect(sent).toContain("<user-focus gadget=");
+  const [action] = await waitForPendingActions(session, 1);
+  expect(action).toMatchObject({
+    gatekeeperId: thing.gatekeeperId, resourceUrl: url,
+    description: { title: "Set the test value to 17" },
+  });
+});
+
 it.concurrent("rejecting an action discards it and leaves the agent stopped", async () => {
   const model = models.script([writeValues(7), { text: "This must not run." }]);
   await using session = await openSession(model, "agentreject");
