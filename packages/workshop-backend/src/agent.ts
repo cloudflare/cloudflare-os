@@ -54,7 +54,8 @@ import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
   ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, UNSUPPORTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError, isImagePolicyError,
-  MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage, withImageDimensions,
+  MAX_FILE_IMAGE_BYTES, MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT,
+  admittedImageDimensions, readFileImage, withImageDimensions,
 } from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
@@ -2512,7 +2513,7 @@ async function runAgentPass(
   // Compaction cannot split a tool-result batch. Reserve a quarter of the input window for
   // instructions/tools/history and cap file pixels themselves before reading their bodies.
   const maxFileImageTokens = Math.max(0, Math.floor(inputBudget * 0.75) - attachmentImageTokens);
-  const replayFileImages = new Map<AiToolCall, ImageContent>();
+  const replayFileImages = new Map<AiToolCall, ImageContent | Error>();
   const sentImageReads = new Map<number, Set<string>>();
   const liveImageReads = new Set<string>();
   const firstLiveSequence = hooks.nextChatSequencePeek(chatId);
@@ -2549,6 +2550,7 @@ async function runAgentPass(
   };
   let fileImageCount = 0, fileImageBytes = 0, fileImageTokens = 0;
   let stepImageCount = 0, stepImageBytes = 0, stepImageTokens = 0;
+  let replayImageProbes = 0;
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
     if (msg.type !== "message" || sawRevertedContent(index)) continue;
@@ -2558,14 +2560,26 @@ async function runAgentPass(
       if (recovery && msg.sequence < recovery.newReadsFrom &&
           !recovery.reads.get(msg.sequence)?.has(call.toolCallId)) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;
-      let tokens = 0;
-      const image = readFileImage(await hooks.openBlob(call.image.oid), undefined,
-          image => (tokens = imageTokens(image)) <= maxFileImageTokens - fileImageTokens);
-      if (!image) continue;
-      replayFileImages.set(call, image);
-      ++fileImageCount;
-      fileImageBytes += call.image.byteLength;
-      fileImageTokens += tokens;
+      if (call.image.dimensions) {
+        const header = withImageDimensions({type: "image", mimeType: "image/png", data: ""}, call.image.dimensions);
+        if (imageTokens(header) > maxFileImageTokens - fileImageTokens) continue;
+      }
+      // Opening even a header can inflate an inline blob. Legacy token misses and failed
+      // opens must not probe every older image in a long history.
+      if (++replayImageProbes > MAX_FILE_IMAGE_CONTEXT_COUNT) continue;
+      try {
+        let tokens = 0;
+        const image = readFileImage(await hooks.openBlob(call.image.oid), undefined,
+            image => (tokens = imageTokens(image)) <= maxFileImageTokens - fileImageTokens);
+        if (!image) continue;
+        replayFileImages.set(call, image);
+        ++fileImageCount;
+        fileImageBytes += call.image.byteLength;
+        fileImageTokens += tokens;
+      } catch (error) {
+        // Preserve the normal per-tool replay error instead of aborting before /compact can run.
+        replayFileImages.set(call, error instanceof Error ? error : new Error(String(error)));
+      }
     }
   }
   for (let [msgIndex, msg] of chatMessages.entries()) {
@@ -2692,6 +2706,7 @@ async function runAgentPass(
                 case "readFile": {
                   if (toolCall.image && !sawRevertedContent(msgIndex)) {
                     const image = replayFileImages.get(toolCall);
+                    if (image instanceof Error) throw image;
                     if (image) {
                       let reads = sentImageReads.get(msg.sequence);
                       if (!reads) sentImageReads.set(msg.sequence, reads = new Set());
@@ -3742,8 +3757,11 @@ async function runAgentPass(
               const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
               const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
               if (oid === undefined) throw new Error("Image file has no immutable blob.");
-              const notes = {image: {oid, byteLength}, ...file.oid ? {observedOid: file.oid} : {}};
+              const imageReference: NonNullable<Extract<AiToolCall, {toolName: "readFile"}>["image"]> = {oid, byteLength};
+              const notes = {image: imageReference, ...file.oid ? {observedOid: file.oid} : {}};
               if (!handle.model.input.includes("image")) {
+                if (byteLength <= MAX_FILE_IMAGE_BYTES) imageReference.dimensions =
+                  inlineChatAttachmentImageDimensions(mimeType, file.source.reader, 8000, 30_000);
                 markFileRead(resolved.workpieceId, filename, file.oid);
                 return toolResult(UNSUPPORTED_FILE_IMAGE, notes);
               }
@@ -3757,6 +3775,7 @@ async function runAgentPass(
               const image = readFileImage(file.source.reader, mimeType,
                   image => (tokens = imageTokens(image)) <= maxFileImageTokens - stepImageTokens);
               if (!image) throw new Error("Image exceeds this model's remaining visual token budget. Resize or crop it, read fewer images per step, or choose a model with a larger context window.");
+              imageReference.dimensions = admittedImageDimensions(image);
               liveImageReads.add(toolCallId);
               ++stepImageCount;
               stepImageBytes += byteLength;

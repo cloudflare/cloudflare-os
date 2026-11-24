@@ -414,6 +414,71 @@ describe("images read from a worktree", () => {
     expect(reads.mock.calls.every(([, length]) => length <= 30)).toBe(true);
   }));
 
+  it.each(["oversize", "dimensions"])("keeps a saved text-only %s read from stranding vision or /compact", kind =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = kind === "oversize" ? new Uint8Array(5.5 * 1024 * 1024) : PNG.slice();
+      bytes.set(PNG);
+      if (kind === "dimensions") new DataView(bytes.buffer).setUint32(16, 8001);
+      const {chatId} = await setup(impl, bytes);
+      const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+      faux.setResponses([fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]);
+      await runAgent(impl, {model: {...faux.getModel(), input: ["text"]}, stream: faux.stream}, chatId,
+        AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "fixture", apiToken: "", contextWindow: 8_000_000});
+      for (let retry = 0; retry < 2; ++retry) {
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue with vision"}]);
+        const {requests} = await turn(impl, chatId, []);
+        expect(results(requests[0])[0]).toMatchObject({isError: true});
+        expect(JSON.stringify(results(requests[0]))).toContain(kind === "oversize" ? "4 MiB" : "8000 pixels");
+      }
+      impl.addChatMessages(chatId, USER, [{type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+      const checkpoints = vi.spyOn(impl, "commitChatCompaction");
+      await scriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Earlier invalid image omitted."))]);
+      expect(checkpoints).toHaveBeenCalledOnce();
+    }));
+
+  it.each(["dimensions", "legacy", "unavailable"])("bounds blob opens across a long image history (%s)", mode =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const bytes = new Uint8Array(1024 * 1024);
+      bytes.set(PNG);
+      new DataView(bytes.buffer).setUint32(16, 768);
+      new DataView(bytes.buffer).setUint32(20, 768);
+      const {chatId, blob} = await setup(impl, bytes);
+      await turn(impl, chatId, [[read()]]);
+      const original = impl.loadChatHistory(chatId).chatMessages.flatMap(message =>
+        message.type === "message" ? message.toolCalls ?? [] : []).find(call => call.toolName === "readFile")!;
+      expect(original.image?.dimensions).toEqual([768, 768]);
+      for (let index = 0; index < 140; ++index) impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "",
+        toolCalls: [{...original, toolCallId: `image-${index}`}]}]);
+      if (mode === "legacy") for (const message of impl.storage.chats.list()) {
+        if (message.type === "message" && message.toolCalls?.some(call => call.image)) impl.storage.chats.put({
+          ...message, toolCalls: message.toolCalls.map(call => call.image
+            ? {...call, image: {...call.image, dimensions: undefined}} : call),
+        });
+      }
+      const config: AiModelConfig = {provider: "openai", model: "gpt-4o-mini", apiToken: "fixture"};
+      const handle = getModel({} as Cloudflare.Env, config, USER);
+      const faux = createFauxCore({models: [{id: "fixture", contextWindow: 8_000_000}]});
+      const requests: Message[][] = [];
+      handle.stream = (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      };
+      const openBlob = impl.openBlob.bind(impl);
+      const opens = vi.spyOn(impl, "openBlob").mockImplementation(oid => {
+        if (mode === "unavailable" && oid === blob.oid) throw new Error("Fixture blob unavailable");
+        return openBlob(oid);
+      });
+      for (let turn = 0; turn < 2; ++turn) {
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+        faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+        opens.mockClear();
+        await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+        expect(opens.mock.calls.filter(([oid]) => oid === blob.oid)).toHaveLength(mode === "dimensions" ? 3 : 4);
+        expect(results(requests.at(-1)!).filter(result => result.content.some(part => part.type === "image")))
+          .toHaveLength(mode === "unavailable" ? 0 : 3);
+      }
+    }));
+
   it.each(["model switch", "router pool switch", "unchanged vision model"] as const)(
     "checks newly visible history images before compaction after a %s", mode => inKernel(crypto.randomUUID(), async impl => {
       const bytes = PNG.slice();
