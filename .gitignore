@@ -42,11 +42,13 @@ wrangler.dev.jsonc
 # Scratch output from scripts/preview (the PR-preview comment body).
 /output/
 
-# Mutation runs (scripts/automerge/proofs/tests.ts).
+# What a proof writes into the checkout (scripts/automerge/proofs/): its artifact, and a mutation
+# run's files inside the package it mutates.
+/automerge-out/
 stryker.automerge.json
 vitest.automerge.config.ts
 .stryker-tmp/
-reports/automerge-mutation-*.json
+**/reports/automerge-mutation-*.json
 .automerge-stryker/
 
 # macOS
