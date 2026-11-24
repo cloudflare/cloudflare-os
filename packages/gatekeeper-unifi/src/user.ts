@@ -10,6 +10,7 @@ import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { UnifiApi } from "./api";
 import { getBaseUrl, type UnifiEnv } from "./env";
 import { UnifiError } from "./errors";
+import { isUsableMac } from "./parse";
 import { UNIFI_LOGO_URL } from "./logo";
 import { NetworkPickerUI, ProtectPickerUI, type PickerSource } from "./pickers";
 import {
@@ -68,6 +69,14 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
     // didn't say which are installed, the console is asked, and must answer with the app's version.
     if (target.appsKnown ? !target.apps[app] : !(await this.#answersAs(target.id, app))) {
       throw new Error(`That console doesn't run ${appName}.`);
+    }
+    // A binding keeps the console's ID across reconnects, which a direct connection can only check
+    // against the hardware each application identified when it connected (the NVR for Protect, the
+    // gateway for Network). One that didn't would let a replacement serve its bindings unnoticed.
+    const identity = await this.#account().identity();
+    if (identity?.mode === "direct" && !identity.appMacs[app].some(isUsableMac)) {
+      throw new Error(`${appName} didn't say which hardware it runs on when this connection was made, so it can't ` +
+        "be connected safely. Reconnect the console, then try again.");
     }
     await this.#opens(resource);
     return {

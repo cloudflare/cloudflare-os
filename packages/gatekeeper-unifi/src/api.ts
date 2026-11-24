@@ -301,10 +301,30 @@ export class UnifiApi {
   }
 
   /** A site's hotspot vouchers, newest first. */
+  /**
+   * A site's vouchers, the newest `MAX_LIST_ITEMS`. UniFi lists them in no promised order, so the
+   * whole list is read before the newest are chosen; cut at its first 1,000, the newest could be
+   * left out.
+   * @throws UnifiError on a site with more than `MAX_VOUCHER_SCAN` vouchers, rather than answering
+   * with what might not be the newest.
+   */
   async listVouchers(siteId: string): Promise<UnifiVoucher[]> {
-    const vouchers = (await this.#list("network", `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`,
-      "voucher list")).map(parseVoucher);
-    return vouchers.toSorted((a, b) => b.createdAt.valueOf() - a.createdAt.valueOf());
+    const path = `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`;
+    const vouchers: UnifiVoucher[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      if (offset >= MAX_VOUCHER_SCAN) {
+        throw new UnifiError({
+          kind: "protocol",
+          message: `This site has more than ${MAX_VOUCHER_SCAN} vouchers, too many to find the newest. ` +
+            "getVoucherBatch() still finds the ones a createVouchers() call made.",
+        });
+      }
+      const page = parseNetworkPage(await this.#json("network", "GET", path, undefined,
+        { offset: String(offset), limit: String(PAGE_SIZE) }), "voucher list");
+      vouchers.push(...page.data.map(parseVoucher));
+      if (page.data.length < PAGE_SIZE || offset + page.data.length >= page.totalCount) break;
+    }
+    return vouchers.toSorted((a, b) => b.createdAt.valueOf() - a.createdAt.valueOf()).slice(0, MAX_LIST_ITEMS);
   }
 
   /**

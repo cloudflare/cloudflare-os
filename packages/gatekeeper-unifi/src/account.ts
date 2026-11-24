@@ -343,7 +343,13 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         if (error instanceof UnifiError && error.kind === "forbidden") return none;
         throw error;
       }
-      const match = consoles.find(c => c.id === target.consoleId) ?? consoles.find(c => sameConsole(c.macs, target.macs));
+      // A cloud owner's console by its host ID alone. A direct owner's by the hardware the bound
+      // application identified, not every MAC the console has: a gateway in common doesn't make a
+      // different NVR the same, and with none pinned there's nothing to match.
+      const pinned = target.appMacs ?? [];
+      const match = target.baseUrl === undefined
+        ? consoles.find(c => c.id === target.consoleId)
+        : pinned.some(isUsableMac) ? consoles.find(c => sameConsole(c.macs, pinned)) : undefined;
       if (!match?.permissions[target.app]) return none;
       consoleId = match.reachable ? match.id : null;
     }

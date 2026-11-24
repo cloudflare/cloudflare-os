@@ -454,6 +454,17 @@ describe("the guest hotspot", () => {
     expect(await hotspot.failure("getVoucherBatch", crypto.randomUUID())).toMatch(/can't be looked up/);
   });
 
+  it("lists the newest vouchers even when UniFi lists the oldest first", async () => {
+    const { console } = installFake();
+    const older = Array.from({ length: 1000 }, (_, i) =>
+      rawVoucher(`5f0ee1aa-0000-4000-9000-${String(i).padStart(12, "0")}`, "Old", String(2_000_000_000 + i), "2026-01-01T00:00:00Z"));
+    console.network!.sites[0]!.vouchers.unshift(...older);
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const listed = await hotspot.call<{ id: string }[]>("listVouchers");
+    expect(listed).toHaveLength(1000);
+    expect(listed[0]!.id).toBe(HOME.voucherId);
+  });
+
   it("finds a batch's vouchers on a site with more than listVouchers() returns", async () => {
     const { console } = installFake();
     const older = Array.from({ length: 1000 }, (_, i) =>
@@ -462,11 +473,9 @@ describe("the guest hotspot", () => {
     const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
     const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240 });
     await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
-    const listed = await hotspot.call<{ note: string }[]>("listVouchers");
-    expect(listed.some(v => v.note === "Party")).toBe(false);
     const [voucher] = await hotspot.call<{ id: string; code: string | null; note: string }[]>("getVoucherBatch", batch);
     expect(voucher).toMatchObject({ note: "Party", code: expect.any(String) });
-    expect(console.calls.at(-1)?.query.filter).toBe(`id.in(${voucher!.id})`);
+    expect(console.calls.some(call => call.query.filter === `id.in(${voucher!.id})`)).toBe(true);
 
     // Deleting it finds it the same way, and once it's gone the batch no longer shows its code.
     await hotspot.call("deleteVoucher", voucher!.id);

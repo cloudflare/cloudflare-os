@@ -450,7 +450,10 @@ export interface UnifiHotspot {
   /** Ends a guest client's access to the network. Throws if the client is not a guest. */
   revokeGuest(clientId: string): Promise<void>;
 
-  /** Lists the vouchers, newest first, up to 1,000, including expired ones. */
+  /**
+   * Lists the vouchers, newest first, up to 1,000, including expired ones. Throws on a site with
+   * more than 10,000; `getVoucherBatch()` still finds the ones a `createVouchers()` call made.
+   */
   listVouchers(): Promise<UnifiVoucher[]>;
 
   /**

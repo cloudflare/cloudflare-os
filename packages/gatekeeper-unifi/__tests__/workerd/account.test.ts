@@ -101,6 +101,19 @@ describe("minting a gatekeeper for a resource URL", () => {
       .toEqual({ ok: UNIFI_RESOURCES[kind as keyof typeof UNIFI_RESOURCES] });
   });
 
+  it("won't bind an application whose hardware wasn't identified when the console connected", async () => {
+    // Without it, a reconnect couldn't tell a replacement NVR from this one.
+    const { console } = installFake();
+    console.unavailable.add("/v1/nvrs");
+    const accountId = await connectDirect();
+    console.unavailable.clear();
+    const consoleId = await directConsoleId(accountId);
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${consoleId}/protect`]))
+      .toMatchObject({ error: expect.stringMatching(/didn't say which hardware it runs on/) });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${consoleId}/network/sites/${HOME.siteId}`]))
+      .toMatchObject({ ok: { id: "site" } });
+  });
+
   it("refuses a resource the connection can't open, such as a camera that's been removed", async () => {
     // An ID filled in by an agent or a blueprint isn't otherwise looked up before the binding is made.
     const { console } = installFake();
@@ -233,6 +246,20 @@ describe("checking collaborators", () => {
     const alex = await connectCloud(ALEX_KEY);
     const consoleId = await directConsoleId(owner);
     expect(await verify(binding(owner, { kind: "protect", consoleId }), alex)).toEqual(ALLOWED);
+    expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), alex)).toEqual(ALLOWED);
+  });
+
+  it("matches a cloud collaborator's console to a direct one by the bound application's hardware", async () => {
+    // The collaborator owns a console with the same gateway, but Protect here answers from another NVR.
+    const { unifi, console } = installFake();
+    unifi.addCloudKey(ALEX_KEY, { email: "alex@example.com", fullName: "Alex", owned: [console] });
+    const ownNvr = homeConsole();
+    ownNvr.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole("https://nvr.home.example", ownNvr, LOCAL_KEY);
+    const owner = await connectDirect({ consoleUrl: "https://nvr.home.example" });
+    const alex = await connectCloud(ALEX_KEY);
+    const consoleId = await directConsoleId(owner);
+    expect(await verify(binding(owner, { kind: "protect", consoleId }), alex)).toEqual(DENIED);
     expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), alex)).toEqual(ALLOWED);
   });
 
