@@ -363,7 +363,7 @@ happened before it is left out until it is. The runs are those of the workspace'
 (`RUNS_READ`), so in a busy workspace an older chat's are no longer marked; listing a chat's runs
 by `spawnedByChatId` would end that. What the workspace says of runs changes with every run of
 every chat, so the chat keeps its own while they stand as they did (`sameRuns`). How the call was
-made stays in the trace. The pills have the still cloud (`AgentIcon`), not the mascot, which
+made stays in the trace. The pills have the still cloud, solid (`AgentIcon`'s `fill`), not the mascot, which
 moves and is played with, and are not pressed where the page cannot open another chat. What is
 under way is before the composer, on its left, where it is seen first (`AgentRunsButton`): one
 alone as the mascot, thinking, or alarmed while it waits on the user; more as up to five solid

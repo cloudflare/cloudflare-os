@@ -2,6 +2,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton, useMotionTransition, type LinkButtonProps } from '@gadgets/ui'
 import { AnimatePresence, motion } from 'motion/react'
 import { AgentIcon } from '@/components/AgentIcon'
+import { CARD_SURFACE } from '@/components/Card'
 import { ArrowRight01Icon } from '@/components/icons'
 import { RunStatusMark, type AgentRunStatus } from './RunStatusMark'
 
@@ -36,7 +37,7 @@ const SPINNER_AWAY = { width: 0, marginInlineStart: '-0.5rem', marginInlineEnd: 
 const SPINNER_HERE = { width: 'auto', marginInlineStart: '0rem', marginInlineEnd: '-0.125rem', opacity: 1, scale: 1 }
 
 /**
- * One agent's run as a pill: the agent's cloud as an icon (still, as the mascot is not), the
+ * One agent's run as a pill, on a card's surface: the agent's cloud as an icon (still, as the mascot is not), the
  * agent's name and what the run was started to do, as its header has them, and how it stands, the
  * words for it only read out: one only started trails off, one at work has a spinner at the end,
  * and one that waits on the user or ended has its mark in the cloud's place. The title is cut
@@ -48,7 +49,8 @@ export const AgentRunPill = ({ title, agent, status, statusWords, onOpen, onClic
   const marked = status !== 'started' && status !== 'running'
   const changes = useMotionTransition(CHANGES)
   const look = cn(
-    'inline-flex h-10 max-w-full min-w-0 items-center gap-2 rounded-full bg-kumo-base ps-3 text-left text-base text-kumo-default ring-1 ring-kumo-line outline-none',
+    'inline-flex h-10 max-w-full min-w-0 items-center gap-2 rounded-full ps-3 text-left text-base text-kumo-default outline-none',
+    CARD_SURFACE,
     onOpen && 'hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-ring data-highlighted:bg-kumo-tint',
     'pe-4',
     className,
@@ -60,7 +62,7 @@ export const AgentRunPill = ({ title, agent, status, statusWords, onOpen, onClic
           <motion.span key={marked ? status : 'agent'} initial={MARK_AWAY} animate={MARK_HERE} exit={MARK_AWAY} transition={changes} className="flex">
             {marked
               ? <RunStatusMark status={status} className="size-4.5" />
-              : <AgentIcon className="size-4.5 shrink-0 text-kumo-default" />}
+              : <AgentIcon weight="fill" className="size-4.5 shrink-0 text-kumo-default" />}
           </motion.span>
         </AnimatePresence>
       </span>
