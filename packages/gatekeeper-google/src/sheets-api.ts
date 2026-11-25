@@ -1,15 +1,18 @@
+import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { readGoogleJson } from "./google-response";
+import { GoogleApiError, readGoogleJson } from "./google-response";
 import {
-  baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
+  baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_AREAS_READ_FIELDS,
+  FORMAT_LINES_READ_FIELDS, FORMAT_READ_FIELDS,
+  type BaseFormats, type BaseSizes, type RestFormatSheet, type RestGridRange,
 } from "./sheets-format";
 import {
-  a1Of, cellCount, findSheet, parseRange, validateRange, type EnteredValue, type Rect,
-  type ValidatedRange,
+  a1Of, byPosition, cellCount, findSheet, intersection, parseRange, rectName, validateRange, type EnteredValue,
+  type Rect, type ValidatedRange,
 } from "./sheets-model";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -22,26 +25,16 @@ const REQUEST_TIMEOUT_MS = 30_000;
 
 const SPREADSHEET_FIELDS = "spreadsheetId,properties(title,locale,timeZone)";
 const SHEET_PROPERTIES_FIELDS =
-  "properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount))";
-// Google keeps at least one unfrozen row and column, so the gatekeeper needs the frozen counts too.
-const METADATA_PROPERTIES_FIELDS =
   "properties(sheetId,title,index,hidden," +
   "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount))";
 // Never `editors`: it lists collaborators' email addresses.
 const PROTECTED_RANGE_FIELDS =
   "protectedRanges(range,unprotectedRanges,requestingUserCanEdit,warningOnly)";
+// Each sheet's merges, which a sheet's ID alone selects in full.
+const MERGE_FIELDS = "sheets(properties(sheetId),merges)";
 // Each range's position, which Google leaves out where it is 0, and its cells as entered.
 const ENTERED_FIELDS =
   "sheets(properties(sheetId),data(startRow,startColumn,rowData(values(userEnteredValue))))";
-
-/** A `GridRange`. Google omits each index that is 0, and an end that is unbounded. */
-type RestGridRange = {
-  sheetId?: number;
-  startRowIndex?: number;
-  endRowIndex?: number;
-  startColumnIndex?: number;
-  endColumnIndex?: number;
-};
 
 type RestSpreadsheet = {
   spreadsheetId: string;
@@ -64,6 +57,9 @@ type RestSpreadsheet = {
     }[];
   }[];
 };
+
+/** A sheet's merges, as `MERGE_FIELDS` reads them; Google leaves out a sheet ID of 0. */
+type RestMergeSheet = { properties?: { sheetId?: number }; merges?: RestGridRange[] };
 
 type RestValueRange = {
   range?: string;
@@ -102,10 +98,10 @@ export type SheetProtection = {
   warningOnly: boolean;
 };
 
-/** A spreadsheet's metadata, with each sheet's protected ranges. */
+/** A spreadsheet's metadata, with its protected ranges and the merges of the sheets read for them. */
 export type SpreadsheetMetadata = Omit<SpreadsheetInfo, "sheets"> & {
-  /** The sheets, with how many of their leading rows and columns are frozen, when any are. */
-  sheets: (SpreadsheetSheetInfo & { frozenRowCount?: number; frozenColumnCount?: number })[];
+  /** The sheets, each with its merged cells when they were read and it has any. */
+  sheets: (SpreadsheetSheetInfo & { merges?: readonly Rect[] })[];
   protectedRanges: SheetProtection[];
 };
 
@@ -184,15 +180,40 @@ function spreadsheetInfo(result: RestSpreadsheet): SpreadsheetInfo {
     sheets: (result.sheets ?? []).flatMap((sheet): SpreadsheetSheetInfo[] => {
       let properties = sheet.properties;
       if (properties?.sheetId === undefined || properties.title === undefined) return [];
+      let grid = properties.gridProperties;
       return [{
         id: properties.sheetId,
         title: properties.title,
         index: properties.index ?? 0,
-        rowCount: properties.gridProperties?.rowCount ?? 0,
-        columnCount: properties.gridProperties?.columnCount ?? 0,
+        rowCount: grid?.rowCount ?? 0,
+        columnCount: grid?.columnCount ?? 0,
         ...(properties.hidden ? { hidden: true } : {}),
+        ...(grid?.frozenRowCount ? { frozenRowCount: grid.frozenRowCount } : {}),
+        ...(grid?.frozenColumnCount ? { frozenColumnCount: grid.frozenColumnCount } : {}),
       }];
     }).toSorted((a, b) => a.index - b.index),
+  };
+}
+
+// A merge's cells. Google bounds every merge.
+function mergeOf(range: RestGridRange): Rect {
+  return {
+    startRow: range.startRowIndex ?? 0, endRow: range.endRowIndex ?? 0,
+    startColumn: range.startColumnIndex ?? 0, endColumn: range.endColumnIndex ?? 0,
+  };
+}
+
+// `metadata` with the merges `merges` holds for its sheets, by sheet ID.
+function withMergesOf(
+  metadata: SpreadsheetMetadata, merges: ReadonlyMap<number, readonly Rect[]>,
+): SpreadsheetMetadata {
+  if (merges.size === 0) return metadata;
+  return {
+    ...metadata,
+    sheets: metadata.sheets.map(sheet => {
+      let held = merges.get(sheet.id);
+      return held?.length ? { ...sheet, merges: held } : sheet;
+    }),
   };
 }
 
@@ -272,11 +293,14 @@ export class GoogleSheetsApi {
     return spreadsheetInfo(await this.#request<RestSpreadsheet>(url, "get spreadsheet"));
   }
 
-  /** A spreadsheet's metadata and the ranges it protects, but not who may edit them. */
+  /**
+   * A spreadsheet's metadata and the ranges it protects, but not who may edit them, nor any sheet's
+   * merges, which only `getMerges` reads, for the sheets a caller needs.
+   */
   async getMetadata(spreadsheetId: string): Promise<SpreadsheetMetadata> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
-    url.searchParams.set(
-      "fields", `${SPREADSHEET_FIELDS},sheets(${METADATA_PROPERTIES_FIELDS},${PROTECTED_RANGE_FIELDS})`);
+    url.searchParams.set("fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS},${PROTECTED_RANGE_FIELDS})`);
+    url.searchParams.set("prettyPrint", "false");
     let result = await this.#request<RestSpreadsheet>(url, "get spreadsheet metadata");
     let protectedRanges = (result.sheets ?? []).flatMap(sheet => {
       let sheetId = sheet.properties?.sheetId;
@@ -288,18 +312,93 @@ export class GoogleSheetsApi {
         warningOnly: protection.warningOnly === true,
       }));
     });
-    let info = spreadsheetInfo(result);
-    let frozen = new Map((result.sheets ?? []).map(({ properties }) =>
-      [properties?.sheetId, properties?.gridProperties] as const));
-    let sheets = info.sheets.map(sheet => {
-      let { frozenRowCount, frozenColumnCount } = frozen.get(sheet.id) ?? {};
-      return {
-        ...sheet,
-        ...(frozenRowCount ? { frozenRowCount } : {}),
-        ...(frozenColumnCount ? { frozenColumnCount } : {}),
-      };
-    });
-    return { ...info, sheets, protectedRanges };
+    return { ...spreadsheetInfo(result), protectedRanges };
+  }
+
+  /**
+   * `metadata` with the merges of each of its sheets in `sheetIds`, as `getMerges` reads them. IDs
+   * of sheets `metadata` does not have are passed over, and with none left nothing is read.
+   */
+  async withMerges(
+    spreadsheetId: string, metadata: SpreadsheetMetadata, sheetIds: Iterable<number>,
+  ): Promise<SpreadsheetMetadata> {
+    let wanted = new Set(sheetIds);
+    let ids = metadata.sheets.flatMap(({ id }) => wanted.has(id) ? [id] : []);
+    return withMergesOf(metadata, await this.getMerges(spreadsheetId, ids));
+  }
+
+  /**
+   * The metadata `withMerges` of its sheets in `sheetIds`, with the two read together. Google refuses
+   * a merges read naming a sheet deleted since its ID was taken, so a failed merges read that named
+   * one the metadata no longer has is sent again without it, and a caller sees the sheet as gone.
+   */
+  async getMetadataWithMerges(
+    spreadsheetId: string, sheetIds: Iterable<number>,
+  ): Promise<SpreadsheetMetadata> {
+    let ids = [...sheetIds];
+    let [metadata, merges] = await Promise.allSettled([
+      this.getMetadata(spreadsheetId), this.getMerges(spreadsheetId, ids),
+    ]);
+    if (metadata.status === "rejected") throw metadata.reason;
+    if (merges.status === "fulfilled") return withMergesOf(metadata.value, merges.value);
+    if (ids.every(id => metadata.value.sheets.some(sheet => sheet.id === id))) throw merges.reason;
+    return this.withMerges(spreadsheetId, metadata.value, ids);
+  }
+
+  /**
+   * The merges of each sheet in `sheetIds` that has any, read in one request by sheet ID with
+   * `spreadsheets:getByDataFilter`; with no IDs nothing is read. That request needs a grant that may
+   * edit the spreadsheet, so where Google refuses it for the grant (403), as for an account that has
+   * lost its write grant but can still read, the merges of every sheet are read with
+   * `spreadsheets.get` instead, as main reads them. Throws `Error` when Google's list of them is
+   * over 5 MiB.
+   */
+  async getMerges(spreadsheetId: string, sheetIds: readonly number[]): Promise<Map<number, Rect[]>> {
+    let ids = [...new Set(sheetIds)];
+    if (ids.length === 0) return new Map();
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
+    url.searchParams.set("fields", MERGE_FIELDS);
+    url.searchParams.set("prettyPrint", "false");
+    let merges: Map<number, Rect[]>;
+    try {
+      merges = await this.#readMerges(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataFilters: ids.map(sheetId => ({ gridRange: { sheetId } })), includeGridData: false }),
+      }, "The sheets the changes act on hold more merged cells than can be read at once: Google's list of " +
+        "them is over 5 MiB, so the changes cannot be checked against them. Unmerge cells on those sheets " +
+        "in Google Sheets, or change other sheets.");
+    } catch (error) {
+      if (!(error instanceof GoogleApiError && error.httpStatus === 403)) throw error;
+      let all = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
+      all.searchParams.set("fields", MERGE_FIELDS);
+      all.searchParams.set("prettyPrint", "false");
+      merges = await this.#readMerges(all, {}, "The spreadsheet holds more merged cells than can be read at once " +
+        "without a grant that may edit it: Google's list of them is over 5 MiB. Reconnect the account with " +
+        "edit access, or unmerge cells in Google Sheets.");
+    }
+    return new Map([...merges].filter(([id]) => ids.includes(id)));
+  }
+
+  // The merges a `MERGE_FIELDS` read answers, by sheet ID, of each sheet that has any, failing with
+  // `tooMany` when Google's answer is over 5 MiB.
+  async #readMerges(url: URL, init: RequestInit, tooMany: string): Promise<Map<number, Rect[]>> {
+    let response = await fetchWithAuthRetry(
+      url.toString(), init,
+      // A read, however it is sent.
+      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+    );
+    let result: { sheets?: RestMergeSheet[] };
+    try {
+      result = await readGoogleJson(response, {
+        provider: "Google Sheets", operation: "read merges", maxBytes: MAX_RESPONSE_BYTES,
+      });
+    } catch (error) {
+      if (!(error instanceof Error && error.cause instanceof ResponseTooLargeError)) throw error;
+      throw new Error(tooMany, { cause: error });
+    }
+    return new Map((result.sheets ?? []).flatMap(({ properties, merges: held }) =>
+      held?.length ? [[properties?.sheetId ?? 0, held.map(mergeOf)] as const] : []));
   }
 
   async readRanges(
@@ -456,6 +555,7 @@ export class GoogleSheetsApi {
       throw new Error("Google Sheets did not return the range it was asked for.");
     }
     let formats = baseFormats([found]);
+    let sizes = baseSizes([found]);
     let sheetId = found.properties.sheetId ?? 0;
     let grid = found.properties.gridProperties;
     let clipped = {
@@ -463,11 +563,16 @@ export class GoogleSheetsApi {
       endRow: Math.min(rect.endRow, grid?.rowCount ?? rect.endRow),
       endColumn: Math.min(rect.endColumn, grid?.columnCount ?? rect.endColumn),
     };
+    // Google lists merges in no order a replay can follow, so reads list them by position.
+    let merges = (found.merges ?? []).map(mergeOf).filter(merge => intersection(merge, clipped))
+      .toSorted(byPosition);
     return {
       range: a1Of(found.properties.title, clipped),
       formats: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
         Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
           formats(sheetId, rect.startRow + r, rect.startColumn + c))),
+      ...(merges.length > 0 ? { merges: merges.map(rectName) } : {}),
+      ...lineSizes(rect, clipped, (axis, index) => sizes(sheetId, axis, index)),
     };
   }
 
@@ -475,12 +580,15 @@ export class GoogleSheetsApi {
    * The formatting of the cells of `areas`, each of which must lie within its sheet's grid. They
    * are read by grid range with `spreadsheets:getByDataFilter`, which needs a grant that may edit
    * the spreadsheet. Only the response size bounds the read, so callers bound how many cells they
-   * ask for.
+   * ask for. With `linesOnly` only the areas' line sizes are read, and no cell's format; a grant
+   * that may only read gets none of them, and no error.
    */
-  async readFormatAreas(spreadsheetId: string, areas: readonly SheetArea[]): Promise<BaseFormats> {
-    if (areas.length === 0) return () => null;
+  async readFormatAreas(
+    spreadsheetId: string, areas: readonly SheetArea[], { linesOnly = false } = {},
+  ): Promise<{ formats: BaseFormats; sizes: BaseSizes }> {
+    if (areas.length === 0) return { formats: () => null, sizes: () => null };
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
-    url.searchParams.set("fields", FORMAT_READ_FIELDS);
+    url.searchParams.set("fields", linesOnly ? FORMAT_LINES_READ_FIELDS : FORMAT_AREAS_READ_FIELDS);
     // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
     url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
@@ -504,9 +612,19 @@ export class GoogleSheetsApi {
       // A read, however it is sent.
       this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
-    let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
-      provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
-    });
+    let result: { sheets?: RestFormatSheet[] };
+    try {
+      result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
+        provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
+      });
+    } catch (error) {
+      // Line sizes alone are read beside cells that are all a queued change's: where the grant
+      // may only read, they are left unknown, and the cells show as pending, as with no read.
+      if (linesOnly && error instanceof GoogleApiError && error.httpStatus === 403) {
+        return { formats: () => null, sizes: () => null };
+      }
+      throw error;
+    }
     let sheets = result.sheets ?? [];
     // Each range's cells are placed by the position Google gives them, whichever order they come
     // in, so a range is answered when its sheet holds data starting where it does.
@@ -514,7 +632,7 @@ export class GoogleSheetsApi {
       (sheet.properties?.sheetId ?? 0) === sheetId && (sheet.data ?? []).some(data =>
         (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
     if (!answered) throw new Error("Google Sheets did not return every range it was asked for.");
-    return baseFormats(sheets);
+    return { formats: baseFormats(sheets), sizes: baseSizes(sheets) };
   }
 
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */
@@ -562,6 +680,21 @@ export class GoogleSheetsApi {
     let refused = response.status >= 400 && response.status < 500;
     throw refused ? new SheetsWriteRefused(response.status) : failure;
   }
+}
+
+/**
+ * The size of each row and column of `rect`, padded to its size, from `size`; null past `clipped`,
+ * the cells of `rect` the sheet has.
+ */
+export function lineSizes(
+  rect: Rect, clipped: Rect, size: (axis: "rows" | "columns", index: number) => number | null,
+): { rowHeights: (number | null)[]; columnWidths: (number | null)[] } {
+  return {
+    rowHeights: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
+      rect.startRow + r < clipped.endRow ? size("rows", rect.startRow + r) : null),
+    columnWidths: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
+      rect.startColumn + c < clipped.endColumn ? size("columns", rect.startColumn + c) : null),
+  };
 }
 
 /** The reads a spreadsheet session makes with no change queued. */
@@ -616,6 +749,7 @@ export class BlankSpreadsheet implements SpreadsheetReader {
       range: a1Of(title, rect),
       formats: Array.from({ length: rect.endRow - rect.startRow }, () =>
         Array.from({ length: rect.endColumn - rect.startColumn }, () => null)),
+      ...lineSizes(rect, rect, axis => axis === "rows" ? DEFAULT_ROW_HEIGHT : DEFAULT_COLUMN_WIDTH),
     };
   }
 }

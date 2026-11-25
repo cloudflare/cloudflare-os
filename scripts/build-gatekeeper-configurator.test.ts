@@ -344,9 +344,13 @@ describe("configurator task wiring", () => {
     );
 
     const config = await readFile("packages/gatekeeper-google/vite.config.ts", "utf8");
+    // The `test` task spreads the shared vitest task, held in a constant since the task also
+    // adds to its `cache.env`, and depends on `build:configurator`: only line comments and a
+    // `cache` of one level may stand between the two.
+    assert.match(config, /const tests = vitestTask\(\[[\s\S]*?\]\);/);
     assert.match(
       config,
-      /test:\s*\{\s*\.\.\.vitestTask\(\[[\s\S]*?\]\),\s*dependsOn:\s*\["build:configurator"\],?\s*\}/,
+      /test:\s*\{\s*\.\.\.tests,(?:\s*\/\/[^\n]*|\s*cache:\s*\{[^{}]*\},)*\s*dependsOn:\s*\["build:configurator"\],?\s*\}/,
     );
   });
 

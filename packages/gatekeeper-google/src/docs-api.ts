@@ -4,7 +4,11 @@
 // It follows the same pattern as google-api.ts (which wraps the Gmail API).
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { DOC_TAB_FIELDS } from "./docs-replica";
 import { GoogleApiError, readGoogleJson } from "./google-response";
+import { obsContext } from "./observability";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.docs", vendorId: "google" });
 
 // ---------------------------------------------------------------------------
 // Types modeling the Google Docs API response.
@@ -43,7 +47,17 @@ export type GoogleDocsTab = {
   lists: Record<string, DocList>;
   /** Named ranges anchored in this tab. */
   namedRanges: NamedRanges;
+  /**
+   * The tab's named styles, which say what text in a paragraph of each style is unless its own
+   * style says otherwise. Absent only where a test builds a tab without them.
+   */
+  namedStyles?: NamedStyles;
 }
+
+/** A tab's named styles, as `documents.get` returns them. */
+export type NamedStyles = {
+  styles?: { namedStyleType?: string; textStyle?: Pick<TextStyle, "bold" | "italic" | "strikethrough"> }[];
+};
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
 export type NamedRanges = Record<string, {
@@ -80,27 +94,115 @@ export type StructuralElement = {
 // The collections in the table types below are optional: the API omits an empty one from its
 // JSON rather than sending `[]`.
 
-/** A table embedded in a document body or table cell. */
+/**
+ * A table embedded in a document body or table cell.
+ *
+ * A table sits between two paragraphs of its container: it is never the container's first or
+ * last element, and never directly beside another table. Its position is the `startIndex` of
+ * the structural element that holds it, which is the exact value a `TableCellLocation` must
+ * name. A table takes one index for its start, before its first row, and one for its end, after
+ * its last row.
+ */
 export type Table = {
   tableRows?: TableRow[];
+  /**
+   * The width of each column: `FIXED_WIDTH` with its `width`, or `EVENLY_DISTRIBUTED`, sharing
+   * what the fixed columns leave of the page's width.
+   */
+  tableStyle?: { tableColumnProperties?: { widthType?: string; width?: Dimension }[] };
+  /** IDs of the suggestions that would insert this table; empty or absent for a table that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this table. */
+  suggestedDeletionIds?: string[];
 }
 
-/** One row in a Google Docs table. */
+/**
+ * One row in a Google Docs table.
+ *
+ * A row takes one index for its start, before its first cell, and `endIndex` is the end of its
+ * last cell. A row that is only suggested, or suggested for deletion, is listed and indexed like
+ * any other, marked by its suggestion IDs.
+ */
 export type TableRow = {
   startIndex: number;
   endIndex: number;
   tableCells?: TableCell[];
+  /**
+   * The row's style: `tableHeader` is true on a row pinned as a header row that repeats on
+   * every page, and `minRowHeight` is the least height the row takes, 0 left out.
+   */
+  tableRowStyle?: { tableHeader?: boolean; minRowHeight?: Dimension };
+  /** IDs of the suggestions that would insert this row; empty or absent for a row that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this row. */
+  suggestedDeletionIds?: string[];
+  /** The suggested changes to the row's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTableRowStyleChanges?: Record<string, object>;
 }
 
-/** One table cell, whose contents use the same recursive structure as the document body. */
+/** A length; Google leaves out a magnitude of 0. Table lengths are in points (`PT`). */
+export type Dimension = { magnitude?: number; unit?: string };
+
+/** A colour that may be none: `color` left out, or with no `rgbColor`, is none. */
+export type OptionalColor = { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
+
+/**
+ * One edge of a table cell. Google refuses an edge without a colour or a `dashStyle` (`SOLID`,
+ * `DOT` or `DASH`), and draws none for one 0 wide.
+ */
+export type TableCellBorder = { color?: OptionalColor; width?: Dimension; dashStyle?: string };
+
+/**
+ * A table cell's style. A field Google leaves out is the default an inserted table has:
+ * no shading, top alignment, 5pt of padding on each side, and a 1pt solid black border.
+ */
+export type TableCellStyle = {
+  rowSpan?: number;
+  columnSpan?: number;
+  backgroundColor?: OptionalColor;
+  /** `TOP`, `MIDDLE` or `BOTTOM`. */
+  contentAlignment?: string;
+  paddingTop?: Dimension;
+  paddingRight?: Dimension;
+  paddingBottom?: Dimension;
+  paddingLeft?: Dimension;
+  borderTop?: TableCellBorder;
+  borderRight?: TableCellBorder;
+  borderBottom?: TableCellBorder;
+  borderLeft?: TableCellBorder;
+};
+
+/**
+ * One table cell, whose contents use the same recursive structure as the document body.
+ *
+ * A cell takes one index for its start and then holds its content, which is never empty: a cell
+ * holds at least one paragraph, so an empty cell spans two indexes. Text goes into a paragraph
+ * of the cell, never at the cell's own index. A cell that is only suggested, or suggested for
+ * deletion, is listed and indexed like any other, marked by its suggestion IDs.
+ */
 export type TableCell = {
   startIndex: number;
   endIndex: number;
   content?: StructuralElement[];
-  tableCellStyle?: {
-    rowSpan?: number;
-    columnSpan?: number;
-  };
+  /**
+   * The cell's row and column spans. A merged cell is the top-left of the cells it merges: it
+   * carries a `rowSpan` or `columnSpan` above 1 and the content of every cell it covers. The
+   * covered cells stay in their rows' `tableCells`, empty and with spans of 1 like a cell that is
+   * not merged, so every row lists as many cells as the table has columns.
+   */
+  tableCellStyle?: TableCellStyle;
+  /**
+   * IDs of the suggestions that would insert this cell; empty or absent for a cell that exists.
+   * A suggested column marks its cells, not the rows that hold them.
+   */
+  suggestedInsertionIds?: string[];
+  /**
+   * IDs of the suggestions that would delete this cell. A row suggested for deletion marks its
+   * cells as well as the row.
+   */
+  suggestedDeletionIds?: string[];
+  /** The suggested changes to the cell's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTableCellStyleChanges?: Record<string, object>;
 }
 
 /** A paragraph (including headings, list items, etc.). */
@@ -110,6 +212,10 @@ export type Paragraph = {
   bullet?: Bullet;
   /** Positioned objects tethered to this paragraph. */
   positionedObjectIds?: string[];
+  /** The suggested changes to the paragraph's style, by suggestion ID: the copy keeps the IDs. */
+  suggestedParagraphStyleChanges?: Record<string, object>;
+  /** The suggested changes to the paragraph's bullet, by suggestion ID: the copy keeps the IDs. */
+  suggestedBulletChanges?: Record<string, object>;
 }
 
 export type ParagraphStyle = {
@@ -132,30 +238,59 @@ export type ParagraphElement = {
   autoText?: {
     type?: string;
     textStyle?: TextStyle;
-  };
-  horizontalRule?: {};
-  pageBreak?: { textStyle?: TextStyle };
-  columnBreak?: { textStyle?: TextStyle };
-  footnoteReference?: { footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle };
-  equation?: {};
-  inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle };
+  } & ElementSuggestions;
+  horizontalRule?: ElementSuggestions;
+  pageBreak?: { textStyle?: TextStyle } & ElementSuggestions;
+  columnBreak?: { textStyle?: TextStyle } & ElementSuggestions;
+  footnoteReference?: {
+    footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle;
+  } & ElementSuggestions;
+  equation?: ElementSuggestions;
+  inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle } & ElementSuggestions;
   person?: {
     textStyle?: TextStyle;
     personProperties?: { name?: string; email?: string };
-  };
+    suggestedPersonPropertiesChanges?: Record<string, object>;
+  } & ElementSuggestions;
   richLink?: {
     textStyle?: TextStyle;
     richLinkProperties?: { title?: string; uri?: string };
-  };
+    suggestedRichLinkPropertiesChanges?: Record<string, object>;
+  } & ElementSuggestions;
   dateElement?: {
     textStyle?: TextStyle;
     dateElementProperties?: { displayText?: string };
-  };
+    suggestedDateElementPropertiesChanges?: Record<string, object>;
+  } & ElementSuggestions;
+  /** A dropdown chip, which takes one index. */
+  dropdown?: {
+    dropdownId?: string;
+    textStyle?: TextStyle;
+    dropdownProperties?: {
+      dropdownDefinitionId?: string;
+      selectedOptionId?: string;
+      displayValue?: string;
+    };
+    suggestedDropdownPropertiesChanges?: Record<string, object>;
+  } & ElementSuggestions;
 }
+
+/** The suggestions an element that is not text is part of, by ID. */
+export type ElementSuggestions = {
+  suggestedInsertionIds?: string[];
+  suggestedDeletionIds?: string[];
+  suggestedTextStyleChanges?: Record<string, object>;
+};
 
 export type TextRun = {
   content: string;
   textStyle: TextStyle;
+  /** IDs of the suggestions that would insert this text; absent for text that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this text. */
+  suggestedDeletionIds?: string[];
+  /** The suggested changes to the text's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTextStyleChanges?: Record<string, object>;
 }
 
 type GoogleDocsLink =
@@ -220,7 +355,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges } = documentTab as Record<string, unknown>;
+      let { body, lists, namedRanges, namedStyles } = documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -239,6 +374,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         body: { content },
         lists: tabCollection<GoogleDocsTab["lists"]>(lists),
         namedRanges: tabCollection<NamedRanges>(namedRanges),
+        ...namedStyles === undefined ? {} : { namedStyles: tabCollection<NamedStyles>(namedStyles) },
       });
 
       if (childTabs === undefined) continue;
@@ -252,13 +388,148 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
 }
 
 // ---------------------------------------------------------------------------
+// Types modeling the `documents.batchUpdate` requests the gatekeeper sends.
+// ---------------------------------------------------------------------------
+
+/** A position in one tab. Every write coordinate names its tab: tab bodies index independently. */
+export type DocsLocation = { index: number; tabId: string };
+
+/** A half-open range in one tab. */
+export type DocsRange = { startIndex: number; endIndex: number; tabId: string };
+
+/** One cell of a table, named by the table's start index and the cell's row and column. */
+export type TableCellLocation = {
+  tableStartLocation: DocsLocation;
+  rowIndex: number;
+  columnIndex: number;
+};
+
+/** The `documents.batchUpdate` requests the Docs gatekeeper sends. */
+export type GoogleDocsRequest =
+  | { insertText: { location: DocsLocation; text: string } }
+  | { deleteContentRange: { range: DocsRange } }
+  | { updateTextStyle: { range: DocsRange; textStyle: TextStyle; fields: string } }
+  | {
+    updateParagraphStyle: {
+      range: DocsRange; paragraphStyle: Record<string, unknown>; fields: string;
+    };
+  }
+  | { createParagraphBullets: { range: DocsRange; bulletPreset: string } }
+  | { deleteParagraphBullets: { range: DocsRange } }
+  | { insertTable: { rows: number; columns: number; location: DocsLocation } }
+  | { insertTableRow: { tableCellLocation: TableCellLocation; insertBelow: boolean } }
+  | { insertTableColumn: { tableCellLocation: TableCellLocation; insertRight: boolean } }
+  | { deleteTableRow: { tableCellLocation: TableCellLocation } }
+  | { deleteTableColumn: { tableCellLocation: TableCellLocation } }
+  | { pinTableHeaderRows: { tableStartLocation: DocsLocation; pinnedHeaderRowsCount: number } }
+  | {
+    updateTableCellStyle: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+      tableCellStyle: TableCellStyle;
+      fields: string;
+    };
+  }
+  | {
+    mergeTableCells: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+    };
+  }
+  | {
+    unmergeTableCells: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+    };
+  }
+  | {
+    updateTableRowStyle: {
+      tableStartLocation: DocsLocation;
+      rowIndices: number[];
+      tableRowStyle: { minRowHeight: { magnitude: number; unit: "PT" } };
+      fields: string;
+    };
+  }
+  | {
+    updateTableColumnProperties: {
+      tableStartLocation: DocsLocation;
+      columnIndices: number[];
+      tableColumnProperties: {
+        widthType: "FIXED_WIDTH" | "EVENLY_DISTRIBUTED"; width?: { magnitude: number; unit: "PT" };
+      };
+      fields: string;
+    };
+  };
+
+/**
+ * The `documents.batchUpdate` request that adds a tab. It changes no tab's content, so it is not
+ * a `GoogleDocsRequest` and the model of a tab's requests is never given one.
+ */
+export type GoogleDocsAddTabRequest = {
+  addDocumentTab: { tabProperties: { title: string; parentTabId?: string; index?: number } };
+};
+
+/** A request `batchUpdate` sends: one that changes a tab's content, or the add of a tab. */
+export type GoogleDocsBatchRequest = GoogleDocsRequest | GoogleDocsAddTabRequest;
+
+// ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
 
 const DOCS_API_BASE = "https://docs.googleapis.com/v1/documents";
-// A native Doc is limited to roughly one million characters; 10 MiB bounds its expanded JSON form.
+// A document is read whole, and its JSON, asked for without indentation, is mostly structure: a
+// paragraph or a table cell takes far more bytes than its text. 10 MiB bounds that answer, which
+// is parsed in memory.
+// TODO: a larger document would need the answer parsed as a stream: a fetch holds its text and
+// its parse tree together when the parse ends, and lets go of the tree only as it is stored.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * How many levels of tabs `documents.get` is asked for field by field: as deep as Google Docs
+ * nests tabs. Below that the child tabs are asked for whole, and never left out, so a tab nested
+ * deeper comes complete.
+ */
+const MASKED_TAB_LEVELS = 3;
+
+/** The fields asked of one tab and of its child tabs, `levels` levels of tabs deep. */
+function tabFields(levels: number): string {
+  return `tabProperties(tabId,title),documentTab(${DOC_TAB_FIELDS}),` +
+    (levels > 1 ? `childTabs(${tabFields(levels - 1)})` : "childTabs");
+}
+
+/**
+ * What `getDocument` asks `documents.get` for, as a field mask: what its callers read of the
+ * document itself, what `normalizeDocumentTabs` reads of each tab, and of a tab's content what
+ * the copy keeps (`DOC_TAB_FIELDS`). Google fails the whole read with a 400 for a name it does
+ * not know and for a selection inside `lists` or `namedRanges`, which are asked for whole.
+ */
+export const DOCUMENT_FIELDS = `documentId,title,revisionId,tabs(${tabFields(MASKED_TAB_LEVELS)})`;
+
+/**
+ * What `getDocumentWithSuggestions` asks for: `DOCUMENT_FIELDS`, so a write is placed on the tabs
+ * as the copy it was queued against holds them, and the suggestion threads, whole. The comment
+ * threads Google would send beside them are left out.
+ */
+const SUGGESTED_DOCUMENT_FIELDS =
+  `documentId,title,revisionId,suggestions,tabs(${tabFields(MASKED_TAB_LEVELS)})`;
+
+/**
+ * The header the field mask of a full read travels in. Google's front end refuses a URL that
+ * carries a mask past some length (21,335 characters were refused and 10,964 taken); the header
+ * has carried 31,706.
+ */
+const FIELD_MASK_HEADER = "X-Goog-FieldMask";
+
+/** What `getTopLevelTabIds` asks for: the document's own id, and each top-level tab's. */
+const TAB_IDS_FIELDS = "documentId,tabs(tabProperties(tabId))";
+
+/**
+ * Whether Google refused a read for the fields it was asked for: any 400 but the one whose status
+ * is `FAILED_PRECONDITION`, which is how it refuses a file that is not a Google Doc whatever is
+ * asked of it.
+ */
+function fieldsRefused(error: unknown): error is GoogleApiError {
+  return error instanceof GoogleApiError && error.httpStatus === 400 &&
+    error.providerStatus !== "FAILED_PRECONDITION";
+}
 
 /**
  * The longest a Docs write's requests can take before it settles or is abandoned: three attempts
@@ -305,13 +576,35 @@ export class GoogleDocsApi {
     return documentId;
   }
 
-  /** Fetch a document and flatten its tab tree. */
+  /**
+   * Fetch a document and flatten its tab tree, asking Google only for `DOCUMENT_FIELDS`.
+   *
+   * The answer is requested as compact JSON. Google indents it otherwise, and since the answer
+   * is mostly structure, the indentation would bring a document with tables to
+   * `MAX_RESPONSE_BYTES` far sooner.
+   *
+   * Google fails the whole read for a field mask it does not take. A read it refuses so is made
+   * once more without the mask and that answer is served, so a field name Google stops knowing
+   * costs each read a second request and fails none.
+   */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
-    let { documentId: id, title, revisionId, tabs } = await this.#request<GoogleDocsResponse>(
-      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true`,
-      {},
-      "get document",
-    );
+    let url =
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&prettyPrint=false`;
+    let answer: GoogleDocsResponse;
+    try {
+      answer = await this.#request<GoogleDocsResponse>(
+        url, { headers: { [FIELD_MASK_HEADER]: DOCUMENT_FIELDS } }, "get document",
+      );
+    } catch (error) {
+      if (!fieldsRefused(error)) throw error;
+      let { providerStatus } = error;
+      logger.error("Google Docs refused the fields asked of a document", {
+        event: "google.doc.read.fields-refused", operation: "get document", fallback: "unmasked",
+        httpStatus: 400, ...providerStatus === undefined ? {} : { providerStatus }, error,
+      });
+      answer = await this.#request<GoogleDocsResponse>(url, {}, "get document");
+    }
+    let { documentId: id, title, revisionId, tabs } = answer;
     if (id !== documentId) {
       throw new Error("Google Docs returned a different document");
     }
@@ -356,12 +649,36 @@ export class GoogleDocsApi {
   }
 
   /**
+   * The IDs of a document's top-level tabs, in the document's order, and nothing else of it:
+   * what binding a document just created reads. Never empty.
+   */
+  async getTopLevelTabIds(documentId: string): Promise<string[]> {
+    let { documentId: id, tabs } = await this.#request<{ documentId?: unknown; tabs?: unknown }>(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true` +
+        `&prettyPrint=false&fields=${encodeURIComponent(TAB_IDS_FIELDS)}`,
+      {},
+      "get tab IDs",
+    );
+    if (id !== documentId) {
+      throw new Error("Google Docs returned a different document");
+    }
+    if (!Array.isArray(tabs) || tabs.length === 0) {
+      throw new Error("Google Docs returned no document tab");
+    }
+    return tabs.map((tab: { tabProperties?: { tabId?: unknown } } | null) => {
+      let tabId = tab?.tabProperties?.tabId;
+      if (typeof tabId !== "string" || tabId.length === 0) throw new Error(INVALID_TAB);
+      return tabId;
+    });
+  }
+
+  /**
    * Send document updates, revision-locking marked writes. Returns the replies to `requests`, in
    * their order, without the marker's.
    */
   async batchUpdate(
     documentId: string,
-    requests: unknown[],
+    requests: readonly GoogleDocsBatchRequest[],
     revisionId?: string,
     writeMarker?: GoogleDocsWriteMarker,
   ): Promise<{ revisionId: string; writeMarkerId?: string; replies: DocsBatchReply[] }> {
@@ -378,7 +695,7 @@ export class GoogleDocsApi {
         }, ...requests]
       : requests;
     let body: {
-      requests: unknown[];
+      requests: readonly unknown[];
       writeControl?: { requiredRevisionId: string } | { targetRevisionId: string };
     } = { requests: markedRequests };
     if (revisionId) {
@@ -431,18 +748,29 @@ export class GoogleDocsApi {
 
   /**
    * Fetch a document as a write must be based on it, suggestions inline, with the suggestion
-   * threads the caller can see. Comment threads come along too but are not kept: Drive lists the
-   * same comments under the same IDs.
+   * threads the caller can see, asking only for `SUGGESTED_DOCUMENT_FIELDS`. Comment threads are
+   * left out: Drive lists the same comments under the same IDs.
    */
   async getDocumentWithSuggestions(
     documentId: string,
   ): Promise<{ document: GoogleDocsDocument; suggestions: DocsSuggestionRecord[] }> {
-    let raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
-      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
-        "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED",
-      {},
-      "get document with suggestions",
-    );
+    let url = `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
+      "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED&prettyPrint=false";
+    let operation = "get document with suggestions";
+    let raw: GoogleDocsResponse & { suggestions?: unknown };
+    try {
+      raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
+        url, { headers: { [FIELD_MASK_HEADER]: SUGGESTED_DOCUMENT_FIELDS } }, operation);
+    } catch (error) {
+      // As `getDocument` reads: a mask Google refuses is not the document's fault.
+      if (!fieldsRefused(error)) throw error;
+      let { providerStatus } = error;
+      logger.error("Google Docs refused the fields asked of a document", {
+        event: "google.doc.read.fields-refused", operation, fallback: "unmasked",
+        httpStatus: 400, ...providerStatus === undefined ? {} : { providerStatus }, error,
+      });
+      raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(url, {}, operation);
+    }
     if (raw.documentId !== documentId) throw new Error("Google Docs returned a different document");
     let { title, revisionId, tabs, suggestions } = raw;
     if (suggestions !== undefined && !Array.isArray(suggestions)) throw new Error(INVALID_THREADS);
@@ -606,9 +934,6 @@ export function docsWriteInvalid(error: unknown): boolean {
   return error instanceof GoogleApiError && error.providerStatus === "INVALID_ARGUMENT";
 }
 
-/** A range of one tab's body, in UTF-16 code units. */
-export type DocsRange = { startIndex: number; endIndex: number; tabId: string };
-
 /** One post of a suggestion thread, as `documents.get` shows it to the caller. */
 export type DocsPostRecord = {
   content: string;
@@ -739,8 +1064,26 @@ export const BLANK_DOC_TAB_ID = "t.0";
 const BLANK_DOC_REVISION = "blank";
 
 /**
+ * The named styles of a new Google Doc, as `documents.get` returns them for one (the fields the
+ * rendering reads): what the text of each paragraph style is unless it says otherwise.
+ */
+export const NEW_DOCUMENT_NAMED_STYLES: NamedStyles = {
+  styles: [
+    { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false, italic: false, strikethrough: false } },
+    { namedStyleType: "HEADING_1", textStyle: {} },
+    { namedStyleType: "HEADING_2", textStyle: { bold: false } },
+    { namedStyleType: "HEADING_3", textStyle: { bold: false } },
+    { namedStyleType: "HEADING_4", textStyle: {} },
+    { namedStyleType: "HEADING_5", textStyle: {} },
+    { namedStyleType: "HEADING_6", textStyle: { italic: true } },
+    { namedStyleType: "TITLE", textStyle: {} },
+    { namedStyleType: "SUBTITLE", textStyle: { italic: false } },
+  ],
+};
+
+/**
  * A top-level tab as Google adds it to a new document or with `addDocumentTab`: one empty
- * paragraph after the section break.
+ * paragraph after the section break, with the named styles of a new document.
  */
 export function blankDocsTab(tabId: string, title: string): GoogleDocsTab {
   return {
@@ -750,6 +1093,7 @@ export function blankDocsTab(tabId: string, title: string): GoogleDocsTab {
     nestingLevel: 0,
     lists: {},
     namedRanges: {},
+    namedStyles: structuredClone(NEW_DOCUMENT_NAMED_STYLES),
     body: {
       content: [
         { startIndex: 0, endIndex: 1, sectionBreak: {} },

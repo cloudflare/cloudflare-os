@@ -29,6 +29,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
+import { docsGetResponse } from "../docs-fields";
 import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 import { faxMarks, imagePdf } from "../pdf-fixture";
 import { formatSheet } from "../sheets-fixture";
@@ -349,7 +350,7 @@ function installProvider(tabs: unknown[] = [docTab("solo", "Solo", "")]) {
       return Response.json(providerFile(id, mimeType));
     }
     if (url.hostname === "docs.googleapis.com") {
-      return Response.json({
+      return docsGetResponse(url, new Headers(init?.headers), {
         documentId: "doc-1",
         title: "Quarterly plan",
         ...providerRevision === undefined ? {} : { revisionId: providerRevision },
@@ -1878,7 +1879,7 @@ describe("folder-scoped native sessions", () => {
       nativeCalls.push(url.hostname);
       onNativeRead?.();
       if (url.hostname === "docs.googleapis.com") {
-        return Response.json({
+        return docsGetResponse(url, new Headers(init?.headers), {
           documentId: decodeURIComponent(url.pathname.split("/").at(-1)!),
           title: "Quarterly plan",
           revisionId: "revision-1",
@@ -1894,7 +1895,7 @@ describe("folder-scoped native sessions", () => {
       if (url.hostname === "sheets.googleapis.com" && url.searchParams.has("ranges")) {
         return Response.json({
           sheets: [formatSheet({ sheetId: 0, title: "Sheet1" }, [
-            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }]] },
+            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }, undefined]] },
           ])],
         });
       }
@@ -1953,7 +1954,7 @@ describe("folder-scoped native sessions", () => {
     const fetched = vi.mocked(fetch);
     const before = fetched.mock.calls.length;
     expect(await sheet.readFormats("A1:B1"))
-      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]] });
+      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]], rowHeights: [21], columnWidths: [100, 100] });
     const formatUrls = fetched.mock.calls.slice(before)
       .map(([input]) => new URL(input instanceof Request ? input.url : input.toString()))
       .filter(url => url.hostname === "sheets.googleapis.com");
@@ -2639,7 +2640,7 @@ describe("Drive comment actions", () => {
       let doc = { ...headedDoc(), revisionId: `revision-${this.revision}` };
       if (request.method === "GET") {
         if (url.searchParams.get("commentsViewMode") !== "COMMENTS_VIEW_MODE_INCLUDED") {
-          return Response.json(doc);
+          return docsGetResponse(url, request.headers, doc);
         }
         return Response.json({ ...doc, suggestions: this.suggestions.map(suggestion => ({
           suggestionId: suggestion.suggestionId, summaryText: suggestion.summaryText,
@@ -3257,7 +3258,7 @@ describe("Drive comment actions", () => {
           let doc = headedDoc();
           let run = doc.tabs[0].documentTab.body.content[4].paragraph!.elements[0];
           run.textRun!.content = "We ship: launch is in May.\n";
-          return Response.json(doc);
+          return docsGetResponse(new URL(request.url), request.headers, doc);
         }
         return fetch(request);
       });

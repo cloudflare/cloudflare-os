@@ -9,6 +9,7 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
 export const DOC_MIME = "application/vnd.google-apps.document";
 export const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 export const SLIDES_MIME = "application/vnd.google-apps.presentation";
+export const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 /** One file or folder. A capability that is a function is read when Drive is asked. */
 export type FakeDriveFile = {
@@ -25,7 +26,7 @@ export type Hold = { reached: Promise<void>; release(): void };
 
 export class DriveFiles implements ProviderFake {
   readonly files: Map<string, FakeDriveFile>;
-  /** Every request, as `GET <path>` or `BATCH <ids>`. */
+  /** Every request, as `GET <path>`, `BATCH <ids>` or `SHORTCUTS <folder id>`. */
   readonly requests: string[] = [];
   #held?: { reach(): void; released: Promise<void> };
 
@@ -62,6 +63,16 @@ export class DriveFiles implements ProviderFake {
         await held.released;
       }
       return this.#batch(ids);
+    }
+    // A folder binding's lookup of a shortcut to a file that is not its child: the folder's
+    // untrashed shortcuts.
+    let query = url.searchParams.get("q") ?? "";
+    if (url.pathname === "/drive/v3/files" && query.includes(SHORTCUT_MIME)) {
+      let parent = /'([^']+)' in parents/.exec(query)?.[1] ?? "";
+      this.requests.push(`SHORTCUTS ${parent}`);
+      let files = [...this.files].filter(([, file]) => file.mimeType === SHORTCUT_MIME &&
+        !file.trashed && file.parents.includes(parent));
+      return Response.json({ files: files.map(([id, file]) => this.#json(id, file)) });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)$/.exec(url.pathname);
     if (!match) return undefined;

@@ -67,7 +67,7 @@ jobs:
       - name: Build release
         run: node scripts/release/build-release.ts --out "$RUNNER_TEMP/release"
 
-  # The three slowest test tasks each get a runner, and every other package shares one. Each leg runs
+  # The four slowest test tasks each get a runner, and every other package shares one. Each leg runs
   # the root `test` script's command (package.json) with its own filters; keep the two in step.
   test:
     name: Test (${{ matrix.name }})
@@ -95,6 +95,9 @@ jobs:
           - name: integration-tests
             filters: --filter=@gadgets/integration-tests
             vitest-workers: 3
+          - name: google-gatekeeper
+            filters: --filter=@gadgets/google-gatekeeper
+            vitest-workers: 3
           # Must exclude every package named above, or its tests run twice.
           - name: other packages
             filters: >-
@@ -102,6 +105,7 @@ jobs:
               --filter=!@gadgets/workshop-backend
               --filter=!@gadgets/workshop-frontend
               --filter=!@gadgets/integration-tests
+              --filter=!@gadgets/google-gatekeeper
             # configurator-ui's browser suite and generated-frame test, and gatekeeper-kit's
             # connect-form test.
             chromium: true
