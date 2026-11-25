@@ -12282,7 +12282,9 @@ class OverseerImpl implements AgentHooks {
         //    recorded requirements the grant reaches, ask it to check those with the same verifier.
         //    It is asked only about requirements no earlier pass checked (see `checked`). Collect
         //    *every* failure rather than just the first, so a re-prompt can present them all at
-        //    once. `denials` holds the definitive ones: the account gone, or refused access.
+        //    once. `denials` holds the definitive ones: the account gone, or refused access by
+        //    addObserver() or verifyObserverAccess(). An addObserver() throw is taken as a refusal,
+        //    since gatekeepers don't tell one from an outage; the next admission clears the mark.
         let failures = new Map<number, ObserverBindingFailure>();
         let denials = new Set<number>();
 
@@ -12304,8 +12306,14 @@ class OverseerImpl implements AgentHooks {
             // Serialized per (observer, gatekeeper) so this registration can't land while an
             // exclusion teardown's removeObserver for the same pair is still in flight (which
             // would delete it moments later); see #withObserverGatekeeperLock.
-            await this.#withObserverGatekeeperLock(observerId, gk.id,
-                async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
+            await this.#withObserverGatekeeperLock(observerId, gk.id, async () => {
+              try {
+                await (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier);
+              } catch (err) {
+                denials.add(gk.id);
+                throw err;
+              }
+            });
             let done = checked.get(gk.id) ?? new Set<string>();
             let unchecked = (scope.requirements.get(gk.id) ?? []).filter(id => !done.has(id));
             if (unchecked.length > 0) {

@@ -990,6 +990,23 @@ describe("background reads", () => {
     expect(await background(world)).toBe(false);
   }));
 
+  // A gatekeeper tracking history itself refuses in addObserver(), before any
+  // verifyObserverAccess(): x is recorded already, so only that refusal can end background reads.
+  it("withholds once a reopen's addObserver() refuses", () => withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(true);
+
+    fakeFacets(impl, { addObserver: () => { throw new Error("can't read the repository"); } });
+    await expect(impl.ensureObserver("carol", world.clientUser("carol"), "workspace"))
+        .rejects.toThrow(/could not confirm/);
+    expect(denied(world)).toBe(true);
+    fakeFacets(impl);
+    await read(world, ["x"]);
+    expect(await background(world)).toBe(false);
+  }));
+
   // The reopen is refused x, checked before the watermark; the background check verifies only y,
   // recorded since, and allows it. Whichever completes first, the refusal ends background reads.
   it.each(["background progress", "refusal"])(

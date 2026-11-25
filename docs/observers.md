@@ -1135,10 +1135,12 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   choice `denied` in the same write that queues their summary again: every handoff withholds, the
   summary they hold is cleared, and later handoffs call nothing until a workspace admission
   re-verifies the choice and clears the mark, or an admission replaces the account. An admission
-  refused by a definitive denial (the account gone, or `verifyObserverAccess()` refusing it) marks
-  a choice with a watermark `denied` the same way, unless another admission published the choice
-  meanwhile (`admissionId`); a background check's progress does not stop it, since it verified
-  only what was recorded since, not what the admission was refused. An operational failure marks
+  refused by a definitive denial (the account gone, or `addObserver()` or `verifyObserverAccess()`
+  refusing it; any `addObserver()` throw counts, since gatekeepers don't tell a refusal from an
+  outage) marks a choice with a watermark `denied` the same way, unless another admission
+  published the choice meanwhile (`admissionId`); a background check's progress does not stop it,
+  since it verified only what was recorded since, not what the admission was refused. Any other
+  operational failure marks
   nothing. A failure or timeout of a background check records nothing and throws: the listing pass
   sends the rest of the listing and retries the summary alone, and fanout keeps them as a failed
   recipient. The rest of a collaborator's listing is re-scoped to their access as it stands once
