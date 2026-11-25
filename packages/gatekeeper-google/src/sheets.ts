@@ -603,10 +603,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     }
     let { grid, conflict } = replayed(gridOf(metadata), pending);
     let area: SimulatedArea;
-    let pieces: SheetArea[];
+    let fetched: { pieces: SheetArea[]; linesOnly: boolean };
     try {
       area = resolveArea(grid, parsed);
-      pieces = grid.log.length > 0 ? formatPiecesToFetch(grid, area) : [];
+      fetched = grid.log.length > 0 ? formatPiecesToFetch(grid, area) : { pieces: [], linesOnly: false };
     } catch (error) {
       // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
       throw new RefusedRead(error as Error);
@@ -615,7 +615,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     // read as named. Otherwise the cells it shows are read by grid range, since its title or
     // bounds may name nothing Google holds.
     let base = grid.log.length > 0
-      ? await this.#api.readFormatAreas(this.#spreadsheetId, pieces)
+      ? await this.#api.readFormatAreas(this.#spreadsheetId, fetched.pieces, { linesOnly: fetched.linesOnly })
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
     let shown = simulatedFormats(grid, area, base.formats, base.sizes);
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;

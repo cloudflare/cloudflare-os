@@ -383,11 +383,14 @@ describe("simulated format reads", () => {
       { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },
       { op: "insertColumns", sheetId: 0, start: 1, count: 1 },
     ]);
-    let pieces = formatPiecesToFetch(queued, resolveArea(queued, { sheet: "Sales", rect: rect(0, 1, 4, 1) }));
-    expect(pieces).toEqual([
-      { sheetId: 0, rect: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
-      { sheetId: 0, rect: { startRow: 100_002, endRow: 100_004, startColumn: 0, endColumn: 1 } },
-    ]);
+    // Their sizes alone: every cell of the inserted column is the change's, none Google's.
+    expect(formatPiecesToFetch(queued, resolveArea(queued, { sheet: "Sales", rect: rect(0, 1, 4, 1) }))).toEqual({
+      pieces: [
+        { sheetId: 0, rect: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+        { sheetId: 0, rect: { startRow: 100_002, endRow: 100_004, startColumn: 0, endColumn: 1 } },
+      ],
+      linesOnly: true,
+    });
   });
 
   it("lists merges in reading order, whatever order Google keeps them in", () => {

@@ -672,13 +672,15 @@ function checkReadSize(pieces: readonly SheetArea[]): void {
 /**
  * The pieces a format read of `area` fetches: those `rangesToFetch` gives, and, where every column
  * of the area or every row is one a queued change inserts, so that none of them holds a cell Google
- * has, one line of the other kind beside its lines, whose sizes are read with it.
+ * has, one line of the other kind beside its lines, whose sizes alone are read (`linesOnly`).
  */
-export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[] {
+export function formatPiecesToFetch(
+  grid: Grid, area: SimulatedArea,
+): { pieces: SheetArea[]; linesOnly: boolean } {
   let pieces = rangesToFetch(grid, [area]);
   let sheet = sheetOf(grid, area.sheetId);
   let source = sheet.source;
-  if (pieces.length > 0 || source === undefined) return pieces;
+  if (pieces.length > 0 || source === undefined) return { pieces, linesOnly: false };
   let { rect } = area;
   // The runs of lines Google holds among the area's, each read beside the sheet's first line of
   // the other kind: the lines between them that queued changes delete are not read.
@@ -693,7 +695,7 @@ export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[
   let lines = rows.length > 0 && columns.length === 0 ? rows.map(rowRuns)
     : columns.length > 0 && rows.length === 0 ? columns.map(columnRuns) : [];
   checkReadSize(lines);
-  return lines;
+  return { pieces: lines, linesOnly: true };
 }
 
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */

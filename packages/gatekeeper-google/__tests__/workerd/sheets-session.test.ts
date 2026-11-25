@@ -11,7 +11,7 @@ import {
   GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl, NO_CHANGES,
 } from "../../src/sheets";
 import { officeFileError } from "../../src/office-conversion";
-import { FORMAT_AREAS_READ_FIELDS, FORMAT_READ_FIELDS } from "../../src/sheets-format";
+import { FORMAT_AREAS_READ_FIELDS, FORMAT_LINES_READ_FIELDS, FORMAT_READ_FIELDS } from "../../src/sheets-format";
 import { parseRange } from "../../src/sheets-model";
 import type { PlannedChange, QueuedChange } from "../../src/sheets-simulation";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
@@ -82,6 +82,8 @@ function named({ sheetId, startRowIndex, endRowIndex, startColumnIndex, endColum
 
 /** The grid ranges of each `spreadsheets:getByDataFilter` format read, in order. */
 let formatFilterReads: Required<FixtureGridRange>[][];
+/** The field mask of each of those reads, in order. */
+let formatFilterMasks: string[];
 /** The sheet IDs each read of merges named, in order. */
 let mergeReads: number[][];
 
@@ -100,6 +102,7 @@ beforeEach(() => {
   dataFilterReads = [];
   enteredReads = [];
   formatFilterReads = [];
+  formatFilterMasks = [];
   mergeReads = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
@@ -146,8 +149,11 @@ beforeEach(() => {
         });
       }
       formatFilterReads.push(body.dataFilters.map(({ gridRange }) => gridRange));
-      // The replay read the merges already: a format read by grid range asks for none.
-      if (url.searchParams.get("fields") !== FORMAT_AREAS_READ_FIELDS) {
+      // The replay read the merges already: a format read by grid range asks for none, and for
+      // no cell's format where it reads line sizes alone.
+      let fields = url.searchParams.get("fields");
+      formatFilterMasks.push(fields ?? "");
+      if (fields !== FORMAT_AREAS_READ_FIELDS && fields !== FORMAT_LINES_READ_FIELDS) {
         throw new Error(`a format read by grid range asks for ${url.searchParams.get("fields")}`);
       }
       // One sheet per range, in an order of Google's own.
@@ -576,6 +582,16 @@ describe("Google Sheets format reads", () => {
     expect(await session.readRange("Sales!A1:B1", { valueMode: "raw" })).toEqual({
       range: "Sales!A1:B1", values: [["saved", 1]],
     });
+  });
+
+  it("reads line sizes alone for a range every cell of which a queued change inserts", async () => {
+    let { session } = newSession([queuedBatch(1, [{ op: "insertColumns", sheetId: 7, start: 1, count: 1 }])]);
+    using _session = session;
+
+    let read = await session.readFormats("'Q3 Plan'!B1:B3");
+    expect(read.pendingCells).toEqual(["B1", "B2", "B3"]);
+    expect(read.rowHeights).toEqual([21, 21, 21]);
+    expect(formatFilterMasks).toEqual([FORMAT_LINES_READ_FIELDS]);
   });
 
   it("reads formats by grid range with rows and sheets queued, leaving inserted rows pending", async () => {
