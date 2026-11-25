@@ -637,9 +637,12 @@ describe("pinned header rows", () => {
       expect(thrownMessage(() => tableChangeRequests(docTabToMarkdown(header(applied)), change))).toBe(refused);
       expect(() => tableChangeRequests(docTabToMarkdown(header(queued)), change)).not.toThrow();
     }
-    // Below the header, a header of another size changes nothing of the new rows.
+    // Below the header, a header of another size changes nothing of the new rows; nor, after a
+    // table whose every row is pinned, does a pin taken off its last row.
     let below = { ...addRows(docTabToMarkdown(header(1)), 0, 2, [["x", "y"]]), pinned: 0 };
     expect(() => tableChangeRequests(docTabToMarkdown(header(2)), below)).not.toThrow();
+    let appended = { ...addRows(docTabToMarkdown(header(3)), 0, 3, [["x", "y"]]), pinned: 0 };
+    expect(() => tableChangeRequests(docTabToMarkdown(header(2)), appended)).not.toThrow();
   });
 
   it("refuses to build a merge of a header row with a row below the header", () => {

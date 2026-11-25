@@ -162,14 +162,15 @@ export function chipCopies(target: TableMapping, reference: number): string {
 }
 
 /**
- * How many rows the table `target` pins as its header, where rows added beside its row
- * `reference` go among them, or 0: the batch then pins that count again, so the first rows of the
- * table, new ones included, are the header. The approval card says which rows that pins and
- * unpins, and the queued change records it, as for `chipCopies`: the table's HTML does not show a
- * pin.
+ * How many rows the table `target` pins as its header, where rows added at its row `at` go among
+ * them, or 0: the batch then pins that count again, so the first rows of the table, new ones
+ * included, are the header. The approval card says which rows that pins and unpins, and the
+ * queued change records it, as for `chipCopies`: the table's HTML does not show a pin. Rows added
+ * after the header, the last pinned row's own pin included, change nothing of it (the batch pins
+ * the count again where Google gives them the row's pin).
  */
-export function pinnedAround(target: TableMapping, reference: number): number {
-  return target.pinnedRows !== undefined && reference < target.pinnedRows ? target.pinnedRows : 0;
+export function pinnedAround(target: TableMapping, at: number): number {
+  return target.pinnedRows !== undefined && at < target.pinnedRows ? target.pinnedRows : 0;
 }
 
 /**
@@ -415,9 +416,7 @@ function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: n
     }
   }
   if (change.type === "insertTableRows" && change.pinned !== undefined) {
-    let rows = render.sourceMap.tables[table].rows.length;
-    let reference = change.at < rows ? change.at : rows - 1;
-    if (pinnedAround(render.sourceMap.tables[table], reference) !== change.pinned) {
+    if (pinnedAround(render.sourceMap.tables[table], change.at) !== change.pinned) {
       throw new Error(
         `${op}: the table's pinned header rows around the new rows have changed since this ` +
         "change was queued, which getContent() does not show.");

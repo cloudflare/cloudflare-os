@@ -481,7 +481,7 @@ function insertionChange(tab: TabReading, call: InsertionCall): ExistingTableCha
     ? {
       type: "insertTableRows", at, cells: storedCells(given, count, columns), expected,
       copies: chipCopies(target, at < rows ? at : rows - 1),
-      pinned: pinnedAround(target, at < rows ? at : rows - 1),
+      pinned: pinnedAround(target, at),
     }
     : { type: "insertTableColumns", at, cells: storedCells(given, rows, count), expected };
 }
@@ -791,7 +791,7 @@ function existingTableCard(
             `${copies.length === 1 ? "column" : "columns"} ${copies.join(", ")} of the row ` +
             `beside ${them}: a dropdown with its first choice, and an empty placeholder for ` +
             "any other chip.") +
-        headerNote(pinnedAround(target, reference), at, cells.length));
+        headerNote(pinnedAround(target, at), at, cells.length));
       if (!empty) description.json("New rows", cells);
       // Below the first row, the first row's field already shows the row above.
       let rowAbove = at >= 2 ? rowsHtml(at - 1, at - 1) : undefined;

@@ -565,7 +565,7 @@ function heldRecording(
     if (made.type === "insertTableRows" && (made.copies === undefined || made.pinned === undefined)) {
       let target = whole.sourceMap.tables[resolveTable(whole, made, made.type)];
       let reference = Math.min(made.at, target.rows.length - 1);
-      made = { ...made, copies: chipCopies(target, reference), pinned: pinnedAround(target, reference) };
+      made = { ...made, copies: chipCopies(target, reference), pinned: pinnedAround(target, made.at) };
     }
     // A table step is prepared by the call naming its table by number, which must give the same
     // change.
