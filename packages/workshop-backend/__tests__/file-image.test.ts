@@ -50,10 +50,10 @@ const read = (extra = {}) => fauxToolCall("readFile", {workpiece: "IMAGES", file
 const results = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName === "readFile" ? [message] : []);
 
-function recordReads(impl: Impl, chatId: number, oid: string, count: number) {
+function recordReads(impl: Impl, chatId: number, oid: string, count: number, byteLength = PNG.length) {
   impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "", toolCalls: Array.from({length: count}, () => ({
     toolName: "readFile", toolCallId: crypto.randomUUID(),
-    input: {workpiece: "IMAGES", filename: "image.png"}, image: {oid, byteLength: PNG.length},
+    input: {workpiece: "IMAGES", filename: "image.png"}, image: {oid, byteLength},
   }))}]);
 }
 
@@ -206,16 +206,36 @@ describe("images read from a worktree", () => {
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
-  it("keeps active reference uploads ahead of older tool images within the shared budget", () => inKernel(crypto.randomUUID(), async impl => {
+  it("reserves active reference slots before accepting a batch of image reads", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Compare these references", {attachments: Array.from({length: 5}, (_, index) =>
+        ({oid: blob.oid, mimeType: "image/png", name: `${index}.png`}))});
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage(Array.from({length: 16}, () => read()), {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const last = requests.at(-1)!;
+    expect(results(last).filter(result => !result.isError)).toHaveLength(15);
+    expect(results(last).filter(result => result.isError)).toHaveLength(1);
+    expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(20);
+  }));
+
+  it.each(["reload", "restart"])("keeps active reference uploads ahead of older tool images after %s", mode => inKernel(crypto.randomUUID(), async impl => {
     const screenshot = new Uint8Array(6 * 1024 * 1024); screenshot.set(PNG);
     const reference = new Uint8Array(4.5 * 1024 * 1024); reference.set(PNG);
-    const {chatId} = await setup(impl, screenshot);
+    const {chatId, blob: screenshotBlob} = await setup(impl, screenshot);
     const blob = impl.gitCache.writeBlob(reference);
     await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
       "Compare against these references", {attachments: ["first.png", "second.png"].map(name =>
         ({oid: blob.oid, mimeType: "image/png", name}))});
+    if (mode === "restart") {
+      // A fresh runAgent must recover the unfinished turn from its durable tool steps alone.
+      recordReads(impl, chatId, screenshotBlob.oid, 1, screenshot.length);
+      recordReads(impl, chatId, screenshotBlob.oid, 1, screenshot.length);
+    }
     const {requests} = await scriptedTurn(impl, chatId, [
-      fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      ...(mode === "reload" ? [fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage([read()], {stopReason: "toolUse"})] : []),
       fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
     ]);
     const last = requests.at(-1)!;

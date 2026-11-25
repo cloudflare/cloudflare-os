@@ -238,7 +238,6 @@ type AgentProgress = {
   executionId: string;
   barrierSequence: number;
   observedHeads: Map<WorkpieceId, string>;
-  prompt?: number;
 };
 
 /**
@@ -2455,8 +2454,12 @@ async function runAgentPass(
   const unreadFileImages = new Set<AiToolCall>();
   const fileImageReads = new Map<ImageContent, {sequence: number; id: string}>();
   let attachmentsFitFrom: number | undefined;
-  // An image reload keeps the active prompt verbatim after its tool calls are persisted.
-  let prompt = progress.prompt;
+  // Recover the active prompt from durable history after an image step, including after restart.
+  const unfinishedTurn = chatMessages.slice(chatMessages.findLastIndex(msg =>
+    msg.type === "message" && msg.author.type === "agent" && !msg.toolCalls?.length) + 1);
+  let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
+    msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))
+    ? unfinishedTurn.findLast(startsAgentTurn)?.sequence : undefined;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   // Preserve the active prompt's references before spending its media budget on tool images.
   const promptAttachmentIds = new Set<string>();
@@ -2467,6 +2470,7 @@ async function runAgentPass(
         keptAttachmentBytes + attachment.size <= MAX_INLINE_MESSAGE_BYTES) {
       promptAttachmentIds.add(attachment.id);
       inlineAttachmentIds.add(attachment.id);
+      unansweredAttachmentIds.push(attachment.id);
       ++keptAttachments;
       keptAttachmentBytes += attachment.size;
     }
@@ -2517,6 +2521,9 @@ async function runAgentPass(
         inlineFileImages.add(candidate.read);
       } else {
         inlineAttachmentIds.add(candidate.id);
+        if (msg.sequence === prompt && promptAttachmentIds.size < MAX_INLINE_ATTACHMENTS) {
+          promptAttachmentIds.add(candidate.id);
+        }
         if (!answered) unansweredAttachmentIds.push(candidate.id);
       }
     }
@@ -3760,7 +3767,7 @@ async function runAgentPass(
               throw new Error("The selected model does not support images. Choose a vision model to read this file.");
             }
             const byteLength = file.source.reader.size;
-            if (stepImageCount >= MAX_INLINE_ATTACHMENTS || stepImageBytes + byteLength > MAX_INLINE_MESSAGE_BYTES) {
+            if (stepImageCount + promptAttachmentIds.size >= MAX_INLINE_ATTACHMENTS || stepImageBytes + byteLength > MAX_INLINE_MESSAGE_BYTES) {
               throw new Error("Read fewer or smaller images per step, or crop/resize the files first.");
             }
             const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
@@ -4978,7 +4985,6 @@ async function runAgentPass(
       if (toolResults.length === 0) return;
       // Otherwise reload when that request won't fit, or can't be measured: the turn-start check
       // then estimates the whole prompt, as it does for that case there.
-      if (stepImageCount > 0) progress.prompt ??= prompt;
       if (!nextRequestFits || stepImageCount > 0) {
         reloadForCompaction = true;
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,
