@@ -130,8 +130,13 @@ function scenarioBaseResult(store: DocStore, version: DocVersion): DocVersion {
   return found.after;
 }
 
-/** The store's costs a test measures: the ingest peak and the widenings are measured where asked. */
-type Spent = Omit<DocStoreCost, "ingestPeakBufferedBytes" | "viewWidenings" | "pieceWidenings">;
+/**
+ * The store's costs a test measures: the ingest peak, the widenings and a card's span
+ * comparisons are measured where asked.
+ */
+type Spent = Omit<
+  DocStoreCost, "ingestPeakBufferedBytes" | "viewWidenings" | "pieceWidenings" | "spanCharsCompared"
+>;
 
 /** What `run` spent in the store: the counts' differences, and the peaks from 0. */
 function spent(run: () => unknown): Spent {

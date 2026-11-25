@@ -11,7 +11,7 @@ import {
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { storedTabReading, unwrapped } from "./docs-reading";
 import { changedSpan, docEditResult, uniqueMarkdown } from "./docs-replay";
-import { DocRunRenderError, markdownHeld } from "./docs-store";
+import { DocRunRenderError, docStoreCost, markdownHeld } from "./docs-store";
 import type { DocStore, DocVersion, StoredRun } from "./docs-store";
 import {
   checkLookTarget, checkTabTableCells, checkTableTarget, chipCopies, hiddenContent, insertedTableNumber,
@@ -1486,6 +1486,7 @@ export function changedMarkdown(
   let asked = { before: 0, after: 0 };
   for (;;) {
     markdownHeld(beforeText.length + afterText.length);
+    docStoreCost.spanCharsCompared += beforeText.length + afterText.length;
     let span = changedSpan(
       beforeText, afterText, range && { start: range.start - mdStart, end: range.end - mdStart },
       { before: mdStart > 0, after: beyond !== undefined });

@@ -1464,8 +1464,8 @@ describe("the strings are the rule's", () => {
   });
 });
 
-// --- A table added after tables that read alike: its span walks far back over repeating text, at a
-// cost that grows with the tab, not its square.
+// --- A table added after tables that read alike: its span walks far back over repeating text, and
+// the characters its comparisons are handed (counted, not timed) grow with the tab, not its square.
 
 /** A table of one cell that reads as every table of an `equal` tab does, added at the tab's end. */
 const ADDED_TABLE: TableCall = { method: "insertTable", table: { rows: 1, columns: 1, cells: [["cell"]] } };
@@ -1476,16 +1476,15 @@ function tinyTables(pairs: number, equal: boolean) {
   return { tab, ...pieceStore(tab) };
 }
 
-/** The milliseconds the card of `ADDED_TABLE` takes on a kept tab of `pairs` tables, the least of three. */
-function cardTime(pairs: number, equal: boolean): number {
-  let times: number[] = [];
-  for (let turn = 0; turn < 3; turn++) {
-    let { store, base } = tinyTables(pairs, equal);
-    let started = performance.now();
-    prepareTableChange(store, base, ADDED_TABLE, LABEL);
-    times.push(performance.now() - started);
-  }
-  return Math.min(...times);
+/**
+ * The characters the comparisons of the card of `ADDED_TABLE` were handed on a kept tab of
+ * `pairs` equal tables (`spanCharsCompared`), and the length of that tab's Markdown.
+ */
+function spanChars(pairs: number): { compared: number; tabLength: number } {
+  let { tab, store, base } = tinyTables(pairs, true);
+  let compared = docStoreCost.spanCharsCompared;
+  prepareTableChange(store, base, ADDED_TABLE, LABEL);
+  return { compared: docStoreCost.spanCharsCompared - compared, tabLength: renderTab(tab).markdown.length };
 }
 
 describe("the card of a table added after tables that read alike", () => {
@@ -1494,8 +1493,12 @@ describe("the card of a table added after tables that read alike", () => {
     expect(prepareTableChange(store, base, ADDED_TABLE, LABEL)).toEqual(wholeTableChange(tab, ADDED_TABLE, LABEL));
   });
 
-  it("takes about what it takes after tables that differ", () => {
-    // A walk back that compared the span again for every run would be many times slower.
-    expect(cardTime(1_500, true)).toBeLessThan(4 * cardTime(1_500, false));
+  it("compares a small multiple of the tab's characters", () => {
+    // Each comparison is handed both strings whole, and each extension after the first few takes
+    // twice the runs of the one before, so together they are handed about five times the tab
+    // (measured 4.8 at 100 to 3,000 tables). Extending a run at a time hands them a figure that
+    // grows with the square of the tables: about 3,000 times the tab here.
+    let { compared, tabLength } = spanChars(1_500);
+    expect(compared).toBeLessThan(10 * tabLength);
   });
 });

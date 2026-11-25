@@ -243,6 +243,8 @@ export type DocStoreCost = {
    * what is in hand at any moment is at most twice it.
    */
   peakMarkdownCharsInHand: number;
+  /** The characters the comparisons of a card's span were handed, over every comparison. */
+  spanCharsCompared: number;
   /** Rows written, as storage counts them for each statement the store ran. */
   rowsWritten: number;
   /** Results of an edit in a version that were made and stored. */
@@ -273,8 +275,8 @@ export type DocStoreCost = {
 /** The running totals of `DocStoreCost`. */
 export const docStoreCost: DocStoreCost = {
   runsDecoded: 0, runsRendered: 0, runsKeyed: 0, viewWidenings: 0, pieceWidenings: 0,
-  peakRunBytesInHand: 0, peakMarkdownCharsInHand: 0, rowsWritten: 0, resultsStored: 0,
-  resultsFound: 0, ingestPeakBufferedBytes: 0,
+  peakRunBytesInHand: 0, peakMarkdownCharsInHand: 0, spanCharsCompared: 0, rowsWritten: 0,
+  resultsStored: 0, resultsFound: 0, ingestPeakBufferedBytes: 0,
 };
 
 function runInHand(json: string): void {

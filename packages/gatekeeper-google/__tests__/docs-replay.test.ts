@@ -569,7 +569,9 @@ function foldOf(stored: Stored, records: readonly QueuedDocRecord[], tabId = TAB
 /** What the store spends while `run` runs. */
 function spent(
   run: () => unknown,
-): Omit<DocStoreCost, "ingestPeakBufferedBytes" | "viewWidenings" | "pieceWidenings"> {
+): Omit<
+  DocStoreCost, "ingestPeakBufferedBytes" | "viewWidenings" | "pieceWidenings" | "spanCharsCompared"
+> {
   let before = { ...docStoreCost };
   docStoreCost.peakRunBytesInHand = 0;
   docStoreCost.peakMarkdownCharsInHand = 0;
