@@ -327,9 +327,10 @@ export type SimulatedList<Row> = {
  * cursor fetched; the two are not read together, nor against apply. A record that applies in
  * between is folded again over a row that already holds it, or no longer over one fetched before
  * it, and a create that landed before its id bound shows as its stand-in and the provider's row.
- * A listing that must not show these runs each page's fetch and journal read together against
- * apply (`runExclusive`), or tells from a row what it holds. See USAGE.md, "A listing over a
- * simulation store".
+ * For the rows a page fetches, a listing that must not show these runs the fetch and journal read
+ * together against apply (`runExclusive`), or tells from a row what it holds; a row buffered
+ * before a record applied is made current only by reading it again or starting the walk again.
+ * See USAGE.md, "A listing over a simulation store".
  * @param options The store, the index of the pending records, and the listing's own id,
  *   order, filter and pending creates.
  * @returns The frozen hooks.

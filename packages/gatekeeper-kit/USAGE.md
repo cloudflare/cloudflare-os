@@ -1402,10 +1402,12 @@ pending records say: a row buffered before a record applied, shown without it; a
 a record applied that `refresh` still read, shown with it folded again (an increment twice, or an
 earlier rename put back over a later one that applied); and, while a create has landed but its
 apply has not yet bound its id (`isResolved`), both its stand-in and the provider's row, which
-`identity` cannot match. A listing that must not show these runs each page's fetch, its journal
-read and the stand-ins it serves together against apply (`runExclusive`), or tells from a row what
-it already holds (a version or a marker the provider keeps on it) and matches a created row to its
-create before the id binds.
+`identity` cannot match. For the rows a page fetches, a listing that must not show these runs the
+fetch, its journal read and the stand-ins it serves together against apply (`runExclusive`), or
+tells from a row what it already holds (a version or a marker the provider keeps on it) and matches
+a created row to its create before the id binds. Neither makes a row the cursor buffered before a
+record applied current: a listing that must show settled changes reads the rows such a change
+touches again, or starts the walk again.
 
 What stays the gatekeeper's, because two listings rarely agree on it:
 
