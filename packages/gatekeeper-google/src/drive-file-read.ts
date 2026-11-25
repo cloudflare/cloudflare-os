@@ -169,12 +169,19 @@ export function downloadableFile(
   return { mimeType, size, modifiedTime: driveModifiedTime(file) };
 }
 
-/** Refuses a file whose owner or administrator has stopped the connected account downloading it. */
+/**
+ * Refuses a file the connected account may not download: one whose owner or administrator has
+ * restricted downloading it, or one Drive does not say it may, since only a stated leave counts,
+ * as it does when a read is authorized.
+ */
 function requireDownloadable(file: DriveFile): void {
-  if (file.capabilities?.canDownload === false) {
-    throw new Error("Google Drive does not let the connected account download this file; its " +
-      "owner or administrator has restricted downloading it.");
-  }
+  let canDownload = file.capabilities?.canDownload;
+  if (canDownload === true) return;
+  throw new Error(canDownload === false
+    ? "Google Drive does not let the connected account download this file; its owner or " +
+      "administrator has restricted downloading it."
+    : "Google Drive did not say whether the connected account may download this file, so its " +
+      "content is not read.");
 }
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

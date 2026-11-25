@@ -1270,10 +1270,15 @@ describe("Drive file reads", () => {
   const FILE_ACCESS_MISSING =
     "This Google account was connected before Drive bindings could read file content. Reconnect " +
     "it in Workshop to read Drive files.";
+  const UNSTATED_DOWNLOAD = "Google Drive did not say whether the connected account may download " +
+    "this file, so its content is not read.";
 
   /** The size of a file too large to be worth holding, served only as a stream a test supplies. */
   const BIG = 64 * 1024 * 1024;
-  type ProviderFile = { mimeType: string; content?: Uint8Array; size?: number; canDownload?: boolean };
+  /** A file Drive answers for; `canDownload: null` is one whose answer omits the capability. */
+  type ProviderFile = {
+    mimeType: string; content?: Uint8Array; size?: number; canDownload?: boolean | null;
+  };
   const FILES: Record<string, ProviderFile> = {
     "csv-1": { mimeType: "text/csv", content: CSV_BYTES },
     "empty-1": { mimeType: "text/plain", content: new Uint8Array() },
@@ -1284,6 +1289,8 @@ describe("Drive file reads", () => {
     "sheet-1": { mimeType: SHEET_MIME },
     "deck-1": { mimeType: SLIDES_MIME },
     "locked-doc-1": { mimeType: DOC_MIME, canDownload: false },
+    "unflagged-1": { mimeType: "text/csv", content: CSV_BYTES, canDownload: null },
+    "unflagged-doc-1": { mimeType: DOC_MIME, canDownload: null },
     "folder-1": { mimeType: FOLDER_MIME },
     "shortcut-1": { mimeType: "application/vnd.google-apps.shortcut" },
     "form-1": { mimeType: "application/vnd.google-apps.form" },
@@ -1340,7 +1347,7 @@ describe("Drive file reads", () => {
         modifiedTime: "2026-08-20T12:00:00Z",
         ...file.content ? { size: String(file.content.byteLength) } : {},
         ...file.size === undefined ? {} : { size: String(file.size) },
-        ...file.canDownload === undefined ? {} : { capabilities: { canDownload: file.canDownload } },
+        ...file.canDownload === null ? {} : { capabilities: { canDownload: file.canDownload ?? true } },
       });
     }));
     return urls;
@@ -1504,6 +1511,14 @@ describe("Drive file reads", () => {
     await expect(Promise.resolve(session.readFile("locked-1"))).rejects.toThrow(
       "Google Drive does not let the connected account download this file; its owner or " +
       "administrator has restricted downloading it.");
+    expect(downloads).toEqual([]);
+  });
+
+  // Drive's answer always holds the capabilities asked for, so one without it is not taken as leave.
+  it("refuses a file whose download leave Drive does not state, without downloading", async () => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("unflagged-1"))).rejects.toThrow(UNSTATED_DOWNLOAD);
     expect(downloads).toEqual([]);
   });
 
@@ -1716,6 +1731,7 @@ describe("Drive file reads", () => {
       "Drive item is a folder."],
     ["locked-doc-1", "pdf", "Google Drive does not let the connected account download this file; " +
       "its owner or administrator has restricted downloading it."],
+    ["unflagged-doc-1", "pdf", UNSTATED_DOWNLOAD],
   ] as const)("refuses to export %s as %s without asking Drive to", async (fileId, format, message) => {
     using session = newSession().session;
 
@@ -1730,6 +1746,18 @@ describe("Drive file reads", () => {
 
     await expect(Promise.resolve(session.exportFile("doc-1", "pdf"))).rejects.toThrow(
       "Google Drive exports at most 10 MB, and this file is larger in that format.");
+  });
+
+  // Its size in that format is a fact about the file's content, which this read was refused.
+  it("withholds Google's size refusal from an export whose read is not authorized", async () => {
+    answerExport = () => Response.json(
+      { error: { code: 403, errors: [{ reason: "exportSizeLimitExceeded" }] } }, { status: 403 });
+    const { queue, session } = newSession();
+    using owned = session;
+    queue.refuse.add("Export file from Google Drive");
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf")))
+      .rejects.toThrow("Observation refused");
   });
 
   it("asks an account connected before content access to reconnect to export", async () => {
@@ -1938,7 +1966,7 @@ describe("folder-scoped native sessions", () => {
     /** Bytes of content, for a file that has its own. */
     size?: string;
     modifiedTime?: string;
-    capabilities?: { canListChildren: boolean };
+    capabilities?: { canListChildren?: boolean; canDownload?: boolean };
   };
 
   /** The subtree the provider answers from. Tests move files by rewriting `parents` here. */
@@ -2454,7 +2482,7 @@ describe("folder-scoped native sessions", () => {
   function dataNode(parent: string) {
     return {
       id: "data-1", mimeType: "application/octet-stream", parents: [parent], trashed: false,
-      size: String(PDF_BYTES.byteLength),
+      size: String(PDF_BYTES.byteLength), capabilities: { canDownload: true },
     };
   }
 
@@ -2543,7 +2571,10 @@ describe("folder-scoped native sessions", () => {
 
   it("exports a direct child native file, checking its place around the export", async () => {
     const nodes = subtree();
-    nodes.set("doc-1", { id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false });
+    nodes.set("doc-1", {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    });
     const nativeCalls = installFolderProvider(nodes);
     const { queue, session } = folderSession(nodes);
     using owned = session;
@@ -2561,7 +2592,10 @@ describe("folder-scoped native sessions", () => {
 
   it("refuses an export of a file moved out of the folder before Drive answered", async () => {
     const nodes = subtree();
-    const doc = { id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false };
+    const doc = {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    };
     nodes.set("doc-1", doc);
     installFolderProvider(nodes, () => nodes.set("doc-1", { ...doc, parents: ["elsewhere"] }));
     const { queue, session } = folderSession(nodes);

@@ -247,10 +247,10 @@ export type DriveFileBytes = {
 };
 
 /**
- * A format `exportFile()` converts a Google Docs, Sheets or Slides file to, as Google Drive's
- * "Download" menu does. A Google Doc exports to `docx`, `odt`, `rtf`, `pdf`, `txt`, `html`, `epub`
- * or `md` (Markdown); a Google Sheet to `xlsx`, `ods`, `pdf`, `csv` or `tsv`, of which `csv` and
- * `tsv` hold its first sheet alone; a Google Slides presentation to `pptx`, `odp`, `pdf` or `txt`.
+ * A format `exportFile()` converts a Google Docs, Sheets or Slides file to. A Google Doc exports
+ * to `docx`, `odt`, `rtf`, `pdf`, `txt`, `html`, `epub` or `md` (Markdown); a Google Sheet to
+ * `xlsx`, `ods`, `pdf`, `csv` or `tsv`, of which `csv` and `tsv` hold its first sheet alone; a
+ * Google Slides presentation to `pptx`, `odp`, `pdf` or `txt`.
  */
 export type DriveExportFormat =
   | "docx" | "odt" | "rtf" | "pdf" | "txt" | "html" | "epub" | "md"

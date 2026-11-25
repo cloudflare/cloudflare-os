@@ -2763,11 +2763,13 @@ const EXPORT_TOO_LARGE =
 /** A failed export as an export reports it. */
 function fileExportError(error: unknown): unknown {
   if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
-  if (error instanceof DriveApiRequestError && error.status === 403 &&
-      error.reason === "exportSizeLimitExceeded") {
-    return new Error(EXPORT_TOO_LARGE);
-  }
   return error;
+}
+
+/** Whether `error` is Google's refusal of an export over its 10 MB limit. */
+function exportTooLarge(error: unknown): boolean {
+  return error instanceof DriveApiRequestError && error.status === 403 &&
+    error.reason === "exportSizeLimitExceeded";
 }
 
 /** The same refusal for a comment listing, which needs the same access. */
@@ -3118,15 +3120,21 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let opened: ReadableStream<Uint8Array> | undefined;
     // An export is the file's content, so it needs leave to download as readFile() does, and a
     // folder binding refuses one of a file that changed since it was opened, as readFile() does.
-    let content = await core.nativeRead(file.id, nativeMimeType, {
+    let outcome = await core.nativeRead(file.id, nativeMimeType, {
       content: true,
       unchanged: current => {
         if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
       },
-    })(async () => {
-      opened = await this.#driveApi.openExport(file.id, mimeType)
-        .catch((error: unknown) => { throw fileExportError(error); });
-      return opened;
+    })(async (): Promise<{ content: ReadableStream<Uint8Array> } | { refusal: Error }> => {
+      try {
+        opened = await this.#driveApi.openExport(file.id, mimeType);
+      } catch (error) {
+        // How large the export is is a fact about the file's content, so Google's refusal of its
+        // size is said only once the read is authorized, as the export itself would be.
+        if (exportTooLarge(error)) return { refusal: new Error(EXPORT_TOO_LARGE) };
+        throw fileExportError(error);
+      }
+      return { content: opened };
     }, () => ({
       title: "Export file from Google Drive",
       description: `Export Drive file ${file.id} as ${format}.`,
@@ -3134,7 +3142,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await opened?.cancel().catch(() => undefined);
       throw error;
     });
-    return {mimeType, modifiedTime, content: idleTimed(content)};
+    if ("refusal" in outcome) throw outcome.refusal;
+    return {mimeType, modifiedTime, content: idleTimed(outcome.content)};
   }
 
   async listComments(fileId: string): Promise<Cursor<DriveComment>> {
