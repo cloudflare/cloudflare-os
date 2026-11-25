@@ -244,22 +244,19 @@ export type ParagraphElement = {
   columnBreak?: { textStyle?: TextStyle };
   footnoteReference?: { footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle };
   equation?: {};
-  inlineObjectElement?: {
-    inlineObjectId?: string; textStyle?: TextStyle;
-    suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
-  };
+  inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle } & ElementSuggestions;
   person?: {
     textStyle?: TextStyle;
     personProperties?: { name?: string; email?: string };
-  };
+  } & ElementSuggestions;
   richLink?: {
     textStyle?: TextStyle;
     richLinkProperties?: { title?: string; uri?: string };
-  };
+  } & ElementSuggestions;
   dateElement?: {
     textStyle?: TextStyle;
     dateElementProperties?: { displayText?: string };
-  };
+  } & ElementSuggestions;
   /** A dropdown chip, which takes one index. */
   dropdown?: {
     dropdownId?: string;
@@ -269,8 +266,11 @@ export type ParagraphElement = {
       selectedOptionId?: string;
       displayValue?: string;
     };
-  };
+  } & ElementSuggestions;
 }
+
+/** The suggestions an image or a smart chip is part of, by ID. */
+export type ElementSuggestions = { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] };
 
 export type TextRun = {
   content: string;

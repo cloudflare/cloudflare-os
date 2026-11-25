@@ -1544,6 +1544,9 @@ type RenderedCell = RenderedHtml &
 /** A rendered table: its HTML, its look, and its rows when it is a table of the tab body. */
 type RenderedTable = { html: string } & Pick<TableMapping, "look" | "rows">;
 
+/** The elements that are not text whose suggestions a cell's deletion discards. */
+const SUGGESTED_ELEMENTS = ["inlineObjectElement", "person", "richLink", "dateElement", "dropdown"] as const;
+
 /** How many suggested insertions, deletions and style changes `value` is marked with. */
 function suggestionsOf(value: {
   suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
@@ -1577,7 +1580,7 @@ function paragraphSuggestions(
 
 /**
  * How many suggestions the table, its rows and its cells are marked with, those on the text,
- * the images and the paragraphs of its cells and those of a table inside one of its cells
+ * the images, the smart chips and the paragraphs of its cells and those of a table inside one of its cells
  * included: deleting the cell discards that suggestion too. The table's own fields count beside
  * those of its rows and cells, since a table that is itself a suggestion may mark only itself.
  */
@@ -1593,7 +1596,7 @@ function suggestionsIn(table: Table): number {
         count += suggestionsOf(element.paragraph);
         for (let part of element.paragraph.elements) {
           if (part.textRun) count += suggestionsOf(part.textRun);
-          if (part.inlineObjectElement) count += suggestionsOf(part.inlineObjectElement);
+          for (let kind of SUGGESTED_ELEMENTS) if (part[kind]) count += suggestionsOf(part[kind]);
         }
       }
     }

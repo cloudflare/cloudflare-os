@@ -1920,6 +1920,26 @@ describe("a deletion whose cells have come to hold what its card did not say", (
       "cells, or to their text, since this change was queued.");
   });
 
+  it.each(["person", "dropdown"] as const)("counts a suggestion on a %s chip in a cell", kind => {
+    let chipped = (suggested: boolean) => {
+      let tab = buildTab([para("Before"), grid(["a", "b"], ["c", "d"]), para("After")]);
+      let { paragraph } = cellParagraph(tab, 1, 0);
+      let { startIndex, endIndex } = paragraph.elements[0];
+      let chip = kind === "person"
+        ? { person: { personProperties: { name: "Ana", email: "ana@example.com" } } }
+        : { dropdown: { dropdownProperties: { displayValue: "Open" } } };
+      let element = { startIndex, endIndex, ...chip };
+      if (suggested) Object.assign(element[kind]!, { suggestedDeletionIds: ["suggest.chip"] });
+      paragraph.elements[0] = element;
+      return tab;
+    };
+    expect(read(chipped(true)).markdown).toBe(read(chipped(false)).markdown);
+    expect(refusal(chipped(true), dropRows(read(chipped(false)), 0, 1))).toBe(suggestedRefusal("deleteTableRows"));
+    expect(refusal(chipped(true), dropTable(read(chipped(false)), 0))).toBe(
+      "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
+      "cells, or to their text, since this change was queued.");
+  });
+
   it("carries what a deletion would remove through the changes queued before it", () => {
     let content = read(dropdownTab());
     let grown = renderTab(applyDocEdit(dropdownTab(), addRows(content, 0, 0, [["new", "row"]])));
