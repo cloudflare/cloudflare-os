@@ -15,7 +15,9 @@ export const DRIVE_READ_TYPES_MODULE_PREFIX =
 /** Module-only prefix of the read and write Google Drive declaration. */
 export const DRIVE_TYPES_MODULE_PREFIX =
   'import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";\n' +
-  'import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";\n' +
+  "import type {\n" +
+  "  DriveEntry, GoogleDriveFolderReadSession, GoogleDriveReadSession,\n" +
+  '} from "./drive-read-types";\n' +
   'import type { GoogleDocEditSession } from "./docs-types";\n' +
   'import type { GoogleSpreadsheetSession } from "./sheets-types";\n' +
   'import type { GooglePresentationSession } from "./slides-types";\n' +

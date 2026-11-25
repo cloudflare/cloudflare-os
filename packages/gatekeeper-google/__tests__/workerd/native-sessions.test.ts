@@ -381,6 +381,7 @@ const NO_COMMENTS: DriveQueue = {
   undecided: read => read([]),
   waiting: read => read([]),
   queued: () => [],
+  madeCopy: () => undefined,
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -3083,9 +3084,11 @@ describe("Drive comment actions", () => {
 
   const posts = () => provider.requests.filter(request => request.startsWith("POST /drive/v3/files/"));
 
-  it("declares one auto-approvable kind for every comment write, beside the edits' kinds", async () => {
-    expect(await binding().autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+  it("declares one auto-approvable kind for every comment write, beside the copies' and the edits' kinds", async () => {
+    expect(await binding().autoApprovable()).toEqual([
+      { tag: "driveComments", label: "Drive comments" }, { tag: "driveCopies", label: "Drive copies" },
+      ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
+    ]);
   });
 
   describe("access level", () => {
@@ -3192,7 +3195,7 @@ describe("Drive comment actions", () => {
             "read native Google Docs, Sheets and Slides and export them with exportFile(), read " +
             "PDFs' text with readPdf() and any " +
             "other file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files, " +
-            "read and queue comments, change who files are shared with, and move files",
+            "read and queue comments, change who files are shared with, and move and copy files",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveSession",
         },
@@ -3217,7 +3220,7 @@ describe("Drive comment actions", () => {
             "text with readPdf() and any other " +
             "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
             "direct children, read and queue comments on direct children, change who they and the " +
-            "folder are shared with, and move them within Drive folder \"folder-root\"",
+            "folder are shared with, and move and copy them within Drive folder \"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
           tsType: "GoogleDriveFolderSession",
         },

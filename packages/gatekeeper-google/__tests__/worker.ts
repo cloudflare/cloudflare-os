@@ -9,8 +9,8 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { DriveBindingScope } from "../src/drive-session";
 import type {
-  Cursor, DocSuggestion, DriveAccess, DriveComment, DriveCommentReply, DriveEntry, DriveScope,
-  GoogleDriveFolderSession, GoogleDriveSession,
+  Cursor, DocSuggestion, DriveAccess, DriveComment, DriveCommentReply, DriveEntry,
+  DriveFileBytes, DriveScope, GoogleDriveFolderSession, GoogleDriveSession,
 } from "../src/drive-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
@@ -205,11 +205,12 @@ function callOn(target: object, method: string, args: unknown[]): unknown {
 /** What one Drive session call returned or threw, and what it queued and observed. */
 type DriveCall = {
   /**
-   * A write's pending item, every page a comment listing yielded, a file's access or one way of
-   * it, an entry, or the binding's scope. A write that returns nothing leaves it `undefined`.
+   * A write's pending item, every page a comment listing or a file listing yielded, a file's
+   * access or one way of it, an entry, a file read with its bytes as text, or the binding's scope.
+   * A write that returns nothing leaves it `undefined`.
    */
-  value?: DriveComment | DriveCommentReply | DriveComment[][] | DriveScope | DriveAccess |
-    DriveAccess[] | DriveEntry;
+  value?: DriveComment | DriveCommentReply | DriveComment[][] | DriveEntry[][] | DriveScope |
+    DriveAccess | DriveAccess[] | DriveEntry | DriveFileRead;
   error?: string;
   actionId?: number;
   action?: ActionDescription;
@@ -218,12 +219,26 @@ type DriveCall = {
   reports: { title: string; subresources?: string[] }[];
 };
 
-/** Every page a comment cursor yields, until it is exhausted. */
-async function drainComments(cursor: Cursor<DriveComment> & Disposable): Promise<DriveComment[][]> {
+/** A file read, with its bytes read out as text. */
+type DriveFileRead = Omit<DriveFileBytes, "content"> & { text: string };
+
+/** Every page a cursor yields, until it is exhausted. */
+async function drain<T>(cursor: Cursor<T> & Disposable): Promise<T[][]> {
   using owned = cursor;
-  let pages: DriveComment[][] = [];
+  let pages: T[][] = [];
   for (let page = await owned.next(); page !== null; page = await owned.next()) pages.push(page);
   return pages;
+}
+
+/** What a Drive call answered, with any cursor drained and any file read whole. */
+async function settled(method: keyof GoogleDriveFolderSession, value: unknown): Promise<DriveCall["value"]> {
+  if (method === "listComments") return drain(value as Cursor<DriveComment> & Disposable);
+  if (method === "list" || method === "search") return drain(value as Cursor<DriveEntry> & Disposable);
+  if (method === "readFile") {
+    let { content, ...read } = value as DriveFileBytes;
+    return { ...read, text: await new Response(content).text() };
+  }
+  return value as DriveCall["value"];
 }
 
 /** An error's message, so a test can assert on a failure that crossed the RPC boundary. */
@@ -857,11 +872,7 @@ export class TestHooks extends DurableObject<Env> {
       }
       let call = target[method] as (...args: unknown[]) => Promise<unknown>;
       let value = await call(...args);
-      outcome = {
-        value: method === "listComments"
-          ? await drainComments(value as Parameters<typeof drainComments>[0])
-          : value as DriveCall["value"],
-      };
+      outcome = { value: await settled(method, value) };
     } catch (error) {
       outcome = failure(error);
     } finally {

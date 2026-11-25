@@ -272,6 +272,11 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    * which has no approval's half-made change to keep out of what it reads.
    */
   queued(): readonly JournalEntry<TaggedAction<M>>[];
+  /**
+   * The file native copy `actionId` made, once an approval has made it, read where the copy
+   * recorded it: what `pending:<n>` names from then on.
+   */
+  madeCopy(actionId: number): string | undefined;
 };
 
 /**

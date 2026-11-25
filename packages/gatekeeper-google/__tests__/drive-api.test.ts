@@ -689,7 +689,7 @@ describe("bulk access verification", () => {
 /** The one mask a scope proof and an observer check read a file through. */
 const SCOPE_MASK = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canEdit)";
+  "canCopy,canEdit)";
 
 describe("folder scope nodes", () => {
   const node = (id: string, extra: Record<string, unknown> = {}) =>
@@ -2103,8 +2103,8 @@ describe("the comment capability on a scope node", () => {
   });
 });
 
-describe("the capabilities a scope node carries for sharing and moves", () => {
-  it("reads the capabilities a sharing or move proof decides from", async () => {
+describe("the capabilities a scope node carries for sharing, moves and copies", () => {
+  it("reads the capabilities a sharing, move or copy proof decides from", async () => {
     let calls = stubFetch([batchResponse([
       { status: 200, body: JSON.stringify({
         id: "folder-1", mimeType: FOLDER_MIME_TYPE, parents: ["p"], driveId: "drive-1",
@@ -2116,7 +2116,9 @@ describe("the capabilities a scope node carries for sharing and moves", () => {
       }) },
       { status: 200, body: JSON.stringify({
         id: "doc-1", parents: ["folder-1"], trashed: false,
-        capabilities: { canShare: false, canAddChildren: false, canMoveItemWithinDrive: false },
+        capabilities: {
+          canShare: false, canAddChildren: false, canMoveItemWithinDrive: false, canCopy: true,
+        },
       }) },
       { status: 200, body: JSON.stringify({ id: "doc-2", capabilities: {} }) },
     ])]);
@@ -2129,7 +2131,7 @@ describe("the capabilities a scope node carries for sharing and moves", () => {
       },
       {
         id: "doc-1", parents: ["folder-1"], trashed: false, canShare: false,
-        canAddChildren: false, canMoveItemWithinDrive: false,
+        canAddChildren: false, canMoveItemWithinDrive: false, canCopy: true,
       },
       // A part that carries no capability has none, which every caller reads as "cannot".
       { id: "doc-2" },
@@ -2140,7 +2142,7 @@ describe("the capabilities a scope node carries for sharing and moves", () => {
     }
   });
 
-  it.each(["canShare", "canAddChildren", "canMoveItemWithinDrive"])(
+  it.each(["canShare", "canAddChildren", "canMoveItemWithinDrive", "canCopy"])(
     "rejects a %s that is not a boolean instead of guessing", async capability => {
       stubFetch([batchResponse([
         { status: 200, body: JSON.stringify({ id: "doc-1", capabilities: { [capability]: "yes" } }) },
@@ -2806,6 +2808,70 @@ describe("swapParent", () => {
     await expect(api().swapParent("x/y", { addParent: "T", removeParent: "S" }))
       .rejects.toThrow("Not a Google Drive file ID.");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("copyFile and findCopy", () => {
+  const COPY_URL = "https://www.googleapis.com/drive/v3/files/F/copy" +
+    "?supportsAllDrives=true&fields=id%2CmimeType";
+
+  it("copies a file under the ID reserved for it, and reads a 409 as an earlier send's copy", async () => {
+    let calls = stubFetch([
+      jsonResponse({ id: "C", mimeType: "application/pdf" }),
+      new Response("{}", { status: 409 }),
+    ]);
+    let copy = { id: "C", name: "Copy of F", parents: ["T"] as [string] };
+
+    await expect(api().copyFile("F", copy)).resolves.toStrictEqual({ id: "C", mimeType: "application/pdf" });
+    await expect(api().copyFile("F", copy)).resolves.toBeUndefined();
+
+    expect(calls.map(({ method, url }) => [method, url.href])).toEqual([
+      ["POST", COPY_URL], ["POST", COPY_URL],
+    ]);
+    expect(JSON.parse(calls[0].body ?? "")).toEqual({ id: "C", name: "Copy of F", parents: ["T"] });
+  });
+
+  it("refuses an answer that names another file than the one reserved", async () => {
+    stubFetch([jsonResponse({ id: "D" })]);
+    await expect(api().copyFile("F", { id: "C", name: "x", parents: ["T"] }))
+      .rejects.toThrow("Google Drive answered a copy with another file than the one asked for");
+  });
+
+  it("sends a copy without a reserved ID once, with its type and app properties", async () => {
+    let calls = stubFetch(() => new Response("{}", { status: 503 }));
+    let copy = {
+      name: "Plan", parents: ["T"] as [string], mimeType: "application/vnd.google-apps.document",
+      // Null clears a property the copy would keep from its file.
+      appProperties: { gadgetsCopyToken: "t0k3n", gadgetsConvertedFrom: null },
+    };
+    await expect(api().copyFile("F", copy)).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].body ?? "")).toEqual(copy);
+
+    // A 409 without a reserved ID is Drive's refusal like any other.
+    stubFetch([new Response("{}", { status: 409 })]);
+    await expect(api().copyFile("F", copy)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("finds a copy by its token in every drive, in the trash too, and only the copy that carries it", async () => {
+    let calls = stubFetch([
+      jsonResponse({ files: [
+        { id: "X", appProperties: { gadgetsCopyToken: "other" } },
+        { id: "N", mimeType: "application/vnd.google-apps.document",
+          appProperties: { gadgetsCopyToken: "t0k3n" } },
+      ] }),
+      jsonResponse({ files: [] }),
+    ]);
+
+    await expect(api().findCopy("t0k3n"))
+      .resolves.toStrictEqual({ id: "N", mimeType: "application/vnd.google-apps.document" });
+    await expect(api().findCopy("t0k3n")).resolves.toBeUndefined();
+
+    let params = calls[0].url.searchParams;
+    // A copy that was made is found though it was put in the trash since.
+    expect(params.get("q")).toBe("appProperties has { key='gadgetsCopyToken' and value='t0k3n' }");
+    expect(params.get("corpora")).toBe("allDrives");
+    expect(params.get("includeItemsFromAllDrives")).toBe("true");
   });
 });
 

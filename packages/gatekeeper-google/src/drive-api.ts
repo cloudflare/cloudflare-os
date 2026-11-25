@@ -104,9 +104,9 @@ export type DriveFile = {
  * asked about and must never see, so it fetches only what membership is decided from, plus what
  * this account may do, which a write is checked against in the same read. Each capability is what
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
- * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canEdit` an edit
- * of a Doc, Sheet or Slides file. One a part does not carry is absent here, which reads as
- * "cannot".
+ * `canAddChildren` a move's or a copy's destination, `canMoveItemWithinDrive` a move's file,
+ * `canCopy` a copy's file, `canEdit` an edit of a Doc, Sheet or Slides file. One a part does not
+ * carry is absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
@@ -121,6 +121,7 @@ export type DriveScopeNode = {
   canShare?: boolean;
   canAddChildren?: boolean;
   canMoveItemWithinDrive?: boolean;
+  canCopy?: boolean;
   canEdit?: boolean;
   /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
   shortcutTargetId?: string;
@@ -129,7 +130,7 @@ export type DriveScopeNode = {
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canEdit)";
+  "canCopy,canEdit)";
 
 /** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
 const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
@@ -216,6 +217,17 @@ const CONVERTED_COPY_FIELDS =
 export const CONVERTED_FROM_PROPERTY = "gadgetsConvertedFrom";
 /** The app property recording the source's `modifiedTime` when it was copied. */
 export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
+/**
+ * The app property a copy queued for approval is made with, holding a random token of its own, so
+ * that a send whose answer was lost can find what it made.
+ */
+export const COPY_TOKEN_PROPERTY = "gadgetsCopyToken";
+
+/** What Drive made of a copy: its ID and type. */
+export type DriveMadeCopy = { id: string; mimeType?: string };
+
+/** Field mask for {@link DriveMadeCopy}. */
+const MADE_COPY_FIELDS = "id,mimeType";
 
 /** Where a native copy landed: in the source's folder, or in My Drive when that could not take it. */
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
@@ -695,6 +707,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   let canShare = optionalCapability(value.capabilities, "canShare");
   let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
+  let canCopy = optionalCapability(value.capabilities, "canCopy");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
   let shortcutTargetId: string | undefined;
   if (value.shortcutDetails !== undefined) {
@@ -712,6 +725,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
     ...(canShare === undefined ? {} : { canShare }),
     ...(canAddChildren === undefined ? {} : { canAddChildren }),
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
+    ...(canCopy === undefined ? {} : { canCopy }),
     ...(canEdit === undefined ? {} : { canEdit }),
     ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
@@ -1664,6 +1678,90 @@ export class DriveApi {
       },
     });
     return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
+  }
+
+  /**
+   * Copies `fileId` into the one folder `copy.parents` names, named `copy.name`; with `mimeType`,
+   * converted to that native type. With `id`, from generateFileId(), the copy is made under that ID:
+   * Drive answers a copy under an ID already used with 409 and makes nothing, so the request is
+   * replayed after a lost answer, and `undefined` means an earlier request made it. Drive takes no
+   * such ID for a copy that is or becomes a Google Docs, Sheets or Slides file; one sent without
+   * is never replayed, since a lost answer may still have made a copy, and its `appProperties`
+   * are how {@link findCopy} finds that copy. Drive patches those over the file's own: a property
+   * left out is kept from the file, and one set to `null` is cleared.
+   */
+  async copyFile(fileId: string, copy: {
+    name: string;
+    parents: [string];
+    id?: string;
+    mimeType?: string;
+    appProperties?: Record<string, string | null>;
+  }): Promise<DriveMadeCopy | undefined> {
+    requireDriveFileId(fileId);
+    requireDriveFileId(copy.parents[0]);
+    if (copy.id !== undefined) requireDriveFileId(copy.id);
+    let params = new URLSearchParams({ supportsAllDrives: "true", fields: MADE_COPY_FIELDS });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy?${params}`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(copy.id === undefined ? {} : { id: copy.id }),
+          name: copy.name,
+          parents: copy.parents,
+          ...(copy.mimeType === undefined ? {} : { mimeType: copy.mimeType }),
+          ...(copy.appProperties === undefined ? {} : { appProperties: copy.appProperties }),
+        }),
+      },
+      this.getAccessToken, { idempotent: copy.id !== undefined });
+    if (copy.id !== undefined && response.status === 409) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    if (!response.ok) throw await driveError(response);
+    let text = await readBoundedText(
+      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+    let made = parseDriveJson(text, "response");
+    if (!isRecord(made) || typeof made.id !== "string" ||
+        (copy.id !== undefined && made.id !== copy.id)) {
+      throw new Error("Google Drive answered a copy with another file than the one asked for");
+    }
+    let mimeType = optionalString(made.mimeType, "file mimeType");
+    return { id: made.id, ...(mimeType === undefined ? {} : { mimeType }) };
+  }
+
+  /**
+   * The file whose {@link COPY_TOKEN_PROPERTY} is `token`, searched for in every drive, or
+   * `undefined` when Drive shows none. App properties are private to the client that set them,
+   * and the token is random, so only the copy made with it can match. A copy in the trash is
+   * found too: it proves the copy was made. Drive's search is updated some time after a file is
+   * made, so not finding it proves nothing.
+   */
+  async findCopy(token: string): Promise<DriveMadeCopy | undefined> {
+    let params = new URLSearchParams({
+      q: `appProperties has { key='${COPY_TOKEN_PROPERTY}' and value='${
+        escapeDriveQueryLiteral(token)}' }`,
+      pageSize: "2",
+      fields: `files(${MADE_COPY_FIELDS},appProperties)`,
+      spaces: "drive",
+      corpora: "allDrives",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    let body = await this.#getUnknown("/files", params);
+    if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+    if (body.files === undefined) return undefined;
+    if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
+    for (let file of body.files) {
+      if (!isRecord(file) || typeof file.id !== "string") {
+        throw new Error("Invalid Google Drive file-list response");
+      }
+      if (optionalAppProperties(file.appProperties)?.[COPY_TOKEN_PROPERTY] !== token) continue;
+      let mimeType = optionalString(file.mimeType, "file mimeType");
+      return { id: file.id, ...(mimeType === undefined ? {} : { mimeType }) };
+    }
+    return undefined;
   }
 
   /** Whether the connected account may comment on a file, as Drive reports it. */

@@ -21,7 +21,7 @@ const FILE_READ_IDLE =
   "The Drive file's content went unread, or Drive stopped sending it, for a minute; read it again.";
 
 /** Every Google-native type starts with this; none has content of its own to download. */
-const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
+export const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
 
 /** The native types a Drive session opens, and what a read of one is told to use instead. */
 const NATIVE_OPENERS: Record<string, string> = {
