@@ -447,9 +447,10 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   /**
    * Sends a request to UniFi with this connection's credentials. Failures come back as values,
    * since an error's class doesn't survive RPC.
+   * @param fresh Whether a GET must reach the console rather than be answered from the cache.
    */
-  async request(request: UnifiRequest): Promise<UnifiResponse> {
-    return this.#send(request, GET_TTL_MS);
+  async request(request: UnifiRequest, fresh = false): Promise<UnifiResponse> {
+    return this.#send(request, fresh ? null : GET_TTL_MS);
   }
 
   /**

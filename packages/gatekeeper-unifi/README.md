@@ -98,7 +98,8 @@ Every read is recorded as an observation. Every change waits for approval:
 Changes to WiFi and guest access are never auto-approvable because they change who can use the
 network, and a doorbell message isn't because it's shown to whoever comes to the door. A device
 the device list doesn't classify can't be restarted, since it can't be told apart from the
-gateway. Approvals name what they change ("Restart “Living Room AP”"), as UniFi names it now rather than as
+gateway, and a device restart asks UniFi again just before it's sent: one that has become the
+gateway, or that UniFi no longer classifies, isn't restarted. Approvals name what they change ("Restart “Living Room AP”"), as UniFi names it now rather than as
 an earlier pending rename would, with its UniFi ID alongside. Action history is visible to
 everyone the workspace is shared with, which is fine for names, but an approval never shows a WiFi
 password or voucher code that still works: a new password is described as changing.

@@ -162,6 +162,28 @@ describe("a device", () => {
     expect(console.writes()).toHaveLength(1);
   });
 
+  it("asks UniFi afresh when a device restart applies, and won't restart one that is now the gateway", async () => {
+    // Submitted as a device restart, then UniFi calls the access point the gateway, within the
+    // few seconds its device list stays cached.
+    const { console } = installFake();
+    const ap = binding(await connectCloud(), RESOURCES.device(HOME.apId));
+    await ap.call("restart");
+    const { actionId } = lastSubmitted(await ap.queue());
+    const listed = console.network!.sites[0]!.devices.find(d => d.overview.id === HOME.apId)!.overview;
+    const roles = listed.features as string[];
+    roles.push("gateway");
+    expect(await ap.applyOutcome(actionId)).toMatchObject({ error: expect.stringMatching(/now says this device is the site's gateway/) });
+    expect(console.writes()).toEqual([]);
+
+    // And not one UniFi no longer classifies.
+    roles.pop();
+    await ap.call("restart");
+    const next = lastSubmitted(await ap.queue()).actionId;
+    delete listed.features;
+    expect(await ap.applyOutcome(next)).toMatchObject({ error: expect.stringMatching(/no longer says what this device does/) });
+    expect(console.writes()).toEqual([]);
+  });
+
   it("warns that restarting the gateway takes the network down, and never auto-approves it", async () => {
     installFake();
     const gateway = binding(await connectCloud(), RESOURCES.device(HOME.gatewayId));
@@ -216,9 +238,18 @@ describe("a device", () => {
     const ap = binding(await connectCloud(), RESOURCES.device(HOME.apId));
     await ap.call("restart");
     const { actionId } = lastSubmitted(await ap.queue());
+    // Unreachable before anything is sent, which the check of the device's role finds: retried later.
     console.offline = true;
-    expect(await ap.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(await ap.applyOutcome(actionId)).not.toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
     console.offline = false;
+    // Then the console stops answering once the restart is on its way.
+    const handle = console.handle.bind(console);
+    console.handle = (app, method, path, query, body) => method === "POST"
+      ? new Response(JSON.stringify({ code: "DeviceTimeout", message: "Device connection timeout" }),
+        { status: 408, headers: { "Content-Type": "application/json" } })
+      : handle(app, method, path, query, body);
+    expect(await ap.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    console.handle = handle;
     // Terminal: the stored message comes back, and nothing is sent again.
     expect(await ap.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
     expect(console.writes()).toEqual([]);
@@ -474,6 +505,23 @@ describe("the guest hotspot", () => {
     // Working codes, which the Workshop keeps from leaving the workspace.
     expect((await hotspot.queue()).observations.at(-1)).toMatchObject({ containsRestrictedData: true });
     expect(await hotspot.failure("getVoucherBatch", "not-a-batch")).toMatch(/isn't a voucher batch ID/);
+  });
+
+  it("still reports the codes of expired vouchers, but doesn't count them as working ones", async () => {
+    // UniFi no longer accepts an expired voucher's code, so reading one doesn't restrict the workspace.
+    const { console } = installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240 });
+    await hotspot.apply((await hotspot.queue()).submitted[0]!.actionId);
+    for (const voucher of console.network!.sites[0]!.vouchers) voucher.expired = true;
+    const code = `console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/voucherCode/${HOME.voucherId}`;
+    await hotspot.call("listVouchers");
+    await hotspot.call("getVoucherBatch", batch);
+    const [listed, read] = (await hotspot.queue()).observations.slice(-2);
+    expect(listed!.subresources).toContain(code);
+    expect(listed!.containsRestrictedData).toBeUndefined();
+    expect(read!.subresources).toEqual(expect.arrayContaining([expect.stringContaining("/voucherCode/")]));
+    expect(read!.containsRestrictedData).toBeUndefined();
   });
 
   it("tells a declined batch, which created nothing, from one it can't look up", async () => {

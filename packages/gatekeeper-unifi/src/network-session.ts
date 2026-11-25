@@ -299,6 +299,14 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
   }
 }
 
+/**
+ * Whether a voucher's code would still let a guest on, which makes the workspace hold restricted
+ * data. UniFi marks one it no longer accepts `expired`.
+ */
+function worksAsCode(voucher: UnifiVoucher): boolean {
+  return voucher.code !== null && !voucher.expired;
+}
+
 /** A site's guest hotspot. Never reveals a client that isn't a guest. */
 @validateRpc()
 export class HotspotSession extends RpcTarget implements UnifiHotspot {
@@ -355,11 +363,11 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
     await this.#ctx.observe("List UniFi hotspot vouchers",
       `Listed ${count(vouchers.length, "voucher")} for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
-      this.#voucherRequirements(vouchers), { restricted: vouchers.some(voucher => voucher.code !== null) });
+      this.#voucherRequirements(vouchers), { restricted: vouchers.some(worksAsCode) });
     return vouchers;
   }
 
-  /** What a read of vouchers requires: the list, and each voucher whose code it returned. */
+  /** What a read of vouchers requires: the list, and each voucher whose code it returned, expired or not. */
   #voucherRequirements(vouchers: readonly UnifiVoucher[]): [UnifiRequirement, ...UnifiRequirement[]] {
     return [
       { kind: "vouchers", siteId: this.#siteId },
@@ -401,7 +409,7 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     }
     await this.#ctx.observe("Read a batch of UniFi hotspot vouchers",
       `Read ${count(vouchers.length, "voucher")} created together for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
-      this.#voucherRequirements(vouchers), { restricted: vouchers.some(voucher => voucher.code !== null) });
+      this.#voucherRequirements(vouchers), { restricted: vouchers.some(worksAsCode) });
     return vouchers;
   }
 
