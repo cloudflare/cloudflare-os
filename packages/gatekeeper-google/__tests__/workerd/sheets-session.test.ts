@@ -556,10 +556,11 @@ describe("Google Sheets format reads", () => {
       queuedChangeConflict: "Queued change 2 no longer applies, so it and the changes queued after " +
         "it are not shown: change 1 (writeCells): the spreadsheet has no sheet with ID 9.",
     });
-    // The metadata, to replay the queued changes over, the merges of the sheet the first writes
-    // and of the sheet read, and the formats.
+    // The metadata, to replay the queued changes over, the merges of the sheets the queued changes
+    // write (9 is gone), and the formats, which answer the merges of the range read: no queued
+    // change touches the sheet read, so its merges are not read whole.
     expect(requested().map(([, fields]) => fields === FORMAT_READ_FIELDS).toSorted()).toEqual([false, false, true]);
-    expect(mergeReads).toEqual([[0, 7]]);
+    expect(mergeReads).toEqual([[0, 9]]);
     expect(formatFilterReads).toEqual([]);
   });
 

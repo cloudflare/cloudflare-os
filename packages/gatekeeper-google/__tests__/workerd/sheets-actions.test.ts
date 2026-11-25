@@ -2796,6 +2796,17 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
     expect(provider.sheets[0].merges).toEqual([]);
   });
 
+  it("reads a range of a sheet of more merges than a read may answer, with a resize queued elsewhere", async () => {
+    let provider = archived();
+    let sheets = gatekeeper(run);
+    await sheets.queued([{ op: "resizeRows", sheet: "Sales", at: 1, count: 2, height: 30 }]);
+    provider.mergeReads = [];
+
+    // The range's own read answers the merge it overlaps; the sheet's 80,000 are not read.
+    expect(await sheets.formats("Archive!A1:C1")).toMatchObject({ merges: ["A1:B1"] });
+    expect(provider.mergeReads.flat()).not.toContain(9);
+  });
+
   it("unmerges only the merges it was queued over, leaving one made in its range since", async () => {
     let provider = budget([{ ...sheetMeta(0, "Sales"), merges: [rectOf(0, 0, 1, 2)] }, sheetMeta(7, "Q3 Plan", { index: 1 })]);
     let sheets = gatekeeper(run);

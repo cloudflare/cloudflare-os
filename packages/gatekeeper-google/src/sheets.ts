@@ -593,12 +593,14 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let parsed = parseFormatRange(range);
     let metadata: SpreadsheetMetadata;
     let read: SpreadsheetFormats | undefined;
-    // The merges a read shows are those of the sheet it reads.
+    // The merges a read shows are those of the sheet it reads. With no cell moved, the range is
+    // read as named, which answers the merges it overlaps: the sheet's own are read only where a
+    // queued change consults them, so a sheet of many merges a resize leaves alone is not read.
     if (mayMoveCells(pending)) {
       metadata = await this.#metadata(pending, [parsed.sheet]);
     } else {
       [metadata, read] = await Promise.all([
-        this.#metadata(pending, [parsed.sheet]), this.#api.readFormats(this.#spreadsheetId, range),
+        this.#metadata(pending), this.#api.readFormats(this.#spreadsheetId, range),
       ]);
     }
     let { grid, conflict } = replayed(gridOf(metadata), pending);
@@ -618,6 +620,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       ? await this.#api.readFormatAreas(this.#spreadsheetId, fetched.pieces, { linesOnly: fetched.linesOnly })
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
     let shown = simulatedFormats(grid, area, base.formats, base.sizes);
+    if (read && !mergedSheets(pending.flatMap(({ action }) => action.payload.changes)).includes(area.sheetId)) {
+      let { merges: _replayed, ...rest } = shown;
+      shown = read.merges ? { ...rest, merges: read.merges } : rest;
+    }
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
   }
 
