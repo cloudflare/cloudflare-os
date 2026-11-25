@@ -47,10 +47,11 @@ export const Chip = ({ children, icon, href: given, about }: ChipProps) => {
     ? <a href={href} target="_blank" rel="noreferrer noopener" title={title} onPointerEnter={measure} onFocus={measure} className="chip">{content}</a>
     : <span title={title} onPointerEnter={measure} className="chip">{content}</span>
   if (!about) return chip
+  // Its card goes where the chip does.
   const said = () => {
     const found = typeof about === 'function' ? about() : about
-    if (found) return { icon, cut, ...found }
-    return cut && name !== undefined ? { icon, cut, title: name } : undefined
+    if (found) return { icon, cut, href, ...found }
+    return cut && name !== undefined ? { icon, cut, href, title: name } : undefined
   }
-  return <ChipTooltip about={said}>{chip}</ChipTooltip>
+  return <ChipTooltip about={said} linked={href !== undefined}>{chip}</ChipTooltip>
 }

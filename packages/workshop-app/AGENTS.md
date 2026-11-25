@@ -548,7 +548,10 @@ workspace's commands while it still offers the skill, `ChatItemHandlers.describe
 a format or a template is for (as its offer in the + menu says; a sent message does not carry
 that), and what a connection holds (its service's snippet) with what kind it is or, in a message,
 the site its link goes to. Where there is nothing of that, there is no card, unless the pill cut
-its name short, which the card then says whole. What a draft holds is also said to a screen
+its name short, which the card then says whole. The card of what is on the web (a link's pill, a
+connection's chip with a link) is a link there itself, opening in a new tab, which stays open
+while the pointer goes onto it: in the draft it waits a moment after the pointer leaves the pill
+for that. What a draft holds is also said to a screen
 reader as it changes, with how to take it off, as the cursor does not come across its pills. A `/` or an `@` typed at the start of a word opens the + menu too (`menuOpenerAt`; by the key
 pressed, or by the one character the draft grew by where a keyboard does not say which key it
 was, as a phone's does not), which has

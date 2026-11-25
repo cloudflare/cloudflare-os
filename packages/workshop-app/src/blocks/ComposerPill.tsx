@@ -24,7 +24,7 @@ export const pillAbout = (pill: NewDraftPill): ChipAbout => {
     return { icon: <FormatIcon name={icon} />, title: noun, description, facts: description ? [template ? 'Template' : 'Format'] : [] }
   }
   // By its site, the whole of it in its card.
-  if (pill.itemType === 'link') return { icon: <Link04Icon aria-hidden="true" />, title: linkSite(pill.data.url), description: pill.data.url }
+  if (pill.itemType === 'link') return { icon: <Link04Icon aria-hidden="true" />, title: linkSite(pill.data.url), description: pill.data.url, href: pill.data.url }
   const { service, title, snippet } = pill.data
   return {
     icon: service.glyph ?? <ServiceLogo bare name={service.name} src={service.logoUrl} />,
