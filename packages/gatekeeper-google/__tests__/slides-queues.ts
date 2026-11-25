@@ -15,6 +15,7 @@ import { themePagesOf } from "../src/slides-model";
 import {
   isDesignBatch, type CreatedPlaceholder, type Deck, type QueuedChange, type SlidesAction,
 } from "../src/slides-simulation";
+import { seeded } from "./doc-fixture";
 import {
   layout, master, shape as shapeElement, slide as slidePage, text as textOf,
 } from "./slides-fixture";
@@ -467,17 +468,6 @@ function shadowDeck(): ShadowSlide[] {
   ];
 }
 
-// A generator of numbers in [0, 1) from `seed` (mulberry32).
-function random(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
-    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
-    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
 const OPS = COVERED.slice(0, 19) as DesignChange["op"][];
 const COLORS = ["#102030", "#a0b0c0", "ACCENT1", "ACCENT5", "DARK2", "#ffffff"];
 const BATCH_KINDS = ["editText", "formatSlides", "editSlides", "deleteSlideContent", "updateSlides"] as const;
@@ -490,7 +480,7 @@ const BATCH_KINDS = ["editText", "formatSlides", "editSlides", "deleteSlideConte
  * conflict. The generator follows what its changes make only roughly, so a queue may stop sooner.
  */
 export function generatedQueue(seed: number): QueuedChange[] {
-  let next = random(seed);
+  let next = seeded(seed);
   let below = (count: number) => Math.floor(next() * count);
   let chance = (odds: number) => next() < odds;
   let oneOf = <T>(items: readonly T[]): T => items[below(items.length)];
