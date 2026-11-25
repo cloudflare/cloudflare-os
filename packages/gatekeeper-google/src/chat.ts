@@ -1048,20 +1048,29 @@ const audienceChanged = (retried: boolean) =>
 const SPACE_WRITE_INTERVAL_MS = 1000;
 
 /**
- * Space one send's writes to a conversation a second apart, so that its uploads and its message
- * don't use up each other's quota and their retries. Others writing there can still collide.
+ * Runs this connection's writes to each conversation one at a time, each a second after the one
+ * before it finished, across sends as well as within one: an approval queue applying several sends
+ * back to back would otherwise spend their retries on each other's quota. Others writing to the
+ * conversation can still collide with them.
  */
-function spacedWrites(): <T>(write: () => Promise<T>) => Promise<T> {
-  let finished: number | undefined;
-  return async write => {
-    const wait = finished === undefined ? 0 : finished + SPACE_WRITE_INTERVAL_MS - Date.now();
-    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
-    try {
-      return await write();
-    } finally {
-      finished = Date.now();
-    }
-  };
+class SpaceWritePacer {
+  #spaces = new Map<string, { tail: Promise<unknown>; finished: number }>();
+
+  run<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+    const space = this.#spaces.get(spaceName) ?? { tail: Promise.resolve(), finished: 0 };
+    this.#spaces.set(spaceName, space);
+    const result = space.tail.then(async () => {
+      const wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now();
+      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      try {
+        return await write();
+      } finally {
+        space.finished = Date.now();
+      }
+    });
+    space.tail = result.catch(() => {});
+    return result;
+  }
 }
 
 /** What an earlier attempt at this send posted, when Google shows it under the name the send gives it. */
@@ -1656,6 +1665,7 @@ export class GoogleChatGatekeeperImpl
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
   #settingUp = new SingleFlight();
+  #spaceWrites = new SpaceWritePacer();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1930,27 +1940,29 @@ export class GoogleChatGatekeeperImpl
           // Uploads go to the conversation the message is posted to. Google is expected not to show
           // one until a message attaches it, though no live conversation has confirmed that yet, so
           // one a lost response leaves behind is simply uploaded again.
-          const spaced = spacedWrites();
           const attachments: ChatAttachmentDataRef[] = [];
           for (const { filename, mimeType, file } of action.attachments ?? []) {
             const content = await store.readAttachment(file);
-            attachments.push(await spaced(() => api.uploadAttachment(spaceName, { filename, mimeType, content })));
+            attachments.push(await this.#spaceWrites.run(spaceName,
+              () => api.uploadAttachment(spaceName, { filename, mimeType, content })));
           }
-          // Someone may have joined while the files uploaded, and the message must reach only the
-          // people it was approved for.
-          if (recipients && attachments.length > 0 && !await hasExactly(api, spaceName, recipients)) {
-            throw new Error(audienceChanged(retried));
-          }
-          // The request id makes Chat itself idempotent, so a retry after a lost response returns
-          // the message the first attempt created rather than posting a second one.
-          const { id } = await store.attemptWrite(actionId, () => spaced(() => api.createMessage(spaceName, {
-            text: action.text,
-            ...(threadName !== undefined ? { threadName } : {}),
-            ...(attachments.length > 0 ? { attachments } : {}),
-          }, {
-            requestId: action.requestId,
-            messageId: clientMessageId(action),
-          })));
+          const { id } = await this.#spaceWrites.run(spaceName, async () => {
+            // Someone may have joined while the files uploaded or this write waited its turn, and
+            // the message must reach only the people it was approved for.
+            if (recipients && attachments.length > 0 && !await hasExactly(api, spaceName, recipients)) {
+              throw new Error(audienceChanged(retried));
+            }
+            // The request id makes Chat itself idempotent, so a retry after a lost response returns
+            // the message the first attempt created rather than posting a second one.
+            return store.attemptWrite(actionId, () => api.createMessage(spaceName, {
+              text: action.text,
+              ...(threadName !== undefined ? { threadName } : {}),
+              ...(attachments.length > 0 ? { attachments } : {}),
+            }, {
+              requestId: action.requestId,
+              messageId: clientMessageId(action),
+            }));
+          });
           // A replayed create echoes the request, not the message Chat stored.
           return readTarget(id);
         };

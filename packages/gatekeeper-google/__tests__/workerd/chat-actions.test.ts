@@ -127,8 +127,8 @@ function chatBackend() {
     uploads: [] as Array<{space: string; filename: string; contentType: string; bytes: number[]}>,
     /** Refuse uploads with this status until cleared, as Google does a blocked file type. */
     uploadFailure: 0,
-    /** Someone who joins the conversation while the next file uploads. */
-    joinOnUpload: undefined as ChatMembershipRaw | undefined,
+    /** Someone who joins the conversation this long after the next file uploads. */
+    joinAfterUpload: undefined as {member: ChatMembershipRaw; ms: number} | undefined,
     /** When each upload and message create arrived, to see how a send spaces its writes. */
     writeTimes: [] as number[],
     /** Profiles in the organization's directory, matched by email or name prefix. */
@@ -186,9 +186,10 @@ function chatBackend() {
     const uploadTo = /^\/upload\/v1\/(spaces\/[^/]+)\/attachments:upload$/.exec(url.pathname)?.[1];
     if (uploadTo && method === "POST" && url.searchParams.get("uploadType") === "multipart") {
       state.writeTimes.push(Date.now());
-      if (state.joinOnUpload) {
-        state.members.push(state.joinOnUpload);
-        state.joinOnUpload = undefined;
+      if (state.joinAfterUpload) {
+        const {member, ms} = state.joinAfterUpload;
+        state.joinAfterUpload = undefined;
+        setTimeout(() => state.members.push(member), ms);
       }
       if (state.uploadFailure) return json({error: {status: "INVALID_ARGUMENT"}}, state.uploadFailure);
       const boundary = /boundary=(.+)$/.exec(new Headers(init.headers).get("Content-Type")!)![1];
@@ -1954,13 +1955,14 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.creates).toHaveLength(1);
   });
 
-  it("posts nothing to a group chat someone joined while its files uploaded", async () => {
+  it("posts nothing to a group chat someone joined after its files uploaded", async () => {
     const {backend, chat} = accountChat({groupChat: true});
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "Impact", {
       attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
     })).message;
-    backend.state.joinOnUpload = joined("400");
+    // While the message waits its turn to be written, a second after the upload.
+    backend.state.joinAfterUpload = {member: joined("400"), ms: 300};
     await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
     expect(backend.state.uploads).toHaveLength(1);
     expect(backend.state.creates).toEqual([]);
@@ -2182,16 +2184,18 @@ describe("Starting Google Chat conversations", () => {
   });
 });
 
+const sha256 = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+  .map(byte => byte.toString(16).padStart(2, "0")).join("");
+
+/** What the gatekeeper still keeps of attached files: chunks and manifests, and their accounting. */
+const kept = async (chat: ReturnType<typeof chatHarness>) => [
+  ...await chat.storageKeys("chat:attachment:"),
+  ...(await chat.storageKeys("chat:attachmentAllocation:")).filter(key => !key.endsWith("totalBytes")),
+];
+
 describe("Google Chat attachments", () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
   const png = (filename = "impact.png") => ({filename, mimeType: "image/png", content: PNG.slice().buffer});
-  const sha256 = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
-    .map(byte => byte.toString(16).padStart(2, "0")).join("");
-  /** What the gatekeeper still keeps of attached files: chunks and manifests, and their accounting. */
-  const kept = async (chat: ReturnType<typeof chatHarness>) => [
-    ...await chat.storageKeys("chat:attachment:"),
-    ...(await chat.storageKeys("chat:attachmentAllocation:")).filter(key => !key.endsWith("totalBytes")),
-  ];
 
   it("uploads a send's files into its conversation only once it is applied, then lets go of them", async () => {
     const backend = chatBackend();
@@ -2234,6 +2238,19 @@ describe("Google Chat attachments", () => {
     await expect(Promise.resolve(message.getAttachment(info.attachments[0].id))).rejects.toThrow(/no such attachment/);
     using attachment = await message.getAttachment(committed.id);
     expect(await attachment.getMetadata()).toEqual(committed);
+  });
+
+  it("spaces the writes of sends applied back to back in one conversation", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _first = (await space.post("Release 41", {attachments: [png()]})).message;
+    using _second = (await space.post("Release 42", {attachments: [png()]})).message;
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    const writes = backend.state.writeTimes;
+    expect(writes).toHaveLength(4);
+    for (const [index, at] of writes.slice(1).entries()) expect(at - writes[index]).toBeGreaterThanOrEqual(1000);
   });
 
   it("doesn't upload a retried send's files again once its message was posted", async () => {
