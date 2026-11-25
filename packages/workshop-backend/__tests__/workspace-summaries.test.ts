@@ -5,7 +5,7 @@
 // collaborator is sent. Runs against real Overseer and User DOs.
 
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -363,7 +363,10 @@ describe("a chat's head", () => {
     });
     await vi.waitFor(async () => expect(await recentHead(reader, fixture.workspaceId, 3)).toBeDefined());
     expect(await recentHead(reader, fixture.workspaceId, 3)).not.toHaveProperty("waiting");
-    await evictDurableObject(fixture.workspace);
+    // A reset, not an eviction: eviction waits out the minute's timer the message's activity listing
+    // may have armed.
+    await expect(runInDurableObject(fixture.workspace, (_instance, ctx) => ctx.abort("Restart")))
+      .rejects.toThrow("Restart");
     await withImpl(fixture.workspace, async impl => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.nextChatSequences.get(3)?.askedUsers).toEqual([readerId]);
