@@ -5005,7 +5005,7 @@ async function runAgentPass(
     const refuseAttachments = (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
     // A first-request input failure can involve history accepted by a different model, or arrive
     // inside an HTTP 200 stream. Preserve pixels on credential/configuration and server failures.
-    const imageStreamError = (statusCode === undefined || statusCode === 200) && /\bimage(?:\b|_)/i.test(message);
+    const imageStreamError = (statusCode === undefined || statusCode === 200) && /(?:\b|_)images?(?:\b|_)/i.test(message);
     const refuseFileImages = (statusCode === 400 || statusCode === 413 || imageStreamError) && refusedFileImages.size > 0;
     if (!stepFinished && (refuseAttachments || refuseFileImages)) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);

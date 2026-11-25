@@ -215,7 +215,7 @@ describe("images read from a worktree", () => {
     expect(results(requests[0]).every(result => result.content.every(part => part.type === "text"))).toBe(true);
   }));
 
-  it.each(["400 Invalid image", "Error Code image_parse_error: Could not process image"])(
+  it.each(["400 Invalid image", "Error Code image_parse_error: Could not process image", "invalid_image_data", "Images are unsupported"])(
     "surfaces a permanent failure without repeating effects and leaves the chat usable: %s", failure => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await expect(scriptedTurn(impl, chatId, [
