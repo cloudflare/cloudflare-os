@@ -1430,7 +1430,7 @@ Read the content of a file owned by a workpiece (a gadget or worktree) in your \
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 
-A PNG, JPEG or WebP image (named with a .png, .jpg, .jpeg or .webp extension) read without \`startLine\` or \`lineCount\` is shown to you as the image itself. To look at an image you produce or fetch in \`executeCode\`, write it into a worktree with \`writeBytes\`, then read it in your next step.
+A PNG, JPEG or WebP image is shown to you as the image itself; read it without \`startLine\` or \`lineCount\`. To look at an image you produce or fetch in \`executeCode\`, write it into a worktree with \`writeBytes\`, then read it in your next step.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -2476,13 +2476,6 @@ async function runAgentPass(
         call.toolName === "readFile" && !call.error && call.imageBytes !== undefined
           ? [{id: call.toolCallId, bytes: call.imageBytes}] : []) : [];
     for (let read of imageReads) messageBytes += read.bytes;
-    // Checked before the replay allowance: a step's image reads, unlike a message's attachments,
-    // have no per-message bound, so one can pass both limits at once, and must still compact.
-    if (attachmentsFitFrom === undefined &&
-        (keptAttachments + messageIds.length + imageReads.length > MAX_INLINE_ATTACHMENTS ||
-         keptAttachmentBytes + messageBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
-      attachmentsFitFrom = msg.sequence + 1;
-    }
     pastReplayBytes ||= keptAttachmentBytes + messageBytes > MAX_INLINE_REPLAY_BYTES;
     if (pastReplayBytes) {
       for (let id of messageIds) unreadAttachmentIds.add(id);
@@ -2491,6 +2484,10 @@ async function runAgentPass(
     }
     keptAttachments += messageIds.length + imageReads.length;
     keptAttachmentBytes += messageBytes;
+    if (attachmentsFitFrom === undefined && (keptAttachments > MAX_INLINE_ATTACHMENTS ||
+        keptAttachmentBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
+      attachmentsFitFrom = msg.sequence + 1;
+    }
     if (attachmentsFitFrom === undefined) {
       sentInline = keptAttachments;
       sentInlineBytes = keptAttachmentBytes;
@@ -3701,6 +3698,8 @@ async function runAgentPass(
         "in the system prompt or chosen when creating it.",
   });
 
+  // The images readFile has shown in the current step, and their bytes.
+  let stepImages = 0, stepImageBytes = 0;
   let tools: Record<string, AgentTool> = {
     readFile: defineTool({
       name: "readFile",
@@ -3729,8 +3728,18 @@ async function runAgentPass(
           if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let {content, imageBytes} =
-              readFileResult(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
+          let {content, imageBytes} = readFileResult(file.source, window, filename,
+              MAX_TOOL_RESULT_CHARS, handle.model.input.includes("image"));
+          if (imageBytes !== undefined) {
+            // One step's images fit one message's budget, as a message's attachments do, so a
+            // compaction that keeps the step alone can always make room for it.
+            if (stepImages >= MAX_INLINE_ATTACHMENTS ||
+                stepImageBytes + imageBytes > MAX_INLINE_MESSAGE_BYTES) {
+              throw new Error("Too many images in one step: read the rest in your next step.");
+            }
+            ++stepImages;
+            stepImageBytes += imageBytes;
+          }
           markFileRead(resolved.workpieceId, filename, file.oid);
           return {content, details: {
             ...(file.oid === undefined ? {} : {observedOid: file.oid}),
@@ -4927,6 +4936,8 @@ async function runAgentPass(
       }
       let inlinePastLimits = sentInline > MAX_INLINE_ATTACHMENTS ||
           sentInlineBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES;
+      stepImages = 0;
+      stepImageBytes = 0;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (

@@ -4,9 +4,7 @@ import { MAX_INLINE_ATTACHMENT_BYTES } from "../src/chat-attachment-validation";
 import { BlobReader, BlobWriter, type ChunkStore } from "../src/git-chunked-blob";
 import { encodeLooseObject } from "../src/git-codec";
 import type { ReadFileWindow } from "../src/line-window";
-import {
-  MAX_READ_FILE_IMAGE_EDGE, readFileImageMimeType, readFileResult,
-} from "../src/read-file-result";
+import { MAX_READ_FILE_IMAGE_EDGE, readFileResult } from "../src/read-file-result";
 import type { GitObjectRecord } from "../src/storage-schema/overseer-storage";
 
 // A blob source over an in-memory chunk store, chunked as the git store stores it.
@@ -60,16 +58,23 @@ describe("readFileResult", () => {
     expect(image).toEqual({ type: "image", data: bytes.toBase64(), mimeType: "image/png" });
   });
 
-  it("reads anything else as text: other names, windows, mismatched headers, session text", () => {
+  it("tells an image by its content, whatever its name, and reads anything else as text", () => {
     let bytes = png(10, 10);
-    expect(() => read(blob(bytes), "chart.bin")).toThrow("binary data");
-    expect(() => read(blob(bytes), "chart.png", { startLine: 1 })).toThrow("binary data");
+    expect(read(blob(bytes), "screenshot")).toHaveLength(2);
     let text = new TextEncoder().encode("not really a picture\n");
     expect(render(blob(text), "fake.png"))
         .toEqual({ content: [{ type: "text", text: "not really a picture\n" }] });
-    // A PNG named as a JPEG matches no header it is checked against.
-    expect(() => read(blob(bytes), "chart.jpg")).toThrow("binary data");
     expect(read({ kind: "text", text: "plain" }, "notes.png")).toEqual([{ type: "text", text: "plain" }]);
+  });
+
+  it("refuses a line window, a model that can't view images, and an unreadable header", () => {
+    let bytes = png(10, 10);
+    expect(() => read(blob(bytes), "chart.png", { startLine: 1 }))
+        .toThrow("chart.png is an image, which has no lines: omit startLine and lineCount to view it.");
+    expect(() => readFileResult(blob(bytes), {}, "chart.png", MAX_TOOL_RESULT_CHARS, false))
+        .toThrow("chart.png is an image, which this model can't view.");
+    expect(() => read(blob(bytes.slice(0, 16)), "cut.png"))
+        .toThrow("cut.png begins like an image (image/png), but its header is unreadable.");
   });
 
   it("refuses an image over the pixel or byte bounds, saying which", () => {
@@ -79,13 +84,5 @@ describe("readFileResult", () => {
         .toThrow(`wide.png is a ${edge + 1}x10 image, too large to view`);
     expect(() => read(blob(png(10, 10, MAX_INLINE_ATTACHMENT_BYTES + 1)), "heavy.png"))
         .toThrow(`heavy.png is ${MAX_INLINE_ATTACHMENT_BYTES + 1} bytes, too large to view as an image`);
-  });
-
-  it("nominates images by extension", () => {
-    expect(readFileImageMimeType("a/b.JPEG")).toBe("image/jpeg");
-    expect(readFileImageMimeType("a.webp")).toBe("image/webp");
-    expect(readFileImageMimeType("png")).toBeUndefined();
-    expect(readFileImageMimeType("a.png/readme")).toBeUndefined();
-    expect(readFileImageMimeType("a.gif")).toBeUndefined();
   });
 });

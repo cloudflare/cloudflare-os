@@ -89,8 +89,8 @@ it("shows a worktree image to the model, live and on replay", async () => {
     images: [`data:image/png;base64,${DOT_BASE64}`],
   };
   expect(toolResult(model.requests[1], "look")).toEqual(shown);
-  // A windowed read stays a text read, which binary content fails.
-  expect(toolResult(model.requests[2], "look-window").text).toContain("binary data");
+  // An image has no lines to window.
+  expect(toolResult(model.requests[2], "look-window").text).toContain("is an image, which has no lines");
 
   await ws.sendChatMessage(chatId, "And now?", VISION_MODEL_ID);
   await waitFor("the second turn", async () => model.requests.length >= 4 || null);

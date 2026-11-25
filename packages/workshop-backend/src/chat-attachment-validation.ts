@@ -63,6 +63,16 @@ const CONTENT_SIGNATURES = new Map<string, readonly (number | null)[]>([
   [PDF_MIME_TYPE, [0x25, 0x50, 0x44, 0x46, 0x2D]],
 ]);
 
+/** The image type whose signature `leadingBytes` begin with, among those attachments take. */
+export function imageMimeTypeOf(leadingBytes: Uint8Array): string | undefined {
+  for (let [mimeType, signature] of IMAGE_SIGNATURES) {
+    if (signature.every((expected, index) => expected === null || leadingBytes[index] === expected)) {
+      return mimeType;
+    }
+  }
+  return undefined;
+}
+
 /** How many leading bytes of an upload validateChatAttachmentUpload() examines. */
 export const CHAT_ATTACHMENT_SIGNATURE_BYTES =
     Math.max(...[...CONTENT_SIGNATURES.values()].map(signature => signature.length));
