@@ -428,6 +428,35 @@ describe("Drive rename sends and their markers", () => {
     // Settled with nothing sent again: a second send could only fail, and then say so wrongly.
     expect(api.renameFile).toHaveBeenCalledTimes(1);
 
+    // Found so, it is not refused for what a new send would be: put in the trash meanwhile, it is
+    // still applied, and gone or under a third name it ends as of unknown outcome.
+    for (let [what, change, outcome] of [
+      ["in the trash", (run: ReturnType<typeof harness>) => {
+        run.names.F = "Budget 2027";
+        run.nodes.F = { ...file("F", "A"), trashed: true };
+      }, null],
+      ["gone", (run: ReturnType<typeof harness>) => run.hide("F"), NO_LONGER_SHOWN],
+      ["under a third name", (run: ReturnType<typeof harness>) => { run.names.F = "Budget (old)"; },
+        RENAMED_AGAIN],
+    ] as const) {
+      let run = harness();
+      run.api.renameFile.mockRejectedValueOnce(unconfirmed());
+      let queued = await run.submit(renameF());
+      expect(await run.apply(queued), what).toBe(UNCONFIRMED_RENAME);
+      let read = run.api.getScopeNodes.getMockImplementation()!;
+      run.api.getScopeNodes.mockImplementationOnce(async (...args) => {
+        let looked = await read(...args);
+        change(run);
+        return looked;
+      });
+      expect(await run.apply(queued), what).toBe(outcome);
+      expect(run.api.renameFile, what).toHaveBeenCalledTimes(1);
+      expect(run.attempts.has(queued), what).toBe(true);
+      if (outcome !== null) {
+        expect(run.journal.get(queued), what).toMatchObject({ state: "failed", outcome: "unknown" });
+      }
+    }
+
     // With no send of its own on record, the new name is someone else's.
     let other = harness();
     let queued = await other.submit(renameF());

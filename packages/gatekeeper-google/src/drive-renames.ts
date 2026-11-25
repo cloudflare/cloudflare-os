@@ -133,23 +133,22 @@ async function proveRename(
  * refusal a later approval can pass, which leaves the rename pending. What the file is now comes
  * before what the account may still do, so that a rename someone else made is said as that.
  *
- * `sentBefore` says an earlier send of this rename is on record. A file found with the new name
- * is then not refused as renamed by someone else: that send may have landed after the look that
- * found the old name. It resolves `"made"` for that file, which is not sent again.
+ * `sentBefore` says an earlier send of this rename is on record, which may have landed after the
+ * look that found the old name. The file is then read as a look reads it ({@link judgeSent}),
+ * and only a file still under the old name is checked as a new send is: one under the new name
+ * resolves `"made"` and is not sent again, and any other ends as of unknown outcome.
  */
 async function requireStillRenamable(
   host: DriveWritesHost, payload: DriveRenameActions["renameFile"], sentBefore: boolean,
 ): Promise<"made" | undefined> {
   await requireWritable(host);
   let proved = await proveRename(host, payload);
+  if (sentBefore && await judgeSent(host, proved, payload) === "made") return "made";
   if (!proved) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
   let { file, name } = proved;
   // Google renames a file that is in the trash, where it stays.
   if (file.trashed !== false) throw new ActionApplyError(FILE_IN_TRASH);
-  if (name === payload.toName) {
-    if (sentBefore) return "made";
-    throw new ActionApplyError(ALREADY_RENAMED);
-  }
+  if (name === payload.toName) throw new ActionApplyError(ALREADY_RENAMED);
   // Someone else's name is not overwritten with one chosen before theirs.
   if (name !== payload.fromName) throw new ActionApplyError(RENAMED_SINCE);
   if (file.canRename !== true) throw new ActionApplyError(CANNOT_RENAME);
@@ -173,12 +172,26 @@ async function findRenamed(
     if (isInsufficientScope(error)) await waitWhileRefused(host, error);
     throw error;
   }
+  return await judgeSent(host, proved, payload) === "made"
+    ? { found: undefined } : { conclusive: true };
+}
+
+/**
+ * What a read of a rename's file says of an earlier send: `"made"` under the new name, and
+ * `"unmade"` under the old one, which proves that send renamed nothing.
+ * @throws ActionOutcomeUnknownError when the file has neither name, or cannot be proved. A read
+ * that proved nothing for a refusal a later approval can pass throws that refusal instead.
+ */
+async function judgeSent(
+  host: DriveWritesHost, proved: { name: string } | undefined,
+  payload: DriveRenameActions["renameFile"],
+): Promise<"made" | "unmade"> {
   if (!proved) {
     await waitWhileRefused(host);
     throw new ActionOutcomeUnknownError(NO_LONGER_SHOWN);
   }
-  if (proved.name === payload.toName) return { found: undefined };
-  if (proved.name === payload.fromName) return { conclusive: true };
+  if (proved.name === payload.toName) return "made";
+  if (proved.name === payload.fromName) return "unmade";
   throw new ActionOutcomeUnknownError(RENAMED_AGAIN);
 }
 
