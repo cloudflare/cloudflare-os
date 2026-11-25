@@ -1512,6 +1512,19 @@ describe("links", () => {
     ]);
   });
 
+  it("models no link set on part of a link whose other runs hold a suggestion", () => {
+    // "Alpha" and a suggested " Beta", one link: setting another on "Alpha" would repoint " Beta".
+    let tab = buildTab([{ runs: [
+      { text: "Alpha", style: { link: LINK_A } },
+      { text: " Beta", style: { link: LINK_A }, suggested: "insertion" },
+      "\n",
+    ] }]);
+    expectNotModelled(tab, styleText(1, 6, { link: LINK_B }, "link"));
+    // A link that reaches no suggested text is repointed as ever.
+    let plain = buildTab([{ runs: [{ text: "Alpha", style: { link: LINK_A } }, " Beta\n"] }]);
+    expect(() => applyDocsRequests(plain, [styleText(1, 6, { link: LINK_B }, "link")])).not.toThrow();
+  });
+
   it("changes only the cleared part when a link is cleared first", () => {
     let tab = buildTab([{ runs: [{ text: "abcd", style: { link: LINK_A } }, "\n"] }]);
     let result = applyDocsRequests(tab, [

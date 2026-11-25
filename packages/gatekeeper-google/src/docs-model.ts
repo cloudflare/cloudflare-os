@@ -1739,6 +1739,12 @@ function repointOverlappedLinks(
     while (from > 0 && sameValue(linkAt(from - 1), existing)) from--;
     let to = at + 1;
     while (sameValue(linkAt(to), existing)) to++;
+    // Google repoints the whole link, its runs past the request included: one that holds a
+    // suggestion would have its suggested text changed with it.
+    for (let position = from; position < to; position++) {
+      let run = elements[position].textRun;
+      if (run && holdsSuggestion(run)) notModelled("a link repointed over text that holds a suggestion");
+    }
     for (let position = from; position < to; position++) {
       let run = elements[position].textRun;
       if (run) run.textStyle.link = structuredClone(link);
