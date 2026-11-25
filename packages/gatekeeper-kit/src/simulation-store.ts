@@ -350,6 +350,7 @@ export type SimulatedList<Row> = {
  * const targets = (action: IncidentAction) => action.kind === "createIncident"
  *   ? ids.isResolved(action.ref) ? [] : [action.ref]
  *   : [ids.resolve(action.incident.id)];
+ * let pending = journal.listPending();
  * const list = simulatedList({
  *   store,
  *   // Built on the call, so a record on a temporary id follows it once it is bound.
