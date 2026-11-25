@@ -512,7 +512,10 @@ describe('toChatFeed', () => {
     })
 
     it('shows nothing for the error a stopped turn ends with', () => {
-      const result = feed(user('go'), agent({ text: 'Working on it' }), error('User requested to stop agent.'), user('again'), error('Overloaded'))
+      const result = feed(
+        user('go'), agent({ text: 'Working on it' }), error('The user stopped the agent.', { code: 'stopped' }),
+        user('again'), error('User requested to stop agent.'), user('once more'), error('Overloaded'),
+      )
       expect(only(result, 'error')).toMatchObject([{ text: 'Overloaded', recovery: 'retry' }])
     })
 
