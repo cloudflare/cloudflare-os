@@ -626,20 +626,6 @@ describe("a message listing over a TokenCursor", () => {
       },
     });
 
-    // The index of the pending actions is kept, and built again when they are read again: no
-    // message's id changes mid-walk.
-    let view = createSimulationView(pending, targets);
-    const list = simulatedList({
-      store,
-      view: () => view,
-      id: row => row.id,
-      compare: newestFirst,
-      keeps: row => row.folderId === listedFolder,
-      // Pending drafts are in Drafts and nowhere else.
-      created: () => listedFolder !== DRAFTS ? [] : host.pending().flatMap(({ action }) =>
-        action.kind === "createDraft" && resolve(action.ref) === action.ref ? [action.ref] : []),
-    });
-
     // Messages whose last pending move puts them in this folder are read by id and listed first.
     const lastMove = new Map<string, string>();
     for (const { action } of pending) {
@@ -647,6 +633,27 @@ describe("a message listing over a TokenCursor", () => {
       for (const { id } of action.messages) lastMove.set(id, resolve(action.to.id));
     }
     const movedIn = [...lastMove].filter(([, to]) => to === listedFolder).map(([id]) => id);
+    // That lead is part of the order, so the cursor places a pending draft after the messages
+    // moved in, whose places it compares the draft with first.
+    const lead = (row: Message): number => {
+      const index = movedIn.indexOf(row.id);
+      return index < 0 ? movedIn.length : index;
+    };
+
+    // The index of the pending actions is kept, and built again when they are read again: no
+    // message's id changes mid-walk.
+    let view = createSimulationView(pending, targets);
+    const list = simulatedList({
+      store,
+      view: () => view,
+      id: row => row.id,
+      compare: (a, b) => lead(a) - lead(b) || newestFirst(a, b),
+      keeps: row => row.folderId === listedFolder,
+      // Pending drafts are in Drafts and nowhere else.
+      created: () => listedFolder !== DRAFTS ? [] : host.pending().flatMap(({ action }) =>
+        action.kind === "createDraft" && resolve(action.ref) === action.ref ? [action.ref] : []),
+    });
+
 
     let first = true;
     return new TokenCursor<Message>({
@@ -784,6 +791,18 @@ describe("a message listing over a TokenCursor", () => {
     expect(rows[3]).toEqual({
       ...standIn, id: earlier, subject: "Second thoughts", receivedAt: at(90), pending: "draft",
     });
+  });
+
+  it("lists a pending draft after a message moved into Drafts, and among the provider's drafts", async () => {
+    const host = mailbox();
+    host.move(DRAFTS, "A02");
+    const ref = host.draft(94, "Reply");
+
+    // Provider pages of two, so the walk goes on past the first continuation token.
+    const cursor = await listMessages(host, DRAFTS, { pageSize: 3, remotePageSize: 2 });
+    expect((await drain(cursor)).map(page => page.map(({ id }) => id))).toEqual([
+      ["A02", "D01", ref], ["D02", "D03", "D04"], ["D05", "D06"],
+    ]);
   });
 
   it("lists no pending draft in another folder", async () => {

@@ -1451,8 +1451,8 @@ What stays the gatekeeper's, because two listings rarely agree on it:
   by title) sorts by a key they do not change.
 - **Which provider rows to read again, and where they go.** A provider that filters before pending
   changes apply leaves out a row they move into the listing. The gatekeeper reads those rows
-  itself and passes each through `list.overlay`. One listing merges them into `inject.items` at
-  their sort position and answers for them in `revalidate`, falling back to the list's own for the
+  itself and passes each through `list.overlay`, merges them into `inject.items` at their sort
+  position and answers for them in `revalidate`, falling back to the list's own for the
   stand-ins:
 
   ```ts
@@ -1468,12 +1468,11 @@ What stays the gatekeeper's, because two listings rarely agree on it:
   },
   ```
 
-  A listing paged by token (`TokenCursor`) may instead return them ahead of its first provider
-  page, as the provider has them rather than through `list.overlay`: the cursor folds every row
-  `fetchPage` returns, so one folded there would be folded twice. It then leaves `inject` to the
-  stand-ins, since the provider's token says where the next page starts. One paged by offset may
-  not: `OffsetCursor` advances by the rows `fetchPage` returns, so each row added there skips a
-  provider row; such a listing keeps them in `inject.items`, as above.
+  A listing that lists them first on purpose may instead return them ahead of its first provider
+  page under `TokenCursor`, as the provider has them, since the cursor folds every row `fetchPage`
+  returns, and makes that lead part of `compare`: the cursor merges the stand-ins against those
+  rows before it sees the provider's own, by `compare`. Under `OffsetCursor` it may not, since
+  each row returned there skips a provider row.
 - **`authorize` and `identity`.** `authorize: true` for every page a session is served, one of
   stand-ins alone included: a stand-in may hold only the caller's own fields and still sit in a
   container whose access the page's authorizer reports (see
