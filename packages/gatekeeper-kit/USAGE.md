@@ -836,8 +836,11 @@ A record that targets several entities is folded once for each, by the call that
 entity, and each of those folds stands alone: refused on one entity, the record still applies to
 the others until the caller leaves it out or removes it. A gatekeeper whose record must take effect
 on all of its entities or none, where only one of them can refuse it, folds that one first and leaves
-what that fold refused out of the lists it folds next. Where more than one can, no order of folds
-decides it: fold an entity that holds them all, or check every target before the record is folded.
+what that fold refused out of the lists it folds next. That fold decides only the records it
+reaches: where it stopped at an `unsupported` record before a shared one, the shared one is in
+neither `refused` nor the entity, and the caller reports the conflict rather than serve the other
+folds. Where more than one can, no order of folds decides it: fold an entity that holds them all,
+or check every target before the record is folded.
 
 A reducer on a draft:
 

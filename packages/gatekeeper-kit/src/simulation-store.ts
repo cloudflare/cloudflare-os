@@ -124,8 +124,10 @@ export type SimulationStore<
    * folds stands alone: refused on one entity, the record still applies to the others, unless
    * the caller leaves it out or removes it before it folds them. A caller whose record must
    * take effect on all of its entities or none, where only one of them can refuse it, folds that
-   * one first and leaves what that fold refused out of the lists it folds next; where more than
-   * one can, no order of folds decides it, and the caller folds an entity that holds them all or
+   * one first and leaves what that fold refused out of the lists it folds next, and where that
+   * fold `stopped` before a shared record, which it then neither refused nor applied, reports
+   * the conflict rather than serve the other folds; where more than one can, no order of folds
+   * decides it, and the caller folds an entity that holds them all or
    * checks every target before the record is folded. A record that targets none
    * of the entities read is never reduced.
    *
