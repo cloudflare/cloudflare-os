@@ -24,15 +24,17 @@ async function turn(impl: Impl, chatId: number, steps: ReturnType<typeof fauxToo
   return scriptedTurn(impl, chatId, [...steps.map(calls => fauxAssistantMessage(calls, {stopReason: "toolUse"})),
     fauxAssistantMessage(fauxText("Done"))]);
 }
-async function scriptedTurn(impl: Impl, chatId: number, responses: AssistantMessage[], vision = true) {
+async function scriptedTurn(impl: Impl, chatId: number, responses: AssistantMessage[], vision = true, native = false) {
   const faux = createFauxCore({models: [{id: "faux-model", contextWindow: 8_000_000}]});
   const requests: Message[][] = [];
   faux.setResponses(responses);
-  await runAgent(impl, {model: {...faux.getModel(), input: vision ? ["text", "image"] : ["text"]}, stream: (model, context, options) => {
+  const config = {provider: native ? "anthropic" as const : "cloudflare" as const,
+    model: native ? "claude-sonnet-5-5" : "faux-model", apiToken: "", contextWindow: 8_000_000};
+  await runAgent(impl, {model: native ? getModel({} as Cloudflare.Env, config, USER).model
+    : {...faux.getModel(), input: vision ? ["text", "image"] : ["text"]}, stream: (model, context, options) => {
     requests.push(structuredClone(context.messages));
-    return faux.stream(model, context, options);
-  }}, chatId, AUTHOR, new AbortController().signal, USER,
-  {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow: 8_000_000});
+    return faux.stream(native ? faux.getModel() : model, context, options);
+  }}, chatId, AUTHOR, new AbortController().signal, USER, config);
   return {requests};
 }
 async function setup(impl: Impl, bytes = PNG, extraFiles: [string, Uint8Array][] = []) {
@@ -261,7 +263,7 @@ describe("images read from a worktree", () => {
     }
   }));
 
-  it("compacts a stopped callback turn while keeping the next callback batch", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([false, true])("compacts a stopped callback turn while keeping the next callback batch (native: %s)", native => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "old-callback", bindingName: "OLD_ARGS"}]);
     recordReads(impl, chatId, blob.oid, 20);
@@ -271,7 +273,7 @@ describe("images read from a worktree", () => {
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage([read()], {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done")),
-    ]);
+    ], true, native);
     expect(impl.loadChatHistory(chatId).checkpoint?.compactedTo).toBeGreaterThan(oldReadSequence);
     const last = requests.at(-1)!;
     expect(results(last).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(1);

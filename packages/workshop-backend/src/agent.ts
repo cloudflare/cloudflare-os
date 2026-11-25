@@ -4827,6 +4827,11 @@ async function runAgentPass(
     }
     let compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,
         checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom, native);
+    if (compactedTo === undefined && native) {
+      native = false;
+      compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,
+          checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom);
+    }
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
