@@ -29,8 +29,9 @@
 import { DurableObject, RpcStub, RpcTarget, restore } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
-  buildDescription, codeSpan, plainInline, sanitizeTitle,
+  buildDescription, codeSpan, plainInline, sanitizeTitle, type ActionDescriptionBuilder,
 } from "@gadgets/gatekeeper-kit/action-description";
+import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import type {
@@ -38,26 +39,26 @@ import type {
   ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_MESSAGE_BYTES, isChatNoAccessError,
-  chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
-  chatMessagesSearchFilter,
+  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_ATTACHMENT_BYTES, MAX_CHAT_MESSAGE_BYTES,
+  isChatNoAccessError, chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
+  chatMessagesSearchFilter, normalizeChatAttachments,
   chatSpaceId, chatSpaceNameFromIdOrUrl, chatThreadParts, chatUserName, validateChatEmoji,
   validateChatSpaceId, validateChatThreadId, validateChatWindow,
 } from "./chat-api";
 import {
-  ChatAction, ChatNewConversation, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
+  ChatAction, ChatNewConversation, ChatQueuedAttachment, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
   overlayMessage, overlayMessageList, overlayReactions, pendingMessageActionId,
   pendingMessageInfo, pendingSpaceName, pendingSpaceRequestId, pendingThreadActionId,
 } from "./chat-state";
 import type {
-  Cursor, ChatAttachment, ChatAttachmentInfo,
+  Cursor, ChatAttachment, ChatAttachmentInfo, ChatAttachmentInput,
   ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessage, ChatMessageEntry, ChatMessageInfo,
   ChatMessageSearch, ChatPerson, ChatReaction, ChatSession, ChatSpaceMessageSearch,
-  ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatSubscribeOptions, ChatUser, ChatThread, ChatThreadEntry,
-  ChatThreadInfo, ChatWindow,
+  ChatSendOptions, ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatSubscribeOptions, ChatUser, ChatThread,
+  ChatThreadEntry, ChatThreadInfo, ChatWindow,
 } from "./chat-types";
-import type { ChatMessageRaw } from "./chat-api";
+import type { ChatAttachmentDataRef, ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
 import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
@@ -165,11 +166,55 @@ function userLabel(user: ChatUser | undefined): string {
 
 // ── Storage ─────────────────────────────────────────────────────────
 
+/** The stored files an action holds. */
+const attachmentFiles = (action: ChatAction): ActionFileReference[] =>
+  action.type === "sendMessage" ? (action.attachments ?? []).map(attachment => attachment.file) : [];
+
+/** Most attachment bytes the queued sends of one connection may hold at once. */
+const MAX_PENDING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/**
+ * How long a stored attachment no queued send names survives: one being captured has no send to
+ * name it until the capture finishes.
+ */
+const ATTACHMENT_GRACE_MS = 60 * 60 * 1000;
+
 class ChatStore {
   #kv: DurableObjectStorage["kv"];
+  #files: ActionFileStore;
 
   constructor(storage: DurableObjectStorage) {
     this.#kv = storage.kv;
+    this.#files = new ActionFileStore(storage, {
+      filePrefix: "chat:attachment:",
+      allocationPrefix: "chat:attachmentAllocation:",
+      maxFileBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      maxTotalBytes: MAX_PENDING_ATTACHMENT_BYTES,
+    });
+  }
+
+  /**
+   * Keep exact copies of a send's files until it is applied or rejected, first clearing any left
+   * behind by a send that never finished queueing. All are kept, or none.
+   */
+  async captureAttachments(inputs: readonly ChatAttachmentInput[]): Promise<ChatQueuedAttachment[]> {
+    if (inputs.length === 0) return [];
+    const referenced = new Set(this.list().flatMap(({ action }) => attachmentFiles(action))
+      .map(file => file.handle));
+    this.#files.pruneUnreferenced(referenced, Date.now() - ATTACHMENT_GRACE_MS);
+    const captured: ChatQueuedAttachment[] = [];
+    try {
+      for (const { filename, mimeType, content } of inputs) {
+        captured.push({ filename, mimeType, file: await this.#files.capture(new Uint8Array(content)) });
+      }
+    } catch (error) {
+      for (const { file } of captured) this.#files.delete(file);
+      throw error;
+    }
+    return captured;
+  }
+
+  readAttachment(file: ActionFileReference): Promise<Uint8Array> {
+    return this.#files.read(file);
   }
 
   submit(action: ChatAction): number {
@@ -223,7 +268,10 @@ class ChatStore {
       });
   }
 
+  /** Forget an action once it is applied, rejected or refused, and the files it was to attach. */
   remove(id: number): void {
+    const action = this.#kv.get<ChatAction>(`chat:action:${id}`);
+    for (const file of action ? attachmentFiles(action) : []) this.#files.delete(file);
     this.#kv.delete(`chat:action:${id}`);
     this.clearAttempt(id);
   }
@@ -729,16 +777,45 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
 
 // ── Outgoing messages ───────────────────────────────────────────────
 
-function validateMessageText(text: string): string {
-  if (text.trim().length === 0) throw new Error("A message needs some text.");
+function validateMessageText(text: string, { attaches = false } = {}): string {
+  if (text.trim().length === 0 && !(attaches && text === "")) {
+    throw new Error(attaches ? "Pass an empty string for a message with only attachments." : "A message needs some text.");
+  }
   if (new TextEncoder().encode(text).byteLength > MAX_CHAT_MESSAGE_BYTES) {
     throw new Error(`A Chat message must be at most ${MAX_CHAT_MESSAGE_BYTES} bytes.`);
   }
   return text;
 }
 
+/** The files an approval names, for its summary line. */
+function attachedFiles(files: readonly ChatQueuedAttachment[]): string {
+  if (files.length === 0) return "";
+  return files.length === 1 ? " with an attached file" : ` with ${files.length} attached files`;
+}
+
 /**
- * Queue one outgoing text message for approval and return how it reads while pending.
+ * Add a send's text and files to its approval. The approver sees each file's name, type, size and
+ * digest, not its content, so a send that attaches any is not shown in full.
+ */
+function describeMessage(
+  builder: ActionDescriptionBuilder, text: string, files: readonly ChatQueuedAttachment[],
+): ActionDescriptionBuilder {
+  if (text !== "") builder.verbatim("Message", text);
+  for (const [index, { filename, mimeType, file }] of files.entries()) {
+    builder.file(files.length === 1 ? "Attachment" : `Attachment ${index + 1}`, {
+      name: filename, mediaType: mimeType, size: file.size, sha256: file.digest, origin: "agent",
+    });
+  }
+  return builder;
+}
+
+/** A caller's send options, checked before anything is read or queued. */
+function sendAttachments(options: ChatSendOptions | undefined): ChatAttachmentInput[] {
+  return normalizeChatAttachments(options?.attachments ?? []);
+}
+
+/**
+ * Queue one outgoing message for approval and return how it reads while pending.
  *
  * Shared by space sends, thread/message replies, which name a thread, and sends to exactly some
  * people in their existing group chat, which name those people.
@@ -747,9 +824,10 @@ async function queueChatMessage(
   ctx: ChatContext,
   spaceName: string,
   text: string,
-  { threadName, recipients }: { threadName?: string; recipients?: string[] } = {},
+  { threadName, recipients, attachments = [] }:
+    { threadName?: string; recipients?: string[]; attachments?: readonly ChatAttachmentInput[] } = {},
 ): Promise<ChatMessageInfo> {
-  const body = validateMessageText(text);
+  const body = validateMessageText(text, { attaches: attachments.length > 0 });
   requireInScope(ctx, spaceName);
   requireThreadInScope(ctx, threadName);
   const info = await ctx.api.getSpace(spaceName);
@@ -761,6 +839,8 @@ async function queueChatMessage(
     if (thread.spaceName !== spaceName) throw new Error("That thread belongs to a different conversation.");
     threadName = thread.name;
   }
+  const recipient = await describeConversation(ctx.api, info, ctx.self.id);
+  const files = await ctx.store.captureAttachments(attachments);
   const action: ChatSendMessageAction = {
     type: "sendMessage",
     spaceName,
@@ -769,15 +849,14 @@ async function queueChatMessage(
     startsThread: threadName === undefined && info.supportsThreads,
     requestId: crypto.randomUUID(),
     ...(recipients ? { recipients } : {}),
+    ...(files.length > 0 ? { attachments: files } : {}),
     submittedAt: Date.now(),
   };
-  const recipient = await describeConversation(ctx.api, info, ctx.self.id);
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
-    ...buildDescription(
-      `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(recipient)}` +
-      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`)
-      .verbatim("Message", body)
+    ...describeMessage(buildDescription(
+      `Post a message${attachedFiles(files)} as ${userLabel(ctx.self)} in ${spaceLabel(recipient)}` +
+      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`), body, files)
       .finish(),
     implementsRevert: true,
     actionKind: SEND_MESSAGE_ACTION,
@@ -810,9 +889,9 @@ const personLabel = (person: ChatNewConversation["members"][number]) => person.n
  * belongs to the same Workspace organization.
  */
 async function queueDirectMessage(
-  ctx: ChatContext, people: readonly string[], text: string,
+  ctx: ChatContext, people: readonly string[], text: string, attachments: readonly ChatAttachmentInput[],
 ): Promise<ChatMessageInfo> {
-  const body = validateMessageText(text);
+  const body = validateMessageText(text, { attaches: attachments.length > 0 });
   // Chat matches email addresses case-insensitively, so naming someone twice must not count twice.
   const users = [...new Set(people.map(person => {
     const name = chatUserName(person.trim());
@@ -835,7 +914,9 @@ async function queueDirectMessage(
     ? `Found the ${kind} with ${users.join(", ")} (${existing.spaceName}).`
     : `No ${kind} exists with exactly ${users.join(", ")}.`,
     spaceSubresources([existing?.spaceName]));
-  if (existing) return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids });
+  if (existing) {
+    return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids, attachments });
+  }
 
   const members: ChatNewConversation["members"] = users
     .filter(user => !user.includes("@"))
@@ -865,6 +946,7 @@ async function queueDirectMessage(
   if (members.some(member => member.id === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
 
   const requestId = crypto.randomUUID();
+  const files = await ctx.store.captureAttachments(attachments);
   const action: ChatSendMessageAction = {
     type: "sendMessage",
     spaceName: pendingSpaceName(requestId),
@@ -873,16 +955,16 @@ async function queueDirectMessage(
     startsThread: false,
     requestId: crypto.randomUUID(),
     newConversation: { members, requestId },
+    ...(files.length > 0 ? { attachments: files } : {}),
     submittedAt: Date.now(),
   };
   const one = members.length === 1;
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Start a Google Chat conversation with ${peopleNames(members)}`),
-    ...buildDescription(
+    ...describeMessage(buildDescription(
       `Create a ${one ? "direct message" : "group chat"} between ${userLabel(ctx.self)} and ` +
-      `${one ? "this person" : `these ${members.length} people`}, and post this message in it.`)
-      .list("People", members.map(personLabel))
-      .verbatim("Message", body)
+      `${one ? "this person" : `these ${members.length} people`}, and post this message${attachedFiles(files)} in it.`)
+      .list("People", members.map(personLabel)), body, files)
       .finish(),
     implementsRevert: true,
     actionKind: START_CONVERSATION_ACTION,
@@ -1029,8 +1111,9 @@ class ChatSessionImpl extends ChatRpcTarget implements ChatSession {
     });
   }
 
-  async sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry> {
-    return postedEntry(this.ctx, await queueDirectMessage(this.ctx, people, text));
+  async sendDirectMessage(people: string[], text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
+    return postedEntry(this.ctx, await queueDirectMessage(this.ctx, people, text, attachments));
   }
 }
 
@@ -1184,8 +1267,9 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     return membership;
   }
 
-  async post(text: string): Promise<ChatMessageEntry> {
-    return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
+  async post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
+    return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text, { attachments }));
   }
 
   async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
@@ -1236,10 +1320,11 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
       thread.spaceName);
   }
 
-  async post(text: string): Promise<ChatMessageEntry> {
+  async post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
     const thread = resolveThread(this.ctx, this.#name);
     return postedEntry(this.ctx,
-      await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name }));
+      await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name, attachments }));
   }
 
   async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
@@ -1309,7 +1394,8 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     return this.#read();
   }
 
-  async reply(text: string): Promise<ChatMessageEntry> {
+  async reply(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
     const info = await this.#read();
     requireKnownThread(this.ctx, this.#name);
     if (info.threadId === undefined) {
@@ -1317,7 +1403,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
         "This conversation does not support threaded replies; send a new message instead.");
     }
     return postedEntry(this.ctx,
-      await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId }));
+      await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId, attachments }));
   }
 
   async edit(text: string): Promise<void> {
@@ -1801,11 +1887,19 @@ export class GoogleChatGatekeeperImpl
           : { spaceName: action.spaceName, posted: undefined };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
+          // Uploads land in the conversation the message is posted to, and stay invisible until it
+          // is. One a lost response leaves behind is never attached, so they can simply be retried.
+          const attachments: ChatAttachmentDataRef[] = [];
+          for (const { filename, mimeType, file } of action.attachments ?? []) {
+            const content = await store.readAttachment(file);
+            attachments.push(await api.uploadAttachment(spaceName, { filename, mimeType, content }));
+          }
           // The request id makes Chat itself idempotent, so a retry after a lost response returns
           // the message the first attempt created rather than posting a second one.
           const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
             text: action.text,
             ...(threadName !== undefined ? { threadName } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
           }, {
             requestId: action.requestId,
             messageId: clientMessageId(action),

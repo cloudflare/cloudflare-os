@@ -133,7 +133,7 @@ interface ChatThread extends RpcTarget {
   getCurrentUser(): Promise<ChatUser>;
   getRootMessage(): Promise<ChatMessageEntry | null>;
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
-  post(text: string): Promise<ChatMessageEntry>;
+  post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 }
 ```
 
@@ -171,8 +171,8 @@ declared filters, so the field is dropped even if an agent sends it. Thread capa
 
 ## Writing and newly created threads
 
-Writes use `space.post(text)`, `thread.post(text)`, `message.reply(text)`, and
-`message.edit(text)`. Memberships, users, and reactions are plain records. A message's
+Writes use `space.post(text, options?)`, `thread.post(text, options?)`,
+`message.reply(text, options?)`, and `message.edit(text)`. Memberships, users, and reactions are plain records. A message's
 metadata already lists its attachments; `message.getAttachment(id)` returns the capability that
 reads one. It also carries `cards`, what a Chat app's cards show (current `cardsV2` and legacy
 `cards` alike): each card's header title and subtitle, its section headers, labels and text items
@@ -188,8 +188,20 @@ message's ID and, when Chat's snapshot of it in the quoting message has them, it
 and its text, and `forwarded` when it was forwarded. The gatekeeper never fetches the quoted message, which
 `getMessage()` returns only when it is in the bound conversation; a forwarded snapshot can hold
 text from another conversation, which Chat shows to everyone who can read the forwarding message.
-Event history, explicit message deletion, outgoing uploads, and generic
-drafts/patches are absent. Undo-send remains supported internally.
+Event history, explicit message deletion, and generic drafts/patches are absent. Undo-send
+remains supported internally.
+
+Every send (`post`, `reply`, `sendDirectMessage`) takes `options.attachments`: up to 10 files of
+at most 10 MiB each, each a filename, a parameterless media type and its bytes. With one, the text
+may be empty. The gatekeeper keeps exact copies in its own Durable Object storage (at most 50 MiB
+for a connection's queued sends at once) and names each file in the approval by name, media type,
+size and SHA-256, which leaves the description incomplete, since the approver cannot read the
+bytes. Applying the send uploads each file into the conversation it posts to, the one a
+`sendDirectMessage` creates included, and creates the message with them attached; an upload no
+message attaches stays invisible, so uploads are simply retried. Applying or rejecting the send
+frees the copies. Until then the pending message lists its files with `readable: false`, and
+`getAttachment()` opens them once it is committed. Google refuses some file types, such as
+executables, at upload, and then nothing is posted.
 
 `space.post(text)` posts a top-level message, which in a threaded conversation starts a new
 thread; `message.getThread()` continues it. The new thread is ready for further posts and edits

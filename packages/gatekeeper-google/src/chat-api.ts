@@ -15,12 +15,13 @@ import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { chatButtonsFromRaw, chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
-  ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
+  ChatAttachmentInfo, ChatAttachmentInput, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatQuotedMessage, ChatReaction,
   ChatSpaceInfo, ChatSpaceType, ChatUser, ChatWindow,
 } from "./chat-types";
 
 const CHAT_API_BASE = "https://chat.googleapis.com/v1";
+const CHAT_UPLOAD_BASE = "https://chat.googleapis.com/upload/v1";
 const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
 
 type PeopleNameRaw = { displayName?: unknown; metadata?: { primary?: boolean } };
@@ -57,6 +58,44 @@ function directoryEntryFromRaw(raw: DirectoryPersonRaw): DirectoryEntry | undefi
 export const MAX_CHAT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 /** Chat's own documented message size ceiling. */
 export const MAX_CHAT_MESSAGE_BYTES = 32_000;
+/**
+ * Largest file one sent message may attach. Chat takes up to 200 MB, but the bytes are held in
+ * Durable Object storage until the send is applied, so this matches Gmail's per-file limit.
+ */
+export const MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Most files one sent message may attach. Chat documents no limit; this keeps approvals readable. */
+export const MAX_CHAT_ATTACHMENTS = 10;
+const MAX_CHAT_ATTACHMENT_FILENAME_LENGTH = 255;
+/** A media type's `type/subtype`, as RFC 9110 tokens: nothing that could break out of a part header. */
+const MEDIA_TYPE_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/** C0 and C1 controls and bidirectional formatting, which could disguise a filename's extension. */
+// oxlint-disable-next-line no-control-regex -- the point is to find control characters
+const UNSAFE_FILENAME_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/** Check a caller's attachments, returning each with its media type lowercased. */
+export function normalizeChatAttachments(inputs: readonly ChatAttachmentInput[]): ChatAttachmentInput[] {
+  if (inputs.length > MAX_CHAT_ATTACHMENTS) {
+    throw new Error(`A Chat message can attach at most ${MAX_CHAT_ATTACHMENTS} files.`);
+  }
+  return inputs.map(({ filename, mimeType, content }, index) => {
+    const label = inputs.length === 1 ? "The attachment" : `Attachment ${index + 1}`;
+    if (!filename.trim() || filename === "." || filename === ".." || /[/\\]/.test(filename) ||
+        UNSAFE_FILENAME_RE.test(filename) || filename.length > MAX_CHAT_ATTACHMENT_FILENAME_LENGTH) {
+      throw new Error(`${label} needs a filename of at most ${MAX_CHAT_ATTACHMENT_FILENAME_LENGTH} ` +
+        "characters, with no path separators or control characters.");
+    }
+    if (!MEDIA_TYPE_RE.test(mimeType)) {
+      throw new Error(`${label}'s mimeType must be a media type such as image/png, with no parameters.`);
+    }
+    if (content.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
+      throw new Error(`${label} is larger than the ${MAX_CHAT_ATTACHMENT_BYTES}-byte limit.`);
+    }
+    return { filename, mimeType: mimeType.toLowerCase(), content };
+  });
+}
+
+/** What an upload returns and a new message attaches the file by. Both fields are opaque. */
+export type ChatAttachmentDataRef = { resourceName?: string; attachmentUploadToken?: string };
 
 /**
  * A provider error carrying only Google's status, its google.rpc code and the reasons it gave
@@ -957,7 +996,7 @@ export class ChatApi {
    */
   async createMessage(
     spaceName: string,
-    message: { text: string; threadName?: string },
+    message: { text: string; threadName?: string; attachments?: readonly ChatAttachmentDataRef[] },
     options: { requestId?: string; messageId?: string } = {},
   ): Promise<ChatMessageInfo> {
     const spaceId = chatSpaceId(spaceName);
@@ -969,7 +1008,12 @@ export class ChatApi {
       params.set("messageReplyOption", "REPLY_MESSAGE_OR_FAIL");
     }
     const query = params.toString();
-    const body: Record<string, unknown> = { text: message.text };
+    // A message needs text or an attachment; one with only attachments sends no text at all.
+    const body: Record<string, unknown> = message.text === "" && message.attachments?.length
+      ? {} : { text: message.text };
+    if (message.attachments?.length) {
+      body.attachment = message.attachments.map(attachmentDataRef => ({ attachmentDataRef }));
+    }
     if (message.threadName !== undefined) {
       const { spaceId: threadSpaceId, threadId } = chatThreadParts(message.threadName);
       if (threadSpaceId !== spaceId) {
@@ -1137,6 +1181,55 @@ export class ChatApi {
   }
 
   // ── Media ─────────────────────────────────────────────────────────
+
+  /**
+   * Upload one file to a conversation, returning the reference a message created there attaches
+   * it by. An upload nothing attaches stays invisible, so a retry after a lost response is safe.
+   */
+  async uploadAttachment(
+    spaceName: string,
+    file: { filename: string; mimeType: string; content: Uint8Array },
+  ): Promise<ChatAttachmentDataRef> {
+    const spaceId = chatSpaceId(spaceName);
+    if (!MEDIA_TYPE_RE.test(file.mimeType)) throw new Error("Invalid attachment media type.");
+    // A random boundary that happens to occur in the file would split it; at 122 random bits, it doesn't.
+    const boundary = `chat-upload-${crypto.randomUUID()}`;
+    const encoder = new TextEncoder();
+    const head = encoder.encode(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify({ filename: file.filename })}\r\n` +
+      `--${boundary}\r\nContent-Type: ${file.mimeType}\r\n\r\n`);
+    const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
+    const body = new Uint8Array(head.byteLength + file.content.byteLength + tail.byteLength);
+    body.set(head);
+    body.set(file.content, head.byteLength);
+    body.set(tail, head.byteLength + file.content.byteLength);
+    const response = await fetchWithAuthRetry(
+      `${CHAT_UPLOAD_BASE}/spaces/${spaceId}/attachments:upload?uploadType=multipart`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": `multipart/related; boundary=${boundary}` },
+        body,
+      },
+      this.getAccessToken,
+      { operation: "media.upload", idempotent: true });
+    if (!response.ok) await chatApiFailure("media.upload", response);
+    let uploaded: { attachmentDataRef?: { resourceName?: unknown; attachmentUploadToken?: unknown } };
+    try {
+      uploaded = await response.json();
+    } catch {
+      throw new Error("Google Chat API media.upload returned invalid JSON.");
+    }
+    const { resourceName, attachmentUploadToken } = uploaded.attachmentDataRef ?? {};
+    const ref: ChatAttachmentDataRef = {
+      ...(typeof resourceName === "string" && resourceName ? { resourceName } : {}),
+      ...(typeof attachmentUploadToken === "string" && attachmentUploadToken ? { attachmentUploadToken } : {}),
+    };
+    if (!ref.resourceName && !ref.attachmentUploadToken) {
+      throw new Error("Google Chat did not return a reference to the uploaded attachment.");
+    }
+    return ref;
+  }
 
   /** Download one uploaded attachment's bytes. Drive-backed attachments are not downloadable. */
   async downloadAttachment(resourceName: string): Promise<ArrayBuffer> {

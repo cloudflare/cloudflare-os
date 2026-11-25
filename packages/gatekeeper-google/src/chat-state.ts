@@ -12,6 +12,7 @@
 // paging position it needs as arguments, which is what lets the simulation be tested without a
 // Durable Object and keeps a page's result independent of what earlier pages returned.
 
+import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type {
   ChatListMessagesOptions, ChatMessageInfo, ChatReaction, ChatUser,
 } from "./chat-types";
@@ -37,7 +38,12 @@ export type ChatSendMessageAction = ChatActionBase & {
    * posts only while they are still exactly who else is there.
    */
   recipients?: string[];
+  /** Files to upload and attach, whose bytes wait in the gatekeeper's own storage. */
+  attachments?: ChatQueuedAttachment[];
 };
+
+/** A file a queued send attaches: what the caller named it, and where its exact bytes are kept. */
+export type ChatQueuedAttachment = { filename: string; mimeType: string; file: ActionFileReference };
 
 /** A direct message or group chat that a queued send creates. */
 export type ChatNewConversation = {
@@ -135,7 +141,11 @@ export function pendingMessageInfo(
     mentions: [],
     createdAt: new Date(action.submittedAt),
     isReply: action.threadName !== undefined,
-    attachments: [],
+    // Uploaded only when the send is applied, so there is nothing to read back yet.
+    attachments: (action.attachments ?? []).map(({ filename, mimeType }, index) => ({
+      id: `${pendingMessageName(id)}/attachments/${index + 1}`,
+      filename, mimeType, source: "uploaded" as const, readable: false,
+    })),
     cards: [],
     buttons: [],
     reactions: [],

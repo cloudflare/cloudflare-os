@@ -131,6 +131,31 @@ export type ChatAttachmentInfo = {
   readable: boolean;
 };
 
+/** A file to attach to a message you send. */
+export type ChatAttachmentInput = {
+  /**
+   * The name Google Chat shows, with its extension, such as `report.png`. At most 255
+   * characters, with no `/`, `\`, or control characters.
+   */
+  filename: string;
+  /**
+   * Media type, such as `image/png` or `application/pdf`, with no parameters. Google Chat shows
+   * images inline in the conversation.
+   */
+  mimeType: string;
+  /** Exact file bytes, not text or base64. At most 10 MiB (10,485,760 bytes). */
+  content: ArrayBuffer;
+};
+
+/** What a message you send carries besides its text. */
+export type ChatSendOptions = {
+  /**
+   * Files to attach, at most 10. With at least one, the message's text may be empty. Google
+   * Chat refuses some file types, such as executables, and then posts nothing.
+   */
+  attachments?: ChatAttachmentInput[];
+};
+
 /**
  * A link a Chat app's card opens, from a button, chip, image, or clickable text, or a link a
  * button under a message opens.
@@ -243,7 +268,10 @@ export type ChatMessageInfo = {
   editedAt?: Date;
   /** Whether this message is a reply in a thread rather than the thread's first message. */
   isReply: boolean;
-  /** Files attached to the message. */
+  /**
+   * Files attached to the message. A pending message lists the files you attached, which
+   * `ChatMessage.getAttachment()` can open once it is committed.
+   */
   attachments: ChatAttachmentInfo[];
   /**
    * Cards a Chat app attached to the message, such as an alert's details and its buttons. Their
@@ -451,9 +479,10 @@ export interface ChatSession extends RpcTarget {
    * posted.
    *
    * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
-   * it is committed it can be edited but not replied to.
+   * it is committed it can be edited but not replied to. `options.attachments` attaches files, as
+   * for `ChatSpace.post()`.
    */
-  sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry>;
+  sendDirectMessage(people: string[], text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 }
 
 /**
@@ -526,11 +555,14 @@ export interface ChatSpace extends RpcTarget {
    * `<users/all>` to mention everyone. Markdown such as `**bold**` or `[label](url)` is not
    * rendered. At most 32,000 bytes.
    *
+   * `options.attachments` attaches files, such as an image Google Chat shows inline; `text` may
+   * then be empty.
+   *
    * Where `supportsThreads` is true, the message starts a new thread; call
    * `entry.message.getThread()` to continue it. The returned entry describes the new message,
    * with its temporary ID until it is committed.
    */
-  post(text: string): Promise<ChatMessageEntry>;
+  post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 
   /**
    * Have `hook.receiveMessage()` called with each new message anyone else posts in this
@@ -613,10 +645,10 @@ export interface ChatThread extends RpcTarget {
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
 
   /**
-   * Reply in this thread as the connected user. `text` uses the formatting described on
+   * Reply in this thread as the connected user. `text` and `options` are as for
    * `ChatSpace.post()`. Fails rather than starting a new thread.
    */
-  post(text: string): Promise<ChatMessageEntry>;
+  post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 
   /**
    * As `ChatSpace.subscribeNewMessages()`, for replies in this thread only. Throws while the
@@ -643,11 +675,11 @@ export interface ChatMessage extends RpcTarget {
   getThread(): Promise<ChatThreadEntry>;
 
   /**
-   * Reply in this message's thread as the connected user. `text` uses the formatting described
-   * on `ChatSpace.post()`. Throws where the conversation's `supportsThreads` is false; post a
-   * new message with `ChatSpace.post()` there.
+   * Reply in this message's thread as the connected user. `text` and `options` are as for
+   * `ChatSpace.post()`. Throws where the conversation's `supportsThreads` is false; post a new
+   * message with `ChatSpace.post()` there.
    */
-  reply(text: string): Promise<ChatMessageEntry>;
+  reply(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 
   /**
    * Replace the text of one of your own messages, including one that is still pending. `text`

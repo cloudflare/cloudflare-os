@@ -30,6 +30,7 @@ type TestHooks = {
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
       actionId: number): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]>;
   failNextObservation(queueId: string, title: string): void;
+  chatStorageKeys(facetName: string, id: string, props: GoogleChatGatekeeperImplProps, prefix: string): Promise<string[]>;
   readQueue(queueId: string): Promise<{
     submissions: Array<{actionId: number; description: unknown}>;
     observations: unknown[];
@@ -120,8 +121,12 @@ function chatBackend() {
     creates: [] as Array<{
       requestId: string | null;
       replyOption: string | null;
-      body: {text: string; thread?: {name: string}};
+      body: {text?: string; thread?: {name: string}; attachment?: Array<{attachmentDataRef: Record<string, string>}>};
     }>,
+    /** Each file uploaded, with the conversation it went to and its exact bytes. */
+    uploads: [] as Array<{space: string; filename: string; contentType: string; bytes: number[]}>,
+    /** Refuse uploads with this status until cleared, as Google does a blocked file type. */
+    uploadFailure: 0,
     /** Profiles in the organization's directory, matched by email or name prefix. */
     directory: [] as Array<{id: string; name: string; email: string}>,
     /** External shared contacts, which only a directory search for domain contacts returns. */
@@ -174,6 +179,25 @@ function chatBackend() {
     }
     if (state.rejectedToken && url.hostname === "chat.googleapis.com" &&
         new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
+    const uploadTo = /^\/upload\/v1\/(spaces\/[^/]+)\/attachments:upload$/.exec(url.pathname)?.[1];
+    if (uploadTo && method === "POST" && url.searchParams.get("uploadType") === "multipart") {
+      if (state.uploadFailure) return json({error: {status: "INVALID_ARGUMENT"}}, state.uploadFailure);
+      const boundary = /boundary=(.+)$/.exec(new Headers(init.headers).get("Content-Type")!)![1];
+      // One character per byte, so the media part's bytes survive the split. (TextDecoder's
+      // "latin1" is windows-1252, which remaps 0x80-0x9f.)
+      const [, metadata, media] = Array.from(init.body as Uint8Array, byte => String.fromCharCode(byte))
+        .join("").split(`--${boundary}`);
+      const [, json_] = metadata.split("\r\n\r\n");
+      const [header, ...rest] = media.split("\r\n\r\n");
+      const content = rest.join("\r\n\r\n").slice(0, -2);
+      const n = state.uploads.push({
+        space: uploadTo,
+        filename: (JSON.parse(json_) as {filename: string}).filename,
+        contentType: /Content-Type: (.+)$/.exec(header)![1],
+        bytes: [...content].map(char => char.charCodeAt(0)),
+      });
+      return json({attachmentDataRef: {resourceName: `media-${n}`, attachmentUploadToken: `upload-${n}`}});
+    }
     if (url.pathname.startsWith("/v1/media/")) {
       state.downloads.push(url.pathname);
       return new Response("attachment bytes");
@@ -247,7 +271,7 @@ function chatBackend() {
         return json({messages: messages.slice(start, end),
           ...(end < messages.length ? {nextPageToken: String(end)} : {})});
       }
-      const body = JSON.parse(init.body as string) as {text: string; thread?: {name: string}};
+      const body = JSON.parse(init.body as string) as typeof state.creates[number]["body"];
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
       const refused = state.createFailure >= 400 && state.createFailure < 500;
@@ -263,9 +287,15 @@ function chatBackend() {
       state.creates.push({requestId: url.searchParams.get("requestId"),
         replyOption: url.searchParams.get("messageReplyOption"), body});
       const thread = state.misplaceReplies ? undefined : body.thread;
+      const createdName = `${SPACE_NAME}/messages/M${state.creates.length}`;
       const created = {
-        name: `${SPACE_NAME}/messages/M${state.creates.length}`,
-        ...storedText(state.storeText(body.text)),
+        name: createdName,
+        ...storedText(state.storeText(body.text ?? "")),
+        attachment: body.attachment?.map(({attachmentDataRef}, index) => {
+          const upload = state.uploads[Number(attachmentDataRef.resourceName.slice("media-".length)) - 1];
+          return {name: `${createdName}/attachments/A${index + 1}`, contentName: upload.filename,
+            contentType: upload.contentType, source: "UPLOADED_CONTENT", attachmentDataRef};
+        }),
         createTime: new Date().toISOString(),
         sender: {name: "users/subject-a", type: "HUMAN"},
         thread: thread ?? {name: `${SPACE_NAME}/threads/T${state.creates.length}`},
@@ -428,6 +458,8 @@ function chatHarness(
       runHook(hook, instance => instance.failNextObservation(queueId, title))),
     readQueue: () => ready.then(() =>
       runHook(hook, instance => instance.readQueue(queueId))),
+    storageKeys: (prefix: string): Promise<string[]> => ready.then(() =>
+      runHook(hook, instance => instance.chatStorageKeys(facetName, id, props, prefix))),
   };
 }
 
@@ -1871,6 +1903,29 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.creates.map(create => create.body.text)).toEqual(["hello"]);
   });
 
+  it("uploads a new direct message's file into the conversation it creates", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    const content = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    using _message = (await account.sendDirectMessage([BOB.email], "", {
+      attachments: [{filename: "impact.pdf", mimeType: "application/pdf", content: content.buffer}],
+    })).message;
+    expect((await chat.readQueue()).submissions[0].description).toMatchObject({
+      description: expect.stringContaining("post this message with an attached file in it"),
+      fields: [
+        {label: "People", kind: "list"},
+        {label: "Attachment", kind: "file", name: "impact.pdf", mediaType: "application/pdf", size: 4},
+      ],
+    });
+    await chat.applyAction(1);
+    expect(backend.state.setups).toHaveLength(1);
+    expect(backend.state.uploads).toEqual([
+      {space: SPACE_NAME, filename: "impact.pdf", contentType: "application/pdf", bytes: [...content]},
+    ]);
+    expect(backend.state.creates[0].body).toEqual(
+      {attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}]});
+  });
+
   it("refuses to start a conversation with anyone outside the directory, or with yourself", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
@@ -2084,5 +2139,105 @@ describe("Starting Google Chat conversations", () => {
     using message = (await account.sendDirectMessage([BOB.email], "helo")).message;
     await message.edit("hello");
     expect(await chat.rejectAction(1)).toEqual({restart: true});
+  });
+});
+
+describe("Google Chat attachments", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+  const png = (filename = "impact.png") => ({filename, mimeType: "image/png", content: PNG.slice().buffer});
+  const sha256 = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+  /** What the gatekeeper still keeps of attached files: chunks and manifests, and their accounting. */
+  const kept = async (chat: ReturnType<typeof chatHarness>) => [
+    ...await chat.storageKeys("chat:attachment:"),
+    ...(await chat.storageKeys("chat:attachmentAllocation:")).filter(key => !key.endsWith("totalBytes")),
+  ];
+
+  it("uploads a send's files into its conversation only once it is applied, then lets go of them", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    const {info, message} = await space.post("Release impact", {attachments: [png()]});
+    using _message = message;
+    expect(info.attachments).toEqual([{
+      id: "pending:send:1/attachments/1", filename: "impact.png", mimeType: "image/png",
+      source: "uploaded", readable: false,
+    }]);
+    const [send] = (await chat.readQueue()).submissions;
+    expect(send.description).toMatchObject({
+      description: expect.stringContaining("Post a message with an attached file as Ada"),
+      actionKind: {tag: "chatSendMessage"},
+      autoApprovable: true,
+      fields: [
+        {label: "Message", kind: "text", value: "Release impact"},
+        {label: "Attachment", kind: "file", name: "impact.png", mediaType: "image/png", size: PNG.length,
+          sha256: await sha256(PNG), origin: "agent"},
+      ],
+    });
+    // The approver sees the file's name and digest, not its content.
+    expect(send.description).not.toHaveProperty("descriptionIsComplete");
+    expect(backend.state.uploads).toEqual([]);
+    expect(await kept(chat)).not.toEqual([]);
+
+    await chat.applyAction(send.actionId);
+    expect(backend.state.uploads).toEqual(
+      [{space: SPACE_NAME, filename: "impact.png", contentType: "image/png", bytes: [...PNG]}]);
+    expect(backend.state.creates.map(create => create.body)).toEqual([{
+      text: "Release impact",
+      attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}],
+    }]);
+    expect(await kept(chat)).toEqual([]);
+    expect((await message.getMetadata()).attachments).toEqual([expect.objectContaining(
+      {filename: "impact.png", mimeType: "image/png", source: "uploaded", readable: true})]);
+  });
+
+  it("sends files with no text, in order, and as a reply", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using root = (await space.post("Release 42")).message;
+    await chat.applyAction(1);
+    const {info, message} = await root.reply("", {attachments: [png("before.png"), png("after.png")]});
+    using _reply = message;
+    expect(info).toMatchObject({text: "", isReply: true});
+    expect((await chat.readQueue()).submissions[1].description).toMatchObject({
+      description: expect.stringContaining("with 2 attached files"),
+      fields: [{label: "Attachment 1", name: "before.png"}, {label: "Attachment 2", name: "after.png"}],
+    });
+    await chat.applyAction(2);
+    expect(backend.state.uploads.map(upload => upload.filename)).toEqual(["before.png", "after.png"]);
+    expect(backend.state.creates[1].body).toEqual({
+      thread: {name: `${SPACE_NAME}/threads/T1`},
+      attachment: [
+        {attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}},
+        {attachmentDataRef: {resourceName: "media-2", attachmentUploadToken: "upload-2"}},
+      ],
+    });
+  });
+
+  it("refuses a bad file or a blank message before queueing anything", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    await expect(Promise.resolve(space.post("x", {attachments: [png("../impact.png")]}))).rejects.toThrow(/filename/);
+    await expect(Promise.resolve(space.post("x", {attachments: [{...png(), mimeType: "image/png; x=1"}]})))
+      .rejects.toThrow(/mimeType/);
+    await expect(Promise.resolve(space.post(" ", {attachments: [png()]}))).rejects.toThrow(/empty string/);
+    await expect(Promise.resolve(space.post("", {attachments: []}))).rejects.toThrow(/needs some text/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
+    expect(await kept(chat)).toEqual([]);
+  });
+
+  it("posts nothing when Google refuses a file, keeping it until the send is rejected", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _message = (await space.post("", {attachments: [png("tool.exe")]})).message;
+    backend.state.uploadFailure = 400;
+    await expect(chat.applyAction(1)).rejects.toThrow(/media\.upload failed \[http=400 INVALID_ARGUMENT\]/);
+    expect(backend.state.creates).toEqual([]);
+    expect(await kept(chat)).not.toEqual([]);
+    await chat.rejectAction(1);
+    expect(await kept(chat)).toEqual([]);
   });
 });

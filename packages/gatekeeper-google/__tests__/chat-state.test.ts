@@ -98,6 +98,22 @@ describe("message list overlay", () => {
     })).toEqual([]);
   });
 
+  it("lists a queued message's files, which can't be opened until it is committed", () => {
+    const file = { handle: "00000000-0000-4000-8000-000000000000", size: 4, digest: "0".repeat(64) };
+    const withFiles: ChatAction = { ...send, text: "", attachments: [
+      { filename: "impact.png", mimeType: "image/png", file },
+      { filename: "impact.pdf", mimeType: "application/pdf", file },
+    ] };
+    const [queued] = overlayMessageList([], pending(withFiles), { ...oldestFirst, first: true, exhausted: true });
+    expect(queued).toMatchObject({ id: pendingMessageName(1), text: "", pending: true });
+    expect(queued.attachments).toEqual([
+      { id: `${pendingMessageName(1)}/attachments/1`, filename: "impact.png", mimeType: "image/png",
+        source: "uploaded", readable: false },
+      { id: `${pendingMessageName(1)}/attachments/2`, filename: "impact.pdf", mimeType: "application/pdf",
+        source: "uploaded", readable: false },
+    ]);
+  });
+
   it("shows a queued edit without changing other messages", () => {
     const edit: ChatAction = {
       type: "updateMessage",

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ChatApi, chatMessageInfoFromRaw, chatMessageParts, chatMessagesListFilter,
-  chatMessagesSearchFilter, chatMembershipFromRaw,
+  ChatApi, MAX_CHAT_ATTACHMENT_BYTES, chatMessageInfoFromRaw, chatMessageParts, chatMessagesListFilter,
+  chatMessagesSearchFilter, chatMembershipFromRaw, normalizeChatAttachments,
   chatSpaceId, chatSpaceIdFromReference, chatSpaceInfoFromRaw, chatSpaceNameFromIdOrUrl,
   chatSpacesListFilter, chatSpacesSearchQuery, chatThreadParts,
   chatUserName, validateChatEmoji, validateChatSpaceId,
@@ -660,5 +660,96 @@ describe("Chat provider error handling", () => {
     await expect(stubResponse(400, { error: { status: "user text could leak here" } })
       .getMessage("spaces/AAAA/messages/BBB"))
       .rejects.toThrow(/messages\.get failed \[http=400\]$/);
+  });
+});
+
+describe("Chat attachments", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const file = (filename: string, mimeType = "image/png", content = new ArrayBuffer(4)) =>
+    ({ filename, mimeType, content });
+
+  it("accepts ordinary files, lowercasing their media type", () => {
+    expect(normalizeChatAttachments([file("Release impact.png", "Image/PNG"), file("report.pdf", "application/pdf")]))
+      .toMatchObject([{ filename: "Release impact.png", mimeType: "image/png" }, { mimeType: "application/pdf" }]);
+    expect(normalizeChatAttachments([file("x.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES))]))
+      .toHaveLength(1);
+  });
+
+  // The filename reaches Google Chat's UI and the media type a multipart header.
+  it.each([
+    ["a path", file("../report.png"), /filename/],
+    ["a Windows path", file("C:\\report.png"), /filename/],
+    ["a blank name", file("  "), /filename/],
+    ["a disguised extension", file("report\u202Egnp.exe"), /filename/],
+    ["a line break", file("report\n.png"), /filename/],
+    ["an overlong name", file(`${"a".repeat(252)}.png`), /filename/],
+    ["media type parameters", file("a.txt", "text/plain; charset=utf-8"), /mimeType/],
+    ["a header injection", file("a.png", "image/png\r\nX-Evil: 1"), /mimeType/],
+    ["a bare type", file("a.png", "image"), /mimeType/],
+    ["a file over the limit", file("a.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES + 1)), /larger than/],
+  ])("refuses %s", (_case, input, message) => {
+    expect(() => normalizeChatAttachments([input])).toThrow(message);
+  });
+
+  it("refuses more than ten files", () => {
+    expect(() => normalizeChatAttachments(Array.from({ length: 11 }, (_, index) => file(`${index}.png`))))
+      .toThrow(/at most 10 files/);
+  });
+
+  it("uploads a file as a multipart request naming it, and returns the reference to attach", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      return new Response(JSON.stringify({
+        attachmentDataRef: { resourceName: "media-1", attachmentUploadToken: "token-1", extra: "dropped" },
+      }));
+    });
+    const api = new ChatApi(async () => "token");
+    const content = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x00, 0xff]);
+    expect(await api.uploadAttachment("spaces/AAAA", { filename: "impact \"v2\".png", mimeType: "image/png", content }))
+      .toEqual({ resourceName: "media-1", attachmentUploadToken: "token-1" });
+
+    const [{ url, init }] = requests;
+    expect(url).toBe("https://chat.googleapis.com/upload/v1/spaces/AAAA/attachments:upload?uploadType=multipart");
+    expect(init.method).toBe("POST");
+    const boundary = /^multipart\/related; boundary=(.+)$/.exec(new Headers(init.headers).get("Content-Type")!)![1];
+    const body = init.body as Uint8Array;
+    const text = Array.from(body, byte => String.fromCharCode(byte)).join("");
+    const parts = text.split(`--${boundary}`);
+    expect(parts.at(-1)).toBe("--\r\n");
+    expect(parts[1]).toBe(`\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ filename: "impact \"v2\".png" })}\r\n`);
+    const media = parts[2];
+    expect(media.startsWith("\r\nContent-Type: image/png\r\n\r\n")).toBe(true);
+    // The exact bytes, high and NUL bytes included, sit between the part header and the closing CRLF.
+    const start = body.length - `\r\n--${boundary}--\r\n`.length - content.length;
+    expect([...body.subarray(start, start + content.length)]).toEqual([...content]);
+  });
+
+  it("refuses an upload response that names no attachment", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ attachmentDataRef: {} })));
+    await expect(new ChatApi(async () => "token").uploadAttachment("spaces/AAAA",
+      { filename: "a.png", mimeType: "image/png", content: new Uint8Array(1) }))
+      .rejects.toThrow(/did not return a reference/);
+  });
+
+  it("creates a message carrying uploaded files, with no text when it has none", async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ name: "spaces/AAAA/messages/M1" }));
+    });
+    const api = new ChatApi(async () => "token");
+    const ref = { resourceName: "media-1", attachmentUploadToken: "token-1" };
+    await api.createMessage("spaces/AAAA", { text: "", attachments: [ref] });
+    await api.createMessage("spaces/AAAA", { text: "Impact report", attachments: [ref] });
+    await api.createMessage("spaces/AAAA", { text: "Plain" });
+    expect(bodies).toEqual([
+      { attachment: [{ attachmentDataRef: ref }] },
+      { text: "Impact report", attachment: [{ attachmentDataRef: ref }] },
+      { text: "Plain" },
+    ]);
   });
 });
