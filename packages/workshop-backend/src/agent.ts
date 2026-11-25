@@ -2458,11 +2458,25 @@ async function runAgentPass(
   // An image reload keeps the active prompt verbatim after its tool calls are persisted.
   let prompt = progress.prompt;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
+  // Preserve the active prompt's references before spending its media budget on tool images.
+  const promptAttachmentIds = new Set<string>();
+  const activePrompt = chatMessages.find(msg => msg.sequence === prompt);
+  for (const attachment of activePrompt?.type === "message" ? activePrompt.attachments ?? [] : []) {
+    if (isInlineCandidate(attachment.mimeType) && !refusedAttachmentIds.has(attachment.id) &&
+        attachment.size <= MAX_INLINE_ATTACHMENT_BYTES && keptAttachments < MAX_INLINE_ATTACHMENTS &&
+        keptAttachmentBytes + attachment.size <= MAX_INLINE_MESSAGE_BYTES) {
+      promptAttachmentIds.add(attachment.id);
+      inlineAttachmentIds.add(attachment.id);
+      ++keptAttachments;
+      keptAttachmentBytes += attachment.size;
+    }
+  }
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
     else if (!answered) prompt ??= msg.sequence;
+    if (msg === activePrompt && promptAttachmentIds.size > 0) continue;
     // File-tool images share attachment admission, byte/count limits and compaction. Their
     // immutable references let this pass choose what fits before opening any image blobs.
     const candidates = [
@@ -2614,7 +2628,8 @@ async function runAgentPass(
                 let inline = (label: string, data: string): (TextContent | ImageContent)[] => {
                   let pair: [TextContent, ImageContent] = [{type: "text", text: label},
                     {type: "image", data, mimeType: attachment.mimeType}];
-                  if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
+                  if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom &&
+                      !promptAttachmentIds.has(attachment.id)) {
                     pastLimitParts.set(pair[0], notShown(PAST_LIMITS));
                   }
                   return pair;

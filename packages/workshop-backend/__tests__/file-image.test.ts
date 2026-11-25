@@ -201,6 +201,25 @@ describe("images read from a worktree", () => {
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
+  it("keeps active reference uploads ahead of older tool images within the shared budget", () => inKernel(crypto.randomUUID(), async impl => {
+    const screenshot = new Uint8Array(6 * 1024 * 1024); screenshot.set(PNG);
+    const reference = new Uint8Array(4.5 * 1024 * 1024); reference.set(PNG);
+    const {chatId} = await setup(impl, screenshot);
+    const blob = impl.gitCache.writeBlob(reference);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Compare against these references", {attachments: ["first.png", "second.png"].map(name =>
+        ({oid: blob.oid, mimeType: "image/png", name}))});
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const last = requests.at(-1)!;
+    const images = last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : []);
+    expect(images.map(image => Uint8Array.fromBase64(image.data).length)).toEqual([reference.length, reference.length, screenshot.length]);
+    expect(results(last)[0].content.every(part => part.type === "text")).toBe(true);
+    expect(results(last)[1].content.some(part => part.type === "image")).toBe(true);
+  }));
+
   it("summarizes over-limit image history as text instead of sending it to native compaction", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     recordReads(impl, chatId, blob.oid, 20);
