@@ -1049,25 +1049,51 @@ describe("baseValues", () => {
     let values: EnteredValue[][][] = pieces.map(({ rect: { startRow, endRow, startColumn, endColumn } }) =>
       Array.from({ length: endRow - startRow }, (_line, r) =>
         Array.from({ length: endColumn - startColumn }, (_cell, c) => `${startRow + r}:${startColumn + c}`)));
+    // Reads of a piece's values, and of a piece itself, as in checking its bounds.
     let reads = 0;
-    let counted = new Proxy(values, {
-      get(target, key, receiver) {
-        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
-        return Reflect.get(target, key, receiver);
+    let looks = 0;
+    let counting = <T extends object>(target: T, count: () => void): T => new Proxy(target, {
+      get(held, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) count();
+        return Reflect.get(held, key, receiver);
       },
     });
-    let entered = baseValues(pieces, counted);
+    let entered = baseValues(counting(pieces, () => looks++), counting(values, () => reads++));
 
     expect(rewriteWork(g, [area], entered)).toBe(0);
     let content = enteredContent(g, [area], entered);
 
     expect(content).toEqual(enteredContent(g, [area], keyedValues(pieces, values)));
     expect(content[0][479 + 25][99 + 25]).toBe("479:99");
-    // Each walk asks for the 480 rows Google holds, 100 cells a row. A cell looks through the
-    // pieces that reach its band of 256 rows and 16 columns, indexed once, from the last, and
-    // reads the values of none but its own: one read a cell, 48,000 a walk. Two walks.
+    // Each walk asks for the 480 rows Google holds, 100 cells a row, and reads the values of no
+    // piece but a cell's own: one read a cell, 48,000 a walk. Two walks.
     expect(reads).toBe(96_000);
+    // Indexing the pieces by band of 256 rows looks at each once: 676. The rows Google holds are
+    // 26 runs that the same pieces hold, and the first lookup in a run looks at each piece that
+    // reaches its band, 357 on average, to index the 26 that hold it by band of 16 columns, once
+    // for both walks: 9,282. A cell then looks through its column band's pieces from the last
+    // until its own, 3.19 on average: 153,120 a walk. Checking every piece that reaches a cell's
+    // bands of rows and columns instead would be 3,268,100, and indexing each row apart 476,644.
+    expect(looks).toBe(676 + 9_282 + 2 * 153_120);
     // Looking through every piece for every cell would be 48,000 * 676, twice: 64,896,000.
-    expect(reads).toBeLessThan(3_000_000);
+    expect(looks).toBeLessThan(1_000_000);
+  });
+
+  it("indexes the rows of a tall piece once, not once a row", () => {
+    let rows = 50_000;
+    let pieces = [{ sheetId: 0, rect: rect(0, 0, rows, 1) }];
+    let values = [Array.from({ length: rows }, (_line, r) => [`${r}`])];
+    let looks = 0;
+    let counted = new Proxy(pieces, {
+      get(held, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) looks++;
+        return Reflect.get(held, key, receiver);
+      },
+    });
+    let cells = baseValues(counted, values);
+    for (let row = 0; row < rows; row++) expect(cells(0, row, 0)).toBe(`${row}`);
+    // One look to index the piece by band, one to index the one run of rows it holds, and one a
+    // cell to check its columns: what is kept is one index, not one for each of the rows read.
+    expect(looks).toBe(1 + 1 + rows);
   });
 });

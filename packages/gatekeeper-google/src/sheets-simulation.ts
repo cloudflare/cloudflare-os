@@ -791,36 +791,74 @@ export type BaseValues = BaseCells<SpreadsheetCellValue>;
  * `values[i]`, what a read of `pieces[i]` returned padded to its size, by cell. It reads the
  * arrays it is given, which it keeps, and copies nothing: a cell is looked for in the pieces of
  * its sheet that hold its row, the last first, and is the first value found that is not null.
- * Those pieces are found once for a run of lookups on one row, which is how a caller walks an
- * area.
+ * Those pieces are found once for each run of rows that the same pieces hold, and kept.
  */
 export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
 ): BaseCells<T> {
-  // The pieces by the cells of `ROW_BAND` rows and `COLUMN_BAND` columns of their sheet they
-  // reach, in piece order, made once: a lookup looks among the pieces near its cell, not every
-  // piece of its sheet, whatever order it is asked in. A guarded area that queued insertions or
-  // deletions cut up has hundreds, across its rows or its columns, and a guard walks many areas
-  // over the same rows.
-  let near = new Map<string, number[]>();
+  // The pieces by the bands of `ROW_BAND` rows of their sheet they reach, in piece order, so the
+  // pieces of a row are looked for among those near it and not among every piece of the sheet,
+  // and the rows of each sheet where a piece starts or ends.
+  let bandsOn = new Map<number, Map<number, number[]>>();
+  let edgesOn = new Map<number, Set<number>>();
   pieces.forEach(({ sheetId, rect }, i) => {
+    let bands = bandsOn.get(sheetId);
+    if (!bands) bandsOn.set(sheetId, bands = new Map());
     for (let band = bandOf(rect.startRow); band <= bandOf(rect.endRow - 1); band++) {
-      for (let columns = columnBandOf(rect.startColumn); columns <= columnBandOf(rect.endColumn - 1); columns++) {
-        let key = `${sheetId}:${band}:${columns}`;
-        let on = near.get(key);
+      let on = bands.get(band);
+      if (on) on.push(i);
+      else bands.set(band, [i]);
+    }
+    let edges = edgesOn.get(sheetId);
+    if (!edges) edgesOn.set(sheetId, edges = new Set());
+    edges.add(rect.startRow).add(rect.endRow);
+  });
+  // Every row between two edges of its sheet is held by the same pieces. Those of a span, by the
+  // bands of `COLUMN_BAND` columns they reach, in piece order, are indexed the first time a row of
+  // it is asked for and kept: a lookup checks only the pieces that hold its row near its column,
+  // whatever order it is asked in, and what is kept grows with the pieces, not with the rows read.
+  // A guarded area that queued insertions or deletions cut up has hundreds of pieces, across its
+  // rows or its columns, and a guard walks many areas over the same rows.
+  let spansOn = new Map([...edgesOn].map(([sheetId, edges]) => [sheetId, {
+    edges: [...edges].sort((a, b) => a - b),
+    held: new Map<number, Map<number, number[]>>(),
+  }]));
+  let holdingRow = (sheetId: number, row: number): Map<number, number[]> | undefined => {
+    let spans = spansOn.get(sheetId);
+    if (!spans) return undefined;
+    let { edges, held } = spans;
+    // The span starts at the last edge at or before the row; past the last edge no piece holds it.
+    let low = 0;
+    let high = edges.length;
+    while (low < high) {
+      let middle = (low + high) >> 1;
+      if (edges[middle] <= row) low = middle + 1;
+      else high = middle;
+    }
+    let span = low - 1;
+    if (span < 0 || span === edges.length - 1) return undefined;
+    let holding = held.get(span);
+    if (holding) return holding;
+    holding = new Map();
+    let start = edges[span];
+    for (let i of bandsOn.get(sheetId)?.get(bandOf(start)) ?? []) {
+      let { rect } = pieces[i];
+      if (start < rect.startRow || start >= rect.endRow) continue;
+      for (let band = columnBandOf(rect.startColumn); band <= columnBandOf(rect.endColumn - 1); band++) {
+        let on = holding.get(band);
         if (on) on.push(i);
-        else near.set(key, [i]);
+        else holding.set(band, [i]);
       }
     }
-  });
+    held.set(span, holding);
+    return holding;
+  };
   return (sheetId, row, column) => {
-    let candidates = near.get(`${sheetId}:${bandOf(row)}:${columnBandOf(column)}`) ?? [];
-    for (let at = candidates.length - 1; at >= 0; at--) {
-      let { rect } = pieces[candidates[at]];
-      if (row < rect.startRow || row >= rect.endRow || column < rect.startColumn || column >= rect.endColumn) {
-        continue;
-      }
-      let value = values[candidates[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
+    let near = holdingRow(sheetId, row)?.get(columnBandOf(column)) ?? [];
+    for (let at = near.length - 1; at >= 0; at--) {
+      let { rect } = pieces[near[at]];
+      if (column < rect.startColumn || column >= rect.endColumn) continue;
+      let value = values[near[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
       if (value !== undefined && value !== null) return value;
     }
     return null;
