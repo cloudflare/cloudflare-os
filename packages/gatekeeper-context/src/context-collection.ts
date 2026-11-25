@@ -1343,6 +1343,18 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       return;
     }
 
+    let documentCount = this.getMetadata().documentCount;
+    if (result.commit === "" && documentCount > 0) {
+      // Publishing this deletes every document, so a lookup that wrongly finds no commits, or a
+      // switch to a branch that doesn't exist, shows in the logs.
+      logger.warn("git branch has no commits; emptying a context collection that holds documents", {
+        event: "context.collection.git.branch.empty",
+        collectionId: meta.id,
+        branch: meta.content.branch,
+        commit: meta.content.commit,
+        documentCount,
+      });
+    }
     this.#publishArtifactSync(result.commit, result.files, stored, computed);
     await this.#propagate();
   }

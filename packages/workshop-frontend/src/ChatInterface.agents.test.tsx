@@ -81,7 +81,7 @@ async function renderList(chats: AiChatMetadata[], extraOverseer: Record<string,
         selectedChatId={selected} onNavigateToChat={navigate}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-        onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+        onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
     );
   };
   /** Render with whichever chat the route has selected, as navigating to one would. */

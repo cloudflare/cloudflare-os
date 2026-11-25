@@ -278,6 +278,10 @@ const HANDLED_CONFIG_KEYS = new Set([
   "$schema", "name", "main", "build", "compatibility_date", "compatibility_flags", "rules",
   "migrations", "observability", "kv_namespaces", "r2_buckets", "worker_loaders", "services",
   "assets", "vars",
+  // How wrangler bundles. The release build has bundled by the time it reads this, so a release's
+  // modules are minified. It carries no source map: `upload_source_maps` reaches only what
+  // wrangler itself deploys.
+  "minify", "upload_source_maps",
   // What one invocation may use (pdf-renderer's CPU time). Carried verbatim, like observability:
   // a customer instance's Worker needs what an internal one does.
   "limits",

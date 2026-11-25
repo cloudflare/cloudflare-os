@@ -65,9 +65,22 @@ interface TestThing {
   watch(key: string, callback: ValueHook): Promise<void>;
   /** Binds a hook the integration test delivers through \`/control/queue-hook\`. */
   subscribe(name: string, callback: ValueHook): Promise<void>;
+  /**
+   * Takes a new Fetcher for the caller's fetch policy, installs it as code the gatekeeper hosts
+   * would use, and fetches \`url\` through it.
+   */
+  fetchUrl(url: string): Promise<FetchResult>;
+  /** Fetches \`url\` through the Fetcher installed last, as the hosted code would on its own. */
+  fetchInstalled(url: string): Promise<FetchResult>;
 }
 interface ValueHook {
   onValueRequested(value: number): Promise<void>;
+}
+/** A response, with its \`Cloudflare-OS-Fetch-Refused\` header if the policy refused the request. */
+interface FetchResult {
+  status: number;
+  body: string;
+  refused?: string;
 }
 `;
 
@@ -739,6 +752,32 @@ export interface TestSession {
   subscribe(name: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
+  /**
+   * Audits the call, takes a new Fetcher, installs it in this binding's storage in place of the
+   * last one, and fetches `url` through it, standing in for code the gatekeeper hosts.
+   */
+  fetchUrl(url: string): Promise<FetchResult>;
+  /**
+   * Fetches `url` through the Fetcher fetchUrl() installed last, taking no new one: the hosted
+   * code's own traffic between calls.
+   */
+  fetchInstalled(url: string): Promise<FetchResult>;
+}
+
+/** What a fetch through a `getFetcher()` Fetcher returned. */
+export type FetchResult = {
+  status: number;
+  body: string;
+  /** The `Cloudflare-OS-Fetch-Refused` header: why the fetch policy refused the request. */
+  refused?: string;
+};
+
+const INSTALLED_FETCHER = "installed-fetcher";
+
+async function fetchThrough(fetcher: Fetcher, url: string): Promise<FetchResult> {
+  const response = await fetcher.fetch(url);
+  const refused = response.headers.get("Cloudflare-OS-Fetch-Refused");
+  return { status: response.status, body: await response.text(), ...(refused ? { refused } : {}) };
 }
 
 /** The hook a gadget binds through `TestSession.watch()`. */
@@ -834,6 +873,22 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async keepSelfStub(key: string): Promise<void> {
     await this.state.keepSelfStub(key, await this.ctx.restore<RpcStub<ConnectionProbe>>({}));
+  }
+
+  async fetchUrl(url: string): Promise<FetchResult> {
+    await this.approvalQueue.authorizeObservation({
+      title: "Ran the test gatekeeper's fetch",
+      description: `Fetched \`${url}\` through the caller's fetch policy.`,
+    });
+    const fetcher = await this.approvalQueue.getFetcher();
+    this.ctx.storage.kv.put(INSTALLED_FETCHER, fetcher);
+    return fetchThrough(fetcher, url);
+  }
+
+  async fetchInstalled(url: string): Promise<FetchResult> {
+    const fetcher = this.ctx.storage.kv.get<Fetcher>(INSTALLED_FETCHER);
+    if (!fetcher) throw new Error("No Fetcher is installed");
+    return fetchThrough(fetcher, url);
   }
 
   [Symbol.dispose](): void {

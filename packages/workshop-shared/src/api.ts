@@ -519,7 +519,33 @@ export type ObserverBindingNeed = {
    * a copy on the wire would go stale while the modal is open across an OAuth round trip.
    */
   failure?: ObserverBindingFailure;
+  /**
+   * Representative routes from the shared gadget by which this connection is in scope: one for
+   * each workpiece or hook the gadget reaches first, along a shortest route within it. A route
+   * through a gadget or agent spawner that a listed route in the same branch already passes
+   * through is left out, so removing a listed route may leave the connection in scope. Set only
+   * for a live gadget grant, by `Overseer.listObserverRequirements()` and
+   * `AdminWorkspaceView.listObserverRequirements()`.
+   */
+  paths?: ObserverBindingPathStep[][];
 };
+
+/**
+ * A step on a route from a shared gadget to the connection of the `ObserverBindingNeed` holding
+ * it. A route lists the workpieces it passes through, and the gadget it ends at (the shared one
+ * for an empty route) binds the connection, unless its last step says why else it is in scope:
+ *
+ * - `gadget`, `agentSpawner`: a workpiece the route passes through, bound by the one before it.
+ * - `hook`: an enabled hook waking the gadget before it, whose connection writes into that
+ *   gadget's state, or one whose gadget can't be resolved, which wakes every gadget.
+ * - `historicalRequirement`: the gadget before it once read data through the connection, which
+ *   its state may still hold. Listed only when that gadget no longer binds the connection
+ *   directly, since a direct binding already lists it.
+ */
+export type ObserverBindingPathStep =
+  | {type: "gadget" | "agentSpawner", id: WorkpieceId, title: string}
+  | {type: "hook", id: number, title: string}
+  | {type: "historicalRequirement"};
 
 /**
  * The opening user's chosen account for a single gatekeeper binding. Returned from
@@ -2968,7 +2994,9 @@ export interface AdminWorkspaceView extends RpcTarget {
    * gadget, asks of the recipient: an account that each of those connections verifies. Read from
    * the workspace's own records: no connection is asked. Throws for a gadget that cannot be
    * shared, and when a connection `grant` reaches was made before connections could verify
-   * collaborators: any such connection for "workspace", and for a gadget only one it reaches. */
+   * collaborators: any such connection for "workspace", and for a gadget only one it reaches. A
+   * live gadget grant's needs carry their `paths`, naming the gadgets, agent spawners and hooks
+   * on the way. */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
   /** The active share links, as Overseer.listShareLinks() lists them. Each has its id, note,
@@ -3883,7 +3911,8 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "google": {
-    "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
+    "gemini-4-neon": {name: "Gemini 4 Neon", contextWindow: 1048576},
+    "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576, hidden: true},
   },
   "ollama": {
   },
@@ -3970,6 +3999,12 @@ export type WorkspaceMetadata = {
    */
   defaultGadgetId?: WorkpieceId;
 
+  /**
+   * How many bytes the workspace stores, once that reaches WORKSPACE_STORAGE_WARNING_BYTES, for
+   * clients to warn; absent below it. Updated as it changes by a tenth of a GB.
+   */
+  storageBytes?: number;
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
@@ -3983,6 +4018,29 @@ export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
 }
+
+/**
+ * The most a workspace can store: the storage limit of the Durable Object that holds it, which
+ * Cloudflare measures in GB, not GiB. A full one would refuse every write, even those that end an
+ * agent turn and report its error, so a workspace refuses what fills it well before that, at
+ * WORKSPACE_FILE_QUOTA_BYTES and WORKSPACE_TURN_QUOTA_BYTES.
+ */
+export const WORKSPACE_STORAGE_LIMIT_BYTES = 10_000_000_000;
+
+/** From this much stored, WorkspaceMetadata reports the workspace's `storageBytes`. */
+export const WORKSPACE_STORAGE_WARNING_BYTES = 7_000_000_000;
+
+/**
+ * From this much stored, a workspace refuses to store a new file over 1 MiB, whether uploaded,
+ * written, or pulled from a gatekeeper by a read, which then fails.
+ */
+export const WORKSPACE_FILE_QUOTA_BYTES = 8_000_000_000;
+
+/**
+ * From this much stored, a workspace starts no agent turn: one that would start ends at once
+ * with an `error` message whose code is `storage_full`.
+ */
+export const WORKSPACE_TURN_QUOTA_BYTES = 9_500_000_000;
 
 /**
  * The icons an output format may be drawn with. A closed set because we want them to look consistent.
@@ -4161,8 +4219,34 @@ export type UiBundle = {
  * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
  * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
  * proxies through the frame.
+ *
+ * Through it the UI tells the host what the user is focused on and lets the host send the user
+ * back to a spot, so the Workshop can restore the spot after a reload and tell the agent what the
+ * user was looking at. It can also ask the host to show the chat of an agent the gadget spawned.
  */
 export interface GadgetHost {
+  /**
+   * Reports the spot the user is focused on, replacing the previous report. Null means nothing
+   * more specific than the gadget itself. Does nothing during an export.
+   */
+  reportFocus(focus: GadgetFocus | null): void;
+
+  /**
+   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor,
+   * usually one this gadget reported earlier: right away if there is a spot to return to, and
+   * later when the user follows a link to one. `navigate` returns false if the anchor no longer
+   * resolves, and otherwise should show the spot, even if the UI is already drawn, and report it
+   * with `reportFocus()`. Calls never overlap: the host waits for one to settle before the next,
+   * and skips any target a newer one replaced meanwhile. A second registration replaces the first.
+   * Resolves once the call for a spot to return to, if there is one, has settled, so a UI that
+   * awaits this before its first render never draws the wrong spot first. Never calls `navigate`
+   * during an export.
+   *
+   * The anchor can come from outside the gadget (a pasted link, for one), so `navigate` must treat
+   * it as untrusted input that selects what to show and never causes an action.
+   */
+  onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
+
   /**
    * Shows the user the chat of an agent this gadget spawned, named by its
    * `SpawnedAgent.getChatToken()` (see `AiChatMetadata.chatToken`). The Workshop opens the chat in
@@ -4172,6 +4256,37 @@ export interface GadgetHost {
    */
   openAgentChat(chatToken: string): Promise<void>;
 }
+
+/** A spot in a gadget's UI that the user is focused on, as the UI reported it. */
+export type GadgetFocus = {
+  /**
+   * Identifies the spot, in a form only the gadget interprets. Built from stable ids rather than
+   * positions, so it still means the same thing after a reload, a code change or an edit to the
+   * data around it. At most MAX_FOCUS_ANCHOR_LENGTH characters.
+   */
+  anchor: string;
+
+  /**
+   * A short name for the spot, shown to people: "Q3 › cell B7". At most MAX_FOCUS_LABEL_LENGTH
+   * characters.
+   */
+  label: string;
+
+  /**
+   * What is at the spot, as text for the agent: the selected text, a row's values. At most
+   * MAX_FOCUS_CONTEXT_LENGTH characters.
+   */
+  context?: string;
+};
+
+/** The longest `GadgetFocus.anchor` a host accepts, in characters. */
+export const MAX_FOCUS_ANCHOR_LENGTH = 256;
+
+/** The longest `GadgetFocus.label` a host accepts, in characters. */
+export const MAX_FOCUS_LABEL_LENGTH = 120;
+
+/** The longest `GadgetFocus.context` a host accepts, in characters. */
+export const MAX_FOCUS_CONTEXT_LENGTH = 2000;
 
 /** One module of a Gadget UI. */
 export type UiModule = {
@@ -4907,39 +5022,30 @@ export interface Overseer extends RpcTarget {
    * Starts a new chat in this workspace with an initial message or slash-command request.
    * A slash command always creates a visible chat event, even when it does not produce a message
    * for the agent.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns the new chat's id without waiting
    * for the agent's turn; `waitForAgent()` waits for it to end.
-   *
-   * `formats` records where the message names one of the deployment's standard output formats, so
-   * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
-   * is already in the text.
    */
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
-          capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          options?: ChatMessageOptions): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
-   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
-   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
-   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
-   * agent finishes.
+   * While it runs, plain text with no capsules, attachments or formats, though possibly a focus,
+   * steers it, on the running turn's model whatever `modelId` is, even null: it waits in
+   * `AiChatMetadata.queuedSteers` until the agent reads it. Anything else, or anything sent after
+   * `stopAgent()`, throws until the agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns without waiting for the agent's
    * turn; `waitForAgent()` waits for it to end.
-   *
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
-                  capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                  formats?: MessageFormatRef[]): Promise<void>;
+                  options?: ChatMessageOptions): Promise<void>;
 
   /**
    * Store raw bytes, such as a file to attach, as an immutable Git blob and return its OID. The OID
@@ -4948,12 +5054,13 @@ export interface Overseer extends RpcTarget {
    * `setBytes` change together with the payload's byte length. The blob must be present in this
    * workspace's Git store.
    *
-   * There is no size limit. A `Uint8Array` travels in one RPC message; for large content, pass
-   * `{stream, byteLength}` instead, which the server stores as it arrives without holding it
-   * whole. `byteLength` must be the stream's exact length: it is verified, and a stream that
-   * ends short of it or runs past it fails the call and stores no blob (though pieces already
-   * written may remain, unreferenced, as after any interrupted write). Either way, the OID is
-   * returned only once the whole blob is durably stored.
+   * There is no size limit, but a blob over 1 MiB is refused once the workspace stores
+   * WORKSPACE_FILE_QUOTA_BYTES, with an error that says so. A `Uint8Array` travels in one RPC
+   * message; for large content, pass `{stream, byteLength}` instead, which the server stores as
+   * it arrives without holding it whole. `byteLength` must be the stream's exact length: it is
+   * verified, and a stream that ends short of it or runs past it fails the call and stores no
+   * blob (though pieces already written may remain, unreferenced, as after any interrupted
+   * write). Either way, the OID is returned only once the whole blob is durably stored.
    */
   uploadBlob(content: Uint8Array | { stream: ReadableStream<Uint8Array>; byteLength: number })
       : Promise<GitOid>;
@@ -4966,9 +5073,10 @@ export interface Overseer extends RpcTarget {
   readBlob(oid: GitOid): Promise<ReadableStream<Uint8Array>>;
 
   /**
-   * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
-   * present in the message's ChatAttachmentRef. Images are inlined there, so this is normally used
-   * only to download non-image attachments on demand.
+   * Fetch the bytes of a committed chat attachment over RPC, whole. The canonical metadata is
+   * already present in the message's ChatAttachmentRef, which carries small images' bytes. Read an
+   * attachment that has an `oid` with readBlob() instead, which streams: this refuses one over
+   * 16 MiB.
    */
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
 
@@ -5194,7 +5302,8 @@ export interface Overseer extends RpcTarget {
   /**
    * List the connections a recipient of `grant` must verify before opening what it grants, in
    * the order the connections were created: none for a view grant, which verifies nothing.
-   * Reports what sharing will cost the recipient; it grants nothing and mints no capability.
+   * Live gadget grants also include paths explaining why each connection is in scope. This
+   * grants nothing and mints no capability.
    */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
@@ -5336,9 +5445,11 @@ export type AiChatMetadata = {
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
    * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
-   * `steered` messages. Absent when none.
+   * `steered` messages. Absent when none. A `focus` is as the message will carry it (see
+   * AiChatMessageBody.focus).
    */
-  queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+  queuedSteers?: {text: string, author: AiChatAuthorInfo,
+                  focus?: MessageFocus & {gadgetTitle: string}}[];
 
   /**
    * True when notifications default off until each user's first participation. Absent on
@@ -5793,6 +5904,13 @@ export type AiChatMessageBody = {
   attachments?: ChatAttachmentRef[];
 
   /**
+   * What the sender was focused on (see `ChatMessageOptions.focus`), with the gadget's title as
+   * it was when the message was sent, so the message still reads the same after the gadget is
+   * renamed or deleted.
+   */
+  focus?: MessageFocus & {gadgetTitle: string};
+
+  /**
    * Sequence of the visible slash-command event that generated this agent-visible message.
    * Clients use this to group the two records for display.
    */
@@ -6071,8 +6189,10 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure). "resume_exhausted" marks a turn that
-   * exhausted its resume attempts before saving a step; `retryAgent()` tells the agent so.
+   * marks a run the user stopped, which is not a failure; "storage_full" marks a turn refused
+   * because the workspace reached WORKSPACE_TURN_QUOTA_BYTES, which a retry can't fix).
+   * "resume_exhausted" marks a turn that exhausted its resume attempts before saving a step;
+   * `retryAgent()` tells the agent so.
    */
   code?: string;
 } | {
@@ -6233,8 +6353,9 @@ export type ChatAttachmentHandle = {
 /**
  * Attachment metadata returned to clients.
  *
- * For supported inline image formats, `content` carries the image bytes so the client can render
- * them without an extra round trip. For other attachments, fetch the bytes on demand via
+ * For supported inline image formats up to 4 MiB, `content` carries the image bytes so the client
+ * can render them without an extra round trip. For other attachments, read the bytes on demand:
+ * with `Overseer.readBlob(oid)`, or for a legacy attachment with no `oid`,
  * `Overseer.getChatAttachmentContent()`.
  */
 export type ChatAttachmentRef = {
@@ -6255,7 +6376,7 @@ export type ChatAttachmentRef = {
    */
   workspacePath?: string;
 
-  /** Inlined bytes for small image attachments. Present only for images. */
+  /** Inlined bytes for image attachments up to 4 MiB. Present only for those. */
   content?: Uint8Array;
 };
 
@@ -6606,6 +6727,39 @@ export type AiToolCall = {
 // TODO: Extend AiToolCall for code-mode tool calls.
 // - Includes inline audit logs from the action.
 // - Actions can be approved or rejected inline.
+
+/** What a chat message carries besides its text. See `Overseer.sendChatMessage()`. */
+export type ChatMessageOptions = {
+  /** Resources embedded inline in the message. A slash-command request cannot include any. */
+  capsules?: CapsuleSpecifier[];
+
+  /** Uploaded blobs attached to the message. A slash-command request cannot include any. */
+  attachments?: ChatAttachmentHandle[];
+
+  /**
+   * Where the message names one of the deployment's standard output formats, so the transcript
+   * can draw it as a chip. Display only -- what the agent reads is the noun, which is already in
+   * the text.
+   */
+  formats?: MessageFormatRef[];
+
+  /**
+   * What the user was focused on when they sent the message, so the agent knows what "this"
+   * refers to. `gadgetId` must name one of the workspace's gadgets, and the spot must be within
+   * the `GadgetFocus` limits, or the message is refused. It grants the agent nothing: the gadget
+   * is not added to the chat's env. A slash-command request cannot carry one.
+   */
+  focus?: MessageFocus;
+};
+
+/** What the user was focused on when they sent a chat message. */
+export type MessageFocus = {
+  /** The gadget they were viewing. */
+  gadgetId: WorkpieceId;
+
+  /** The spot within it, if the gadget's UI had reported one. Absent: the gadget as a whole. */
+  spot?: GadgetFocus;
+};
 
 /**
  * A standard output format named inline in a chat message, recorded so the message can be redrawn

@@ -941,6 +941,24 @@ describe("revert and draft discard", () => {
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
     expect(impl.storage.gadgets.get(2)).toBeUndefined();
   }));
+
+  it("folds a converted chat's content and pins from its conversion boundary",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n", "b.txt": "kept\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    seedConvertedChat(impl, c1, true);
+
+    // The pinned gadget's base tree with the boundary's collapsed change on top, plus the
+    // carried creation.
+    let content: CodeContent = await impl.buildChatContent(1);
+    expect(Object.fromEntries(
+        [...content].map(([gadgetId, files]) => [gadgetId, Object.fromEntries(files)]))).toEqual({
+      1: { "a.txt": "one\nlegacy\n", "b.txt": "kept\n" },
+      2: { "mine.js": "mine\n" },
+    });
+    expect(impl.declaredPins(1)).toEqual(new Map([[1, { gadgetId: 1, baseCommit: c1 }]]));
+  }));
 });
 
 // The chat's pin for one gadget.
@@ -1573,6 +1591,32 @@ describe("chat content reconstruction", () => {
     expect((await impl.buildChatContent(1)).get(1)).toBeUndefined();
   }));
 
+  it("reads no tree of an epoch that an accept closed", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+    });
+    expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
+        .toEqual({ outcome: "merged" });
+    let head = impl.storage.gadgets.get(1)!.commitId!;
+    await submit(impl, 1, {
+      generation: 1, revision: 0, clientId: "cli", seq: 2,
+      pins: [{ gadgetId: 1, baseCommit: head }],
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "top\none\nedited\n" }),
+    });
+    impl.materializeChatChanges(1);
+
+    let reads = vi.spyOn(impl.gitCache, "readCommitFiles");
+    let content = await impl.buildChatContent(1);
+    expect(Object.fromEntries(content.get(1)!)).toEqual({ "a.txt": "top\none\nedited\n" });
+    expect(reads.mock.calls).toEqual([[head]]);
+  }));
+
   it("materializes automatically when the live window grows past the threshold",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "0\n" });
@@ -1711,6 +1755,45 @@ describe("chat content reconstruction", () => {
     expect(changes[0].author).toEqual(USER);
     expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
     expect(liveRows(impl, 1)).toHaveLength(1);
+  }));
+
+  it("reads none of a closed epoch's rows to fold the current epoch",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nfirst\n" }),
+    });
+    expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
+        .toEqual({ outcome: "merged" });
+    let head = impl.storage.gadgets.get(1)!.commitId!;
+    let epoch = impl.storage.chatMeta.get(1)!.codeBase!.epoch!;
+
+    await submit(impl, 1, {
+      generation: 1, revision: 0, clientId: "cli", seq: 2,
+      pins: [{ gadgetId: 1, baseCommit: head }],
+      change: editChange(1, { "a.txt": "one\nfirst\n" }, { "a.txt": "one\nfirst\nsecond\n" }),
+    });
+    impl.materializeChatChanges(1);
+
+    let read: number[] = [];
+    let list = impl.storage.chats.list.bind(impl.storage.chats);
+    using _ = vi.spyOn(impl.storage.chats, "list").mockImplementation(function* (options: any) {
+      for (let msg of list(options)) {
+        read.push(msg.sequence);
+        yield msg;
+      }
+    });
+
+    let content = await impl.buildChatContent(1);
+    expect(Object.fromEntries(content.get(1)!)).toEqual({ "a.txt": "one\nfirst\nsecond\n" });
+    expect(impl.declaredPins(1)).toEqual(new Map([[1, { gadgetId: 1, baseCommit: head }]]));
+    // The epoch's opening message is the earliest row either fold needs.
+    expect(Math.min(...read)).toBe(epoch);
   }));
 });
 

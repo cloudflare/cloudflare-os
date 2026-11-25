@@ -1642,6 +1642,35 @@ export interface ApprovalQueue extends ObservationAuthorizer {
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: RpcStub<Hook>,
         description: HookDescription): Promise<void>;
+
+  /**
+   * A Fetcher that applies this session's caller's fetch policy: which hosts the caller may reach,
+   * GET and HEAD only, no credentials. It is for code the gatekeeper hosts on the caller's behalf,
+   * such as a container's outbound traffic. The gatekeeper's own calls to its vendor keep using
+   * its own `fetch()`. A refused request is answered with a 403 (405 for the method) whose
+   * `Cloudflare-OS-Fetch-Refused` header says why, with the reason as its body. On
+   * `approval-requested`, which only an agent caller gets, nothing more need be done: the agent's
+   * turn ends, and it runs its code again once the user approves. A redirect goes back to the
+   * requester to follow, except a user-approved URL's, which the Fetcher follows itself: that
+   * response's `Cloudflare-OS-Fetch-Url` header names the URL it came from, since its `url` and
+   * `redirected` describe only the request sent.
+   *
+   * The workspace decides each request by its policy as it stands at that moment, and records the
+   * ones it allows, except requests to the deployment admin's trusted hosts: the Fetcher allows
+   * those itself, by the trusted hosts as they stood when it was made, and nothing records them.
+   * It may be stored, in the gatekeeper's Durable Object storage for example, and used from later
+   * calls. But a Fetcher taken in a session for an agent's code execution serves that execution:
+   * once it ends, the workspace refuses the requests it decides. So take a new Fetcher in each
+   * such session that hosts code.
+   *
+   * An environment the Fetcher filters serves one workspace. Data from one workspace and a
+   * Fetcher from another must never share it: an unrestricted workspace's Fetcher would let the
+   * other's restricted data out. To move an environment to another workspace, discard everything
+   * it retained first.
+   *
+   * Throws if the session has ended (see `requireLive()`).
+   */
+  getFetcher(): Promise<Fetcher>;
 }
 
 /** What a gadget is about to read from an external service, for `authorizeObservation()`. */
@@ -2039,7 +2068,8 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  *
  * This is a choice of representation, not a storage limit: no object is refused for its size.
  * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
- * row's worth.
+ * row's worth. (A workspace near its storage quota does refuse new blobs larger than this; see
+ * `WORKSPACE_FILE_QUOTA_BYTES` in `@gadgets/workshop-shared/api`.)
  */
 export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
 
@@ -2117,7 +2147,8 @@ export interface GitCache extends RpcTarget {
 
   /**
    * Add an object to cache. Returns the computed oid. There is no size limit, but the object
-   * travels whole in one RPC message.
+   * travels whole in one RPC message, and a blob over MAX_BUFFERED_BLOB_SIZE is refused while the
+   * workspace is near its storage quota (`WORKSPACE_FILE_QUOTA_BYTES`).
    *
    * As with `get()`, the `content` must NOT include the `<type> <size>\0` header.
    *

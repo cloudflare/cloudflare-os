@@ -18,6 +18,8 @@
   "ai": {
     "binding": "AI"
   },
+  "minify": true,
+  "upload_source_maps": true,
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"

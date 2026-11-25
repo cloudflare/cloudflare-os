@@ -111,22 +111,37 @@ describe('UiBlockCard', () => {
   const buttonNamed = (name: string) =>
     [...container.querySelectorAll('button')].find(button => button.textContent === name)
 
-  it('provides only this block’s literal images, excluding download-only and other blocks’ pins', async () => {
-    const source = 'worktree://SCRATCH/image&more&again.png'
-    const download = 'worktree://OUTPUTS/report.csv', other = 'worktree://OUTPUTS/other.png'
+  it('reads any file the message pinned, wherever the reply named it, and refuses an unpinned one', async () => {
+    const image = 'worktree://SCRATCH/image&more&again.png', data = 'worktree://OUTPUTS/totals.json'
+    // Named only in the reply's prose, only in another view, or by a URL this view's code builds.
+    const prose = 'worktree://OUTPUTS/prose.csv', elsewhere = 'worktree://OUTPUTS/elsewhere.json'
+    const built = 'worktree://OUTPUTS/built.json'
+    const oids = { [image]: 'a'.repeat(40), [data]: 'd'.repeat(40), [prose]: 'e'.repeat(40),
+      [elsewhere]: 'f'.repeat(40), [built]: '1'.repeat(40), 'worktree://OUTPUTS/missing.json': null }
     const readBlob = vi.fn<FileSnapshots['readBlob']>().mockRejectedValue(new Error('Blob unavailable'))
     await act(async () => root.render(<UiBlockCard
-      block={{ ...BLOCK, html: `<img src="${source.replaceAll('&', '&amp;')}"><!-- <img src="${download}"> -->` +
-        `<script>const example = '<img src="${other}">';</script>` }} scrollRoot={scrollRoot}
-      onHeightChange={onHeightChange} onSendMessage={async () => {}}
-      files={{ oids: { [source]: 'a'.repeat(40), [download]: 'b'.repeat(40), [other]: 'c'.repeat(40) }, readBlob }} />))
-    const host = await handshake(container.querySelector('iframe')!, new FakeFrame())
-    await expect(Promise.resolve(host.readImage(source))).rejects.toThrow('Blob unavailable')
-    expect(readBlob).toHaveBeenCalledWith('a'.repeat(40))
-    await expect(Promise.resolve(host.readImage('worktree://SCRATCH/other.png'))).rejects.toThrow(/File unavailable/)
-    await expect(Promise.resolve(host.readImage(download))).rejects.toThrow(/File unavailable/)
-    await expect(Promise.resolve(host.readImage(other))).rejects.toThrow(/File unavailable/)
-    expect(readBlob).toHaveBeenCalledTimes(1)
+      block={{ ...BLOCK, html: `<img src="${image.replaceAll('&', '&amp;')}">` +
+        `<script>embeds.json("${data}");\nembeds.json("worktree://OUTPUTS/" + "built.json");\n</script>` }} scrollRoot={scrollRoot}
+      onHeightChange={onHeightChange} onSendMessage={async () => {}} files={{ oids, readBlob }} />))
+    const iframe = container.querySelector('iframe')
+    if (iframe === null) throw new Error('The card drew no frame')
+    const host = await handshake(iframe, new FakeFrame())
+    const outcome = async (url: string) =>
+      await Promise.resolve(host.readFile(url)).then(() => 'read', (error: Error) => error.message)
+    // Every file this reply pinned reaches the blob reader, which this test makes fail.
+    for (const url of [image, data, prose, elsewhere, built]) expect(await outcome(url)).toBe('Blob unavailable')
+    expect(readBlob.mock.calls.map(([oid]) => oid)).toEqual(['a', 'd', 'e', 'f', '1'].map(c => c.repeat(40)))
+    // Not pinned, pinned as missing, or not a worktree:// URL.
+    for (const url of ['worktree://SCRATCH/other.png', 'worktree://OUTPUTS/missing.json', 'https://example.com/a.png']) {
+      expect(await outcome(url)).toMatch(/^File unavailable/)
+    }
+    expect(readBlob).toHaveBeenCalledTimes(5)
+  })
+
+  it('refuses every read in a message with no pinned files, and still draws the view', async () => {
+    const host = await handshake(await renderCard({ ...BLOCK, html: `<p>Totals</p><script>embeds.json("worktree://OUTPUTS/t.json")</script>` }))
+    await expect(Promise.resolve(host.readFile('worktree://OUTPUTS/t.json'))).rejects.toThrow(/unavailable/)
+    expect(container.querySelector('iframe')).not.toBeNull()
   })
 
   it('clears a recovered image failure without dismissing script errors', async () => {
