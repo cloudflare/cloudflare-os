@@ -702,6 +702,11 @@ const WEB_SEARCH_LIMIT = 5;
 //   not eligible for zero data retention.
 // - openai-responses: limited to OpenAI's index, so a live page is read only under the
 //   workspace's fetch policy (see docs/unified-fetch.md). `web_search_preview` ignores that field.
+//   Undefined for a request whose `reasoning.effort` is "minimal", which OpenAI refuses with the
+//   tool: gpt-5 answered 400 "The following tools cannot be used with reasoning.effort
+//   'minimal': web_search." on 2026-11-25. The effort is read from the payload, because a
+//   reasoning level can be sent as another effort. Such a request goes as pi built it, and the
+//   chat searches as one with no tool does.
 // - Other APIs: undefined.
 function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
@@ -714,7 +719,7 @@ function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefi
             { type: "web_search_20250305", name: "web_search", max_uses: WEB_SEARCH_LIMIT }],
       };
     case "openai-responses":
-      return {
+      return hasMinimalEffort(payload) ? undefined : {
         ...payload,
         tools: [...tools, { type: "web_search", external_web_access: false }],
         max_tool_calls: WEB_SEARCH_LIMIT,
@@ -723,6 +728,10 @@ function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefi
       return undefined;
   }
 }
+
+const hasMinimalEffort = (payload: object): boolean =>
+    "reasoning" in payload && typeof payload.reasoning === "object" && payload.reasoning !== null &&
+    "effort" in payload.reasoning && payload.reasoning.effort === "minimal";
 
 const declaresWebSearch = (payload: object): boolean =>
     "tools" in payload && Array.isArray(payload.tools) && payload.tools.some((tool: unknown) =>

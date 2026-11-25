@@ -282,8 +282,9 @@ function readAnthropicReply(
     search: BuiltInSearchStream, observe: (...record: BuiltInSearchRecord) => void) {
   const content: Block[] = [];
   const toolInputs = new Map<number, string>();
-  // What the stream held that `content` does not reproduce, if anything.
-  let lost: string | undefined;
+  // What the stream held that `content` does not reproduce, each with its block where the loss
+  // is within one block.
+  const lost: { what: string; block?: Block }[] = [];
   let kept: string | undefined;
   // The searches Anthropic has charged the response for, as its latest count says.
   let billed = 0;
@@ -323,7 +324,7 @@ function readAnthropicReply(
       switch (type) {
         case "content_block_start":
           if (content_block === undefined || index !== content.length) {
-            lost ??= "a content block out of order";
+            lost.push({ what: "a content block out of order" });
             break;
           }
           content.push(content_block);
@@ -337,8 +338,8 @@ function readAnthropicReply(
             // The error reaches the logs, which take none of a provider's content: so it names
             // the delta's type only when that is shaped like one of Anthropic's type names.
             const kind = delta?.type;
-            lost ??= typeof kind === "string" && /^[a-z_]{1,40}$/.test(kind)
-                ? `a "${kind}" delta` : "a delta of an unknown type";
+            lost.push({ block, what: typeof kind === "string" && /^[a-z_]{1,40}$/.test(kind)
+                ? `a "${kind}" delta` : "a delta of an unknown type" });
           }
           break;
         case "content_block_stop": {
@@ -349,7 +350,7 @@ function readAnthropicReply(
             block.input = JSON.parse(input);
           } catch (error) {
             if (!(error instanceof SyntaxError)) throw error;
-            lost ??= "a search whose input is not JSON";
+            lost.push({ block, what: "a search whose input is not JSON" });
           }
           break;
         }
@@ -361,14 +362,18 @@ function readAnthropicReply(
           search.sources = citedSources(content);
           if (answered.size === 0) break;
           search.searched = { billed };
-          if (lost !== undefined) {
+          // A search with no result is not kept: sent back, Anthropic refuses it unless tool
+          // results and nothing else follow. So nothing lost within it can be sent back wrong.
+          const unanswered = (each: Block) =>
+              each.type === "server_tool_use" && !answered.has(each.id);
+          const failed = lost.find(({ block }) => block === undefined || !unanswered(block));
+          if (failed !== undefined) {
             // Sending back anything but what Anthropic sent fails the chat's next request, or
             // makes the model search again. Failing here says why, where an operator looks.
-            throw new Error(`Anthropic's response searched the web and its stream held ${lost}, ` +
-                "which this version cannot send back as it was.");
+            throw new Error("Anthropic's response searched the web and its stream held " +
+                `${failed.what}, which this version cannot send back as it was.`);
           }
-          kept = JSON.stringify(content.flatMap(each =>
-              each.type === "server_tool_use" && !answered.has(each.id) ? []
+          kept = JSON.stringify(content.flatMap(each => unanswered(each) ? []
               : each.type === "tool_use" ? [{ ...each, input: null }] : [each]));
           break;
         }

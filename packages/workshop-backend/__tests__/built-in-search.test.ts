@@ -257,6 +257,30 @@ describe("OpenAI's web search tool", () => {
     expect(bodies[0]?.max_tool_calls).toBeUndefined();
   });
 
+  // OpenAI refuses the tool for a request whose reasoning effort is "minimal". The level "off"
+  // is sent to gpt-5 as that effort too, because the model cannot stop reasoning.
+  it.each([
+    { reasoning: "minimal", effort: "minimal", declared: false },
+    { reasoning: "off", effort: "minimal", declared: false },
+    { reasoning: "low", effort: "low", declared: true },
+  ] as const)("is declared at the level $reasoning, sent as the effort $effort: $declared",
+      async ({ reasoning, effort, declared }) => {
+    const { handle, bodies, respond } = gateway({ ...GPT, model: "gpt-5", reasoning });
+    respond(OPENAI_DONE, OPENAI_DONE);
+    const search = withBuiltInSearch(handle.stream, () => true, async () => {});
+    await search.stream(handle.model, { messages: [system, QUESTION] }).result();
+    await completeText(handle, { prompt: "Reply with OK.", webSearch: true, thinking: true });
+
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      expect(body.reasoning).toMatchObject({ effort });
+      expect(toolTypes(body).includes("web_search")).toBe(declared);
+      expect(body.max_tool_calls).toBe(declared ? 5 : undefined);
+    }
+    // The agent's own tools are sent either way.
+    expect(toolTypes(bodies[0])).toContain("function");
+  });
+
   it("is declared by a one-shot request only when it asks, as the admin's model test does",
       async () => {
     const { handle, bodies, respond } = gateway(GPT);
@@ -497,6 +521,61 @@ describe("Anthropic's web search tool", () => {
         ANSWER_CONTENT.filter(block => block.type !== "thinking")));
     expect(blockTypes(sent)).toContain("web_search_tool_result");
     expectSendable(bodies[1]);
+  });
+
+  // The captured answer up to the thinking after its search, then a second search that the
+  // response cap cuts off in the middle of its query. No result answers that call, so it is
+  // not kept, and what the stream held of it cannot be sent back wrong.
+  it.each([
+    { name: "its query", cut: { type: "input_json_delta", partial_json: '{"query": "Wrang' } },
+    { name: "a delta of an unknown type", cut: { type: "mystery_delta", mystery: "?" } },
+  ])("keeps a finished search when the response is cut off in a later search, in $name",
+      async ({ cut }) => {
+    const finished = ANSWER.split("event: content_block_start").slice(0, 5)
+        .join("event: content_block_start");
+    const { handle, bodies, respond, records, search, message } = await answered(finished + sse([
+      { type: "content_block_start", index: 4, content_block: {
+        type: "server_tool_use", id: "srvtoolu_cut", name: "web_search", input: {},
+      } },
+      { type: "content_block_delta", index: 4, delta: cut },
+      { type: "content_block_stop", index: 4 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: {
+        output_tokens: 600, server_tool_use: { web_search_requests: 1 },
+      } },
+      { type: "message_stop" },
+    ]));
+    // As pi ends a response that reached its cap.
+    expect(message.stopReason).toBe("length");
+    expect(records).toHaveLength(1);
+    expect(search.searched).toStrictEqual({ billed: 1 });
+
+    const kept = ANSWER_CONTENT.slice(0, 4);
+    expect(blockTypes(kept))
+        .toStrictEqual(["thinking", "server_tool_use", "web_search_tool_result", "thinking"]);
+    expect(message).toHaveProperty("providerContent", JSON.stringify(kept));
+    respond(CLAUDE_DONE);
+    await search.stream(handle.model, {
+      messages: [system, QUESTION, message, user("Go on.")],
+    }).result();
+    expect(JSON.stringify(assistantContents(bodies[1]))).toBe(JSON.stringify([kept]));
+    expectSendable(bodies[1]);
+  });
+
+  it("fails a response whose answered search has an input that is not JSON", async () => {
+    const [, searched, result] = ANSWER_CONTENT;
+    const { message } = await answered(claudeStream(
+      { type: "content_block_start", index: 0, content_block: { ...searched, input: {} } },
+      { type: "content_block_delta", index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"query": "Wrang' } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: result },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {
+        output_tokens: 9, server_tool_use: { web_search_requests: 1 },
+      } },
+    ));
+    expect(message.stopReason).toBe("error");
+    expect(message).not.toHaveProperty("providerContent");
   });
 
   it("fails a response it cannot keep as it was, and a request that would lose kept content",
@@ -902,6 +981,54 @@ describe("an agent's turn on a Claude model with web search on", () => {
     await claudeTurn();
     expect(claude.bodies.map(body => body.compaction !== undefined))
         .toStrictEqual([false, true, false]);
+  }));
+
+  // Claude's own follow-up measured the prompt with its kept content, so that size is the
+  // chat's. The estimate of the kept content alone would pass this budget.
+  it("takes the size its own model measured for a prompt that holds kept content",
+      () => withChat(async impl => {
+    const small: AiModelConfig = { ...CLAUDE, compactionInputBudget: 16_000 };
+    const claude = gateway(small);
+    ask(impl, "What is the latest stable release of Wrangler?");
+    claude.respond(ANSWER);
+    await turn(impl, claude.handle);
+    ask(impl, "Thanks.");
+    claude.respond(CLAUDE_DONE);
+    await turn(impl, claude.handle);
+    expect(impl.storage.chatMeta.get(CHAT_ID)?.totalTokens).toBe(102);
+
+    ask(impl, "And the one before it?");
+    claude.respond(CLAUDE_DONE);
+    await runAgent(impl, claude.handle, CHAT_ID, agent, new AbortController().signal, OWNER, small);
+    expect(claude.bodies.map(body => body.compaction !== undefined))
+        .toStrictEqual([false, false, false]);
+  }));
+
+  // The other direction. Claude's follow-up measured a prompt with the search content that only
+  // Claude is sent back, so a pass on GPT cannot take that size either. Here GPT's budget is
+  // between its own prompt and Claude's count, and the chat has room left.
+  it("does not take for another model a size measured with kept content that model is not sent",
+      () => withChat(async impl => {
+    const claude = gateway(CLAUDE);
+    ask(impl, "What is the latest stable release of Wrangler?");
+    claude.respond(ANSWER);
+    await turn(impl, claude.handle);
+    ask(impl, "Thanks.");
+    claude.respond(CLAUDE_DONE.replace('"input_tokens":100', '"input_tokens":20000'));
+    await turn(impl, claude.handle);
+    expect(impl.storage.chatMeta.get(CHAT_ID)?.totalTokens).toBe(20_002);
+
+    const small: AiModelConfig = { ...GPT, compactionInputBudget: 16_000 };
+    const gpt = gateway(small);
+    const events: AiChatStreamEvent[] = [];
+    impl.emitChatStreamEvent = (_chatId, event) => events.push(event);
+    ask(impl, "And the one before it?");
+    gpt.respond(OPENAI_DONE);
+    await runAgent(impl, gpt.handle, CHAT_ID, { type: "agent", id: "gpt-6-luna", name: "GPT" },
+        new AbortController().signal, OWNER, small);
+    expect(events.filter(event => event.type === "compacting")).toStrictEqual([]);
+    expect(gpt.bodies).toHaveLength(1);
+    expect(JSON.stringify(gpt.bodies[0])).not.toContain("web_search_tool_result");
   }));
 
   // A cited passage can end inside a code block or a table row, where a link would not be one.

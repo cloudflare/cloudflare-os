@@ -2506,6 +2506,9 @@ async function runAgentPass(
   const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
   // The markers of the attachments past MAX_INLINE_REPLAY_BYTES.
   const unreadParts = new Set<TextContent | ImageContent>();
+  // Whether a stored reply of this pass holds what its provider sent for a web search, for this
+  // model or for another (see keptForModel).
+  let holdsKeptContent = false;
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2551,6 +2554,7 @@ async function runAgentPass(
         // web is empty to pi, but not to the model that is sent back what its provider sent.
         let storedModelData = msg.author.type === "agent"
             ? hooks.getChatModelData(chatId, msg.sequence) : undefined;
+        holdsKeptContent ||= storedModelData?.providerContent !== undefined;
         if (storedModelData) storedModelData = keptForModel(storedModelData, handle.model);
         if (storedModelData && storedModelData.content.length === 0 &&
             storedModelData.providerContent === undefined) {
@@ -3658,11 +3662,11 @@ async function runAgentPass(
   let lastMeasured = chatMessages.findLast(message =>
     message.type === "message" && message.author.type === "agent");
   let lastMeasuredSequence = lastMeasured?.sequence;
-  // A size that another model's response measured leaves out what only this model is sent back:
-  // the content its provider sent for a web search (see keptForModel). So it measures this pass's
-  // prompt only if the pass holds no such content.
-  let measuredThisPrompt = lastMeasured?.author.id === author.id ||
-    !modelMessages.some(message => "providerContent" in message);
+  // The content a provider sent for a web search goes back to the model that produced it and to
+  // no other (see keptForModel). So a size that another model's response measured is too small
+  // for this pass if this model is sent such content, and too large if that model was. It
+  // measures this pass's prompt only if no stored reply of the pass holds such content.
+  let measuredThisPrompt = lastMeasured?.author.id === author.id || !holdsKeptContent;
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)

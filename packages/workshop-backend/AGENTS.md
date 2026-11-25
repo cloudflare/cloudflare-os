@@ -58,17 +58,22 @@ tool for it: `ai-models.ts` adds the provider's tool to a request that asks for 
   record, that record is usable, and the Web Search Worker is installed. A workspace's record is
   not enough: a gadget-spawned chat holds only the bindings its spawner gave it and those it
   gained in its log, such as a resource a user pasted.
-- A turn on a user's own gateway does not declare the tool. Outside an agent's turn, two things
-  send it. The admin's two model Tests send it, of a model in the list and of a model before it
-  is added. The cache-warm resend repeats a turn's last request after the turn ends, with the
-  tool that request declared, and `cappedForResend()` keeps it from searching.
+- A turn on a user's own gateway does not declare the tool. Nor does a request that the provider
+  refuses with the tool: for OpenAI, one whose `reasoning.effort` is `minimal`.
+  `withWebSearchTool()` reads the effort from the request as sent, because a reasoning level can
+  be sent as another effort. Outside an agent's turn, two things send the tool. The admin's two
+  model Tests send it, of a model in the list and of a model before it is added. The cache-warm
+  resend repeats a turn's last request after the turn ends, with the tool that request declared,
+  and `cappedForResend()` keeps it from searching.
 - Each thing the provider's tool did is recorded as an observation when it arrives in the stream
   (`recordProviderObservation()`). The provider ran it before the Workshop saw the query, so the
   record cannot come first, as a gatekeeper's does.
 - pi drops Anthropic's search blocks, and Anthropic refuses the next request without them. So the
   wrapper keeps the response's content whole (`StoredAssistantMessage.providerContent`) and sends
   it back in place of pi's form, for the model that produced it. It never keeps a search that has
-  no result: Anthropic refuses one unless tool results and nothing else follow it.
+  no result: Anthropic refuses one unless tool results and nothing else follow it. The wrapper
+  fails a response only for content it would send back wrong. So nothing the stream holds of a
+  search with no result fails the response, such as a query that the response cap cut off.
 - A response that searched reports more input tokens than the chat holds: Anthropic sums them
   over the response's internal steps, and OpenAI counts the results it read. That is what the
   provider bills, so `usage` keeps it, but it is not the chat's size: such a response counts as
