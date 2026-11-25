@@ -1101,12 +1101,10 @@ describe("ChatComposer", () => {
       });
     });
 
-    it("is dismissed for one message", async () => {
-      let finishSend: (() => void) | undefined;
-      const onSend = vi.fn<ComposerProps["onSend"]>(
-        () => new Promise<void>((resolve) => { finishSend = resolve; }),
-      );
-      await render({ onSend, focusOffer: { focus: { gadgetId: 3, gadgetTitle: "Budget" }, offerId: 1 } });
+    it("is dismissed for the message, which still uses the offer up", async () => {
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      const onFocusOfferUsed = vi.fn<(offerId: number) => void>();
+      await render({ onSend, onFocusOfferUsed, focusOffer: { focus: { gadgetId: 3, gadgetTitle: "Budget" }, offerId: 1 } });
 
       await act(async () => dismissButton()!.click());
       expect(dismissButton()).toBeNull();
@@ -1114,13 +1112,24 @@ describe("ChatComposer", () => {
       await send("Start over");
       expect(onSend).toHaveBeenLastCalledWith("Start over", "model-a", {});
       expect(onSend.mock.lastCall![2].focus).toBeUndefined();
+      expect(onFocusOfferUsed).toHaveBeenCalledExactlyOnceWith(1);
+    });
+
+    it("tells of the offer a sent message used, once it is sent", async () => {
+      let finishSend: (() => void) | undefined;
+      const onSend = vi.fn<ComposerProps["onSend"]>(
+        () => new Promise<void>((resolve) => { finishSend = resolve; }),
+      );
+      const onFocusOfferUsed = vi.fn<(offerId: number) => void>();
+      await render({ onSend, onFocusOfferUsed, focusOffer: budget });
+      await send("Why is this so low?");
+      expect(onSend.mock.lastCall![2].focus).toEqual({ gadgetId: 3, spot: budgetFocus.spot });
+      // An offer that arrives meanwhile isn't the one the message had.
+      await render({ onSend, onFocusOfferUsed, focusOffer: { ...budget, offerId: 2 } });
+      expect(onFocusOfferUsed).not.toHaveBeenCalled();
 
       await act(async () => finishSend!());
-      expect(container!.textContent).toContain("Budget");
-      await send("And this one?");
-      expect(onSend).toHaveBeenLastCalledWith("And this one?", "model-a", {
-        focus: { gadgetId: 3 },
-      });
+      expect(onFocusOfferUsed).toHaveBeenCalledExactlyOnceWith(1);
     });
 
     it("turns down only the offer dismissed, whatever the next one names", async () => {

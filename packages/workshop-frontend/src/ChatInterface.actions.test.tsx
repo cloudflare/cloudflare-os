@@ -54,6 +54,7 @@ import {
   clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
 } from './action-test-harness'
 import ChatInterface from './ChatInterface'
+import type { PaneFocus } from './features/gadget-focus/paneFocus'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
@@ -100,7 +101,12 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: {
+    restricted?: boolean
+    selectedChatId?: number
+    paneFocus?: PaneFocus
+    onNavigateToChat?: (chatId: number | null) => void
+  } = {},
 ) {
   return testRoot.render(
     <ChatInterface
@@ -108,7 +114,7 @@ function renderChat(
       overseer={overseer}
       restricted={props.restricted}
       selectedChatId={props.selectedChatId ?? null}
-      onNavigateToChat={() => {}}
+      onNavigateToChat={props.onNavigateToChat ?? (() => {})}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
       consoleLogSeverity="info"
@@ -116,6 +122,7 @@ function renderChat(
       onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}} onOpenFocus={() => {}}
       outputOfWorkpiece={() => undefined}
+      paneFocus={props.paneFocus}
     />,
   )
 }
@@ -859,5 +866,39 @@ describe('live views', () => {
     const { streamed, stored } = await streamThenStore(`Earlier text. ${answer}`)
     expect(stored).not.toBeNull()
     expect(stored).not.toBe(streamed)
+  })
+})
+
+describe('focus chip', () => {
+  const budget: PaneFocus = { focus: { gadgetId: 3, gadgetTitle: 'Budget' }, offerId: 1, pendingChatId: undefined }
+  const chip = () => document.querySelector('[aria-label^="Don\'t send"]')
+
+  it("isn't offered again once a new chat's first message opens the chat", async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [openChat])
+    const newChat = vi.fn<(message: string, model: string | null, options: { focus?: unknown }) => Promise<number>>(
+      async () => 1)
+    const sendChatMessage = vi.fn<(chatId: number, message: string, model: string | null, options: { focus?: unknown }) => Promise<void>>(
+      async () => {})
+    Object.assign(server.overseer as object, { newChat, sendChatMessage })
+    let navigatedTo: number | null | undefined
+    const show = (selectedChatId: number | undefined, paneFocus: PaneFocus) => renderChat(server.overseer, {
+      selectedChatId,
+      paneFocus,
+      onNavigateToChat: chatId => { navigatedTo = chatId },
+    })
+    await show(undefined, budget)
+    expect(chip()).not.toBeNull()
+
+    await sendFromComposer('Why is this so low?')
+    expect(newChat.mock.lastCall![2].focus).toEqual({ gadgetId: 3 })
+    expect(navigatedTo).toBe(1)
+    await show(1, budget)
+    expect(chip()).toBeNull()
+    await sendFromComposer('And last quarter?')
+    expect(sendChatMessage.mock.lastCall![3].focus).toBeUndefined()
+
+    await show(1, { ...budget, offerId: 2 })
+    expect(chip()).not.toBeNull()
   })
 })

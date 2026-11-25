@@ -2680,6 +2680,13 @@ function ChatInterface({
   paneFocus,
   onOpenFocus,
 }: ChatInterfaceProps) {
+  // The focus offer a sent message already had, with its chip or without. Kept here rather than in
+  // a composer, because a new chat's first message opens the chat, whose composer is another one.
+  const [usedFocusOffer, setUsedFocusOffer] = useState<number | null>(null);
+  const unusedPaneFocus = paneFocus?.offerId === usedFocusOffer ? undefined : paneFocus;
+  // Offers only count up, and sends in two chats can finish out of order.
+  const onFocusOfferUsed = (offerId: number) =>
+    setUsedFocusOffer((used) => used !== null && used > offerId ? used : offerId);
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
@@ -5853,7 +5860,8 @@ function ChatInterface({
             }
             getOverseer={getOverseer}
             onSend={handleNewChatSend}
-            focusOffer={focusForChat(paneFocus, null)}
+            focusOffer={focusForChat(unusedPaneFocus, null)}
+            onFocusOfferUsed={onFocusOfferUsed}
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
@@ -6950,7 +6958,8 @@ function ChatInterface({
                     }
                     getOverseer={getOverseer}
                     onSend={handleSend}
-                    focusOffer={focusForChat(paneFocus, selectedChatId)}
+                    focusOffer={focusForChat(unusedPaneFocus, selectedChatId)}
+                    onFocusOfferUsed={onFocusOfferUsed}
                     isAgentActive={isAgentActive}
                     models={availableModels}
                     selectedModel={selectedModel === null ? null : {

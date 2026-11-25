@@ -87,6 +87,7 @@ export const ChatComposer = ({
   getOverseer,
   onSend,
   focusOffer,
+  onFocusOfferUsed,
   isAgentActive,
   models,
   selectedModel,
@@ -127,10 +128,15 @@ export const ChatComposer = ({
     options: ChatMessageOptions,
   ) => Promise<void> | void;
   /**
-   * What the user is focused on, sent with the message unless they dismiss its chip for that
-   * message. Offer only a focus the message's chat accepts. A slash command never carries it.
+   * What the user is focused on, sent with the message unless they dismiss its chip. Offer only a
+   * focus the message's chat accepts. A slash command never carries it.
    */
   focusOffer?: FocusOffer;
+  /**
+   * A message was sent while `focusOffer` was this one, with its chip or without. Each offer goes
+   * with one message at most, so stop offering it: a follow-up on the same topic doesn't need it.
+   */
+  onFocusOfferUsed?: (offerId: number) => void;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: SelectedModel;
@@ -588,8 +594,8 @@ export const ChatComposer = ({
         focus: offeredFocus && typeof message === "string" ? messageFocusOf(offeredFocus.focus) : undefined,
       });
       clearSentAttachments(attachmentsSnapshot);
-      // A dismissal is for one message.
-      if (mountedRef.current) setDismissedFocusOffer(null);
+      // The offer was this message's, sent or dismissed; one that arrived meanwhile still stands.
+      if (focusOffer) onFocusOfferUsed?.(focusOffer.offerId);
       if (!completeDraftSend(draftSend)) return;
       replaceComposerDocument({ text: "", capsules: [], formats: [], command: null });
     } finally {
