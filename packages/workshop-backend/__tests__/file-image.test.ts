@@ -189,22 +189,22 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
-  it("keeps an unanswered late steer on Retry after manual edits, before any image read", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([true, false])("keeps an unanswered prompt on Retry before any image read (steered: %s)", steered => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await turn(impl, chatId, []);
     const creation = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : [])
       .find(call => call.toolName === "createWorktree");
     if (creation?.toolName !== "createWorktree" || creation.output?.worktreeId === undefined) throw new Error("Expected worktree");
     impl.addChatMessages(chatId, USER, [
-      {type: "message", message: "Still-unanswered steer", steered: true},
+      {type: "message", message: "Still-unanswered instruction", steered},
       {type: "changes", change: {[creation.output.worktreeId]: [["note.txt", {set: "Manual edit"}]]}},
-      {type: "agentNudge"},
+      {type: "agentNudge", text: steered ? undefined : "The previous turn was interrupted repeatedly. Retry."},
     ]);
     impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 8_000_000});
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done")),
     ]);
-    expect(requests.at(-1)).toContainEqual({role: "user", content: "Still-unanswered steer", timestamp: expect.any(Number)});
+    expect(requests.at(-1)).toContainEqual({role: "user", content: "Still-unanswered instruction", timestamp: expect.any(Number)});
     expect(results(requests.at(-1)!)).toEqual([]);
   }));
 
