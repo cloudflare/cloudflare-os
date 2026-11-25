@@ -30,6 +30,15 @@ export function getWranglerPortFromBackendHost(backendHost: string): string | nu
 }
 
 /**
+ * The local instance's admins, as the shell's `ADMINS` names them: comma-separated usernames,
+ * trimmed, empty entries dropped. `["admin"]` when it is unset, blank or names nobody.
+ */
+export function devAdmins(value: string | undefined): string[] {
+  const admins = (value ?? "").split(",").map(name => name.trim()).filter(Boolean);
+  return admins.length > 0 ? admins : ["admin"];
+}
+
+/**
  * Resolve where the dev server's backend lives: an explicit `--port` wins, else
  * `VITE_BACKEND_HOST`, else `localhost:8787`.
  */

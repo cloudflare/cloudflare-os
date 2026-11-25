@@ -209,7 +209,7 @@ Because access is recomputed from the graph on every `open()` and `getGadget()`,
 
 A share-key redemption goes through the same gate. The redeeming open() then verifies a `build` recipient as an observer like any other collaborator, and a gadget recipient when they get the gadget live (a recipient who may only view it is never verified: see "Static snapshots"); a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
-Deployment admins can inspect a workspace outside the sharing graph: `AdminApi.inspectWorkspace()` mints a read-only `AdminWorkspaceView` through `openForAdmin()`, which never consults the permission graph, adds no collaborator and joins no session. It is a deliberate exception, bounded by an environment-set access cap and an audit recorded before anything an admin reads leaves the server; see [admin-access.md](admin-access.md).
+Deployment admins can inspect a workspace outside the sharing graph: `AdminApi.inspectWorkspace()` mints a read-only `AdminWorkspaceView` through `openForAdmin()`, which never consults the permission graph, adds no collaborator and joins no session. It is a deliberate exception, bounded by an environment-set access cap and an audit recorded before anything an admin reads leaves the server; see [admin-access.md](admin-access.md). The view returns metadata; a workspace's content is returned only under a live grant, given by the workspace's owner or by a second admin's approval, where the operator has raised the cap to `content`, and a grant adds no collaborator and no edge to the sharing graph either.
 
 ### `ownerInvitesOnly`
 

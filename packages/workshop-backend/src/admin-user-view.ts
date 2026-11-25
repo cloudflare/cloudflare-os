@@ -29,11 +29,12 @@ const logger = createWorkshopLogger("workshop.admin.user-view");
  * nothing that writes, subscribes or opens a transaction. The two collections whose records hold
  * gatekeeper stubs are left out, so nothing in this module can name one: connected accounts come
  * through AdminUserViewHost.connectedAccounts(), without their stubs, and pending handoffs (grants
- * staged and not yet confirmed) are not read at all.
+ * staged and not yet confirmed) are not read at all. Nor is the owner's account-wide admin grant:
+ * a workspace's content check is the only admin-side reader of it.
  */
 export type UserStoreReads = {
   readonly [K in Exclude<keyof UserStorage,
-      "connectedAccounts" | "pendingHandoffs" | "transaction">]:
+      "connectedAccounts" | "pendingHandoffs" | "transaction" | "accountAdminGrant">]:
       Pick<UserStorage[K], Extract<keyof UserStorage[K], "get" | "list">>;
 };
 

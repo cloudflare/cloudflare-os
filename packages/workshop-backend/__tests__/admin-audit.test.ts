@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminAccessRecord, type AdminAuditRecord, type AdminSettingRecord,
-  type AdminUserAccessRecord, type AdminWriteRecord,
+  type AdminGrantRecord, type AdminUserAccessRecord,
+  type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { auditOwnerId, cutAdminAuditText } from "../src/admin-access.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
@@ -35,7 +36,8 @@ function access(overrides: Partial<AdminAccessRecord> = {}): AdminAccessRecord {
   return {
     kind: "workspace", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
     workspaceId: "w1", workspaceOwner: "owner-1", workspaceTitle: "Plans", method: "describe",
-    args: {}, reason: "ticket 1", access: "metadata", ...overrides,
+    args: {}, reason: "ticket 1", requested: "metadata", access: "metadata", exposed: "metadata",
+    ...overrides,
   };
 }
 
@@ -52,6 +54,15 @@ function setting(overrides: Partial<AdminSettingRecord> = {}): AdminSettingRecor
     kind: "setting", at: new Date(), admin: "ada", sessionId: "session-1", via: "cli",
     method: "setSiteName", changes: [{ setting: "siteName", before: "Old", after: "New" }],
     ...overrides,
+  };
+}
+
+function grant(overrides: Partial<AdminGrantRecord> = {}): AdminGrantRecord {
+  return {
+    kind: "grant", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
+    workspaceId: "w1", workspaceOwner: "owner-1", workspaceTitle: "Plans",
+    reason: "the owner cannot be reached", method: "requestContentAccess", requestId: "request-1",
+    requestedBy: "ada", ...overrides,
   };
 }
 
@@ -184,6 +195,59 @@ describe("AdminAuditDurableObject.list", () => {
     expect(await list({ workspace: "w7", kind: "write", admin: "linus" })).toEqual([approved]);
     expect(await list({ owner: "grace" })).toEqual([approved, requested, read]);
     expect(await list({ owner: "grace", kind: "write" })).toEqual([approved, requested]);
+  });
+
+  it("returns a grant step as appended, and finds it by kind, method, workspace and owner",
+      async () => {
+    let log = auditLog();
+    let requested = grant();
+    let approved = grant({ method: "approveContentAccess", admin: "linus", grantId: "grant-1" });
+    let ended = grant({
+      method: "endWorkspaceGrant", admin: "linus", grantId: "grant-1", endReason: "done",
+    });
+    for (let record of [access(), write(), requested, approved, ended]) {
+      await log.append(record, RETENTION);
+    }
+    let rows = await sql<{ kind: string; workspace_id: string | null; exposed: string | null }>(
+        log, "SELECT kind, workspace_id, exposed FROM admin_audit WHERE kind = 'grant'");
+    expect(rows).toEqual(
+        Array.from({ length: 3 }, () => ({ kind: "grant", workspace_id: "w1", exposed: null })));
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    // Strictly, so that a step gains no field it was not given.
+    expect(await list({ kind: "grant" })).toStrictEqual([ended, approved, requested]);
+    expect(await list({ method: "approveContentAccess" })).toStrictEqual([approved]);
+    expect(await list({ owner: "owner-1", kind: "grant", admin: "linus" }))
+        .toStrictEqual([ended, approved]);
+    expect((await log.stats({ days: 7, kind: "grant" }, RETENTION)).totalEvents).toBe(3);
+  });
+
+  it("finds only the given requests' requestContentAccess records by requestIds", async () => {
+    let log = auditLog();
+    let first = grant({ requestId: "request-1" });
+    let second = grant({ requestId: "request-2", admin: "linus", requestedBy: "linus" });
+    let third = grant({ requestId: "request-3" });
+    let records: AdminAuditRecord[] = [
+      first, second, third,
+      // Another step of a listed request, and records that are not grant steps at all.
+      grant({ requestId: "request-1", method: "denyContentAccess", admin: "linus" }),
+      access(), write(),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let list = (query: object) => log.list({ limit: 50, ...query }, RETENTION);
+    let ids = ["request-1", "request-2", "request-3"];
+    expect((await list({ requestIds: ids })).records).toStrictEqual([third, second, first]);
+    expect((await list({ requestIds: ["request-2"] })).records).toStrictEqual([second]);
+    expect((await list({ requestIds: ids, admin: "ada" })).records)
+        .toStrictEqual([third, first]);
+    expect((await list({ requestIds: [] })).records).toEqual([]);
+
+    let page = await list({ requestIds: ids, limit: 2 });
+    expect(page.records).toStrictEqual([third, second]);
+    expect((await list({ requestIds: ids, cursor: page.nextCursor })).records)
+        .toStrictEqual([first]);
   });
 
   it("combines the kind, admin, workspace and since filters", async () => {
@@ -375,14 +439,17 @@ describe("AdminAuditDurableObject schema", () => {
     expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(3);
   });
 
-  it("stores exposed as 'metadata' for every access record, and null for a setting record",
+  it("stores what an access record exposed in its column alone, and null for a setting record",
       async () => {
     let log = auditLog();
     let records: AdminAuditRecord[] = [
       access(),
       access({ access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff }),
-      // A call whose read failed.
-      access({ method: "getChatState", args: { chatId: 999 } }),
+      // A call made under a grant: one whose answer held content, one whose answer held none.
+      access({ method: "listChats", requested: "content", access: "content", exposed: "content",
+               grantId: "grant-1" }),
+      access({ method: "listActions", requested: "content", access: "content",
+               grantId: "grant-1" }),
       userAccess(),
       userAccess({
         method: "inspectUser", access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
@@ -392,15 +459,39 @@ describe("AdminAuditDurableObject schema", () => {
     ];
     for (let record of records) await log.append(record, RETENTION);
 
-    expect(await sql(log, "SELECT kind, exposed FROM admin_audit ORDER BY seq")).toEqual([
+    let rows = await sql<{ kind: string; exposed: string | null; record: string }>(log,
+        "SELECT kind, exposed, record FROM admin_audit ORDER BY seq");
+    expect(rows.map(({ kind, exposed }) => ({ kind, exposed }))).toEqual([
       { kind: "workspace", exposed: "metadata" }, { kind: "workspace", exposed: "metadata" },
-      { kind: "workspace", exposed: "metadata" }, { kind: "user", exposed: "metadata" },
+      { kind: "workspace", exposed: "content" }, { kind: "workspace", exposed: "metadata" },
       { kind: "user", exposed: "metadata" }, { kind: "user", exposed: "metadata" },
-      { kind: "setting", exposed: null },
+      { kind: "user", exposed: "metadata" }, { kind: "setting", exposed: null },
     ]);
-    let listed = (await log.list({ limit: 10 }, RETENTION)).records;
-    expect(listed).toEqual(records.toReversed());
-    for (let record of listed) expect(record).not.toHaveProperty("exposed");
+    // Each field is stored once: the column holds `exposed`, the JSON the rest.
+    for (let row of rows) expect(JSON.parse(row.record)).not.toHaveProperty("exposed");
+    expect(JSON.parse(rows[2].record)).toMatchObject({ requested: "content", grantId: "grant-1" });
+    expect(JSON.parse(rows[0].record)).not.toHaveProperty("grantId");
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 10, ...query }, RETENTION)).records;
+    expect(await list({})).toStrictEqual(records.toReversed());
+    expect(await list({ exposed: "content" })).toStrictEqual([records[2]]);
+    // Only access records carry it, so no setting record matches either value. A call into a
+    // user's account always exposed metadata, which is how the table keeps it.
+    expect(await list({ exposed: "metadata" })).toStrictEqual(
+        [records[6], records[5], records[4], records[3], records[1], records[0]]);
+    expect(await list({ exposed: "content", kind: "setting" })).toEqual([]);
+
+    let plan = await sql<{ detail: string }>(log, `EXPLAIN QUERY PLAN SELECT seq FROM admin_audit
+        WHERE exposed = 'content' ORDER BY seq DESC`);
+    expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_exposed");
+
+    let stats = await log.stats({ days: 7 }, RETENTION);
+    expect(stats.totalEvents).toBe(8);
+    expect(stats.contentReads).toBe(1);
+    expect((await log.stats({ days: 7, kind: "workspace" }, RETENTION)).contentReads).toBe(1);
+    expect((await log.stats({ days: 7, kind: "user" }, RETENTION)).contentReads).toBe(0);
+    expect((await log.stats({ days: 7, kind: "setting" }, RETENTION)).contentReads).toBe(0);
 
     // The table ties the column to the kind itself.
     await expectRejection(insertRow(log, "workspace", "w1", "t", null), "CHECK constraint failed");
@@ -410,7 +501,54 @@ describe("AdminAuditDurableObject schema", () => {
     await expectRejection(insertRow(log, "workspace", "w1", "t", "bogus"),
         "CHECK constraint failed");
     await expectRejection(insertRow(log, "user", null, null, "bogus"), "CHECK constraint failed");
-    expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(7);
+    expect(await sql(log, "SELECT seq FROM admin_audit")).toHaveLength(8);
+  });
+
+  it("keeps an access record sent without what it exposed as one that exposed metadata",
+      async () => {
+    let log = auditLog();
+    // As a caller running other code would send it: the field is required of this one's.
+    let { exposed: _exposed, ...bare } = access({ method: "listChats" });
+    await log.append(bare as AdminAccessRecord, RETENTION);
+    let content = access({ method: "getChatState", exposed: "content", grantId: "grant-1" });
+    await log.append(content, RETENTION);
+    await expectRejection(
+        log.append(access({ exposed: "everything" as never }), RETENTION),
+        "An access record exposes \"metadata\" or \"content\".");
+
+    expect(await sql(log, "SELECT exposed FROM admin_audit ORDER BY seq"))
+        .toEqual([{ exposed: "metadata" }, { exposed: "content" }]);
+    let listed = { ...bare, exposed: "metadata" };
+    let list = async (query: object) =>
+        (await log.list({ limit: 10, ...query }, RETENTION)).records;
+    expect(await list({})).toStrictEqual([content, listed]);
+    expect(await list({ exposed: "metadata" })).toStrictEqual([listed]);
+    expect(await list({ exposed: "content" })).toStrictEqual([content]);
+    expect((await log.stats({ days: 7 }, RETENTION)).contentReads).toBe(1);
+  });
+
+  it("lists a row kept without what its view was opened for as a metadata view's", async () => {
+    let log = auditLog();
+    let at = new Date();
+    // A row as a view that returns metadata only stores one: no `requested`, `exposed` or
+    // `grantId` in its JSON, and 'metadata' in the column.
+    let json = {
+      sessionId: "session-1", via: "api", workspaceOwner: "owner-1", method: "describe",
+      args: {}, reason: "ticket 1", access: "metadata",
+    };
+    for (let exposed of ["metadata", "content"]) {
+      await sql(log, `INSERT INTO admin_audit
+          (at, kind, admin, workspace_id, workspace_title, exposed, record)
+          VALUES (?, 'workspace', 'ada', 'w1', 'Plans', ?, ?)`,
+          at.getTime(), exposed, JSON.stringify(json));
+    }
+    let whole = {
+      ...json, kind: "workspace", at, admin: "ada", workspaceId: "w1", workspaceTitle: "Plans",
+      requested: "metadata",
+    };
+    expect((await log.list({ limit: 10 }, RETENTION)).records).toStrictEqual([
+      { ...whole, exposed: "content" }, { ...whole, exposed: "metadata" },
+    ]);
   });
 
   it("keeps a long user id as a long owner is kept, and finds its account and workspaces by it",
@@ -534,6 +672,7 @@ describe("AdminAuditDurableObject.stats", () => {
         { admin: "ada", count: 2 }, { admin: "grace", count: 2 }, { admin: "linus", count: 1 },
       ],
       writes: 0,
+      contentReads: 0,
     });
 
     let many = auditLog();
@@ -681,6 +820,25 @@ const THREE_KIND_SCHEMA = [
 ];
 const WRITE_ROW = `INSERT INTO admin_audit (at, kind, admin, workspace_id, workspace_title, record)
     VALUES (0, 'write', 'ada', 'w1', 'Plans', '{}')`;
+// The table and indexes of a build whose log knows all four kinds and no content read, statement
+// for statement: its views answer with metadata alone, so its access records say neither what
+// their view was opened for nor what they exposed.
+const FOUR_KIND_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS admin_audit (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+  admin TEXT NOT NULL,
+  workspace_id TEXT,
+  workspace_title TEXT,
+  exposed TEXT CHECK (exposed IN ('metadata', 'content')),
+  record TEXT NOT NULL CHECK (json_valid(record)),
+  CHECK ((kind IN ('workspace', 'write')) =
+      (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
+  CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))
+) STRICT`,
+  ...THREE_KIND_SCHEMA.slice(1),
+];
 
 type StoredRow = Record<string, SqlStorageValue> & { seq: number };
 type SchemaRow = { type: string; name: string; sql: string | null };
@@ -885,6 +1043,81 @@ describe("AdminAuditDurableObject's table rebuild", () => {
     expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
   });
 
+  it("rebuilds a log that a build without content reads or grant records wrote, keeping its rows, " +
+      "and takes a content read after it", async () => {
+    let log = auditLog();
+    let at = new Date();
+    // One row of each kind as that build stores it: an access record's JSON holds neither
+    // `requested` nor `exposed`, and its column holds 'metadata'.
+    let call = {
+      sessionId: "session-1", via: "api", method: "describe", args: {}, reason: "ticket 1",
+      access: "metadata",
+    };
+    let step = {
+      sessionId: "session-1", via: "cli", workspaceOwner: "owner-1", method: "stopAgent",
+      args: { chatId: 4 }, reason: "a stuck turn",
+    };
+    let change = {
+      sessionId: "session-1", via: "cli", method: "setSiteName",
+      changes: [{ setting: "siteName", before: "Old", after: "New" }],
+    };
+    let stored: [string, string | null, string | null, string | null, object][] = [
+      ["workspace", "w1", "Plans", "metadata", { ...call, workspaceOwner: "owner-1" }],
+      ["user", null, null, "metadata", { ...call, userId: "grace" }],
+      ["setting", null, null, null, change],
+      ["write", "w1", "Plans", null, step],
+    ];
+    let [planted, constructed] = await runInDurableObject(log, (instance, state) => {
+      let db = state.storage.sql;
+      replant(db, FOUR_KIND_SCHEMA);
+      for (let [kind, workspaceId, title, exposed, json] of stored) {
+        db.exec(`INSERT INTO admin_audit
+            (at, kind, admin, workspace_id, workspace_title, exposed, record)
+            VALUES (?, ?, 'ada', ?, ?, ?, ?)`,
+            at.getTime(), kind, workspaceId, title, exposed, JSON.stringify(json));
+      }
+      let start = snapshot(db);
+      construct(instance, state);
+      return [start, snapshot(db)];
+    });
+    // That build's table knows no grant record, so a start rebuilds it, row for row.
+    expect(planted.rows.map(row => [row.seq, row.kind])).toEqual(
+        [[1, "workspace"], [2, "user"], [3, "setting"], [4, "write"]]);
+    expect(constructed.rows).toEqual(planted.rows);
+    expect(tableDefinition(constructed.schema)).not.toBe(tableDefinition(planted.schema));
+
+    let columns = { at, admin: "ada" };
+    let workspace = { workspaceId: "w1", workspaceTitle: "Plans" };
+    let listed = [
+      { ...step, kind: "write", ...columns, ...workspace },
+      { ...change, kind: "setting", ...columns },
+      { ...call, userId: "grace", kind: "user", ...columns },
+      // A view is opened for metadata unless content is asked for, and the column says what the
+      // call exposed.
+      {
+        ...call, workspaceOwner: "owner-1", kind: "workspace", ...columns, ...workspace,
+        requested: "metadata", exposed: "metadata",
+      },
+    ];
+    let list = async (query: object = {}) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    expect(await list()).toStrictEqual(listed);
+    expect(await list({ exposed: "content" })).toEqual([]);
+    expect((await log.stats({ days: 7 }, RETENTION)).contentReads).toBe(0);
+
+    let read = access({
+      method: "listChats", requested: "content", access: "content", exposed: "content",
+      grantId: "grant-1",
+    });
+    await log.append(read, RETENTION);
+    expect(await list()).toStrictEqual([read, ...listed]);
+    expect(await list({ exposed: "content" })).toStrictEqual([read]);
+    expect(await list({ exposed: "metadata" })).toStrictEqual([listed[2], listed[3]]);
+    expect((await log.stats({ days: 7 }, RETENTION)).contentReads).toBe(1);
+    expect(await sql(log, "SELECT seq, exposed FROM admin_audit WHERE seq > 4"))
+        .toEqual([{ seq: 5, exposed: "content" }]);
+  });
+
   it("drops the workspace-owner index from a table of the current definition without rebuilding it",
       async () => {
     let { log, listed } = await seededLog();
@@ -908,7 +1141,7 @@ describe("AdminAuditDurableObject's table rebuild", () => {
       let db = state.storage.sql;
       let current = tableDefinition(snapshot(db).schema);
       let later = current.replace(
-          "'user', 'setting', 'write')", "'user', 'setting', 'write', 'later')");
+          "'setting', 'write', 'grant')", "'setting', 'write', 'grant', 'later')");
       expect(later).not.toBe(current);
       db.exec("DROP TABLE admin_audit");
       db.exec(`CREATE TABLE admin_audit ${later}`);

@@ -52,13 +52,15 @@ export class StreamArg {
 /**
  * `value` as JSON-safe data. Every capability found inside it (a stub, or a function, which capnweb
  * passes by reference) is replaced by `{"$capability": true}` and pushed onto `found`, for the
- * caller to dispose once it has printed the result.
+ * caller to dispose once it has printed the result. Every `ReadableStream` inside it is replaced by
+ * `{"$stream": true}` and pushed onto `streams`, in the order printed, for the caller to read or
+ * cancel.
  */
-export function encodeValue(value: unknown, found: Disposable[] = []): unknown {
-  return encode(value, found) ?? null;
+export function encodeValue(value: unknown, found: Disposable[] = [], streams?: ReadableStream<Uint8Array>[]): unknown {
+  return encode(value, found, streams) ?? null;
 }
 
-function encode(value: unknown, found: Disposable[]): unknown {
+function encode(value: unknown, found: Disposable[], streams?: ReadableStream<Uint8Array>[]): unknown {
   if (value === undefined) return undefined;
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
@@ -81,15 +83,19 @@ function encode(value: unknown, found: Disposable[]): unknown {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   if (value instanceof Error) return { name: value.name, message: value.message };
   if (value instanceof URL) return value.href;
-  if (value instanceof ReadableStream || value instanceof WritableStream) return { $stream: true };
-  if (value instanceof Set) return [...value].map((item) => encode(item, found) ?? null);
-  if (value instanceof Map) {
-    return [...value].map(([key, item]) => [encode(key, found) ?? null, encode(item, found) ?? null]);
+  if (value instanceof ReadableStream) {
+    streams?.push(value as ReadableStream<Uint8Array>);
+    return { $stream: true };
   }
-  if (Array.isArray(value)) return value.map((item) => encode(item, found) ?? null);
+  if (value instanceof WritableStream) return { $stream: true };
+  if (value instanceof Set) return [...value].map((item) => encode(item, found, streams) ?? null);
+  if (value instanceof Map) {
+    return [...value].map(([key, item]) => [encode(key, found, streams) ?? null, encode(item, found, streams) ?? null]);
+  }
+  if (Array.isArray(value)) return value.map((item) => encode(item, found, streams) ?? null);
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    const encoded = encode(item, found);
+    const encoded = encode(item, found, streams);
     if (encoded !== undefined) result[key] = encoded;
   }
   return result;

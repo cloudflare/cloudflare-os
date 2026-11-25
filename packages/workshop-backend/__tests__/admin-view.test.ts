@@ -153,7 +153,7 @@ describe("adminViewCall", () => {
 
   it("records each call in the deployment-wide log with no retention", async () => {
     let view = fakeView();
-    // `read` is given nothing: no level, no policy.
+    // `read` is given the level in force, and nothing else of the policy.
     let given: unknown[][] = [];
     let read = (...args: unknown[]) => {
       given.push(args);
@@ -162,8 +162,12 @@ describe("adminViewCall", () => {
 
     expect(await adminViewCall(view.host, read)).toStrictEqual({ text: "a title" });
     expect(await adminViewCall(view.host, async () => "later")).toBe("later");
+    let content = fakeView({
+      config: { adminWorkspaceAccess: "content" }, vars: { ADMIN_WORKSPACE_ACCESS_MAX: "content" },
+    });
+    expect(await adminViewCall(content.host, read)).toStrictEqual({ text: "a title" });
 
-    expect(given).toStrictEqual([[]]);
+    expect(given).toStrictEqual([["metadata"], ["content"]]);
     expect(view.recorded).toStrictEqual([undefined, undefined]);
     // The log's one object, and the record alone: a retention would prune by a stale policy.
     expect(view.appended).toStrictEqual([

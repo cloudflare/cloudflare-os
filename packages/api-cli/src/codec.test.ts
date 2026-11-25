@@ -87,6 +87,37 @@ test("capabilities inside a result are marked and handed back for disposal", () 
   assert.deepEqual(encodeValue(new ReadableStream()), { $stream: true });
 });
 
+test("byte streams inside a result are marked and handed back, in the order printed; a WritableStream is only marked", () => {
+  const [first, second, third, fourth] = Array.from({ length: 4 }, () => new ReadableStream<Uint8Array>());
+  const streams: ReadableStream<Uint8Array>[] = [];
+  const value = {
+    files: [{ kind: "text", text: "a" }, { kind: "stream", content: first }],
+    keyed: new Map([["b", second]]),
+    set: new Set([third]),
+    sink: new WritableStream(),
+    last: fourth,
+  };
+  const printed = {
+    files: [{ kind: "text", text: "a" }, { kind: "stream", content: { $stream: true } }],
+    keyed: [["b", { $stream: true }]],
+    set: [{ $stream: true }],
+    sink: { $stream: true },
+    last: { $stream: true },
+  };
+  assert.deepEqual(encodeValue(value, [], streams), printed);
+  assert.deepEqual(streams.map((stream) => [first, second, third, fourth].indexOf(stream)), [0, 1, 2, 3]);
+  assert.equal(streams.some((stream) => stream.locked), false);
+  // A result that is a stream itself is found too; one with none leaves the list empty.
+  const top: ReadableStream<Uint8Array>[] = [];
+  assert.deepEqual(encodeValue(first, [], top), { $stream: true });
+  assert.deepEqual(top, [first]);
+  const none: ReadableStream<Uint8Array>[] = [];
+  encodeValue({ kind: "text", text: "a" }, [], none);
+  assert.deepEqual(none, []);
+  // Without the list, the result prints the same.
+  assert.deepEqual(encodeValue(value), printed);
+});
+
 const files: Record<string, string> = { "note.json": '{"created": "2026-01-01T00:00:00Z"}', "blob.bin": "\u0001\u0002" };
 const source: ArgSource = {
   readFile: async (path) => {

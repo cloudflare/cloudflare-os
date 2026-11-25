@@ -102,6 +102,8 @@ export type SecretPath = string[];
  *   only beside `capabilities`, when the result may be null itself: a null result then stops a chain
  *   going on to one of them, which fails. `bytes`, when the result is a `Uint8Array` (or that or
  *   null): with `--out`, it is written there decoded rather than printed as `{"base64": ...}`.
+ *   `stream`, when the declared type holds a `ReadableStream` somewhere inside it: the result is
+ *   printed with `{"$stream": true}` in its place, and `--out <file>` saves that stream's bytes.
  * - `stub`: a capability on `node`, where the chain continues with the next segment. `nullable`
  *   when the declared type is `X | null`: a null result stops the chain, which fails.
  * - `handle`: an empty capability (`RpcStub<{}>`): dispose it and print `null`.
@@ -114,7 +116,10 @@ export type SecretPath = string[];
  *   segment continues it, unchecked.
  */
 export type ApiReturn =
-  | { kind: "value"; type: string; nullable?: true; capabilities?: Record<string, ApiCapabilityProperty>; bytes?: true }
+  | {
+    kind: "value"; type: string; nullable?: true; capabilities?: Record<string, ApiCapabilityProperty>; bytes?: true;
+    stream?: true;
+  }
   | { kind: "stub"; node: string; nullable: boolean }
   | { kind: "handle" }
   | { kind: "stream" }

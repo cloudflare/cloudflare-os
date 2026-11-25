@@ -1,8 +1,9 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  ADMIN_ACCESS_ERROR_CODES, getAdminAccessErrorCode, getOpenWorkspaceErrorCode,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_DIRECTORY_TEXT_LENGTH, OPEN_WORKSPACE_ERROR_CODES,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, getAdminAccessErrorCode,
+  getOpenWorkspaceErrorCode, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_DIRECTORY_TEXT_LENGTH,
+  OPEN_WORKSPACE_ERROR_CODES,
   type ActionLogEntry, type ActionsSubscriber, type AdminAccessErrorCode, type AdminAccessRecord,
   type AdminApi, type AdminAuditQuery, type AdminAuditRecord, type AdminWorkspaceAccess,
   type AdminWorkspaceView, type AiChatAuthorInfo, type AiChatSubscriber, type AuthenticatedApi,
@@ -38,6 +39,10 @@ const OBSERVATION_DESCRIPTION =
 const LINK_NOTE = "For the audit reviewers";
 // The kind of the test connection's write, which an auto-approval rule names.
 const SET_VALUE = { tag: "set-value", label: "Set value" };
+// The view's methods that answer with content alone: refused unless the view was opened for
+// content and a grant is live.
+const CONTENT_METHODS: readonly string[] =
+    ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile"];
 
 // Admin settings and the audit log are deployment-wide, so this file owns its harness and runs
 // serially.
@@ -59,7 +64,12 @@ beforeAll(async () => {
   harness = await startHarness({
     gatekeepers: [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }],
     patchWorkshop: config => {
-      config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME, AUDITOR_USERNAME] };
+      config.vars = {
+        ...config.vars, ADMINS: [ADMIN_USERNAME, AUDITOR_USERNAME],
+        // The operator allows content. The level an admin picked stays "metadata", but for the
+        // one case that reads content.
+        ADMIN_WORKSPACE_ACCESS_MAX: "content",
+      };
     },
   });
   admin = await adminApiOf(ADMIN_USERNAME);
@@ -232,7 +242,8 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
   };
 }
 
-/** One call of each of the seventeen view methods, in the interface's order, with its answer. */
+/** One call of each of the seventeen view methods that a view opened for metadata answers, in the
+ * interface's order, with its answer. */
 async function everyAnswer(view: RpcStub<AdminWorkspaceView>, populated: Populated) {
   const { chatId, gadgetId, empty, head, attachmentChatId, draftChatId } = populated;
   return {
@@ -253,6 +264,20 @@ async function everyAnswer(view: RpcStub<AdminWorkspaceView>, populated: Populat
     listAutoApprovals: await view.listAutoApprovals(),
     listBlueprints: await view.listBlueprints(),
     getDiagnostics: await view.getDiagnostics(),
+  };
+}
+
+/** One call of each of the five view methods that answer with content alone, with its answer:
+ * the attachment's bytes read to their end, as text. */
+async function contentAnswers(view: RpcStub<AdminWorkspaceView>, populated: Populated) {
+  const { chatId, gadgetId, head, attachmentChatId, attachmentId, draftChatId } = populated;
+  const attachment = await view.readChatAttachment(attachmentChatId, attachmentId);
+  return {
+    getChat: await view.getChat(chatId),
+    readChatAttachment: await new Response(attachment).text(),
+    readFile: await view.readFile(gadgetId, "notes.txt"),
+    readFileAtCommit: await view.readFileAtCommit(head, "notes.txt"),
+    readPendingFile: await view.readPendingFile(draftChatId, gadgetId, "notes.txt"),
   };
 }
 
@@ -310,7 +335,7 @@ it("refuses every admin method to a non-admin", async () => {
   // The bypass is on the Overseer's Durable Object, never on a capability a user holds.
   const looseWs = ws as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   await expect(looseWs.openForAdmin!(ownerName, REASON, "session", {
-    via: "api", expiresAt: new Date(Date.now() + 60_000),
+    via: "api", access: "metadata", expiresAt: new Date(Date.now() + 60_000),
   })).rejects.toThrow();
 });
 
@@ -380,7 +405,8 @@ it("lists users and workspaces from the deployment directory", async () => {
 
 it("records an inspection apart from the workspace, where its members never see it", async () => {
   using stack = new DisposableStack();
-  const { ws, id, title, session, ownerName } = await populatedWorkspace(stack, "inspected");
+  const populated = await populatedWorkspace(stack, "inspected");
+  const { ws, id, title, session, ownerName } = populated;
 
   const actions = new ActionsRecorder();
   const presence = new PresenceRecorder();
@@ -393,8 +419,7 @@ it("records an inspection apart from the workspace, where its members never see 
   {
     using view = await admin.inspectWorkspace(id, REASON);
     const description = await view.describe();
-    expect(description).toMatchObject({ id, title });
-    expect(description).not.toHaveProperty("access");
+    expect(description).toMatchObject({ id, title, access: "metadata", grants: [] });
     await view.listChats();
     await view.listActions();
     // The roster the members see: the owner's session is on it, and the view never is. The
@@ -443,6 +468,39 @@ it("records an inspection apart from the workspace, where its members never see 
     expect(await workspaceRecords(id)).toEqual(logged);
   }
 
+  // Nor does a view that reads content: every method, the five that answer with content alone
+  // among them, under a grant the owner gave. The grant is the owner's own record, in neither
+  // the action log nor the roster.
+  try {
+    await admin.setAdminWorkspaceAccess("content");
+    const grant = await ws.grantAdminAccess();
+    using view = await admin.inspectWorkspace(id, REASON, { access: "content" });
+    const answers = {
+      ...await everyAnswer(view, populated), ...await contentAnswers(view, populated),
+    };
+    expect(answers.getChat.messages)
+        .toContainEqual(expect.objectContaining({ type: "message", message: CHAT_MESSAGE }));
+    expect(answers.readChatAttachment).toBe(ATTACHMENT);
+    expect(answers.readFile).toEqual({ kind: "text", text: NOTES });
+    expect(answers.readFileAtCommit).toEqual({ kind: "text", text: NOTES });
+    expect(answers.readPendingFile).toEqual({ kind: "text", text: DRAFT_NOTES });
+
+    // The open and one call of every method, each recorded, and each content read under the
+    // grant.
+    const read = (await workspaceRecords(id)).map(accessRecord)
+        .filter(record => record.requested === "content");
+    expect(read.map(record => record.method).toSorted())
+        .toEqual([...ADMIN_WORKSPACE_METHODS].toSorted());
+    expect(["inspectWorkspace", ...Object.keys(answers)].toSorted())
+        .toEqual([...ADMIN_WORKSPACE_METHODS].toSorted());
+    for (const method of CONTENT_METHODS) {
+      expect(read.find(record => record.method === method), method)
+          .toMatchObject({ access: "content", exposed: "content", grantId: grant.id });
+    }
+  } finally {
+    await admin.setAdminWorkspaceAccess("metadata");
+  }
+
   // A view that restarted the workspace would end the owner's sessions here.
   await settleRestart();
   expect(await ws.listActions()).toEqual(actionsBefore);
@@ -469,8 +527,9 @@ it("withholds what the workspace's owner can read, and turns inspection off", as
   } = populated;
 
   const settings = await admin.getSettings();
+  // The operator's cap alone gives nothing: the level in force is the one an admin picked.
   expect(settings.adminWorkspaceAccess)
-      .toEqual({ effective: "metadata", chosen: "metadata", max: "metadata" });
+      .toEqual({ effective: "metadata", chosen: "metadata", max: "content" });
   expect(settings.adminAuditRetentionDays).toEqual({ effective: 90, chosen: 90, min: 90 });
 
   // Each part a view withholds, read first through the owner's own session: it is in the
@@ -634,25 +693,34 @@ it("lists attachments, commits and a draft's paths without their content", async
   }
 });
 
-it("has no level above metadata", async () => {
+it("opens a metadata view unless content is asked for, and takes no option or level that is not one",
+    async () => {
   using stack = new DisposableStack();
   const { id, gadgetId, chatId, head, attachmentChatId, attachmentId, draftChatId } =
       await populatedWorkspace(stack, "nolevel");
 
-  // An inspection has no level to ask for: the option is not one, and the view is as any other.
-  using view = await admin.inspectWorkspace(id, REASON, { access: "full" } as never);
+  // A value that is not one a view opens at is not of the option's type: nothing is opened, and
+  // nothing recorded.
+  await expect(admin.inspectWorkspace(id, REASON, { access: "full" } as never))
+      .rejects.toThrow(TypeError);
+  expect(await workspaceRecords(id)).toEqual([]);
+
+  // Opened without the option, a view is one for metadata.
+  using view = await admin.inspectWorkspace(id, REASON);
   const description = await view.describe();
-  expect(description).not.toHaveProperty("access");
+  expect(description.access).toBe("metadata");
+  expect(description.grants).toEqual([]);
   expect(description.workpieces.find(workpiece => workpiece.id === gadgetId))
       .not.toHaveProperty("upstream");
   const logged = await workspaceRecords(id);
   expect(logged.map(record => record.method)).toEqual(["describe", "inspectWorkspace"]);
   for (const record of logged) {
-    expect(record).toMatchObject({ access: "metadata" });
-    expect(Object.keys(record)).not.toContain("requested");
+    expect(record).toMatchObject(
+        { requested: "metadata", access: "metadata", exposed: "metadata" });
+    expect(record).not.toHaveProperty("grantId");
   }
 
-  // Nor is there one to set. The value is not of the setter's type, so the refusal is a
+  // Nor is "full" a level to set. The value is not of the setter's type, so the refusal is a
   // TypeError rather than the error of a level above the deployment's maximum, and nothing is
   // stored or recorded.
   const { adminWorkspaceAccess } = await admin.getSettings();
@@ -661,20 +729,33 @@ it("has no level above metadata", async () => {
   expect((await admin.getSettings()).adminWorkspaceAccess).toEqual(adminWorkspaceAccess);
   expect(await newestRecord({ kind: "setting" })).toEqual(setting);
 
-  // A view has no method that reads content. Each of these names something the workspace holds,
-  // and none is recorded: there is no call to record.
-  const loose = view as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-  const absent: [string, unknown[]][] = [
-    ["getChat", [chatId]],
-    ["readChatAttachment", [attachmentChatId, attachmentId]],
-    ["readFile", [gadgetId, "notes.txt"]],
-    ["readFileAtCommit", [head, "notes.txt"]],
-    ["readPendingFile", [draftChatId, gadgetId, "notes.txt"]],
+  // The view was not opened for content, so each content read is refused and the refusal
+  // recorded. Each names something the workspace holds; the refusal comes before any of it is
+  // touched.
+  const refused = ADMIN_ACCESS_ERROR_CODES.contentNotRequested;
+  const reads: [AdminAccessRecord["method"], AdminAccessRecord["args"], () => PromiseLike<unknown>][] = [
+    ["getChat", { chatId }, () => view.getChat(chatId)],
+    ["readChatAttachment", { chatId: attachmentChatId, id: attachmentId },
+     () => view.readChatAttachment(attachmentChatId, attachmentId)],
+    ["readFile", { gadgetId, path: "notes.txt" }, () => view.readFile(gadgetId, "notes.txt")],
+    ["readFileAtCommit", { commitId: head, path: "notes.txt" },
+     () => view.readFileAtCommit(head, "notes.txt")],
+    ["readPendingFile", { chatId: draftChatId, gadgetId, path: "notes.txt" },
+     () => view.readPendingFile(draftChatId, gadgetId, "notes.txt")],
   ];
-  for (const [method, args] of absent) {
-    await expect(loose[method]!(...args), method).rejects.toThrow();
+  for (const [method, , call] of reads) expect(await refusalOf(call()), method).toBe(refused);
+
+  // Exactly one record for each, in call order (the log lists the newest first).
+  const after = await workspaceRecords(id);
+  expect(after.slice(reads.length)).toEqual(logged);
+  const added = after.slice(0, reads.length).toReversed().map(accessRecord);
+  expect(added.map(record => [record.method, record.args])).toEqual(
+      reads.map(([method, args]) => [method, args]));
+  for (const record of added) {
+    expect(record).toMatchObject(
+        { refused, requested: "metadata", access: "metadata", exposed: "metadata" });
+    expect(record).not.toHaveProperty("grantId");
   }
-  expect(await workspaceRecords(id)).toEqual(logged);
 });
 
 it("records each call into a workspace", async () => {
@@ -745,6 +826,10 @@ it("records each call into a workspace", async () => {
       ["getChatState", { chatId: missingChat }],
     ];
     expect(expected.slice(1, 18).map(([method]) => method)).toEqual(Object.keys(answers));
+    // The open and every method of the view but those that answer with content alone, which a
+    // view opened for metadata refuses.
+    expect(expected.slice(0, 18).map(([method]) => method))
+        .toEqual(ADMIN_WORKSPACE_METHODS.filter(method => !CONTENT_METHODS.includes(method)));
     const logged = (await workspaceRecords(id)).toReversed();
     expect(logged.map(record => [record.method, accessRecord(record).args])).toEqual(expected);
     const { sessionId } = logged[0]!;
@@ -754,19 +839,22 @@ it("records each call into a workspace", async () => {
         workspaceId: id, workspaceOwner: ownerName, workspaceTitle: title, reason: REASON,
         access: "metadata",
       });
-      // A record says who called what, when and why, and nothing of what the call returned.
+      // A record says who called what, when and why, what the view was opened for, and of what
+      // the call returned only whether it held content. None ran under a grant.
+      expect(record).toMatchObject({ requested: "metadata", exposed: "metadata" });
       expect(Object.keys(record).toSorted(), record.method).toEqual([
-        "access", "admin", "args", "at", "kind", "method", "reason", "sessionId", "via",
-        "workspaceId", "workspaceOwner", "workspaceTitle",
+        "access", "admin", "args", "at", "exposed", "kind", "method", "reason", "requested",
+        "sessionId", "via", "workspaceId", "workspaceOwner", "workspaceTitle",
       ]);
     }
 
     // The table behind the log, which is always getByName(""). Its `exposed` column holds
-    // 'metadata' for every access record, refused ones included, and nothing for a setting change.
+    // 'metadata' for every access record of this view, the failed read included, and nothing
+    // for a setting change.
     const storage = await harness.server.getWorker("workshop-backend")
         .getDurableObjectStorage("AdminAuditDurableObject", { name: "" });
-    expect(await storage.exec<{ exposed: string | null }>(
-        "SELECT DISTINCT exposed FROM admin_audit WHERE kind = 'workspace'"))
+    expect(await storage.exec<{ exposed: string | null }>(`SELECT DISTINCT exposed
+        FROM admin_audit WHERE kind = 'workspace' AND workspace_id = '${id}'`))
         .toEqual([{ exposed: "metadata" }]);
     expect(await storage.exec<{ exposed: string | null; total: number }>(`SELECT exposed,
         COUNT(*) AS total FROM admin_audit WHERE kind = 'setting' GROUP BY exposed`))

@@ -3,13 +3,16 @@ import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-s
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind, WORKSPACE_FILE_QUOTA_BYTES, WORKSPACE_STORAGE_LIMIT_BYTES, WORKSPACE_STORAGE_WARNING_BYTES, WORKSPACE_TURN_QUOTA_BYTES } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
-  createAdminAccessError, createSnapshotSharingError,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_GRANT_ERROR_CODES,
+  ADMIN_GRANT_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED,
+  SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createAdminGrantError, createSnapshotSharingError,
+  type AdminAccessExposure, type AdminAccessGrant, type AdminAccessRecord,
+  type AdminAutoApproval, type AdminChatAttachment, type AdminChatState, type AdminFileContent,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
-  type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
-  type ObserverBindingPathStep,
+  type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
+  type AdminWorkspaceMethod, type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs,
+  type AdminGrantRecord, type AdminWriteRecord, type ObserverBindingPathStep,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -38,7 +41,9 @@ import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import {
   GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor, type WholeTextReadOptions,
 } from "./git-cache";
-import { blobByteStream, type BlobReader } from "./git-chunked-blob";
+import {
+  blobByteStream, bytesStream, textByteStream, utf8ByteLength, type BlobReader,
+} from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
@@ -70,15 +75,25 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
-  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
-  withholdHookContent,
-  type AdminViewTerms,
+  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCommitLogDepth,
+  adminContentRefusal, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
+  blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
+  commitHoldsContent, creationHoldsContent, cutAdminAuditText, fileHoldsContent,
+  hookHoldsContent, namedUser, redactAdminAuditArgs,
+  validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
+  withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdCreationContent,
+  withholdHookContent, workpieceHoldsContent,
+  type AdminAccessPolicy, type AdminContentGrantCall, type AdminGrantActor,
+  type AdminWorkspaceViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import {
+  isAdminGrantLive, isAdminGrantPrunable, isLiveAccountGrant, newAdminGrant,
+  newestAdminGrantFirst,
+} from "./admin-grants";
 import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
-import { isDeploymentAdmin } from "./auth/config";
+import { isDeploymentAdmin, sameDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import {
   chatChangeStatuses, foldCompactedCode, isCompactionTurn, isTurnPrompt,
@@ -1470,6 +1485,7 @@ class OverseerImpl implements AgentHooks {
       for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
     });
     this.ownerId = undefined;
+    this.#accountGrant = undefined;
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
   }
@@ -6458,6 +6474,32 @@ class OverseerImpl implements AgentHooks {
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
 
+  // A stream of the bytes getChatAttachmentData() returns, read only from what the workspace
+  // stores and never whole: the record's own bytes, else its stored blob, else, for a record
+  // that holds only a commit and a path, the file there. It never pulls through a connection: an
+  // object the workspace does not store throws (see AdminWorkspaceView.readChatAttachment()).
+  openChatAttachment(chatId: number, id: string): ReadableStream<Uint8Array> {
+    let content = this.storage.chatAttachmentContent.get(validateChatAttachmentId(id));
+    if (!content || content.state.type !== "committed" || content.state.chatId !== chatId) {
+      throw new Error("Chat attachment not found.");
+    }
+    if (content.data !== undefined) return bytesStream(content.data);
+    if (content.state.oid !== undefined) {
+      return blobByteStream(this.gitCache.openBlobRef(content.state.oid, undefined));
+    }
+    if (content.state.workspaceCommitId === undefined ||
+        content.state.workspacePath === undefined) {
+      throw new Error("Chat attachment has no stored content.");
+    }
+    let entry = this.gitCache.localPathEntryAtCommit(
+        content.state.workspaceCommitId, content.state.workspacePath);
+    if (!entry || entry.kind === "dir" || entry.kind === "submodule" ||
+        !this.gitCache.hasLocalObject(entry.oid)) {
+      throw new Error("Chat attachment content is missing from Git.");
+    }
+    return blobByteStream(this.gitCache.openBlobRef(entry.oid, undefined));
+  }
+
   // Prepare a stored chat message for delivery to a client: strip private unread positions,
   // inline the bytes of images up to MAX_CLIENT_INLINE_IMAGE_BYTES, while `inlineBytes` (a
   // budget shared across a history page, and spent here) lasts (other attachments are fetched
@@ -6465,7 +6507,11 @@ class OverseerImpl implements AgentHooks {
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
-  hydrateChatMessageForClient(msg: StoredChatMessage, inlineBytes?: {left: number}): AiChatMessage {
+  //
+  // With `inlineBytes` false every attachment comes as its reference alone: neither an image's
+  // blob nor its stored bytes are read, and bytes a stored reference holds are left out.
+  hydrateChatMessageForClient(msg: StoredChatMessage, inlineBytes?: {left: number} | false)
+      : AiChatMessage {
     let {visibleThroughSequence: _, ...publicMessage} = msg;
     msg = publicMessage;
     if (msg.type === "changes" && "update" in msg) {
@@ -6474,6 +6520,10 @@ class OverseerImpl implements AgentHooks {
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
+      if (inlineBytes === false) {
+        let {content: _content, ...ref} = a;
+        return ref;
+      }
       if (!isAllowedChatAttachmentImageMimeType(a.mimeType) || a.size > MAX_CLIENT_INLINE_IMAGE_BYTES ||
           a.size > (inlineBytes?.left ?? Infinity)) {
         return a;
@@ -7007,6 +7057,88 @@ class OverseerImpl implements AgentHooks {
 
     this.storage.actions.put(record);
     this.#associateAction(caller, actionId);
+  }
+
+  /** The stored grants that are live (isAdminGrantLive()), from either source, newest first.
+   * Synchronous, and it writes nothing. All of them: contentGrant() takes its first, and an
+   * admin view's describe() lists the "admins" ones before the owner's, MAX_ADMIN_GRANTS_LISTED
+   * in all. */
+  liveAdminGrants(): AdminAccessGrant[] {
+    let now = Date.now();
+    return [...this.storage.adminGrants.list()]
+        .filter(grant => isAdminGrantLive(grant, now)).toSorted(newestAdminGrantFirst);
+  }
+
+  // The owner's account-wide grant as their account last gave it, with when the question was
+  // sent and the owner it was asked of (see contentGrant()). In memory only.
+  #accountGrant?: { at: number; ownerId: string; grant: AdminAccessGrant };
+
+  /**
+   * The grant an admin's content call runs under: the newest of liveAdminGrants(), else the
+   * owner's account-wide grant. A live answer from the owner's account is kept in memory, with
+   * the id of the owner it was asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
+   * the question was sent (the time is taken before the await, so the bound on a revocation does
+   * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. An
+   * answer that arrives after that time is neither used nor kept: it counts as no grant. It
+   * is dropped when `ownerId` is no longer the owner it was asked of, and by beginDeletion(): a
+   * workspace id can live again under another owner in the same instance. An answer that there
+   * is none is not kept, so a grant given a moment later is found by the next call. A question
+   * that fails (the account object threw or could not be reached) is logged, never kept, and
+   * counts as no grant: this never throws. The only caller is AdminWorkspaceViewImpl, for a call
+   * that would return content: no member-facing path, listing or metadata call reaches it. It
+   * writes nothing.
+   */
+  async contentGrant(): Promise<AdminAccessGrant | undefined> {
+    let [stored] = this.liveAdminGrants();
+    if (stored) return stored;
+
+    let ownerId = this.ownerId;
+    let at = Date.now();
+    let kept = this.#accountGrant;
+    if (kept && kept.ownerId === ownerId && isLiveAccountGrant(kept.grant, at) &&
+        at - kept.at < ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000) {
+      return kept.grant;
+    }
+    this.#accountGrant = undefined;
+    // A workspace with no owner has no account to ask.
+    if (!ownerId) return undefined;
+    try {
+      // A raw stub rather than ownerUserDo(), since an admin's read must never restart the
+      // workspace: a refused lookup falls back to no grant below.
+      let account = () => this.users.get(this.users.idFromString(ownerId));
+      let answer = await retryOnDoReset(() => account().liveAccountAdminGrant(), this.logger);
+      // The account's word is not taken for the grant's liveness, scope or source, nor an
+      // answer that took the whole time one may be kept.
+      if (!isLiveAccountGrant(answer) ||
+          Date.now() - at >= ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000) {
+        return undefined;
+      }
+      this.#accountGrant = {at, ownerId, grant: answer};
+      return answer;
+    } catch (err) {
+      this.logger.warn("failed to ask the owner's account for an account-wide admin grant", {
+        event: "admin.grant.account.failed", error: err,
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Deletes the stored grants that isAdminGrantPrunable(), of `source` alone when one is given.
+   * Synchronous. The owner's methods pass "owner", so that no member call touches a record whose
+   * source is "admins".
+   *
+   * `retentionDays` is the audit log's retention as the caller last read it, which can trail a
+   * change an admin has just made. That is good enough here: the stored record of an ended grant
+   * serves its owner's listing and the admins' view of the workspace, and nothing checks access
+   * against it. Only the grant methods prune, so a workspace nobody gives or ends a grant on
+   * again keeps its ended grants until it is deleted.
+   */
+  pruneAdminGrants(retentionDays: number, source?: AdminAccessGrant["source"]): void {
+    for (let grant of this.storage.adminGrants.list()) {
+      if (source !== undefined && grant.source !== source) continue;
+      if (isAdminGrantPrunable(grant, retentionDays)) this.storage.adminGrants.delete(grant.id);
+    }
   }
 
   async submitAction(gatekeeperId: number, action: number | "create",
@@ -12274,10 +12406,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * The open is the view's first call ("inspectWorkspace"): it passes the view's checks (a caller
    * no longer an admin is refused unrecorded), is recorded as refused and throws `accessOff` while
    * the deployment's level is "off", and is otherwise recorded in the deployment-wide log before
-   * the view is returned; a record that cannot be written refuses the open.
+   * the view is returned; a record that cannot be written refuses the open. A view is opened for
+   * content without a grant being looked for: each of its calls looks for one.
    */
-  async openForAdmin(adminId: string, reason: string, sessionId: string, terms: AdminViewTerms)
-      : Promise<AdminWorkspaceView> {
+  async openForAdmin(adminId: string, reason: string, sessionId: string,
+      terms: AdminWorkspaceViewTerms): Promise<AdminWorkspaceView> {
     if (!this.impl.ownerId) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
@@ -12379,6 +12512,211 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     impl.logger.info("admin write applied", {
       event: "admin.write.applied", operation: call.action,
     });
+  }
+
+  /**
+   * Give the grant a claimed content access request asks for (AdminApiImpl.approveContentAccess()),
+   * recording the approval first. `call` carries the request and the admin who approved it, through
+   * which session, as an AdminGrantRecord keeps them. Reachable only over the Workshop's Durable
+   * Object binding.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once the level, the owner and the approver have been read;
+   *   - a blank or over-long reason and a `via` that is not "api" or "cli" (TypeError);
+   *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and an approver
+   *     who is the requester (`secondAdminRequired`, see sameDeploymentAdmin()): AdminSettings
+   *     refused that already, and what was handed over is checked again;
+   *   - a request that already gave this workspace its grant (`requestNotPending`), and a level in
+   *     force below "content" (`contentOff`);
+   *   - a call whose `workspaceOwner` is not this workspace's owner (`workspaceChanged`): the
+   *     approver confirmed a grant on that owner's workspace, and a deleted workspace's id can be
+   *     initialised again for someone else. Not `workspaceNotFound`, on which the caller drops the
+   *     workspace from the directory: this workspace is alive.
+   *
+   * Then the AdminGrantRecord ("approveContentAccess", naming the grant) is appended to the
+   * deployment-wide log, and only then is the grant stored: source "admins", for
+   * ADMIN_GRANT_LIFETIME_SECONDS, ending, as ended by the approver, the live "admins" grant it
+   * replaces, which the record names (`replacedGrantId`). A grant whose record cannot be written
+   * is not given. Nothing is
+   * entered in the action log, and no event, notification or unread count is raised: a
+   * workspace's members are not told that admins read its content. Resolves the grant's id.
+   */
+  async grantAdminContent(call: AdminContentGrantCall): Promise<{grantId: string}> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    let reason = validateAdminAccessReason(call.reason);
+    if (call.via !== "api" && call.via !== "cli") {
+      throw new TypeError("An admin's via must be \"api\" or \"cli\".");
+    }
+    // Read from the OverseerImpl's environment, so that the checks hold for this workspace's
+    // isolate even if the Worker that approved ran an older config.
+    if (!isDeploymentAdmin(impl.env, call.admin) || !isDeploymentAdmin(impl.env, call.requestedBy)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (sameDeploymentAdmin(call.admin, call.requestedBy)) {
+      throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+    }
+    if (grantedByRequest(impl, call.requestId)) {
+      throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending);
+    }
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the grant.
+    let policy = adminAccessPolicy(await readAdminConfig(impl.env), impl.env);
+    let ownerId = await impl.getOwnerProfileId();
+    let admin = await adminProfile(impl, call.admin);
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    if (call.workspaceOwner !== auditOwnerId(ownerId)) {
+      throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.workspaceChanged);
+    }
+
+    // Drawn here so that the record names it: the calls made under the grant carry this id.
+    let grantId = crypto.randomUUID();
+    // The live admins' grant this one replaces, which the record names too.
+    let replaced = impl.liveAdminGrants().find(live => live.source === "admins");
+    let record: AdminGrantRecord = {
+      kind: "grant",
+      at: new Date(),
+      admin: call.admin,
+      sessionId: call.sessionId,
+      via: call.via,
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      reason,
+      method: "approveContentAccess",
+      requestId: call.requestId,
+      requestedBy: call.requestedBy,
+      grantId,
+      ...replaced && {replacedGrantId: replaced.id},
+    };
+    try {
+      // No retention, as for a view's call (see adminViewCall()).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // No grant was given.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: "grantAdminContent", error: err,
+      });
+      throw err;
+    }
+
+    // Nothing is awaited from here on, so every check holds when the grant is put. The workspace
+    // may have been deleted, or the request's grant given by a retry, while the record was
+    // appended: the record stands for the attempt.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    if (grantedByRequest(impl, call.requestId)) {
+      throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending);
+    }
+    // One live admins' grant at a time, so that MAX_ADMIN_GRANTS_LISTED lists every one that
+    // lets content be read: the approver ends the one the record names. A grant an approval that
+    // raced this one gave is not ended, since no record names its end.
+    let stillLive = replaced && impl.storage.adminGrants.get(replaced.id);
+    if (stillLive && isAdminGrantLive(stillLive)) {
+      impl.storage.adminGrants.put({...stillLive, revokedAt: new Date(), revokedBy: namedUser(admin)});
+    }
+    // Of either source: this is an admins' grant.
+    impl.pruneAdminGrants(policy.retentionDays);
+    impl.storage.adminGrants.put(newAdminGrant({
+      id: grantId, source: "admins", scope: "workspace", grantedBy: admin,
+      requestedBy: call.requestedBy, requestId: call.requestId, reason,
+    }));
+    impl.logger.info("admin grant given", {event: "admin.grant.given"});
+    return {grantId};
+  }
+
+  /**
+   * End a grant with source "admins" (AdminApiImpl.endWorkspaceGrant()), recording the ending (an
+   * AdminGrantRecord, "endWorkspaceGrant") first. `actor` carries the admin's canonical user id,
+   * session id and via, as an AdminGrantRecord keeps them. Reachable only over the Workshop's
+   * Durable Object binding.
+   *
+   * Refuses, writing and recording nothing: a workspace never initialised or since deleted
+   * (`workspaceNotFound`), a blank or over-long reason and a `via` that is not "api" or "cli"
+   * (TypeError), an actor who is not a deployment admin (`notAdmin`), and an id that names no
+   * live grant with source "admins" here (`notFound`): an owner's grant is the owner's to end.
+   * It asks for no level: ending a grant only takes access away.
+   *
+   * The record is appended before the grant is ended, so an ending whose record cannot be
+   * written does not happen. A grant another admin ended while the record was appended is
+   * refused `notFound`, and the record stands for the attempt. Like the approval that gave the
+   * grant, the ending shows the workspace's members nothing.
+   */
+  async endAdminGrant(actor: AdminGrantActor, grantId: string, reason: string): Promise<void> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    let endReason = validateAdminAccessReason(reason);
+    if (actor.via !== "api" && actor.via !== "cli") {
+      throw new TypeError("An admin's via must be \"api\" or \"cli\".");
+    }
+    if (!isDeploymentAdmin(impl.env, actor.admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    let liveGrant = () => {
+      let stored = impl.storage.adminGrants.get(grantId);
+      if (stored?.source !== "admins" || !isAdminGrantLive(stored)) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+      }
+      return stored;
+    };
+    // An approval's grant always carries its request, requester and reason.
+    let {requestId = "", requestedBy = "", reason: requestReason = ""} = liveGrant();
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    let admin = await adminProfile(impl, actor.admin);
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let record: AdminGrantRecord = {
+      kind: "grant",
+      at: new Date(),
+      admin: actor.admin,
+      sessionId: actor.sessionId,
+      via: actor.via,
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      reason: requestReason,
+      method: "endWorkspaceGrant",
+      requestId,
+      requestedBy,
+      grantId,
+      endReason,
+    };
+    try {
+      // No retention, as for a view's call (see AdminWorkspaceViewImpl).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed: the grant is still live.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: "endAdminGrant", error: err,
+      });
+      throw err;
+    }
+
+    // Nothing is awaited from here on. The workspace may have been deleted, or the grant ended
+    // by another admin, while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    impl.storage.adminGrants.put(
+        {...liveGrant(), revokedAt: new Date(), revokedBy: namedUser(admin)});
+    impl.logger.info("admin grant ended", {event: "admin.grant.ended"});
   }
 
   /**
@@ -12831,6 +13169,45 @@ function joinSessionPresence(
   };
 }
 
+// A stored chat message as clients see it, an action message carrying its action's current log
+// entry (see OverseerImpl.hydrateChatMessageForClient() for `inlineBytes`).
+function chatMessageForClient(impl: OverseerImpl, msg: StoredChatMessage,
+    inlineBytes?: {left: number} | false): AiChatMessage {
+  if (msg.type === "action") {
+    let record = impl.storage.actions.get(msg.actionId);
+    if (record) {
+      msg.actionLog = actionRecordToLog(record);
+    }
+  }
+  return impl.hydrateChatMessageForClient(msg, inlineBytes);
+}
+
+// One page of a chat's history (see Overseer.getChatHistory()). Compaction boundaries delimit the
+// pages: the newest page is the tail replay still scans, and each earlier page is the span one
+// checkpoint summarized. A thread that was never compacted has a single page.
+function chatHistoryPage(impl: OverseerImpl, chatId: number, beforeSequence?: number,
+    inlineImages = true): AiChatHistoryPage {
+  let checkpoint = beforeSequence === undefined
+      ? impl.getActiveChatCompaction(chatId)
+      : impl.getChatCompactionBelow(chatId, beforeSequence);
+  let result = [...impl.storage.chats.list({
+    prefix: chatKeyPrefix(chatId),
+    start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
+    end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
+  })];
+  // Newest first, so the images in view when the chat opens are the ones that come inline.
+  let inlineBytes = inlineImages && {left: MAX_CLIENT_INLINE_PAGE_BYTES};
+  return {
+    messages: result.toReversed().map((msg) => chatMessageForClient(impl, msg, inlineBytes))
+        .toReversed(),
+    compacted: checkpoint && {
+      to: checkpoint.compactedTo,
+      summary: checkpoint.summary,
+      proposedChange: checkpoint.proposedChange,
+    },
+  };
+}
+
 // Every hook the workspace's connections deliver (see Overseer.listHooks()).
 function boundHookInfos(impl: OverseerImpl): BoundHookInfo[] {
   let defaultGadgetId = impl.defaultGadgetId;
@@ -13215,6 +13592,90 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.logger.info("deleted workspace", {
       event: "workspace.delete.completed", durationMs: Date.now() - startedAt,
     });
+  }
+
+  // --- Grants for admin content reads ---
+  //
+  // Each of the four methods is the owner's alone, sees only the grants the owner gave (see
+  // #ownerGrant()), and first deletes those of them that ended longer ago than the admin audit
+  // log keeps its records. None changes the workspace's metadata, raises an event, adds to the
+  // action log or writes an admin audit record: an owner's grant is the owner's own record.
+
+  // Refuses anyone but the owner, then reads the deployment's policy.
+  async #ownerGrantPolicy(): Promise<AdminAccessPolicy> {
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can give admins access to it.");
+    }
+    return adminAccessPolicy(await readAdminConfig(this.impl.env), this.impl.env);
+  }
+
+  // The grant `id` names among those the owner gave, for renewAdminAccess() and
+  // revokeAdminAccess(). The owner's methods never put, delete or return a record whose source
+  // is "admins": nothing a member can call may change because a second admin's approval gave a
+  // grant. So an id naming such a grant is refused by the same lookup and the same throw as an
+  // id naming nothing, and its owner cannot learn by probing that the grant exists.
+  #ownerGrant(id: string): AdminAccessGrant {
+    let grant = this.impl.storage.adminGrants.get(id);
+    if (grant?.source !== "owner") throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    return grant;
+  }
+
+  async grantAdminAccess(): Promise<AdminAccessGrant> {
+    let policy = await this.#ownerGrantPolicy();
+    let owner = await this.#getClientProfile();
+    // Nothing is awaited from here on: the workspace is still its owner's when the grant is put.
+    if (!this.impl.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    let grant = newAdminGrant({source: "owner", scope: "workspace", grantedBy: owner});
+    this.impl.storage.adminGrants.put(grant);
+    return grant;
+  }
+
+  async renewAdminAccess(grantId: string): Promise<AdminAccessGrant> {
+    let policy = await this.#ownerGrantPolicy();
+    if (!this.impl.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    let grant = this.#ownerGrant(grantId);
+    if (!isAdminGrantLive(grant)) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    grant.expiresAt = new Date(Date.now() + ADMIN_GRANT_LIFETIME_SECONDS * 1000);
+    this.impl.storage.adminGrants.put(grant);
+    return grant;
+  }
+
+  // Reads neither the settings nor their retention, which other grant operations prune by: an
+  // owner's revoke depends on nothing that could fail it.
+  async revokeAdminAccess(grantId: string): Promise<void> {
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can give admins access to it.");
+    }
+    let owner = await this.#getClientProfile();
+    if (!this.impl.ownerId) return;
+    let grant = this.#ownerGrant(grantId);
+    if (!isAdminGrantLive(grant)) return;
+    grant.revokedAt = new Date();
+    grant.revokedBy = namedUser(owner);
+    this.impl.storage.adminGrants.put(grant);
+  }
+
+  // The live ones come first, so that the owner sees a grant they can still end while there is
+  // one: the newest of them, when they alone pass the bound.
+  async listAdminGrants(): Promise<AdminAccessGrant[]> {
+    let policy = await this.#ownerGrantPolicy();
+    if (!this.impl.ownerId) return [];
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    let now = Date.now();
+    let given = [...this.impl.storage.adminGrants.list()]
+        .filter(grant => grant.source === "owner").toSorted(newestAdminGrantFirst);
+    return [
+      ...given.filter(grant => isAdminGrantLive(grant, now)),
+      ...given.filter(grant => !isAdminGrantLive(grant, now)),
+    ].slice(0, MAX_ADMIN_GRANTS_LISTED);
   }
 
   async submitCodeChange(chatId: number, submission: CodeChangeSubmission)
@@ -13833,44 +14294,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return await this.impl.getChatAttachmentData(chatId, id);
   }
 
-  // Compaction boundaries delimit the pages: the newest page is the tail replay still scans, and each
-  // earlier page is the span one checkpoint summarized. A thread that was never compacted has a
-  // single page.
   async getChatHistory(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
-    let checkpoint = beforeSequence === undefined
-        ? this.impl.getActiveChatCompaction(chatId)
-        : this.impl.getChatCompactionBelow(chatId, beforeSequence);
-    let result = [...this.impl.storage.chats.list({
-      prefix: chatKeyPrefix(chatId),
-      start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
-      end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
-    })];
-    // Newest first, so the images in view when the chat opens are the ones that come inline.
-    let inlineBytes = {left: MAX_CLIENT_INLINE_PAGE_BYTES};
-    return {
-      messages: result.toReversed().map((msg) => this.#getChatMessageForClient(msg, inlineBytes))
-          .toReversed(),
-      compacted: checkpoint && {
-        to: checkpoint.compactedTo,
-        summary: checkpoint.summary,
-        proposedChange: checkpoint.proposedChange,
-      },
-    };
+    return chatHistoryPage(this.impl, chatId, beforeSequence);
   }
 
   async getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined> {
     let msg = this.impl.storage.chats.get(chatKey(chatId, sequence));
-    return msg && this.#getChatMessageForClient(msg);
-  }
-
-  #getChatMessageForClient(msg: StoredChatMessage, inlineBytes?: {left: number}): AiChatMessage {
-    if (msg.type === "action") {
-      let record = this.impl.storage.actions.get(msg.actionId);
-      if (record) {
-        msg.actionLog = actionRecordToLog(record);
-      }
-    }
-    return this.impl.hydrateChatMessageForClient(msg, inlineBytes);
+    return msg && chatMessageForClient(this.impl, msg);
   }
 
   async subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date)
@@ -13903,7 +14333,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
-      subscriber.message(self.#getChatMessageForClient(record)).catch(unsubscribe);
+      subscriber.message(chatMessageForClient(self.impl, record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
@@ -14172,7 +14602,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // or web fetch it stopped to wait on. Not the other records logged under it: the `changes` a
       // step that replied and edited records after its reply, nor an agentNudge (as Stop logs one).
       if (msg.author.type === "agent" && WAIT_FOR_AGENT_RESULT_TYPES.has(msg.type)) {
-        return this.#getChatMessageForClient(msg);
+        return chatMessageForClient(this.impl, msg);
       }
     }
     return null;
@@ -14578,6 +15008,10 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
+  async grantAdminAccess(): Promise<AdminAccessGrant> { this.#deny(); }
+  async renewAdminAccess(_grantId: string): Promise<AdminAccessGrant> { this.#deny(); }
+  async revokeAdminAccess(_grantId: string): Promise<void> { this.#deny(); }
+  async listAdminGrants(): Promise<AdminAccessGrant[]> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
@@ -14728,23 +15162,24 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
 // A deployment admin's read-only view of the workspace (see AdminWorkspaceView in api.ts and
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
-// no presence or fan-out, and never reads through a connection: its reads of trees, history and
-// a chat's pending paths never pull, and what a connection could tell it, it reads from the
-// workspace's own records instead. Beyond the workspace's storage it reads only the owner's
-// profile, from their account (describe() and listShareLinks()). Every method runs through
-// #call, which reads the call's answer and records the call in the deployment-wide log before
-// returning anything.
+// no presence or fan-out, and never reads through a connection: its reads of trees, files,
+// history, attachments and a chat's pending content never pull, and what a connection could
+// tell it, it reads from the workspace's own records instead. Beyond the workspace's storage it
+// asks only the owner's account: for their profile (describe() and listShareLinks()), and, when
+// a call that would return content finds no live grant stored here, for their account-wide
+// grant (OverseerImpl.contentGrant()). Every method runs through #call, which reads the call's
+// answer and records the call in the deployment-wide log before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
   #adminId: string;
   #reason: string;
   #sessionId: string;
-  #terms: AdminViewTerms;
+  #terms: AdminWorkspaceViewTerms;
   #ownerId: string;
 
   constructor(impl: OverseerImpl, adminId: string, reason: string, sessionId: string,
-              terms: AdminViewTerms, ownerId: string) {
+              terms: AdminWorkspaceViewTerms, ownerId: string) {
     super();
     this.#impl = impl;
     this.#adminId = adminId;
@@ -14757,7 +15192,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   // Mints a view, recording the open as its first call (see openForAdmin()). Static, so that
   // auditing stays off the view's RPC surface.
   static async open(impl: OverseerImpl, adminId: string, reason: string, sessionId: string,
-                    terms: AdminViewTerms, ownerId: string): Promise<AdminWorkspaceViewImpl> {
+                    terms: AdminWorkspaceViewTerms, ownerId: string)
+      : Promise<AdminWorkspaceViewImpl> {
     let view = new AdminWorkspaceViewImpl(impl, adminId, reason, sessionId, terms, ownerId);
     await view.#call(
         "inspectWorkspace", {expiresAt: terms.expiresAt.toISOString()}, () => undefined);
@@ -14775,28 +15211,70 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 
   // Runs one call through adminViewCall(): checks the view, reads the deployment's setting and
   // checks again. While the setting is "off" the call is recorded and refused, having read
-  // nothing. Any other call reads its answer with `read` (never through a connection), is checked
-  // once more, and is recorded. Only then is it answered, so nothing it read leaves the server
-  // unrecorded, and a call whose record cannot be written fails and returns nothing. A read that
-  // fails is recorded as an attempt, and the call fails with the read's error. The host is built
-  // at each call, so its audit log and logger are the Overseer's at that call, and the environment
-  // is read at each use within it.
+  // nothing, and so is a call of a method that answers with content alone when it may return
+  // none (see below). Any other call reads its answer with `read` (never through a connection),
+  // is checked once more, and is recorded. Only then is it answered, so nothing it read leaves
+  // the server unrecorded, and a call whose record cannot be written fails and returns nothing. A
+  // read that fails is recorded as an attempt, and the call fails with the read's error. The host
+  // is built at each call, so its audit log and logger are the Overseer's at that call, and the
+  // environment is read at each use within it.
+  //
+  // `read` is told whether the call may return content: only under a grant (see below), and
+  // otherwise it withholds what the "metadata" level withholds. `holdsContent` says whether the
+  // answer of a call made under a grant held any, which is what its record says it exposed.
   async #call<T>(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
-      read: () => T | Promise<T>): Promise<T> {
+      read: (content: boolean) => T | Promise<T>,
+      holdsContent: (answer: T) => boolean = () => false): Promise<T> {
     let impl = this.#impl;
+    // What the record says of the call beyond its arguments, as the call learns it. The level
+    // stays "off" for a call refused for that, which is recorded without its read having run.
+    let access: AdminWorkspaceAccess = "off";
+    let exposed: AdminAccessExposure = "metadata";
+    let refused: AdminAccessRecord["refused"];
+    let grant: AdminAccessGrant | undefined;
     return adminViewCall({
       env: () => impl.env,
       audits: impl.adminAudits,
       logger: impl.logger,
       assertLive: () => this.#assertLive(),
-      recordOf: refused => this.#recordOf(method, args, refused),
-    }, read);
+      recordOf: off => this.#recordOf(method, args, access, exposed, grant?.id, off ?? refused),
+    }, async level => {
+      access = level;
+      // A grant is looked for only by a call that could return content under one: a method whose
+      // answer can hold content, on a view opened for content, while the level in force is
+      // "content". So a metadata view, a method that answers with metadata alone and the open
+      // itself never ask the owner's account for a grant. The lookup never throws: when that
+      // account cannot answer, the call is one with no grant.
+      let kind = ADMIN_METHOD_ANSWERS[method];
+      if (kind !== "metadata") {
+        let refusal = adminContentRefusal(this.#terms, {access: level});
+        if (refusal === undefined) {
+          grant = await impl.contentGrant();
+          // Checked again: the lookup may have awaited the owner's account.
+          this.#assertLive();
+          if (grant === undefined) refusal = ADMIN_ACCESS_ERROR_CODES.grantRequired;
+        }
+        // A method that answers with content alone has nothing to answer without a grant, so its
+        // call is recorded and refused, having read nothing: the refusal is thrown as the read's
+        // failure, which adminViewCall() records before the call fails with it. A mixed one goes
+        // on to answer as the "metadata" level does.
+        if (refusal !== undefined && kind === "content") {
+          refused = refusal;
+          throw createAdminAccessError(refusal);
+        }
+      }
+      let answer = await read(grant !== undefined);
+      if (grant !== undefined && holdsContent(answer)) exposed = "content";
+      return answer;
+    });
   }
 
-  // The record of one call, as the deployment-wide log keeps it, as refused when `refused` names
-  // why. Synchronous: adminViewCall() builds and sends a record with nothing awaited since its
+  // The record of one call, as the deployment-wide log keeps it: the level in force when it ran,
+  // what its answer exposed, the grant it ran under when it had one, and why it was refused when
+  // it was. Synchronous: adminViewCall() builds and sends a record with nothing awaited since its
   // last check.
   #recordOf(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
+      access: AdminWorkspaceAccess, exposed: AdminAccessExposure, grantId?: string,
       refused?: AdminAccessRecord["refused"]): AdminAccessRecord {
     let impl = this.#impl;
     return {
@@ -14813,7 +15291,10 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       method,
       args: redactAdminAuditArgs(args),
       reason: this.#reason,
-      access: refused ? "off" : "metadata",
+      requested: this.#terms.access,
+      access,
+      exposed,
+      ...(grantId !== undefined ? {grantId} : {}),
       ...(refused ? {refused} : {}),
     };
   }
@@ -14843,17 +15324,17 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         (commit, path) => impl.gitCache.readLocalFileAtCommitIfExists(commit, path));
   }
 
-  // The owner's profile, from their account: the one thing a view reads beyond the workspace's
-  // storage (describe() and listShareLinks()).
+  // The owner's profile, from their account (describe() and listShareLinks()).
   #ownerProfile(): Promise<AiChatAuthorInfo> {
     return retryOnDoReset(() => this.#impl.ownerUserDo().whoami(), this.#impl.logger);
   }
 
   async describe(): Promise<AdminWorkspaceDescription> {
     let impl = this.#impl;
-    return this.#call("describe", {}, async () => {
+    return this.#call("describe", {}, async content => {
       let owner = await this.#ownerProfile();
       let collaborators = await (await impl.getSharingManager()).listCollaborators();
+      let live = impl.liveAdminGrants();
       return {
         id: impl.ctx.id.toString(),
         // Live data, not a record, so whole.
@@ -14864,25 +15345,45 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         defaultGadgetId: impl.defaultGadgetId,
         owner,
         workpieces: [...impl.storage.gadgets.list()]
-            .map(record => workpieceSummary(record, false)),
+            .map(record => workpieceSummary(record, content)),
         collaborators,
+        access: this.#terms.access,
+        // Who may read content is metadata, so every view lists the grants. The list is bounded
+        // because an owner's grants are not, and the "admins" ones come first so that an owner's
+        // never crowd one out: only an admin can end it, and this is where an admin finds it.
+        // Each took a second admin's approval, so they are few: past the bound, the newest are
+        // listed.
+        grants: [
+          ...live.filter(grant => grant.source === "admins"),
+          ...live.filter(grant => grant.source === "owner"),
+        ].slice(0, MAX_ADMIN_GRANTS_LISTED),
         expiresAt: this.#terms.expiresAt,
       };
-    });
+    }, description => description.workpieces.some(workpieceHoldsContent));
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
     return this.#call("listChats", {},
-        () => [...this.#impl.storage.chatMeta.list({reverse: true})]
+        content => [...this.#impl.storage.chatMeta.list({reverse: true})]
             .map(meta => this.#impl.chatMetaForClient(meta))
-            .map(withholdChatContent));
+            .map(meta => content ? meta : withholdChatContent(meta)),
+        chats => chats.some(chatHoldsContent));
+  }
+
+  // A member's page without its inlined images: an image's bytes are content this call would
+  // otherwise hold whole, and readChatAttachment() streams them.
+  async getChat(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
+    return this.#call("getChat", {chatId, beforeSequence}, () => {
+      this.#impl.getChatMetaOrThrow(chatId);
+      return chatHistoryPage(this.#impl, chatId, beforeSequence, false);
+    }, chatPageHoldsContent);
   }
 
   // Each part of the answer names the fields its type declares, since the stored records hold
   // more: a turn's and a queued call's hold their initiator's user id, and a queued call's its
   // raw arguments. Each storage listing is read to its end before the next starts.
   async getChatState(chatId: number): Promise<AdminChatState> {
-    return this.#call("getChatState", {chatId}, () => {
+    return this.#call("getChatState", {chatId}, content => {
       let storage = this.#impl.storage;
       let meta = this.#impl.getChatMetaOrThrow(chatId);
       let turn = storage.activeAgents.get(chatId);
@@ -14892,11 +15393,12 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         callId: call.callId,
         methodName: call.methodName,
         initiatorModelId: call.initiatorModelId,
+        argsSummary: call.argsSummary,
       }));
       let pendingActionIds = [...storage.actions.byHistoryFilter.get("pending")]
           .filter(({caller}) => "chatId" in caller && caller.chatId === chatId)
           .map(action => action.id);
-      return {
+      let state: AdminChatState = {
         turn: turn && {
           modelId: turn.modelId,
           initiator: turn.initiator,
@@ -14908,7 +15410,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         queuedCalls,
         pendingActionIds,
       };
-    });
+      return content ? state : withholdChatStateContent(state);
+    }, chatStateHoldsContent);
   }
 
   // The scan deleteChat() makes: a message's ChatAttachmentRef is the one record of an
@@ -14927,14 +15430,20 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     });
   }
 
+  async readChatAttachment(chatId: number, id: string): Promise<ReadableStream<Uint8Array>> {
+    return this.#call("readChatAttachment", {chatId, id},
+        () => this.#impl.openChatAttachment(chatId, id), () => true);
+  }
+
   async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
     validateBeforeId(options?.beforeId);
     return this.#call("listActions", {beforeId: options?.beforeId, filter: options?.filter},
-        () => {
+        content => {
           let page = actionHistoryPage(this.#impl.storage, options);
-          return {...page, entries: page.entries.map(withholdActionContent)};
-        });
+          return content ? page : {...page, entries: page.entries.map(withholdActionContent)};
+        },
+        page => page.entries.some(actionHoldsContent));
   }
 
   async listFiles(gadgetId: WorkpieceId): Promise<TreeNode[]> {
@@ -14942,19 +15451,32 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         () => this.#impl.gitCache.readLocalCommitTree(this.#committedHead(gadgetId)));
   }
 
+  async readFile(gadgetId: WorkpieceId, path: string): Promise<AdminFileContent> {
+    return this.#call("readFile", {gadgetId, path},
+        () => this.#impl.gitCache.readLocalFileAtCommit(this.#committedHead(gadgetId), path),
+        fileHoldsContent);
+  }
+
   // `limit`, the depth the validator answers with, bounds the walk: readCommitLog() stops only at
   // a depth it is handed. The record keeps `depth` as the caller gave it.
   async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
     let limit = adminCommitLogDepth(depth);
     return this.#call("getCommitLog", {fromCommit, depth},
-        () => this.#impl.gitCache
+        content => this.#impl.gitCache
             .readCommitLog(this.#storedCommit(fromCommit), {depth: limit, stopAtMissing: true})
-            .map(withholdCommitContent));
+            .map(commit => content ? commit : withholdCommitContent(commit)),
+        log => log.some(commitHoldsContent));
   }
 
   async listFilesAtCommit(commitId: string): Promise<TreeNode[]> {
     return this.#call("listFilesAtCommit", {commitId},
         () => this.#impl.gitCache.readLocalCommitTree(this.#storedCommit(commitId)));
+  }
+
+  async readFileAtCommit(commitId: string, path: string): Promise<AdminFileContent> {
+    return this.#call("readFileAtCommit", {commitId, path},
+        () => this.#impl.gitCache.readLocalFileAtCommit(this.#storedCommit(commitId), path),
+        fileHoldsContent);
   }
 
   async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
@@ -15037,8 +15559,35 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     });
   }
 
+  async readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string)
+      : Promise<AdminFileContent> {
+    return this.#call("readPendingFile", {chatId, gadgetId, path},
+        async (): Promise<AdminFileContent> => {
+          let impl = this.#impl;
+          let files = (await this.#pendingContent(chatId)).get(gadgetId);
+          if (files === undefined || impl.storage.gadgets.get(gadgetId) === undefined) {
+            throw new Error(`Chat ${chatId} holds no changes to workpiece ${gadgetId}.`);
+          }
+          let file = files.get(path);
+          if (file === undefined) return {kind: "absent"};
+          if (typeof file !== "string") {
+            // Bytes are streamed from the stored blob, never read whole.
+            return {
+              kind: "stream", byteLength: file.byteLength,
+              content: blobByteStream(impl.gitCache.openBlobRef(file.oid, file.byteLength)),
+            };
+          }
+          // The size of the text's UTF-8 encoding decides how the file arrives; a stream encodes
+          // it a piece at a time, so its encoding is never held whole beside the text.
+          let byteLength = utf8ByteLength(file);
+          return byteLength > MAX_BUFFERED_BLOB_SIZE
+              ? {kind: "stream", byteLength, content: textByteStream(file)}
+              : {kind: "text", text: file};
+        }, fileHoldsContent);
+  }
+
   async listGatekeepers(): Promise<AdminGatekeeperInfo[]> {
-    return this.#call("listGatekeepers", {}, () => {
+    return this.#call("listGatekeepers", {}, content => {
       let storage = this.#impl.storage;
       let gadgets = [...storage.gadgets.list()].filter(record => record.type === "gadget");
       let hooks = boundHookInfos(this.#impl);
@@ -15047,16 +15596,20 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         resourceTitle: record.resourceTitle,
         resourceUrl: record.resourceUrl,
         vendorId: gatekeeperVendorId(record),
-        creationSpec: record.creationSpec && withholdCreationContent(record.creationSpec),
+        creationSpec: record.creationSpec &&
+            (content ? record.creationSpec : withholdCreationContent(record.creationSpec)),
         createdBy: record.createdBy,
         bindings: gadgets.flatMap(gadget => Object.entries(gadget.bindings)
             .filter(([, edge]) => edge.target === record.id)
             .map(([name, edge]) => ({
               gadgetId: gadget.id, name, ...(edge.pending ? {chatId: edge.pending.chatId} : {}),
             }))),
-        hooks: hooks.filter(hook => hook.gatekeeperId === record.id).map(withholdHookContent),
+        hooks: hooks.filter(hook => hook.gatekeeperId === record.id)
+            .map(hook => content ? hook : withholdHookContent(hook)),
       }));
-    });
+    }, gatekeepers => gatekeepers.some(gatekeeper =>
+        (gatekeeper.creationSpec !== undefined && creationHoldsContent(gatekeeper.creationSpec)) ||
+        gatekeeper.hooks.some(hookHoldsContent)));
   }
 
   // Each entry names the fields its type declares, since a stored record also holds the observer
@@ -15104,7 +15657,9 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
     return this.#call("listBlueprints", {},
-        () => this.#impl.blueprintSummaries().map(withholdBlueprintContent));
+        content => this.#impl.blueprintSummaries()
+            .map(blueprint => content ? blueprint : withholdBlueprintContent(blueprint)),
+        blueprints => blueprints.some(blueprintHoldsContent));
   }
 
   async getDiagnostics(): Promise<AdminWorkspaceDiagnostics> {
@@ -15157,6 +15712,23 @@ async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args:
   }
   // Reached by no action: one without an operation above does not compile.
   action satisfies never;
+}
+
+// Whether the approved request `requestId` has given this workspace its grant: a request is
+// applied once, so a grant naming it means the request was handed over before.
+function grantedByRequest(impl: OverseerImpl, requestId: string): boolean {
+  for (let grant of impl.storage.adminGrants.list()) {
+    if (grant.requestId === requestId) return true;
+  }
+  return false;
+}
+
+// The profile of the admin `admin` (a canonical user id) as a workspace keeps it of an admin's
+// write or grant: their account's, or the id alone for an admin whose account has no profile.
+async function adminProfile(impl: OverseerImpl, admin: string): Promise<AiChatAuthorInfo> {
+  return await retryOnDoReset(
+      () => impl.users.getByName(admin).whoamiIfExists(), impl.logger) ??
+      {type: "user", id: admin, name: admin};
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

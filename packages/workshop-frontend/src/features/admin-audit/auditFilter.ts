@@ -1,8 +1,10 @@
 import {
+  ADMIN_GRANT_METHODS,
   ADMIN_SETTING_METHODS,
   ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
   ADMIN_WRITE_ACTIONS,
+  type AdminAccessExposure,
   type AdminAuditKind,
   type AdminAuditRecord,
 } from '@gadgets/workshop-shared/api'
@@ -11,7 +13,7 @@ import {
 export type AuditMethod = AdminAuditRecord['method']
 
 /** The kinds of record, as the filter lists them. */
-export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'setting']
+export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'grant', 'setting']
 
 /**
  * The user `record` targets, as the owner filter matches them: the owner of the workspace a call was
@@ -22,6 +24,9 @@ export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
   if (record.kind === 'setting') return undefined
   return (record.kind === 'user' ? record.userId : record.workspaceOwner) || undefined
 }
+
+/** What an admin's call can have exposed, as the filter lists them. */
+export const AUDIT_EXPOSURES: readonly AdminAccessExposure[] = ['content', 'metadata']
 
 /**
  * The Audit tab's filters, kept in the admin page's URL as search parameters of these names, so a
@@ -39,6 +44,12 @@ export type AuditFilter = {
   /** Only records about this user's data: access to, or a write to, the workspaces they own, and
    * access to their account, by canonical user id. */
   owner?: string
+  /** Only records of calls whose answer exposed this: content, which only a call into a workspace
+   * can, or metadata alone, as every call into a user's account does. */
+  exposed?: AdminAccessExposure
+  /** Only the requests to read a workspace's content that are still pending, which an admin can
+   * approve or deny. */
+  pending?: true
 }
 
 /**
@@ -49,6 +60,7 @@ export type AuditFilter = {
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
   { label: 'Inspection calls', methods: [...new Set([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS])] },
   { label: 'Workspace writes', methods: ADMIN_WRITE_ACTIONS },
+  { label: 'Content grants', methods: ADMIN_GRANT_METHODS },
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS },
 ]
 
@@ -57,6 +69,9 @@ const isAuditMethod = (value: unknown): value is AuditMethod =>
 
 const isAuditKind = (value: unknown): value is AdminAuditKind =>
   (AUDIT_KINDS as readonly unknown[]).includes(value)
+
+const isAuditExposure = (value: unknown): value is AdminAccessExposure =>
+  (AUDIT_EXPOSURES as readonly unknown[]).includes(value)
 
 const text = (value: unknown) => typeof value === 'string' && value !== '' ? value : undefined
 
@@ -71,6 +86,8 @@ export const auditFilterOf = (search: Record<string, unknown>): AuditFilter => {
   if (workspace !== undefined) filter.workspace = workspace
   const owner = text(search.owner)
   if (owner !== undefined) filter.owner = owner
+  if (isAuditExposure(search.exposed)) filter.exposed = search.exposed
+  if (search.pending === true) filter.pending = true
   return filter
 }
 
