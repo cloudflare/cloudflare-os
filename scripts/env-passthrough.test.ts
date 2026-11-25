@@ -105,8 +105,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
-  // `build-release.ts`, `run-dev-server.ts`, `run-local.ts` and `preview/` are invoked directly,
-  // never as vp tasks.
+  // `build-release.ts`, `run-dev-server.ts`, `run-local.ts`, `preview/` and `automerge/` are invoked
+  // directly, never as vp tasks.
   // Every cached watchdogged task declares the timeout policy via TESTS_WITH_TIMEOUT_ENV;
   // vitest-task.test.ts pins the shared declaration.
   // `property-runs.ts` reads FAST_CHECK_SEED inside the `test` task of whichever package runs a
@@ -118,11 +118,13 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "TESTS_WITH_TIMEOUT_MAX_SECONDS", "VITE_FRONTEND_ERROR_REPORTING",
     ],
     external: [
-      "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
+      "AUTOMERGE_HEAD_REF", "AUTOMERGE_MUTATION_BUDGET_MINUTES", "AUTOMERGE_PR_AUTHOR",
+      "BONK_MODEL", "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-      "CLOUDFLARE_OS_DEPLOYMENT", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMIN_CONFIG_SEED", "PREVIEW_ADMINS",
-      "PREVIEW_GITHUB_CLIENT_ID", "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
+      "CLOUDFLARE_OS_DEPLOYMENT", "GITHUB_REPOSITORY", "GITHUB_TOKEN",
+      "PATH", "PREVIEW_ADMIN_CONFIG_SEED", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
+      "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
       "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
       // Read by `vp/concurrency.ts` in the wrapper before `vp` starts, never inside a task.
       "VP_RUN_CONCURRENCY_LIMIT",

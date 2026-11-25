@@ -1,0 +1,64 @@
+{
+  "action": "submitted",
+  "review": {
+    "_links": {
+      "html": {
+        "href": "https://github.com/cloudflare/cloudflare-os/pull/845#pullrequestreview-5609683674"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/cloudflare/cloudflare-os/pulls/845"
+      }
+    },
+    "author_association": "MEMBER",
+    "body": "Reviewed all seven changed files and relevant CI/Bonk workflow interactions at `795f5aa4`. The 50 committed Node tests pass. An independent probe of the production authorization/classification functions with mocked GitHub/Clef confirms immediate success and app approval without reading Bonk. One review-gate issue needs resolving before enabling this policy; no live App/environment/Clef validation was performed.",
+    "commit_id": "795f5aa494a566b9a0e4809519d408b71699c37f",
+    "copilot_code_review_effort": null,
+    "id": 5609683674,
+    "is_copilot_code_review": false,
+    "state": "COMMENTED",
+    "submitted_at": "2026-10-22T05:34:00Z",
+    "user": {
+      "login": "deregtd",
+      "id": 2371464,
+      "type": "User"
+    }
+  },
+  "pull_request": {
+    "number": 845,
+    "state": "open",
+    "draft": false,
+    "user": {
+      "login": "ndisidore",
+      "id": 1103087,
+      "type": "User"
+    },
+    "head": {
+      "ref": "chore/classify-changsets",
+      "sha": "795f5aa494a566b9a0e4809519d408b71699c37f",
+      "repo": {
+        "full_name": "cloudflare/cloudflare-os"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "sha": "a3343fa6021c1f105e466c690c354d3bd63d302f"
+    }
+  },
+  "repository": {
+    "default_branch": "main",
+    "full_name": "cloudflare/cloudflare-os",
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "node_id": "R_kgDOSDyFow",
+    "owner": {
+      "login": "cloudflare",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "deregtd",
+    "id": 2371464,
+    "type": "User"
+  }
+}

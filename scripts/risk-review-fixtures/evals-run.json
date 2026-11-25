@@ -1,0 +1,96 @@
+{
+  "id": 41522161848,
+  "name": "Workshop eval comparison",
+  "head_branch": "maximo/admin-models-fixes",
+  "head_sha": "0b08f313001a42cbcaf1b9fa09193413db4d70fb",
+  "path": ".github/workflows/workshop-evals-pr.yml",
+  "display_title": "Fix admin, quick model and Auto Router settings a customer deployment ran into",
+  "run_number": 1043,
+  "event": "pull_request",
+  "status": "completed",
+  "conclusion": "success",
+  "workflow_id": 355366609,
+  "check_suite_id": 112520781769,
+  "check_suite_node_id": "CS_kwDOSDyFo88AAAAaMsLfyQ",
+  "pull_requests": [
+    {
+      "id": 5127154426,
+      "number": 976,
+      "head": {
+        "ref": "maximo/admin-models-fixes",
+        "sha": "0b08f313001a42cbcaf1b9fa09193413db4d70fb",
+        "repo": {
+          "id": 1211925923,
+          "name": "cloudflare-os"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "35361988f77e1e7165c6b6c2dbbab4fc8fd745c5",
+        "repo": {
+          "id": 1211925923,
+          "name": "cloudflare-os"
+        }
+      }
+    }
+  ],
+  "created_at": "2026-11-02T20:45:47Z",
+  "updated_at": "2026-11-02T21:06:45Z",
+  "actor": {
+    "login": "Maximo-Guk",
+    "id": 62088388,
+    "type": "User",
+    "site_admin": false
+  },
+  "run_attempt": 1,
+  "referenced_workflows": [],
+  "run_started_at": "2026-11-02T20:45:47Z",
+  "triggering_actor": {
+    "login": "Maximo-Guk",
+    "id": 62088388,
+    "type": "User",
+    "site_admin": false
+  },
+  "head_commit": {
+    "id": "0b08f313001a42cbcaf1b9fa09193413db4d70fb",
+    "tree_id": "e74e312a59ae691abeb6663420dd2dc2a08a3eac",
+    "message": "Pick Auto's allowed models as chips, like the Share dialog's people\n\nThe allowed models were one comma-separated text field. They are now\nstaged as chips in a composer like the Share dialog's: suggested names\nare picked from a list, and any other gateway name is typed and added\nwith Enter or a comma, or as \"Add ... exactly\". Suggestions are each\nroutable provider's every model, plus the exact names that are certain:\nWorkers AI's @cf/ IDs and OpenAI's openai/<id>. Anthropic's gateway names\ndiffer from its model IDs, so only its wildcard is suggested.\n\nThe Share dialog's chip pill moves to components/ComposerChip.tsx, which\nboth use.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "timestamp": "2026-11-02T20:45:21Z",
+    "author": {
+      "name": "Maximo Guk",
+      "email": "62088388+Maximo-Guk@users.noreply.github.com"
+    },
+    "committer": {
+      "name": "Maximo Guk",
+      "email": "62088388+Maximo-Guk@users.noreply.github.com"
+    }
+  },
+  "repository": {
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "full_name": "cloudflare/cloudflare-os",
+    "private": false,
+    "owner": {
+      "login": "cloudflare",
+      "id": 314135,
+      "type": "Organization",
+      "site_admin": false
+    },
+    "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+    "fork": false
+  },
+  "head_repository": {
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "full_name": "cloudflare/cloudflare-os",
+    "private": false,
+    "owner": {
+      "login": "cloudflare",
+      "id": 314135,
+      "type": "Organization",
+      "site_admin": false
+    },
+    "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+    "fork": false
+  }
+}

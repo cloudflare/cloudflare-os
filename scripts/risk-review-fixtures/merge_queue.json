@@ -1,0 +1,43 @@
+{
+  "repository": {
+    "mergeQueue": {
+      "entries": {
+        "nodes": [
+          {
+            "headCommit": {
+              "oid": "4e1c0d9a7b2f6e3d8c5a9b0f1e2d3c4b5a6f7e8d"
+            },
+            "baseCommit": {
+              "oid": "79f87d199c34f0d0e40250d1071c963664dd88ad"
+            },
+            "pullRequest": {
+              "number": 939
+            }
+          },
+          {
+            "headCommit": {
+              "oid": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+            },
+            "baseCommit": {
+              "oid": "4e1c0d9a7b2f6e3d8c5a9b0f1e2d3c4b5a6f7e8d"
+            },
+            "pullRequest": {
+              "number": 943
+            }
+          },
+          {
+            "headCommit": {
+              "oid": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6"
+            },
+            "baseCommit": {
+              "oid": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+            },
+            "pullRequest": {
+              "number": 951
+            }
+          }
+        ]
+      }
+    }
+  }
+}

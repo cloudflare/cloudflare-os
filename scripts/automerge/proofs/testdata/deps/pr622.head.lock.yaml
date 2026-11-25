@@ -1,0 +1,257 @@
+lockfileVersion: '9.0'
+
+catalogs:
+  default:
+    '@cloudflare/workers-types':
+      specifier: ^5.20260924.1
+      version: 5.20260924.1
+
+importers:
+
+  .:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/bundled-blueprints:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+  packages/gatekeeper-cloudflare:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-confluence:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-context:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-email:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-github:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-google:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-homeassistant:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-kit:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+  packages/gatekeeper-linear:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-mcp-portal:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-mcp:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-notion:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-scheduler:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-slack:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-spotify:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-supabase:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/gatekeeper-zoominfo:
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/integration-tests:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/observability:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+  packages/router:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/typed-storage:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+  packages/workshop-backend:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+
+  packages/workshop-evals:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+  packages/workshop-shared:
+    dependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260924.1
+
+packages:
+
+  '@cloudflare/workers-types@5.20260924.1':
+    resolution: {integrity: sha512-puvr63PrfAFIkdh3FInGEgS0VTQ49WYNYDC2Eupd+qvwWwGpSRjxJD5Iz22oNHCmV1UEcsDz+OtGF++01vUloA==}
+
+snapshots:
+
+  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+    dependencies:
+      '@vitest/runner': 4.1.10
+      '@vitest/snapshot': 4.1.10
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.1
+      miniflare: 5.20260921.1-alpha(@types/node@26.1.0)
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+    dependencies:
+      '@vitest/runner': 4.1.11
+      '@vitest/snapshot': 4.1.11
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.1
+      miniflare: 5.20260921.1-alpha(@types/node@26.1.0)
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler: 4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/workers-types@5.20260924.1': {}
+
+  wrangler@4.138.0(@cloudflare/workers-types@5.20260924.1)(@types/node@26.1.0):
+    dependencies:
+      '@cloudflare/kv-asset-handler': 0.5.0
+      '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.24)(workerd@1.20260921.1)
+      blake3-wasm: 2.1.5
+      esbuild: 0.28.1
+      miniflare: 5.20260921.1-alpha(@types/node@26.1.0)
+      path-to-regexp: 6.3.0
+      unenv: 2.0.0-rc.24
+      workerd: 1.20260921.1
+    optionalDependencies:
+      '@cloudflare/workers-types': 5.20260924.1
+      fsevents: 2.3.3
+    transitivePeerDependencies:
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate

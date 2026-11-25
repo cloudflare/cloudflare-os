@@ -1,0 +1,6 @@
+{
+  "number": 1001,
+  "title": "Share one observer identity across concurrent admissions",
+  "merged_at": "2026-11-04T23:44:23Z",
+  "body": "Fixes a concurrency bug deferred from https://github.com/cloudflare/cloudflare-os/pull/894#discussion_r4451830221\r\n\r\nConcurrent first opens by one collaborator (two tabs or devices) minted separate observer IDs, and every completing admission overwrote the observer record. With per-gadget scopes, that can erase a verified account choice for a gadget the collaborator still holds, after which the le"
+}

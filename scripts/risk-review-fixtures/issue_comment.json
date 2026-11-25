@@ -1,0 +1,83 @@
+{
+  "action": "created",
+  "issue": {
+    "id": 6006664029,
+    "number": 881,
+    "title": "add per-chat and per-gadget observation tracking",
+    "user": {
+      "login": "maxwellpeterson",
+      "id": 64494795,
+      "type": "User"
+    },
+    "labels": [
+      {
+        "id": 11795881122,
+        "name": "kernel",
+        "color": "B60205",
+        "default": false,
+        "description": "Changes to the Workshop kernel",
+        "archived_at": null,
+        "archived_by": null
+      },
+      {
+        "id": 11795881127,
+        "name": "workshop/shared",
+        "color": "0E8A16",
+        "default": false,
+        "description": "Changes to shared Workshop APIs",
+        "archived_at": null,
+        "archived_by": null
+      }
+    ],
+    "state": "open",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 30,
+    "created_at": "2026-10-23T22:58:05Z",
+    "updated_at": "2026-11-02T16:30:37Z",
+    "closed_at": null,
+    "author_association": "MEMBER",
+    "issue_field_values": [],
+    "type": null,
+    "active_lock_reason": null,
+    "draft": false,
+    "pull_request": {
+      "merged_at": null
+    },
+    "body": null,
+    "closed_by": null,
+    "state_reason": null
+  },
+  "comment": {
+    "id": 6581764815,
+    "user": {
+      "login": "kentonv",
+      "id": 4001805,
+      "type": "User"
+    },
+    "created_at": "2026-11-02T16:00:35Z",
+    "updated_at": "2026-11-02T16:00:35Z",
+    "author_association": "MEMBER",
+    "body": "<!-- pr-review-request:3 -->\n\n> \ud83e\udd16 *Written by an AI agent:*\n>\n> **[medium \u00b7 bug] Admission can be starved by ongoing reads: every scope change re-runs the full verification pass, capped at 3 retries**\n>\n> `packages/workshop-backend/src/overseer.ts:10122`\n>\n> Requested by: \ud83e\udd16 AI summary agent (noticed while summarizing the PR)\n>\n> In `ensureObserver`, step 6 recomputes `observerScope()` after each pass. If *any* new distinct requirement key appeared through an in-scope connection in a context the role reaches, it does `scope = current; continue`. The next pass then repeats **everything**: `addObserver()` on every connection, verifier lookups, and `checkAccess` over the connection's whole accumulated requirement list, not just the delta. After 3 re-runs the open fails with \"What this workspace must verify kept changing\u2026\".\n>\n> **Scenario:** once a gatekeeper reports per-document or per-message IDs (strategy C), an agent working in a chat, or a frequently firing hook, records new IDs every second or so. A \"build\" collaborator, who reaches every chat, opens the workspace. Each pass takes a few seconds (one User-DO RPC plus one gatekeeper RPC per connection, possibly OAuth-backed), so every pass sees new keys, and the open fails deterministically for as long as the activity continues. Retrying doesn't help.\n>\n> **Suggested fix:** do what the observation side already does with its `verified` set. On a re-pass, only verify what is new: connections that entered the scope, and for unchanged connections only the requirements not already checked (i.e. `current` minus `scope`), reusing the verifier already minted for the pass. Then the passes converge quickly instead of each costing as much as the first. Alternatively, allow more passes when each delta is small.\n",
+    "minimized": null,
+    "pin": null
+  },
+  "repository": {
+    "default_branch": "main",
+    "full_name": "cloudflare/cloudflare-os",
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "node_id": "R_kgDOSDyFow",
+    "owner": {
+      "login": "cloudflare",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "kentonv",
+    "id": 4001805,
+    "type": "User"
+  }
+}
