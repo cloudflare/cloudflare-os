@@ -1623,6 +1623,9 @@ type InlineStyleTag = keyof typeof INLINE_STYLES;
 
 const HREF_ESCAPES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"' };
 
+// A link's opening tag where it starts, matched there and no further on (sticky).
+const ANCHOR = /<a href="([^"]*)">/y;
+
 /**
  * Read the HTML of a cell paragraph's text. Throws for anything the text of a cell cannot be
  * written with.
@@ -1630,7 +1633,10 @@ const HREF_ESCAPES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot:
 export function parseCellInline(html: string): CellInline {
   let text = "";
   let runs: CellInline["runs"] = [];
+  // The tags open, to check they close in order, and how many of each style are open, so a run
+  // starts in the same few steps however deep the tags are.
   let open: (InlineStyleTag | "a")[] = [];
+  let depth: Record<InlineStyleTag, number> = { strong: 0, em: 0, s: 0 };
   let link: string | undefined;
   // Text is added to the last run while its formatting is the one in force.
   let current: CellInline["runs"][number] | undefined;
@@ -1640,7 +1646,7 @@ export function parseCellInline(html: string): CellInline {
   let add = (characters: string) => {
     if (!current) {
       current = { text: "", start: text.length, end: text.length };
-      for (let tag of open) if (tag !== "a") current[INLINE_STYLES[tag]] = true;
+      for (let tag of ["strong", "em", "s"] as const) if (depth[tag] > 0) current[INLINE_STYLES[tag]] = true;
       if (link !== undefined) current.link = link;
       runs.push(current);
     }
@@ -1677,9 +1683,10 @@ export function parseCellInline(html: string): CellInline {
     let name = tagNameAt(html, index);
     let closing = html[index + 1] === "/";
     if (name === "a" && !closing && (html[index + 2] === " " || html[index + 2] === ">")) {
-      let anchor = /^<a href="([^"]*)">/.exec(html.slice(index));
+      ANCHOR.lastIndex = index;
+      let anchor = ANCHOR.exec(html);
       if (!anchor) throw new Error(LINK_REFUSAL);
-      if (open.includes("a")) throw new Error(TAG_ORDER_REFUSAL);
+      if (link !== undefined) throw new Error(TAG_ORDER_REFUSAL);
       let destination = anchor[1].replace(/&(amp|lt|gt|quot);/g, (_, entity: string) =>
         HREF_ESCAPES[entity]);
       if (!isSafeTableLink(destination)) throw new Error(LINK_REFUSAL);
@@ -1697,8 +1704,10 @@ export function parseCellInline(html: string): CellInline {
     if (closing) {
       if (open.pop() !== tag) throw new Error(TAG_ORDER_REFUSAL);
       if (tag === "a") link = undefined;
+      else depth[tag]--;
     } else {
       open.push(tag);
+      if (tag !== "a") depth[tag]++;
     }
     restyle();
     index += tag.length + (closing ? 3 : 2);
