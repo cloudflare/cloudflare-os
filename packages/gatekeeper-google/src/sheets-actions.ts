@@ -40,7 +40,7 @@ import { obsContext } from "./observability";
 import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
 import { callsOnlySpreadsheetFunctions } from "./sheets-formula";
 import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
-import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
+import { guardDigest, guardFits, guardOf, mergedSheets, planSheet } from "./sheets-plan";
 import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
 import type { SheetBorder, SheetNumberFormat } from "./sheets-read-types";
 import type { SheetCellInput, SheetFormatChange } from "./sheets-types";
@@ -201,8 +201,9 @@ async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] |
     throw new ChangeConflict(`it builds on change ${unapplied}, which was not applied`);
   }
   let guard = guardOf(batch);
-  // The batch is checked against the merges of the sheets it acts on alone.
-  let metadata = await host.api.getMetadataWithMerges(host.spreadsheetId, guard.sheetIds);
+  // The batch is checked against the merges of the sheets it acts on alone, of those whose
+  // changes consult them.
+  let metadata = await host.api.getMetadataWithMerges(host.spreadsheetId, mergedSheets(batch.changes));
   let { requests } = planSheet(gridOf(metadata), batch.changes);
   // Cells the sheets no longer hold cannot be read, and have changed.
   if (!guardFits(metadata.sheets, guard.cells)) return undefined;

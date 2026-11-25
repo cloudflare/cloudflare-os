@@ -26,7 +26,8 @@ import type { BaseFormats, BaseSizes } from "./sheets-format";
 import { isLayoutChange, isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
-  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, guardOf, resolveChanges, sheetLabels,
+  checkProtections, consultsMerges, guardAfter, guardCells, guardDigest, guardOf, mergedSheets,
+  resolveChanges, sheetLabels,
 } from "./sheets-plan";
 import type {
   GoogleSpreadsheetReadSession, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange,
@@ -278,7 +279,7 @@ export class GoogleSheetsGatekeeperImpl
 function mergesConsulted(
   metadata: SpreadsheetMetadata, pending: readonly QueuedChange[], names: readonly (string | undefined)[],
 ): Set<number> {
-  let consulted = new Set(pending.flatMap(({ action }) => guardedSheets(action.payload.changes)));
+  let consulted = new Set(pending.flatMap(({ action }) => mergedSheets(action.payload.changes)));
   let untouched = metadata.sheets.filter(sheet => !consulted.has(sheet.id));
   for (let name of names) {
     let found = findSheet(untouched, name);
@@ -395,7 +396,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     if (names.length === 0) {
       // One list, so a sheet an earlier batch adds, which Google does not have yet, is not asked for.
       return this.#api.getMetadataWithMerges(
-        this.#spreadsheetId, guardedSheets(pending.flatMap(({ action }) => action.payload.changes)));
+        this.#spreadsheetId, mergedSheets(pending.flatMap(({ action }) => action.payload.changes)));
     }
     let metadata = await this.#api.getMetadata(this.#spreadsheetId);
     return this.#api.withMerges(this.#spreadsheetId, metadata, mergesConsulted(metadata, pending, names));
@@ -632,7 +633,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           ]);
           if (!editable) return { title: found.title, editable };
           // Only the sheets the queued changes and these act on are checked against their merges.
-          let names = prepared.flatMap(change => "sheet" in change ? [change.sheet] : []);
+          let names = prepared.flatMap(change =>
+            "sheet" in change && consultsMerges(change) ? [change.sheet] : []);
           let metadata = await this.#api.withMerges(
             this.#spreadsheetId, found, mergesConsulted(found, pending, names));
           let { grid, conflict } = replayed(gridOf(metadata), pending);

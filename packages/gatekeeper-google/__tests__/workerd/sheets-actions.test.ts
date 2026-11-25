@@ -2811,6 +2811,35 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
     expect(provider.mergeReads).toEqual([[0], [0], [0]]);
   });
 
+  it("formats and resizes a sheet of more merges than a read may answer, reading none of them", async () => {
+    let provider = archived();
+    let sheets = gatekeeper(run);
+    provider.mergeReads = [];
+
+    let { actionId, error } = await sheets.update([
+      { op: "formatCells", range: "Archive!A1:B2", format: { bold: true } },
+      { op: "resizeRows", sheet: "Archive", at: 1, count: 2, height: 30 },
+    ]);
+    expect(error).toBeUndefined();
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.batches).toHaveLength(1);
+    expect(provider.mergeReads).toEqual([]);
+  });
+
+  it("reads the merges of a sheet renamed in the batch that unmerges it under its new title", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+
+    let { actionId, error } = await sheets.update([
+      { op: "renameSheet", sheet: "Sales", title: "Renamed" },
+      { op: "unmergeCells", range: "Renamed!C4:E6" },
+    ]);
+    expect(error).toBeUndefined();
+    expect((await sheets.info()).queuedChangeConflict).toBeUndefined();
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.sheets[0]).toMatchObject({ title: "Renamed", merges: [] });
+  });
+
   it("reads the merges together with the metadata for reads with changes queued and for an approval", async () => {
     let provider = laidOut();
     let sheets = gatekeeper(run);

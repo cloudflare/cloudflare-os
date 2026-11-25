@@ -1203,6 +1203,28 @@ export function guardedSheets(changes: readonly PlannedChange[]): number[] {
   return [...addressed].toSorted((a, b) => a - b);
 }
 
+/**
+ * The changes whose plan never reads a sheet's merges: the same requests whatever it holds. A
+ * rename is not one, though it reads none: the changes after it name the sheet by its new title,
+ * which the metadata the merges are chosen from does not hold yet, so its sheet is chosen by ID.
+ */
+const MERGE_FREE: ReadonlySet<string> =
+  new Set(["formatCells", "resizeRows", "resizeColumns", "clearRange"]);
+
+/** Whether planning `change` reads its sheet's merges. */
+export function consultsMerges(change: { op: string }): boolean {
+  return !MERGE_FREE.has(change.op);
+}
+
+/**
+ * The sheets whose merges planning `changes` reads: those `guardedSheets` names for the changes
+ * that consult them, so that a sheet only formatted, resized or cleared is planned with
+ * no read of its merges, however many it holds.
+ */
+export function mergedSheets(changes: readonly PlannedChange[]): number[] {
+  return guardedSheets(changes.filter(consultsMerges));
+}
+
 // Whether `changes` place a sheet among the others, at an index that counts them.
 function placesSheet(changes: readonly PlannedChange[]): boolean {
   return changes.some(change => change.op === "addSheet" || change.op === "duplicateSheet");
