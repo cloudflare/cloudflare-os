@@ -580,7 +580,8 @@ export class GoogleSheetsApi {
    * The formatting of the cells of `areas`, each of which must lie within its sheet's grid. They
    * are read by grid range with `spreadsheets:getByDataFilter`, which needs a grant that may edit
    * the spreadsheet. Only the response size bounds the read, so callers bound how many cells they
-   * ask for. With `linesOnly` only the areas' line sizes are read, and no cell's format.
+   * ask for. With `linesOnly` only the areas' line sizes are read, and no cell's format; a grant
+   * that may only read gets none of them, and no error.
    */
   async readFormatAreas(
     spreadsheetId: string, areas: readonly SheetArea[], { linesOnly = false } = {},
@@ -611,9 +612,19 @@ export class GoogleSheetsApi {
       // A read, however it is sent.
       this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
-    let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
-      provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
-    });
+    let result: { sheets?: RestFormatSheet[] };
+    try {
+      result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
+        provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
+      });
+    } catch (error) {
+      // Line sizes alone are read beside cells that are all a queued change's: where the grant
+      // may only read, they are left unknown, and the cells show as pending, as with no read.
+      if (linesOnly && error instanceof GoogleApiError && error.httpStatus === 403) {
+        return { formats: () => null, sizes: () => null };
+      }
+      throw error;
+    }
     let sheets = result.sheets ?? [];
     // Each range's cells are placed by the position Google gives them, whichever order they come
     // in, so a range is answered when its sheet holds data starting where it does.

@@ -84,6 +84,8 @@ function named({ sheetId, startRowIndex, endRowIndex, startColumnIndex, endColum
 let formatFilterReads: Required<FixtureGridRange>[][];
 /** The field mask of each of those reads, in order. */
 let formatFilterMasks: string[];
+/** Whether Google refuses those reads, as for a grant that may only read. */
+let formatFilterForbidden: boolean;
 /** The sheet IDs each read of merges named, in order. */
 let mergeReads: number[][];
 
@@ -103,6 +105,7 @@ beforeEach(() => {
   enteredReads = [];
   formatFilterReads = [];
   formatFilterMasks = [];
+  formatFilterForbidden = false;
   mergeReads = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
@@ -153,6 +156,9 @@ beforeEach(() => {
       // no cell's format where it reads line sizes alone.
       let fields = url.searchParams.get("fields");
       formatFilterMasks.push(fields ?? "");
+      if (formatFilterForbidden) {
+        return Response.json({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+      }
       if (fields !== FORMAT_AREAS_READ_FIELDS && fields !== FORMAT_LINES_READ_FIELDS) {
         throw new Error(`a format read by grid range asks for ${url.searchParams.get("fields")}`);
       }
@@ -591,6 +597,17 @@ describe("Google Sheets format reads", () => {
     let read = await session.readFormats("'Q3 Plan'!B1:B3");
     expect(read.pendingCells).toEqual(["B1", "B2", "B3"]);
     expect(read.rowHeights).toEqual([21, 21, 21]);
+    expect(formatFilterMasks).toEqual([FORMAT_LINES_READ_FIELDS]);
+  });
+
+  it("shows a range a queued change inserts as pending, with no sizes, where the grant may only read", async () => {
+    formatFilterForbidden = true;
+    let { session } = newSession([queuedBatch(1, [{ op: "insertColumns", sheetId: 7, start: 1, count: 1 }])]);
+    using _session = session;
+
+    let read = await session.readFormats("'Q3 Plan'!B1:B3");
+    expect(read.pendingCells).toEqual(["B1", "B2", "B3"]);
+    expect(read.rowHeights).toEqual([null, null, null]);
     expect(formatFilterMasks).toEqual([FORMAT_LINES_READ_FIELDS]);
   });
 
