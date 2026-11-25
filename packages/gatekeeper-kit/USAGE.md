@@ -1398,7 +1398,12 @@ first. What is kept is the stand-in rows the last `refresh()` made, which `reval
 `refresh` reads the journal again and not the provider: a row the cursor buffered stays as it was
 fetched, so a record that applies and leaves the journal mid-walk (a delete, an update) is no longer
 folded over a row fetched before it landed, which then shows as it was. A listing that must show
-settled changes reads the rows such a change touches again, or starts the walk again.
+settled changes reads the rows such a change touches again, or starts the walk again. The other way
+round, a page fetched after `refresh` read the journal can hold a record that applied in between,
+which `overlay` then folds again over a row that already holds it: no harm for a reducer that sets a
+value, but one that adds shows its record twice (an increment of 1 over the new count). Such a
+reducer needs a way to tell what a row already holds (a version or a marker the provider keeps on
+it), or the fetch and the journal read are run together against apply (`runExclusive`).
 
 What stays the gatekeeper's, because two listings rarely agree on it:
 
@@ -1429,7 +1434,10 @@ What stays the gatekeeper's, because two listings rarely agree on it:
   ```
 
   Another returns them ahead of its first provider page and leaves `inject` to the stand-ins.
-- **`authorize` and `identity`.** Whether the stand-ins carry provider data, and what makes a
+- **`authorize` and `identity`.** `authorize: true` for every page a session is served, one of
+  stand-ins alone included: a stand-in may hold only the caller's own fields and still sit in a
+  container whose access the page's authorizer reports (see
+  [Simulation and subresources](#simulation-and-subresources)). `identity` is what makes a
   stand-in and the provider's row of a create that landed mid-walk the same thing.
 - **When pending records are read again, and when ids resolve.** `view` is called at every fold
   and never kept. A gatekeeper whose targets resolve temporary ids builds the view on the call, as
