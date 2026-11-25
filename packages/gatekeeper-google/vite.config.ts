@@ -7,6 +7,12 @@ const tests = vitestTask([
   "vitest run -c vitest.docs-worker.config.ts",
 ]);
 
+const widerTests = vitestTask([
+  // A wider Node file runs for up to two minutes on CI, and the reporter is silent until one ends.
+  { command: "vitest related --run __tests__/wider-run.ts --no-passWithNoTests", idleSeconds: 180 },
+  "vitest related --run __tests__/wider-run.ts -c vitest.docs-worker.config.ts --no-passWithNoTests",
+]);
+
 /** Configurator tasks plus separate Node and workerd test passes. */
 export default {
   ...gatekeeperConfiguratorConfig,
@@ -37,6 +43,16 @@ export default {
         // (`__tests__/wider-run.ts`): a run with it set holds more, so it is another result,
         // and a cached run must neither strip it nor replay the narrower one.
         cache: { ...tests.cache, env: [...tests.cache.env, "GOOGLE_DOCS_WIDER_TESTS"] },
+        dependsOn: ["build:configurator"],
+      },
+      /**
+       * Only the test files that import `__tests__/wider-run.ts`, directly or through a helper, in
+       * the Node and Docs workerd projects. `.github/workflows/google-wider-tests.yml` runs it with
+       * `GOOGLE_DOCS_WIDER_TESTS` set.
+       */
+      "test:wider": {
+        ...widerTests,
+        cache: { ...widerTests.cache, env: [...widerTests.cache.env, "GOOGLE_DOCS_WIDER_TESTS"] },
         dependsOn: ["build:configurator"],
       },
     },
