@@ -4905,15 +4905,10 @@ async function runAgentPass(
       let measured = message.usage.totalTokens;
       nextRequestFits = measured > 0 && !shouldCompactChat(measured + estimateProjectionTokens(
           toolResults.map(({details: _, ...message}) => ({message}))), inputBudget);
-      // Images the step's tools showed join what the next request carries inline (see the
-      // replay's limits). A vision model only: any other gets pi's placeholder instead.
-      if (handle.model.input.includes("image")) {
-        for (let part of toolResults.flatMap(result => result.content)) {
-          if (part.type !== "image") continue;
-          ++sentInline;
-          sentInlineBytes += Math.floor(part.data.length * 3 / 4);
-        }
-      }
+      // Images the step's reads showed join what the next request carries inline (see the
+      // replay's limits).
+      sentInline += stepImages;
+      sentInlineBytes += stepImageBytes;
       let inlinePastLimits = sentInline > MAX_INLINE_ATTACHMENTS ||
           sentInlineBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES;
       stepImages = 0;
