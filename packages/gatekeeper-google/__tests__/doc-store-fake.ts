@@ -1,6 +1,6 @@
 // A Durable Object's storage for the Node tests of the Doc store.
 
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import { fakeKv, type FakeKv } from "../../gatekeeper-kit/__tests__/fake-kv";
 import type { RunSizes } from "../src/docs-runs";
 import { DocStore, type DocStoreStorage } from "../src/docs-store";
@@ -52,32 +52,60 @@ export function fakeDocStorage(): FakeDocStorage {
   let refuses: ((statement: string, bindings: readonly unknown[]) => boolean) | undefined;
   let depth = 0;
 
+  // Prepared statements by query, as workerd caches them. One with a cursor open on it is busy: a
+  // statement steps one iterator at a time, so a query run again meanwhile is prepared afresh.
+  const prepared = new Map<string, StatementSync>();
+  const busy = new Set<StatementSync>();
+  const prepare = (query: string) => {
+    const cached = prepared.get(query);
+    if (cached && !busy.has(cached)) return cached;
+    const statement = db.prepare(query);
+    if (!cached) prepared.set(query, statement);
+    return statement;
+  };
+  // A statement whose step threw answers that error again when next reset, so it is not kept.
+  const steps = <R>(query: string, statement: StatementSync, step: () => R): R => {
+    try {
+      return step();
+    } catch (error) {
+      if (prepared.get(query) === statement) prepared.delete(query);
+      busy.delete(statement);
+      throw error;
+    }
+  };
+
   const all = (query: string) => db.prepare(query).all() as Record<string, unknown>[];
-  const totalChanges = () => Number(all("SELECT total_changes() AS changes")[0].changes);
+  const changes = db.prepare("SELECT total_changes() AS changes");
+  const totalChanges = () => Number((changes.get() as { changes: number }).changes);
 
   function exec<T extends Record<string, SqlStorageValue>>(
     query: string, ...bindings: unknown[]
   ): FakeDocCursor<T> {
     statements.add(query);
     if (refuses?.(query, bindings)) throw new Error("storage refused the write");
-    const statement = db.prepare(query);
+    const statement = prepare(query);
     const before = totalChanges();
     // A statement that answers no row runs whole, at once; one that answers rows is stepped.
     const iterator = statement.columns().length === 0
       ? undefined
       : statement.iterate(...bindings as SQLInputValue[]);
-    if (!iterator) statement.run(...bindings as SQLInputValue[]);
+    if (!iterator) steps(query, statement, () => statement.run(...bindings as SQLInputValue[]));
     const rowsWritten = totalChanges() - before;
     let rolledBack = false;
     // The cursor holds one row ahead of what it has answered, from the moment it is made.
-    let ahead: IteratorResult<unknown> = iterator?.next() ?? { done: true, value: undefined };
+    let ahead: IteratorResult<unknown> = iterator
+      ? steps(query, statement, () => iterator.next())
+      : { done: true, value: undefined };
     const cursor: FakeDocCursor<T> = {
       next() {
         if (rolledBack) throw new Error("The cursor was closed by a rollback.");
         if (ahead.done) return { done: true };
         const value = { ...ahead.value as T };
-        ahead = iterator!.next();
-        if (ahead.done) open.delete(cursor);
+        ahead = steps(query, statement, () => iterator!.next());
+        if (ahead.done) {
+          open.delete(cursor);
+          busy.delete(statement);
+        }
         return { done: false, value };
       },
       toArray() {
@@ -97,9 +125,11 @@ export function fakeDocStorage(): FakeDocStorage {
       rowsWritten,
     };
     if (iterator && !ahead.done) {
+      busy.add(statement);
       open.set(cursor, () => {
         rolledBack = true;
         iterator.return?.();
+        busy.delete(statement);
       });
     }
     return cursor;

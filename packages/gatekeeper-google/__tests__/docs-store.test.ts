@@ -4084,6 +4084,29 @@ describe("the fake storage", () => {
     expect(storage.arrays()).toEqual(["SELECT id FROM doc_n ORDER BY id"]);
   });
 
+  it("steps two cursors of the same query apart", () => {
+    let storage = numbered();
+    const query = "SELECT id FROM doc_n WHERE id >= ? ORDER BY id";
+    let first = storage.sql.exec<{ id: number }>(query, 1);
+    let second = storage.sql.exec<{ id: number }>(query, 2);
+    expect(first.next()).toEqual({ done: false, value: { id: 1 } });
+    expect(second.toArray()).toEqual([{ id: 2 }, { id: 3 }]);
+    expect(first.toArray()).toEqual([{ id: 2 }, { id: 3 }]);
+    // Both drained, the query runs again from its first row.
+    expect(storage.sql.exec<{ id: number }>(query, 3).toArray()).toEqual([{ id: 3 }]);
+    expect(storage.openCursors()).toBe(0);
+  });
+
+  it("runs a query again after it failed", () => {
+    let storage = numbered();
+    const read = "SELECT json_extract(?, '$.id') AS id";
+    expect(() => storage.transactionSync(() => storage.sql.exec(read, "{").toArray())).toThrow("malformed JSON");
+    expect(storage.sql.exec(read, '{"id": 4}').toArray()).toEqual([{ id: 4 }]);
+    const write = "INSERT INTO doc_n (id, text) VALUES (?, 'again')";
+    expect(() => storage.sql.exec(write, 1)).toThrow("UNIQUE constraint failed");
+    expect(storage.sql.exec(write, 4).rowsWritten).toBe(1);
+  });
+
   it("nests transactions and restores the KV with the rows", () => {
     let storage = numbered();
     storage.kv.put("kept", "before");
