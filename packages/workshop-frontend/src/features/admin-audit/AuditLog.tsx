@@ -108,25 +108,34 @@ export const AuditLog = ({
     }
     // Listed once the page has answered, which never waits for them: a listing taken after the
     // page marks every request on it still pending, where one taken before would miss a request
-    // filed in between. A failed listing, as from a backend older than the requests, leaves the log
-    // as it was, with no request offered for a decision.
-    const listPending = () => admin.listContentAccessRequests().then(
-      (requests) => {
-        if (!current) return
-        const pending = requests.filter((r) => r.state === 'pending')
-        setListed({ request, pending: new Map(pending.map((r) => [r.id, r])) })
-      },
-      (err: unknown) => {
-        if (!current) return
-        logRpcFailure('Failed to list the content access requests:', err)
-        setListed({ request, pending: new Map(), failed: true })
-      },
-    )
+    // filed in between. Only the requests on the page are asked for, and none when it holds none.
+    // A failed listing, as from a backend older than the requests, leaves the log as it was, with
+    // no request offered for a decision.
+    const listPending = (page: AdminAuditPage) => {
+      const ids = page.records.flatMap((record) =>
+        record.kind === 'grant' && record.method === 'requestContentAccess' ? [record.requestId] : [])
+      if (ids.length === 0) {
+        setListed({ request, pending: new Map() })
+        return
+      }
+      admin.listContentAccessRequests({ pending: true, ids }).then(
+        (requests) => {
+          if (!current) return
+          const pending = requests.filter((r) => r.state === 'pending')
+          setListed({ request, pending: new Map(pending.map((r) => [r.id, r])) })
+        },
+        (err: unknown) => {
+          if (!current) return
+          logRpcFailure('Failed to list the content access requests:', err)
+          setListed({ request, pending: new Map(), failed: true })
+        },
+      )
+    }
     admin.listAdminAudit(query).then(
       (page) => {
         if (!current) return
         setAnswer({ request, page })
-        void listPending()
+        listPending(page)
       },
       (err: unknown) => {
         if (!current) return

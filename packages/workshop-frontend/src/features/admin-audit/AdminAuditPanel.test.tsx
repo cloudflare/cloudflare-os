@@ -1371,6 +1371,20 @@ describe('AdminAuditPanel', () => {
       }
     }
 
+    it('asks only for the pending requests among its page\'s requests', async () => {
+      const { listContentAccessRequests } = await render(contentLevel(), withRequests(), {}, 'second-admin')
+      expect(listContentAccessRequests).toHaveBeenCalledExactlyOnceWith(
+        { pending: true, ids: ['request-1', 'request-0'] })
+    })
+
+    it('asks for no requests when its page holds none', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()]))
+      const { listAdminAudit, listContentAccessRequests } = await render(contentLevel(), admin, {}, 'second-admin')
+      expect(listAdminAudit).toHaveBeenCalled()
+      expect(listContentAccessRequests).not.toHaveBeenCalled()
+    })
+
     it('offers Pending requests only at the Content level, or while it is set', async () => {
       const { show } = await render()
       expect(card('Activity log').textContent).not.toContain('Pending requests only')

@@ -648,8 +648,12 @@ are refused `contentOff`.
   (`ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS`), and ends sooner when its requester stops being an
   admin.
 - **The list.** `listContentAccessRequests()` returns every admin's requests, the pending ones
-  first, and `listAdminAudit({ pending: true })` the records of the pending ones. In the Audit tab,
-  **Pending requests only**, offered while the level in force is Content, lists those records; a
+  first, or only those its query asks for (`pending`, and up to `ADMIN_LIST_MAX_LIMIT` `ids`), and
+  `listAdminAudit({ pending: true })` the records of the pending ones. The Audit tab asks for the
+  pending requests among those its page holds, and nothing when it holds none. In the Audit tab,
+  **Pending requests only**, offered while the level in force is Content, lists those records, and
+  checking it clears the Exposed filter and a Kind or Action no request record has, as choosing
+  one of those clears it; a
   pending request's record carries a Pending badge, and its details offer Approve and Deny on
   another admin's request, or Withdraw alone on the signed-in admin's own. Below Content, where an
   approval is refused, only Deny is offered, so a request left from before the level was lowered
@@ -1063,8 +1067,8 @@ source, is an access record with the grant's id.
 `listAdminAudit()` filters by kind, admin, method, workspace, the user a call's or a write's target
 belongs to (`owner`), what a call exposed (`exposed`), the requests still pending (`pending`) and
 time; `getAdminAuditStats()` by kind. `pending: true` lists the `requestContentAccess` records of
-the requests `listContentAccessRequests()` gives as pending, the ones an admin can approve or
-deny: `AdminApiImpl` reads their ids (at most `MAX_PENDING_CONTENT_REQUESTS`) and passes them to
+the requests `listContentAccessRequests({ pending: true })` gives, the ones an admin can approve
+or deny: `AdminApiImpl` reads their ids (at most `MAX_PENDING_CONTENT_REQUESTS`) and passes them to
 the store as one JSON parameter, matched through `json_each()`, so no count of ids meets the limit
 on bound parameters; with none pending the page is empty and the store is not asked.
 `exposed: "content"` lists the content reads, which only calls into a workspace can be;
