@@ -3265,6 +3265,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async rename(fileId: string, name: string): Promise<void> {
     await this.#requireWritable();
     let toName = newFileName(name);
+    // The file is read for the card as the account connected now; the rename is not fenced to it.
+    await this.#writes.actor();
     let target = await this.#core.renameTarget(fileId);
     if (target.trashed) throw new Error(RENAME_TRASHED);
     if (target.name === toName) throw new Error(RENAME_SAME_NAME);

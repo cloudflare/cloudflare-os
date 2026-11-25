@@ -1541,7 +1541,7 @@ describe("sharing", () => {
     expect(provider.direct("doc-1")).toEqual([["perm-A", "owner"], ["perm-carol", "reader"]]);
   });
 
-  it("checks and makes an approved rename as the account connected now", async () => {
+  it("queues, checks and makes a rename as the account connected now", async () => {
     let drive = binding();
     let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
     // No restart: the gatekeeper still holds the first account's token, which Google accepts.
@@ -1551,6 +1551,15 @@ describe("sharing", () => {
     expect(await drive.apply(actionId)).toBeNull();
     expect(provider.calls()).toContain("PATCH /drive/v3/files/doc-1");
     expect(provider.requests.filter(({ token }) => token !== OTHER_TOKEN)).toEqual([]);
+
+    // The card is read as the account connected now, too: here the first again, which a binding
+    // that last read as the second does not keep reading as.
+    let later = binding();
+    await later.call("getEntry", "sheet-1");
+    await account().setDriveToken(undefined);
+    provider.forget();
+    expect((await later.queued("rename", "sheet-1", "Plan 2028")).actionId).toBeDefined();
+    expect(provider.requests.filter(({ token }) => token === OTHER_TOKEN)).toEqual([]);
   });
 
   it("never sends a refused change again under credentials installed during its approval", async () => {
