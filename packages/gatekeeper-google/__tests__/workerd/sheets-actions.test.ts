@@ -3539,8 +3539,9 @@ describe("Google Sheets replay cost", () => {
       {
         ...none, phase: "formats read", pending: 5 + N,
         overlayCopies: 1,
-        // The sheets and then the merges, beside the formats Google holds for the cells.
-        fetches: 3, responseBytes: SHEETS + MERGES + 35_008, mostOpen: 2,
+        // The sheets and the merges of the sheets the queued changes consult, together, beside the
+        // formats Google holds for the cells, which answer the merges of the range read.
+        fetches: 3, responseBytes: SHEETS + MERGES + 35_008, mostOpen: 3,
       },
       {
         ...none, phase: "queue a deleted row", pending: 6 + N,
