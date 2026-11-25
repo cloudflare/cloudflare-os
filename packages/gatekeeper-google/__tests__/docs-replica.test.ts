@@ -41,11 +41,10 @@ const RECORDED: { name: string; tab: GoogleDocsTab }[] = FIXTURES.flatMap(fixtur
 // --- A tab as Google sends it: with what the gatekeeper does not read
 
 /**
- * The parts of which the copy keeps no suggestion ids (it keeps those of text runs, images, smart
- * chips, tables, rows and cells).
+ * The parts of which the copy keeps no suggestion ids (it keeps those of text runs, the other
+ * paragraph elements, tables, rows and cells).
  */
 const SUGGESTIBLE: ReadonlySet<string> = new Set([
-  "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference", "equation",
   "sectionBreak", "tableOfContents",
 ]);
 
@@ -447,7 +446,7 @@ function everyFieldTab(): GoogleDocsTab {
     },
     ...links.map(link => ({ textRun: { content: "to", textStyle: { link } } })),
     { autoText: { type: "PAGE_NUMBER", textStyle: look } },
-    { horizontalRule: {} },
+    { horizontalRule: { suggestedDeletionIds: ["suggest.rule"] } },
     { pageBreak: { textStyle: look } },
     { columnBreak: { textStyle: look } },
     { footnoteReference: { footnoteId: "kix.note", footnoteNumber: "7", textStyle: look } },
@@ -462,7 +461,7 @@ function everyFieldTab(): GoogleDocsTab {
     {
       richLink: {
         textStyle: look, richLinkProperties: { title: "Link 1", uri: "https://example.com/1" },
-        suggestedInsertionIds: ["suggest.link"],
+        suggestedInsertionIds: ["suggest.link"], suggestedTextStyleChanges: { "suggest.link.style": {} },
       },
     },
     {
@@ -905,7 +904,7 @@ it("keeps which style changes a row's and a cell's suggestions make, by ID alone
 it("keeps exactly these fields under this format version", () => {
   let tabs = [RICHEST, ...RECORDED.map(({ tab }) => tab)].map(tab => pruneTab(dressed(tab)));
   expect({ version: DOC_COPY_FORMAT_VERSION, fields: keptFields(tabs) }).toStrictEqual({
-    version: 10,
+    version: 11,
     fields: {
       autoText: "textStyle type",
       backgroundColor: "color",
@@ -1312,9 +1311,13 @@ describe("the fields asked of documents.get", () => {
     expect(JSON.stringify(copy)).toBe(JSON.stringify(pruneTab(whole)));
     expect(copy.body.content[0]).toStrictEqual({ endIndex: 1, sectionBreak: {} });
     expect(copy.body.content[1]).toStrictEqual({ startIndex: 1, endIndex: 6, tableOfContents: {} });
+    // An element keeps the suggestions it is part of, and nothing else of what it holds.
     expect(copy.body.content[2].paragraph?.elements.slice(0, 2)).toStrictEqual([
       { startIndex: 6, endIndex: 7, horizontalRule: {} },
-      { startIndex: 7, endIndex: 8, equation: {} },
+      {
+        startIndex: 7, endIndex: 8,
+        equation: { suggestedInsertionIds: ["suggest.in"], suggestedDeletionIds: ["suggest.out"] },
+      },
     ]);
   });
 

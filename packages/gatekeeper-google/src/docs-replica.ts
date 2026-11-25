@@ -22,7 +22,7 @@ import type { CutRun, RunSizes } from "./docs-runs";
  * would go on lacking a field the rendering or the model reads. What code derives of a stored
  * tab is versioned apart, by the digest of that code (`DOC_DERIVED`).
  */
-export const DOC_COPY_FORMAT_VERSION = 10;
+export const DOC_COPY_FORMAT_VERSION = 11;
 
 // ---------------------------------------------------------------------------
 // Named ranges and write markers
@@ -204,7 +204,13 @@ const TEXT_STYLE = {
 /** The text style of an element that is not a text run, kept where it has one. */
 const textStyle = part(TEXT_STYLE);
 
-const ELEMENT_SUGGESTIONS = { suggestedInsertionIds: values, suggestedDeletionIds: values };
+// What an element that is not text keeps of the suggestions it is part of, by ID: deleting its cell
+// would discard them.
+const ELEMENT_SUGGESTIONS = {
+  suggestedInsertionIds: values,
+  suggestedDeletionIds: values,
+  suggestedTextStyleChanges: { kind: "map", fields: {}, absent: "skip" },
+} satisfies Fields;
 
 const PARAGRAPH_ELEMENT = {
   startIndex: value,
@@ -218,14 +224,12 @@ const PARAGRAPH_ELEMENT = {
     suggestedDeletionIds: values,
     suggestedTextStyleChanges: { kind: "map", fields: {}, absent: "skip" },
   } satisfies FieldsOf<TextRun>),
-  autoText: whole({ type: value, textStyle }),
-  horizontalRule: present,
-  pageBreak: whole({ textStyle }),
-  columnBreak: whole({ textStyle }),
-  footnoteReference: whole({ footnoteId: value, footnoteNumber: value, textStyle }),
-  equation: present,
-  // An image and a smart chip keep the suggestions they are part of, by ID: deleting their cell
-  // would discard them.
+  autoText: whole({ type: value, textStyle, ...ELEMENT_SUGGESTIONS }),
+  horizontalRule: whole(ELEMENT_SUGGESTIONS),
+  pageBreak: whole({ textStyle, ...ELEMENT_SUGGESTIONS }),
+  columnBreak: whole({ textStyle, ...ELEMENT_SUGGESTIONS }),
+  footnoteReference: whole({ footnoteId: value, footnoteNumber: value, textStyle, ...ELEMENT_SUGGESTIONS }),
+  equation: whole(ELEMENT_SUGGESTIONS),
   inlineObjectElement: whole({ inlineObjectId: value, textStyle, ...ELEMENT_SUGGESTIONS }),
   person: whole({
     textStyle, personProperties: part({ name: value, email: value }), ...ELEMENT_SUGGESTIONS,

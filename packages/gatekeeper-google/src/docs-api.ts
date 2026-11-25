@@ -238,12 +238,14 @@ export type ParagraphElement = {
   autoText?: {
     type?: string;
     textStyle?: TextStyle;
-  };
-  horizontalRule?: {};
-  pageBreak?: { textStyle?: TextStyle };
-  columnBreak?: { textStyle?: TextStyle };
-  footnoteReference?: { footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle };
-  equation?: {};
+  } & ElementSuggestions;
+  horizontalRule?: ElementSuggestions;
+  pageBreak?: { textStyle?: TextStyle } & ElementSuggestions;
+  columnBreak?: { textStyle?: TextStyle } & ElementSuggestions;
+  footnoteReference?: {
+    footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle;
+  } & ElementSuggestions;
+  equation?: ElementSuggestions;
   inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle } & ElementSuggestions;
   person?: {
     textStyle?: TextStyle;
@@ -269,8 +271,12 @@ export type ParagraphElement = {
   } & ElementSuggestions;
 }
 
-/** The suggestions an image or a smart chip is part of, by ID. */
-export type ElementSuggestions = { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] };
+/** The suggestions an element that is not text is part of, by ID. */
+export type ElementSuggestions = {
+  suggestedInsertionIds?: string[];
+  suggestedDeletionIds?: string[];
+  suggestedTextStyleChanges?: Record<string, object>;
+};
 
 export type TextRun = {
   content: string;
