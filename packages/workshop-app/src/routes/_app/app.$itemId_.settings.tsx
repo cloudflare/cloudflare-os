@@ -8,7 +8,7 @@ const validateTab = (value: unknown): GadgetSettingsTab | undefined =>
 
 /**
  * A gadget's own settings, from its More menu: its settings, or with `?tab=`, what it is connected
- * to. Its code is viewed in its place in the pane.
+ * to or the agents it can start. Its code is viewed in its place in the pane.
  */
 export const Route = createFileRoute('/_app/app/$itemId_/settings')({
   params: {

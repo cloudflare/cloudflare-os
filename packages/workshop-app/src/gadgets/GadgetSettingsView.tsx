@@ -1,12 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import {
-  AlertCircleIcon, ArrowLeft01Icon, FileDownIcon, PlugSocketIcon, PlusSignIcon, Share08Icon,
+  AlertCircleIcon, ArrowLeft01Icon, FileDownIcon, PlugSocketIcon, PlusSignIcon, RoboticIcon, Share08Icon,
 } from '@/components/icons'
 import { BindingRow } from '@/blocks/BindingRow'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import type { MadeTemplate, TemplateChanges } from '@/blocks/CreateTemplateDialog'
 import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
-import { Button, ConfirmMenu, DropdownMenu, EditableTitle, EmptyState, HeaderBubble, ListGroup, PageLayout, type SaveOutcome, SettingRow, SettingsCard, SettingsGroup, Tabs } from '@gadgets/ui'
+import { Button, ConfirmMenu, DropdownMenu, EditableTitle, EmptyState, HeaderBubble, ListGroup, PageLayout, type SaveOutcome, SettingRow, SettingsCard, Tabs } from '@gadgets/ui'
 import { MadeTemplateSettings } from '@/blocks/MadeTemplateSettings'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -18,11 +18,12 @@ import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES
 import type { BindingService } from './useGadgetSettings'
 
 /** What a gadget's settings page shows beneath its name. */
-export type GadgetSettingsTab = 'connections' | 'settings'
+export type GadgetSettingsTab = 'connections' | 'agents' | 'settings'
 
 export const GADGET_SETTINGS_TABS: { value: GadgetSettingsTab; label: string }[] = [
   { value: 'settings', label: 'Settings' },
   { value: 'connections', label: 'Connections' },
+  { value: 'agents', label: 'Agents' },
 ]
 
 /** The tab a gadget's settings start at, which an address leaves out. */
@@ -123,7 +124,7 @@ export type GadgetSettingsViewProps = {
 /**
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
- * connected to, with the agents it can start apart, where an AI model is added and changed, and its
+ * connected to, where an AI model is added and changed, the agents its code can start, and its
  * settings, which are updating it from its template, creating a template from it, exporting it, and
  * deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
@@ -223,7 +224,7 @@ export const GadgetSettingsView = ({
         {state.status === 'ready' && (
           <Tabs value={tab} onValueChange={onTabChange} tabs={GADGET_SETTINGS_TABS} aria-label="Gadget" className="gap-6">
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
-              {/* The tab says what they are, so they have no heading of their own; the agents, after them, do. */}
+              {/* The tab says what they are, so they have no heading of their own. */}
               {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
               {bindings.status === 'failed' && <p role="alert" className="px-5 text-base text-kumo-subtle">Couldn’t load its connections: {bindings.message}</p>}
               {bindings.status === 'ready' && (connections.length === 0
@@ -242,14 +243,26 @@ export const GadgetSettingsView = ({
                       <ul className="flex flex-col">{connections.map(row)}</ul>
                     </ListGroup>
                   ))}
-              {/* Only once it has any: most gadgets start none. */}
-              {agents.length > 0 && (
-                <SettingsGroup title="Agents" description="Agents its code can start, each with a conversation of its own." plain>
-                  <ListGroup label="Agents">
-                    <ul className="flex flex-col">{agents.map(row)}</ul>
-                  </ListGroup>
-                </SettingsGroup>
-              )}
+            </Tabs.Panel>
+            <Tabs.Panel value="agents" className="flex flex-col gap-12">
+              {/* Bindings too, read with its connections. */}
+              {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its agents…</p>}
+              {bindings.status === 'failed' && <p role="alert" className="px-5 text-base text-kumo-subtle">Couldn’t load its agents: {bindings.message}</p>}
+              {bindings.status === 'ready' && (agents.length === 0
+                ? (
+                    <EmptyState
+                      size="section"
+                      tinted
+                      icon={RoboticIcon}
+                      title="No agents yet"
+                      description="Agents its code can start, each with a conversation of its own, show here. Ask the agent in a chat to give it one."
+                    />
+                  )
+                : (
+                    <ListGroup label="Agents">
+                      <ul className="flex flex-col">{agents.map(row)}</ul>
+                    </ListGroup>
+                  ))}
             </Tabs.Panel>
             <Tabs.Panel value="settings" className="flex flex-col gap-4">
               <SettingsCard>

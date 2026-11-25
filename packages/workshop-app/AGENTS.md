@@ -1371,8 +1371,9 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   which asks "Delete template?" without the name, as the name would read as the gadget.
   `useTemplateOwner` does them, one at a time. Export is the More menu's
   (`ExportItems`) in a menu of its own.
-- Connections: what it is bound to (`GadgetSettings`, plain and tested,
-  `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
+- Connections and Agents: what it is bound to (`GadgetSettings`, plain and tested,
+  `listBindings()`), by the name its code knows each by, the agents it can start on a tab of their
+  own, with an empty state where it starts none, as most do. A
   binding says what it reaches (`kind`): an agent, with the model its spawner thinks with
   (`listAgentSpawners()`), a model, which its connection is asked to name (`getCreationSpec()`,
   for a model alone), or a service's resource. One is taken away from the gadget, asked for
