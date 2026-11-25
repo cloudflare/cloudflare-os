@@ -773,8 +773,10 @@ default text, since the request that takes the heading off takes the rest with i
 row or column the new ones go before, or the last one when they go at the end. The header rows a
 table pins keep their count when a row is added beside one: Google would pin the new row as well,
 so the change pins the count again. A row added above a header row therefore becomes a header row,
-and the last of the rows that were pinned stops being one; the approval card does not say so, since
-pinning is not something the Markdown shows. Google copies a cell's borders as the cell stores them,
+and the last of the rows that were pinned stops being one. Reads do not show it, since pinning is
+not something the Markdown shows, but the approval card says which new rows the header takes in and
+how many of its rows it lets go, and the change is refused at approval once the header's size has
+changed since it was queued. Google copies a cell's borders as the cell stores them,
 so an edge it shares with the line beside the new one can read differently on its two sides. A
 column added beside one that shares the page's width can make Google narrow the table's fixed
 columns, and only sometimes, so such a change sets every fixed width back to what it was. Reads

@@ -129,13 +129,18 @@ export type SpreadsheetFormats = {
    */
   merges?: string[];
   /**
-   * The height of each row of the range, in pixels: 21 unless resized. `null` for a row past the
-   * sheet's last, or one a queued change inserts, whose height Google gives it.
+   * The height of each row of the range, in pixels: 21 unless resized. `null` where it is not
+   * known: for a row past the sheet's last, one a queued change inserts, whose height Google gives
+   * it, and, where every cell of the range is one a queued change inserts and the connected
+   * account may only read the spreadsheet, for every row, since the rows beside them cannot be
+   * read for their sizes.
    */
   rowHeights: (number | null)[];
   /**
-   * The width of each column of the range, in pixels: 100 unless resized. `null` for a column past
-   * the sheet's last, or one a queued change inserts.
+   * The width of each column of the range, in pixels: 100 unless resized. `null` where it is not
+   * known: for a column past the sheet's last, one a queued change inserts, and, as for
+   * `rowHeights`, every column of a range of inserted cells read with an account that may only
+   * read the spreadsheet.
    */
   columnWidths: (number | null)[];
   /**
