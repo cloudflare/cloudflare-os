@@ -1,0 +1,55 @@
+name: Google Docs wider tests
+
+# The Docs tests that have a wider run (`packages/gatekeeper-google/__tests__/wider-run.ts`) run it
+# here: the same generated tests over more seeds and larger tables, which ci.yml's Google leg runs
+# at their default sizes only. `test:wider` picks every test file that imports `wider-run.ts`.
+#
+# Only a pull request that changes the Google gatekeeper starts it. So it is not a required check:
+# a required check that never starts blocks the merge of every other pull request. It shows red on
+# the pull request when it fails.
+on:
+  pull_request:
+    paths:
+      - packages/gatekeeper-google/**
+      - .github/workflows/google-wider-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push makes the run in progress worthless.
+concurrency:
+  group: google-wider-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  wider:
+    name: Google Docs wider tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The steps are ci.yml's test leg; keep them in step.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
+
+      - name: Test
+        env:
+          GOOGLE_DOCS_WIDER_TESTS: "1"
+          FAST_CHECK_SEED: "1"
+          VITEST_MAX_WORKERS: "3"
+        run: node scripts/vp/run.ts --cache --fail-if-no-match --filter=@gadgets/google-gatekeeper test:wider

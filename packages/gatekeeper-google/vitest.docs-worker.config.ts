@@ -72,7 +72,8 @@ export default defineConfig({
     }),
   ],
   test: {
-    testTimeout: 15_000,
+    // Four times as long for the wider run (`__tests__/wider-run.ts`), as in the Node project.
+    testTimeout: 15_000 * (process.env.GOOGLE_DOCS_WIDER_TESTS ? 4 : 1),
     include: [
       "__tests__/workerd/calendar-actions.test.ts",
       "__tests__/workerd/doc-actions.test.ts",
