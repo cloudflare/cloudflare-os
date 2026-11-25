@@ -731,12 +731,23 @@ export class GoogleDocsApi {
   async getDocumentWithSuggestions(
     documentId: string,
   ): Promise<{ document: GoogleDocsDocument; suggestions: DocsSuggestionRecord[] }> {
-    let raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
-      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
-        "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED&prettyPrint=false",
-      { headers: { [FIELD_MASK_HEADER]: SUGGESTED_DOCUMENT_FIELDS } },
-      "get document with suggestions",
-    );
+    let url = `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
+      "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED&prettyPrint=false";
+    let operation = "get document with suggestions";
+    let raw: GoogleDocsResponse & { suggestions?: unknown };
+    try {
+      raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
+        url, { headers: { [FIELD_MASK_HEADER]: SUGGESTED_DOCUMENT_FIELDS } }, operation);
+    } catch (error) {
+      // As `getDocument` reads: a mask Google refuses is not the document's fault.
+      if (!fieldsRefused(error)) throw error;
+      let { providerStatus } = error;
+      logger.error("Google Docs refused the fields asked of a document", {
+        event: "google.doc.read.fields-refused", operation, fallback: "unmasked",
+        httpStatus: 400, ...providerStatus === undefined ? {} : { providerStatus }, error,
+      });
+      raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(url, {}, operation);
+    }
     if (raw.documentId !== documentId) throw new Error("Google Docs returned a different document");
     let { title, revisionId, tabs, suggestions } = raw;
     if (suggestions !== undefined && !Array.isArray(suggestions)) throw new Error(INVALID_THREADS);

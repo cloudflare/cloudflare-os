@@ -185,6 +185,30 @@ describe("native Google content API safety", () => {
     }
   });
 
+  it("reads a document with its suggestions once more without the mask when Google refuses it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      fieldMaskOf(init) === null
+        ? Response.json(docResponse())
+        : Response.json(REFUSED_FIELDS, { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getDocumentWithSuggestions("doc-1"))
+      .resolves.toMatchObject({ document: { documentId: "doc-1" }, suggestions: [] });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][0]).toBe(fetch.mock.calls[0][0]);
+    expect(fieldMaskOf(fetch.mock.calls[1][1])).toBeNull();
+    // The unmasked read keeps the suggestions inline and the compact answer.
+    let asked = new URL(String(fetch.mock.calls[1][0]));
+    expect(asked.searchParams.get("suggestionsViewMode")).toBe("SUGGESTIONS_INLINE");
+    expect(asked.searchParams.get("prettyPrint")).toBe("false");
+    expect(error.mock.calls[0]?.[0]).toMatchObject({
+      event: "google.doc.read.fields-refused", operation: "get document with suggestions",
+    });
+  });
+
   it("reads once more after a 400 that is not JSON", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
