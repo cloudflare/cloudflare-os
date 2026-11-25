@@ -2,12 +2,13 @@ import {describe, expect, it, vi} from "vitest";
 import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
-import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
+import {assertChatAttachmentSize, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_MESSAGE_BYTES, validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
-import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
-import type {CodeChange} from "@gadgets/workshop-shared/code-change";
+import {replaceSpanChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
+import {MAX_WHOLE_TEXT_BYTES} from "../src/git-cache";
 import type {AiChatStreamEvent} from "@gadgets/workshop-shared/api";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -23,19 +24,35 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
   await impl.commitAgentStep(chatId, AUTHOR, [], {changes: [{change}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
-async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api, contextWindow?: number) {
-  const faux = createFauxCore({models: [{id: "faux-model", contextWindow}]});
+// `summary` answers a compaction the turn runs first.
+async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api,
+                            summary?: string) {
+  const faux = createFauxCore({models: [{id: "faux-model"}]});
   const requests: Message[][] = [];
-  faux.setResponses(calls.length
-    ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
-    : [fauxAssistantMessage(fauxText("Done"))]);
+  faux.setResponses([
+    ...summary === undefined ? [] : [fauxAssistantMessage(fauxText(summary))],
+    ...calls.length
+      ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
+      : [fauxAssistantMessage(fauxText("Done"))],
+  ]);
   await runAgent(impl, {model: {...faux.getModel(), ...(api ? {api} : {})}, stream: (model, context, options) => {
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
   }}, chatId, AUTHOR, new AbortController().signal, USER,
-  {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow});
+  {provider: "cloudflare", model: "faux-model", apiToken: ""});
   return requests;
 }
+// A PNG header claiming `width`×1000 pixels, padded to `size` bytes: projection reads only headers.
+const pngOfSize = (size: number, width: number) => {
+  const bytes = new Uint8Array(size);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+  view.setUint32(16, width); view.setUint32(20, 1000);
+  return bytes;
+};
+const imageParts = (messages: Message[]) => messages.flatMap(message =>
+  Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName !== "observeUserChanges"
     ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
@@ -343,7 +360,8 @@ describe("attachment worktree ingress", () => {
     const chatId = await impl.newChat(user, {profile: USER}, "Seed", {attachments:
       [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]});
     const text = "first line\nneedle\n" + "padding\n".repeat(524286);
-    // Exact upload cap, with short lines so the model requests only a small window.
+    // Far over MAX_BUFFERED_BLOB_SIZE, so named by its blob, with short lines so the model
+    // requests only a small window.
     const bytes = new TextEncoder().encode(text.padEnd(4 * 1024 * 1024, "x").slice(0, 4 * 1024 * 1024));
     const ref = await impl.gitCache.writeBlob(bytes);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", {attachments:
@@ -382,6 +400,46 @@ describe("attachment worktree ingress", () => {
       expect(JSON.stringify(result.content)).toContain("needle");
     }
   }));
+
+  // An edit saved before the whole-text limit existed still applies to its base on replay, and
+  // the file, whose text replay holds anyway, can still be edited. A first edit of a file that
+  // large is refused before it is read.
+  it("replays a saved edit of a file over the whole-text limit, and refuses a first one", async () => {
+    const name = crypto.randomUUID();
+    const text = "a row of the forecast\n".repeat(Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / 22));
+    const {chatId, worktreeId} = await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      const ref = impl.gitCache.writeBlob(new TextEncoder().encode(text));
+      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", {attachments: [
+        {oid: ref.oid, mimeType: "text/csv", name: "edited.csv"},
+        {oid: ref.oid, mimeType: "text/csv", name: "untouched.csv"}]});
+      const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
+      // As the code before the limit saved it, reading the base whole.
+      const readFileAtCommit = impl.readFileAtCommit.bind(impl);
+      impl.readFileAtCommit = (commit: string, path: string) => readFileAtCommit(commit, path);
+      await step(impl, chatId, {[worktreeId]: [["edited.csv",
+        {edit: replaceSpanChange(text.length, 0, "a row", "A ROW")}]]});
+      impl.readFileAtCommit = readFileAtCommit;
+      return {chatId, worktreeId};
+    });
+    // A fresh object, with nothing cached, folds and replays the saved edit over the base.
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
+      expect(content.get(worktreeId)!.get("edited.csv")).toMatch(/^A ROW of the/);
+      const window = (filename: string) =>
+        fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename, lineCount: 2});
+      const edit = (filename: string, textToReplace: string) => fauxToolCall("editFile",
+        {workpiece: "ATTACHMENTS", filename, textToReplace, replacement: "The row"});
+      const requests = await scriptedTurn(impl, chatId, [
+        window("edited.csv"), edit("edited.csv", "A ROW"),
+        window("untouched.csv"), edit("untouched.csv", "a row")]);
+      const [, edited, , untouched] = fileToolResults(requests.at(-1)!);
+      expect(edited.isError).toBe(false);
+      expect(untouched.isError).toBe(true);
+      expect(JSON.stringify(untouched.content)).toContain("too large to read or edit as whole text");
+    });
+  });
 
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
@@ -478,7 +536,7 @@ describe("attachment worktree ingress", () => {
       return {id};
     };
     const bytes = new TextEncoder().encode("x".repeat(size));
-    validateChatAttachmentUpload({content: bytes, mimeType: "text/plain", name: "large.txt"});
+    assertChatAttachmentSize(bytes.byteLength);
     const upload = await stage(bytes, "large.txt");
     const chatId = existing
       ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [await stage(new TextEncoder().encode("small"), "small.txt")]})
@@ -516,7 +574,7 @@ describe("attachment worktree ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const bytes = new TextEncoder().encode("original upload");
       const stage = (name: string) => {
-        const upload = validateChatAttachmentUpload({content: bytes, mimeType: "text/plain", name});
+        const upload = validateChatAttachmentUpload({leadingBytes: bytes, mimeType: "text/plain", name});
         const id = crypto.randomUUID();
         impl.storage.chatAttachmentContent.put({fileId: id, data: bytes, state: {
           type: "staged", uploadedAt: Date.now(), mimeType: upload.mimeType, name: upload.name,
@@ -594,9 +652,9 @@ describe("attachment worktree ingress", () => {
         if (source === "blob") return {
           oid: (await impl.gitCache.writeBlob(content)).oid, mimeType, name,
         };
-        const upload = validateChatAttachmentUpload({content, mimeType, name});
+        const upload = validateChatAttachmentUpload({leadingBytes: content, mimeType, name});
         const id = crypto.randomUUID();
-        impl.storage.chatAttachmentContent.put({fileId: id, data: upload.content, state: {
+        impl.storage.chatAttachmentContent.put({fileId: id, data: upload.leadingBytes, state: {
           type: "staged", uploadedAt: Date.now(), mimeType: upload.mimeType, name: upload.name,
         }});
         return {id};
@@ -764,7 +822,7 @@ describe("attachment worktree ingress", () => {
   }));
 
   it.each(["image/png", "application/pdf"])(
-    "reprojects earlier large images when a later %s crosses the many-image limit", mimeType => inKernel(crypto.randomUUID(), async impl => {
+    "compacts before a later %s takes the chat past 20 inline images and PDFs", mimeType => inKernel(crypto.randomUUID(), async impl => {
       // Header fixtures exercise projection without decoding pixels or altering original bytes.
       const large = new Uint8Array(24), small = new Uint8Array(24);
       for (const [bytes, width] of [[large, 4000], [small, 2000]] as const) {
@@ -778,25 +836,25 @@ describe("attachment worktree ingress", () => {
       const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
       const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch});
       for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch});
-      const imageParts = (messages: Message[]) => messages.flatMap(message =>
-        Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
-      // Isolate attachment reprojection from compaction: these twenty large header fixtures now
-      // contribute visual tokens even though the faux provider reports no usage.
-      const before = await scriptedTurn(impl, chatId, [], "anthropic-messages", 1_000_000);
+      const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
       expect(imageParts(before[0])).toHaveLength(20);
       const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
       const last = await impl.gitCache.writeBlob(lastBytes);
       await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", {attachments:
         [{oid: last.oid, mimeType, name: "last"}]});
-      for (let turn = 0; turn < 2; ++turn) {
-        if (turn) await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
-        const request = (await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0];
-        const parts = imageParts(request);
-        expect(parts).toHaveLength(1);
-        expect(parts[0]).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
-        expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png");
-        expect(JSON.stringify(request)).toContain("binary contents are not inlined");
-      }
+      // The summary request carries none of them, and the turn keeps the messages whose
+      // attachments fit, as earlier requests showed them, at their full 4000 pixels.
+      const [summary, compacted] = await scriptedTurn(impl, chatId, [], "anthropic-messages", "Summary of the first five.");
+      expect(imageParts(summary)).toHaveLength(0);
+      const parts = imageParts(compacted);
+      expect(parts).toHaveLength(16);
+      expect(parts.at(-1)).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
+      expect(parts.filter(part => part.type === "image" && part.data === large.toBase64())).toHaveLength(15);
+      expect(JSON.stringify(compacted)).toContain("Summary of the first five.");
+      expect(JSON.stringify(compacted)).not.toContain("First five");
+      // A later turn extends that request rather than rewriting it.
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
+      expect(imageParts((await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0])).toEqual(parts);
       const originals = [...impl.storage.chats.list()].flatMap(message =>
         message.type === "message" ? message.attachments ?? [] : []);
       expect(originals).toHaveLength(21);
@@ -805,6 +863,152 @@ describe("attachment worktree ingress", () => {
       }
     }),
   );
+
+  // Whether an image is inline depends only on its own message, so later messages never change
+  // how an earlier one is shown. One past the limits is named by workspace path, unread.
+  it("decides each image within its own message, and compacts once the chat's pass the byte limit", () => inKernel(crypto.randomUUID(), async impl => {
+    const upload = async (name: string, size: number, width: number) =>
+      ({oid: impl.gitCache.writeBlob(pngOfSize(size, width)).oid, mimeType: "image/png", name});
+    const share = Math.floor(MAX_INLINE_MESSAGE_BYTES / 2.5);
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    // The third of these passes the message's byte limit; the last passes the per-file one.
+    const chatId = await impl.newChat(user, {profile: USER}, "Photos", {attachments: [
+      await upload("a.png", share, 1), await upload("b.png", share, 2),
+      await upload("c.png", share, 3), await upload("huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1, 4)]});
+    const attachmentName = (id: string) => [...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.attachments ?? [] : []).find(attachment => attachment.id === id)?.name;
+    const read = vi.spyOn(impl, "getChatAttachmentData");
+    const first = (await scriptedTurn(impl, chatId, []))[0];
+    expect(imageParts(first)).toHaveLength(2);
+    for (const [name, size] of [["c.png", share], ["huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1]] as const) {
+      expect(JSON.stringify(first)).toContain(`[Attached image (${name}); workspace file env.ATTACHMENTS/${name}; ` +
+        `${size} bytes, not shown to you: past the limits on the images and PDFs one request can carry.]`);
+    }
+    expect(read.mock.calls.map(([, id]) => attachmentName(id)).toSorted()).toEqual(["a.png", "b.png"]);
+
+    // Later images that fit leave the first message as it was shown.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And these", {attachments:
+      [await upload("d.png", 1000, 5), await upload("e.png", share, 6), await upload("f.png", share, 7)]});
+    const second = (await scriptedTurn(impl, chatId, []))[0];
+    expect(second.find(message => message.role === "user")).toEqual(first.find(message => message.role === "user"));
+    expect(imageParts(second)).toHaveLength(5);
+
+    // One more takes the chat past the request's byte limit, so the turn compacts the first
+    // message away first.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", {attachments: [await upload("g.png", share, 8)]});
+    const [, compacted] = await scriptedTurn(impl, chatId, [], undefined, "Summary of the photos.");
+    expect(JSON.stringify(compacted)).toContain("Summary of the photos.");
+    expect(JSON.stringify(compacted)).not.toContain("a.png");
+    expect(imageParts(compacted)).toHaveLength(4);
+  }));
+
+  // Messages no turn showed a vision model, such as ones sent with none chosen, can hold more than
+  // memory allows read at once: the oldest are named by path, unread, and the summary is written
+  // from the transcript, since the prompt is no longer the one earlier requests sent.
+  it("reads no more images and PDFs than a request and a new message carry", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const size = MAX_INLINE_MESSAGE_BYTES / 5;
+    const blob = impl.gitCache.writeBlob(pngOfSize(size, 100));
+    const batch = (from: number) =>
+      Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch(5 * i)});
+    const names = new Map([...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.attachments ?? [] : []).map(attachment => [attachment.id, attachment.name]));
+    const read = vi.spyOn(impl, "getChatAttachmentData");
+
+    const [summary, compacted] = await scriptedTurn(impl, chatId, [], "anthropic-messages", "Summary of the photos.");
+    const unread = ["0.png", "1.png", "2.png", "3.png", "4.png"];
+    expect(read.mock.calls.map(([, id]) => names.get(id)).filter(name => unread.includes(name!))).toEqual([]);
+    // The other fifteen once before compacting, and the ten it keeps again after.
+    expect(read).toHaveBeenCalledTimes(25);
+    expect(JSON.stringify(summary)).toContain("workspace file env.ATTACHMENTS/0.png; " +
+      `${size} bytes, not shown to you: past the limits on the images and PDFs one request can carry.]`);
+    expect(imageParts(summary)).toHaveLength(0);
+    expect(JSON.stringify(compacted)).toContain("Summary of the photos.");
+    expect(imageParts(compacted)).toHaveLength(10);
+  }));
+
+  // Compaction summarizes the prompt as earlier requests sent it. Only if it fails does the turn
+  // name the older attachments by path, and then without the thinking the rewrite invalidates.
+  it("names older attachments by path, without the thinking after them, when compaction fails", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const batch = (from: number, length = 5) =>
+      Array.from({length}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    const thinking = (messages: Message[]) => messages.flatMap(message =>
+      message.role === "assistant" ? message.content.filter(block => block.type === "thinking") : []);
+    await turn(fauxAssistantMessage([fauxThinking("Considering the first five."), fauxText("Seen.")]));
+    for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch(5 * i)});
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Wait");
+    await turn(fauxAssistantMessage(fauxText("Waiting.")));
+    // The thinking is replayed while nothing rewrites the messages before it.
+    expect(thinking(requests[1])).toHaveLength(1);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", {attachments: batch(20, 1)});
+    // An empty summary fails the compaction, so the turn runs without it.
+    await turn(fauxAssistantMessage(fauxText("")),
+      fauxAssistantMessage([fauxThinking("Thought over the placeholders."), fauxText("Done.")]));
+    const request = requests.at(-1)!;
+    expect(imageParts(request)).toHaveLength(16);
+    expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png; 24 bytes, not shown to you");
+    expect(thinking(request)).toEqual([]);
+    expect(JSON.stringify(request)).toContain("Seen.");
+
+    // That reply's thinking, signed over the placeholders, is not stored, so a later compaction of
+    // the original prompt keeps nothing it would invalidate.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Again");
+    await turn(fauxAssistantMessage(fauxText("Summary of the first five.")), fauxAssistantMessage(fauxText("Again.")));
+    const compacted = requests.at(-1)!;
+    expect(JSON.stringify(compacted)).toContain("Summary of the first five.");
+    expect(JSON.stringify(compacted)).toContain("Done.");
+    expect(JSON.stringify(compacted)).not.toContain("not shown to you");
+    expect(imageParts(compacted)).toHaveLength(16);
+    // Only thinking signed over the prompt as first sent remains: the first reply's, kept after
+    // the cut.
+    expect(thinking(compacted).map(block => block.type === "thinking" && block.thinking))
+      .toEqual(["Considering the first five."]);
+  }));
+
+  // The model has answered nothing after the messages it was refused with, so naming their
+  // attachments by path changes nothing it has seen.
+  it.each([
+    ["anthropic-messages", '400 {"type":"error","error":{"type":"invalid_request_error","message":"too many PDF pages"}}'],
+    // The Google SDK's message is the JSON body alone.
+    ["google-generative-ai", '{"error":{"code":400,"message":"The document has more than 1000 pages.","status":"INVALID_ARGUMENT"}}'],
+  ] as const)("names the attachments of a refused first request by path from then on (%s)", (api, errorMessage) => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const pdf = impl.gitCache.writeBlob(new TextEncoder().encode("%PDF-1.7 601 pages"));
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this", {attachments:
+      [{oid: pdf.oid, mimeType: "application/pdf", name: "long.pdf"}]});
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: {...faux.getModel(), api}, stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    await expect(turn(fauxAssistantMessage([], {stopReason: "error", errorMessage})))
+      .rejects.toThrow("Retrying sends this message's images and PDFs as workspace files instead.");
+    expect(imageParts(requests[0])).toHaveLength(1);
+    await turn(fauxAssistantMessage(fauxText("Read it from the workspace.")));
+    expect(imageParts(requests[1])).toHaveLength(0);
+    expect(JSON.stringify(requests[1])).toContain("[Attached PDF file (long.pdf); workspace file " +
+      "env.ATTACHMENTS/long.pdf; 18 bytes, not shown to you: the model's provider refused a request with it.]");
+  }));
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {
     const list = vi.spyOn(impl.storage.chatAttachmentContent, "list")
@@ -848,7 +1052,15 @@ describe("attachment worktree ingress", () => {
     await expect(impl.newChat(user, {profile: USER}, "Missing blob", {attachments:
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]}))
       .rejects.toThrow("Unknown Git blob");
-    const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
+    // Streamed, as the composer uploads: the blob is never held whole.
+    const tooBigSize = 100 * 1024 * 1024 + 1, piece = new Uint8Array(1024 * 1024);
+    let left = tooBigSize;
+    const tooBig = await impl.gitCache.writeBlobStream(new ReadableStream({pull(controller) {
+      if (left === 0) return controller.close();
+      const length = Math.min(left, piece.byteLength);
+      left -= length;
+      controller.enqueue(piece.slice(0, length));
+    }}), tooBigSize);
     // Refused by its size alone: none of its chunks is read.
     const record = impl.storage.gitObjects.get(tooBig.oid)!;
     if (!("chunks" in record)) throw new Error("expected a chunked blob");
@@ -861,7 +1073,119 @@ describe("attachment worktree ingress", () => {
     };
     await expect(impl.newChat(user, {profile: USER}, "Too large", {attachments:
       [{oid: tooBig.oid, mimeType: "application/octet-stream"}]}))
-      .rejects.toThrow("too large");
+      .rejects.toThrow("100 MB or smaller");
     expect(chunkReads).toBe(0);
   }));
+});
+
+// Data files for views (plans/live-views.md, "Data files"): the agent writes a file with
+// executeCode, and a later answer's view reads it by a quoted worktree:// URL. The binding's
+// writes are simulated: workerd refuses an executeCode call into the binding in this harness ("The
+// RPC receiver's prototype does not implement writeFile"), so executeCodeMode is replaced with one
+// that makes the changes the binding makes (worktree-session.ts) through the turn's
+// WorktreeTurnAccess.appendChange: a text change for writeFile, a stored blob and a setBytes change
+// for writeBytes.
+type Write = {path: string, text?: string, bytes?: string};
+
+// `value`, or a failed test if it is missing.
+function only<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined) throw new Error(`No ${what}`);
+  return value;
+}
+
+describe("data files for views", () => {
+  // Each executeCode call's writes, by the id its code carries.
+  const writesById = new Map<string, Write[]>();
+  // The OID each simulated writeBytes stored, by path.
+  const storedBlobs = new Map<string, string>();
+  const code = (...writes: Write[]) => {
+    const id = crypto.randomUUID();
+    writesById.set(id, writes);
+    return fauxToolCall("executeCode", {code: id});
+  };
+  const view = (path: string) => `Here it is.\n\n<inline-html>\n<title>Data</title>\n<p id="out"></p>\n` +
+    `<script type="module">\nconst rows = await embeds.json("worktree://OUTPUTS/${path}");\n</script>\n</inline-html>`;
+  // One agent turn whose model answers each step in order; returns the pins of its stored answers.
+  async function turn(impl: Impl, chatId: number, steps: ReturnType<typeof fauxAssistantMessage>[]) {
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Show my data"}]);
+    const before = new Set([...impl.storage.chats.list()].map(message => message.sequence));
+    const execute = vi.spyOn(impl, "executeCodeMode").mockImplementation(
+        async (_chatId, id, _initiator, _model, bindings, _output, worktreeTurn) => {
+          const entry = bindings.OUTPUTS;
+          if (entry?.type !== "workpiece" || !worktreeTurn) throw new Error("no OUTPUTS worktree");
+          for (const {path, text, bytes} of only(writesById.get(id), "writes")) {
+            if (text !== undefined) {
+              worktreeTurn.appendChange(entry.id, path, {set: text});
+            } else {
+              const blob = impl.gitCache.writeBlob(new TextEncoder().encode(bytes));
+              storedBlobs.set(path, blob.oid);
+              worktreeTurn.appendChange(entry.id, path, {setBytes: blob});
+            }
+          }
+          return "Written";
+        });
+    try {
+      const faux = createFauxCore({models: [{id: "faux-model"}]});
+      faux.setResponses([...steps, fauxAssistantMessage(fauxText("Done"))]);
+      await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, chatId,
+          AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    } finally {
+      execute.mockRestore();
+    }
+    return [...impl.storage.chats.list()].filter(message => message.chatId === chatId && !before.has(message.sequence))
+        .flatMap(message => message.type === "message" && message.embeds ? [message.embeds] : []);
+  }
+  const steps = (...calls: ReturnType<typeof fauxToolCall>[]) => fauxAssistantMessage(calls, {stopReason: "toolUse"});
+  const answer = (text: string, ...calls: ReturnType<typeof fauxToolCall>[]) =>
+    fauxAssistantMessage([fauxText(text), ...calls], calls.length ? {stopReason: "toolUse"} : undefined);
+  const newChat = (impl: Impl) =>
+    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data");
+  const createOutputs = fauxToolCall("createWorktree", {title: "Outputs", bindingName: "OUTPUTS"});
+  const source = (path: string) => `worktree://OUTPUTS/${path}`;
+  const text = (impl: Impl, oid: string | null | undefined) =>
+    new TextDecoder().decode(impl.gitCache.readBlob(only(oid, "pin")));
+
+  it("pins a file written in an earlier step, as a text change or a setBytes change, in the next step's view", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      const pins = await turn(impl, chatId, [
+        steps(createOutputs, code({path: "text.json", text: "[1,2]"})),
+        steps(code({path: "bytes.json", bytes: "[3]"})),
+        answer(view("text.json") + "\n\n" + view("bytes.json")),
+      ]);
+      const pinned = only(pins.at(-1), "pinned answer");
+      expect(text(impl, pinned[source("text.json")])).toBe("[1,2]");
+      // A setBytes change pins the very blob it stored.
+      expect(pinned[source("bytes.json")]).toBe(storedBlobs.get("bytes.json"));
+    }));
+
+  it("pins the path as it was in a view written in the same response as its write", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      await turn(impl, chatId, [steps(createOutputs, code({path: "old.json", text: "[1]"}))]);
+      const pins = await turn(impl, chatId, [
+        answer(view("new.json") + "\n\n" + view("old.json"),
+            code({path: "new.json", text: "[9]"}, {path: "old.json", text: "[2]"})),
+      ]);
+      const pinned = only(pins.at(0), "pinned answer");
+      expect(pinned[source("new.json")]).toBeNull();
+      expect(text(impl, pinned[source("old.json")])).toBe("[1]");
+    }));
+
+  it("pins null for a binding that is a Gadget, not a worktree", () => inKernel(crypto.randomUUID(), async impl => {
+    const chatId = await newChat(impl);
+    const pins = await turn(impl, chatId, [
+      steps(fauxToolCall("createGadget", {title: "Log", bindingName: "LOG"})),
+      answer('<inline-html>\n<script type="module">embeds.json("worktree://LOG/client.js")</script>\n</inline-html>'),
+    ]);
+    expect(pins.at(-1)).toEqual({"worktree://LOG/client.js": null});
+  }));
+
+  it("pins a file written in an earlier turn, before its change is accepted", () =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const chatId = await newChat(impl);
+      await turn(impl, chatId, [steps(createOutputs, code({path: "totals.json", text: "[42]"}))]);
+      const pins = await turn(impl, chatId, [answer(view("totals.json"))]);
+      expect(text(impl, only(pins.at(-1), "pinned answer")[source("totals.json")])).toBe("[42]");
+    }));
 });

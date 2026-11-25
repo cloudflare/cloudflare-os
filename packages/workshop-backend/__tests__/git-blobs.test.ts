@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {expect, it, vi} from "vitest";
 import {makeMockStorage} from "./mock-storage";
 import {makeOverseerStorage} from "../src/storage-schema/overseer-storage";
-import {WorkspaceGitCache} from "../src/git-cache";
+import {assertWholeTextFits, isTextBlob, MAX_WHOLE_TEXT_BYTES, MAX_WHOLE_TEXT_LINES, UnreadableContentError, WorkspaceGitCache} from "../src/git-cache";
 import {buildPackStream, decodeLooseObject, decodePackStream} from "../src/git-codec";
 
 function fixture() {
@@ -128,4 +128,92 @@ it("decodes UTF-8 blobs by content and preserves old blob contents across replac
   expect(() => git.readCommitFiles(next)).toThrow("not a text file");
   expect(git.readBlob(ref.oid)).toEqual(bytes);
   expect(await cache.fileBytesAtCommit(commit, "a.txt")).toEqual(ref);
+});
+
+it("asks for room before storing a blob over CHUNK_MAX_SIZE, and before each new chunk", async () => {
+  const storage = makeOverseerStorage(makeMockStorage());
+  const asked: number[] = [];
+  let refuseAfter = Infinity;
+  const git = new WorkspaceGitCache(storage, {async pull() {throw new Error("unexpected pull");}},
+    byteLength => {
+      if (asked.length >= refuseAfter) throw new Error("no room");
+      asked.push(byteLength);
+    });
+  // Varied bytes, so the blob cuts into several distinct chunks.
+  const large = Uint8Array.from({length: 3 * 1024 * 1024}, (_, i) => (i * 2654435761) >>> 24);
+  git.writeBlob(Uint8Array.of(1));
+  expect(asked).toEqual([]);
+  const ref = git.writeBlob(large);
+  expect(asked[0]).toBe(large.byteLength);
+  expect(asked.length).toBeGreaterThan(2);
+  expect(git.readBlob(ref.oid, ref.byteLength)).toEqual(large);
+
+  const before = [...storage.gitObjects.list()].length;
+  asked.length = 0;
+  refuseAfter = 0;
+  expect(() => git.writeBlob(large.toReversed())).toThrow("no room");
+  let cancelled: unknown;
+  const refused = new ReadableStream<Uint8Array>({
+    pull: controller => controller.enqueue(large.toReversed()),
+    cancel: reason => { cancelled = reason; },
+  });
+  await expect(git.writeBlobStream(refused, large.byteLength)).rejects.toThrow("no room");
+  expect(cancelled).toBeInstanceOf(Error);
+  expect([...storage.gitObjects.list()]).toHaveLength(before);
+  // A small blob is never refused, streamed or not, of known length or not.
+  const small = Uint8Array.of(4, 5, 6);
+  expect((await git.writeBlobStream(new Blob([small]).stream(), small.byteLength)).byteLength).toBe(3);
+  expect((await git.writeBlobStream(new Blob([small.toReversed()]).stream())).byteLength).toBe(3);
+  expect(asked).toEqual([]);
+  // A stream of unknown length is refused at the chunk that finds no room.
+  refuseAfter = 2;
+  await expect(git.writeBlobStream(new Blob([large.toReversed()]).stream())).rejects.toThrow("no room");
+  expect(asked).toHaveLength(2);
+});
+
+// Its bytes and its text together would crowd the Durable Object, so a new read of a file over
+// MAX_WHOLE_TEXT_BYTES, or of more than MAX_WHOLE_TEXT_LINES, is refused as whole text, unread,
+// while windowed reads still stream it. The readers replay and folding use still read it, to
+// apply edits saved before the limit.
+it.each([
+  // Long rows, so only the bytes are over the limit.
+  ["bytes", "x".repeat(99_999) + "\n", Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / 100_000)],
+  // Short rows, within the bytes but over the lines.
+  ["lines", "1\n", MAX_WHOLE_TEXT_LINES + 1],
+] as const)("refuses new whole-text reads of a file over the limit on its %s", async (_, row, count) => {
+  const {git} = fixture();
+  const text = row.repeat(count);
+  const ref = await git.writeBlobStream(new Blob([text]).stream(), text.length);
+  const commit = await git.writeFilesAsCommit(new Map([["rows.csv", ref]]), options);
+  const refusal = `rows.csv is ${text.length} bytes in ${count} lines, too large to read or edit as whole text`;
+  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toThrow(refusal);
+  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toBeInstanceOf(UnreadableContentError);
+  await expect(git.readFileAtCommitIfExists(commit, "rows.csv", {limited: true})).rejects.toThrow(refusal);
+  const file = await git.openFileAtCommit(commit, "rows.csv");
+  expect(() => assertWholeTextFits(file!.reader, "rows.csv")).toThrow(refusal);
+  // Unlimited, as replay reads it.
+  expect((await git.readFileAtCommitIfExists(commit, "rows.csv"))?.length).toBe(text.length);
+  expect(git.readLocalFileAtCommitIfExists(commit, "rows.csv")?.length).toBe(text.length);
+});
+
+it("reads a file of as many lines as MAX_WHOLE_TEXT_LINES whole", async () => {
+  const {git} = fixture();
+  const text = "1\n".repeat(MAX_WHOLE_TEXT_LINES);
+  const ref = await git.writeBlobStream(new Blob([text]).stream());
+  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).resolves.toBe(text);
+});
+
+// A blob it can't read is a failure to report, not a binary file: a merge would take a side whole.
+it("tells binary from text a piece at a time, and throws for a piece it can't read", async () => {
+  const {git, storage} = fixture();
+  const piece = "a row of text\n".repeat(100_000);
+  const text = await git.writeBlobStream(new Blob([piece, piece]).stream());
+  const binary = await git.writeBlobStream(new Blob([piece, "\0", piece]).stream());
+  expect(isTextBlob(await git.openBlob(text.oid))).toBe(true);
+  expect(isTextBlob(await git.openBlob(binary.oid))).toBe(false);
+  const record = storage.gitObjects.get(text.oid)!;
+  if (!("chunks" in record)) throw new Error("expected a chunked blob");
+  const reader = await git.openBlob(text.oid);
+  storage.gitObjects.delete(record.chunks.at(-1)!.oid);
+  expect(() => isTextBlob(reader)).toThrow();
 });

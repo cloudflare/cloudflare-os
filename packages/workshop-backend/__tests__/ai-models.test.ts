@@ -12,7 +12,6 @@ import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import { zeroUsage } from "../src/ai-invoke.js";
-import {resolveModelInput} from "../src/ai-model-input";
 import {
   DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
   getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
@@ -334,19 +333,6 @@ describe("getModel AI Gateway routing", () => {
       expect(request.headers.get("cf-aig-allowed-models")).toBe("anthropic/*,openai/gpt-6-luna");
       expect(request.headers.get("cf-aig-allowed-providers")).toBeNull();
       expect(request.headers.get("cf-aig-session-id")).toBeNull();
-    }, 15000);
-
-    it.each([
-      [["@cf/openai/gpt-oss-20b"], ["text"]],
-      [["@cf/zai-org/glm-5.2", "@cf/openai/gpt-oss-20b"], ["text"]],
-      [["@cf/openai/gpt-oss-20b", "openai/gpt-6-astra"], ["text", "image"]],
-      [["anthropic/*"], ["text", "image"]],
-      [["@cf/test/unknown"], ["text", "image"]],
-    ])("derives image input from a known allow-list: %j", async (models, input) => {
-      const handle = getModel(env(), {...AUTO, autoRouterPool: {models}}, INITIATOR);
-      expect(handle.model.input).toEqual(input);
-      const request = await captureRequest(handle);
-      expect(request.headers.get("cf-aig-allowed-models")).toBe(models.join(","));
     }, 15000);
 
     // A provider test's config carries no pool: the gateway's own default pool answers.
@@ -740,172 +726,6 @@ describe("getModel direct routing (no gateway)", () => {
     expect(() => getModel(env({ CF_AI_GATEWAY: undefined }),
         { ...WORKERS_AI_CONFIG, ...overrides }, INITIATOR))
         .toThrow("This Workers AI model has no Cloudflare credentials.");
-  });
-
-  it.each([
-    {capabilities: ["completion", "tools"], images: false},
-    {capabilities: ["completion", "vision"], images: true},
-    {capabilities: undefined, images: true},
-  ])("resolves Ollama vision from model metadata: $capabilities", async ({capabilities, images}) => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-      apiUrl: `http://${crypto.randomUUID()}.fixture:11434/v1`, extraHeaders: {Authorization: "Bearer proxy", "X-Proxy": "fixture"}};
-    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-    let request: Request | undefined;
-    const metadata = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      request = new Request(input, init);
-      return Response.json({capabilities});
-    });
-    vi.stubGlobal("fetch", metadata);
-    try {
-      await resolveModelInput(handle, config, new AbortController().signal);
-      expect(metadata).toHaveBeenCalledOnce();
-      expect(request!.url).toBe(handle.model.baseUrl.replace(/\/v1$/, "") + "/api/show");
-      expect(request!.method).toBe("POST");
-      expect(await request!.json()).toEqual({model: "custom-model"});
-      expect(request!.headers.get("Authorization")).toBe("Bearer proxy");
-      expect(request!.headers.get("X-Proxy")).toBe("fixture");
-      expect(metadata.mock.calls[0][1]?.redirect).toBe("manual");
-      expect(handle.model.input).toEqual(images ? ["text", "image"] : ["text"]);
-    } finally {vi.unstubAllGlobals();}
-  });
-
-  it.each(["unavailable", "invalid", "network"])("keeps Ollama text usable when metadata is %s", async failure => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
-    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-    const metadata = vi.fn(async () => {
-      if (failure === "network") throw new TypeError("offline");
-      return new Response(failure === "invalid" ? "not json" : "missing", {status: failure === "invalid" ? 200 : 404});
-    });
-    vi.stubGlobal("fetch", metadata);
-    try {
-      await resolveModelInput(handle, config, new AbortController().signal);
-      expect(handle.model.input).toEqual(["text", "image"]);
-      const next = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-      await resolveModelInput(next, config, new AbortController().signal);
-      expect(next.model.input).toEqual(["text", "image"]);
-      expect(metadata).toHaveBeenCalledOnce();
-    } finally {vi.unstubAllGlobals();}
-  });
-
-  it("caches Ollama capabilities briefly without sharing them across credentials", async () => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "first",
-      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
-    const metadata = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
-      Response.json({capabilities: new Headers(init?.headers).get("Authorization") === "Bearer first"
-        ? ["completion"] : ["completion", "vision"]}));
-    vi.stubGlobal("fetch", metadata);
-    const resolve = async (settings = config) => {
-      const handle = getModel(env({CF_AI_GATEWAY: undefined}), settings, INITIATOR);
-      await resolveModelInput(handle, settings, new AbortController().signal);
-      return handle.model.input;
-    };
-    let clock: ReturnType<typeof vi.spyOn> | undefined;
-    try {
-      expect(await resolve()).toEqual(["text"]);
-      expect(await resolve()).toEqual(["text"]);
-      expect(metadata).toHaveBeenCalledTimes(1);
-      expect(await resolve({...config, apiToken: "second"})).toEqual(["text", "image"]);
-      expect(metadata).toHaveBeenCalledTimes(2);
-      clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
-      expect(await resolve()).toEqual(["text"]);
-      expect(metadata).toHaveBeenCalledTimes(3);
-    } finally {clock?.mockRestore(); vi.unstubAllGlobals();}
-  });
-
-  it.each(["unavailable", "invalid", "network", "missing"])(
-    "retains explicit Ollama capabilities through a %s refresh, then retries", async failure => {
-      const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-        apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
-      let attempts = 0;
-      const metadata = vi.fn(async () => {
-        if (++attempts === 1) return Response.json({capabilities: ["completion", "tools"]});
-        if (attempts === 2) {
-          if (failure === "network") throw new TypeError("offline");
-          if (failure === "missing") return Response.json({});
-          return new Response(failure === "invalid" ? "not json" : "unavailable",
-            {status: failure === "invalid" ? 200 : 503});
-        }
-        return Response.json({capabilities: ["completion", "vision"]});
-      });
-      vi.stubGlobal("fetch", metadata);
-      const resolve = async () => {
-        const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-        await resolveModelInput(handle, config, new AbortController().signal);
-        return handle.model.input;
-      };
-      const now = Date.now();
-      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-      try {
-        expect(await resolve()).toEqual(["text"]);
-        clock.mockReturnValue(now + 60_001);
-        expect(await resolve()).toEqual(["text"]);
-        expect(await resolve()).toEqual(["text"]);
-        expect(metadata).toHaveBeenCalledTimes(2);
-        clock.mockReturnValue(now + 120_002);
-        expect(await resolve()).toEqual(["text", "image"]);
-        expect(metadata).toHaveBeenCalledTimes(3);
-      } finally {clock.mockRestore(); vi.unstubAllGlobals();}
-    });
-
-  it("keeps explicit capabilities learned by an overlapping turn when the later probe fails", async () => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
-    const pending: ((response: Response) => void)[] = [];
-    const metadata = vi.fn(() => new Promise<Response>(resolve => {pending.push(resolve);}));
-    vi.stubGlobal("fetch", metadata);
-    const resolve = async () => {
-      const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-      await resolveModelInput(handle, config, new AbortController().signal);
-      return handle.model.input;
-    };
-    try {
-      const first = resolve();
-      await vi.waitFor(() => expect(pending).toHaveLength(1));
-      const second = resolve();
-      await vi.waitFor(() => expect(pending).toHaveLength(2));
-      pending[0](Response.json({capabilities: ["completion", "tools"]}));
-      expect(await first).toEqual(["text"]);
-      pending[1](new Response("unavailable", {status: 503}));
-      expect(await second).toEqual(["text"]);
-      expect(await resolve()).toEqual(["text"]);
-      expect(metadata).toHaveBeenCalledTimes(2);
-    } finally {vi.unstubAllGlobals();}
-  });
-
-  it("cancels oversized streamed Ollama metadata without buffering the unused model template", async () => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: "fixture",
-      apiUrl: `http://${crypto.randomUUID()}.fixture:11434`};
-    let chunks = 0, cancelled = false;
-    const metadata = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (++chunks > 2048) {controller.close(); return;}
-        controller.enqueue(new Uint8Array(16 * 1024).fill(32));
-      },
-      cancel() {cancelled = true;},
-    })));
-    vi.stubGlobal("fetch", metadata);
-    try {
-      for (let turn = 0; turn < 2; ++turn) {
-        const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-        await resolveModelInput(handle, config, new AbortController().signal);
-        expect(handle.model.input).toEqual(["text", "image"]);
-      }
-      expect(cancelled).toBe(true);
-      expect(chunks).toBeLessThan(20);
-      expect(metadata).toHaveBeenCalledOnce();
-    } finally {vi.unstubAllGlobals();}
-  });
-
-  it("preserves cancellation during Ollama metadata resolution", async () => {
-    const config: AiModelConfig = {provider: "ollama", model: "custom-model", apiToken: ""};
-    const handle = getModel(env({CF_AI_GATEWAY: undefined}), config, INITIATOR);
-    const controller = new AbortController();
-    const stopped = new Error("stopped");
-    vi.stubGlobal("fetch", async () => {controller.abort(stopped); throw stopped;});
-    try {
-      await expect(resolveModelInput(handle, config, controller.signal)).rejects.toBe(stopped);
-    } finally {vi.unstubAllGlobals();}
   });
 
   it("appends /v1 to an Ollama server base URL", () => {
@@ -1325,6 +1145,7 @@ describe("gateway model reasoning levels", () => {
     ["openai", "gpt-5.6-sol", ["off", ...LOW_TO_MAX]],
     ["openai", "gpt-5.6-luna", ["off", ...LOW_TO_MAX]],
     ["openai", "gpt-5.6-terra", ["off", ...LOW_TO_MAX]],
+    ["google", "gemini-4-neon", ["low", "medium", "high", "xhigh"]],
     ["google", "gemini-3.6-flash", ["minimal", "low", "medium", "high"]],
     ["cloudflare", "@cf/moonshotai/kimi-k2.7-code", OFF_TO_HIGH],
     ["cloudflare", "@cf/zai-org/glm-5.2", ["off", "high", "max"]],
@@ -1361,6 +1182,7 @@ describe("gateway model reasoning levels", () => {
     ["openai", "gpt-5.6-sol", "medium"],
     ["openai", "gpt-5.6-luna", "medium"],
     ["openai", "gpt-5.6-terra", "medium"],
+    ["google", "gemini-4-neon", null],
     ["google", "gemini-3.6-flash", null],
     ["cloudflare", "@cf/moonshotai/kimi-k2.7-code", null],
     ["cloudflare", "@cf/zai-org/glm-5.2", null],
@@ -2049,46 +1871,6 @@ describe("Gemini function call signatures", () => {
   }, 15000);
 });
 
-describe("Gemini parallel image tool results", () => {
-  beforeEach(() => { capturedRequests.length = 0; });
-
-  it.each([
-    ["gemini-2.5-flash", true], ["gemini-2.5-flash", false],
-    ["gemini-3.6-flash", true], ["gemini-3.6-flash", false],
-  ] as const)("keeps each response batch together: %s, second image %s", async (model, secondImage) => {
-    const handle = getModel(env(), {provider: "google", model, apiToken: "fixture"}, INITIATOR);
-    const step = (prefix: string): [AssistantMessage, ToolResultMessage, ToolResultMessage] => {
-      const result = (id: number): ToolResultMessage => ({
-        role: "toolResult", toolCallId: `${prefix}_${id}`, toolName: "readFile", isError: false, timestamp: 0,
-        content: [{type: "text", text: `${prefix}_${id}`},
-          ...(id === 1 || secondImage ? [{type: "image" as const, mimeType: "image/png", data: btoa(`${prefix}_${id}`)}] : [])],
-      });
-      return [{
-        role: "assistant", api: handle.model.api, provider: handle.model.provider, model,
-        usage: zeroUsage(), stopReason: "toolUse", timestamp: 0,
-        content: [1, 2].map(id => ({type: "toolCall", id: `${prefix}_${id}`, name: "readFile", arguments: {}})),
-      }, result(1), result(2)];
-    };
-    const stream = handle.stream(handle.model, {
-      messages: [{role: "user", content: "Read these files", timestamp: 0}, ...step("a"), ...step("b")],
-    }, {fetch: fetchStub, maxRetries: 0});
-    expect((await stream.result()).stopReason).toBe("error");
-    const image = z.object({inlineData: z.object({data: z.string()}).optional()});
-    const body = z.object({contents: z.array(z.object({role: z.string(), parts: z.array(z.object({
-      functionResponse: z.object({response: z.object({output: z.string()}), parts: z.array(image).optional()}).optional(),
-      inlineData: z.object({data: z.string()}).optional(),
-    }))}))}).parse(JSON.parse(capturedRequests[0].body));
-    const responseTurns = body.contents.filter(content => content.parts.some(part => part.functionResponse));
-    expect(responseTurns.map(content => content.parts.flatMap(part => part.functionResponse?.response.output ?? [])))
-      .toEqual([["a_1", "a_2"], ["b_1", "b_2"]]);
-    const pixels = body.contents.flatMap(content => content.parts.flatMap(part => [
-      ...(part.inlineData ? [part.inlineData.data] : []),
-      ...(part.functionResponse?.parts?.flatMap(part => part.inlineData?.data ?? []) ?? []),
-    ]));
-    expect(pixels).toEqual(["a_1", ...(secondImage ? ["a_2"] : []), "b_1", ...(secondImage ? ["b_2"] : [])].map(value => btoa(value)));
-  });
-});
-
 describe("Tool-call arguments", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
@@ -2367,26 +2149,6 @@ describe("Resending a request to keep its cache", () => {
     expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
     expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
     expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
-  }, 15000);
-
-  it.each(["anthropic", "openai"] as const)("does not retain %s media requests for warming", async provider => {
-    const handle = getModel(env(), {provider, model: provider === "anthropic" ? "claude-opus-5-5" : "gpt-6-luna", apiToken: ""}, INITIATOR);
-    await send(handle);
-    expect(handle.lastRequest).toBeDefined();
-    for (const role of ["user", "toolResult"] as const) {
-      const image = {type: "image" as const, mimeType: "image/png", data: "a".repeat(4 * 1024 * 1024)};
-      const message = role === "user" ? {role, content: [image], timestamp: 0} : {
-        role, toolCallId: "read", toolName: "readFile", content: [image], isError: false, timestamp: 0,
-      };
-      const result = await handle.stream(handle.model, {messages: [message]},
-          {fetch: answering(), maxRetries: 0}).result();
-      expect(result.stopReason).toBe("stop");
-      expect(result.usage.cacheRead).toBeGreaterThan(0);
-      expect(handle.lastRequest).toBeUndefined();
-    }
-    // Once images have left the model projection, text-only warming is available again.
-    await send(handle);
-    expect(handle.lastRequest).toBeDefined();
   }, 15000);
 
   it("prices a resend as a read of the whole prompt and a one-token answer, and a miss as a " +

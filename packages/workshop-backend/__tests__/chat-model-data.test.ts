@@ -65,7 +65,6 @@ describe("rehydrateStoredAssistantMessage", () => {
   it("reproduces the original message exactly", () => {
     let message = makeAssistantMessage();
     let stored = makeStoredAssistantMessage(message);
-    stored.inputImageTokens = 144_000; // Server accounting must not enter the provider transcript.
 
     let result =
         rehydrateStoredAssistantMessage(structuredClone(stored), makeToolCallRecords(), 1, 2);

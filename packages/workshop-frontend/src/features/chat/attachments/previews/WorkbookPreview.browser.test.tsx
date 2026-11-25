@@ -32,8 +32,8 @@ const mount = async (fixture: StyledXlsxFixture) => {
       </div>
     </ThemeProvider>,
   ));
-  // First use also loads the spreadsheet worker; cold CI can exceed the default poll deadline.
-  await expect.poll(() => host!.querySelector("table"), {timeout: 5_000}).toBeTruthy();
+  // The workbook is read in a worker, so the grid arrives after the render.
+  await expect.poll(() => host!.querySelector("table")).toBeTruthy();
 };
 
 const text = (reference: string, value: string, style = 0) =>

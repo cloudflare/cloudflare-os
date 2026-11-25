@@ -6,8 +6,6 @@ import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/cod
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
-import {imageDimensions} from "./chat-attachment-validation";
-import {admittedImageDimensions, claudeImageFrame} from "./file-image";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
@@ -222,79 +220,18 @@ export type CompactionProjectionMessage = {
   canCut?: boolean;
 };
 
-/** Image accounting for a request; persisted beside usage to detect a changed replay projection. */
-export function estimateImageTokens(message: Message, model?: Model<Api>): number {
-  return typeof message.content === "string" ? 0 : message.content.reduce((sum, part) => {
-    if (part.type !== "image" || !part.mimeType.startsWith("image/")) return sum;
-    const id = model?.id.split("/").at(-1) ?? "";
-    // pi leaves Gemini's media resolution unspecified, whose image budget is size-independent.
-    // https://ai.google.dev/gemini-api/docs/media-resolution#token-counts
-    if (model?.api === "google-generative-ai" && /^gemini-[34](?:[.-]|$)/.test(id)) return sum + 1120;
-    // Image admission already parsed the complete header through byte ranges, including JPEG
-    // metadata beyond 64 KiB. Reuse it without decoding base64 again. Other image sources keep
-    // the bounded header fallback rather than allocating another multi-MiB payload copy.
-    let dimensions = admittedImageDimensions(part);
-    if (!dimensions) try {
-      dimensions = imageDimensions(part.mimeType, Uint8Array.fromBase64(part.data.slice(0, 87_380)));
-    } catch { /* A malformed header must not break compaction. */ }
-    // Known Claude models resize to the same frame reported with file coordinates. Admission
-    // must count those pixels, or large images can be rejected before usage can correct us.
-    const claudeFrame = dimensions && model && claudeImageFrame(dimensions, model);
-    if (claudeFrame) return sum + Math.ceil(claudeFrame[0] / 28) * Math.ceil(claudeFrame[1] / 28);
-    // pi sends OpenAI images with detail:auto. Apply its documented default sizing before
-    // admission; an original-resolution estimate could otherwise reject every large read.
-    // https://developers.openai.com/api/docs/guides/images-vision#model-sizing-behavior
-    const tileCost = /^gpt-4o-mini(?:-|$)/.test(id) ? [2833, 5667]
-      : /^gpt-(?:4o|4\.1)(?:-\d{4}|$)/.test(id) ? [85, 170]
-      : /^gpt-(?:5|5\.1)(?:-\d{4}|$)/.test(id) ? [70, 140]
-      : /^o(?:1|1-pro|3)(?:-\d{4}|$)/.test(id) ? [75, 150] : undefined;
-    if (tileCost) {
-      let tiles = 8; // Maximum after fitting inside 2048px and reducing the short side to 768px.
-      if (dimensions) {
-        const [width, height] = dimensions;
-        const scale = Math.min(1, 2048 / width, 2048 / height, 768 / Math.min(width, height));
-        tiles = Math.ceil(Math.max(1, Math.floor(width * scale)) / 512) *
-          Math.ceil(Math.max(1, Math.floor(height * scale)) / 512);
-      }
-      return sum + tileCost[0] + tiles * tileCost[1];
-    }
-    const multiplier = /^gpt-4\.1-nano(?:-|$)/.test(id) ? 2.46
-      : /^gpt-4\.1-mini(?:-|$)/.test(id) ? 1.62
-      : /^o4-mini(?:-|$)/.test(id) ? 1.72
-      : /^gpt-5-nano(?:-|$)/.test(id) ? 1.5 : 1.2;
-    const resize = /^gpt-(?:4\.1-mini|5\.2)(?:-\d{4}|$)/.test(id) ? [2048, 6144]
-      : /^gpt-5\.4(?:-(?:mini|nano))?(?:-\d{4}|$)/.test(id) ? [2048, 2500]
-      : /^gpt-5\.5(?:-\d{4}|$)/.test(id) ? [6000, 10_000] : undefined;
-    let patches = dimensions ? Math.ceil(dimensions[0] / 32) * Math.ceil(dimensions[1] / 32) : 30_000;
-    if (resize) {
-      if (dimensions) {
-        const [width, height] = dimensions;
-        const scale = Math.min(1, resize[0] / width, resize[0] / height);
-        // Keep fractional edges until patch coverage so pixel rounding cannot undercount a patch.
-        patches = Math.ceil(width * scale / 32) * Math.ceil(height * scale / 32);
-      }
-      // The provider's second resize cannot exceed this patch budget. Its ceiling is a safe
-      // estimate without duplicating the pixel-perfect resize algorithm needed for coordinates.
-      patches = Math.min(patches, resize[1]);
-    }
-    const tokens = Math.ceil(patches * multiplier);
-    // Original-detail and unknown models keep the conservative original-resolution fallback.
-    return sum + (resize ? tokens : Math.max(1024, tokens));
-  }, 0);
-}
-
-function projectionMessageWeight(message: Message, model?: Model<Api>): number {
-  // A flat-color screenshot can be tiny on disk but expensive at original resolution.
-  const text = JSON.stringify(message, (key, value) =>
-    key === "data" && typeof value === "string" ? "[binary]" : value).length;
-  return text + estimateImageTokens(message, model) * 4;
+function projectionMessageWeight(message: Message): number {
+  // Use serialized length to divide the measured prompt size between messages. Replace attachment
+  // data (base64 image payloads ride ImageContent.data) with a short marker because the model's
+  // attachment cost depends on the content it processes, not the byte count.
+  return JSON.stringify(message, (key, value) =>
+    key === "data" && typeof value === "string" && value.length > 64 ? "[binary]" : value).length;
 }
 
 /** Estimate tokens for messages not included in provider usage, or when usage data is unavailable. */
-export function estimateProjectionTokens(
-    projection: CompactionProjectionMessage[], model?: Model<Api>): number {
+export function estimateProjectionTokens(projection: CompactionProjectionMessage[]): number {
   return Math.ceil(projection.reduce((total, {message}) =>
-    total + projectionMessageWeight(message, model), 0) / 4);
+    total + projectionMessageWeight(message), 0) / 4);
 }
 
 function flattenModelMessage(message: Message): string {
@@ -360,14 +297,17 @@ export function buildSummaryPrompt(
  * Choose the first sequence to retain, or undefined if the boundary cannot advance. `contextTokens`
  * must be positive: the caller supplies an estimate when provider usage is unavailable.
  * `protectedFromSequence` is the first sequence holding state the checkpoint cannot own.
+ * `retainFrom` is the earliest sequence the retained tail may start at, when one is required: the
+ * first after the attachments a prompt has too many of (see the replay in agent.ts).
  */
 export function findCompactionBoundary(
     projection: CompactionProjectionMessage[], inputBudget: number, contextTokens: number,
-    compactedTo = 0, protectedFromSequence?: number, model?: Model<Api>): number | undefined {
+    compactedTo = 0, protectedFromSequence?: number, retainFrom?: number, atRoleChange = false)
+    : number | undefined {
   // Walk backward until the retained messages fill the target budget, then move the cut to a record
   // boundary. Provider tokenizers differ, so character weights divide the measured token count among
   // messages; the weights affect only where the cut lands.
-  let weights = projection.map(({message}) => projectionMessageWeight(message, model));
+  let weights = projection.map(({message}) => projectionMessageWeight(message));
   let tokensPerWeight = contextTokens / weights.reduce((sum, weight) => sum + weight, 0);
   let tailBudget = Math.min(inputBudget * COMPACTION_TARGET_RATIO, COMPACTION_TAIL_TOKEN_LIMIT);
   let keptTokens = 0;
@@ -379,6 +319,11 @@ export function findCompactionBoundary(
 
   while (keepFrom >= 0 && !projection[keepFrom].canCut) --keepFrom;
   let sequence = projection[keepFrom]?.sequence;
+  // A required start moves the cut to the first record at or after it, unless the budget cuts later.
+  if (retainFrom !== undefined && !(sequence !== undefined && sequence >= retainFrom)) {
+    sequence = projection.find(entry => entry.canCut && entry.sequence !== undefined &&
+        entry.sequence >= retainFrom)?.sequence;
+  }
   // The walk runs off the front when one record fills the budget alone, and when the prompt is
   // already under the target -- which is every explicit `/compact` on a short chat. Falling back to
   // the newest cut summarizes all but the last record, so the command always does what it says.
@@ -389,8 +334,31 @@ export function findCompactionBoundary(
 
   let boundary = protectedFromSequence === undefined
       ? sequence : Math.min(sequence, protectedFromSequence);
+  if (atRoleChange) {
+    // Anthropic's native compaction merges the first kept message into the last summarized one
+    // when their roles match (a tool result is a user message to it), which voids the thinking it
+    // keeps: move the cut on to where the role changes, which summarizes more, as attachments
+    // need, but not past what must stay; else back to where it last changed, keeping what they
+    // require.
+    let start = projection.findIndex(entry => entry.sequence !== undefined && entry.sequence >= boundary);
+    let changesRole = (i: number) => i > 0 && projection[i].canCut === true &&
+        apiRole(projection[i - 1].message) !== apiRole(projection[i].message);
+    let index = start;
+    while (index >= 0 && index < projection.length && !changesRole(index)) ++index;
+    let moved = index >= 0 ? projection[index]?.sequence : undefined;
+    if (moved === undefined ||
+        (protectedFromSequence !== undefined && moved > protectedFromSequence)) {
+      index = start - 1;
+      while (index > 0 && !changesRole(index)) --index;
+      moved = changesRole(index) ? projection[index].sequence : undefined;
+      if (moved === undefined || (retainFrom !== undefined && moved < retainFrom)) return;
+    }
+    boundary = moved;
+  }
   return boundary > compactedTo ? boundary : undefined;
 }
+
+const apiRole = (message: Message) => message.role === "assistant" ? "assistant" : "user";
 
 /**
  * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed

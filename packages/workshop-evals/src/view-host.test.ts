@@ -242,4 +242,37 @@ describe("RenderedView", { timeout: 60_000 }, () => {
       expect(series.marks.map(({ label, axis }) => [label, axis]), JSON.stringify(gap)).toEqual([[0, "y"], [1, "y"]]);
     }
   });
+
+  it("gives a view any file its message pinned, by the Workshop's rule, and refuses an unpinned one", async () => {
+    const named = "worktree://OUTPUTS/totals.json", built = "worktree://OUTPUTS/built.json";
+    const read: string[] = [];
+    // built.json is pinned elsewhere in the reply and reached here by a URL the code builds.
+    await using view = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        const totals = await embeds.json("${named}");
+        const fromBuilt = await embeds.json("worktree://OUTPUTS/" + "built.json");
+        const unpinned = await embeds.text("worktree://OUTPUTS/missing.json").catch(error => error.message);
+        const unknown = await embeds.text("worktree://OUTPUTS/other.json").catch(error => error.message);
+        document.getElementById("out").textContent = [totals.Food, fromBuilt.Food, unpinned, unknown].join(" | ");
+      </script>`, {
+      oids: { [named]: "a".repeat(40), [built]: "b".repeat(40), "worktree://OUTPUTS/missing.json": null },
+      readText: async oid => { read.push(oid); return '{"Food":420}'; },
+    });
+    const [totals, fromBuilt, unpinned, unknown] = (await view.text()).trim().split(" | ");
+    expect([totals, fromBuilt]).toEqual(["420", "420"]);
+    expect(unpinned).toMatch(/^File unavailable/);
+    expect(unknown).toMatch(/^File unavailable/);
+    expect(read).toEqual(["a".repeat(40), "b".repeat(40)]);
+  });
+
+  it("reads no file for a view opened without its message's files", async () => {
+    await using view = await RenderedView.open(`
+      <p id="out"></p>
+      <script type="module">
+        document.getElementById("out").textContent =
+          await embeds.json("worktree://OUTPUTS/totals.json").catch(error => error.message);
+      </script>`);
+    expect((await view.text()).trim()).toMatch(/^File unavailable/);
+  });
 });

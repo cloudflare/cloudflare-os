@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {formatGrep, matchBlob, matchLines, scanWorkpieceForGrep, type GrepScan} from "../src/grep";
+import {formatGrep, matchBlob, matchLines, MAX_SEARCHED_LINE_CHARS, scanWorkpieceForGrep, type GrepScan} from "../src/grep";
 import {BlobReader, BlobWriter, CHUNK_MAX_SIZE, type ChunkStore} from "../src/git-chunked-blob";
 import {encodeLooseObject} from "../src/git-codec";
 import type {GitObjectRecord} from "../src/storage-schema/overseer-storage";
@@ -83,6 +83,45 @@ describe("grep", () => {
     let pattern = /needle.*$/g;
     expect(matchBlob(reader, pattern, "big.txt")).toEqual(matchLines(text, pattern));
     expect(matchBlob(reader, pattern, "big.txt").length).toBe(Math.ceil(40_000 / 997) + 1);
+  });
+
+  // A broad match over a large file keeps only what the output can show, and counts the rest.
+  it("keeps only the matches that fit its budget, counting the others", async () => {
+    let text = Array.from({length: 200_000}, (_, i) => `row ${i}`).join("\n");
+    let {reader, chunks} = openBlob(text);
+    expect(chunks).toBeGreaterThan(1);
+    let unreached = () => { throw new Error("not reached"); };
+    let cache = {
+      pathEntryAtCommit: async () => ({kind: "file" as const, oid: "f".repeat(40), referencedBy: "e".repeat(40)}),
+      listCommitTreePaths: unreached, openBlob: async () => reader, ensureBlobs: async () => {},
+    };
+    let turn = {getOverlayFiles: () => new Map<string, string>(), getRemovedPaths: () => new Set<string>()};
+    let scan = await scanWorkpieceForGrep(cache, turn, 1, "c".repeat(40), "rows.csv", /row/, 1000);
+    expect(scan.matches.length).toBeLessThan(200);
+    expect(scan.matches.length + scan.omitted!).toBe(200_000);
+    let output = formatGrep(scan, 1000);
+    expect(output.length).toBeLessThanOrEqual(1000);
+    let shown = output.split("\n").filter(line => /^\d+:row/.test(line)).length;
+    expect(output).toContain(`(${200_000 - shown} more matches not shown; narrow the pattern or path)`);
+  });
+
+  // A whole file on one line would otherwise be held whole before it could be searched.
+  it("passes over a line too long to search, and reports it", async () => {
+    let text = `needle first\n${"x".repeat(MAX_SEARCHED_LINE_CHARS + 10)} needle\nneedle last`;
+    let {reader} = openBlob(text);
+    let unreached = () => { throw new Error("not reached"); };
+    let cache = {
+      pathEntryAtCommit: async () => ({kind: "file" as const, oid: "f".repeat(40), referencedBy: "e".repeat(40)}),
+      listCommitTreePaths: unreached, openBlob: async () => reader, ensureBlobs: async () => {},
+    };
+    let turn = {getOverlayFiles: () => new Map<string, string>(), getRemovedPaths: () => new Set<string>()};
+    let scan = await scanWorkpieceForGrep(cache, turn, 1, "c".repeat(40), "export.json", /needle/);
+    expect(scan.matches).toEqual([
+      {file: "export.json", line: 1, text: "needle first"},
+      {file: "export.json", line: 3, text: "needle last"},
+    ]);
+    expect(scan.errors).toEqual([{file: "export.json",
+      error: `export.json: 1 line over ${MAX_SEARCHED_LINE_CHARS} characters not searched`}]);
   });
 
   it("skips a large blob holding a NUL byte as binary, and a small one too", () => {

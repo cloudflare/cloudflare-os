@@ -2068,7 +2068,8 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  *
  * This is a choice of representation, not a storage limit: no object is refused for its size.
  * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
- * row's worth.
+ * row's worth. (A workspace near its storage quota does refuse new blobs larger than this; see
+ * `WORKSPACE_FILE_QUOTA_BYTES` in `@gadgets/workshop-shared/api`.)
  */
 export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
 
@@ -2146,7 +2147,8 @@ export interface GitCache extends RpcTarget {
 
   /**
    * Add an object to cache. Returns the computed oid. There is no size limit, but the object
-   * travels whole in one RPC message.
+   * travels whole in one RPC message, and a blob over MAX_BUFFERED_BLOB_SIZE is refused while the
+   * workspace is near its storage quota (`WORKSPACE_FILE_QUOTA_BYTES`).
    *
    * As with `get()`, the `content` must NOT include the `<type> <size>\0` header.
    *

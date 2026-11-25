@@ -723,6 +723,12 @@ export type AiChatAgentContext = {
   attachmentsMigrated?: true;
 
   /**
+   * Attachments (`ChatAttachmentRef.id`) a model provider refused a request for, which replay
+   * names by workspace path instead of sending inline again.
+   */
+  refusedInlineAttachments?: string[];
+
+  /**
    * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
    * and bindings, saved when the chat's first turn built it.
    *
@@ -908,8 +914,6 @@ export type StoredToolCall = Omit<ToolCall, "arguments">;
  */
 export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
   content: (TextContent | ThinkingContent | StoredToolCall)[];
-  /** Estimated images in the measured request, before this step's tool results. Legacy: absent. */
-  inputImageTokens?: number;
 };
 
 // One agent step's model-facing snapshot (see StoredAssistantMessage), keyed by the

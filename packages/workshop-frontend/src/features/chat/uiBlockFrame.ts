@@ -33,8 +33,11 @@ export interface UiBlockHost {
   /** Reports the current image-read failure, or clears it after recovery. */
   reportImageError(message: string | null): void
 
-  /** Read an image path already pinned into this message by the host parser. */
-  readImage(source: string): Promise<InlineFile>
+  /**
+   * Reads a file this view's reply pinned in its message (`embeds`), at the `worktree://` URL it
+   * was pinned under. Images and `embeds` both read here.
+   */
+  readFile(source: string): Promise<InlineFile>
 }
 
 /** What the Workshop may call on a block's frame. */
@@ -91,7 +94,7 @@ export type UiBlockHostOptions = {
   onResize: (height: number) => void
   onError: (message: string) => void
   onImageError?: (message: string | null) => void
-  readImage?: SnapshotFileReader
+  readFile?: SnapshotFileReader
 }
 
 /**
@@ -125,9 +128,9 @@ export class UiBlockHostImpl extends RpcTarget implements UiBlockHost {
     this.#options.onImageError?.(message === null ? null : String(message))
   }
 
-  async readImage(source: string): Promise<InlineFile> {
-    if (!this.#options.readImage) throw new Error('Files are unavailable in this view.')
-    return this.#options.readImage(source)
+  async readFile(source: string): Promise<InlineFile> {
+    if (!this.#options.readFile) throw new Error('Files are unavailable in this view.')
+    return this.#options.readFile(source)
   }
 }
 
@@ -165,7 +168,7 @@ const reportImageErrors = () =>
   host.reportImageError([...images.values()].find(state => state.error)?.error ?? null).catch(() => {});
 const loadImage = async (image, state) => {
   try {
-    const result = await host.readImage(state.source);
+    const result = await host.readFile(state.source);
     if (images.get(image) !== state || !image.isConnected) {
       await result.stream?.cancel();
       return;
@@ -274,6 +277,12 @@ const host = newMessagePortRpcSession(port1, new Frame());
 // leaves nothing held on either end. A refused message still rejects it.
 globalThis.agent = Object.freeze({
   send: async message => { await host.requestMessage(message); },
+});
+
+// A view's data files, read whole through the same reader as its images. A refused read rejects.
+globalThis.embeds = Object.freeze({
+  json: async source => await new Response((await host.readFile(source)).stream).json(),
+  text: async source => await new Response((await host.readFile(source)).stream).text(),
 });
 `)}`
 

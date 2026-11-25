@@ -3,7 +3,7 @@ import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
   buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
-  estimateImageTokens, estimateProjectionTokens, foldProposedChanges, getModelTokenLimits, isCompactionTurn,
+  foldProposedChanges, getModelTokenLimits, isCompactionTurn,
   shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
 import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -230,78 +230,6 @@ describe("compaction trigger", () => {
   });
 });
 
-describe("image context estimates", () => {
-  // The header is all the estimator reads. Size on disk does not determine visual tokens.
-  function image(width: number, height: number, padding = 0) {
-    const bytes = new Uint8Array(24 + padding);
-    const view = new DataView(bytes.buffer);
-    for (const [offset, value] of [[0, 0x89504e47], [4, 0x0d0a1a0a], [8, 13], [12, 0x49484452], [16, width], [20, height]]) {
-      view.setUint32(offset, value);
-    }
-    return {type: "image" as const, mimeType: "image/png", data: bytes.toBase64()};
-  }
-  it("counts the four original-resolution file results before the next request and on replay", () => {
-    const live = Array.from({length: 4}, (_, index) => ({message: {
-      role: "toolResult" as const, toolName: "readFile", toolCallId: String(index),
-      content: [image(6400, 4800)], isError: false, timestamp: 0,
-    }}));
-    const replay = structuredClone(live);
-    const limits = getModelTokenLimits({provider: "openai", model: "gpt-6-astra", apiToken: ""});
-    for (const projection of [live, replay]) {
-      expect(estimateProjectionTokens(projection)).toBeGreaterThanOrEqual(144_000);
-      expect(shouldCompactChat(150_000 + estimateProjectionTokens(projection), limits.inputBudget)).toBe(true);
-    }
-  });
-  it.each([
-    {id: "gpt-4o-mini", width: 768, height: 768, tokens: 25_501},
-    {id: "openai/gpt-4o-mini-2024-07-18", width: 768, height: 768, tokens: 25_501},
-    {id: "gpt-4o-mini", width: 4096, height: 1024, tokens: 25_501},
-    {id: "gpt-4.1-mini", width: 1024, height: 1024, tokens: 1659},
-    {id: "gpt-4.1-mini", width: 6400, height: 4800, tokens: 4977},
-    {id: "gpt-4.1-mini", width: 6400, height: 202, tokens: 312},
-    {id: "openai/gpt-4.1-mini-2025-04-14", width: 4800, height: 6400, tokens: 4977},
-    {id: "gpt-5.2", width: 6400, height: 4800, tokens: 3687},
-    {id: "gpt-5.4", width: 6400, height: 4800, tokens: 3000},
-    {id: "gpt-5.4-mini", width: 4800, height: 6400, tokens: 3000},
-    {id: "gpt-5.4-nano", width: 6400, height: 4800, tokens: 3000},
-    {id: "gpt-5.5", width: 6400, height: 4800, tokens: 12_000},
-    {id: "gpt-5.6-luna", width: 6400, height: 4800, tokens: 36_000},
-    {id: "gpt-6-astra", width: 6400, height: 4800, tokens: 36_000},
-    {id: "gpt-4o", width: 6400, height: 4800, tokens: 765},
-    {id: "gpt-4.1", width: 6400, height: 4800, tokens: 765},
-    {id: "gpt-5.1", width: 6400, height: 4800, tokens: 630},
-    {id: "o3", width: 6400, height: 4800, tokens: 675},
-    {id: "gpt-4.1-nano", width: 1024, height: 1024, tokens: 2520},
-  ])("accounts for known image pricing for $id ($width x $height)", ({id, width, height, tokens}) => {
-    const message: Message = {role: "user", content: [image(width, height)], timestamp: 0};
-    expect(estimateImageTokens(message, {...testModel, id})).toBe(tokens);
-    const four = Array.from({length: 4}, () => ({message}));
-    expect(estimateProjectionTokens(four, {...testModel, id})).toBeGreaterThanOrEqual(tokens * 4);
-    if (id.includes("4o-mini")) expect(shouldCompactChat(
-      55_000 + estimateProjectionTokens(four, {...testModel, id}), 128_000)).toBe(true);
-  });
-  it("uses dimensions and a small header allocation, independent of encoded pixel size", () => {
-    const estimate = (part: ReturnType<typeof image>) => estimateProjectionTokens([
-      {message: {role: "user", content: [part], timestamp: 0}},
-    ]);
-    expect(estimate(image(6400, 4800, 4 * 1024 * 1024))).toBe(estimate(image(6400, 4800)));
-    expect(estimate(image(1, 1))).toBeLessThan(1100);
-    expect(estimate({...image(1, 1), data: "malformed"})).toBeGreaterThanOrEqual(36_000);
-  });
-  it.each([
-    ["gemini-3.6-flash", "google-generative-ai", 1120],
-    ["gemini-3-pro-preview", "google-generative-ai", 1120],
-    ["models/gemini-3.1-pro-preview", "google-generative-ai", 1120],
-    ["gemini-4-hydrogen", "google-generative-ai", 1120],
-    ["gemini-2.5-flash", "google-generative-ai", 36_000],
-    ["gemini-custom", "google-generative-ai", 36_000],
-    ["gemini-3.6-flash", "openai-completions", 36_000],
-  ] as const)("uses Gemini's default image cost only for the matching family/API (%s, %s)", (id, api, tokens) => {
-    const message: Message = {role: "user", content: [image(6400, 4800)], timestamp: 0};
-    expect(estimateImageTokens(message, {...testModel, id, api})).toBe(tokens);
-  });
-});
-
 describe("compaction boundary", () => {
   // An explicit `/compact` on a short chat has no budget pressure to cut against. It summarizes
   // everything but the newest record rather than refusing, because the user asked for it.
@@ -317,6 +245,72 @@ describe("compaction boundary", () => {
 
     // Under budget pressure the walk picks the cut instead, leaving roughly the target in the tail.
     expect(findCompactionBoundary(projection(messages), 100_000, 40_000)).toBe(1);
+  });
+
+  // Too many inline attachments require the tail to start after them. The cut keeps as much as
+  // that allows, unless the token budget cuts later.
+  it("starts the tail at a required sequence, or later if the budget demands it", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "follow-up"),
+      message(3, agent, "second response"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 2)).toBe(2);
+    // The budget alone cuts at 1, later than a required 0.
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 0)).toBe(1);
+  });
+
+  // Anthropic merges a kept message into the summarized one before it when their roles match.
+  it("moves a native compaction's cut on to where the role changes, short of what must stay", () => {
+    let messages = [
+      message(0, user, "first photos"),
+      message(1, user, "more photos"),
+      message(2, agent, "seen them"),
+      message(3, user, "and now?"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1, true)).toBe(2);
+    // With message 1 protected, no cut both changes role and keeps it.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, 1, 1, true)).toBeUndefined();
+  });
+
+  // A tool result is a user message to the API, so the prompt, after one, doesn't change role; the
+  // turn protects it (2), so the cut doesn't move on past it to the exchange recording its uploads.
+  it("never moves a native compaction's cut past what must stay", () => {
+    let text = (role: "user", body: string) => ({role, content: body, timestamp: 0});
+    let toolResult = {role: "toolResult" as const, toolCallId: "call", toolName: "observeUserChanges",
+      content: [{type: "text" as const, text: "ok"}], isError: false, timestamp: 0};
+    let entries = [
+      {message: text("user", "first request"), sequence: 0, canCut: true},
+      {message: assistantMessage([{type: "text", text: "working"}]), sequence: 1, canCut: true},
+      {message: toolResult, sequence: 1},
+      {message: text("user", "x".repeat(20_000)), sequence: 2, canCut: true},
+      {message: assistantMessage([{type: "text", text: "uploads"}]), sequence: 3, canCut: true},
+      {message: toolResult, sequence: 3},
+    ];
+
+    expect(findCompactionBoundary(entries, 100_000, 40_000)).toBe(2);
+    expect(findCompactionBoundary(entries, 100_000, 40_000, 0, 2, undefined, true)).toBe(1);
+  });
+
+  // A `/compact` of a chat ending in messages queued after the agent's reply: nothing after the
+  // newest record changes role, so the cut goes back to the last place that does.
+  it("moves a native compaction's cut back when none after it changes role", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "queued"),
+      message(3, user, "queued too"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000)).toBe(3);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, undefined, true)).toBe(2);
+    // Not back past what the attachments require be kept.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 3, true)).toBeUndefined();
   });
 
   // The checkpoint records provisional creations, so unlike a pending connection request they need

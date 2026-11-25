@@ -39,6 +39,10 @@ import { formatUnifiedDiff, type WorktreeTurnAccess } from "./agent";
 import { formatGrep, scanWorkpieceForGrep } from "./grep";
 import { blobByteStream } from "./git-chunked-blob";
 
+// The most a binding's grep() or structuredGrep() returns, in the characters of its `grep -n`
+// lines: a broad search of a large upload would otherwise hold every match in the Overseer.
+const MAX_BINDING_GREP_CHARS = 1024 * 1024;
+
 /**
  * What the session needs from the overseer: the git plumbing, the worktree's registry record
  * (whose headCommit the step barrier owns), and its replicator. Structurally satisfied by
@@ -274,15 +278,20 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree, Replicab
   }
 
   async grep(pattern: RegExp, path?: string | string[]): Promise<string> {
-    let scan = await scanWorkpieceForGrep(
-        this.host.gitCache, this.turn, this.worktreeId, this.#pinBase(), path, pattern);
+    let scan = await scanWorkpieceForGrep(this.host.gitCache, this.turn, this.worktreeId,
+        this.#pinBase(), path, pattern, MAX_BINDING_GREP_CHARS);
     return formatGrep(scan, Infinity);
   }
 
   async structuredGrep(pattern: RegExp, path?: string | string[])
       : Promise<StructuredGrepResult> {
-    let { matches, errors } = await scanWorkpieceForGrep(
-        this.host.gitCache, this.turn, this.worktreeId, this.#pinBase(), path, pattern);
+    let { matches, errors, omitted } = await scanWorkpieceForGrep(this.host.gitCache, this.turn,
+        this.worktreeId, this.#pinBase(), path, pattern, MAX_BINDING_GREP_CHARS);
+    // All matches are promised, so a search with more than fit fails rather than returning some.
+    if (omitted) {
+      throw new Error(`structuredGrep() matched ${matches.length + omitted} lines, more than ` +
+          `fit in one result (${MAX_BINDING_GREP_CHARS} characters). Narrow the pattern or the path.`);
+    }
     return { matches, errors };
   }
 

@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
 import type { AgentTurnResult, WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
 import type {
-  AiChatMessage, GadgetClient, WorkpieceId, WorkpieceSummary,
+  AiChatMessage, ChatEmbeds, GadgetClient, WorkpieceId, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { EvalCheck, EvalCheckOutcome } from "./task.js";
 import { RenderedView, ViewHostError } from "./view-host.js";
@@ -11,7 +11,7 @@ const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
 export type VerifierSession =
-  Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
+  Pick<WorkshopAgentSession, "openGadget" | "connectionDrops" | "readBlobText">;
 
 /** The chat as the Workshop recorded it when the turn ended. */
 export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
@@ -93,9 +93,12 @@ export class EvalVerifier {
     }
   }
 
-  /** Runs `html`, an `<inline-html>` view of this chat, as the Workshop runs it (see RenderedView). */
-  openView(html: string): Promise<RenderedView> {
-    return RenderedView.open(html);
+  /**
+   * Runs `html`, an `<inline-html>` view of this chat, as the Workshop runs it (see RenderedView).
+   * `embeds` is its message's pinned files, which the view reads through this chat's session.
+   */
+  openView(html: string, embeds: ChatEmbeds = {}): Promise<RenderedView> {
+    return RenderedView.open(html, {oids: embeds, readText: oid => this.#session.readBlobText(oid)});
   }
 
   /**
