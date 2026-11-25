@@ -217,12 +217,17 @@ describe("images read from a worktree", () => {
     expect(results(requests.at(-1)!).flatMap(result => result.content.filter(part => part.type === "image"))).toEqual([]);
   }));
 
-  it.each(["chat", "callback", "steer"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["chat", "callback", "steer", "blueprint"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     if (trigger !== "chat") {
       await turn(impl, chatId, []);
       if (trigger === "callback") {
         impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "callback-argument-note", bindingName: "INSPECT_ARGS"}]);
+      } else if (trigger === "blueprint") {
+        impl.addChatMessages(chatId, USER, [{type: "changes", blueprintMerges: [{
+          gadgetId: "test-gadget", blueprintId: "test-blueprint", title: "blueprint-review-note",
+          version: 2, commitId: "0".repeat(40), kind: "follow", conflictPaths: [],
+        }]}]);
       } else {
         impl.addChatMessages(chatId, USER, [{type: "message", message: "Still-active steer", steered: true}]);
       }
@@ -234,6 +239,7 @@ describe("images read from a worktree", () => {
     ]);
     const last = requests.at(-1)!;
     expect(last).toContainEqual({role: "user", content: trigger === "callback" ? expect.stringContaining("callback-argument-note")
+      : trigger === "blueprint" ? expect.stringContaining("blueprint-review-note")
       : trigger === "steer" ? "Still-active steer" : "Read the image", timestamp: expect.any(Number)});
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
@@ -585,6 +591,36 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
+  it("recovers from a local model's explicit unsupported-image response", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await turn(impl, chatId, [[read()]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const config = {provider: "ollama" as const, model: "local-model", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const actualStream = handle.stream;
+    const payloads: string[] = [];
+    handle.stream = (model, context, options) => actualStream(model, context, {...options, maxRetries: 0,
+      fetch: async (input, init) => {
+        const payload = await new Request(input, init).text();
+        payloads.push(payload);
+        if (payload.includes(PNG.toBase64())) return Response.json({error: {
+          code: 500, type: "server_error", message: payloads.length === 1 ? "image input is not supported" : "Unexpected repeat",
+        }}, {status: payloads.length === 1 ? 500 : 401});
+        return new Response([null, "stop"].map(finish_reason => `data: ${JSON.stringify({
+          id: "reply", object: "chat.completion.chunk", created: 0, model: config.model,
+          choices: [{index: 0, delta: finish_reason ? {} : {role: "assistant", content: "Done"}, finish_reason}],
+        })}\n\n`).join("") + "data: [DONE]\n\n", {headers: {"content-type": "text/event-stream"}});
+      },
+    });
+    const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    await expect(run()).rejects.toThrow("Retrying keeps these image inputs as workspace files instead.");
+    await run();
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Unrelated follow-up"}]);
+    await run();
+    expect(payloads.filter(payload => payload.includes(PNG.toBase64()))).toHaveLength(1);
+    expect(payloads).toHaveLength(3);
+  }));
+
   it.each([[400, false], [413, false], [401, false], [200, false], [400, true]] as const)(
     "recovers from native-compaction image refusals: status=%s automatic=%s", (status, automatic) => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);

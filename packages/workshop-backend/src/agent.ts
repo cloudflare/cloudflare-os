@@ -2468,10 +2468,11 @@ async function runAgentPass(
   };
   // Ordinary turns and native compaction may send different slices of the same saved reads.
   const rejectFileImages = (messages: readonly Message[], error: AgentTurnError): boolean => {
-    if (error.retryable) return false;
     const status = error.statusCode;
-    const inputError = (status === undefined || status === 200 || status === 400) &&
-      (error.contextOverflow || /(?:\b|_)images?(?:\b|_)/i.test(error.message));
+    const unsupported = status === 500 && /\bimage input is not supported\b/i.test(error.message);
+    if (error.retryable && !unsupported) return false;
+    const inputError = unsupported || ((status === undefined || status === 200 || status === 400) &&
+      (error.contextOverflow || /(?:\b|_)images?(?:\b|_)/i.test(error.message)));
     if (status !== 413 && !inputError) return false;
     const refused = new Map<number, Set<string>>();
     for (const msg of messages) if (msg.role === "toolResult") {
@@ -2497,7 +2498,8 @@ async function runAgentPass(
     msg.type === "agentCallback" && unfinishedTurn[index - 1]?.type !== "agentCallback");
   const activePrompt = callback && (!userPrompt || callback.sequence > userPrompt.sequence)
     ? callback : userPrompt ?? unfinishedTurn.find(msg =>
-      startsAgentTurn(msg) || (msg.type === "message" && msg.steered));
+      startsAgentTurn(msg) || (msg.type === "message" && msg.steered) ||
+      (msg.type === "changes" && msg.author.type === "user" && msg.blueprintMerges?.length));
   let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
     msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))
     ? activePrompt?.sequence : undefined;
@@ -5067,7 +5069,6 @@ async function runAgentPass(
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let statusCode = httpStatusFromError(message, handle.lastResponse);
     let error = new AgentTurnError(message, statusCode, turnFailure);
-    if (error.retryable) return {type: "transientFailure", error};
     // A provider that refuses the pass's first request may be refusing an attachment the model
     // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
     // Those go by path from now on. The model answered nothing after them, so no thinking
@@ -5075,6 +5076,7 @@ async function runAgentPass(
     // thinking through the replay markers above.
     const refuseAttachments = !stepFinished && (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
     const refuseFileImages = rejectFileImages(modelMessages, error);
+    if (error.retryable && !refuseFileImages) return {type: "transientFailure", error};
     if (refuseAttachments || refuseFileImages) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
       const retryHint = refuseAttachments
