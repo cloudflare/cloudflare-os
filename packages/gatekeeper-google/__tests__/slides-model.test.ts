@@ -5,7 +5,7 @@ import type {
 import {
   backgroundOf, restBackgroundOf, restThemeColorsOf, THEME_COLOR_TYPES, themeColorsOf,
 } from "../src/slides-format";
-import { layoutNames, mastersOf, presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
+import { layoutNames, mastersOf, presentationInfo, slideLabel, slideOf, themePagesOf, titleOf } from "../src/slides-model";
 import type { ShapeElement } from "../src/slides-read-types";
 import {
   colorScheme, layout, master, presentation, shape, SIMPLE_LIGHT, slide, text,
@@ -539,5 +539,20 @@ describe("Slides model", () => {
   it("rejects a page element without an object ID", () => {
     expect(() => onlySlide({ shape: { shapeType: "TEXT_BOX" } }))
       .toThrow("Google Slides returned an invalid page element");
+  });
+});
+
+describe("slideLabel", () => {
+  it("keeps every title with text, so a copy that leaves out a title added since reads the next", () => {
+    // A title placeholder added ahead of the original after a copy of the slide was queued.
+    let added = shape("added", text(["New title"]), { placeholder: "TITLE" });
+    let original = shape("original", text(["Q3 review"]), { placeholder: "TITLE" });
+    let body = shape("body", text(["A long body the label lets go of"]), { placeholder: "BODY" });
+    let label = slideLabel(slide("s1", [added, body, original]));
+    expect(label.pageElements?.map(({ objectId }) => objectId)).toEqual(["added", "original"]);
+    expect(titleOf(label)).toBe("New title");
+    // The copy has the elements the copy was queued over, so its title is the original's.
+    let copied = { ...label, pageElements: label.pageElements?.filter(({ objectId }) => objectId !== "added") };
+    expect(titleOf(copied)).toBe("Q3 review");
   });
 });

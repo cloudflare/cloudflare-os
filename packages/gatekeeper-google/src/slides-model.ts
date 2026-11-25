@@ -268,19 +268,18 @@ export function titleOf(slide: RestSlide): string | undefined {
 
 /**
  * What a read keeps of `slide`, read with `LABEL_FIELDS`: its ID, whether it is skipped, the text
- * of its title placeholder as far as `titleOf` reads it, numbers included, and each other element
+ * of each title placeholder that has any as far as `titleOf` reads it, numbers included, since a
+ * queued copy leaves out one added since and reads its title from the next, and each other element
  * that shows the slide's number, holding those numbers alone. Every other text of the answer, a
  * body's above all, is let go as each answer comes, so a change that names many slides holds a
  * few hundred bytes of each, whatever its pages hold. A title keeps its slide numbers as they are,
  * since a queued move renumbers them.
  */
 export function slideLabel(slide: RestSlide): RestSlide {
-  let titled = false;
   let pageElements = (slide.pageElements ?? []).flatMap(({ objectId, shape }): RestPageElement[] => {
     let placeholder = shape?.placeholder;
     let elements = shape?.text?.textElements ?? [];
-    if (!titled && TITLE_PLACEHOLDERS.has(placeholder?.type ?? "") && textOf(shape?.text).length > 0) {
-      titled = true;
+    if (TITLE_PLACEHOLDERS.has(placeholder?.type ?? "") && textOf(shape?.text).length > 0) {
       return [{ objectId, shape: { placeholder, text: { textElements: titlePrefix(elements) } } }];
     }
     let numbers = elements.filter(({ autoText }) => autoText?.type === "SLIDE_NUMBER");
