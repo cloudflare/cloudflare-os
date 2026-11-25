@@ -3502,20 +3502,21 @@ describe("Google Sheets replay cost", () => {
     //
     // An answer of cells as entered is 40 bytes around its blocks, one for each area. Wherever the
     // sheets are read to queue, replay or apply, the merges of the sheets the changes act on are
-    // read too (`MERGES`): after the sheets to queue, which finds sheets by title, and beside them
-    // to read or apply, which know the sheets' IDs from the queued changes.
+    // read too (`MERGES`), of those whose changes consult them: after the sheets to queue, which
+    // finds sheets by title, and beside them to read or apply, which know the sheets' IDs from the
+    // queued changes. A change that only formats consults none.
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
         // Three copies a batch: the fold's, of no entry, and the two after it, of 0, 20, 40, 60
         // and 80 thousand entries each.
         overlayCopies: 15, overlayEntries: 400_000,
-        // The sheets and whether the account may edit, asked together for each batch, and then the
-        // two guards' cells as entered, at 53 bytes a cell: a block of 10,000 cells is 531,313
-        // bytes, and 15 more where it names its first row, which a block from row 1 does not. One
-        // of the first guard's two blocks names it and both of the second's, with a comma between
-        // the two.
-        fetches: 17, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 5 * MERGES + 1_062_682 + 1_062_697,
+        // The sheets and whether the account may edit, asked together for each batch, no merges
+        // (no change of the queue consults them), and then the two guards' cells as entered, at 53
+        // bytes a cell: a block of 10,000 cells is 531,313 bytes, and 15 more where it names its
+        // first row, which a block from row 1 does not. One of the first guard's two blocks names
+        // it and both of the second's, with a comma between the two.
+        fetches: 12, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 1_062_682 + 1_062_697,
         mostOpen: 2,
       },
       {
@@ -3573,10 +3574,10 @@ describe("Google Sheets replay cost", () => {
       {
         ...none, phase: "approve", pending: 6 + N,
         // The batch is planned again over the sheets as they are, with nothing queued. It formats,
-        // so its digest is of no cell. The sheets and the merges, together, then the write, whose
-        // answer is 20 bytes.
+        // so its digest is of no cell and its plan reads no merges. The sheets, then the write,
+        // whose answer is 20 bytes.
         overlayCopies: 1,
-        fetches: 3, responseBytes: SHEETS + MERGES + 20, mostOpen: 2,
+        fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1,
       },
       // A rejection reads nothing.
       { ...none, phase: "reject", pending: 5 + N },
