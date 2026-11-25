@@ -1873,8 +1873,9 @@ export class GoogleChatGatekeeperImpl
   /**
    * Where a send to exactly some people posts, and what an earlier attempt posted there, if Google
    * shows it. A conversation the send creates is created on its first apply: a retry reuses it
-   * whether or not its response arrived, and sends to the same people share one. Otherwise the
-   * send posts only while they are exactly who else is in the conversation.
+   * whether or not its response arrived, and sends to the same people share one. Either way the
+   * send posts only while they are exactly who else is in the conversation, which is checked just
+   * before posting.
    */
   async #conversationFor(
     api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
@@ -1895,8 +1896,6 @@ export class GoogleChatGatekeeperImpl
       const posted = await earlierPost(api, store, actionId, spaceName, action);
       if (posted) return { spaceName, posted };
     }
-    // A retry may follow a post that landed, so it leaves the attempt mark as it is.
-    if (!await hasExactly(api, spaceName, recipients)) throw new Error(audienceChanged(retried));
     return { spaceName };
   }
 
@@ -1947,9 +1946,12 @@ export class GoogleChatGatekeeperImpl
               () => api.uploadAttachment(spaceName, { filename, mimeType, content })));
           }
           const { id } = await this.#spaceWrites.run(spaceName, async () => {
-            // Someone may have joined while the files uploaded or this write waited its turn, and
-            // the message must reach only the people it was approved for.
-            if (recipients && attachments.length > 0 && !await hasExactly(api, spaceName, recipients)) {
+            // A send to exactly some people must reach only them, so who is in the conversation is
+            // checked as late as it can be: after any uploads and this write's wait for its turn.
+            // Google has no create that holds only while the members are unchanged, so someone
+            // added between this check and the post still receives it. A retry may follow a post
+            // that landed, so a refusal here leaves the attempt mark as it is.
+            if (recipients && !await hasExactly(api, spaceName, recipients)) {
               throw new Error(audienceChanged(retried));
             }
             // The request id makes Chat itself idempotent, so a retry after a lost response returns

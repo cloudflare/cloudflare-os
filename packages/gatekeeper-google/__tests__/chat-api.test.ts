@@ -663,13 +663,13 @@ describe("Chat provider error handling", () => {
   });
 });
 
+const file = (filename: string, mimeType = "image/png", content = new ArrayBuffer(4)) =>
+  ({ filename, mimeType, content });
+
 describe("Chat attachments", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-
-  const file = (filename: string, mimeType = "image/png", content = new ArrayBuffer(4)) =>
-    ({ filename, mimeType, content });
 
   it("accepts ordinary files, lowercasing their media type", () => {
     expect(normalizeChatAttachments([file("a.bin", `${"a".repeat(127)}/${"b".repeat(127)}`)])).toHaveLength(1);
@@ -699,9 +699,9 @@ describe("Chat attachments", () => {
   it("refuses more than ten files, or more than 20 MiB in all", () => {
     expect(() => normalizeChatAttachments(Array.from({ length: 11 }, (_, index) => file(`${index}.png`))))
       .toThrow(/at most 10 files/);
-    const largest = () => file("a.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES));
-    expect(normalizeChatAttachments([largest(), largest()])).toHaveLength(2);
-    expect(() => normalizeChatAttachments([largest(), largest(), file("b.png")]))
+    const largest = file("a.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES));
+    expect(normalizeChatAttachments([largest, largest])).toHaveLength(2);
+    expect(() => normalizeChatAttachments([largest, largest, file("b.png")]))
       .toThrow(/total at most 20971520 bytes/);
   });
 

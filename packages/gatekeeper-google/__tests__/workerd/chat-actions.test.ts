@@ -127,8 +127,8 @@ function chatBackend() {
     uploads: [] as Array<{space: string; filename: string; contentType: string; bytes: number[]}>,
     /** Refuse uploads with this status until cleared, as Google does a blocked file type. */
     uploadFailure: 0,
-    /** Someone who joins the conversation this long after the next file uploads. */
-    joinAfterUpload: undefined as {member: ChatMembershipRaw; ms: number} | undefined,
+    /** Someone who joins the conversation this long after the next upload or message create. */
+    joinAfterWrite: undefined as {member: ChatMembershipRaw; ms: number} | undefined,
     /** When each upload and message create arrived, to see how a send spaces its writes. */
     writeTimes: [] as number[],
     /** Profiles in the organization's directory, matched by email or name prefix. */
@@ -147,6 +147,12 @@ function chatBackend() {
     setupFailure: 0,
   };
   const storedText = (formattedText: string) => ({formattedText, text: state.renderText(formattedText)});
+  const joinLater = () => {
+    if (!state.joinAfterWrite) return;
+    const {member, ms} = state.joinAfterWrite;
+    state.joinAfterWrite = undefined;
+    setTimeout(() => state.members.push(member), ms);
+  };
   /** A page of `items` no longer than asked for, nor than `state.pageSize`, as Google may return. */
   const pageOf = <T>(items: T[], url: URL) => {
     const start = Number(url.searchParams.get("pageToken") ?? 0);
@@ -186,11 +192,7 @@ function chatBackend() {
     const uploadTo = /^\/upload\/v1\/(spaces\/[^/]+)\/attachments:upload$/.exec(url.pathname)?.[1];
     if (uploadTo && method === "POST" && url.searchParams.get("uploadType") === "multipart") {
       state.writeTimes.push(Date.now());
-      if (state.joinAfterUpload) {
-        const {member, ms} = state.joinAfterUpload;
-        state.joinAfterUpload = undefined;
-        setTimeout(() => state.members.push(member), ms);
-      }
+      joinLater();
       if (state.uploadFailure) return json({error: {status: "INVALID_ARGUMENT"}}, state.uploadFailure);
       const boundary = /boundary=(.+)$/.exec(new Headers(init.headers).get("Content-Type")!)![1];
       // One character per byte, so the media part's bytes survive the split. (TextDecoder's
@@ -282,6 +284,7 @@ function chatBackend() {
           ...(end < messages.length ? {nextPageToken: String(end)} : {})});
       }
       state.writeTimes.push(Date.now());
+      joinLater();
       const body = JSON.parse(init.body as string) as typeof state.creates[number]["body"];
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
@@ -1939,6 +1942,18 @@ describe("Starting Google Chat conversations", () => {
       {attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}]});
   });
 
+  it("posts nothing to a group chat someone joined while the message waited its turn", async () => {
+    const {backend, chat} = accountChat({groupChat: true});
+    using account = await chat.account();
+    using _first = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 41")).message;
+    using _second = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 42")).message;
+    // Someone joins while the second message waits out the second after the first.
+    backend.state.joinAfterWrite = {member: joined("400"), ms: 300};
+    await chat.applyAction(1);
+    await expect(chat.applyAction(2)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["Release 41"]);
+  });
+
   it("doesn't upload a new conversation's files again when a retry finds the message posted", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
@@ -1962,7 +1977,7 @@ describe("Starting Google Chat conversations", () => {
       attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
     })).message;
     // While the message waits its turn to be written, a second after the upload.
-    backend.state.joinAfterUpload = {member: joined("400"), ms: 300};
+    backend.state.joinAfterWrite = {member: joined("400"), ms: 300};
     await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
     expect(backend.state.uploads).toHaveLength(1);
     expect(backend.state.creates).toEqual([]);
