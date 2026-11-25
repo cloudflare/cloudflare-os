@@ -4790,13 +4790,21 @@ async function runAgentPass(
       emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
+        const keptFrom = projection.findIndex(({sequence}) =>
+          sequence !== undefined && sequence >= compactedTo);
+        const prefix = modelMessages.slice(0, keptFrom);
+        // Native compaction sends the original prefix, before the omission rewrite below.
+        // If its media exceeds the same request limits, summarize the transcript instead.
+        const images = prefix.flatMap(msg => Array.isArray(msg.content)
+          ? msg.content.filter(part => part.type === "image") : []);
+        const imageBytes = images.reduce((sum, {data}) => sum + data.length * 3 / 4 -
+          (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0), 0);
+        native &&= images.length <= MAX_INLINE_ATTACHMENTS && imageBytes <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES;
         if (native) {
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
-          let keptFrom = projection.findIndex(({sequence}) =>
-            sequence !== undefined && sequence >= compactedTo);
           let {summary, block} = await requestAnthropicCompaction(
               handle, stream,
-              {messages: [leadingSystemMessage, ...modelMessages.slice(0, keptFrom)]},
+              {messages: [leadingSystemMessage, ...prefix]},
               COMPACTION_SYSTEM_PROMPT, {maxTokens: maxOutputTokens, signal: abortSignal});
           written = {summary, anthropicCompactionBlock: block};
         } else {
@@ -4989,12 +4997,23 @@ async function runAgentPass(
     // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
     // Those go by path from now on. The model answered nothing after them, so no thinking
     // depends on how they were shown.
-    if ((statusCode === 400 || statusCode === 413) && !stepFinished &&
-        (unansweredAttachmentIds.length > 0 || unansweredFileImages.size > 0)) {
-      hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
+    // Admission can omit an unanswered file batch: only images actually sent can be refused.
+    const sentImageReads = new Set(modelMessages.flatMap(msg => msg.role === "toolResult" &&
+        msg.content.some(part => part.type === "image") ? [msg.toolCallId] : []));
+    for (const [sequence, reads] of unansweredFileImages) {
+      for (const id of reads) if (!sentImageReads.has(id)) reads.delete(id);
+      if (reads.size === 0) unansweredFileImages.delete(sequence);
+    }
+    const refuseAttachments = (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
+    // A permanent failure may arrive inside HTTP 200 streaming data. Keep unread file images
+    // out of the next attempt without guessing provider error codes or retrying any effects.
+    if (!stepFinished && (refuseAttachments || unansweredFileImages.size > 0)) {
+      if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
       hooks.rejectChatFileImages(chatId, unansweredFileImages);
-      throw new AgentTurnError(`${message}\n\nRetrying sends this message's images and PDFs ` +
-          "as workspace files instead.", statusCode);
+      const retryHint = unansweredFileImages.size > 0
+        ? "Retrying keeps these unread image inputs as workspace files instead."
+        : "Retrying sends this message's images and PDFs as workspace files instead.";
+      throw new AgentTurnError(`${message}\n\n${retryHint}`, statusCode);
     }
     throw error;
   }

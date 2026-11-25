@@ -50,6 +50,13 @@ const read = (extra = {}) => fauxToolCall("readFile", {workpiece: "IMAGES", file
 const results = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName === "readFile" ? [message] : []);
 
+function recordReads(impl: Impl, chatId: number, oid: string, count: number) {
+  impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "", toolCalls: Array.from({length: count}, () => ({
+    toolName: "readFile", toolCallId: crypto.randomUUID(),
+    input: {workpiece: "IMAGES", filename: "image.png"}, image: {oid, byteLength: PNG.length},
+  }))}]);
+}
+
 describe("images read from a worktree", () => {
   it("shows pixels immediately and replays the immutable blob after file removal and eviction", async () => {
     const name = crypto.randomUUID();
@@ -148,6 +155,51 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
+  it("summarizes over-limit image history as text instead of sending it to native compaction", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    recordReads(impl, chatId, blob.oid, 20);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "More images"}]);
+    recordReads(impl, chatId, blob.oid, 5);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Finish"}]);
+    // A long retained reply puts the native cut after both image batches.
+    impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "Done ".repeat(20_000)}]);
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: 40_000});
+    impl.addChatMessages(chatId, USER, [{type: "slashCommand",
+      request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    faux.setResponses([fauxAssistantMessage(fauxText("Summarized the image observations."))]);
+    const requests: Message[][] = [];
+    await runAgent(impl, {model: getModel({} as Cloudflare.Env,
+      {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"}, USER).model,
+      stream: (_model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(faux.getModel(), context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"});
+    expect(requests).toHaveLength(1);
+    expect(requests[0].flatMap(msg => Array.isArray(msg.content)
+      ? msg.content.filter(part => part.type === "image") : [])).toEqual([]);
+    expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({summary: "Summarized the image observations."});
+    expect(impl.loadChatHistory(chatId).checkpoint?.anthropicCompactionBlock).toBeUndefined();
+  }));
+
+  it("does not refuse file images that admission omitted from the failing request", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    recordReads(impl, chatId, blob.oid, 20);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "New upload", {attachments: [{oid: blob.oid, mimeType: "image/png", name: "new.png"}]});
+    await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("")),
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"}),
+    ])).rejects.toThrow("400 Invalid image");
+    const reads = impl.loadChatHistory(chatId).chatMessages.flatMap(msg =>
+      msg.type === "message" ? msg.toolCalls ?? [] : []).filter(call => call.toolName === "readFile");
+    expect(reads).toHaveLength(20);
+    expect(reads.every(call => !call.image?.rejected)).toBe(true);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(results(requests[0]).flatMap(msg => msg.content.filter(part => part.type === "image"))).toHaveLength(20);
+  }));
+
   it("does not send reverted image reads", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await turn(impl, chatId, [[read()]]);
@@ -159,18 +211,31 @@ describe("images read from a worktree", () => {
     expect(results(requests[0]).every(result => result.content.every(part => part.type === "text"))).toBe(true);
   }));
 
-  it("records provider refusal without retrying completed tools, and leaves the chat usable", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["400 Invalid image", "Error Code image_parse_error: Could not process image"])(
+    "surfaces a permanent failure without repeating effects and leaves the chat usable: %s", failure => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await expect(scriptedTurn(impl, chatId, [
       fauxAssistantMessage([read(), fauxToolCall("writeFile", {workpiece: "IMAGES", filename: "note.txt", content: "Saved"})], {stopReason: "toolUse"}),
-      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"}),
-    ])).rejects.toThrow("400 Invalid image");
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: failure}),
+    ])).rejects.toThrow(failure);
     const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
     expect(calls.filter(call => call.toolName === "writeFile")).toHaveLength(1);
     expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.rejected", true);
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
     const {requests} = await turn(impl, chatId, []);
     expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
+  }));
+
+  it("retains unread pixels across transient provider retries", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "503 Unavailable"}),
+      fauxAssistantMessage(fauxText("Recovered")),
+    ]);
+    expect(results(requests.at(-1)!)[0].content.some(part => part.type === "image")).toBe(true);
+    const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : []);
+    expect(calls.find(call => call.toolName === "readFile")).not.toHaveProperty("image.rejected");
   }));
 
   it("reads an uncommitted byte-backed file and preserves its original pixels after replacement", () => inKernel(crypto.randomUUID(), async impl => {
