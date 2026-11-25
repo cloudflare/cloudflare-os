@@ -2607,6 +2607,9 @@ export class GoogleDriveGatekeeperImpl
       let settled = record === undefined || record.state === "failed" ||
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
+        // A write staged under no account is checked and made as the account connected now: a
+        // reconnect does not revoke the token this object kept of the one before it.
+        if (!settled) await this.#getAccessToken({ reloadStored: true });
         this.#adoptOrphanedClaim(actionId);
         let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
         try {

@@ -1541,6 +1541,18 @@ describe("sharing", () => {
     expect(provider.direct("doc-1")).toEqual([["perm-A", "owner"], ["perm-carol", "reader"]]);
   });
 
+  it("checks and makes an approved rename as the account connected now", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
+    // No restart: the gatekeeper still holds the first account's token, which Google accepts.
+    await switchAccount();
+    provider.forget();
+
+    expect(await drive.apply(actionId)).toBeNull();
+    expect(provider.calls()).toContain("PATCH /drive/v3/files/doc-1");
+    expect(provider.requests.filter(({ token }) => token !== OTHER_TOKEN)).toEqual([]);
+  });
+
   it("never sends a refused change again under credentials installed during its approval", async () => {
     let drive = binding();
     let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
@@ -1617,12 +1629,10 @@ describe("sharing", () => {
     provider.nextWrite = { status: 403, reason: "shareOutNotPermitted" };
     expect(await drive.apply(share.actionId)).toBe(SHARE_OUT_REFUSED);
     await switchAccount();
-    provider.nextWrite = { status: 403, reason: "insufficientPermissions" };
 
-    // A comment is applied as whichever account is connected: refused for the scope, it is sent
-    // again under the credentials stored since, which the failed approval's token would prevent.
+    // A comment is applied as the account connected now, not under the failed approval's token.
     expect(await drive.apply(comment.actionId)).toBeNull();
-    expect(sent(COMMENT_ON_DOC).map(({ token }) => token === OTHER_TOKEN)).toEqual([false, true]);
+    expect(sent(COMMENT_ON_DOC).map(({ token }) => token === OTHER_TOKEN)).toEqual([true]);
     expect(provider.comments.get("doc-1")).toEqual(["Hi"]);
   });
 
