@@ -131,16 +131,18 @@ export class ActionFileStore {
    * dated when the capture began, which `pruneUnreferenced()` may delete, failing the capture.
    * If the stream errors, gives more than `maxFileBytes` or anything but `Uint8Array` chunks, or
    * would take the store past `maxTotalBytes`, the capture fails and keeps nothing, and the stream
-   * is cancelled without the failure waiting for the cancel to settle.
+   * is cancelled without the failure waiting for the cancel to settle. Needs workerd's
+   * `crypto.DigestStream`; without it, the capture rejects and leaves `content` unlocked.
    * @param content File bytes to retain.
    * @returns A reference suitable for a queued-action payload.
    */
   async captureStream(content: ReadableStream<Uint8Array>): Promise<ActionFileReference> {
     const handle = crypto.randomUUID();
     const startedAt = Date.now();
-    const reader = content.getReader();
     const digest = new crypto.DigestStream("SHA-256");
     const hashing = digest.getWriter();
+    // Locked last, so a digest that cannot be set up leaves the source as it was given.
+    const reader = content.getReader();
     let size = 0;
     let chunks = 0;
     let chunk = new Uint8Array(ACTION_FILE_CHUNK_BYTES);
@@ -236,7 +238,8 @@ export class ActionFileStore {
    * manifest names. Each chunk's size is checked as it is read, and the whole file's digest before
    * the final chunk is given: a stream that errors gave an incomplete or corrupted file, and never
    * its final chunk, so a consumer that commits on the last byte, such as a resumable upload,
-   * commits nothing. A chunk is read only when the consumer asks for one.
+   * commits nothing. A chunk is read only when the consumer asks for one. Needs workerd's
+   * `crypto.DigestStream`.
    * @param file Stored file reference.
    * @returns The exact captured bytes, streamed.
    */
