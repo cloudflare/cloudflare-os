@@ -1469,9 +1469,11 @@ What stays the gatekeeper's, because two listings rarely agree on it:
   ```
 
   A listing paged by token (`TokenCursor`) may instead return them ahead of its first provider
-  page and leave `inject` to the stand-ins, since the provider's token says where the next page
-  starts. One paged by offset may not: `OffsetCursor` advances by the rows `fetchPage` returns, so
-  each row added there skips a provider row; such a listing keeps them in `inject.items`, as above.
+  page, as the provider has them rather than through `list.overlay`: the cursor folds every row
+  `fetchPage` returns, so one folded there would be folded twice. It then leaves `inject` to the
+  stand-ins, since the provider's token says where the next page starts. One paged by offset may
+  not: `OffsetCursor` advances by the rows `fetchPage` returns, so each row added there skips a
+  provider row; such a listing keeps them in `inject.items`, as above.
 - **`authorize` and `identity`.** `authorize: true` for every page a session is served, one of
   stand-ins alone included: a stand-in may hold only the caller's own fields and still sit in a
   container whose access the page's authorizer reports (see
