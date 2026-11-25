@@ -60,7 +60,7 @@ const deleteRows = (sheetId: number, first: number, count = 1): PlannedChange =>
   ({ op: "deleteRows", sheetId, start: first - 1, count });
 
 
-describe("baseValues", () => {
+describe("baseValues against a scan of every piece", () => {
   // Pieces cut across rows (tall), and many narrow column fragments with a few wide pieces over
   // them (wide), both across several bands and overlapping.
   let shapes = {
