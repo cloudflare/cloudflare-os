@@ -381,7 +381,7 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const blob = impl.gitCache.writeBlob(png);
     const dot = { oid: blob.oid, mimeType: "image/png", name: "dot.png" };
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, { profile: OWNER }, "Look at this", { attachments: [dot] });
+    const chatId = await impl.newChat(user, { profile: OWNER }, "Look at this", "auto", { attachments: [dot] });
     impl.addChatMessages(chatId, AGENT, [{ type: "message", message: "", toolCalls:
       Array.from({ length: 20 }, (_, i) => ({ toolCallId: `look-${i}`, toolName: "readFile" as const,
         input: { workpiece: "ATTACHMENTS", filename: "dot.png" }, observedOid: blob.oid, imageBytes: 24 })),

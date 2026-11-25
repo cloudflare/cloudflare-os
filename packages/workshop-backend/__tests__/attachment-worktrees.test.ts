@@ -979,7 +979,7 @@ describe("attachment worktree ingress", () => {
   it("compacts mid-turn once the images readFile showed pass the limit", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: blob.oid, mimeType: "image/png", name: "dot.png"}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
@@ -1021,7 +1021,7 @@ describe("attachment worktree ingress", () => {
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
     const ref = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Match this mockup", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Match this mockup", "auto", {attachments:
       [{oid: ref.oid, mimeType: "image/png", name: "ref.png"}]});
     const looks = Array.from({length: 20}, (_, i) => fauxAssistantMessage(
         [fauxThinking(`Look ${i}`), fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "ref.png"})],
@@ -1048,7 +1048,7 @@ describe("attachment worktree ingress", () => {
   it("counts no image read of content the user later reverted", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[worktreeId]: [["notes.txt", {set: "draft"}]]});
@@ -1070,7 +1070,7 @@ describe("attachment worktree ingress", () => {
   it("replays an image read as a note for a model that can't view images", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     await scriptedTurn(impl, chatId, [fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "dot.png"})]);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Now in words");
@@ -1091,7 +1091,7 @@ describe("attachment worktree ingress", () => {
   it("refuses image reads past one message's budget within a step", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at these", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at these", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[worktreeId]: [
