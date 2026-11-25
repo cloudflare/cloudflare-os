@@ -1418,10 +1418,12 @@ fetch, its journal read and the stand-ins it serves together against apply (`run
 tells from a row what it already holds (a version or a marker the provider keeps on it) and matches
 a created row to its create before the id binds. The fence orders applies; it does not settle a
 write whose outcome is unknown: one an earlier activation dispatched and never settled (left
-`claimed`), or one this activation sent whose reply was lost, which stays pending to be retried.
-Either is still listed, and whether the provider took it is known only from the provider, so an
-exact listing needs that evidence for it, as the document recipe's write marker gives, or shows
-its row as not yet known. Neither makes a row the cursor buffered before a
+`claimed`), or one this activation sent whose reply was lost and whose handler failed it
+retryably, which stays pending to be retried. Either is still listed, and whether the provider took
+it is known only from the provider, so an exact listing needs that evidence for it, as the document
+recipe's write marker gives, or shows its row as not yet known. One failed with
+`ActionOutcomeUnknownError` is no longer pending and is not folded, so a row it reached shows as
+the provider answers it. Neither makes a row the cursor buffered before a
 record applied current: a listing that must show settled changes reads the rows such a change
 touches again, or starts the walk again.
 

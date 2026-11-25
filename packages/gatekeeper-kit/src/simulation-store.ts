@@ -331,8 +331,8 @@ export type SimulatedList<Row> = {
  * it, and a create that landed before its id bound shows as its stand-in and the provider's row.
  * For the rows a page fetches, a listing that must not show these runs the fetch and journal read
  * together against apply (`runExclusive`), which settles no write whose outcome is unknown (one
- * left `claimed`, or one retried after a lost reply needs evidence from the provider), or tells
- * from a row what it holds; a row buffered
+ * left `claimed`, or one failed retryably after a lost reply, needs evidence from the provider),
+ * or tells from a row what it holds; a row buffered
  * before a record applied is made current only by reading it again or starting the walk again.
  * See USAGE.md, "A listing over a simulation store".
  * @param options The store, the index of the pending records, and the listing's own id,
