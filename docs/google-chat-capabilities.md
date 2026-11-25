@@ -192,15 +192,17 @@ Event history, explicit message deletion, and generic drafts/patches are absent.
 remains supported internally.
 
 Every send (`post`, `reply`, `sendDirectMessage`) takes `options.attachments`: up to 10 files of
-at most 10 MiB each, each a filename, a parameterless media type and its bytes. With one, the text
+at most 10 MiB each and 20 MiB in all, since they arrive as one call's arguments and Workers RPC
+caps those at 32 MiB. Each is a filename, a parameterless media type and its bytes. With one, the text
 may be empty. The gatekeeper keeps exact copies in its own Durable Object storage (at most 50 MiB
 for a connection's queued sends at once) and names each file in the approval by name, media type,
 size and SHA-256, which leaves the description incomplete, since the approver cannot read the
 bytes. Applying the send uploads each file into the conversation it posts to, the one a
 `sendDirectMessage` creates included, and creates the message with them attached; an upload no
 message attaches stays invisible, so uploads are simply retried. Applying or rejecting the send
-frees the copies. Until then the pending message lists its files with `readable: false`, and
-`getAttachment()` opens them once it is committed. Google refuses some file types, such as
+frees the copies. Until then the pending message lists its files with `readable: false`, under temporary
+IDs; once it is committed, `getMetadata()` lists them with Google's IDs, which `getAttachment()`
+takes. Google refuses some file types, such as
 executables, at upload, and then nothing is posted.
 
 `space.post(text)` posts a top-level message, which in a threaded conversation starts a new

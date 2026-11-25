@@ -16,7 +16,7 @@ import { ChatSpaceConfiguratorUI } from "../../src/google-configurators";
 type TestHooks = {
   chatStartSession(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
-      queueId: string): Promise<void>;
+      queueId: string, rejection?: string): Promise<void>;
   runChatOperation(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
       queueId: string, operation: string, args: unknown[]): Promise<unknown>;
@@ -376,6 +376,8 @@ function chatHarness(
     backend: ReturnType<typeof chatBackend>,
     userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
     binding: "account" | "space" | "thread" = "space",
+    /** Have the approval queue refuse every submission with this message. */
+    rejection?: string,
 ) {
   // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
   // in the test context cannot be awaited there.
@@ -415,7 +417,7 @@ function chatHarness(
         {token: "access-token", expires: new Date(Date.now() + 3_600_000)});
     })
     .then(() => runHook(hook, instance =>
-      instance.chatStartSession(facetName, id, props, queueId)));
+      instance.chatStartSession(facetName, id, props, queueId, rejection)));
   const observerId = testEnv.UserAccount.idFromName(`${name}-observer`);
   return {
     setToken: (token: string) => runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
@@ -437,7 +439,7 @@ function chatHarness(
       await ready;
       await abortAllDurableObjects();
       hook = testEnv.TestHooks.get(testEnv.TestHooks.idFromName(name));
-      await runHook(hook, instance => instance.chatStartSession(facetName, id, props, queueId));
+      await runHook(hook, instance => instance.chatStartSession(facetName, id, props, queueId, rejection));
     },
     call: (operation: string, args: unknown[] = []): Promise<unknown> => ready.then(() =>
       runHook(hook, instance =>
@@ -2187,8 +2189,35 @@ describe("Google Chat attachments", () => {
       attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}],
     }]);
     expect(await kept(chat)).toEqual([]);
-    expect((await message.getMetadata()).attachments).toEqual([expect.objectContaining(
-      {filename: "impact.png", mimeType: "image/png", source: "uploaded", readable: true})]);
+    // Committed, the file carries Google's ID, which is the one getAttachment() takes.
+    const [committed] = (await message.getMetadata()).attachments;
+    expect(committed).toEqual({id: `${messageName("M1")}/attachments/A1`, filename: "impact.png",
+      mimeType: "image/png", source: "uploaded", readable: true});
+    await expect(Promise.resolve(message.getAttachment(info.attachments[0].id))).rejects.toThrow(/no such attachment/);
+    using attachment = await message.getAttachment(committed.id);
+    expect(await attachment.getMetadata()).toEqual(committed);
+  });
+
+  it("doesn't upload a retried send's files again once its message was posted", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _message = (await space.post("Release impact", {attachments: [png()]})).message;
+    // The message is posted, but its response is lost.
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    backend.state.createFailure = 0;
+    await chat.applyAction(1);
+    expect(backend.state.uploads).toHaveLength(1);
+    expect(backend.state.creates).toHaveLength(1);
+    expect(await kept(chat)).toEqual([]);
+  });
+
+  it("lets go of a send's files when the approval queue refuses it", async () => {
+    const chat = chatHarness(chatBackend(), undefined, "space", "Refused by the test.");
+    using space = await chat.session();
+    await expect(Promise.resolve(space.post("x", {attachments: [png()]}))).rejects.toThrow(/Refused by the test/);
+    expect(await kept(chat)).toEqual([]);
   });
 
   it("sends files with no text, in order, and as a reply", async () => {

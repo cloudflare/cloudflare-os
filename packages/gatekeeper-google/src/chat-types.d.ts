@@ -150,8 +150,9 @@ export type ChatAttachmentInput = {
 /** What a message you send carries besides its text. */
 export type ChatSendOptions = {
   /**
-   * Files to attach, at most 10. With at least one, the message's text may be empty. Google
-   * Chat refuses some file types, such as executables, and then posts nothing.
+   * Files to attach: at most 10, totalling at most 20 MiB (20,971,520 bytes). With at least one,
+   * the message's text may be empty. Google Chat refuses some file types, such as executables,
+   * and then posts nothing.
    */
   attachments?: ChatAttachmentInput[];
 };
@@ -269,8 +270,9 @@ export type ChatMessageInfo = {
   /** Whether this message is a reply in a thread rather than the thread's first message. */
   isReply: boolean;
   /**
-   * Files attached to the message. A pending message lists the files you attached, which
-   * `ChatMessage.getAttachment()` can open once it is committed.
+   * Files attached to the message. A pending message lists the files you attached under
+   * temporary IDs, which `ChatMessage.getAttachment()` does not take. Once it is committed,
+   * `ChatMessage.getMetadata()` lists them with the IDs it does.
    */
   attachments: ChatAttachmentInfo[];
   /**

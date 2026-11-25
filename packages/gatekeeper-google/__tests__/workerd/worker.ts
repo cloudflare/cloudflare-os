@@ -664,8 +664,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async chatStartSession(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+      rejection?: string,
   ): Promise<void> {
-    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#queues.set(queueId, new TestApprovalQueue(rejection));
     this.#chat(facetName, id, props);
   }
 

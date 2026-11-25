@@ -1032,6 +1032,18 @@ function deletedTarget(store: ChatStore, actionId: number, cause: unknown): Erro
     "Reject it.", { cause });
 }
 
+/** What an earlier attempt at this send posted, when Google shows it under the name the send gives it. */
+async function earlierPost(
+  api: ChatApi, store: ChatStore, actionId: number, spaceName: string, action: ChatSendMessageAction,
+): Promise<ChatMessageInfo | undefined> {
+  return api.getMessage(`${spaceName}/messages/${clientMessageId(action)}`).catch((error: unknown) => {
+    if (error instanceof DeletedChatMessageError) throw deletedTarget(store, actionId, error);
+    // Not finding it doesn't show that the earlier attempt never landed.
+    if (error instanceof ChatApiError && error.status === 404) return undefined;
+    throw error;
+  });
+}
+
 /** Pair a just-queued message with its capability. */
 function postedEntry(ctx: ChatContext, info: ChatMessageInfo): ChatMessageEntry {
   return { info, message: new ChatMessageImpl(ctx, info.id) };
@@ -1838,13 +1850,7 @@ export class GoogleChatGatekeeperImpl
     const retried = store.wasAttempted(actionId);
     if (retried) {
       // A post an earlier attempt made is sent, whoever is in the conversation now.
-      const posted = await api.getMessage(`${spaceName}/messages/${clientMessageId(action)}`)
-        .catch((error: unknown) => {
-          if (error instanceof DeletedChatMessageError) throw deletedTarget(store, actionId, error);
-          // Not finding it doesn't show that the earlier attempt never landed.
-          if (error instanceof ChatApiError && error.status === 404) return undefined;
-          throw error;
-        });
+      const posted = await earlierPost(api, store, actionId, spaceName, action);
       if (posted) return { spaceName, posted };
     }
     // A retry may follow a post that landed, so it leaves the attempt mark as it is.
@@ -1884,7 +1890,13 @@ export class GoogleChatGatekeeperImpl
         const recipients = action.newConversation?.members.map(member => member.id) ?? action.recipients;
         const { spaceName, posted } = recipients
           ? await this.#conversationFor(api, store, actionId, action, recipients)
-          : { spaceName: action.spaceName, posted: undefined };
+          : {
+            spaceName: action.spaceName,
+            // Retried, a send would upload its files again only for Chat to return the message
+            // they were already posted in.
+            posted: retried && action.attachments?.length
+              ? await earlierPost(api, store, actionId, action.spaceName, action) : undefined,
+          };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
           // Uploads land in the conversation the message is posted to, and stay invisible until it

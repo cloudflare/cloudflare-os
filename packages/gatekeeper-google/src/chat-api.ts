@@ -63,6 +63,11 @@ export const MAX_CHAT_MESSAGE_BYTES = 32_000;
  * Durable Object storage until the send is applied, so this matches Gmail's per-file limit.
  */
 export const MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/**
+ * Most bytes one sent message may attach in all. The files arrive as one call's arguments, which
+ * Workers RPC caps at 32 MiB, and the queued sends of a connection hold 50 MiB at most.
+ */
+export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024;
 /** Most files one sent message may attach. Chat documents no limit; this keeps approvals readable. */
 export const MAX_CHAT_ATTACHMENTS = 10;
 const MAX_CHAT_ATTACHMENT_FILENAME_LENGTH = 255;
@@ -76,6 +81,9 @@ const UNSAFE_FILENAME_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-
 export function normalizeChatAttachments(inputs: readonly ChatAttachmentInput[]): ChatAttachmentInput[] {
   if (inputs.length > MAX_CHAT_ATTACHMENTS) {
     throw new Error(`A Chat message can attach at most ${MAX_CHAT_ATTACHMENTS} files.`);
+  }
+  if (inputs.reduce((total, { content }) => total + content.byteLength, 0) > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+    throw new Error(`A Chat message's attachments can total at most ${MAX_CHAT_ATTACHMENT_TOTAL_BYTES} bytes.`);
   }
   return inputs.map(({ filename, mimeType, content }, index) => {
     const label = inputs.length === 1 ? "The attachment" : `Attachment ${index + 1}`;
@@ -706,16 +714,16 @@ export class ChatApi {
   async #request<T>(
     operation: string,
     path: string,
-    init?: RequestInit & { idempotent?: boolean },
+    init?: RequestInit & { idempotent?: boolean; base?: string },
   ): Promise<T> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
     if (init?.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const { idempotent, ...rest } = init ?? {};
+    const { idempotent, base = CHAT_API_BASE, ...rest } = init ?? {};
     const response = await fetchWithAuthRetry(
-      `${CHAT_API_BASE}${path}`,
+      `${base}${path}`,
       { ...rest, headers },
       this.getAccessToken,
       idempotent === undefined ? { operation } : { operation, idempotent },
@@ -1204,22 +1212,15 @@ export class ChatApi {
     body.set(head);
     body.set(file.content, head.byteLength);
     body.set(tail, head.byteLength + file.content.byteLength);
-    const response = await fetchWithAuthRetry(
-      `${CHAT_UPLOAD_BASE}/spaces/${spaceId}/attachments:upload?uploadType=multipart`,
-      {
-        method: "POST",
-        headers: { Accept: "application/json", "Content-Type": `multipart/related; boundary=${boundary}` },
-        body,
-      },
-      this.getAccessToken,
-      { operation: "media.upload", idempotent: true });
-    if (!response.ok) await chatApiFailure("media.upload", response);
-    let uploaded: { attachmentDataRef?: { resourceName?: unknown; attachmentUploadToken?: unknown } };
-    try {
-      uploaded = await response.json();
-    } catch {
-      throw new Error("Google Chat API media.upload returned invalid JSON.");
-    }
+    const uploaded = await this.#request<{
+      attachmentDataRef?: { resourceName?: unknown; attachmentUploadToken?: unknown };
+    }>("media.upload", `/spaces/${spaceId}/attachments:upload?uploadType=multipart`, {
+      method: "POST",
+      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      body,
+      idempotent: true,
+      base: CHAT_UPLOAD_BASE,
+    });
     const { resourceName, attachmentUploadToken } = uploaded.attachmentDataRef ?? {};
     const ref: ChatAttachmentDataRef = {
       ...(typeof resourceName === "string" && resourceName ? { resourceName } : {}),

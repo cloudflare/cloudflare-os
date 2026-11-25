@@ -694,9 +694,13 @@ describe("Chat attachments", () => {
     expect(() => normalizeChatAttachments([input])).toThrow(message);
   });
 
-  it("refuses more than ten files", () => {
+  it("refuses more than ten files, or more than 20 MiB in all", () => {
     expect(() => normalizeChatAttachments(Array.from({ length: 11 }, (_, index) => file(`${index}.png`))))
       .toThrow(/at most 10 files/);
+    const largest = () => file("a.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES));
+    expect(normalizeChatAttachments([largest(), largest()])).toHaveLength(2);
+    expect(() => normalizeChatAttachments([largest(), largest(), file("b.png")]))
+      .toThrow(/total at most 20971520 bytes/);
   });
 
   it("uploads a file as a multipart request naming it, and returns the reference to attach", async () => {
