@@ -1020,7 +1020,7 @@ class OverseerImpl implements AgentHooks {
 
   // Per-chat in-memory state for running agents.
   #liveChats = new Map<number, LiveChatContext>();
-  #chatSubscribers: Set<RpcStub<AiChatSubscriber>> = new Set();
+  #chatSubscribers = new Map<RpcStub<AiChatSubscriber>, {pending: number; pausedChats: Set<number>}>();
   readonly cacheWarmer: ChatCacheWarmer;
 
   #autoApprovalDrainer: AutoApprovalDrainer;
@@ -1067,7 +1067,7 @@ class OverseerImpl implements AgentHooks {
   #pendingCallDrains = new Map<number, Promise<void>>();
 
   addChatSubscriber(subscriber: RpcStub<AiChatSubscriber>) {
-    this.#chatSubscribers.add(subscriber);
+    this.#chatSubscribers.set(subscriber, {pending: 0, pausedChats: new Set()});
   }
 
   removeChatSubscriber(subscriber: RpcStub<AiChatSubscriber>) {
@@ -1323,6 +1323,7 @@ class OverseerImpl implements AgentHooks {
   // the original authority for the log's current decision; starting new work replaces it.
   #unregisterRunningAgent(chatId: number, retainRecord = false) {
     this.#runningAgents.delete(chatId);
+    for (const state of this.#chatSubscribers.values()) state.pausedChats.delete(chatId);
     if (!retainRecord) this.storage.activeAgents.delete(chatId);
     this.#updateAlarm();
     if (this.#runningAgents.size === 0) {
@@ -3292,7 +3293,7 @@ class OverseerImpl implements AgentHooks {
 
   // Broadcast one accepted row to chat subscribers (see AiChatSubscriber.changeApplied).
   emitChatChangeApplied(row: ChatChangeRecord): void {
-    for (let subscriber of this.#chatSubscribers) {
+    for (let subscriber of this.#chatSubscribers.keys()) {
       subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
                                row.submission).catch(() => {
         subscriber[Symbol.dispose]();
@@ -11105,8 +11106,20 @@ class OverseerImpl implements AgentHooks {
   }
 
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void {
-    for (let subscriber of this.#chatSubscribers) {
-      subscriber.stream(chatId, event).catch(() => {
+    for (const [subscriber, state] of this.#chatSubscribers) {
+      const isDelta = "delta" in event;
+      if (isDelta) {
+        if (state.pausedChats.has(chatId)) continue;
+        if (state.pending >= 64) {
+          // A partial preview can't resume mid-answer. The saved message still reaches this client.
+          state.pausedChats.add(chatId);
+          continue;
+        }
+        ++state.pending;
+      }
+      subscriber.stream(chatId, event).then(() => {
+        if (isDelta) --state.pending;
+      }, () => {
         subscriber[Symbol.dispose]();
         this.#chatSubscribers.delete(subscriber);
       });
