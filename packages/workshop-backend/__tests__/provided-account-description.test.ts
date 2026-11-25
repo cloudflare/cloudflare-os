@@ -143,7 +143,24 @@ it.each([
   });
   await hooks.pauseAccountDescriptions(userId, false);
   expect(await listing).toEqual([]);
-  expect(await user.listProvidedAccounts()).toEqual([]);
+  expect(await user.listProvidedAccounts(true)).toEqual([]);
+  expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
+  expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
+});
+
+it("preserves the cached singleton when its management app is disabled", async () => {
+  const singleton = { tsType: "ExistingSession" };
+  const { user, hooks, userId, id } = await fixture({ singleton, providesUi: { title: "Container settings" } });
+  await user.listProvidedAccounts(true);
+  await runInDurableObject(user, instance => {
+    const internals = instance as unknown as { env: Cloudflare.Env };
+    internals.env = { ...internals.env, BLUEPRINTS: {
+      get: async () => JSON.stringify({ disabledGatekeepers: ["container"] }),
+    } as unknown as KVNamespace };
+  });
+  // Workspace reconciliation must still see the account, or it deletes its saved binding edges.
+  expect(await user.listProvidedAccounts()).toMatchObject([{ accountId: id, description: { singleton } }]);
+  expect(await user.listProvidedAccounts(true)).toEqual([]);
   expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });

@@ -2349,9 +2349,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
-   * `refreshApps` refreshes only management-app metadata for auto-provisioned accounts. Concurrent
-   * callers await the same pending refresh. `vendorId` scopes refresh calls for direct app opens;
-   * ordinary agent reads use the saved descriptions.
+   * `refreshApps` refreshes management-app metadata for auto-provisioned accounts and filters disabled
+   * apps. Concurrent callers await the same pending refresh. `vendorId` scopes refresh calls for
+   * direct app opens; ordinary agent reads use the saved descriptions.
    */
   async listProvidedAccounts(refreshApps = false, vendorId?: string): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
@@ -2390,10 +2390,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
       if (!rec.description.singleton && !rec.description.providesUi) continue;
+      // App availability must not remove accounts from the cached singleton reconciliation list.
+      if (refreshApps && config.disabledGatekeepers.includes(rec.vendorId)) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
-      if (config.disabledGatekeepers.includes(rec.vendorId) ||
-          (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled")) continue;
+      if (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled") continue;
       result.push({ accountId: rec.id, vendorId: rec.vendorId, description: rec.description });
     }
     return result;
