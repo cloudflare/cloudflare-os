@@ -42,7 +42,7 @@ import type {
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
   estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat, startsAgentTurn,
+  foldProposedChanges, getModelTokenLimits, isCompactionTurn, isTurnPrompt, shouldCompactChat, startsAgentTurn,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import {
@@ -2457,14 +2457,14 @@ async function runAgentPass(
   // Recover the active prompt from durable history after an image step, including after restart.
   const unfinishedTurn = chatMessages.slice(chatMessages.findLastIndex(msg =>
     msg.type === "message" && msg.author.type === "agent" && !msg.toolCalls?.length) + 1);
+  const activePrompt = unfinishedTurn.findLast(isTurnPrompt) ?? unfinishedTurn.find(msg =>
+    startsAgentTurn(msg) || (msg.type === "message" && msg.steered));
   let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
     msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))
-    ? (unfinishedTurn.findLast(startsAgentTurn) ??
-      unfinishedTurn.find(msg => msg.type === "message" && msg.steered))?.sequence : undefined;
+    ? activePrompt?.sequence : undefined;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   // Preserve the active prompt's references before spending its media budget on tool images.
   const promptAttachmentIds = new Set<string>();
-  const activePrompt = chatMessages.find(msg => msg.sequence === prompt);
   for (const attachment of activePrompt?.type === "message" ? activePrompt.attachments ?? [] : []) {
     if (isInlineCandidate(attachment.mimeType) && !refusedAttachmentIds.has(attachment.id) &&
         attachment.size <= MAX_INLINE_ATTACHMENT_BYTES && keptAttachments < MAX_INLINE_ATTACHMENTS &&

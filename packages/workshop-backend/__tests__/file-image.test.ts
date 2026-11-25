@@ -229,11 +229,12 @@ describe("images read from a worktree", () => {
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
-  it("reserves active reference slots before accepting a batch of image reads", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([false, true])("reserves active reference slots before accepting image reads (approval: %s)", approval => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
       "Compare these references", {attachments: Array.from({length: 5}, (_, index) =>
         ({oid: blob.oid, mimeType: "image/png", name: `${index}.png`}))});
+    if (approval) impl.addChatMessages(chatId, USER, [{type: "agentNudge", text: "The user approved the pending action; continue."}]);
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage(Array.from({length: 16}, () => read()), {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
@@ -242,6 +243,24 @@ describe("images read from a worktree", () => {
     expect(results(last).filter(result => !result.isError)).toHaveLength(15);
     expect(results(last).filter(result => result.isError)).toHaveLength(1);
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(20);
+  }));
+
+  it("keeps the original prompt and reference uploads through an approval handoff", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Compare these references", {attachments: Array.from({length: 5}, (_, index) =>
+        ({oid: blob.oid, mimeType: "image/png", name: `${index}.png`}))});
+    impl.addChatMessages(chatId, USER, [{type: "agentNudge", text: "The user approved the pending action; continue."}]);
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage(Array.from({length: 10}, () => read()), {stopReason: "toolUse"}),
+      fauxAssistantMessage(Array.from({length: 6}, () => read()), {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const last = requests.at(-1)!;
+    const prompt = last.find(msg => msg.role === "user" && Array.isArray(msg.content) &&
+      msg.content.some(part => part.type === "text" && part.text === "Compare these references"));
+    expect(prompt?.content).toHaveLength(11); // Original text plus five image/label pairs.
+    expect(results(last).flatMap(msg => msg.content.filter(part => part.type === "image"))).toHaveLength(6);
   }));
 
   it.each(["reload", "restart"])("keeps active reference uploads ahead of older tool images after %s", mode => inKernel(crypto.randomUUID(), async impl => {
