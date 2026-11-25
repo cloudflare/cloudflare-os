@@ -2778,7 +2778,7 @@ async function runAgentPass(
                     };
                   } else if (toolCall.image) {
                     const image: ImageContent | undefined = inlineFileImages.has(toolCall)
-                      ? {type: "image", mimeType: "image/png", data: ""} : undefined;
+                      ? {type: "image", mimeType: "image/*", data: ""} : undefined;
                     toolOutput = image ? {text: "Image file.", image} : {
                       text: "Image pixels are not shown in this request. Re-read with a vision model if needed; crop or resize if the provider refused the original.",
                     };
