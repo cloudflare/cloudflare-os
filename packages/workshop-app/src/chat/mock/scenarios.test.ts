@@ -59,7 +59,7 @@ describe('scenarios', () => {
   it('plain: the reply is thought about, then written, and joins the conversation only when done', async () => {
     const { ready, seen } = await watch(scenario('plain'), (chat) => [`${chat.ready().activity}: ${chat.making().join()}; ${chat.ready().items.length} rows`])
 
-    expect([...seen]).toEqual(expect.arrayContaining(['Thinking…: thinking; 1 rows', 'Writing…: thinking,writing; 1 rows']))
+    expect([...seen]).toEqual(expect.arrayContaining(['Floating ideas: thinking; 1 rows', 'Typing: thinking,writing; 1 rows']))
     // What it thought is kept behind the reply, for whoever asks about it.
     expect(ready().items).toMatchObject([
       { kind: 'user' },
@@ -72,7 +72,7 @@ describe('scenarios', () => {
   it('tool-run: what each call is doing is said while it runs, and stays behind the reply rather than in the conversation', async () => {
     const { rows, seen } = await watch(scenario('tool-run'), ({ ready }) => [ready().activity])
 
-    expect([...seen]).toEqual(expect.arrayContaining(['Reading src/worker.ts…', 'Writing src/trend.ts…', 'Running code…', 'Writing…', undefined]))
+    expect([...seen]).toEqual(expect.arrayContaining(['Reading your project', 'Making changes', 'Running code', 'Typing', undefined]))
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant'])
     const [, answer] = of(rows(), 'assistant')
     expect(answer.trace.length).toBeGreaterThan(4)
@@ -104,7 +104,7 @@ describe('scenarios', () => {
     const whilePending: string[] = []
     while (overseer.player.getSnapshot().position < overseer.player.getSnapshot().total) {
       overseer.player.step()
-      if (pending().length && ready().activity === 'Writing…') whilePending.push(pending()[0].title)
+      if (pending().length && ready().activity === 'Typing') whilePending.push(pending()[0].title)
     }
     expect(new Set(whilePending)).toEqual(new Set(['Post to #platform']))
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'action', 'assistant', 'action', 'action', 'assistant', 'assistant', 'action'])
@@ -130,7 +130,7 @@ describe('scenarios', () => {
     })
     expect(seen).toContain('call,observation,observation')
     // With the hook already under the answer, the agent both ran a tool and wrote on.
-    expect([...seen]).toEqual(expect.arrayContaining(['with the hook: Running code…', 'with the hook: Writing…']))
+    expect([...seen]).toEqual(expect.arrayContaining(['with the hook: Running code', 'with the hook: Typing']))
     expect(rows().slice(-3).map(({ kind }) => kind)).toEqual(['assistant', 'assistant', 'hook'])
 
     expect(rows().at(-1)).toMatchObject({ kind: 'hook', enabled: true })
@@ -191,7 +191,7 @@ describe('scenarios', () => {
     const restart = played.script.findIndex((step) => 'restart' in step)
     while (overseer.player.getSnapshot().position < restart) overseer.player.step()
     const before = ready()
-    expect(before.activity).toBe('Writing…')
+    expect(before.activity).toBe('Typing')
 
     overseer.player.step()
     await vi.advanceTimersByTimeAsync(2900)
@@ -200,7 +200,7 @@ describe('scenarios', () => {
     await vi.advanceTimersByTimeAsync(200)
     // Read again: what was being written is gone, to be written again from the start.
     expect(ready().items).toEqual(before.items)
-    expect(ready()).toMatchObject({ activity: 'Thinking…', agentActive: true })
+    expect(ready()).toMatchObject({ activity: 'Floating ideas', agentActive: true })
 
     await playThrough(overseer)
     expect(ready()).toMatchObject({ activity: undefined, agentActive: false })
@@ -268,7 +268,7 @@ describe('scenarios', () => {
   it('steer-slash: a steer waits unread and is the same row once read; the compaction is marked', async () => {
     const { rows, seen } = await watch(scenario('steer-slash'), (chat) => [
       ...of(chat.rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.').map(({ key, unread }) => `${key} ${unread ? 'unread' : 'read'}`),
-      ...(chat.ready().activity === 'Compacting the conversation…' ? ['compacting'] : []),
+      ...(chat.ready().activity === 'Tidying up' ? ['compacting'] : []),
     ])
 
     const [steer] = of(rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.')
@@ -296,25 +296,26 @@ describe('scenarios', () => {
     expect(scenario('long-history').history.length).toBeGreaterThan(300)
   })
 
-  it('long-history: the message a reply quotes is found by paging back to it', async () => {
+  it('long-history: the message a reply names is reached by fetching back to it, and no further', async () => {
     const { session, ready } = await open(scenario('long-history'))
-    const reply = ready().items.findLast((item) => item.kind === 'user' && item.quote !== undefined)
+    const reply = ready().items.findLast((item) => item.kind === 'user' && item.replyTo !== undefined)
     if (reply?.kind !== 'user') throw new Error('expected the history to end in a reply')
     expect(ready().items.some((item) => item.kind === 'user' && item.text.startsWith('Request 3:'))).toBe(false)
 
-    const key = await session.findQuoted(reply)
+    const key = await session.findReplied(reply)
 
-    expect(ready().items.find((item) => item.key === key)).toMatchObject({ kind: 'user', text: 'Request 3: update src/module-2.ts and check it still runs.' })
-    // No further than it had to.
+    expect(ready().items.find((item) => item.key === key)).toMatchObject({ kind: 'user', id: reply.replyTo, text: 'Request 3: update src/module-2.ts and check it still runs.' })
+    expect(ready().items.findIndex((item) => item.key === key)).toBe(ready().items.findIndex((item) => item.kind === 'user'))
     expect(ready().hasEarlier).toBe(true)
   })
 
-  it('long-history: a quote of nothing that was said is given up on at the start of the conversation', async () => {
+  it('long-history: a message that names nothing it replies to fetches nothing', async () => {
     const { session, ready } = await open(scenario('long-history'))
-    const [reply] = ready().items.filter((item) => item.kind === 'user')
+    const reply = ready().items.findLast((item) => item.kind === 'user')
     if (reply?.kind !== 'user') throw new Error('expected a message from the user')
+    const shown = ready().items.length
 
-    expect(await session.findQuoted({ ...reply, quote: 'Nobody said this' })).toBeUndefined()
-    expect(ready().hasEarlier).toBe(false)
+    expect(await session.findReplied({ ...reply, replyTo: undefined })).toBeUndefined()
+    expect(ready().items).toHaveLength(shown)
   })
 })

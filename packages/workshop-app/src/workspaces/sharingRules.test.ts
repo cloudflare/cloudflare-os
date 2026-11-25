@@ -7,17 +7,16 @@ import type {
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   PermissionEdge,
-  ShareLinkInfo,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import {
   canChange,
   covers,
   grantOf,
+  holdsOnlyView,
   invitedBy,
   inviteRefusal,
   listed,
-  ownLinkOf,
   removalOutcome,
   type ShareTarget,
   shareKeyOf,
@@ -60,6 +59,18 @@ describe('access', () => {
     expect(grantOf(gadget(3))).toEqual({ gadgetId: 3 })
   })
 
+  it('grants a gadget to view only where asked, and a workspace never', () => {
+    expect(grantOf(gadget(3), 'view')).toEqual({ gadgetId: 3, mode: 'view' })
+    expect(grantOf(WHOLE, 'view')).toBe('workspace')
+  })
+
+  it('takes someone to view only the gadgets named as viewed, and whoever edits none', () => {
+    expect(holdsOnlyView({ role: 'use', gadgetIds: [3], viewOnly: [3] }, 3)).toBe(true)
+    expect(holdsOnlyView({ role: 'use', gadgetIds: [3, 4], viewOnly: [4] }, 3)).toBe(false)
+    expect(holdsOnlyView(uses(3), 3)).toBe(false)
+    expect(holdsOnlyView(BUILD, 3)).toBe(false)
+  })
+
   it('takes editing to cover everything, and using only the gadgets it names', () => {
     expect(covers(BUILD, gadget(3))).toBe(true)
     expect(covers(uses(3), gadget(3))).toBe(true)
@@ -93,26 +104,16 @@ describe('inviteRefusal', () => {
     expect(inviteRefusal('alan', gadget(4), ada, people)).toBeUndefined()
     expect(inviteRefusal('barbara', gadget(3), ada, people)).toBeUndefined()
   })
+
+  it('lets someone who only views a gadget be let use it, and whoever uses it not be given less', () => {
+    const viewers = [collaborator('alan', uses(3)), collaborator('edsger', { role: 'use', gadgetIds: [3], viewOnly: [3] })]
+    expect(inviteRefusal('edsger', gadget(3), ada, viewers)).toBeUndefined()
+    expect(inviteRefusal('edsger', gadget(3), ada, viewers, 'view')).toBe('edsger can already view Budget.')
+    expect(inviteRefusal('alan', gadget(3), ada, viewers, 'view')).toBe('alan can already use Budget.')
+  })
 })
 
 describe('links', () => {
-  const created = new Date(0)
-  const link = (linkId: string, change: Partial<ShareLinkInfo> = {}): ShareLinkInfo => ({ linkId, created, createdBy: ada, default: true, ...change })
-
-  it('finds the viewer’s own link to what is being shared', () => {
-    const links = [
-      link('theirs', { createdBy: person('grace') }),
-      link('extra', { default: undefined }),
-      link('gadget', { role: 'use', gadgetId: 3 }),
-      link('whole', { role: 'build' }),
-    ]
-    expect(ownLinkOf(links, WHOLE, 'ada')?.linkId).toBe('whole')
-    expect(ownLinkOf(links, gadget(3), 'ada')?.linkId).toBe('gadget')
-    expect(ownLinkOf(links, gadget(4), 'ada')).toBeUndefined()
-    expect(ownLinkOf([link('old')], WHOLE, 'ada')?.linkId).toBe('old')
-    expect(ownLinkOf([link('several', { role: 'use', gadgets: [{ id: 3, title: 'Budget' }, { id: 4, title: 'Plan' }] })], WHOLE, 'ada')).toBeUndefined()
-  })
-
   it('carries the key in the fragment, and reads it back', () => {
     const url = withShareKey('https://os.example/app/ws-3', 'k3y')
     expect(url).toBe('https://os.example/app/ws-3#share=k3y')

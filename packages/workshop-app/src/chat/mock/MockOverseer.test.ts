@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent } from '@gadgets/workshop-shared/api'
+import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent, GadgetSummary, WorkspacesSubscriber } from '@gadgets/workshop-shared/api'
 import type { CodeChange } from '@gadgets/workshop-shared/code-change'
 import type { StreamRow } from '../code/changeStream'
+import type { ApiSession } from '@/rpc/ApiContext'
 import { createMockApi } from './mockApi'
 import { withFile, type CodeDraft } from '@/gadgets/codeDrafts'
 import { saveCode, type SavingOverseer } from '@/gadgets/saveCode'
+import { templateUpdateStatus } from '@/gadgets/templateUpdate'
 import { MockOverseer } from './MockOverseer'
 import { action, agent, connectionRequest, history, turn, user, when, type Scenario } from './scenario'
 
@@ -119,17 +121,50 @@ describe('MockOverseer', () => {
   })
 
   it('lists the workspace until it deletes itself, or one shared with the viewer is removed from their list', async () => {
+    // What the list shows, by id: what the fake said first, then each change.
+    const listed = async (api: ApiSession['api']) => {
+      const ids = new Set<string>()
+      const subscriber: Pick<WorkspacesSubscriber, 'snapshot' | 'updated'> = {
+        snapshot: async (workspaces) => workspaces.forEach(({ id }) => ids.add(id)),
+        updated: async (id, workspace) => void (workspace ? ids.add(id) : ids.delete(id)),
+      }
+      // Plain, as the fake answers whatever it is given.
+      await api.subscribeToWorkspaces(subscriber as unknown as Parameters<typeof api.subscribeToWorkspaces>[0])
+      return ids
+    }
     const own = createMockApi(scenario({}))
     expect(await own.overseer.getMetadata()).toMatchObject({ owner: undefined })
+    const ownList = await listed(own.session.api)
+    expect([...ownList]).toEqual(['mock'])
     await own.session.api.openWorkspace('mock').deleteSelf()
-    expect(await own.session.api.listWorkspaces()).toEqual([])
+    expect([...ownList]).toEqual([])
 
     const grace = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
     const shared = createMockApi(scenario({ owner: grace }))
-    expect(await shared.session.api.listWorkspaces()).toMatchObject([{ owner: grace }])
+    const sharedList = await listed(shared.session.api)
+    expect([...sharedList]).toEqual(['mock'])
     expect((await shared.overseer.listCollaborators()).map(({ profile }) => profile.name)).toEqual(['Ada Lovelace', 'Alan Turing'])
     await shared.session.api.dismissSharedWorkspace('mock')
-    expect(await shared.session.api.listWorkspaces()).toEqual([])
+    expect([...sharedList]).toEqual([])
+    expect([...(await listed(shared.session.api))]).toEqual([])
+  })
+
+  it('offers the output scenario a newer published release through the public API', async () => {
+    const { overseer, session, publicApi } = createMockApi(scenario({ templateUpdate: true }))
+    using workspace = session.api.openWorkspace('mock')
+    using _gadget = workspace.getGadget(3)
+    const entries: GadgetSummary[] = []
+    using _lease = await overseer.subscribeToWorkpieces({
+      entry: (summary) => {
+        if (summary.type === 'gadget') entries.push(summary)
+      },
+      removed: () => {},
+      ready: () => {},
+    })
+    const upstream = entries[0]?.upstream
+    const release = await publicApi.getBlueprint(upstream?.blueprintId ?? '')
+    expect(templateUpdateStatus(upstream, release?.metadata)).toBe('available')
+    expect(await publicApi.getBlueprint('no-such-template')).toBeNull()
   })
 
   it('renames and deletes a gadget, which those listening to the workpieces hear of', async () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { createFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
 import { validateAsideParam } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
@@ -8,6 +8,7 @@ import { ChatHeader } from '@/blocks/ChatHeader'
 import { NEW_CHAT_TITLE, NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { useApi } from '@/rpc/ApiContext'
 import { UpdateNotice } from '@/settings/admin/UpdateNotice'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -41,6 +42,7 @@ export const Route = createFileRoute('/_app/')({
 function Home() {
   const { api, user } = useApi()
   const navigate = useNavigate()
+  const preferences = usePreferences()
   const { format: formatId, workspace: namedId, open } = Route.useSearch()
   // Written in the composer as the page opens, where the page before had something to ask for.
   const draft = useRouterState({ select: ({ location }) => location.state.draft })
@@ -56,19 +58,38 @@ function Home() {
   // list is read, the one named is taken at its word, so that a message sent meanwhile goes there.
   const startsIn = workspaces.status === 'loading' || startable.some(({ id }) => id === namedId) ? namedId : undefined
   const chosen = startable.find(({ id }) => id === startsIn)
-  // The new workspace it starts in, made before it is sent where a connection was added to it
-  // first, which needs a workspace to be made in. Until it has a chat the backend leaves it out
-  // of the list (a provisional workspace), so one that is never sent leaves nothing behind.
+  // The new workspace it starts in, made before it is sent where its commands are looked for or
+  // a connection is added to it first, either of which needs a workspace. Until it has a chat the
+  // backend leaves it out of the list (a provisional workspace), so one that is never sent leaves
+  // nothing behind. Made once, however often it is asked for.
   const [made, setMade] = useState<string>()
-  const makeConnectable = async () => {
-    const overseer = api.newWorkspace()
+  const making = useRef<Promise<void>>(undefined)
+  const ensureWorkspace = () => {
+    making.current ??= (async () => {
+      const overseer = api.newWorkspace()
+      try {
+        setMade((await overseer.getMetadata()).id)
+      } finally {
+        overseer[Symbol.dispose]()
+      }
+    })().catch((error: unknown) => {
+      making.current = undefined
+      throw error
+    })
+    return making.current
+  }
+  const startIn = startsIn ?? made
+  // Stable per workspace: useChatCommands reads again when it changes.
+  const listCommands = useCallback(async () => {
+    if (startIn === undefined) return []
+    // Disposed by hand: `using` is not lowered for every browser this runs in, and Safari cannot parse it.
+    const overseer = api.openWorkspace(startIn)
     try {
-      setMade((await overseer.getMetadata()).id)
+      return await overseer.listSlashCommands()
     } finally {
       overseer[Symbol.dispose]()
     }
-  }
-  const startIn = startsIn ?? made
+  }, [api, startIn])
   // With none to choose, there is nothing to pick but a new workspace, so it is left out. Kept
   // while the list loads, so that it does not pop in under the composer for whoever has some,
   // unless one is named, which it could not say the title of until then.
@@ -82,7 +103,7 @@ function Home() {
         label: workspaceLabel(chosen.title),
         look: looks[chosen.id],
         // What is shown beside the chat to be stays beside the workspace.
-        onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id }, search: { open: carryAside(open, { workspaceId: chosen.id }) } }),
+        onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id }, search: { open: carryAside(preferences, open, { workspaceId: chosen.id }) } }),
       }}
       title={NEW_CHAT_TITLE}
     />
@@ -103,14 +124,15 @@ function Home() {
         onValueChange: (id) => navigate({ to: '/', search: (previous: NewChatSearch) => ({ ...previous, workspace: id, open: undefined }), replace: true }),
       } : undefined}
       initialText={draft}
-      connectsIn={startIn}
-      makeConnectable={makeConnectable}
-      start={(text, files, modelId, command, formats, capsules) =>
-        startConversation(() => (startIn === undefined ? api.newWorkspace() : api.openWorkspace(startIn)), text, files, modelId, command, formats, capsules)}
+      startIn={startIn}
+      listCommands={listCommands}
+      ensureWorkspace={ensureWorkspace}
+      start={(text, files, modelId, command, formats, connections) =>
+        startConversation(() => (startIn === undefined ? api.newWorkspace() : api.openWorkspace(startIn)), text, files, modelId, command, formats, connections)}
       // From a workspace, in its place, so that going back goes to where it was started from
       // rather than to an empty chat.
       onStarted={({ workspaceId, chatId }) => {
-        if (open) rememberShown(workspaceId, chatId, open)
+        if (open) rememberShown(preferences, workspaceId, chatId, open)
         return navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open }, state: { chatTitle: NEW_CHAT_TITLE }, replace: startsIn !== undefined })
       }}
     />

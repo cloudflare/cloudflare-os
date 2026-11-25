@@ -1,5 +1,4 @@
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog } from '@gadgets/ui'
 
 export type CodeFileCautionDialogProps = {
   open: boolean

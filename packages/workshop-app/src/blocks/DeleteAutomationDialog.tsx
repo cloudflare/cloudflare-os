@@ -1,8 +1,6 @@
 import { useState } from 'react'
-import { XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Cancel01Icon } from '@/components/icons'
+import { Banner, Button, Dialog } from '@gadgets/ui'
 import { deletionProblem, deletionWords, type AutomationDetails } from './automationDetails'
 import { usePending, type ActionResult } from './usePending'
 
@@ -37,7 +35,7 @@ const DeleteAutomationContent = ({ title, gadget, onConfirm, pending, run }: Pic
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Delete “{title}”?</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">{deletionWords({ gadget })}</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <footer className="flex flex-col gap-3 p-6 pt-4">
         {problem && <Banner title={problem} />}

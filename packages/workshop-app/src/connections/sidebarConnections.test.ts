@@ -25,8 +25,8 @@ const LINEAR = vendor('linear', 'Linear')
 const SLACK = vendor('slack', 'Slack')
 const GITHUB = vendor('github', 'GitHub')
 const SCHEDULER = vendor('scheduler', 'Scheduled Tasks', { autoProvisionsAccount: true })
-const HTTP = vendor('http', 'HTTP')
-const OFFERED = [CLOUDFLARE, GOOGLE, LINEAR, SLACK, GITHUB, HTTP]
+const PLAIN = vendor('plain', 'Plain', { logo: undefined })
+const OFFERED = [PLAIN, CLOUDFLARE, GOOGLE, LINEAR, SLACK, GITHUB]
 
 const logos = (accounts: ConnectedAccount[], extra: GatekeeperVendorInfo[] = []) =>
   sidebarConnections(connectionsOf({ vendors: OFFERED, addable: [SCHEDULER, ...extra], accounts })).map(({ name }) => name)
@@ -38,26 +38,20 @@ describe('sidebarConnections', () => {
   })
 
   it('leaves out what comes with the app', () => {
-    expect(logos([account(SCHEDULER), account(HTTP), account(GOOGLE)])).toEqual(['Google'])
+    expect(logos([account(SCHEDULER), account(GOOGLE)])).toEqual(['Google'])
   })
 
-  it('offers the best known to someone who has connected nothing, even with only what comes with the app', () => {
-    expect(logos([])).toEqual(['Google', 'Cloudflare', 'GitHub'])
-    expect(logos([account(SCHEDULER)])).toEqual(['Google', 'Cloudflare', 'GitHub'])
+  it('offers the first few with a logo, in the deployment’s order, to someone who has connected nothing, even with only what comes with the app', () => {
+    expect(logos([])).toEqual(['Cloudflare', 'Google', 'Linear'])
+    expect(logos([account(SCHEDULER)])).toEqual(['Cloudflare', 'Google', 'Linear'])
   })
 
   it('offers only what the deployment has of them', () => {
-    expect(sidebarConnections(connectionsOf({ vendors: [SLACK, GOOGLE], addable: [], accounts: [] })).map(({ name }) => name)).toEqual(['Google', 'Slack'])
+    expect(sidebarConnections(connectionsOf({ vendors: [SLACK, GOOGLE], addable: [], accounts: [] })).map(({ name }) => name)).toEqual(['Slack', 'Google'])
   })
 
   it('shows nothing until the services are read', () => {
     expect(sidebarConnections([])).toEqual([])
-  })
-
-  it('marks a logo that is much wider than it is tall, and no other', () => {
-    const [google, cloudflare] = sidebarConnections(connectionsOf({ vendors: [GOOGLE, CLOUDFLARE], addable: [], accounts: [] }))
-    expect(google.wide).toBeUndefined()
-    expect(cloudflare.wide).toBe(true)
   })
 
   it('draws each from its service', () => {

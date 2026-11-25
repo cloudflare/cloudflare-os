@@ -1,0 +1,9 @@
+// Type-checks the tests too. Separate from `tsconfig.json` so the Worker's own check stays free of
+// test files, the pool's declarations and Node types.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types", "node"]
+  },
+  "include": ["src", "__tests__"]
+}

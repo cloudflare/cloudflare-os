@@ -1,13 +1,14 @@
 import { chatConnectors, type ChatConnector } from './chatConnectors'
 import type { ChatAttachment, ChatItem, HookItem, OutputItem } from './chatItems'
+import type { ChatArtifacts } from './ChatSession'
 
-/** What a chat has, as its conversation shows, each kind latest first. */
+/** What a chat has, each kind latest first. */
 export type ChatContext = {
-  /** What it made or worked on, each once, as it was last titled. */
+  /** What it made that its workspace still has, each once, as it is titled now. */
   outputs: OutputItem[]
   /** What was uploaded to it, each once. */
   files: ChatAttachment[]
-  /** What it set up to run by itself, and was not deleted since. */
+  /** What it set up to run by itself, and was not deleted since, as far as its conversation is loaded. */
   hooks: HookItem[]
   connectors: ChatConnector[]
 }
@@ -26,25 +27,40 @@ const distinct = <T>(rows: Iterable<T>, key: (row: T) => string | number | undef
 }
 
 /**
- * What a chat has, as far as `rows`, its conversation as loaded and what waits under it, show.
- *
- * This is partial for a long chat: what was made or uploaded before the earliest message loaded is
- * not here, and neither are the services (`chatConnectors`). Listing everything a chat has needs the
- * backend to say it (what each output, upload and automation was made in which chat, and the
- * services used), which the workspace does not yet; the library does not say which chat made an output.
+ * What a chat has: what it made, what was uploaded to it and the services it used, all of it, as
+ * its workspace lists it (`artifacts`, nothing while that is unread); and its automations, from
+ * `rows`, its conversation as loaded and what waits under it.
  */
-export const chatContextOf = (rows: readonly ChatItem[]): ChatContext => {
-  const latestFirst = rows.toReversed()
+export const chatContextOf = (artifacts: ChatArtifacts | undefined, rows: readonly ChatItem[]): ChatContext => {
+  const latestFirst = (artifacts?.artifacts ?? []).toReversed()
   return {
-    outputs: distinct(latestFirst.filter((row): row is OutputItem => row.kind === 'output'), (output) => output.workpieceId),
-    files: distinct(latestFirst.flatMap((row) => (row.kind === 'user' ? row.attachments.toReversed() : [])), (file) => file.id),
-    hooks: distinct(latestFirst.filter((row): row is HookItem => row.kind === 'hook'), (hook) => hook.hookId),
-    connectors: chatConnectors(rows),
+    outputs: distinct(latestFirst.flatMap((artifact): OutputItem[] => {
+      if (artifact.type !== 'workpiece') return []
+      const { workpiece, sequence } = artifact
+      const output = workpiece.type === 'gadget' ? workpiece.output : undefined
+      return [{
+        kind: 'output',
+        id: sequence,
+        key: `output:${workpiece.id}`,
+        workpieceId: workpiece.id,
+        title: workpiece.title,
+        type: workpiece.type,
+        draft: workpiece.type === 'gadget' && workpiece.chatId !== undefined,
+        format: output && { noun: output.noun, icon: output.icon },
+      }]
+    }), (output) => output.workpieceId),
+    files: distinct(latestFirst.flatMap((artifact): ChatAttachment[] => {
+      if (artifact.type !== 'attachment') return []
+      const { id, name, mimeType, size } = artifact.attachment
+      return [{ id, name: name || 'Attached file', mimeType, size }]
+    }), (file) => file.id),
+    hooks: distinct(rows.toReversed().filter((row): row is HookItem => row.kind === 'hook'), (hook) => hook.hookId),
+    connectors: chatConnectors(artifacts?.connections ?? []),
   }
 }
 
 const KINDS = [
-  ['outputs', 'output'],
+  ['outputs', 'library item'],
   ['hooks', 'automation'],
   ['files', 'upload'],
   ['connectors', 'connector'],
@@ -54,7 +70,7 @@ const KINDS = [
 export const contextCount = (context: ChatContext) => KINDS.reduce((total, [kind]) => total + context[kind].length, 0)
 
 /**
- * What a chat has in a few words, for a button that opens it: "3 outputs · 1 automation", the
+ * What a chat has in a few words, for a button that opens it: "3 library items · 1 automation", the
  * first two kinds it has, and how many others there are.
  */
 export const contextSummary = (context: ChatContext): string => {

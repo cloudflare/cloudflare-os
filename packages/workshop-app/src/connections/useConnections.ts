@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { ConnectedAccounts } from './ConnectedAccounts'
@@ -71,16 +71,16 @@ export const useConnections = (): { state: ConnectionsState; reloadAddable: () =
   const reloadAddable = () => {
     api.listAddableGatekeepers().then(setAddable, () => {})
   }
-  const retry = () => {
-    setProblem(undefined)
-    setAttempt((current) => current + 1)
-  }
-
   // What was read stays up when reading it again fails, as over a connection that then drops.
-  const state: ConnectionsState = vendors && accounts
-    ? { status: 'ready', connections: connectionsOf({ vendors, addable, accounts }), unreachable: unreachableServices(vendors), complete: addableAsked }
-    : problem !== undefined
-      ? { status: 'failed', message: problem, retry }
-      : { status: 'loading' }
+  // The same until what it is read from changes, for whoever is drawn again far more often, as a chat is.
+  const state = useMemo((): ConnectionsState => {
+    if (vendors && accounts) return { status: 'ready', connections: connectionsOf({ vendors, addable, accounts }), unreachable: unreachableServices(vendors), complete: addableAsked }
+    if (problem === undefined) return { status: 'loading' }
+    const retry = () => {
+      setProblem(undefined)
+      setAttempt((current) => current + 1)
+    }
+    return { status: 'failed', message: problem, retry }
+  }, [vendors, addable, accounts, addableAsked, problem])
   return { state, reloadAddable }
 }

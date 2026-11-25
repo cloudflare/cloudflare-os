@@ -376,81 +376,6 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toHaveLength(1);
   }));
 
-  it("an external message counts as a live build session once its caller is authorized",
-      () => withImpl(async (impl, restarts, instance) => {
-    stubFacets(impl);
-    // A workspace owned by someone else, so the caller is a collaborator. The call parks *after*
-    // authorization (on the caller's model lookup), which is when the lease must be held: this
-    // path never constructs a counted client interface, so without its own lease a widening
-    // mid-call would find no session to sever and the reply would be produced under stale
-    // verification.
-    impl.ownerId = "owner-user-id";
-    let fail!: (err: Error) => void;
-    let reached = new Promise<void>(resolve => {
-      impl.users = {
-        getByName: () => ({
-          id: { toString: () => "caller-user-id" },
-          whoamiIfExists: async () => ({ type: "user", id: "carol", name: "Carol" }),
-          getExternalMessageChatContext: () => {
-            resolve();
-            return new Promise((_, reject) => { fail = reject; });
-          },
-        }),
-      };
-    });
-    impl.authorizeCollaborator = async () => ({ role: "build" });
-
-    let pending = instance.receiveExternalMessage({
-      callerEmail: "carol@example.com", externalChatKey: "k", idempotencyKey: "i",
-      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
-    } as any);
-    await reached;
-
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toHaveLength(1);
-
-    fail(new Error("model lookup failed"));
-    await expect(pending).rejects.toThrow(/model lookup failed/);
-
-    // The lease died with the call.
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toHaveLength(1);
-  }));
-
-  it("an external-message caller who is denied never joins the count",
-      () => withImpl(async (impl, restarts, instance) => {
-    stubFacets(impl);
-    impl.ownerId = "owner-user-id";
-    impl.users = {
-      getByName: () => ({
-        id: { toString: () => "caller-user-id" },
-        whoamiIfExists: async () => ({ type: "user", id: "mallory", name: "Mallory" }),
-      }),
-    };
-    // Authorization itself is covered by authorizeCollaborator's own internal lease (which counts
-    // nobody until a role is resolved), so this path must not take its lease up front: a stranger
-    // parked in authorization racing an addGatekeeper would otherwise cause a needless reset.
-    let deny!: () => void;
-    let reached = new Promise<void>(resolve => {
-      impl.authorizeCollaborator = () => {
-        resolve();
-        return new Promise(resolveAuth => { deny = () => resolveAuth(null); });
-      };
-    });
-
-    let pending = instance.receiveExternalMessage({
-      callerEmail: "mallory@example.com", externalChatKey: "k", idempotencyKey: "i",
-      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
-    } as any);
-    await reached;
-
-    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
-    expect(restarts).toEqual([]);
-
-    deny();
-    expect((await pending).accepted).toBe(false);
-  }));
-
   it("a retained connection capability holds the gate open after its interface is gone",
       () => withImpl(async (impl, restarts) => {
     stubFacets(impl);
@@ -610,6 +535,69 @@ describe("restarting sessions when verification scope widens", () => {
 
     expect(restarts).toHaveLength(1);
     expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+});
+
+// A binding pointed at another gatekeeper in one step (GadgetClient.rebind): refused unless it
+// still points where the caller read it did, keeping the rest of the edge, and restarting only
+// where the new target widens what the gadget reaches, as binding it would.
+describe("rebinding a binding", () => {
+  const ANNOTATION = { title: "Writer", description: "Writes the summary" };
+
+  function seedBound(impl: Parameters<Parameters<typeof withImpl>[0]>[0]): void {
+    seedGadget(impl, 100);
+    seedVendorlessGatekeeper(impl, 1);
+    seedVendorlessGatekeeper(impl, 2);
+    seedGatekeeper(impl, 3);
+    let gadget = impl.storage.gadgets.get(100);
+    gadget.bindings.LLM = { target: 1, blueprintAnnotation: ANNOTATION };
+    impl.storage.gadgets.put(gadget);
+  }
+
+  it("refuses a binding pointed elsewhere since it was read, changing nothing",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    expect(() => impl.rebindWorkpiece(100, "LLM", 2, 3)).toThrow(/changed since it was read/);
+    expect(impl.storage.gadgets.get(100).bindings.LLM)
+        .toEqual({ target: 1, blueprintAnnotation: ANNOTATION });
+    expect(restarts).toEqual([]);
+  }));
+
+  it("points it at another model, keeping its annotation and every session",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    impl.rebindWorkpiece(100, "LLM", 1, 2);
+    expect(impl.storage.gadgets.get(100).bindings.LLM)
+        .toEqual({ target: 2, blueprintAnnotation: ANNOTATION });
+    // A model is vendorless, so nobody is verified against it and nobody's scope widened.
+    expect(restarts).toEqual([]);
+  }));
+
+  it("restarts a use collaborator when the new target widens the gadget's reach",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    impl.rebindWorkpiece(100, "LLM", 1, 3);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("refuses a binding a chat proposes, and a target that is no gatekeeper",
+      () => withImpl(async impl => {
+    seedBound(impl);
+    seedGadget(impl, 101);
+    let gadget = impl.storage.gadgets.get(100);
+    gadget.bindings.PROPOSED = { target: 1, pending: { chatId: 7 } };
+    impl.storage.gadgets.put(gadget);
+
+    expect(() => impl.rebindWorkpiece(100, "PROPOSED", 1, 2)).toThrow(/No such binding/);
+    expect(() => impl.rebindWorkpiece(100, "LLM", 1, 101)).toThrow(/Gadget-to-gadget/);
+    expect(() => impl.rebindWorkpiece(100, "LLM", 1, 99)).toThrow(/No such gatekeeper/);
+    expect(impl.storage.gadgets.get(100).bindings.LLM.target).toBe(1);
   }));
 });
 
@@ -1028,7 +1016,7 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
         getChatContext: async () => ({ profile: USER_META.profile }),
         // Best-effort bookkeeping the bind triggers for the owner.
         setGadgetLastActive: async () => {},
-        syncWorkspaceOutputs: async () => {},
+        syncWorkspaceListing: () => {},
       }),
     };
     // The queue the spawner's facet would wrap, minted while the spawner was still usable.
@@ -1539,7 +1527,7 @@ async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
     impl.ownerId = user.id;
     impl.users = { idFromString: (id: string) => id, get: () => user };
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     impl.getGatekeeperFacet = () => ({
       describe: async () =>
           ({ title: "Test", url: "https://example.com/new", suggestedBindingName: "RES" }),

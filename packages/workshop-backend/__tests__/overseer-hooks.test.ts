@@ -250,3 +250,35 @@ describe("hook target", () => {
   });
 
 });
+
+describe("listHooks", () => {
+  it("names each hook's vendor and the chat that bound it", async () => {
+    let hook = (id: number, actionId: number, vendorId?: string) => ({
+      id, actionId, gatekeeperId: 1, gadgetId: 2, ...(vendorId ? {vendorId} : {}),
+      controller: {}, callback: {}, description: {title: `Hook ${id}`, description: ""},
+      enabled: true,
+    });
+    let callers: Record<number, object> = {
+      10: {from: "agent", chatId: 7},
+      11: {from: "gadget", chatId: 8, gadgetId: 2},
+      12: {from: "hook", gadgetId: 2},
+    };
+    let client = await openFakeOverseer({
+      // The third was recorded before hooks kept their vendor, which its connection names.
+      boundHooks: {list: () => [hook(1, 10, "scheduler"), hook(2, 11, "email"), hook(3, 12)]},
+      actions: {get: (id: number) => ({id, caller: callers[id]})},
+      gatekeepers: {get: () => ({
+        resourceTitle: "Inbox",
+        creationSpec: {type: "gatekeeper", vendorId: "Email", resourceUrl: "https://example.com",
+                       typeUrlPattern: "https://*"},
+      })},
+    });
+
+    expect((await client.listHooks()).map(({id, vendorId, chatId}) => ({id, vendorId, chatId})))
+        .toEqual([
+          {id: 1, vendorId: "scheduler", chatId: 7},
+          {id: 2, vendorId: "email", chatId: 8},
+          {id: 3, vendorId: "email", chatId: undefined},
+        ]);
+  });
+});

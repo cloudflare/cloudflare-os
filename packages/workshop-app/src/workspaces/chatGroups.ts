@@ -1,7 +1,5 @@
-import type { AiChatAuthorInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { isAgentRun } from '@/automations/agents'
-import { groupByTime } from '@/chat/timeGroups'
-import type { ArrangedGroup } from '@/components/listView'
+import { isAgentRun, type AiChatAuthorInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
+import { groupByTime, type ArrangedGroup } from '@gadgets/ui'
 import type { ChatGrouping } from './chatList'
 import type { ChatState, ChatStateKind } from './chatStates'
 

@@ -24,7 +24,7 @@ export type GhostChat = {
 /**
  * The chats the sidebar lists that the recent chats do not have: the one open (`open`) while it is
  * not listed (`isListed`, by key), and, once left, one in which something was said meanwhile,
- * until the recent chats have it, which leaving it reads again for (`refresh`, by workspace). One
+ * until the recent chats, which follow the account live, have it. One
  * left with nothing said in it goes. One the viewer took out of the sidebar is put back once
  * something is said in it, and one left that is gone to again is still fresh. `title` is what the chat was called as it was gone to, until
  * its own is read. The open one's session is the chat page's own, held here too.
@@ -32,7 +32,6 @@ export type GhostChat = {
 export const useGhostChats = (
   open: { workspaceId: string; chatId: number; title?: string } | undefined,
   isListed: (key: string) => boolean,
-  refresh: (workspaceId: string) => void,
 ): GhostChat[] => {
   const key = open && recentChatKey(open.workspaceId, open.chatId)
   const shown = open && key !== undefined && !isListed(key) ? open : undefined
@@ -60,14 +59,10 @@ export const useGhostChats = (
     : undefined
 
   // Hidden, it would never be among the recent chats again however much is said in it.
-  // Read again with its workspace, which says what was said in it since.
   const freshKey = current?.fresh ? current.key : undefined
-  const freshIn = current?.fresh ? current.workspaceId : undefined
   useEffect(() => {
-    if (freshKey === undefined || freshIn === undefined) return
-    setSidebarHidden(freshKey, undefined)
-    refresh(freshIn)
-  }, [freshKey, freshIn, refresh])
+    if (freshKey !== undefined) setSidebarHidden(freshKey, undefined)
+  }, [freshKey])
   const last = useRef<GhostChat>(undefined)
   useLayoutEffect(() => {
     const was = last.current
@@ -76,11 +71,6 @@ export const useGhostChats = (
   useLayoutEffect(() => {
     last.current = current
   })
-  const leftKey = left?.key
-  const leftIn = left?.workspaceId
-  useEffect(() => {
-    if (leftIn !== undefined && leftKey !== undefined) refresh(leftIn)
-  }, [leftKey, leftIn, refresh])
 
   const kept = left && left.key !== key && !isListed(left.key) ? left : undefined
   return [current, kept].filter((ghost) => ghost !== undefined)

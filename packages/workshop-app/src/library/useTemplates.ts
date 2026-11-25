@@ -1,30 +1,23 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { BlueprintPublicInfo } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
-import { sharedConnection } from '@/rpc/sharedConnection'
+import { useTemplateReader } from '@/rpc/PublicApiContext'
 import { TemplateStore } from './TemplateStore'
 
 /** The one store, so that the templates' page and a template's own show the same, stars and all. */
 export const templateStore = new TemplateStore()
 
-/** The public API, where a blueprint's own record is read, or null between connections. */
-const usePublicApi = () => {
-  const connection = sharedConnection()
-  return useSyncExternalStore(connection.subscribe, connection.getSnapshot).publicApi
-}
-
 /**
  * The templates there are to start something from, and the ids of the starred ones, in their
- * order, read over the backend connection there is: again over a new one, with what was read
- * before shown meanwhile.
+ * order, kept over the backend connection there is: again over a new one, with what was read
+ * before shown meanwhile. Not read unless `wanted`; what another has read is there all the same.
  */
-export const useTemplates = () => {
+export const useTemplates = (wanted = true) => {
   const { api, reconnecting } = useApi()
-  const publicApi = usePublicApi()
   // Over a lost connection it could only fail; the new connection's `api` reads them.
   useEffect(() => {
-    if (!reconnecting) templateStore.connect(api, publicApi)
-  }, [api, publicApi, reconnecting])
+    if (wanted && !reconnecting) templateStore.connect(api)
+  }, [api, reconnecting, wanted])
   return { state: useSyncExternalStore(templateStore.subscribe, templateStore.getSnapshot), setStars: templateStore.setStars, reload: templateStore.reload }
 }
 
@@ -37,7 +30,7 @@ export type SharedTemplateState = { status: 'loading' } | { status: 'gone' } | {
  * uses it by the id.
  */
 export const useSharedTemplate = (id: string, wanted: boolean): SharedTemplateState => {
-  const publicApi = usePublicApi()
+  const publicApi = useTemplateReader()
   const [state, setState] = useState<SharedTemplateState>({ status: 'loading' })
   useEffect(() => {
     if (!wanted || !publicApi) return

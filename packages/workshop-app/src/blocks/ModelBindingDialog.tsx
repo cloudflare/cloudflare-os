@@ -1,11 +1,7 @@
 import { useState } from 'react'
-import { BrainIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
+import { Brain03Icon, Cancel01Icon } from '@/components/icons'
+import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { CodeBlock } from '@/components/CodeBlock'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
-import { TextField } from '@/components/TextField'
 
 /** One of the user's models a gadget's code can be given: one that writes, or one that decides. */
 export type ModelChoice = { id: string; name: string; kind: 'language' | 'decision' }
@@ -84,7 +80,7 @@ const ModelBindingContent = ({ gadget, models, initialModel, changing, suggestNa
     <form className="contents" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <header className="flex items-start gap-3 p-6">
         <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          <BrainIcon className="size-6" />
+          <Brain03Icon className="size-6" />
         </span>
         <div className="flex min-h-12 min-w-0 flex-1 flex-col justify-center gap-0.5 leading-snug">
           <Dialog.Title className="text-lg font-medium text-kumo-default">{changing === undefined ? 'Add an AI model' : 'Change model'}</Dialog.Title>
@@ -94,7 +90,7 @@ const ModelBindingContent = ({ gadget, models, initialModel, changing, suggestNa
               : `env.${changing} uses this model from now on. The code stays as it is.`}
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto px-6">

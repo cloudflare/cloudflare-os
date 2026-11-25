@@ -26,6 +26,7 @@ export const REFUSAL_NAMES: Record<NonNullable<AdminAccessRecord['refused']>, st
 export const KIND_NAMES: Record<AdminAuditKind, string> = {
   workspace: 'Workspace access',
   user: 'User access',
+  write: 'Workspace write',
   setting: 'Setting change',
 }
 

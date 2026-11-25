@@ -1,9 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { CheckCircleIcon, CubeIcon, RobotIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { Cancel01Icon, CheckmarkCircle02Icon, PackageIcon, RoboticIcon } from '@/components/icons'
+import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 /** A model one of the needs can be met with. */
@@ -64,7 +61,7 @@ const needIcon = (need: UseTemplateNeed): ReactNode =>
     ? <ServiceLogo name={need.service.name} src={need.service.logoUrl} color={need.service.color} small />
     : (
         <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          {need.kind === 'agent' ? <RobotIcon className="size-5" /> : <CubeIcon className="size-5" />}
+          {need.kind === 'agent' ? <RoboticIcon className="size-5" /> : <PackageIcon className="size-5" />}
         </span>
       )
 
@@ -74,7 +71,7 @@ const NeedControl = ({ need, pending }: { need: UseTemplateNeed; pending: boolea
     if (need.unavailable) return <span className="pe-2 text-sm text-kumo-danger">{need.unavailable}</span>
     return (
       <span className="flex items-center gap-1.5">
-        {need.chosen !== undefined && <CheckCircleIcon aria-label="Chosen" weight="fill" className="size-4 text-(--color-live)" />}
+        {need.chosen !== undefined && <CheckmarkCircle02Icon aria-label="Chosen" weight="fill" className="size-4 text-(--color-live)" />}
         <Button variant={need.chosen === undefined ? 'secondary' : 'ghost'} disabled={pending} onClick={need.onChoose} aria-label={`${need.chosen === undefined ? 'Choose' : 'Change'} ${need.title}`}>
           {need.chosen === undefined ? 'Choose' : 'Change'}
         </Button>
@@ -127,7 +124,7 @@ const UseTemplateContent = ({ title, creator, needs, onUse, onDone }: Omit<UseTe
             {creator && ` Created by ${creator}: nothing of theirs comes with it.`}
           </Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
       {needs.length > 0 && (

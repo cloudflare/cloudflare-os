@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SlashCommandChoice } from '@gadgets/workshop-shared/api'
-import { composerCommandOf, missingCommand, orderCommands, skillCommandOf, slashRequestFor } from './slashCommands'
+import { composerCommandOf, missingCommand, orderCommands, slashRequestFor } from './slashCommands'
 
 const SKILL: SlashCommandChoice = {
   selection: { gatekeeperId: 7, commandId: 'c1/meeting-brief/SKILL.md' },
@@ -16,6 +16,11 @@ describe('composer commands', () => {
     expect(composerCommandOf(COMPACT)).toMatchObject({ name: 'compact', title: 'Compact', kind: 'builtin' })
   })
 
+  it('says which collection a skill is kept in, which tells it from another of its name', () => {
+    expect(composerCommandOf({ ...SKILL, resourceLabel: 'Sales Playbooks · meeting-brief/SKILL.md' }).source).toBe('Sales Playbooks')
+    expect(composerCommandOf({ ...SKILL, resourceLabel: 'Runbooks' }).source).toBe('Runbooks')
+  })
+
   it('sends a command as the workspace offers it, with the words after it', () => {
     expect(slashRequestFor([COMPACT, SKILL], composerCommandOf(SKILL), 'for Tuesday')).toEqual({ id: SKILL.selection, args: 'for Tuesday', commandPosition: 0 })
   })
@@ -29,11 +34,5 @@ describe('composer commands', () => {
     const gone = composerCommandOf({ ...SKILL, selection: { gatekeeperId: 7, commandId: 'c1/old/SKILL.md' }, name: 'old' })
     expect(slashRequestFor([SKILL], gone, '')).toBeUndefined()
     expect(missingCommand(gone)).toMatch(/Old isn’t available here/)
-  })
-
-  it('offers a Library skill before there is a workspace as the workspace will know it, by its id', () => {
-    const offered = skillCommandOf({ id: 'c1/meeting-brief/SKILL.md', name: 'Meeting brief', description: 'Before a meeting', tag: 'Meetings' })
-    expect(offered).toMatchObject({ key: composerCommandOf(SKILL).key, name: 'meeting-brief', title: 'Meeting brief', kind: 'skill', source: 'Meetings' })
-    expect(slashRequestFor([COMPACT, SKILL], offered, 'for Tuesday')).toEqual({ id: SKILL.selection, args: 'for Tuesday', commandPosition: 0 })
   })
 })

@@ -1,6 +1,5 @@
-import { ArrowCounterClockwiseIcon } from '@phosphor-icons/react'
-import { Button } from './Button'
-import { TextField } from './TextField'
+import { UndoIcon } from './icons'
+import { Button, TextField } from '@gadgets/ui'
 
 export type SecretFieldProps = (
   | { label: string; 'aria-label'?: undefined }
@@ -42,7 +41,7 @@ export const SecretField = ({ value, onValueChange, saved, placeholder, label, '
         />
       </span>
       {saved && value !== null && (
-        <Button variant="ghost" icon={ArrowCounterClockwiseIcon} aria-label="Keep the saved one" disabled={props.disabled} onClick={() => onValueChange(null)} className="text-kumo-subtle" />
+        <Button variant="ghost" icon={UndoIcon} aria-label="Keep the saved one" disabled={props.disabled} onClick={() => onValueChange(null)} className="text-kumo-subtle" />
       )}
     </span>
   )

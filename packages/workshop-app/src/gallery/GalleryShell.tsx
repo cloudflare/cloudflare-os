@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { SearchField } from '@/components/SearchField'
+import { SearchField } from '@gadgets/ui'
 
 /** One page of the gallery: a part of the app, with every state of what it is made of. */
 export type GalleryPage = { id: string; group: string; name: string; Page: ComponentType }

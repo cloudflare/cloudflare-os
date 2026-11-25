@@ -6,6 +6,9 @@
 // admin session can change neither: admins choose an access level and a retention within them (in
 // AdminConfig), and adminAccessPolicy() holds that choice inside them wherever it is enforced. This
 // is the reason authentication config stays in auth/config.ts rather than in AdminConfig.
+//
+// Whether admins may change a workspace at all is a third bound read from the environment
+// (adminWorkspaceWritesEnabled()): a switch, with no admin setting under it.
 
 import { createHash } from "node:crypto";
 import {
@@ -22,6 +25,7 @@ import {
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
 import { createWorkshopLogger } from "./observability";
+import { canonicalJson } from "./canonical-json.js";
 
 const logger = createWorkshopLogger("workshop.admin.access");
 
@@ -31,6 +35,7 @@ const logger = createWorkshopLogger("workshop.admin.access");
 // on every request that reads it.
 const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
+const reportedInvalidWrites = new Set<unknown>();
 
 function isBlank(raw: unknown): boolean {
   return raw === undefined || raw === null || String(raw).trim() === "";
@@ -78,6 +83,29 @@ export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
         { event: "admin.access.config.invalid" });
   }
   return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
+}
+
+/** Whether ADMIN_WORKSPACE_WRITES lets admins change workspaces: only the string "on", in any case
+ * and trimmed. Unset, blank and "off" are off. Any other value misconfigures a security bound, so
+ * it is off too, logged as an error (once per isolate per value, never the value itself). A bound
+ * of its own: neither ADMIN_WORKSPACE_ACCESS_MAX nor the level admins chose holds a write back. */
+export function adminWorkspaceWritesEnabled(env: Cloudflare.Env): boolean {
+  let raw: unknown = env.ADMIN_WORKSPACE_WRITES;
+  // Never String(raw): that reads a JSON binding of ["on"] as "on" and of [] as blank, and throws
+  // for an object whose toString is not a function.
+  let value = typeof raw === "string" ? raw.trim().toLowerCase() : undefined;
+  if (raw === undefined || raw === null || value === "") return false;
+  if (value === "on") return true;
+
+  // This turns on a privileged surface, so only its one documented value does: "true", "1" and a
+  // typo of "on" all leave writes off.
+  if (value !== "off" && !reportedInvalidWrites.has(raw)) {
+    reportedInvalidWrites.add(raw);
+    logger.error(
+        "ADMIN_WORKSPACE_WRITES is not on or off, so admin writes to workspaces are off",
+        { event: "admin.access.config.invalid" });
+  }
+  return false;
 }
 
 /** The lower of two access levels (ADMIN_WORKSPACE_ACCESS_LEVELS lists them in order). */
@@ -248,24 +276,6 @@ export function redactAdminAuditArgs(args: Record<string, string | number | unde
         ? cutAdminAuditText(value, MAX_ADMIN_AUDIT_ARG_LENGTH) : value;
   }
   return kept;
-}
-
-// Canonical JSON: object keys sorted at every level, written out as text. Building a sorted copy
-// by assignment instead would turn a "__proto__" key into a prototype change and drop it.
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(item => item === undefined ? "null" : canonicalJson(item)).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    let entries: string[] = [];
-    for (let key of Object.keys(value).toSorted()) {
-      let item = (value as Record<string, unknown>)[key];
-      if (item === undefined) continue;
-      entries.push(`${JSON.stringify(key)}:${canonicalJson(item)}`);
-    }
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /** A value as an AdminSettingChange records it: a string as itself, anything else as JSON with

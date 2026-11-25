@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { fetchBackendVersion } from './versionChecks'
+import { fetchVersions } from './versionChecks'
 import { useSessionCheck } from './useSessionCheck'
 
 /**
@@ -24,9 +24,9 @@ export const useStaleBackendReconnect = (
     const version = currentVersion.current
     if (checking.current || version === undefined || reconnectedFrom.current.has(version)) return
     checking.current = true
-    void fetchBackendVersion().then((latest) => {
+    void fetchVersions().then(({ backend: latest }) => {
       checking.current = false
-      if (typeof latest !== 'string' || latest === version) return
+      if (latest === undefined || latest === version) return
       // The socket may have changed during the fetch.
       if (currentVersion.current !== version) return
       reconnectedFrom.current.add(version)

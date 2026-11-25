@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
-import { messageInfo } from '@/blocks/messageInfo'
+import { messageInfo, thinkingOf } from '@/blocks/messageInfo'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
 import { answerParts } from '@/chat/answerParts'
@@ -35,9 +35,17 @@ export const MessageBlocksPreview = () => {
 
   return (
     <>
-      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, a Word document, deck and workbook drawn on their tiles once fetched, attachments alone, another sender, not read yet)">
+      <Section title="UserMessage (plain, a long one cut short with more, a link as a pill of its site, a reply, a short reply to a long message, mentions, slash command, attachments, a Word document, deck and workbook drawn on their tiles once fetched, attachments alone, another sender, not read yet)">
         <Column>
           <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} onReply={() => say('reply')} />
+          <UserMessage
+            parts={[
+              { type: 'text', text: 'Here are the notes from this morning’s planning session, can you turn them into a plan for the quarter? ' },
+              { type: 'capsule', title: 'Q3 planning notes', url: 'https://docs.example.com/q3' },
+              { type: 'text', text: ' We agreed that the onboarding flow comes first: new workspaces should be set up in under five minutes, which means the template picker has to load instantly and the first chat should already know what the workspace is for. After that, the agents page needs a proper empty state and a way to set one up without asking in a chat. Billing comes third: the usage page is confusing, people cannot tell what a run costs, and the credits warning arrives too late. We also talked about the mobile layout, which breaks below 400px on the settings pages, and about the export button, which half the team could not find. Finally, the support rota for launch week still has gaps on Thursday and Friday, and someone needs to own the status page while the release goes out.' },
+            ]}
+          />
+          <UserMessage parts={[{ type: 'text', text: 'Compare https://www.cloudflare.com/plans/ with what we pay now.' }]} />
           <UserMessage parts={[{ type: 'text', text: 'Make it twenty-four, and keep the weekly split.' }]} quote="The chart now covers 12 weeks" />
           <UserMessage
             parts={[{ type: 'text', text: 'Yes' }]}
@@ -46,14 +54,17 @@ export const MessageBlocksPreview = () => {
           <UserMessage
             parts={[
               { type: 'text', text: 'Turn ' },
-              { type: 'capsule', title: 'PLAT-212 Chart shows 4 weeks', url: 'https://jira.example.com/browse/PLAT-212' },
+              { type: 'capsule', title: 'PLAT-212 Chart shows 4 weeks', url: 'https://jira.example.com/browse/PLAT-212', snippet: 'The dashboard’s ticket chart stops at four weeks, though the filter above it says twelve.' },
               { type: 'text', text: ' into a ' },
               { type: 'format', noun: 'Document', icon: 'fileText' },
               { type: 'text', text: ' and a ' },
               { type: 'format', noun: 'Spreadsheet', icon: 'gridNine' },
             ]}
           />
-          <UserMessage parts={[{ type: 'command', name: 'release-notes' }, { type: 'text', text: ' for the dashboard, since Monday' }]} />
+          <UserMessage
+            parts={[{ type: 'command', name: 'release-notes' }, { type: 'text', text: ' for the dashboard, since Monday' }]}
+            describe={(part) => (part.type === 'command' ? { description: 'Draft release notes from what was merged.', facts: ['Skill', 'Engineering'] } : undefined)}
+          />
           <UserMessage
             parts={[{ type: 'text', text: 'Here are the files' }]}
             attachments={[
@@ -83,15 +94,16 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
+      <Section title="Message details (a click on the message shows a bubble under it of what there is to know about it, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; a click or the chevron puts them away; the brain button on a reply that took steps shows them above it, apart from the details)">
         <Column>
           <AssistantMessage
             text="I’ll build a personal Jira dashboard."
-            details={{ ...of('no-trace'), ...messageInfo({ sender: 'Mock Model Fast', sentAt: SENT, trace: { steps: [], openSteps: open, onToggleStep: toggle } }) }}
+            details={{ ...of('no-trace'), ...messageInfo({ sender: 'Mock Model Fast', sentAt: SENT, reply: true }) }}
           />
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
-            details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, trace: { steps: TRACE, openSteps: open, onToggleStep: toggle } }) }}
+            details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, reply: true }) }}
+            thinking={{ ...of('thinking'), content: thinkingOf({ steps: TRACE, toggledSteps: open, onToggleStep: toggle }) }}
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}

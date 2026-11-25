@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CalendarBlankIcon, CpuIcon, TimerIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { Calendar04Icon, ChipIcon, StopWatchIcon, UserIcon, type Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { formatDuration } from '@/components/usageFormat'
 import type { ToolStepEntry } from './ToolStep'
@@ -10,18 +10,20 @@ export type MessageInfo = {
   sender?: string
   /** When it joined the conversation. Absent for a message that has not yet. */
   sentAt?: Date
-  /**
-   * How the message came about, for one the agent wrote: the steps it took and what it thought.
-   * Left out for a message a person sent. Nothing is shown for a reply that took no steps.
-   */
-  trace?: {
-    steps: ToolStepEntry[]
-    /** The keys of the steps whose detail is showing. */
-    openSteps: ReadonlySet<string>
-    onToggleStep: (key: string) => void
-  }
+  /** The agent wrote it (its sender is a model, not a person). */
+  reply?: boolean
   /** For developer mode: how long a reply took to make, in milliseconds. */
   workedFor?: number
+}
+
+/** How a reply came about: the steps it took and what it thought, for `thinkingOf`. */
+export type MessageTrace = {
+  steps: ToolStepEntry[]
+  /** The keys of the steps opened or put away by hand (`WorkLog`). */
+  toggledSteps: ReadonlySet<string>
+  onToggleStep: (key: string) => void
+  /** Its steps start open, as where they were watched as they happened (`WorkLog`). */
+  startOpen?: boolean
 }
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -36,27 +38,18 @@ const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; ch
 
 /**
  * What there is to know about a message, as the two parts a message's details show it in (see
- * `MessageBubble`): their first line, and the rest, when there is more.
+ * `MessageBubble`), under it: their first line, and the rest, when there is more.
  */
-export const messageInfo = ({ sender, sentAt, trace, workedFor }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
-  const from = sender && <Line icon={trace ? CpuIcon : UserIcon} name="From">{sender}</Line>
+export const messageInfo = ({ sender, sentAt, reply, workedFor }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
+  const from = sender && <Line icon={reply ? ChipIcon : UserIcon} name="From">{sender}</Line>
   const sent = (
-    <Line icon={CalendarBlankIcon} name="Sent">
+    <Line icon={Calendar04Icon} name="Sent">
       {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
     </Line>
   )
-  const steps = trace && trace.steps.length > 0 && (
-    <section aria-label="What led to this message" className="border-t border-kumo-line pt-2 text-start">
-      {/* Compensate for each step's hit-area padding so its icon aligns with the lines above. */}
-      <div className="-mx-2">
-        <WorkLog steps={trace.steps} openSteps={trace.openSteps} onToggleStep={trace.onToggleStep} />
-      </div>
-    </section>
-  )
+  const took = workedFor !== undefined && <Line icon={StopWatchIcon} name="Took">{formatDuration(workedFor)}</Line>
 
-  const took = workedFor !== undefined && <Line icon={TimerIcon} name="Took">{formatDuration(workedFor)}</Line>
-
-  if (!from && !steps && !took) return { summary: sent }
+  if (!from && !took) return { summary: sent }
   return {
     summary: from || sent,
     // The space above is part of it, so that folded away it leaves exactly the one line.
@@ -64,8 +57,19 @@ export const messageInfo = ({ sender, sentAt, trace, workedFor }: MessageInfo): 
       <div className={cn('flex flex-col gap-3', from ? 'pt-2' : 'pt-3')}>
         {from && sent}
         {took}
-        {steps}
       </div>
     ),
   }
 }
+
+/**
+ * How a reply came about, for `MessageBubble`'s `trace`, shown above the message: the steps it took, as
+ * the thinking indicator has them while it works, as the history that led up to it. Nothing for a reply
+ * that took no steps.
+ */
+export const thinkingOf = ({ steps, toggledSteps, onToggleStep, startOpen }: MessageTrace): ReactNode =>
+  steps.length > 0 && (
+    <section aria-label="What led to this message">
+      <WorkLog steps={steps} toggledSteps={toggledSteps} onToggleStep={onToggleStep} startOpen={startOpen} />
+    </section>
+  )

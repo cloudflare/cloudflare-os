@@ -1,5 +1,7 @@
-import { AppWindowIcon, DotsThreeIcon, FolderSimpleIcon, InfoIcon, TrashIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import {
+  AppWindowIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, MoreHorizontalIcon,
+} from '@/components/icons'
+import { DropdownMenu } from '@gadgets/ui'
 import type { AutomationDetails } from './automationDetails'
 
 export type AutomationMoreMenuProps = Pick<AutomationDetails, 'title' | 'gadget' | 'workspace'> & {
@@ -16,11 +18,11 @@ export type AutomationMoreMenuProps = Pick<AutomationDetails, 'title' | 'gadget'
  * the workspace it is in, and after a line, delete it, which asks first.
  */
 export const AutomationMoreMenu = ({ title, gadget, workspace, onShowDetails, onDelete, triggerClassName }: AutomationMoreMenuProps) => (
-  <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant="ghost" triggerClassName={triggerClassName} align="end">
-    <DropdownMenu.Item icon={InfoIcon} onSelect={onShowDetails}>Details</DropdownMenu.Item>
+  <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${title}`} triggerVariant="ghost" triggerClassName={triggerClassName} align="end">
+    <DropdownMenu.Item icon={InformationCircleIcon} onSelect={onShowDetails}>Details</DropdownMenu.Item>
     {gadget && <DropdownMenu.Item icon={AppWindowIcon} onSelect={gadget.onOpen}>Open app</DropdownMenu.Item>}
-    {workspace && <DropdownMenu.Item icon={FolderSimpleIcon} onSelect={workspace.onOpen}>Go to workspace</DropdownMenu.Item>}
+    {workspace && <DropdownMenu.Item icon={Folder01Icon} onSelect={workspace.onOpen}>Go to workspace</DropdownMenu.Item>}
     {onDelete && <DropdownMenu.Separator />}
-    {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
+    {onDelete && <DropdownMenu.Item icon={Delete02Icon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
   </DropdownMenu>
 )

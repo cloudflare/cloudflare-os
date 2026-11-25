@@ -55,9 +55,11 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
   return {
     authVendors,
     passwordAuthEnabled: isPasswordAuthEnabled(env),
+    authMode: env.CF_ACCESS_AUD ? "cfAccess" : "token",
     cloudflareLimitsEnabled: isCloudflareLimitsEnabled(env),
     signupsEnabled: config.signupsEnabled,
     userSearchEnabled: config.userSearchEnabled,
+    snapshotSharingEnabled: config.snapshotSharingEnabled,
     siteName: config.siteName,
     siteLogo: siteLogoImage(config.siteLogoConfigured),
     announcement: config.announcement,

@@ -2,7 +2,6 @@ import type { SearchEntry } from '@/blocks/SearchDialog'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { accountLabel, connectionName, connectionStatus, type Connection } from './connectionList'
 import type { ListedAccount, OfferedService } from './connectionProps'
-import { serviceCategories } from './serviceCategories'
 
 const GROUP = 'Connections'
 
@@ -12,8 +11,8 @@ const logoOf = (connection: Connection) => (
   <ServiceLogo tiny name={connectionName(connection)} src={connection.vendor.logo?.url} color={connection.vendor.color} />
 )
 
-// What a service is for and what kind it is, so that "mail" finds the services that do it.
-const aboutOf = (connection: Connection) => [connection.vendor.tagline ?? '', ...serviceCategories(connection.vendorId).map(({ label }) => label)]
+// What a service is for, so that "mail" finds the services that do it.
+const aboutOf = (connection: Connection) => [connection.vendor.tagline ?? '']
 
 /**
  * Search's way to the connections, one entry for each as the Connections page lists them: the

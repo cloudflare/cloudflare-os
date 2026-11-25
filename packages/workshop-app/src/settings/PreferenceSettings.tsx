@@ -1,6 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
+import { ConfirmMenu, SettingRow, SettingsGroup } from '@gadgets/ui'
 import { resetLocalPreferences } from './resetLocalPreferences'
 import { SettingDefinitionRow } from './SettingDefinitionRow'
 import { usePreferenceSettings } from './usePreferenceSettings'
@@ -10,12 +8,15 @@ import { usePreferenceSettings } from './usePreferenceSettings'
  * to forget all of it, as it is all kept in this browser.
  */
 export const PreferenceSettings = () => {
-  const { theme, motion, autoOpenOutputs, developerMode } = usePreferenceSettings()
+  const { theme, motion, autoOpenOutputs, alwaysShowThinking, developerMode } = usePreferenceSettings()
   return (
     <>
       <SettingsGroup title="Appearance">
         <SettingDefinitionRow setting={theme} />
         <SettingDefinitionRow setting={motion} />
+      </SettingsGroup>
+      <SettingsGroup title="Chat">
+        <SettingDefinitionRow setting={alwaysShowThinking} />
       </SettingsGroup>
       <SettingsGroup title="Side pane">
         <SettingDefinitionRow setting={autoOpenOutputs} />
@@ -24,12 +25,12 @@ export const PreferenceSettings = () => {
         <SettingDefinitionRow setting={developerMode} />
         <SettingRow
           title="Reset local preferences"
-          description="Clear what’s saved in this browser: the layout, list views, stars, workspace icons and theme. Your account isn’t affected and you stay signed in."
+          description="Clear what’s saved in this browser: the layout, list views and theme. Your account isn’t affected and you stay signed in."
         >
           <ConfirmMenu
             label="Reset"
             title="Reset local preferences?"
-            description="Stars and workspace icons are saved only in this browser, so they’ll be lost for good."
+            description="This browser’s layout, list views and theme go back to how they start."
             confirmLabel="Reset"
             onConfirm={resetLocalPreferences}
           />

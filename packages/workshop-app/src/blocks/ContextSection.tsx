@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { Disclosure } from '@/components/Disclosure'
 
@@ -25,7 +25,7 @@ export const ContextSection = ({ title, open, onToggle, children }: ContextSecti
     summary={(
       <span className="flex items-center gap-1 text-base font-medium">
         {title}
-        <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-2.5 shrink-0 transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
+        <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('size-2.5 shrink-0 transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
       </span>
     )}
     // Set apart from the next by room alone, which is under its rows, so that titles with their rows folded away stay together; the last has none, as the card's own padding makes up.

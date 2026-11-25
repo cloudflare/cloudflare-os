@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckIcon, CopyIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Cancel01Icon, Copy01Icon, Tick02Icon } from '@/components/icons'
+import { Button } from '@gadgets/ui'
 
 export type CopyValueButtonProps = {
   /** What is shown, and put on the clipboard. */
@@ -13,9 +13,9 @@ export type CopyValueButtonProps = {
 const SHOWN_FOR = 1500
 
 const STATES = {
-  ready: { icon: CopyIcon, text: undefined },
-  copied: { icon: CheckIcon, text: 'Copied' },
-  failed: { icon: XIcon, text: 'Couldn’t copy' },
+  ready: { icon: Copy01Icon, text: undefined },
+  copied: { icon: Tick02Icon, text: 'Copied' },
+  failed: { icon: Cancel01Icon, text: 'Couldn’t copy' },
 }
 
 /** A value, that copies itself when pressed and says for a moment that it did: an ID, for a settings row. */

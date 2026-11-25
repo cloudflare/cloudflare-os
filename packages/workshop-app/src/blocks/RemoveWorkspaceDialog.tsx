@@ -1,8 +1,6 @@
 import { useState } from 'react'
-import { XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Cancel01Icon } from '@/components/icons'
+import { Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 import type { WorkspaceRemoval } from './WorkspaceMoreMenu'
 
@@ -85,7 +83,7 @@ const RemoveWorkspaceContent = ({ title, removal, others, onConfirm, pending, ru
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{words.question(title || 'Untitled workspace')}</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">{words.said(others)}</Dialog.Description>
         </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
       <footer className="flex flex-col gap-3 p-6 pt-4">
         {problem && <Banner title={words.problem} description={problem} />}

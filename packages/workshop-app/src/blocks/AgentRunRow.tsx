@@ -1,9 +1,14 @@
-import { CheckCircleIcon, CircleNotchIcon, HandPalmIcon, PencilSimpleLineIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
+import { RunStatusMark, type AgentRunStatus } from './RunStatusMark'
 
-/** How a run stands, as `automations/agents.ts` says. */
-export type AgentRunStatus = 'running' | 'waiting' | 'failed' | 'changes' | 'done'
+/** The colour of how a run stands in words, for those that want the user: waiting on them, failed. */
+const WORDS_COLOUR: Record<AgentRunStatus, string> = {
+  running: 'text-kumo-subtle',
+  waiting: 'text-kumo-brand',
+  failed: 'text-kumo-danger',
+  changes: 'text-kumo-subtle',
+  done: 'text-kumo-subtle',
+}
 
 export type AgentRunRowProps = {
   title: string
@@ -20,36 +25,25 @@ export type AgentRunRowProps = {
   onSelect: () => void
 }
 
-const MARKS = {
-  running: { Icon: CircleNotchIcon, colour: 'text-kumo-default motion-safe:animate-spin', words: 'text-kumo-subtle' },
-  waiting: { Icon: HandPalmIcon, colour: 'text-kumo-warning', words: 'text-kumo-warning' },
-  failed: { Icon: WarningCircleIcon, colour: 'text-kumo-danger', words: 'text-kumo-danger' },
-  changes: { Icon: PencilSimpleLineIcon, colour: 'text-kumo-default', words: 'text-kumo-subtle' },
-  done: { Icon: CheckCircleIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
-} as const
-
 /**
  * One run of an agent in a list of them: a mark of how it stands, its title over how it stands
  * (and whose run it is, where the list is not one agent's), and when it was last active at the end.
  * What wants the user (waiting on them, failed) is in its colour. The row opens its conversation.
  */
-export const AgentRunRow = ({ title, status, statusWords, time, agent, href, onSelect }: AgentRunRowProps) => {
-  const { Icon, colour, words } = MARKS[status]
-  return (
-    <LinkButton
-      href={href}
-      onClick={onSelect}
-      className="flex w-full items-center gap-3 rounded-2xl p-3 text-left text-base hover:bg-kumo-contrast/5"
-    >
-      <Icon aria-hidden="true" weight={status === 'done' ? 'regular' : 'bold'} className={cn('size-5 shrink-0', colour)} />
-      <span className="flex min-w-0 flex-1 flex-col leading-snug">
-        <span className="truncate font-medium text-kumo-default">{title}</span>
-        <span className="truncate text-kumo-subtle">
-          {agent && <>{agent} · </>}
-          <span className={words}>{statusWords}</span>
-        </span>
+export const AgentRunRow = ({ title, status, statusWords, time, agent, href, onSelect }: AgentRunRowProps) => (
+  <LinkButton
+    href={href}
+    onClick={onSelect}
+    className="flex w-full items-center gap-3 rounded-2xl p-3 text-left text-base hover:bg-kumo-contrast/5"
+  >
+    <RunStatusMark status={status} className="size-5" />
+    <span className="flex min-w-0 flex-1 flex-col leading-snug">
+      <span className="truncate font-medium text-kumo-default">{title}</span>
+      <span className="truncate text-kumo-subtle">
+        {agent && <>{agent} · </>}
+        <span className={WORDS_COLOUR[status]}>{statusWords}</span>
       </span>
-      {time && <span className="shrink-0 self-start text-kumo-subtle">{time}</span>}
-    </LinkButton>
-  )
-}
+    </span>
+    {time && <span className="shrink-0 self-start text-kumo-subtle">{time}</span>}
+  </LinkButton>
+)

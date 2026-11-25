@@ -96,8 +96,8 @@ const Dock = ({ gadget, title, restricted, raised, asks, asked, agents, vendors 
   }
   const once = (group: AskGroup) => {
     const [first] = group.asks
-    if (!group.creation || first.gatekeeperId === undefined) return asks.approve(group.asks)
-    return approveCreation({ actionId: first.id, title: first.description.title, gatekeeperId: first.gatekeeperId })
+    if (!group.creation || group.gatekeeperId === undefined) return asks.approve(group.asks)
+    return approveCreation({ actionId: first.id, title: first.description.title, gatekeeperId: group.gatekeeperId })
   }
   const always = async ({ gatekeeperId, allowable, asks: kind }: AskGroup) => {
     if (gatekeeperId === undefined || !allowable) return asks.approve(kind)

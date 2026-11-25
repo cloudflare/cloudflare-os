@@ -1,0 +1,55 @@
+/* A step that comes after the log was shown: its row opens to its height as it fades in, so that what
+   is below it is moved smoothly rather than all at once. `overflow` is clipped for the length of it only. */
+.row-enter {
+  animation: row-enter 260ms cubic-bezier(0.25, 0.1, 0.25, 1) backwards;
+}
+
+@keyframes row-enter {
+  from {
+    height: 0;
+    min-height: 0;
+    opacity: 0;
+    overflow: hidden;
+  }
+  to {
+    height: 2.5rem;
+    min-height: 2.5rem;
+    opacity: 1;
+    overflow: hidden;
+  }
+}
+
+/* The icon of a step that has just been done, grown out from nothing where the spinner, or the mascot,
+   was, with a little overshoot. */
+.mark-grows {
+  animation: mark-grows 420ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
+@keyframes mark-grows {
+  from {
+    opacity: 0;
+    transform: scale(0);
+  }
+}
+
+:root[data-motion='off'] .row-enter,
+:root[data-motion='off'] .mark-grows {
+  animation: none;
+}
+
+/* The words of a step that has just been done go from the full colour of what is under way to the quiet
+   one of what is done. An animation, not a transition, so that the colour they take as the row is pointed
+   at is at once, and the same for the icon beside them. */
+.row-quiets {
+  animation: row-quiets 500ms ease-out backwards;
+}
+
+@keyframes row-quiets {
+  from {
+    color: var(--text-color-kumo-default);
+  }
+}
+
+:root[data-motion='off'] .row-quiets {
+  animation: none;
+}

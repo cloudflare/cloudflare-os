@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { ArrowRight01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type SidePaneTitleProps = {
@@ -33,7 +33,7 @@ export const SidePaneTitle = ({ title, icon: kind, onOpenSettings }: SidePaneTit
       >
         {kind && <span className="flex text-kumo-subtle">{icon(kind)}</span>}
         <span className="truncate">{title}</span>
-        <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
+        <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
       </button>
     )
   }

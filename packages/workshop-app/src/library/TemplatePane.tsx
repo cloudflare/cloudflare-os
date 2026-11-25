@@ -3,7 +3,7 @@ import { useConnections } from '@/connections/useConnections'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { withStar } from './libraryStars'
-import { mostUsed } from './templateList'
+import { recentlyAdded } from './templateList'
 import { TemplatePageView } from './TemplatePageView'
 import { templateNeeds, templateType, type Template } from './templates'
 import { UseTemplate, type MadeFromTemplate } from './UseTemplate'
@@ -26,9 +26,9 @@ export type TemplatePaneProps = {
 
 /**
  * One template's page (`TemplatePageView`) over what it shows: the template, whether it is
- * starred, which of the services it needs the user has connected, and the most used others of its
- * kind. One that is not listed, as one whose link was shared, is read on its own. Use template sets
- * up what it needs and makes it (`UseTemplate`).
+ * starred, which of the services it needs the user has connected, and the latest created others of
+ * its kind. One that is not listed, as one whose link was shared, is read on its own. Use template
+ * sets up what it needs and makes it (`UseTemplate`).
  */
 export const TemplatePane = ({ templateId, onOpenTemplate, templateHref, onBack, onMade }: TemplatePaneProps) => {
   const { state, setStars } = useTemplates()
@@ -70,7 +70,7 @@ export const TemplatePane = ({ templateId, onOpenTemplate, templateHref, onBack,
         }}
         connected={connected}
         owner={madeIn ? { onEdit: (fields) => owner.edit(templateId, fields), onDelete: () => owner.remove(templateId), busy: owner.busy !== undefined, problem: owner.problem } : undefined}
-        related={template ? mostUsed(templates).filter((other) => other.id !== template.id && templateType(other).id === templateType(template).id).slice(0, RELATED) : []}
+        related={template ? recentlyAdded(templates).filter((other) => other.id !== template.id && templateType(other).id === templateType(template).id).slice(0, RELATED) : []}
         onOpenTemplate={onOpenTemplate}
         templateHref={templateHref}
         onBack={onBack}

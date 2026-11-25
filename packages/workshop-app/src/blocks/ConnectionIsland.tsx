@@ -1,12 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { animate, AnimatePresence, motion, useMotionValue, usePresence, type MotionStyle, type PanInfo } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { motionCurve, motionTransition, readMotionLevel, useReducedMotion } from '@gadgets/ui'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
 import { ShimmerText } from '@/components/ShimmerText'
-import { motionCurve } from '@/components/springCurve'
-import { motionTransition } from '@/hooks/motionTransition'
-import { readMotionLevel } from '@/prefs/motion'
 import './ConnectionIsland.css'
 
 export type ConnectionIslandState =

@@ -1,4 +1,4 @@
-import { GitBranchIcon } from '@phosphor-icons/react'
+import { GitBranchIcon } from '@/components/icons'
 import { attachmentKind } from '@/files/attachmentKind'
 import { ATTACHMENT_KIND_ICONS } from '@/blocks/attachmentKindIcons'
 import { FormatIcon } from '@/components/FormatIcon'

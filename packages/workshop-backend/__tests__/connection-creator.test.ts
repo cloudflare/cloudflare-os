@@ -99,8 +99,7 @@ async function withClient(
   await withImpl(async (impl, instance) => {
     impl.ensureAmbientCapsules = async () => {};
     impl.syncDirectory = () => {};
-    impl.markOutputsDirty = () => {};
-    impl.syncOutputsTo = async () => {};
+    impl.markListingDirty = () => {};
     impl.authorizeCollaborator = async () => ({ role: "build" });
     // The pool binds no model gatekeeper class, so its ctx.exports has none to mint a model
     // connection from. The facets are fakes, so the class is stored and never instantiated.

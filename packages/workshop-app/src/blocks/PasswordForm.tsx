@@ -1,7 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
-import { SettingRow } from './SettingRow'
+import { Button, SettingRow, TextField } from '@gadgets/ui'
 
 export type PasswordFormProps = {
   /** Resolves to why the password was not changed, or to nothing once it is. */

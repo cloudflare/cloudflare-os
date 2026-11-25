@@ -1,7 +1,9 @@
 import {
+  isAgentRun,
   matchesActionHistoryFilter,
   type ActionHistoryFilter,
   type ActionHistoryPage,
+  type AgentSpawnerInfo,
   type BoundHookInfo,
   type ActionLogEntry,
   type ActionsSubscriber,
@@ -9,13 +11,18 @@ import {
   type AiChatMessage,
   type AiChatMetadata,
   type AiChatSubscriber,
-  type ChatAttachmentHandle,
+  type CapsuleSpecifier,
+  type ChatArtifact,
+  type ChatArtifactPage,
+  type ChatListOptions,
   type ChatReadState,
+  type ChatAttachmentHandle,
   type ChatAttachmentRef,
   type CodeChangeSubmission,
   type CollaboratorInfo,
   type CommitInfo,
   type FileAtCommit,
+  type MessageFormatRef,
   type PresenceSubscriber,
   type SlashCommandRequest,
   type TreeNode,
@@ -213,11 +220,9 @@ export class MockOverseer {
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
-    this.#agents = scenario.agents ?? { setups: [], runs: [] }
-    // The gadgets that start them are listed from the start.
-    for (const { gadget } of this.#agents.setups) {
-      if (gadget) this.#gadgets.set(gadget.id, new MockGadget(gadget.title, () => this.#backUp()))
-    }
+    this.#agents = scenario.agents ?? { spawners: [], gadgets: [], runs: [] }
+    // The gadgets bound to them are listed from the start.
+    for (const { id, title } of this.#agents.gadgets) this.#gadgets.set(id, new MockGadget(title, () => this.#backUp()))
     this.#metadata = {
       id: CHAT_ID,
       title: scenario.title,
@@ -242,20 +247,10 @@ export class MockOverseer {
         if (name === 'onRpcBroken') {
           return (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : handle.onBroken.add(callback))
         }
-        if (name === 'getGatekeeperById') {
-          return (id: number) => ({
-            getCreationSpec: async () => {
-              const setup = this.#agents.setups.find(({ spawnerId }) => spawnerId === id)
-              if (!setup) throw new Error(`No connection ${id}.`)
-              return { type: 'agentSpawner', config: { displayName: setup.name, modelId: setup.model ?? null }, ...(setup.model ? { modelName: setup.model } : {}) }
-            },
-            [Symbol.dispose]: () => {},
-          })
-        }
         if (name === 'getGadget') {
           return (id: number) => ({
             ...this.#gadget(id).open(handle),
-            // The agents it starts, which are all it is bound to here.
+            // The agents bound to it, which are all it is bound to here.
             applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle),
             setTitle: (title: string) => this.#renameGadget(id, title, handle),
             remove: () => this.#removeGadget(id, handle),
@@ -263,9 +258,9 @@ export class MockOverseer {
             listBindings: async () => {
               if (handle.broken) throw handle.broken
               return [
-                ...this.#agents.setups
-                  .filter(({ gadget }) => gadget?.id === id)
-                  .map(({ spawnerId, name: title, gadget }) => ({ name: gadget!.bindingName, target: spawnerId, resourceTitle: title })),
+                ...this.#agents.spawners.flatMap(({ id: target, config, bindings }) => bindings
+                  .filter(({ gadgetId }) => gadgetId === id)
+                  .map(({ name }) => ({ name, target, resourceTitle: config.displayName, kind: 'agentSpawner' as const }))),
                 ...(this.#gadgetAsks ? [this.#gadgetAsks.connection] : []),
                 ...(this.#automations.find(({ gadget }) => gadget.id === id)?.connections ?? []),
               ]
@@ -449,6 +444,11 @@ export class MockOverseer {
     return { outcome: 'proposed', chatId: CHAT_ID } as const
   }
 
+  /** Even a shared mock workspace has not published any templates of its own. */
+  async listBlueprints() {
+    return []
+  }
+
   /**
    * The gadgets opened so far, each with the same history of its code, and the worktrees, listed
    * as they are to the chat that made them.
@@ -555,15 +555,44 @@ export class MockOverseer {
 
   /** Set once the workspace has deleted itself, which takes it out of the list. */
   deleted = false
+  /** Told once it has, as whoever listens to the list is. */
+  onDeleted = () => {}
 
   async deleteSelf() {
     this.deleted = true
+    this.onDeleted()
   }
 
-  async listChats(): Promise<AiChatMetadata[]> {
-    return [...(this.#deleted ? [] : [this.#metadata]), ...[...this.#others.values()].map(({ chat }) => chat), ...this.#agents.runs]
+  async listChats({ kind, spawnerId, beforeId, limit }: ChatListOptions = {}): Promise<AiChatMetadata[]> {
+    const listed = [...(this.#deleted ? [] : [this.#metadata]), ...[...this.#others.values()].map(({ chat }) => chat), ...this.#agents.runs]
+      .filter((chat) => (spawnerId !== undefined ? chat.spawnerId === spawnerId : kind === undefined || isAgentRun(chat) === (kind === 'runs')))
+      .filter(({ id }) => beforeId === undefined || id < beforeId)
+      .toSorted((a, b) => b.id - a.id)
+    return limit === undefined ? listed : listed.slice(0, limit)
   }
 
+  /** The workspace's agent spawners, as the scenario has them; none waits in a chat here. */
+  async listAgentSpawners(): Promise<AgentSpawnerInfo[]> {
+    return this.#agents.spawners
+  }
+
+  async getChatMetadata(chatId: number): Promise<AiChatMetadata | undefined> {
+    return (await this.listChats()).find(({ id }) => id === chatId)
+  }
+
+  /** All of what the chat has in one page: the files sent in it and the gadgets its changes made. */
+  async listChatArtifacts(chatId: number): Promise<ChatArtifactPage> {
+    if (chatId !== CHAT_ID) return { artifacts: [], connections: [] }
+    const artifacts = this.#messages.flatMap((message): ChatArtifact[] => {
+      const { sequence, timestamp } = message
+      if (message.type === 'message') {
+        return (message.attachments ?? []).map(({ id, oid, name, mimeType, size }) => ({ type: 'attachment', timestamp, attachment: { id, oid, name, mimeType, size, sequence } }))
+      }
+      if (message.type !== 'changes') return []
+      return (message.createdGadgets ?? []).flatMap(({ gadgetId }) => this.#gadgets.has(gadgetId) ? [{ type: 'workpiece', sequence, timestamp, workpiece: this.#gadgetSummary(gadgetId) }] : [])
+    })
+    return { artifacts, connections: [] }
+  }
 
   /** Deletes the chat, which everyone subscribed hears of, as the server tells them. */
   async deleteChat(chatId: number) {
@@ -667,7 +696,7 @@ export class MockOverseer {
 
   async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {
     // An agent's run that failed ends on its error, which is all of it that is kept here.
-    if (this.#agents.failed?.includes(chatId)) {
+    if (this.#agents.runs.some(({ id, lastTurnFailed }) => id === chatId && lastTurnFailed)) {
       return { messages: [{ chatId, sequence: 1, timestamp: new Date(), author: AGENT, type: 'error', message: 'The model provider returned an error.' }] }
     }
     const other = this.#others.get(chatId)
@@ -706,12 +735,17 @@ export class MockOverseer {
     _chatId: number,
     message: string | SlashCommandRequest,
     _modelId?: string | null,
-    _capsules?: unknown,
+    _capsules?: CapsuleSpecifier[],
     handles?: ChatAttachmentHandle[],
+    _formats?: MessageFormatRef[],
+    replyToSequence?: number,
   ) {
     if (this.#sendDelay) await new Promise((resolve) => setTimeout(resolve, this.#sendDelay))
     const refusal = this.#refusals.shift()
     if (refusal !== undefined) throw new Error(refusal)
+    if (replyToSequence !== undefined && !this.#messages.some(({ sequence, type }) => sequence === replyToSequence && (type === 'message' || type === 'slashCommand'))) {
+      throw new Error(`Chat ${CHAT_ID} has no message ${replyToSequence} to reply to.`)
+    }
     const attachments = handles?.map((handle): ChatAttachmentRef => {
       const content = 'oid' in handle ? this.#blobs.get(handle.oid) : undefined
       if (!('oid' in handle) || !content) throw new Error('Chat attachment not found.')
@@ -724,13 +758,13 @@ export class MockOverseer {
       this.#append({ type: 'slashCommand', request: message, author: VIEWER })
     } else if (attachments?.length) {
       if (this.#metadata.activeAgent) throw new Error('The agent is still running.')
-      this.#append({ type: 'message', message, author: VIEWER, attachments })
+      this.#append({ type: 'message', message, author: VIEWER, attachments, replyToSequence })
     } else if (this.#metadata.activeAgent) {
       // A running agent is steered: the message waits in the metadata until the script reads it.
-      const queuedSteers = [...(this.#metadata.queuedSteers ?? []), { text: message, author: VIEWER }]
+      const queuedSteers = [...(this.#metadata.queuedSteers ?? []), { text: message, author: VIEWER, replyToSequence }]
       this.#setMetadata({ queuedSteers })
     } else {
-      this.#append({ type: 'message', message, author: VIEWER })
+      this.#append({ type: 'message', message, author: VIEWER, replyToSequence })
     }
     this.player.fire('onSend')
   }
@@ -746,6 +780,7 @@ export class MockOverseer {
       id: 9000 + index,
       type: 'action',
       chatId,
+      from: 'agent',
       state: 'pending',
       resourceTitle: 'Mail',
       createdAt: new Date(),
@@ -803,6 +838,8 @@ export class MockOverseer {
       type: 'action',
       state: 'pending',
       gatekeeperId: asks.connection.target,
+      from: 'gadget',
+      gadgetId: asks.gadgetId,
       resourceTitle: asks.connection.resourceTitle,
       createdAt: new Date(),
       description: {
@@ -861,7 +898,7 @@ export class MockOverseer {
       const log = message.type === 'action' ? message.actionLog : undefined
       if (log?.type !== 'bindHook' || log.hookId === undefined) return []
       const { hookId: id, gatekeeperId = 0, resourceTitle, resourceUrl, description, enabled } = log
-      return [{ id, gatekeeperId, gadgetId: 1, resourceTitle, resourceUrl, description, enabled }]
+      return [{ id, gatekeeperId, gadgetId: 1, chatId: message.chatId, resourceTitle, resourceUrl, description, enabled }]
     })
     return [...set, ...this.#automations.flatMap(({ gadget, hooks }) => hooks.map((hook) => ({ ...hook, gadgetId: gadget.id })))]
   }
@@ -922,6 +959,7 @@ export class MockOverseer {
   #run(step: ScriptStep) {
     if ('restart' in step) this.#restart(step.restart)
     else if ('disconnect' in step) this.#disconnect(step.disconnect)
+    else if ('run' in step) this.#runOther(step.run)
     else if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
     else if ('message' in step) {
       this.#append(step.message)
@@ -978,11 +1016,27 @@ export class MockOverseer {
     }
   }
 
+  /**
+   * Starts or changes another chat of the workspace, as of now (a `run` step), which whoever is
+   * subscribed hears of as the server tells them: its metadata, then the message it is given.
+   */
+  #runOther({ id, metadata = {}, message }: Extract<ScriptStep, { run: unknown }>['run']) {
+    const now = new Date()
+    const other: MockChat = this.#others.get(id) ?? { chat: { id, title: '', started: now, lastActive: now }, messages: [] }
+    other.chat = { ...other.chat, ...metadata, lastActive: now }
+    this.#others.set(id, other)
+    this.#chatSubscribers.forEach((subscriber) => subscriber.metadata(other.chat))
+    if (!message) return
+    const stamped = { ...stamp(message, (other.messages.at(-1)?.sequence ?? -1) + 1), chatId: id, timestamp: now }
+    other.messages.push(stamped)
+    this.#deliver(stamped)
+  }
+
   #endTurn() {
     const unread = this.#metadata.queuedSteers ?? []
     this.#setMetadata({ activeAgent: undefined, queuedSteers: undefined })
     // A steer the agent never read prompts the next turn as an ordinary message.
-    for (const { text, author } of unread) this.#append({ type: 'message', message: text, author })
+    for (const { text, author, replyToSequence } of unread) this.#append({ type: 'message', message: text, author, replyToSequence })
     if (unread.length) this.player.fire('onSend')
   }
 

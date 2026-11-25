@@ -1,4 +1,4 @@
-import { CpuIcon, LightningIcon } from '@phosphor-icons/react'
+import { ChipIcon, FlashIcon } from '@/components/icons'
 import { defaultModelOf } from '@/chat/defaultModel'
 import type { ChoiceSetting } from './settingDefinition'
 import type { ModelSettingsState } from './useModelSettings'
@@ -33,7 +33,7 @@ export const modelChoiceSettings = (
       title: 'Default model',
       description: 'Answers each message you send, in new chats and in ones you already have. A reply that is already under way keeps the model it started with.',
       keywords: ['answers', 'chat', 'ai', 'llm'],
-      icon: CpuIcon,
+      icon: ChipIcon,
       remote: true,
       value: (ready && defaultModelOf(models, ready.preferred)?.id) || '',
       options,
@@ -48,7 +48,7 @@ export const modelChoiceSettings = (
       title: 'Quick model',
       description: 'Used for small tasks, such as naming chats. With none, chats stay untitled.',
       keywords: ['small', 'tasks', 'naming', 'titles', 'ai', 'llm'],
-      icon: LightningIcon,
+      icon: FlashIcon,
       remote: true,
       value: quick ?? NONE,
       options: [{ id: NONE, label: 'None' }, ...options],

@@ -10,6 +10,7 @@ import {
 } from "../../src/calendar-api";
 import {
   BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationLocationConfiguratorUI, DriveConfiguratorUI,
+  GoogleGroupConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
@@ -1206,10 +1207,13 @@ describe("BigQuery picker", () => {
   const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE", friendlyName?: string) =>
     ({ tableReference: { projectId, datasetId, tableId }, type, friendlyName });
 
-  /** An account holding a role in `mine` only, which was shared `theirs.events`. */
+  /**
+   * An account BigQuery lists a role in `mine` for, which was shared `theirs.events`, and which may
+   * create query jobs in `granted` though BigQuery does not list it. A dry run in `flaky` fails.
+   */
   function bigQuery() {
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
       const path = decodeURIComponent(url.pathname.replace("/bigquery/v2", ""));
       calls.push(path);
@@ -1234,6 +1238,17 @@ describe("BigQuery picker", () => {
           return Response.json(table("theirs", "events", "clicks"));
         case "/projects/example.com:legacy/datasets/events/tables/clicks":
           return Response.json(table("example.com:legacy", "events", "clicks", "SNAPSHOT"));
+        case "/projects/granted/datasets":
+          return Response.json({ datasets: [dataset("granted", "reports")] });
+        case "/projects/granted/jobs":
+          // Accepts only a dry run: a probe that ran a real job, billed to the project, fails here.
+          return init?.method === "POST" && JSON.parse(String(init.body)).configuration?.dryRun === true
+            ? Response.json({ status: { state: "DONE" } })
+            : Response.json({ error: { code: 400, message: "Not a dry run", errors: [{ reason: "invalid" }] } }, { status: 400 });
+        case "/projects/flaky/datasets":
+          return Response.json({ datasets: [dataset("flaky", "logs")] });
+        case "/projects/flaky/jobs":
+          return Response.json({ error: { code: 503, message: "Backend Error", errors: [{ reason: "backendError" }] } }, { status: 503 });
       }
       return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
     }));
@@ -1243,11 +1258,11 @@ describe("BigQuery picker", () => {
   it("lists the projects the account holds a role in, and inside one its datasets and tables, by name", async () => {
     const { ui } = bigQuery();
     expect(await ui.listNodes("bigquery", "", null)).toEqual({ nodes: [
-      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
-      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", runsQueries: true },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, runsQueries: true },
     ] });
     expect(await ui.listNodes("project:mine", "", null)).toMatchObject({ nodes: [
-      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
+      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", runsQueries: true, path: [{ id: "project:mine", title: "mine" }] },
       { id: "dataset:mine/web", title: "web" },
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "dai", null)).toMatchObject({ nodes: [
@@ -1278,26 +1293,83 @@ describe("BigQuery picker", () => {
     const { ui, calls } = bigQuery();
     // Ahead of a listed project whose name merely contains the ID typed.
     expect(await ui.listNodes("bigquery", "theirs", null)).toEqual({ nodes: [
-      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
-      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, runsQueries: false },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, runsQueries: true },
     ] });
     expect(calls).toContain("/projects/theirs/datasets");
-    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
+    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", runsQueries: false }] });
     const console = "https://console.cloud.google.com/bigquery?project=mine&p=theirs&d=events&page=dataset";
     expect(await ui.listNodes("bigquery", console, null)).toMatchObject({ nodes: [
-      { id: "dataset:theirs/events", subtitle: "Shared events", listed: false, path: [{ id: "project:theirs" }] },
+      { id: "dataset:theirs/events", subtitle: "Shared events", runsQueries: false, path: [{ id: "project:theirs" }] },
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`", null)).toMatchObject({ nodes: [
-      { id: "table:theirs/events/clicks", kind: "table", listed: false },
+      { id: "table:theirs/events/clicks", kind: "table", runsQueries: false },
     ] });
     // A legacy domain-scoped project ID parses as a URL, but is a reference all the same.
     expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks", null)).toMatchObject({ nodes: [
-      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, listed: false },
+      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, runsQueries: false },
     ] });
     expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs", null)).toMatchObject({ nodes: [
-      { id: "project:theirs", listed: false },
+      { id: "project:theirs", runsQueries: false },
     ] });
-    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", runsQueries: false });
+  });
+
+  it("runs queries in a project BigQuery does not list when it lets the account create jobs there", async () => {
+    const { ui, calls } = bigQuery();
+    expect(await ui.getNode("project:granted")).toMatchObject({ id: "project:granted", runsQueries: true });
+    expect(await ui.listNodes("project:granted", "", null)).toMatchObject({ nodes: [{ id: "dataset:granted/reports", runsQueries: true }] });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ runsQueries: false });
+    // Each project BigQuery does not list is asked once; one it lists, never.
+    expect(calls.filter(path => path.endsWith("/jobs"))).toEqual(["/projects/granted/jobs", "/projects/theirs/jobs"]);
+  });
+
+  it("asks for a query project, without failing the lookup, when a dry run fails for another reason than a refusal", async () => {
+    const { ui } = bigQuery();
+    expect(await ui.getNode("project:flaky")).toMatchObject({ id: "project:flaky", runsQueries: false });
+    expect(await ui.listNodes("project:flaky", "", null)).toMatchObject({ nodes: [{ id: "dataset:flaky/logs", runsQueries: false }] });
+  });
+
+  it("asks for a query project once the dry run's deadline passes, even while a token is being refreshed", async () => {
+    // The probe's 10-second deadline is taken in hand; every other timeout runs as usual.
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => ms === 10_000 ? deadline.signal : timeout(ms));
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = decodeURIComponent(new URL(String(input)).pathname.replace("/bigquery/v2", ""));
+      if (path === "/projects") return Response.json({ projects: [] });
+      if (path === "/projects/expired/datasets") return Response.json({ datasets: [] });
+      return Response.json({ error: { code: 401, message: "Expired" } }, { status: 401 });
+    }));
+    // The dry run's 401 asks for a fresh token, which doesn't come until the test is done.
+    const refresh = Promise.withResolvers<GoogleAccessToken>();
+    let refreshing = false;
+    const ui = new BigQueryConfiguratorUI((opts?: AccessTokenRequest) => {
+      if (!opts?.forceRefresh) return Promise.resolve(token("t"));
+      refreshing = true;
+      return refresh.promise;
+    });
+    const node = ui.getNode("project:expired");
+    await vi.waitFor(() => expect(refreshing).toBe(true));
+    deadline.abort(new DOMException("Timed out", "TimeoutError"));
+    expect(await node).toMatchObject({ id: "project:expired", runsQueries: false });
+    refresh.resolve(token("fresh"));
+  });
+
+  it("fails a lookup when the project list fails, rather than calling what it names unseen, so it can be asked again", async () => {
+    let lists = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = decodeURIComponent(new URL(String(input)).pathname.replace("/bigquery/v2", ""));
+      if (path === "/projects" && ++lists === 1) {
+        return Response.json({ error: { code: 400, message: "Invalid page token", errors: [{ reason: "invalid" }] } }, { status: 400 });
+      }
+      if (path === "/projects") return Response.json({ projects: [] });
+      if (path === "/projects/theirs/datasets/events") return Response.json(dataset("theirs", "events"));
+      return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
+    }));
+    const ui = new BigQueryConfiguratorUI(async () => token("t"));
+    await expect(ui.getNode("dataset:theirs/events")).rejects.toThrow("http=400");
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ id: "dataset:theirs/events", runsQueries: false });
   });
 
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
@@ -1320,5 +1392,149 @@ describe("BigQuery picker", () => {
     for (const prefix of ["th", "thei", "their"]) await ui.listNodes("bigquery", prefix, null);
     expect(calls.filter(path => path !== "/projects")).toEqual([]);
     expect((await ui.listNodes("bigquery", "theirs", null)).nodes[0]).toMatchObject({ id: "project:theirs" });
+  });
+});
+
+describe("Google Group check", () => {
+  const GROUP = "team@example.com";
+  const OWNER = "owner@example.com";
+
+  /** Cloud Identity and Gmail for one group whose newest mail is `mail`. */
+  function mockGroup(
+      { mail, membership, primary = GROUP }: {
+        mail: Array<Array<[string, string]>>; membership: "member" | "manager" | "none" | "hidden"; primary?: string;
+      }) {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
+        return Response.json({ sub: "owner-subject", email: OWNER, email_verified: true });
+      }
+      if (url.pathname === "/v1/groups:lookup") return Response.json({ name: "groups/0team" });
+      if (url.pathname === "/v1/groups/0team") {
+        return Response.json({
+          name: "groups/0team", groupKey: { id: primary },
+          labels: { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
+          createTime: "2020-01-01T00:00:00Z",
+        });
+      }
+      if (url.pathname === "/v1/groups/0team/memberships:lookup") {
+        if (membership === "member" || membership === "manager") {
+          return Response.json({ name: "groups/0team/memberships/owner" });
+        }
+        let code = membership === "hidden" ? 403 : 404;
+        return Response.json({ error: { code, details: [{ reason: "PERMISSION_DENIED" }] } }, { status: code });
+      }
+      if (url.pathname === "/v1/groups/0team/memberships/owner") {
+        return Response.json({
+          name: "groups/0team/memberships/owner",
+          roles: [{ name: "MEMBER" }, ...(membership === "manager" ? [{ name: "MANAGER" }] : [])],
+        });
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages") {
+        return Response.json({ messages: mail.map((_, n) => ({ id: `a${n}`, threadId: `f${n}` })) });
+      }
+      let message = /^\/gmail\/v1\/users\/me\/messages\/a(\d+)$/.exec(url.pathname);
+      if (message) {
+        return Response.json({
+          id: `a${message[1]}`, threadId: `f${message[1]}`, labelIds: ["INBOX"], internalDate: "1767225600000",
+          payload: { headers: mail[Number(message[1])].map(([name, value]) => ({ name, value })) },
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+  }
+
+  const ui = () => new GoogleGroupConfiguratorUI(async () => token("access-token"), async () => true);
+  const check = (outsideSenders = false) => ui().checkGroup(GROUP, outsideSenders);
+  const authenticated: Array<[string, string]> = [
+    ["Authentication-Results", "mx.google.com; dmarc=pass (p=REJECT) header.from=example.com"],
+    ["From", "Bea <bea@example.com>"], ["To", GROUP], ["Subject", "Venue"],
+  ];
+  /** Authenticated, but from outside the group's domain and never delivered by the group. */
+  const outside: Array<[string, string]> = [
+    ["Authentication-Results", "mx.google.com; dmarc=pass (p=REJECT) header.from=example.org"],
+    ["From", "Dan <dan@example.org>"], ["To", GROUP], ["Subject", "Read this"],
+  ];
+  const forged: Array<[string, string]> = [["From", "Mallory <mallory@example.org>"], ["To", GROUP]];
+
+  it.for([
+    ["mail it can show", [authenticated], "ready"],
+    ["no mail yet", [], "empty"],
+    ["only mail Google doesn't vouch for", [forged], "unverified"],
+    ["only outside mail the group didn't deliver", [outside], "unverified"],
+  ] as const)("reports %s", async ([, mail, finding]) => {
+    mockGroup({ mail: mail.map(headers => [...headers]), membership: "member" });
+    await expect(check()).resolves.toEqual({ mail: finding, membership: "member" });
+  });
+
+  it("counts outside mail that names the group for a connection that takes any", async () => {
+    mockGroup({ mail: [outside], membership: "member" });
+    await expect(check(true)).resolves.toEqual({ mail: "ready", membership: "member" });
+    mockGroup({ mail: [forged], membership: "member" });
+    await expect(check(true)).resolves.toEqual({ mail: "unverified", membership: "member" });
+  });
+
+  it("says so when the group hides its members from the account, whatever its mail", async () => {
+    mockGroup({ mail: [authenticated], membership: "hidden" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "hidden" });
+  });
+
+  describe("listing", () => {
+    const FORUM = { "cloudidentity.googleapis.com/groups.discussion_forum": "" };
+
+    function mockGroups(groups: () => Response) {
+      let searches = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
+          return Response.json({ sub: "owner-subject", email: OWNER, email_verified: true });
+        }
+        if (url.pathname === "/v1/groups/-/memberships:searchDirectGroups") {
+          searches++;
+          return groups();
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }));
+      return () => searches;
+    }
+
+    it("offers the account's groups by address, searched by name or address, from one lookup", async () => {
+      let searches = mockGroups(() => Response.json({ memberships: [
+        { group: "groups/0team", groupKey: { id: GROUP }, displayName: "Team", labels: FORUM },
+        { group: "groups/0ops", groupKey: { id: "ops@example.com" }, labels: FORUM },
+        { group: "groups/0acl", groupKey: { id: "acl@example.com" }, displayName: "Access only", labels: {} },
+      ] }));
+      let groups = ui();
+      await expect(groups.listGroups("")).resolves.toEqual([
+        { value: GROUP, title: "Team", subtitle: GROUP },
+        { value: "ops@example.com", title: "ops@example.com" },
+      ]);
+      await expect(groups.listGroups("OPS")).resolves.toEqual([{ value: "ops@example.com", title: "ops@example.com" }]);
+      expect(searches()).toBe(1);
+    });
+
+    it("says why when Google won't list them, and asks again next time", async () => {
+      let searches = mockGroups(() =>
+        Response.json({ error: { code: 403, details: [{ reason: "PERMISSION_DENIED" }] } }, { status: 403 }));
+      let groups = ui();
+      await expect(groups.listGroups("")).rejects.toThrow("Google won't let this account look up its groups.");
+      await expect(groups.listGroups("")).rejects.toThrow("Google won't let this account look up its groups.");
+      expect(searches()).toBe(2);
+    });
+  });
+
+  it("says a manager's own lookup can't speak for the group's other members", async () => {
+    mockGroup({ mail: [authenticated], membership: "manager" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "manager" });
+  });
+
+  it("answers an address that is another group's alias with the group's own", async () => {
+    mockGroup({ mail: [authenticated], membership: "member", primary: "crew@example.com" });
+    await expect(check()).resolves.toEqual({ aliasOf: "crew@example.com" });
+  });
+
+  it("says so when the account isn't in the group directly", async () => {
+    mockGroup({ mail: [authenticated], membership: "none" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "none" });
   });
 });

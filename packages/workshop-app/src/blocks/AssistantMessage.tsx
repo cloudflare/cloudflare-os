@@ -1,4 +1,5 @@
-import { Markdown } from '@/components/Markdown'
+import type { ReactNode } from 'react'
+import { Markdown } from '@gadgets/ui'
 import { InlineView } from './InlineView'
 import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
 
@@ -29,6 +30,11 @@ export type AssistantMessageProps = {
   developerCopies?: MessageBubbleProps['developerCopies']
   /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
+  /**
+   * How it came about (see `thinkingOf`): above the message while open, with the way to switch it among
+   * its actions. Above the first of its bubbles, where it has several, and the button on the last.
+   */
+  thinking?: { open: boolean; onToggle: () => void; content: ReactNode; shownAlready?: boolean }
   /** Sends what one of its views suggested, as the viewer's own message (`InlineView`'s `onSend`). */
   onSendSuggestion?: (message: string) => Promise<boolean>
 }
@@ -38,10 +44,12 @@ export type AssistantMessageProps = {
  * (`MessageBubble`'s `view`), live, in order; what can be done with the message is on the last.
  * Copied, it is the Markdown it was written in.
  */
-export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, developerCopies, details, onSendSuggestion }: AssistantMessageProps) => {
+export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, developerCopies, details, thinking, onSendSuggestion }: AssistantMessageProps) => {
+  const trace = thinking && { open: thinking.open, content: thinking.content, shownAlready: thinking.shownAlready }
+  const button = thinking && { open: thinking.open, onToggle: thinking.onToggle }
   if (!parts || (parts.length === 1 && parts[0].type === 'text')) {
     return (
-      <MessageBubble role="assistant" joins={joins} onReply={onReply} onMarkUnread={onMarkUnread} copyText={text} developerCopies={developerCopies} details={details}>
+      <MessageBubble role="assistant" joins={joins} onReply={onReply} onMarkUnread={onMarkUnread} copyText={text} developerCopies={developerCopies} details={details} thinking={button} trace={trace}>
         <Markdown>{parts?.[0]?.type === 'text' ? parts[0].text : text}</Markdown>
       </MessageBubble>
     )
@@ -60,6 +68,8 @@ export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, de
           developerCopies: ends ? developerCopies : undefined,
           copyText: ends ? text : undefined,
           details: ends ? details : undefined,
+          thinking: ends ? button : undefined,
+          trace: index === 0 ? trace : undefined,
         } as const
         return part.type === 'text'
           ? <MessageBubble key={index} {...bubble}><Markdown>{part.text}</Markdown></MessageBubble>

@@ -15,4 +15,11 @@ describe('startWithFormat', () => {
   it('is the name alone when nothing was written', () => {
     expect(startWithFormat(DOCUMENT, '').text).toBe('Document')
   })
+
+  it('names a template in a sentence, and says where in it its title is', () => {
+    const { text, formats } = startWithFormat({ noun: 'Tip Jar', icon: 'appWindow', template: true }, 'in our colours')
+    expect(text).toBe('Use the Tip Jar template. in our colours')
+    expect(text.slice(formats[0].position, formats[0].position + formats[0].length)).toBe('Tip Jar')
+    expect(startWithFormat({ noun: 'Tip Jar', icon: 'appWindow', template: true }, '').text).toBe('Use the Tip Jar template.')
+  })
 })

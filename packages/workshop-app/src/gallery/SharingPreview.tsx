@@ -9,16 +9,11 @@ import type {
   UserDirectoryRecord,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { BuildingsIcon, UsersThreeIcon } from '@phosphor-icons/react'
-import { AccessMenu } from '@/blocks/AccessMenu'
+import { Building06Icon, UserGroupIcon } from '@/components/icons'
+import { AccessMenu, Banner, Button, ListGroup, MemberListItem, ShareNote } from '@gadgets/ui'
 import { ConfirmAccessForm, type ConfirmAccessRow } from '@/blocks/ConfirmAccessForm'
 import { InviteField } from '@/blocks/InviteField'
-import { ListGroup } from '@/blocks/ListGroup'
-import { MemberListItem } from '@/blocks/MemberListItem'
 import { RemovalDialog, type RemovalDialogProps } from '@/blocks/RemovalDialog'
-import { ShareNote } from '@/blocks/ShareNote'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
 import { ApiContext, type ApiSession } from '@/rpc/ApiContext'
 import type { SharingOverseer } from '@/workspaces/SharingSession'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
@@ -68,7 +63,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
     { profile: GRACE, addedBy: [by('ada')], access: BUILD },
     { profile: ALAN, addedBy: [by('grace')], access: { role: 'use', gadgetIds: [CHECKLIST.id] } },
   ]
-  let links: ShareLinkInfo[] = []
+  let own: ShareLinkInfo | undefined
   const meta: WorkspaceMetadata = {
     id: 'notes',
     title: 'Engineering Notes',
@@ -100,16 +95,14 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
       people = people.filter(({ profile }) => !gone.some((one) => one.profile.id === profile.id))
       return gone
     }),
-    listShareLinks: () => later(() => links),
+    listShareLinks: () => later(() => (own ? [own] : [])),
     createShareLink: (grant: CollaboratorGrant) => later(() => {
-      const gadget = grant === 'workspace' ? {} : { gadgetId: grant.gadgetId }
-      links = [{ linkId: 'link', created: new Date(), createdBy: viewer, role: grant === 'workspace' ? 'build' : 'use', default: true, ...gadget }]
+      own = { linkId: 'link', created: new Date(), createdBy: viewer, default: true, ...(grant === 'workspace' ? {} : { role: 'use' as const, gadgetId: grant.gadgetId }) }
       return { key: 'preview-key', linkId: 'link' }
     }),
     newShareLinkKey: () => later(() => ({ key: 'preview-key' })),
-    previewRevokeShareLink: () => later(() => []),
     revokeShareLink: () => later(() => {
-      links = []
+      own = undefined
       return []
     }),
     onRpcBroken: () => {},
@@ -169,7 +162,7 @@ const DialogDemo = ({ setup }: { setup: keyof typeof SETUPS }) => {
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-lg flex-col gap-3">{children}</div>
 
 const LINK = [
-  { value: 'on', label: 'Can join', hint: 'Anyone with the link can join' },
+  { value: 'on', label: 'Can join', hint: 'Anyone with your link can join' },
   { value: 'off', label: 'No access', hint: 'Only people you add can join' },
 ] as const
 
@@ -198,10 +191,10 @@ const RowsPreview = () => {
             />
           ))}
           <MemberListItem name="Katherine Johnson" role="Can use" />
-          <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
+          <MemberListItem icon={UserGroupIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
-            icon={BuildingsIcon}
-            name="Anyone with the link"
+            icon={Building06Icon}
+            name="Anyone with your link"
             detail="Signed in to Cloudflare OS"
             role=""
             access={<AccessMenu label={LINK.find(({ value }) => value === link)!.label} of="anyone with your link" choices={{ options: LINK, value: link, onChange: setLink }} />}

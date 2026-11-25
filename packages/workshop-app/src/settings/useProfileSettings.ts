@@ -1,4 +1,4 @@
-import { EnvelopeIcon, UserIcon } from '@phosphor-icons/react'
+import { Mail01Icon, UserIcon } from '@/components/icons'
 import { validateCommitEmail } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import type { TextSetting } from './settingDefinition'
@@ -28,7 +28,7 @@ export const useProfileSettings = () => {
     title: 'Commit email',
     description: 'The author email on your changes. Leave empty to use one generated from your user ID.',
     keywords: ['author', 'git', 'address', 'profile'],
-    icon: EnvelopeIcon,
+    icon: Mail01Icon,
     remote: true,
     value: user.commitEmail ?? '',
     placeholder: 'name@example.com',

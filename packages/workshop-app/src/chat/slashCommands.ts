@@ -1,40 +1,29 @@
 import type { SlashCommandChoice, SlashCommandId, SlashCommandRequest } from '@gadgets/workshop-shared/api'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
-import { humanizeSkillName, skillNameFromTitle } from '@/skills/skillName'
-import type { Skill } from '@/skills/SkillStore'
+import { commandTitle, type ComposerCommand } from '@/blocks/composerCommand'
 
 /**
- * What a command is known by in the composer, the same before a workspace has one as in it: a
- * skill by its document's id (`collection/path`), which is the command id its gatekeeper gives it
- * in every workspace, and a built-in by its own.
+ * What a command is known by in the composer: a gatekeeper's by its command id, which that
+ * gatekeeper gives it in every workspace, and a built-in by its own.
  */
-const keyOf = (id: SlashCommandId) => (id.builtin ? `builtin:${id.commandId}` : `command:${id.commandId}`)
+const keyOf = (id: Pick<SlashCommandId, 'commandId'> & { builtin?: boolean }) => (id.builtin ? `builtin:${id.commandId}` : `command:${id.commandId}`)
 
 // Words for the built-ins, which the server names in its own.
 const BUILTINS: Record<string, Pick<ComposerCommand, 'title' | 'description'>> = {
   compact: { title: 'Compact', description: 'Sum up the chat so far, to make room for more' },
 }
 
-/** A command a workspace offers (`Overseer.listSlashCommands`), as the composer shows it. */
-export const composerCommandOf = ({ selection, name, description, providerLabel }: SlashCommandChoice): ComposerCommand => ({
+/**
+ * A command a workspace offers (`Overseer.listSlashCommands`), as the composer shows it. A skill
+ * says where it is kept, which tells it from another of its name: the first part of what its
+ * provider labels it with, which for the Context Library is its collection (the rest is its path
+ * there), or else the provider.
+ */
+export const composerCommandOf = ({ selection, name, description, providerLabel, resourceLabel }: SlashCommandChoice): ComposerCommand => ({
   key: keyOf(selection),
   name,
   ...(selection.builtin
-    ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: humanizeSkillName(name), description }) }
-    : { kind: 'skill', title: humanizeSkillName(name), description, source: providerLabel }),
-})
-
-/**
- * One of the user's skills as the composer offers it before any workspace has listed it, as a new
- * chat's does: by the same key the workspace the first message makes will know it by, its id.
- */
-export const skillCommandOf = ({ id, name, description, tag }: Pick<Skill, 'id' | 'name' | 'description' | 'tag'>): ComposerCommand => ({
-  key: keyOf({ gatekeeperId: 0, commandId: id }),
-  name: skillNameFromTitle(name),
-  title: name,
-  description,
-  kind: 'skill',
-  source: tag,
+    ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: commandTitle(name), description }) }
+    : { kind: 'skill', title: commandTitle(name), description, source: resourceLabel?.split(' · ')[0]?.trim() || providerLabel }),
 })
 
 /**

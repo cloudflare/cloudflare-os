@@ -1,30 +1,23 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon, TrayIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, InboxIcon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
 import { useChatLibrary } from '@/aside/useChatLibrary'
-import { hooksShownIn, setUpIn } from '@/automations/automations'
+import { setUpIn } from '@/automations/automations'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { FileListItem } from '@/blocks/FileListItem'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, EditableTitle, EmptyState, HeaderBubble, ListGroup, PageLayout, Tabs, groupByTime } from '@gadgets/ui'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Button } from '@/components/Button'
-import { EmptyState } from '@/components/EmptyState'
-import { EditableTitle } from '@/components/EditableTitle'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { withItemEdits } from '@/library/libraryEdits'
 import { useLibraryActions } from '@/library/useLibraryActions'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatOptionsTab } from './ChatOptionsTab'
-import { groupByTime } from './timeGroups'
 import { useChatSession } from './useChatSession'
 
 /** What a chat's settings page shows beneath its title. */
@@ -62,8 +55,8 @@ export type ChatSettingsPaneProps = {
  * What a chat has, apart from the conversation, a tab each: for whoever builds in its workspace,
  * what they can do about the chat (its notifications, marking it read, and deleting it), which it
  * starts with; what its workspace has made, as beside the chat (`useChatLibrary`), latest first,
- * grouped by when; and what the chat set up to run by itself, as the cards in its conversation
- * show. Whoever may only use the workspace starts with its library.
+ * grouped by when; and what the chat set up to run by itself, the hooks bound from it. Whoever may
+ * only use the workspace starts with its library.
  */
 export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref, outputHref, onOpenSettings, onDeleted }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
@@ -94,10 +87,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
     return output && actionsOf(output)
   }
   const groups = groupByTime(withItemEdits(library.items, edits).map((item) => ({ value: item, at: item.at })))
-  // A hook does not say which chat set it up, so the chat's are those its cards show.
-  const items = chat.status === 'ready' ? chat.items : undefined
-  const pinned = chat.status === 'ready' ? chat.pinned : undefined
-  const ownAutomations = useMemo(() => setUpIn(new Set(hooksShownIn([...(items ?? []), ...(pinned ?? [])]))), [items, pinned])
+  const ownAutomations = useMemo(() => setUpIn(chatId), [chatId])
 
   return (
     <PageLayout
@@ -105,7 +95,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
           {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} onOpen={onOpenWorkspace} />}
           <HeaderBubble>
-            <Button icon={CaretLeftIcon} onClick={onBack}>Back to chat</Button>
+            <Button icon={ArrowLeft01Icon} onClick={onBack}>Back to chat</Button>
           </HeaderBubble>
         </nav>
       )}
@@ -134,10 +124,10 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
               <EmptyState
                 size="section"
                 tinted
-                icon={TrayIcon}
+                icon={InboxIcon}
                 title="Nothing made here yet"
                 description="The apps, documents and files this workspace’s chats make show here, this chat’s among them."
-                actions={[{ label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack }]}
+                actions={[{ label: 'Back to chat', icon: ArrowLeft01Icon, onClick: onBack }]}
               />
             )}
             {groups.map(({ key, label, entries }) => (
@@ -173,7 +163,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                 itemHref={itemHref}
                 empty={{
                   description: 'Ask in this chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
-                  action: { label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack },
+                  action: { label: 'Back to chat', icon: ArrowLeft01Icon, onClick: onBack },
                 }}
               />
             )}

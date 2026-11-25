@@ -1,4 +1,4 @@
-import { Select } from '@/components/Select'
+import { Select } from '@gadgets/ui'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { messageOf } from '@/settings/useAttempt'

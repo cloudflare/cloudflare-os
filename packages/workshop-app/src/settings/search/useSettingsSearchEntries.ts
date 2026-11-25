@@ -40,6 +40,7 @@ export const useSettingsSearchEntries = (
     preferences.theme,
     preferences.motion,
     preferences.autoOpenOutputs,
+    preferences.alwaysShowThinking,
     preferences.developerMode,
   ]
   // What is reached for most, and what bothers someone enough to look for it: the model, the

@@ -1,6 +1,6 @@
-import { CheckCircleIcon, WarningCircleIcon, XIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, Cancel01Icon, CheckmarkCircle02Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 
 export type PaneStatusProps = {
@@ -33,8 +33,8 @@ export const PaneStatus = ({ tone, title, description, action, onDismiss }: Pane
       {tone !== 'working' && (
         <span className="flex h-(--control-size) shrink-0 items-center">
           {tone === 'done'
-            ? <CheckCircleIcon aria-hidden="true" weight="fill" className="size-5 text-kumo-success" />
-            : <WarningCircleIcon aria-hidden="true" className="size-5" />}
+            ? <CheckmarkCircle02Icon aria-hidden="true" weight="fill" className="size-5 text-kumo-success" />
+            : <AlertCircleIcon aria-hidden="true" className="size-5" />}
         </span>
       )}
       <div className={cn('flex min-w-0 flex-1 flex-col gap-0.5 py-[calc((var(--control-size)-1lh)/2)]', tone === 'working' && 'pe-2')}>
@@ -45,7 +45,7 @@ export const PaneStatus = ({ tone, title, description, action, onDismiss }: Pane
       {onDismiss && tone !== 'working' && (
         <Button
           variant="ghost"
-          icon={<XIcon weight="bold" />}
+          icon={<Cancel01Icon weight="bold" />}
           aria-label="Dismiss"
           onClick={onDismiss}
           className={tone === 'failed' ? 'text-kumo-danger not-data-disabled:hover:bg-kumo-danger/12' : 'text-kumo-subtle'}

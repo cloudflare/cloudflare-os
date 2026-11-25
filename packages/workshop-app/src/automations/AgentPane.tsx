@@ -1,38 +1,30 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { CaretDownIcon } from '@phosphor-icons/react'
+import { ArrowDown01Icon } from '@/components/icons'
 import { AgentCrumb } from '@/blocks/AgentCrumb'
 import { AgentMark } from '@/blocks/AgentMark'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Banner, Button, LinkButton, ListGroup, PageLayout, Tabs, type TabsTab, formatActivity, groupByTime } from '@gadgets/ui'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { LinkButton } from '@/components/LinkButton'
-import { Tabs, type TabsTab } from '@/components/Tabs'
-import { groupByTime } from '@/chat/timeGroups'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNow } from '@/hooks/useNow'
-import { PageLayout } from '@/layouts/PageLayout'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { activityWords, agentByKey, attentionWords, foldRuns, runFilterCounts, runsMatching, runsWords, STATUS_WORDS, type Agent, type AgentRun, type RunEntry, type RunFilter } from './agents'
-import { cadenceWords } from './cadence'
-import { useAutomations } from './useAutomations'
+import { activityWords, agentsOf, attentionWords, foldRuns, gadgetsOf, gadgetTitles, runFilterCounts, runsMatching, runsWords, STATUS_WORDS, type Agent, type AgentRun, type RunEntry, type RunFilter } from './agents'
+import { useAgentRunList } from './useAgentRunList'
 import { useWorkspaceAgents } from './useWorkspaceAgents'
 
 export type AgentPaneProps = {
   workspaceId: string
-  /** Which of the workspace's agents (`Agent.key`). */
+  /** Which of the workspace's agents (`Agent.key`: its spawner's id). */
   agentKey: string
   onOpenWorkspace: () => void
   /** Opens one of its runs' conversation. */
   onOpenRun: (run: AgentRun) => void
   /** A run's address, for its row to link to so that it can be opened in another tab. */
   runHref?: (chatId: number) => string
-  /** Shows the gadget that starts it. */
+  /** Shows a gadget bound to it. */
   onOpenGadget: (gadgetId: number) => void
   /** Where that gadget opens, for its link to be opened in another tab. */
   gadgetHref?: (gadgetId: number) => string
@@ -40,37 +32,62 @@ export type AgentPaneProps = {
 
 /**
  * One of a workspace's agents, as a page of its own (`/workspace/<id>/agent/<key>`): headed by
- * its workspace and the agent, as a chat is by its workspace, then what it is (`AgentView`), with
- * when it runs from the automations of the gadget that starts it.
+ * its workspace and the agent, as a chat is by its workspace, then what it is (`AgentView`). What
+ * it is comes from the workspace's agents (`useWorkspaceAgents`); its runs are its own, read a
+ * page at a time (`useAgentRunList`), so an agent the workspace's latest runs leave out is still
+ * found by its spawner's id.
  */
-export const AgentPane = ({ workspaceId, agentKey, onOpenWorkspace, onOpenRun, runHref, onOpenGadget, gadgetHref }: AgentPaneProps) => {
+export const AgentPane = (props: AgentPaneProps) => {
+  const { workspaceId, agentKey } = props
   const { state, retry } = useWorkspaceAgents(workspaceId)
-  const automations = useAutomations(workspaceId)
-  const workspaces = useWorkspaces()
-  const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
-  const look = useWorkspaceLooks()[workspaceId]
   const now = useNow()
-  // A run that predates its spawner's id names its agent by name, and may have joined one that has an id.
-  const agent = state.status === 'ready'
-    ? agentByKey(state.agents, agentKey) ?? (agentKey.startsWith('name:') ? state.agents.find(({ name }) => `name:${name}` === agentKey) : undefined)
-    : undefined
-  useDocumentTitle(agent?.name || 'Agent')
+  const spawnerId = /^\d+$/.test(agentKey) ? Number(agentKey) : undefined
+  if (state.status === 'ready' && spawnerId !== undefined) {
+    const listed = state.agents.find(({ key }) => key === agentKey)
+    return <AgentPage key={spawnerId} {...props} spawnerId={spawnerId} listed={listed} pending={state.actionsWaiting} now={now} />
+  }
+  const view: AgentViewProps['state'] =
+    state.status === 'failed' ? { status: 'failed', message: state.message, onRetry: retry }
+      : state.status === 'ready' ? { status: 'gone' }
+        : { status: 'loading' }
+  return (
+    <AgentFrame {...props}>
+      <AgentView state={view} now={now} {...props} />
+    </AgentFrame>
+  )
+}
 
-  // What sets off the gadget that starts it, which is when it runs, as far as anything says.
-  const gadgetId = agent?.gadget?.id
-  const when = gadgetId !== undefined && automations.state.status === 'ready'
-    ? automations.state.automations
-      .filter(({ hook }) => hook.gadgetId === gadgetId && hook.enabled)
-      .map(({ hook, schedule }) => (schedule ? cadenceWords(schedule.cadence) : `When ${hook.description.title}`))
-    : []
+type AgentPageProps = AgentPaneProps & {
+  spawnerId: number
+  /** The agent as the workspace lists it, with what it is; absent for one known only by its runs. */
+  listed?: Agent
+  /** The runs with an action waiting to be approved. */
+  pending: ReadonlySet<number>
+  now: number
+}
 
+/** An agent found, with its own runs. */
+const AgentPage = ({ spawnerId, listed, pending, now, ...props }: AgentPageProps) => {
+  const { state, more, retry } = useAgentRunList(props.workspaceId, spawnerId)
+  const agent = state.status === 'ready' ? agentsOf(state.runs, { pending }, listed ? [listed] : [])[0] : undefined
   const view: AgentViewProps['state'] =
     state.status === 'loading' ? { status: 'loading' }
       : state.status === 'failed' ? { status: 'failed', message: state.message, onRetry: retry }
-        : agent ? { status: 'ready', agent }
-          // Until the gadgets have said, one that has not run may yet be found.
-          : state.setUpRead ? { status: 'gone' } : { status: 'loading' }
+        : agent ? { status: 'ready', agent, all: state.all, more: { reading: state.reading, problem: state.problem, onMore: more } }
+          : { status: 'gone' }
+  return (
+    <AgentFrame {...props} agent={agent}>
+      <AgentView state={view} now={now} {...props} />
+    </AgentFrame>
+  )
+}
 
+/** The page around an agent: its workspace's crumb and, once it is known, its own. */
+const AgentFrame = ({ workspaceId, onOpenWorkspace, agent, children }: Pick<AgentPaneProps, 'workspaceId' | 'onOpenWorkspace'> & { agent?: Agent; children: ReactNode }) => {
+  const workspaces = useWorkspaces()
+  const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
+  useDocumentTitle(agent?.name || 'Agent')
   return (
     <PageLayout
       header={(
@@ -80,10 +97,13 @@ export const AgentPane = ({ workspaceId, agentKey, onOpenWorkspace, onOpenRun, r
         </nav>
       )}
     >
-      <AgentView state={view} when={when} now={now} onOpenRun={onOpenRun} runHref={runHref} onOpenGadget={onOpenGadget} gadgetHref={gadgetHref} />
+      {children}
     </PageLayout>
   )
 }
+
+/** Reading more of an agent's runs than those it has. */
+export type MoreRuns = { reading: boolean; problem?: string; onMore: () => void }
 
 export type AgentViewProps = {
   state:
@@ -91,9 +111,8 @@ export type AgentViewProps = {
     | { status: 'failed'; message: string; onRetry: () => void }
     /** There is no such agent in the workspace. */
     | { status: 'gone' }
-    | { status: 'ready'; agent: Agent }
-  /** When it runs, in words, each a schedule of the gadget that starts it or what sets that off. */
-  when: string[]
+    /** `all`: its runs are all of them; else `more` reads more. */
+    | { status: 'ready'; agent: Agent; all: boolean; more?: MoreRuns }
   /** The clock it is shown by, which moves on while it is shown. */
   now: number
   onOpenRun: (run: AgentRun) => void
@@ -109,10 +128,6 @@ const Fact = ({ label, children }: { label: string; children: ReactNode }) => (
   </div>
 )
 
-// How many of its runs are listed at first, and how many more each time more are asked for.
-const FIRST_RUNS = 25
-const MORE_RUNS = 50
-
 const FILTERS: { value: RunFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'attention', label: 'Needs you' },
@@ -123,16 +138,17 @@ const FILTERS: { value: RunFilter; label: string }[] = [
 /**
  * What an agent is, drawn from plain props: its mark, there to be played with as the home page's
  * is, and its name, what of it wants the user (a run waiting on them, or a latest run that failed)
- * with the way to that run, then the gadget that starts it, the model it thinks with, when it runs
- * and how often it has, then its runs by when, each saying how it stands and opening its
- * conversation, which is where what it did is seen.
+ * with the way to that run, then the gadgets bound to it, the model it thinks with and how often it
+ * has run, then its runs by when, each saying how it stands and opening its conversation, which is
+ * where what it did is seen. Nothing says when it runs: nothing tells which of a gadget's hooks, if
+ * any, started a run.
  *
- * An agent can run hundreds of times, so its runs are narrowed by how they stand (a tab each, for
- * those it has), listed a page at a time, and a run that finished the same way as the one after it,
- * with the same title, is folded under that one, said once with how often, there to open out.
- * Under All, what wants the user is on top, apart from the rest.
+ * An agent can run hundreds of times, so its runs are read a page at a time, narrowed by how they
+ * stand (a tab each, for those it has, counting those read), and a run that finished the same way
+ * as the one after it, with the same title, is folded under that one, said once with how often,
+ * there to open out. Under All, what wants the user is on top, apart from the rest.
  */
-export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, gadgetHref }: AgentViewProps) => {
+export const AgentView = ({ state, now, onOpenRun, runHref, onOpenGadget, gadgetHref }: AgentViewProps) => {
   if (state.status === 'loading') return <p role="status" className="appears-late px-4 pt-16 text-center text-base text-kumo-subtle">Loading the agent…</p>
   if (state.status === 'failed') {
     return (
@@ -144,11 +160,11 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
   }
   if (state.status === 'gone') return <p className="px-4 pt-16 text-center text-base text-kumo-subtle">There’s no such agent in this workspace, or it was deleted.</p>
 
-  const { agent } = state
+  const { agent, all, more } = state
   const date = new Date(now)
   const attention = attentionWords(agent)
   const wanting = agent.runs.find(({ status }) => status === 'waiting') ?? (agent.failed ? agent.runs[0] : undefined)
-  const gadget = agent.gadget
+  const gadgets = gadgetsOf(agent)
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
@@ -156,7 +172,7 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
         <AgentMark size="large" interactive state={agent.running > 0 ? 'working' : agent.failed ? 'failed' : 'idle'} />
         <h1 className="max-w-full px-2.5 py-1 text-xl font-medium wrap-anywhere text-kumo-default">{agent.name}</h1>
         <p className="max-w-md text-base text-pretty text-kumo-subtle">
-          {gadget ? `${gadget.title} starts it with a task.` : 'A gadget starts it with a task.'} Each run is a conversation of its own, there to open to see what it did.
+          {gadgets.length > 0 ? `${gadgetTitles(gadgets)} ${gadgets.length === 1 ? 'starts' : 'start'} it with a task.` : 'A gadget starts it with a task.'} Each run is a conversation of its own, there to open to see what it did.
         </p>
       </div>
       {attention && wanting && (
@@ -171,31 +187,30 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
       )}
       <dl className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
         <Fact label="Started by">
-          {gadget
-            ? (
-                <LinkButton href={gadgetHref?.(gadget.id)} onClick={() => onOpenGadget(gadget.id)} className="text-left underline underline-offset-2">
-                  {gadget.title}
-                </LinkButton>
-              )
+          {gadgets.length > 0
+            ? gadgets.map((gadget, index) => (
+                <span key={gadget.id}>
+                  {index > 0 && ', '}
+                  <LinkButton href={gadgetHref?.(gadget.id)} onClick={() => onOpenGadget(gadget.id)} className="text-left underline underline-offset-2">
+                    {gadget.title}
+                  </LinkButton>
+                </span>
+              ))
             : <span className="text-kumo-subtle">No gadget starts it now</span>}
         </Fact>
         <Fact label="Thinks with">{agent.model ?? <span className="text-kumo-subtle">No model: its runs wait for a person to answer</span>}</Fact>
-        <Fact label="When it runs">
-          {when.length > 0 ? when.join(' · ') : gadget ? `Whenever ${gadget.title} starts it` : <span className="text-kumo-subtle">Not known</span>}
-        </Fact>
-        <Fact label="Runs">{runsWords(agent, date)}</Fact>
+        <Fact label="Runs">{runsWords(agent, all, date)}</Fact>
       </dl>
-      <AgentRuns key={agent.key} runs={agent.runs} now={date} onOpenRun={onOpenRun} runHref={runHref} />
+      <AgentRuns key={agent.key} runs={agent.runs} more={all ? undefined : more} now={date} onOpenRun={onOpenRun} runHref={runHref} />
     </div>
   )
 }
 
-type AgentRunsProps = Pick<AgentViewProps, 'onOpenRun' | 'runHref'> & { runs: AgentRun[]; now: Date }
+type AgentRunsProps = Pick<AgentViewProps, 'onOpenRun' | 'runHref'> & { runs: AgentRun[]; more?: MoreRuns; now: Date }
 
-/** An agent's runs, narrowed, a page at a time, with those alike folded (see `AgentView`). */
-const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
+/** An agent's runs, narrowed, with those alike folded, and the way to read more where there are (see `AgentView`). */
+const AgentRuns = ({ runs, more, now, onOpenRun, runHref }: AgentRunsProps) => {
   const [filter, setFilter] = useState<RunFilter>('all')
-  const [shown, setShown] = useState(FIRST_RUNS)
   // The runs opened out from under the one they are folded under, by its chat.
   const [open, setOpen] = useState<ReadonlySet<number>>(new Set())
   const counts = runFilterCounts(runs)
@@ -208,13 +223,11 @@ const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
   const pinnedIds = new Set(pinned.map(({ chatId }) => chatId))
   const listed = runsMatching(runs, filter).filter(({ chatId }) => !pinnedIds.has(chatId))
   const entries = foldRuns(listed)
-  const page = entries.slice(0, Math.max(0, shown - pinned.length))
-  const left = entries.length - page.length
-  const groups = groupByTime(page.map((entry) => ({ value: entry, at: entry.run.lastActive })), now)
+  const groups = groupByTime(entries.map((entry) => ({ value: entry, at: entry.run.lastActive })), now)
 
   // Where any run has others folded under it, every row keeps the room of the way to open them, so
   // that when each was is in one column.
-  const folds = page.some(({ folded }) => folded.length > 0)
+  const folds = entries.some(({ folded }) => folded.length > 0)
   const row = ({ key, run, folded }: RunEntry, time?: string) => {
     const opened = open.has(key)
     return (
@@ -233,7 +246,7 @@ const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
           {folded.length > 0 && (
             <Button
               variant="ghost"
-              icon={<CaretDownIcon aria-hidden="true" className={cn('transition-transform duration-150 motion-reduce:transition-none', opened && 'rotate-180')} />}
+              icon={<ArrowDown01Icon aria-hidden="true" className={cn('transition-transform duration-150 motion-reduce:transition-none', opened && 'rotate-180')} />}
               aria-label={opened ? `Fold the ${folded.length} earlier runs` : `Show the ${folded.length} earlier runs`}
               aria-expanded={opened}
               className="ms-1 shrink-0 text-kumo-subtle"
@@ -274,10 +287,7 @@ const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
       ) : (
         <Tabs
           value={filter}
-          onValueChange={(next) => {
-            setFilter(next)
-            setShown(FIRST_RUNS)
-          }}
+          onValueChange={setFilter}
           tabs={tabs}
           aria-label="Runs"
           align="start"
@@ -291,10 +301,11 @@ const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
                 {grouped.map(({ value, time }) => row(value, time))}
               </ListGroup>
             ))}
-            {left > 0 && (
-              <div className="flex justify-center">
-                <Button variant="secondary" onClick={() => setShown((current) => current + MORE_RUNS)}>
-                  {`Show ${Math.min(left, MORE_RUNS)} more`}
+            {more && (
+              <div className="flex flex-col items-center gap-2">
+                {more.problem && <p role="alert" className="text-base text-kumo-subtle">Couldn’t load more runs: {more.problem}</p>}
+                <Button variant="secondary" disabled={more.reading} onClick={more.onMore}>
+                  {more.reading ? 'Loading runs…' : 'Show more'}
                 </Button>
               </div>
             )}

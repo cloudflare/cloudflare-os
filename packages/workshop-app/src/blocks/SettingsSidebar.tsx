@@ -1,12 +1,8 @@
 import { Fragment, useRef } from 'react'
-import { ArrowLeftIcon, SignOutIcon, type Icon } from '@phosphor-icons/react'
+import { ArrowLeft02Icon, Logout05Icon, type Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { Button, ConfirmMenu, LinkButton, Tooltip, useScrollFadeFallback } from '@gadgets/ui'
 import { RailDivider } from './Sidebar'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
 /** One part of the settings, as the ways to it name it. */
@@ -83,7 +79,7 @@ const PartGroup = ({ group, current, onSelect }: { group: SettingsNavGroup; curr
 export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed = false, onSignOut }: SettingsSidebarProps) => {
   const scrollRef = useRef<HTMLElement>(null)
   useScrollFadeFallback(scrollRef)
-  const back = <Button icon={ArrowLeftIcon} aria-label="Close settings" title="Close settings" onClick={onClose} />
+  const back = <Button icon={ArrowLeft02Icon} aria-label="Close settings" title="Close settings" onClick={onClose} />
 
   if (collapsed) {
     return (
@@ -116,7 +112,7 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
         </nav>
         {onSignOut && (
           <footer className="flex shrink-0 pt-2">
-            <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" side="top" align="start" title="Sign out?" description="You’ll need to sign in again to use the Workshop in this browser." confirmLabel="Sign out" onConfirm={onSignOut} />
+            <ConfirmMenu icon={Logout05Icon} aria-label="Sign out" triggerVariant="ghost" side="top" align="start" title="Sign out?" description="You’ll need to sign in again to use the Workshop in this browser." confirmLabel="Sign out" onConfirm={onSignOut} />
           </footer>
         )}
       </div>
@@ -136,7 +132,7 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
         <footer className="flex shrink-0">
           <ConfirmMenu
             label="Sign out"
-            icon={SignOutIcon}
+            icon={Logout05Icon}
             triggerVariant="ghost"
             triggerClassName="w-full justify-start"
             side="top"

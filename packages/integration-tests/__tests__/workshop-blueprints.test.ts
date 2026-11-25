@@ -319,6 +319,7 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
       type: "workspace",
       workspaceId: sourceMetadata.id,
       workspaceTitle: sourceMetadata.title,
+      gadgetId: sourceGadgetId,
     },
   }));
   using installedWorkspace = await authenticated.newWorkspaceFromBlueprint(blueprint.id, {});

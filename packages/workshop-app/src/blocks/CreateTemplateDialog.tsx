@@ -1,12 +1,14 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { CheckCircleIcon, LayoutIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { LinkButton } from '@/components/LinkButton'
-import { TextField } from '@/components/TextField'
+import { Cancel01Icon, CheckmarkCircle02Icon, Layout01Icon } from '@/components/icons'
+import { Banner, Button, Dialog, LinkButton, ListGroup, TextField } from '@gadgets/ui'
 import { CopyLinkButton } from './CopyLinkButton'
-import { ListGroup } from './ListGroup'
+
+/**
+ * What a template's gadget has that the template has not released, each only if it has: committed
+ * `code`, and `bindings` (what it is connected to, renamed, swapped or given a new note). Releasing
+ * the code takes the bindings with it; bindings alone can be sent without a new version.
+ */
+export type TemplateChanges = { code?: true; bindings?: true }
 
 /** A template made from the gadget's workspace, as the dialog lists it. */
 export type MadeTemplate = {
@@ -15,9 +17,14 @@ export type MadeTemplate = {
   /** What it is for, as its page says. */
   description: string
   version: number
-  /** The gadget has committed changes since the template's last version, which can be released as its next. */
-  changes?: boolean
+  /** What the gadget has changed since the template's last version, which can be released to it. Left out, nothing. */
+  changes?: TemplateChanges
 }
+
+/** What releasing `changes` is called: a new version for code, the connections alone otherwise. */
+export const releaseWords = (changes: TemplateChanges) => changes.code
+  ? { action: 'Release update', pending: 'Releasing…', status: 'Has changes to release', done: 'Update released' }
+  : { action: 'Update connections', pending: 'Updating…', status: 'Its connections have changed', done: 'Connections updated' }
 
 export type CreateTemplateDialogProps = {
   open: boolean
@@ -28,8 +35,8 @@ export type CreateTemplateDialogProps = {
   existing: { status: 'loading' } | { status: 'ready'; templates: MadeTemplate[] } | { status: 'failed'; message: string }
   /** Creates a new template from it, rejecting with why it could not; gives the template's id. */
   onCreate: (template: { title: string; description: string }) => Promise<string>
-  /** Releases what it has committed since as the next version of a template already made, rejecting with why it could not. */
-  onRelease: (id: string) => Promise<void>
+  /** Releases `changes`, what it has since the template's last version, to a template already made, rejecting with why it could not. */
+  onRelease: (id: string, changes: TemplateChanges) => Promise<void>
   /** Goes to a template's page. */
   onViewTemplate: (id: string) => void
   /** The template just made or released to, as the Templates page lists it, for the dialog to show in place of a tick. Left out, there is the tick. */
@@ -42,7 +49,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 const versionWords = (version: number) => `Version ${version}`
 
-type Step = { at: 'list' } | { at: 'form' } | { at: 'done'; id: string; updated: boolean }
+type Step = { at: 'list' } | { at: 'form' } | { at: 'done'; id: string; released?: TemplateChanges }
 
 const Header = ({ title, description }: { title: string; description: string }) => (
   <header className="flex items-start gap-3 p-6 pb-5">
@@ -50,7 +57,7 @@ const Header = ({ title, description }: { title: string; description: string }) 
       <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
       <Dialog.Description className="text-sm text-pretty text-kumo-subtle">{description}</Dialog.Description>
     </div>
-    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
   </header>
 )
 
@@ -75,18 +82,18 @@ const CreateTemplateContent = ({ title: gadgetTitle, existing, onCreate, onRelea
       setChosen(next)
       if (next.at === 'done') onDone()
     } catch (error) {
-      setProblem(`Couldn’t ${what === 'new' ? 'create the template' : 'release the update'}: ${messageOf(error)}`)
+      setProblem(`Couldn’t ${what === 'new' ? 'create the template' : 'update the template'}: ${messageOf(error)}`)
     } finally {
       setPending(undefined)
     }
   }
   const create = (event: FormEvent) => {
     event.preventDefault()
-    void run('new', async () => ({ at: 'done', id: await onCreate({ title: title.trim() || gadgetTitle, description: description.trim() }), updated: false }))
+    void run('new', async () => ({ at: 'done', id: await onCreate({ title: title.trim() || gadgetTitle, description: description.trim() }) }))
   }
-  const release = (id: string) => void run(id, async () => {
-    await onRelease(id)
-    return { at: 'done', id, updated: true }
+  const release = (id: string, changes: TemplateChanges) => void run(id, async () => {
+    await onRelease(id, changes)
+    return { at: 'done', id, released: changes }
   })
 
   // Until it is known whether it has templates already, which is where it starts if it has.
@@ -103,10 +110,17 @@ const CreateTemplateContent = ({ title: gadgetTitle, existing, onCreate, onRelea
     const card = renderTemplate?.(step.id)
     return (
       <>
-        <Header title={step.updated ? 'Update released' : 'Template created'} description={step.updated ? `The template has ${gadgetTitle} as it is now. Anyone who made something from it can update to it.` : `Anyone you share the template with can make their own ${gadgetTitle} from it.`} />
+        <Header
+          title={step.released ? releaseWords(step.released).done : 'Template created'}
+          description={!step.released
+            ? `Anyone you share the template with can make their own ${gadgetTitle} from it.`
+            : step.released.code
+              ? `The template has ${gadgetTitle} as it is now. Anyone who made something from it can update to it.`
+              : `The template asks for what ${gadgetTitle} is connected to now. Its code and version stay as they were.`}
+        />
         {card ? <div className="appears px-6 py-4">{card}</div> : (
           <div className="flex justify-center px-6 pb-2">
-            <CheckCircleIcon aria-hidden="true" weight="fill" className="appears size-12 text-kumo-success" />
+            <CheckmarkCircle02Icon aria-hidden="true" weight="fill" className="appears size-12 text-kumo-success" />
           </div>
         )}
         <footer className="flex justify-end gap-2 p-6">
@@ -125,16 +139,16 @@ const CreateTemplateContent = ({ title: gadgetTitle, existing, onCreate, onRelea
           <ListGroup label="Made from this workspace">
             {templates.map(({ id, title: templateTitle, version, changes }) => (
               <div key={id} className="flex items-center gap-3 rounded-2xl p-3 text-base">
-                <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><LayoutIcon className="size-5" /></span>
+                <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line"><Layout01Icon className="size-5" /></span>
                 <span className="flex min-w-0 flex-1 flex-col leading-snug">
                   <LinkButton href={templateHref?.(id)} onClick={() => onViewTemplate(id)} className="max-w-full truncate text-left font-medium text-kumo-default underline-offset-2 hover:underline">
                     {templateTitle}
                   </LinkButton>
-                  <span className="truncate text-kumo-subtle">{changes ? `${versionWords(version)} · Has changes to release` : `${versionWords(version)} · Up to date`}</span>
+                  <span className="truncate text-kumo-subtle">{`${versionWords(version)} · ${changes ? releaseWords(changes).status : 'Up to date'}`}</span>
                 </span>
                 {changes && (
-                  <Button variant="primary" disabled={pending !== undefined} onClick={() => release(id)} className="shrink-0">
-                    {pending === id ? 'Releasing…' : 'Release update'}
+                  <Button variant="primary" disabled={pending !== undefined} onClick={() => release(id, changes)} className="shrink-0">
+                    {pending === id ? releaseWords(changes).pending : releaseWords(changes).action}
                   </Button>
                 )}
               </div>

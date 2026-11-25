@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PlusIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon, UserAdd01Icon } from '@/components/icons'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { runsWantingAttention, type Agent } from '@/automations/agents'
@@ -11,20 +11,16 @@ import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { AvatarStack } from '@/components/AvatarStack'
-import { Button } from '@/components/Button'
-import { EditableTitle } from '@/components/EditableTitle'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
+import { Button, EditableTitle, HeaderBubble, PageLayout, Tabs, useNarrowScreen } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useNow } from '@/hooks/useNow'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useUnread } from '@/notifications/UnreadContext'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { useApi } from '@/rpc/ApiContext'
-import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { SharedAppPane } from './SharedAppPane'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
@@ -35,14 +31,15 @@ import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { WorkspaceOptionsTab } from './WorkspaceOptionsTab'
 import { useRemoveWorkspace, useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
+import { setWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 import { workspaceLabel } from './workspaceLabel'
 import { membersOnly, workspaceMembers } from './workspaceMembers'
 import { attentionCount, attentionOf } from './activity/overview'
 import { useWorkspaceActivity } from './activity/useWorkspaceActivity'
 import { WorkspaceHistory } from './activity/WorkspaceHistory'
 import { removalOf } from './workspaceRemoval'
-import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
-import { gadgetsWaitingIn } from './waitingWords'
+import { useWorkspaceSummaries } from './WorkspaceSummariesContext'
+import { useWorkspaceChats } from './useWorkspaceChats'
 
 /** What a workspace's page shows beneath its title. */
 export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members' | 'settings'
@@ -117,7 +114,7 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
   const narrow = useNarrowScreen()
   const devMode = useDevMode()
   const look = useWorkspaceLooks()[workspaceId]
-  const setLook = useSetWorkspaceLook()
+  const preferences = usePreferences()
 
   const { user } = useApi()
   const sharing = useSharing(workspaceId, true)
@@ -153,9 +150,12 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
   const waiting = wanting.filter(({ run }) => run.status === 'waiting')
   // What else waits on the viewer: its gadgets that ask something, and the chats people had with
   // its agent stopped on a decision or an action, each counted on the tab that lists it.
-  const asks = useWaitingAsks()
-  const gadgetsWaiting = gadgetsWaitingIn(workspaceId, asks.byGadget)
-  const chatsWaiting = agents.state.status === 'ready' ? agents.state.chatsWaiting : undefined
+  const gadgetsWaiting = useWorkspaceSummaries().workspaces.get(workspaceId)?.waiting.gadgets.length ?? 0
+  const chats = useWorkspaceChats(workspaceId)
+  const actionsWaiting = agents.state.status === 'ready' ? agents.state.actionsWaiting : undefined
+  const chatsWaiting = chats.status === 'ready'
+    ? new Set(chats.chats.filter(({ id, awaitingDecision }) => awaitingDecision || actionsWaiting?.has(id)).map(({ id }) => id))
+    : undefined
   // Everything that waits on a decision, wherever it was asked for, and the runs that failed, on the
   // chats' tab, which lists them all first.
   const activity = useWorkspaceActivity(workspaceId)
@@ -173,17 +173,20 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
-  const [renameProblem, setRenameProblem] = useState<string>()
+  const [headingProblem, setHeadingProblem] = useState<string>()
   const connection = useConnectionNotice()
   const unread = useUnread()
   // Its marks clear as the account says they have.
   const markRead = unread?.totals.workspaces.has(workspaceId) ? () => unread.markWorkspaceRead(workspaceId) : undefined
   const rename = (next: string) => {
-    setRenameProblem(undefined)
+    setHeadingProblem(undefined)
     if (connection?.blocked()) return
     renameWorkspace(workspaceId, next).catch((error: unknown) => {
-      setRenameProblem(`Couldn’t rename the workspace: ${error instanceof Error ? error.message : String(error)}`)
+      setHeadingProblem(`Couldn’t rename the workspace: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+  const changeLook = (next: WorkspaceLook) => {
+    if (!connection?.blocked()) setWorkspaceLook(preferences, workspaceId, next)
   }
 
   return (
@@ -212,8 +215,8 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
             {canInvite && (
               <HeaderBubble origin="end">
                 {narrow
-                  ? <Button icon={UserPlusIcon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
-                  : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Invite</Button>}
+                  ? <Button icon={UserAdd01Icon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
+                  : <Button icon={UserAdd01Icon} onClick={() => setInviting(true)}>Invite</Button>}
               </HeaderBubble>
             )}
           </span>
@@ -222,9 +225,9 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          {/* Its icon, which opens what it can be drawn as. That is kept on this device, so anyone may choose. */}
+          {/* Its icon, which opens what it can be drawn as. That is the viewer's own, so anyone may choose. */}
           {workspace
-            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={(next) => setLook(workspaceId, next)} />
+            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={changeLook} />
             : <WorkspaceIcon label="" />}
           <span className="mt-3 -mb-2 text-sm text-kumo-subtle">Workspace</span>
           {/* Its own heading, which can be renamed by whoever may build in it. */}
@@ -233,12 +236,13 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
               ? <EditableTitle value={workspace.title} onRename={rename} aria-label="Workspace title" placeholder="Untitled workspace" className="text-center" />
               : <span className="px-2.5 py-1">{title || 'Workspace'}</span>}
           </h1>
-          {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
+          {headingProblem && <p role="alert" className="text-base text-kumo-subtle">{headingProblem}</p>}
         </div>
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
             <WorkspaceChatList
               workspaceId={workspaceId}
+              chats={chats}
               onOpenChat={onOpenChat}
               chatHref={chatHref}
               builds={builds}
@@ -269,7 +273,7 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
               itemHref={itemHref}
               empty={{
                 description: 'Ask in a chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
-                action: { label: 'Add automation', icon: PlusIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
+                action: { label: 'Add automation', icon: PlusSignIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
               }}
               waiting={{ asks: outsideAsks, onOpen: () => onTabChange('library') }}
             />

@@ -1,8 +1,7 @@
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import type { BannerColor } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
-import { Markdown } from '@/components/Markdown'
+import { Button, Markdown } from '@gadgets/ui'
 
 export type SiteBannerProps = {
   /** What the deployment says to everyone, as Markdown, whose links open elsewhere. */
@@ -45,7 +44,7 @@ export const SiteBanner = ({ text, color, onDismiss }: SiteBannerProps) => (
     </div>
     <Button
       variant="ghost"
-      icon={<XIcon weight="bold" />}
+      icon={<Cancel01Icon weight="bold" />}
       aria-label="Dismiss announcement"
       onClick={onDismiss}
       className="size-(--banner-button) shrink-0 text-current not-data-disabled:hover:bg-current/10"

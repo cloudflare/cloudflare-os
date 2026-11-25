@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, ListGroup } from '@gadgets/ui'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTemplate } from '@/blocks/UpdateFromTemplateDialog'
-import { Button } from '@/components/Button'
 import { bindingNameProblem, freeBindingName, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from '@/gadgets/GadgetSettings'
 import { DEFAULT_GADGET_SETTINGS_TAB, GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
@@ -130,9 +129,10 @@ const STATES = {
 
 const TEMPLATES: Record<string, { label: string; made: MadeTemplate[] | undefined }> = {
   none: { label: 'No template yet', made: [] },
-  changes: { label: 'Template with changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }] },
+  changes: { label: 'Template with changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { code: true } }] },
+  connections: { label: 'Template with connection changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { bindings: true } }] },
   current: { label: 'Template up to date', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3 }] },
-  several: { label: 'Several templates', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }, { id: 'tpl-lunch', title: 'Team lunch tracker', description: '', version: 1 }] },
+  several: { label: 'Several templates', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { code: true } }, { id: 'tpl-lunch', title: 'Team lunch tracker', description: '', version: 1, changes: { bindings: true } }] },
   unread: { label: 'Templates not read', made: undefined },
 }
 
@@ -183,7 +183,7 @@ export const GadgetSettingsPreview = () => {
       <Section title="UpdateFromTemplateDialog (proposing a gadget’s update from its template in a new chat: with a newer version, already up to date, unrelated and warned of first, one that can’t be merged, one that couldn’t be asked with the way to try again, its template gone, and while it is read)">
         <UpdatePreview />
       </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for updating it from its template, creating a template from it, exporting it, a group for each template it has made, which releases its changes as its next version or deletes it, which asks first, and deleting it, which asks first, and one for what it is connected to, with its agents apart, where a model is added and changed; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for updating it from its template, creating a template from it, exporting it, a group for each template it has made, which releases its changes as its next version or deletes it, which asks first, and deleting it, which asks first, one for what it is connected to, where a model is added and changed, and one for the agents its code can start; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (

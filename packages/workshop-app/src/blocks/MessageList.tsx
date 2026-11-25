@@ -1,10 +1,9 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
-import { ArrowDownIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { isMotionOff, readMotionLevel } from '@/prefs/motion'
+import { ArrowDown02Icon } from '@/components/icons'
+import { Button, isMotionOff, readMotionLevel, useScrollFadeFallback } from '@gadgets/ui'
+import { MessageScrollContext } from './messageScroll'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
 import { useMessageScroll } from './useMessageScroll'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 
 const VIRTUAL_PAGE_SIZE = 50
 
@@ -53,10 +52,13 @@ const markArriving = (row: Element) => {
   // animates in (a message draws up to the one it joins), and the row has to open to the height it
   // will end at, or it would jump to it when the animation was over.
   const { height } = row.getBoundingClientRect()
+  // What in it was on screen already, elsewhere (a reply's steps, which were showing as it came), is not
+  // made room for again: the row opens from there.
+  const already = row.querySelector('[data-shown-already]')?.getBoundingClientRect().height ?? 0
   row.setAttribute('data-arriving', '')
   if (!isMotionOff()) {
     // A row of no height would still be given the list's `gap-2`, so it starts by taking that back.
-    row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], arrival())
+    row.animate([{ height: `${already}px`, marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], arrival())
   }
   const arrivals = row.getAnimations({ subtree: true }).map(({ finished }) => finished)
   void Promise.allSettled(arrivals).then(() => row.removeAttribute('data-arriving'))
@@ -64,7 +66,7 @@ const markArriving = (row: Element) => {
 
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
 export const MessageList = ({ messages, children, history, streaming, ref }: MessageListProps) => {
-  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile } = useMessageScroll()
+  const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile, followNow, keepPlace } = useMessageScroll()
   useImperativeHandle(ref, () => ({
     scrollToMessage: (id) => {
       const sequence = messages.find((message) => message.id === id)?.sequence
@@ -72,6 +74,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
     },
     scrollToLatest: scrollToBottom,
   }), [messages, scrollToRow, scrollToBottom])
+  const scroll = useMemo(() => ({ keepPlace }), [keepPlace])
   const startRef = useRef<HTMLDivElement>(null)
   useScrollFadeFallback(scrollRef)
   // Sequence buckets stay stable when history is prepended or an existing message is updated.
@@ -111,6 +114,15 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
     observer.observe(liveRef.current!, { childList: true })
     return () => observer.disconnect()
   }, [])
+  // What is under way at the end of the conversation changes its height frame by frame, as the thinking
+  // indicator's rows come in and open, and cards arrive (all of it eased, none of it jumping): the view is
+  // held to the end in step with it, in the same frame, rather than by the library's eased catching-up,
+  // which would trail it and have the end of the conversation sway.
+  useEffect(() => {
+    const observer = new ResizeObserver(followNow)
+    observer.observe(liveRef.current!)
+    return () => observer.disconnect()
+  }, [followNow])
   const { hasMore, loading, error, onLoadEarlier } = history ?? {}
   useEffect(() => {
     if (!hasMore || loading || error || !onLoadEarlier) return
@@ -154,7 +166,9 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
               </div>
             )}
           </div>
-          {pages.map((page) => <MessagePage key={page.id} page={page} scrollRef={scrollRef} onLayout={reconcile} />)}
+          <MessageScrollContext value={scroll}>
+            {pages.map((page) => <MessagePage key={page.id} page={page} scrollRef={scrollRef} onLayout={reconcile} />)}
+          </MessageScrollContext>
           <div ref={liveRef} data-message-anchor="live" className="flex flex-col gap-2">{children}</div>
         </div>
       </div>
@@ -162,7 +176,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
         <div className="absolute inset-x-0 bottom-[calc(var(--composer-half,0px)+0.75rem)] flex justify-center pe-(--side-width,0px) pointer-events-none">
           <Button
             className="pointer-events-auto shadow-sm"
-            icon={ArrowDownIcon}
+            icon={ArrowDown02Icon}
             aria-label="Scroll to latest message"
             title="Scroll to latest message"
             onClick={scrollToBottom}

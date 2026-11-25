@@ -1,0 +1,68 @@
+/* The line the mascot is on while the steps are closed, which gives way as they open: its room shuts as the
+   panel opens (`.disclosure-panel`, which it matches) and opens as it closes (`.presence-panel`, below),
+   so that what is below it moves smoothly. What it says is another matter (`.presence-label`). */
+.presence-header {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 420ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.presence-header[data-away] {
+  grid-template-rows: 0fr;
+}
+
+/* The steps open, and close, in as long as it takes the mascot to get to its place beside them, or back to its
+   line: it is there as they are, not before or after. They are gone, fading, in the last of closing, rather
+   than in the first, with the mascot still on its way. */
+.presence-panel {
+  transition:
+    height 420ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 260ms ease-out;
+}
+
+.presence-panel[data-ending-style] {
+  transition:
+    height 420ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 260ms 100ms ease-out;
+}
+
+/* What the steps showed went into the reply that has just arrived, open above it: they are gone at once, as
+   they are there already, and only their room closes, as the reply's row opens under them. */
+.presence-panel[data-handed-over][data-ending-style] {
+  opacity: 0;
+  transition: height 420ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* The status words fade in, once the mascot is there, and go at once. */
+.presence-label {
+  opacity: 1;
+  transition: opacity 260ms ease-out;
+}
+
+.presence-label[data-hidden] {
+  opacity: 0;
+  transition: none;
+}
+
+:root[data-motion='off'] .presence-header,
+:root[data-motion='off'] .presence-header[data-away],
+:root[data-motion='off'] .presence-panel,
+:root[data-motion='off'] .presence-panel[data-ending-style],
+:root[data-motion='off'] .presence-label {
+  transition: none;
+}
+
+/* The mascot, a little smaller among the steps' marks than beside the status. The scale is its own
+   property, as the carrying is (`useFlight` sets `translate`), so it is from the mascot's middle,
+   which is where the carrying aims. */
+.presence-mascot {
+  transition: scale 360ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.presence-mascot[data-expanded] {
+  scale: 0.8;
+}
+
+:root[data-motion='off'] .presence-mascot {
+  transition: none;
+}

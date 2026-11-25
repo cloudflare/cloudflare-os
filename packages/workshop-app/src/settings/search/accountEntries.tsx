@@ -1,4 +1,4 @@
-import { ArrowCounterClockwiseIcon, SignOutIcon, XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon, Logout05Icon, UndoIcon } from '@/components/icons'
 import type { SearchEntry, SearchPage } from '@/blocks/SearchDialog'
 import { signOut } from '@/rpc/signOut'
 import { resetLocalPreferences } from '../resetLocalPreferences'
@@ -12,7 +12,7 @@ const confirmPage = (title: string, confirmTitle: string, warning: string, icon:
   placeholder: title,
   entries: [
     { key: 'confirm', group: GROUP, title: confirmTitle, detail: warning, icon, onSelect: onConfirm },
-    { key: 'cancel', group: GROUP, title: 'Cancel', icon: <XIcon />, onSelect: () => {} },
+    { key: 'cancel', group: GROUP, title: 'Cancel', icon: <Cancel01Icon />, onSelect: () => {} },
   ],
 })
 
@@ -26,15 +26,15 @@ export const accountEntries: SearchEntry[] = [
     group: GROUP,
     title: 'Sign out',
     keywords: ['log out', 'logout', 'security'],
-    icon: <SignOutIcon />,
-    onSelect: () => confirmPage('Sign out?', 'Sign out', 'Running tasks continue', <SignOutIcon />, signOut),
+    icon: <Logout05Icon />,
+    onSelect: () => confirmPage('Sign out?', 'Sign out', 'Running tasks continue', <Logout05Icon />, signOut),
   },
   {
     key: 'setting:reset-local-preferences',
     group: GROUP,
     title: 'Reset local preferences',
-    keywords: ['forget', 'clear', 'stars', 'layout', 'theme', 'advanced'],
-    icon: <ArrowCounterClockwiseIcon />,
-    onSelect: () => confirmPage('Reset local preferences?', 'Reset', 'Can’t be undone', <ArrowCounterClockwiseIcon />, resetLocalPreferences),
+    keywords: ['forget', 'clear', 'layout', 'theme', 'advanced'],
+    icon: <UndoIcon />,
+    onSelect: () => confirmPage('Reset local preferences?', 'Reset', 'Can’t be undone', <UndoIcon />, resetLocalPreferences),
   },
 ]

@@ -8,9 +8,9 @@ const appFolders = (...folders: string[]) =>
   folders.flatMap((folder) => [`@/${folder}/*`, `../${folder}/*`, `../../${folder}/*`, `../../../${folder}/*`])
 
 // workshop-app: the folders that talk to the backend. UI layers must not import them.
-const DATA_LAYERS = appFolders('rpc', 'chat', 'workspaces', 'aside', 'library', 'gadgets', 'connections', 'settings', 'skills', 'automations', 'notifications')
+const DATA_LAYERS = appFolders('rpc', 'chat', 'workspaces', 'aside', 'library', 'gadgets', 'connections', 'gatekeeperApps', 'settings', 'automations', 'notifications')
 const DATA_LAYERS_MESSAGE =
-  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/, aside/, library/, gadgets/, connections/, settings/, skills/, automations/ and notifications/, and routes connect it.'
+  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/, aside/, library/, gadgets/, connections/, gatekeeperApps/, settings/, automations/ and notifications/, and routes connect it.'
 // workshop-app: the development-only gallery, which nothing that ships may import.
 const GALLERY = { group: appFolders('gallery'), message: 'The gallery is for development only.' }
 
@@ -107,6 +107,8 @@ export default defineConfig({
       // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They
       // do not follow the host repository's lint rules and must round-trip without code changes.
       '**/bundled-blueprints/blueprints/*/files/**',
+      // The draft editor is kept as it was written, which was not to these rules.
+      'packages/billow/src/**',
       '**/*.gen.ts',
       '**/node_modules/**',
       '**/.wrangler/**',
@@ -189,7 +191,7 @@ export default defineConfig({
       },
       {
         // The data folders feed the UI through routes; they never import routes themselves.
-        files: ['packages/workshop-app/src/{rpc,chat,workspaces,aside,library,gadgets,connections,settings,skills,automations,notifications}/**/*.{ts,tsx}'],
+        files: ['packages/workshop-app/src/{rpc,chat,workspaces,aside,library,gadgets,connections,gatekeeperApps,settings,automations,notifications}/**/*.{ts,tsx}'],
         rules: {
           'no-restricted-imports': [
             'error',
@@ -236,6 +238,7 @@ export default defineConfig({
           'packages/workshop-backend/**/*.ts',
           'packages/router/**/*.ts',
           'packages/gatekeeper-*/src/**/*.ts',
+          'packages/pdf-renderer/src/**/*.ts',
           'packages/workshop-shared/**/*.ts',
           'packages/typed-storage/**/*.ts',
         ],

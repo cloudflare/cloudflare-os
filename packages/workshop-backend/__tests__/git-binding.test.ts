@@ -402,7 +402,7 @@ describe("env.GIT presence", () => {
       let ownerId = impl.users.newUniqueId().toString();
       impl.ownerId = ownerId;
       impl.ensureAmbientCapsules = async () => {};
-      impl.markOutputsDirty = () => {};
+      impl.markListingDirty = () => {};
       let client = await instance.open(
           ownerId, "owner-profile", new RpcStub<() => void>(() => {}));
       seedGadget(impl, 100);

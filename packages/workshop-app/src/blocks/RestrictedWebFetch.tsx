@@ -1,12 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { PlusIcon, TrashIcon } from '@phosphor-icons/react'
-import { CardAction } from './CardAction'
-import { LIST_ACTION } from './StarButton'
-import { SettingRow } from './SettingRow'
-import { ON_SETTINGS_CARD, SettingsCard, SettingsGroup } from './SettingsGroup'
-import { Button } from '@/components/Button'
-import { Switch } from '@/components/Switch'
-import { TextField } from '@/components/TextField'
+import { Delete02Icon, PlusSignIcon } from '@/components/icons'
+import { Button, CardAction, LIST_ACTION, ON_SETTINGS_CARD, SettingRow, SettingsCard, SettingsGroup, Switch, TextField } from '@gadgets/ui'
 
 export type RestrictedWebFetchProps = {
   /** The hosts it may reach, as the server keeps them. */
@@ -47,7 +41,7 @@ export const RestrictedWebFetch = ({ hosts, onHostsChange, approvals, onApproval
     <SettingsGroup
       title="Web fetch in restricted workspaces"
       description="Once a workspace reads data a service marks as restricted, its agent fetches pages without asking only from these hosts, and only addresses without a query. Add a host only if everyone who can see requests to it may see that data."
-      action={<Button icon={PlusIcon} disabled={draft !== undefined} onClick={() => setDraft('')}>Add host</Button>}
+      action={<Button icon={PlusSignIcon} disabled={draft !== undefined} onClick={() => setDraft('')}>Add host</Button>}
       plain
     >
       <SettingsCard>
@@ -58,7 +52,7 @@ export const RestrictedWebFetch = ({ hosts, onHostsChange, approvals, onApproval
               <li key={host} className="group flex items-center gap-3 border-t border-kumo-line py-2 first:border-t-0">
                 <p className="min-w-0 flex-1 py-2 leading-snug wrap-anywhere text-kumo-default">{host}</p>
                 <CardAction>
-                  <Button variant="ghost" icon={TrashIcon} aria-label={`Remove ${host}`} title="Remove" disabled={pending} onClick={() => void keep(hosts.filter((other) => other !== host))} className={LIST_ACTION} />
+                  <Button variant="ghost" icon={Delete02Icon} aria-label={`Remove ${host}`} title="Remove" disabled={pending} onClick={() => void keep(hosts.filter((other) => other !== host))} className={LIST_ACTION} />
                 </CardAction>
               </li>
             ))}

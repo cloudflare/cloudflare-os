@@ -1,8 +1,8 @@
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { getResourceTypeId, type SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
-import { webUrl } from '@/components/webUrl'
+import { webUrl } from '@gadgets/ui'
 import type { SavedType } from '@/files/saveStream'
-import type { SavedExport } from '@/prefs/savedExports'
+import type { SavedExport } from '@/prefs/preferenceFields'
 
 /** A kind of file a gadget can be saved as in one of the user's accounts, and the export it is made from. */
 export type SaveTarget = {
@@ -92,11 +92,11 @@ export const saveTargetsOf = (vendors: readonly GatekeeperVendorInfo[], formats:
   }))
 
 /**
- * What a gadget's last save to `target` is kept under: the user's, as another may sign in on the
- * same device, and the gadget's in its workspace, as its id is only a count within it.
+ * What a gadget's last save to `target` is kept under, in the user's own account: the gadget's in
+ * its workspace, as its id is only a count within it.
  */
-export const savedExportKey = (userId: string, gadget: { workspaceId: string; workpieceId: number }, { vendor, resource }: SaveTarget) =>
-  JSON.stringify([userId, gadget.workspaceId, gadget.workpieceId, vendor.id, getResourceTypeId(resource)])
+export const savedExportKey = (gadget: { workspaceId: string; workpieceId: number }, { vendor, resource }: SaveTarget) =>
+  JSON.stringify([gadget.workspaceId, gadget.workpieceId, vendor.id, getResourceTypeId(resource)])
 
 /**
  * One gadget's exports: what it can be exported as, read each time it is asked for, as the code

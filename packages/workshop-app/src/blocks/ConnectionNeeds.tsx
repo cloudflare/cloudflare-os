@@ -1,5 +1,5 @@
-import { CheckCircleIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { CheckmarkCircle02Icon } from '@/components/icons'
+import { Button } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 export type ConnectionNeed = {
@@ -37,7 +37,7 @@ export const ConnectionNeeds = ({ needs, onConnect }: ConnectionNeedsProps) => (
         <span className="flex h-10 shrink-0 items-center">
           {need.connected === true && (
             <span className="flex items-center gap-1.5 pe-2 text-sm font-medium text-kumo-subtle">
-              <CheckCircleIcon aria-hidden="true" weight="fill" className="size-4 text-(--color-live)" />
+              <CheckmarkCircle02Icon aria-hidden="true" weight="fill" className="size-4 text-(--color-live)" />
               Connected
             </span>
           )}

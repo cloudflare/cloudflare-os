@@ -1,19 +1,7 @@
 import {
-  ArrowsClockwiseIcon,
-  BellIcon,
-  BrainIcon,
-  ChartBarIcon,
-  CpuIcon,
-  FileTextIcon,
-  GearSixIcon,
-  LightningIcon,
-  ListMagnifyingGlassIcon,
-  PlugsIcon,
-  SlidersHorizontalIcon,
-  UserIcon,
-  UserPlusIcon,
-  type Icon,
-} from '@phosphor-icons/react'
+  Brain03Icon, ChartUpIcon, ChipIcon, ConnectIcon, FileTextIcon, FilterHorizontalIcon, Notification01Icon,
+  RefreshCwIcon, SearchList01Icon, Settings02Icon, UserAdd01Icon, UserIcon, type Icon,
+} from '@/components/icons'
 
 /** The parts of the settings, by what each is called in the page's address (`?section=`). */
 export const SETTINGS_SECTION_IDS = [
@@ -21,7 +9,6 @@ export const SETTINGS_SECTION_IDS = [
   'preferences',
   'notifications',
   'models',
-  'skills',
   'usage',
   'admin-general',
   'admin-services',
@@ -61,11 +48,10 @@ type SectionGroup = { label?: string; sections: SectionInfo[] }
 export const SETTINGS_GROUP: SectionGroup = {
   sections: [
     { id: 'profile', label: 'Profile', summary: 'Name, picture, identity and password', icon: UserIcon },
-    { id: 'preferences', label: 'Preferences', summary: 'Appearance, side pane and developer mode', icon: SlidersHorizontalIcon },
-    { id: 'notifications', label: 'Notifications', summary: 'This browser and muted workspaces', icon: BellIcon },
-    { id: 'models', label: 'Models', summary: 'Default and quick models, and your own', icon: CpuIcon },
-    { id: 'skills', label: 'Skills', summary: 'Your skills and their collections', icon: LightningIcon },
-    { id: 'usage', label: 'Usage & billing', summary: 'Free requests and billing', icon: ChartBarIcon },
+    { id: 'preferences', label: 'Preferences', summary: 'Appearance, side pane and developer mode', icon: FilterHorizontalIcon },
+    { id: 'notifications', label: 'Notifications', summary: 'This browser and muted workspaces', icon: Notification01Icon },
+    { id: 'models', label: 'Models', summary: 'Default and quick models, and your own', icon: ChipIcon },
+    { id: 'usage', label: 'Usage & billing', summary: 'Free requests and billing', icon: ChartUpIcon },
   ],
 }
 
@@ -76,13 +62,13 @@ export const SETTINGS_GROUP: SectionGroup = {
 export const ADMIN_GROUP: SectionGroup = {
   label: 'Admin',
   sections: [
-    { id: 'admin-general', label: 'General', summary: 'Name, logo, notices and agent instructions', icon: GearSixIcon },
-    { id: 'admin-services', label: 'Services', summary: 'Which services and resources are offered', icon: PlugsIcon },
+    { id: 'admin-general', label: 'General', summary: 'Name, logo, notices and agent instructions', icon: Settings02Icon },
+    { id: 'admin-services', label: 'Services', summary: 'Which services and resources are offered', icon: ConnectIcon },
     { id: 'admin-formats', label: 'Formats', summary: 'The kinds of thing offered to be made', icon: FileTextIcon },
-    { id: 'admin-models', label: 'Gateway models', summary: 'Models and providers through AI Gateway', icon: BrainIcon },
-    { id: 'admin-access', label: 'Access', summary: 'Sign-ups and finding people', icon: UserPlusIcon },
-    { id: 'admin-audit', label: 'Audit', summary: 'What admins have done, and may do', icon: ListMagnifyingGlassIcon },
-    { id: 'admin-updates', label: 'Updates', summary: 'New releases of this deployment', icon: ArrowsClockwiseIcon },
+    { id: 'admin-models', label: 'Gateway models', summary: 'Models and providers through AI Gateway', icon: Brain03Icon },
+    { id: 'admin-access', label: 'Access', summary: 'Sign-ups and finding people', icon: UserAdd01Icon },
+    { id: 'admin-audit', label: 'Audit', summary: 'What admins have done, and may do', icon: SearchList01Icon },
+    { id: 'admin-updates', label: 'Updates', summary: 'New releases of this deployment', icon: RefreshCwIcon },
   ],
 }
 

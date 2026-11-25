@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -19,7 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -559,6 +559,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     return {
       signupsEnabled: config.signupsEnabled,
       userSearchEnabled: config.userSearchEnabled,
+      snapshotSharingEnabled: config.snapshotSharingEnabled,
       siteName: config.siteName,
       siteLogo: siteLogoImage(config.siteLogoConfigured),
       instanceInstructions: config.instanceInstructions,
@@ -1286,17 +1287,19 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
 // Capability for managing and investigating the deployment, obtained via
 // AuthenticatedApi.getAdminApi() (which is null for non-admins). The admin access check happens
-// once, when the capability is minted in server.ts, so its methods don't re-check, with one
-// exception: inspectWorkspace() and inspectUser() re-check, as openForAdmin() and every call on
-// the view either mints do, since a view is the one thing an admin holds that reads users' data.
+// once, when the capability is minted in server.ts, so its methods don't re-check, with two
+// exceptions. inspectWorkspace() and inspectUser() re-check, as openForAdmin() and every call on
+// the view either mints do, since a view is what an admin holds that reads users' data.
+// writeWorkspace() re-checks admin status and the environment's switch (ADMIN_WORKSPACE_WRITES),
+// and the workspace checks both again in its own environment.
 // Setting by setting, this is a thin validation+forwarding facade over the AdminSettings DO —
 // fully user-independent — so a disabled gatekeeper/resource can't be re-enabled via a crafted
 // request, and the client never receives a stub to the DO's internal methods. Every setter's
 // change is recorded in the deployment's audit log before it takes effect (see
 // #mutateAdminConfig()). Covers branding, agent instructions, signups, gatekeeper
 // connector/resource availability, AI Gateway models, whether an update is available, the user and
-// workspace directory, and admin access to workspaces and to users' accounts; authentication
-// config stays env-var driven.
+// workspace directory, admin access to workspaces and to users' accounts, and admin writes to
+// workspaces; authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   private admin: DurableObjectStub<AdminSettings>;
@@ -1340,6 +1343,11 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   async setUserSearchEnabled(enabled: boolean): Promise<void> {
     await this.admin.updateAdminConfig(
         { userSearchEnabled: enabled }, this.#actor("setUserSearchEnabled"));
+  }
+
+  async setSnapshotSharingEnabled(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig(
+        { snapshotSharingEnabled: enabled }, this.#actor("setSnapshotSharingEnabled"));
   }
 
   async setSiteName(name: string): Promise<void> {
@@ -1585,23 +1593,28 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     return this.#openForAdmin(id, trimmedReason, { via: this.via, expiresAt });
   }
 
-  // Mint the view. A workspace that turns out not to exist leaves the directory, which lists it
-  // only until something finds it gone.
+  // Mint the view. A workspace that turns out not to exist leaves the directory (see
+  // #dropIfMissing()).
   async #openForAdmin(id: DurableObjectId, reason: string, terms: AdminViewTerms) {
     try {
       return await this.overseers.get(id).openForAdmin(
           this.adminUserId, reason, this.#sessionId, terms);
     } catch (error) {
-      if (getAdminAccessErrorCode(error) === ADMIN_ACCESS_ERROR_CODES.workspaceNotFound) {
-        try {
-          await this.directories.getByName("").removeWorkspace(id.toString());
-        } catch (removal) {
-          logger.warn("failed to drop a missing workspace from the directory", {
-            event: "admin.directory.heal.failed", error: removal,
-          });
-        }
-      }
+      await this.#dropIfMissing(id, error);
       throw error;
+    }
+  }
+
+  // Drops the workspace `id` from the directory when `error` is its refusal `workspaceNotFound`:
+  // the directory lists a workspace only until something finds it gone.
+  async #dropIfMissing(id: DurableObjectId, error: unknown): Promise<void> {
+    if (getAdminAccessErrorCode(error) !== ADMIN_ACCESS_ERROR_CODES.workspaceNotFound) return;
+    try {
+      await this.directories.getByName("").removeWorkspace(id.toString());
+    } catch (removal) {
+      logger.warn("failed to drop a missing workspace from the directory", {
+        event: "admin.directory.heal.failed", error: removal,
+      });
     }
   }
 
@@ -1672,5 +1685,35 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setAdminAuditRetentionDays(days: number): Promise<void> {
     return this.admin.setAdminAuditRetentionDays(days, this.#actor("setAdminAuditRetentionDays"));
+  }
+
+  /** The one caller of OverseerDurableObject.applyAdminWrite(), which validates the call, checks
+   * the admin and the switch again in its own environment, and records the write before it runs. */
+  async writeWorkspace(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                       reason: string): Promise<void> {
+    if (!isDeploymentAdmin(this.env, this.adminUserId)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(this.env)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.writesOff);
+    }
+    let id: DurableObjectId;
+    try {
+      id = this.overseers.idFromString(workspaceId);
+    } catch {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    try {
+      await this.overseers.get(id).applyAdminWrite({
+        action, args, reason, admin: this.adminUserId, sessionId: this.#sessionId, via: this.via,
+      });
+    } catch (error) {
+      await this.#dropIfMissing(id, error);
+      // Never the reason or the arguments.
+      logger.warn("an admin write failed", {
+        event: "admin.write.failed", operation: action, error,
+      });
+      throw error;
+    }
   }
 }

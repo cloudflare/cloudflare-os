@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { isNarrowScreen } from '@/hooks/useNarrowScreen'
+import { isNarrowScreen } from '@gadgets/ui'
 import { readLayoutPrefs } from '@/prefs/layoutPrefs'
 import type { ChatFeed, OutputItem } from './chatItems'
 import { NewOutputs } from './NewOutputs'

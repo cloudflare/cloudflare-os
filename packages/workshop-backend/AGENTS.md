@@ -40,6 +40,15 @@ belongs to the invocation that opened it, and once a Durable Object invocation h
 event the object receives ends its trace. So a turn keeps all its spans only while the request that
 started it (usually the browser session) stays open.
 
+## Agents and their runs
+
+A run is a chat an agent spawner started (`isAgentRun`). It records its spawner (`spawnerId`),
+which is its agent, and the gadget whose code started it (`spawnedByGadgetId`) or the chat whose
+agent's code did (`spawnedByChatId`); a gadget's hook
+firing cannot be told from its UI, so no run names a hook. `listChats()` pages by kind and by
+spawner off the chatMeta `byListing` index, and
+`listAgentSpawners()` lists each spawner with every gadget bound to it.
+
 ## Auto-provisioned gatekeepers
 
 A gatekeeper may declare `VendorDescription.autoProvisionsAccount`: it can mint a connected account
@@ -64,8 +73,12 @@ orthogonal — an account can declare either, both, or neither.
   bound to any gadget by default — most gadgets never call it programmatically — but the agent may
   wire it into a gadget's binding list with `setGadgetBinding` when the gadget's persistent code
   needs it.
-- The UI is hosted at `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g.
-  `/gatekeepers/context`) via `startAppUi({ isAdmin })`.
+- The UI is served by `startAppUi({ isAdmin })` and hosted by the frontend: the old one at
+  `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g. `/gatekeepers/context`), workshop-app at
+  `/apps/$appId`, which redirects the old path there. Anything after that prefix is the app's
+  own path, so apps can be deep-linked: the Workshop owns the URL and syncs it with the iframe over
+  `GatekeeperAppNavigation` (`@gadgets/workshop-shared/gatekeeper-app`); the Context Library uses
+  `/collections/<id>` and `/collections/<id>/files/<path>`.
 
 ## Admin settings
 

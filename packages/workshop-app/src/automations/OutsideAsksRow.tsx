@@ -1,8 +1,7 @@
-import { CirclesFourIcon, ShieldCheckIcon } from '@phosphor-icons/react'
+import { DashboardCircleIcon, SecurityCheckIcon } from '@/components/icons'
 import { StatusPill } from '@/blocks/StatusPill'
-import { LinkButton } from '@/components/LinkButton'
+import { formatActivity, LinkButton } from '@gadgets/ui'
 import type { ActionEntry } from '@/workspaces/activity/activityEntries'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { approvalsWords } from './automationAsks'
 
 export type OutsideAsksRowProps = {
@@ -26,13 +25,13 @@ export const OutsideAsksRow = ({ asks, onOpen, href }: OutsideAsksRowProps) => {
   return (
     <LinkButton href={href} onClick={onOpen} className="flex items-start gap-3 rounded-2xl p-3 text-left text-base hover:bg-kumo-contrast/5">
       <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-default">
-        <CirclesFourIcon aria-hidden="true" className="size-5" />
+        <DashboardCircleIcon aria-hidden="true" className="size-5" />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-snug">
         <span className="truncate font-medium text-kumo-default">{first.description.title}{more}</span>
         <span className="truncate text-kumo-subtle">{line}</span>
       </span>
-      <StatusPill words={approvalsWords(asks.length)} tone="warning" icon={ShieldCheckIcon} count={asks.length > 1 ? asks.length : undefined} className="mt-px" />
+      <StatusPill words={approvalsWords(asks.length)} tone="warning" icon={SecurityCheckIcon} count={asks.length > 1 ? asks.length : undefined} className="mt-px" />
     </LinkButton>
   )
 }

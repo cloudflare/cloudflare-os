@@ -1,13 +1,8 @@
 import { useState } from 'react'
-import { LockSimpleIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, SquareLock01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { EmptyState } from '@/components/EmptyState'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Banner, Button, DropdownMenu, EmptyState, groupSurface, ListGroup, useNarrowScreen } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { groupSurface, ListGroup } from './ListGroup'
 
 /** One protected resource, as the dialog asks about it. */
 export type ConfirmAccessRow = {
@@ -175,7 +170,7 @@ const ServiceCard = ({ rows, onChoose, onTint }: { rows: ConfirmAccessRow[]; onC
       <ul aria-label={`What it reads at ${service.name}`} className="flex flex-wrap gap-1.5">
         {rows.map((each) => (
           <li key={each.key} className={cn('flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-sm', each.issue ? 'bg-kumo-warning-tint text-kumo-warning' : onTint ? 'bg-kumo-tint text-kumo-default' : 'bg-kumo-base text-kumo-default')}>
-            {each.issue && <WarningCircleIcon aria-hidden="true" className="size-3.5 shrink-0" />}
+            {each.issue && <AlertCircleIcon aria-hidden="true" className="size-3.5 shrink-0" />}
             <span className="truncate">{each.title}</span>
             {each.issue && <span className="sr-only">: {issueWords(each.issue, 1)}</span>}
           </li>
@@ -242,7 +237,7 @@ export const ConfirmAccessForm = ({ what, again = false, rows, problem, onChoose
           another is hard to take hold of there. */}
       <div className="m-auto flex w-full max-w-[31rem] flex-col gap-6 px-6 pt-10 md:max-h-full md:min-h-0">
         {/* Said as the pane's other notices say what it shows in place of the app, the same lock and all. */}
-        <EmptyState size="section" onTint={surface === 'tint'} icon={LockSimpleIcon} title={headingOf(again)} description={descriptionOf(what, again)} className="shrink-0 py-0" />
+        <EmptyState size="section" onTint={surface === 'tint'} icon={SquareLock01Icon} title={headingOf(again)} description={descriptionOf(what, again)} className="shrink-0 py-0" />
         {/* Wide, the list's surface stays where it is, and what scrolls is the rows within it. It keeps
             a little of the list in sight however short the page, but no more than the list is: one
             row is shorter than that, and would have room left under it. */}

@@ -1,4 +1,4 @@
-import { ImageIcon, TrashIcon } from '@phosphor-icons/react'
+import { Delete02Icon, Image03Icon } from '@/components/icons'
 import type { SearchEntry } from '@/blocks/SearchDialog'
 import { useApi } from '@/rpc/ApiContext'
 import { ownAvatar } from '../OwnAvatar'
@@ -22,7 +22,7 @@ export const usePictureEntries = (onOpenProfile: () => void): SearchEntry[] => {
       group: GROUP,
       title: 'Change profile picture…',
       keywords: ['avatar', 'photo', 'image', 'profile'],
-      icon: <ImageIcon />,
+      icon: <Image03Icon />,
       onSelect: onOpenProfile,
     },
     ...(hasPicture
@@ -31,7 +31,7 @@ export const usePictureEntries = (onOpenProfile: () => void): SearchEntry[] => {
           group: GROUP,
           title: 'Remove profile picture',
           keywords: ['avatar', 'photo', 'image', 'delete', 'profile'],
-          icon: <TrashIcon />,
+          icon: <Delete02Icon />,
           onSelect: async () => {
             requireConnection()
             await api.setAvatar(null)

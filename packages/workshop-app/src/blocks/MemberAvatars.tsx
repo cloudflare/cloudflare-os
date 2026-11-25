@@ -1,6 +1,5 @@
 import { cn } from '@cloudflare/kumo/utils'
-import { Avatar } from '@/components/Avatar'
-import { Tooltip } from '@/components/Tooltip'
+import { Avatar, Tooltip } from '@gadgets/ui'
 
 /** Someone with access to what is listed. */
 export type ListedMember = {
@@ -11,8 +10,10 @@ export type ListedMember = {
 }
 
 export type MemberAvatarsProps = {
-  /** Everyone with access, the owner first. */
+  /** Everyone with access, the owner first, or the first of them when `count` says there are more. */
   members: ListedMember[]
+  /** How many have access, when more than are listed. */
+  count?: number
   /** Smaller pictures, for a line of a card's text. */
   small?: boolean
 }
@@ -43,17 +44,17 @@ const counted = (count: number) => `${count} ${count === 1 ? 'member' : 'members
  * Who has access to a workspace, where it is listed: the first few members' pictures, overlapping,
  * on a tinted surface. Pointed at, a picture says how many members there are and whose it is.
  */
-export const MemberAvatars = ({ members, small }: MemberAvatarsProps) => {
+export const MemberAvatars = ({ members, count = members.length, small }: MemberAvatarsProps) => {
   const { overlap, cut } = SIZES[small ? 'small' : 'regular']
   return (
     <span
       role="img"
-      aria-label={`${counted(members.length)}: ${members.map(({ name, you }) => (you ? 'You' : name)).join(', ')}`}
+      aria-label={`${counted(count)}: ${members.map(({ name, you }) => (you ? 'You' : name)).join(', ')}${count > members.length ? `, and ${count - members.length} more` : ''}`}
       // Over what covers a row to make all of it one link, so that it can be pointed at.
       className={cn('appears relative z-1 flex shrink-0 items-center', overlap)}
     >
       {members.slice(0, SHOWN).map(({ id, name, you }) => (
-        <Tooltip key={id} delay={TOOLTIP_DELAY} content={`${counted(members.length)} · ${you ? 'You' : name}`}>
+        <Tooltip key={id} delay={TOOLTIP_DELAY} content={`${counted(count)} · ${you ? 'You' : name}`}>
           <span className={cn('flex rounded-full', cut)}>
             <Avatar name={name} small={small} className="bg-kumo-base" />
           </span>

@@ -5,19 +5,20 @@ import { DurableObject } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import {
   ContextCollectionContent, ContextCollectionMember, ContextCollectionMetadata,
-  ContextCollectionRole, ContextCollectionSharing, ContextCollectionVisibility,
+  ContextCollectionPermissions, ContextCollectionRole, ContextCollectionSharing,
+  ContextCollectionSummary, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary,
   ContextGitTokenCreateResult, ContextGitTokenList,
   DEFAULT_DOCUMENT_CONTENT_TYPE, DEFAULT_GIT_BRANCH, MAX_DOCUMENT_BODY_BYTES,
-  contentTypeFromPath, isTextContentType, VENDOR_ID,
+  contentTypeFromPath, isTextContentType, skillFilesOf, VENDOR_ID,
 } from "./context-types.js";
 import {
-  type CollectionAccess, collectionPermissions,
+  type CollectionAccess, canReadCollection, collectionPermissions,
 } from "./collection-access.js";
 import { metadataToSummary } from "./collection-kv.js";
 import { domainName } from "./domain.js";
 import {
-  readArtifactRepoDocuments, type ArtifactContextDocument,
+  gitBlobHash, readArtifactRepoDocuments, type ArtifactContextDocument,
 } from "./artifact-sync.js";
 import {
   isSkillManifestPath, parseSkillManifest, updateSkillManifestName, type SkillIndexEntry,
@@ -43,6 +44,9 @@ type AgentSkillParse = { manifest: SkillManifestMetadata } | { error: string };
 const GIT_TOKEN_TTL_SECONDS = 31_536_000;
 // Background git refresh happens minutely at most.
 const GIT_REFRESH_MIN_INTERVAL_MS = 60_000;
+// After a git sync that did not succeed, wait a minute before the next background attempt,
+// doubling up to an hour.
+const GIT_SYNC_RETRY_MAX_MS = 60 * 60_000;
 // Retry a failed git token revocation after 5 minutes, doubling up to a day.
 const GIT_TOKEN_REVOKE_RETRY_MS = 5 * 60_000;
 const GIT_TOKEN_REVOKE_RETRY_MAX_MS = 24 * 60 * 60_000;
@@ -105,6 +109,9 @@ type ContextRecord = {
   // Legacy records have string bodies: literal text or base64 for binary content.
   body: string | Uint8Array;
   lastUpdated: Date;
+  // Git-backed collections: the blob hash of `body`, so a sync skips files whose hash is unchanged.
+  // Records synced before it was kept have none until the next sync works it out from `body`.
+  gitBlobHash?: string;
 };
 
 function contextRecord(document: ContextDocument): ContextRecord & { body: Uint8Array } {
@@ -123,6 +130,29 @@ function contextRecordSize(record: ContextRecord): number {
     JSON.stringify({ ...record, body: "" }),
   ).byteLength;
 }
+
+function sameStoredBody(left: string | Uint8Array, right: string | Uint8Array): boolean {
+  if (typeof left === "string" || typeof right === "string") return left === right;
+  return left.byteLength === right.byteLength && left.every((byte, i) => byte === right[i]);
+}
+
+/** A skill's document as its collection stores it, its path relative to the skill's directory. */
+export type ContextSkillRecord = Pick<ContextRecord, "path" | "description" | "contentType" | "body">;
+
+/** A skill as exportContextSkill() reads it for importContextSkill(). */
+export type ContextSkillExport = {
+  /** The skill's directory name: its own directory's, or its manifest name for a top-level SKILL.md. */
+  name: string;
+  records: ContextSkillRecord[];
+};
+
+/** What getSkillListing() gives a reader: the parts of `ContextSkillCollection` read here. */
+export type SkillListing = {
+  summary: ContextCollectionSummary;
+  documents: ContextDocumentSummary[];
+  permissions: ContextCollectionPermissions;
+  owner?: ContextCollectionMember;
+};
 
 // Old records that predate git-based collections won't have `content` set in storage.
 // Unset `content` is defaulted to { "source": "web" } at the API layer, which is why
@@ -163,6 +193,9 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       // Private collections only: every account's role. Authoritative for access.
       grants: collection<GrantRecord>()({ primaryKey: "accountId" }),
       gitTokenIssuers: collection<GitTokenIssuerRecord>()({ primaryKey: "tokenId" }),
+      // Git-backed collections: files a sync has read, held until every file of its commit has been
+      // read and they replace `documents` together. A sync that stops part way keeps what it read.
+      gitStaged: collection<ArtifactContextDocument>()({ primaryKey: "path" }),
     },
     singletons: {
       // Sharing domain for cross-DO references.
@@ -174,6 +207,10 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       aclVersion: 0,
       // Consecutive failed attempts to revoke a token whose issuer lost write access.
       gitTokenRevokeAttempts: 0,
+      // Git syncs begun since the last one that succeeded, and when the latest began, or failed if it
+      // threw. Written as a sync starts, so one that resets the object still counts against the next.
+      gitSyncAttempts: 0,
+      gitSyncBackoffFrom: new Date(0),
       // Once all pre-sharing tokens have issuer records, later changes need no legacy-token scan.
       legacyGitTokensSwept: false,
       // Keep deletion durable until external cleanup succeeds; pending collections are unreadable.
@@ -351,7 +388,14 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   getSharing(accountId: string): ContextCollectionSharing {
     let access = this.getAccess(accountId);
     if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
-    let members: ContextCollectionMember[] = [...this.storage.grants.list()]
+    return {
+      members: this.#members(accountId), everyoneCanView: access.everyoneCanView,
+      hasOwner: access.hasOwner,
+    };
+  }
+
+  #members(viewerId: string): ContextCollectionMember[] {
+    return [...this.storage.grants.list()]
       .toSorted((left, right) =>
         ROLE_ORDER[left.role] - ROLE_ORDER[right.role]
         || left.grantedAt.valueOf() - right.grantedAt.valueOf())
@@ -359,9 +403,27 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
         memberId: grant.accountId,
         role: grant.role,
         displayName: grant.displayName,
-        isViewer: grant.accountId === accountId,
+        isViewer: grant.accountId === viewerId,
       }));
-    return { members, everyoneCanView: access.everyoneCanView, hasOwner: access.hasOwner };
+  }
+
+  /**
+   * What the Skills app lists of this collection, read in one step: its summary, its documents, the
+   * account's permissions and, where the account holds a role on a private collection, the first
+   * owner other than it. Null for an account that can't read the collection.
+   */
+  async getSkillListing(accountId: string, isAdmin: boolean): Promise<SkillListing | null> {
+    let access = this.getAccess(accountId);
+    if (!canReadCollection(access)) return null;
+    let owner = access.visibility === "private" && access.role !== null
+      ? this.#members(accountId).find(member => member.role === "owner" && !member.isViewer)
+      : undefined;
+    return {
+      summary: metadataToSummary(this.getMetadata()),
+      documents: await this.listContextDocuments(),
+      permissions: collectionPermissions(access, isAdmin),
+      ...(owner ? { owner } : {}),
+    };
   }
 
   // Throws unless `actorId` may give `targetId` the role `role`, or remove them (null).
@@ -711,6 +773,8 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       if (branch !== meta.content.branch) {
         meta.content.branch = branch;
         delete meta.content.commit;
+        // Failed syncs of the old branch say nothing about the new one.
+        this.storage.gitSyncAttempts.put(0);
         changed = true;
       }
     }
@@ -823,23 +887,20 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (directoryOccupied) {
       throw new Error(`Skill directory already exists: ${directory}`);
     }
-    let parentDirectory = dirName(directory);
-    if (parentDirectory) {
-      let parentExists = false;
-      for (let record of this.storage.documents.list({ prefix: parentDirectory + "/" })) {
-        parentExists = record.path.length > 0;
-        break;
-      }
-      if (!parentExists) throw new Error(`Directory not found: ${parentDirectory}`);
-      let ancestor = parentDirectory;
-      while (ancestor) {
-        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
-          throw new Error("Cannot create a skill inside another skill.");
-        }
-        ancestor = dirName(ancestor);
+    this.#assertSkillParent(dirName(directory), "create");
+    await this.#writeContextDocument(path, doc, true);
+  }
+
+  // A skill's directory goes in an existing directory (or the top level) that no skill holds.
+  #assertSkillParent(directory: string, action: "create" | "move"): void {
+    if (!directory) return;
+    let [first] = this.storage.documents.list({ prefix: directory + "/", limit: 1 });
+    if (!first) throw new Error(`Directory not found: ${directory}`);
+    for (let ancestor = directory; ancestor; ancestor = dirName(ancestor)) {
+      if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
+        throw new Error(`Cannot ${action} a skill inside another skill.`);
       }
     }
-    await this.#writeContextDocument(path, doc, true);
   }
 
   async deleteContextDocument(path: string): Promise<void> {
@@ -884,6 +945,22 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       : [manifestPath];
     if (!paths.includes(manifestPath)) throw new Error(`Document not found: ${manifestPath}`);
     await this.#deleteContextDocuments(paths);
+  }
+
+  /**
+   * Delete the files a move copied from here, as exportContextSkill() listed them (`paths`), once
+   * `actorId` is found to still be able to edit, with no await between the check and the delete.
+   * Files already gone are skipped.
+   */
+  async deleteMovedContextSkill(actorId: string, isAdmin: boolean, paths: string[]): Promise<void> {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    for (let path of paths) validateDocumentPath(path);
+    await this.#deleteContextDocuments(paths.filter(path => this.storage.documents.get(path)));
+  }
+
+  #assertActorCanEdit(actorId: string, isAdmin: boolean): void {
+    if (!collectionPermissions(this.getAccess(actorId), isAdmin).canEdit) throw new Error(NOT_FOUND);
   }
 
   async #deleteContextDocuments(paths: string[]): Promise<void> {
@@ -1045,27 +1122,95 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     )) {
       throw new Error("Cannot move a skill into itself.");
     }
-    if (directoryPath) {
-      let targetExists = false;
-      for (let record of this.storage.documents.list({ prefix: directoryPath + "/" })) {
-        targetExists = record.path.length > 0;
-        break;
-      }
-      if (!targetExists) throw new Error(`Directory not found: ${directoryPath}`);
-      let ancestor = directoryPath;
-      while (ancestor) {
-        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
-          throw new Error("Cannot move a skill inside another skill.");
-        }
-        ancestor = dirName(ancestor);
-      }
-    }
+    this.#assertSkillParent(directoryPath, "move");
     let destinationDirectory = joinPath(
       directoryPath,
       sourceDirectory ? baseName(sourceDirectory) : skill.name,
     );
     validateDocumentPath(destinationDirectory);
     await this.#moveContextSkill(manifestPath, destinationDirectory);
+  }
+
+  /**
+   * A skill's files as stored (those of skillFilesOf(), so not those of a skill within it), for
+   * importContextSkill() in another collection, if `actorId` can edit here. Refuses a git-based
+   * collection, which a move could not then delete the skill from.
+   */
+  exportContextSkill(actorId: string, isAdmin: boolean, manifestPath: string): ContextSkillExport {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    validateDocumentPath(manifestPath);
+    if (!isSkillManifestPath(manifestPath)) throw new Error("Skill manifest filename must be SKILL.md.");
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    let skill = parseSkillManifest(
+      manifestPath, decodeStoredContextBody(manifest.contentType, manifest.body));
+    let directory = dirName(manifestPath);
+    this.#ensureSkillIndex();
+    let records = skillFilesOf(
+      manifestPath,
+      [...this.storage.skillIndex.list()].map(entry => entry.path),
+      [...(directory ? this.storage.documents.list({ prefix: directory + "/" }) : this.storage.documents.list())]);
+    let prefixLength = directory ? directory.length + 1 : 0;
+    return {
+      name: directory ? baseName(directory) : skill.name,
+      records: records.map(record => ({
+        path: record.path.slice(prefixLength),
+        description: record.description,
+        contentType: record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE,
+        body: record.body,
+      })),
+    };
+  }
+
+  /**
+   * Store an exported skill in `directoryPath` (`""` for the top level), in a directory of its
+   * name, each record as exported, in one transaction. Refuses an occupied skill directory, a
+   * parent that doesn't exist or is inside another skill, and a git-based collection. A skill
+   * directory holding exactly these records already is an earlier import of them, and succeeds.
+   * Returns the skill's manifest path.
+   */
+  async importContextSkill(
+      actorId: string, isAdmin: boolean, directoryPath: string, skill: ContextSkillExport): Promise<string> {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    if (directoryPath) validateDocumentPath(directoryPath);
+    let directory = joinPath(directoryPath, skill.name);
+    validateDocumentPath(directory);
+    let records = skill.records.map(record => ({ ...record, path: joinPath(directory, record.path) }));
+    for (let record of records) validateDocumentPath(record.path);
+    let manifestPath = joinPath(directory, "SKILL.md");
+    let manifest = records.find(record => record.path === manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    parseSkillManifest(manifestPath, decodeStoredContextBody(manifest.contentType, manifest.body));
+
+    let existing = [...this.storage.documents.list({ prefix: directory + "/" })];
+    let occupant = this.storage.documents.get(directory);
+    if (occupant || existing.length > 0) {
+      let imported = new Map(records.map(record => [record.path, record]));
+      let isEarlierImport = !occupant && existing.length === imported.size
+        && existing.every(stored => {
+          let record = imported.get(stored.path);
+          return !!record && record.description === stored.description
+            && record.contentType === stored.contentType && sameStoredBody(record.body, stored.body);
+        });
+      if (isEarlierImport) return manifestPath;
+      throw new Error(`Skill directory already exists: ${directory}`);
+    }
+    this.#assertSkillParent(directoryPath, "move");
+
+    let now = new Date();
+    this.storage.transaction(() => {
+      for (let record of records) {
+        this.#putDocument({ ...record, name: baseName(record.path), lastUpdated: now });
+      }
+      let meta = this.getMetadata();
+      meta.documentCount += records.length;
+      meta.lastUpdated = now;
+      this.storage.metadata.put(meta);
+    });
+    await this.#propagate();
+    return manifestPath;
   }
 
   async renameContextSkill(manifestPath: string, newName: string): Promise<void> {
@@ -1155,12 +1300,20 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (!this.env.ARTIFACTS) return;
     let content = this.getMetadata().content;
     if (content.source !== "git") return;
-    if (Date.now() - content.lastRefreshedAt.getTime() < GIT_REFRESH_MIN_INTERVAL_MS) return;
+    let now = Date.now();
+    if (now - content.lastRefreshedAt.getTime() < GIT_REFRESH_MIN_INTERVAL_MS) return;
+    // A sync that fails, or resets the object, waits out a growing delay before the next try.
+    let attempts = this.storage.gitSyncAttempts.get();
+    if (attempts > 0 && now - this.storage.gitSyncBackoffFrom.get().getTime() <
+        Math.min(GIT_REFRESH_MIN_INTERVAL_MS * 2 ** (attempts - 1), GIT_SYNC_RETRY_MAX_MS)) {
+      return;
+    }
 
     void this.#refreshArtifactSource().catch((err) => {
       logger.warn("failed to refresh git-based context collection in the background", {
         event: "context.collection.git.refresh.failed",
         collectionId: this.getMetadata().id,
+        consecutiveFailures: this.storage.gitSyncAttempts.get(),
         error: err,
       });
     });
@@ -1169,33 +1322,108 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   #refreshArtifactSource(): Promise<void> {
     if (this.#artifactRefresh) return this.#artifactRefresh;
 
-    let promise = this.#loadArtifactSnapshot().finally(() => {
+    let attempts = this.storage.gitSyncAttempts.get();
+    if (attempts > 0) {
+      // A sync that reset the object logged nothing, so each retry says how many came before it.
+      logger.warn("retrying a git-based context collection sync that has not succeeded", {
+        event: "context.collection.git.refresh.retry",
+        collectionId: this.getMetadata().id,
+        consecutiveFailures: attempts,
+      });
+    }
+    this.storage.gitSyncAttempts.put(attempts + 1);
+    this.storage.gitSyncBackoffFrom.put(new Date());
+    let id = this.getMetadata().id;
+    let promise = this.#loadArtifactSnapshot().catch((err: unknown) => {
+      // A slow sync that fails waits out its delay from when it failed, not when it began.
+      if (this.#isGitSyncTarget(id)) this.storage.gitSyncBackoffFrom.put(new Date());
+      throw err;
+    }).finally(() => {
       if (this.#artifactRefresh === promise) this.#artifactRefresh = undefined;
     });
     this.#artifactRefresh = promise;
     return promise;
   }
 
-  #replaceArtifactDocuments(commit: string, documents: ArtifactContextDocument[]): void {
+  // Each stored document's git blob hash, into `stored`. A document stored before hashes were kept
+  // gets one from its bytes, which a sync stores verbatim, and is added to `computed` as well.
+  async #readStoredGitBlobHashes(stored: Map<string, string>, computed: Map<string, string>): Promise<void> {
+    // Records are read one at a time and no body is kept, so a large collection never has all of
+    // its bodies in memory at once.
+    let unhashed: string[] = [];
+    for (let record of this.storage.documents.list()) {
+      if (record.gitBlobHash) stored.set(record.path, record.gitBlobHash);
+      // Older records with string bodies can't be hashed; the sync reads them again.
+      else if (record.body instanceof Uint8Array) unhashed.push(record.path);
+    }
+    for (let path of unhashed) {
+      let body = this.storage.documents.get(path)?.body;
+      if (!(body instanceof Uint8Array)) continue;
+      let hash = await gitBlobHash(body);
+      stored.set(path, hash);
+      computed.set(path, hash);
+    }
+  }
+
+  // A sync waits on Artifacts, and its collection can be deleted meanwhile. Each of the sync's writes
+  // checks first, so nothing it read is stored once deletion has begun.
+  #assertGitSyncTarget(id: string): void {
+    if (!this.#isGitSyncTarget(id)) throw new Error("The collection was deleted during its git sync.");
+  }
+
+  #isGitSyncTarget(id: string): boolean {
+    return !this.storage.deletionPending.get() && this.storage.metadata.get().id === id;
+  }
+
+  // Delete what an unfinished sync staged.
+  #clearGitStaged(): void {
+    // Read the paths before deleting from the same storage collection.
+    for (let path of Array.from(this.storage.gitStaged.list(), record => record.path)) {
+      this.storage.gitStaged.delete(path);
+    }
+  }
+
+  // Replace the documents with the files of `commit`, all at once. Each file is the stored document
+  // if that matches, else its staged copy if that matches; a file neither holds was too large to
+  // keep. `stored` and `computed` are the stored documents' hashes, as #readStoredGitBlobHashes left
+  // them. Staged files are then cleared.
+  #publishArtifactSync(
+      commit: string, files: Map<string, string>,
+      stored: Map<string, string>, computed: Map<string, string>): void {
+    // Kept documents keep their skill entries, so the index must be current before it is patched.
+    this.#ensureSkillIndex();
     let invalidSkills: Array<{ filepath: string; reason: string }> = [];
     this.storage.transaction(() => {
-      for (let record of this.storage.documents.list()) {
-        this.storage.documents.delete(record.path);
+      let published = new Set<string>();
+      for (let [path, hash] of files) {
+        if (stored.get(path) === hash) {
+          // A document stored before hashes were kept keeps the one worked out for it.
+          let record = computed.has(path) ? this.storage.documents.get(path) : undefined;
+          if (record) this.storage.documents.put({ ...record, gitBlobHash: hash });
+          published.add(path);
+          continue;
+        }
+        let staged = this.storage.gitStaged.get(path);
+        if (staged?.gitBlobHash === hash) {
+          let skill = this.#putDocument(staged);
+          if (skill && "error" in skill) invalidSkills.push({ filepath: path, reason: skill.error });
+          published.add(path);
+        }
       }
-      this.#clearSkillIndex();
-      for (let doc of documents) {
-        let skill = this.#putDocument(doc);
-        if (skill && "error" in skill) invalidSkills.push({ filepath: doc.path, reason: skill.error });
+      // Read the paths before deleting from the same storage collection.
+      for (let path of Array.from(this.storage.documents.list(), record => record.path)) {
+        if (!published.has(path)) this.#deleteDocument(path);
       }
+      this.#clearGitStaged();
 
+      this.storage.gitSyncAttempts.put(0);
       let meta = this.getMetadata();
-      meta.documentCount = documents.length;
+      meta.documentCount = published.size;
       meta.lastUpdated = new Date();
       if (meta.content.source !== "git") throw new Error("Collection must be git-based.");
       meta.content.commit = commit;
       meta.content.lastRefreshedAt = new Date();
       this.storage.metadata.put(meta);
-      this.storage.skillIndexVersion.put(SKILL_INDEX_VERSION);
     });
     if (invalidSkills.length > 0) {
       // Git pushes bypass createContextSkill's validation, so a broken manifest would otherwise
@@ -1210,45 +1438,42 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
   }
 
-  #deleteArtifactDocuments(commit: string): void {
-    this.storage.transaction(() => {
-      for (let record of this.storage.documents.list()) {
-        this.storage.documents.delete(record.path);
-      }
-      this.#clearSkillIndex();
-
-      let meta = this.getMetadata();
-      meta.documentCount = 0;
-      meta.lastUpdated = new Date();
-      if (meta.content.source !== "git") throw new Error("Collection must be git-based.");
-      meta.content.commit = commit;
-      meta.content.lastRefreshedAt = new Date();
-      this.storage.metadata.put(meta);
-      this.storage.skillIndexVersion.put(SKILL_INDEX_VERSION);
-    });
-  }
-
   async #loadArtifactSnapshot(): Promise<void> {
     const meta = this.getMetadata();
     if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
+    const stored = new Map<string, string>();
+    const computed = new Map<string, string>();
     const result = await readArtifactRepoDocuments(
-        this.#artifacts(), meta.id, meta.content.remote, meta.content.branch, meta.content.commit);
+        this.#artifacts(), meta.id, meta.content.branch, meta.content.commit, {
+          heldBlobHashes: async () => {
+            await this.#readStoredGitBlobHashes(stored, computed);
+            // Files staged by an earlier sync that stopped part way are held too.
+            let held = new Map<string, Set<string>>();
+            for (let [path, hash] of stored) held.set(path, new Set([hash]));
+            for (let record of this.storage.gitStaged.list()) {
+              held.set(record.path, (held.get(record.path) ?? new Set()).add(record.gitBlobHash));
+            }
+            return held;
+          },
+          stage: (document) => {
+            this.#assertGitSyncTarget(meta.id);
+            this.storage.gitStaged.put(document);
+          },
+        });
+    this.#assertGitSyncTarget(meta.id);
     if (!result.changed) {
       // Nothing changed, just bump the refresh timestamp.
       const latestMeta = this.getMetadata();
       if (latestMeta.content.source !== "git") throw new Error("Collection is not git-based.");
       latestMeta.content = { ...latestMeta.content, lastRefreshedAt: new Date() };
       this.storage.metadata.put(latestMeta);
+      this.storage.gitSyncAttempts.put(0);
+      // The branch is back at the published commit, so what an unfinished sync staged is stale.
+      this.#clearGitStaged();
       return;
     }
 
-    if (result.commit) {
-      // The repo was updated to a new commit, stored documents need to be updated.
-      this.#replaceArtifactDocuments(result.commit, result.documents);
-    } else {
-      // The repo was updated to an empty state.
-      this.#deleteArtifactDocuments(result.commit);
-    }
+    this.#publishArtifactSync(result.commit, result.files, stored, computed);
     await this.#propagate();
   }
 

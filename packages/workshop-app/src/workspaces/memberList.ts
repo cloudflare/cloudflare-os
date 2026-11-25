@@ -1,5 +1,4 @@
-import type { ArrangedGroup, ListOrder } from '@/components/listView'
-import type { ListViewSpec } from '@/hooks/useListView'
+import type { ArrangedGroup, ListOrder, ListViewSpec } from '@gadgets/ui'
 import type { WorkspaceMember } from './workspaceMembers'
 
 const collator = new Intl.Collator('en', { sensitivity: 'base', numeric: true })

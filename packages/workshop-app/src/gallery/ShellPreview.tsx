@@ -4,9 +4,11 @@ import { AsidePane } from '@/aside/AsidePane'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import { SCENARIOS } from '@/chat/mock/scenarios'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { AppShell } from '@/layouts/AppShell'
 import { ApiContext } from '@/rpc/ApiContext'
+import { PublicApiContext } from '@/rpc/PublicApiContext'
+import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { Section } from './Section'
 
 const WORKSPACES: SidebarWorkspace[] = [
@@ -38,7 +40,7 @@ export const ShellPreview = () => {
   // Beside the page, taking all of its room, from the divider dragged all the way over.
   const [expanded, setExpanded] = useState(false)
   // A gadget opened here runs against the fake backend the scripted chats use.
-  const [{ session }] = useState(() => createMockApi(SCENARIOS[0]))
+  const [{ session, publicApi }] = useState(() => createMockApi(SCENARIOS[0]))
   const leavePage = () => {
     setAsPage(false)
     setFullScreen(false)
@@ -70,32 +72,38 @@ export const ShellPreview = () => {
                 collapsed={collapsed}
               />
             )}
-            aside={shown && (asPage ? (
-              <AsidePane
-                placement="page"
-                item={shown}
-                link="https://example.com/output"
-                fullScreen={fullScreen}
-                onFullScreenChange={setFullScreen}
-                fromChat={shown === ELSEWHERE ? undefined : { chatId: 1, onBack: leavePage }}
-              />
-            ) : (
-              <AsidePane
-                placement="beside"
-                item={shown}
-                link="https://example.com/output"
-                onHide={() => show(undefined)}
-                expanded={expanded}
-                onShrink={() => setExpanded(false)}
-                onOpenPage={shown.kind === 'output' ? () => {
-                  setExpanded(false)
-                  setFullScreen(false)
-                  setAsPage(true)
-                } : undefined}
-                fullScreen={fullScreen}
-                onFullScreenChange={setFullScreen}
-              />
-            ))}
+            aside={shown && (
+              <PublicApiContext value={publicApi}>
+                <WorkspacesProvider>
+                  {asPage ? (
+                    <AsidePane
+                      placement="page"
+                      item={shown}
+                      link="https://example.com/output"
+                      fullScreen={fullScreen}
+                      onFullScreenChange={setFullScreen}
+                      fromChat={shown === ELSEWHERE ? undefined : { chatId: 1, onBack: leavePage }}
+                    />
+                  ) : (
+                    <AsidePane
+                      placement="beside"
+                      item={shown}
+                      link="https://example.com/output"
+                      onHide={() => show(undefined)}
+                      expanded={expanded}
+                      onShrink={() => setExpanded(false)}
+                      onOpenPage={shown.kind === 'output' ? () => {
+                        setExpanded(false)
+                        setFullScreen(false)
+                        setAsPage(true)
+                      } : undefined}
+                      fullScreen={fullScreen}
+                      onFullScreenChange={setFullScreen}
+                    />
+                  )}
+                </WorkspacesProvider>
+              </PublicApiContext>
+            )}
             asideAlone={Boolean(shown) && (asPage || expanded)}
             asideFullScreen={Boolean(shown) && fullScreen}
             onOpenAside={shown ? undefined : () => show(ITEMS[0])}

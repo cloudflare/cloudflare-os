@@ -1,10 +1,12 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { assetsBuildId } from '@gadgets/scripts/assets-build-id'
 import { pdfjsAssets } from './vite-pdfjs-assets'
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
@@ -42,7 +44,8 @@ const runConfig = {
         },
       },
       // Shared with the other packages: keeps vitest's scratch files out of the cache fingerprint.
-      test: vitestTask(['vitest run'], [ownDist]),
+      // The browser suite second, under its own config (see vitest.browser.config.ts).
+      test: vitestTask(['vitest run', 'vitest run -c vitest.browser.config.ts'], [ownDist]),
     },
   },
 }
@@ -67,6 +70,8 @@ export default defineConfig(({ command, mode }) => {
       tsconfigPaths(),
       // The files pdf.js fetches by name while it draws a PDF's thumbnail.
       pdfjsAssets(),
+      // The build's id, which `/api/version` answers (see usePageUpdate).
+      assetsBuildId(),
     ],
     resolve: build
       ? { alias: [{ find: /^\.\/routeTree\.gen$/, replacement: fileURLToPath(new URL(BUILD_ROUTE_TREE, import.meta.url)) }] }
@@ -79,6 +84,10 @@ export default defineConfig(({ command, mode }) => {
       // `ws` carries the RPC WebSocket.
       // A template's screenshot is the backend's too, as it is under the router in a deployment.
       proxy: { '/api': { target: `http://${backendHost}`, ws: true }, '/blueprint-screenshot': { target: `http://${backendHost}` } },
+    },
+    test: {
+      // Chromium's, under vitest.browser.config.ts.
+      exclude: [...configDefaults.exclude, 'src/**/*.browser.test.tsx'],
     },
     build: {
       // A build that reports what goes wrong (`src/rpc/errorReporting.ts`) has its source maps

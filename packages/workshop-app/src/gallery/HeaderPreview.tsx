@@ -1,10 +1,8 @@
 import { useState } from 'react'
-import { CodeIcon, EyeIcon, GearSixIcon, NotePencilIcon } from '@phosphor-icons/react'
+import { CodeIcon, PencilEdit02Icon, Settings02Icon, ViewIcon } from '@/components/icons'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Button } from '@/components/Button'
-import { EditableTitle } from '@/components/EditableTitle'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, EditableTitle, HeaderBubble } from '@gadgets/ui'
 import { IconSwitch } from '@/components/IconSwitch'
 import { Section } from './Section'
 
@@ -38,8 +36,8 @@ export const HeaderPreview = () => {
     </Section>
     <Section title="IconSwitch (two views of one thing, each an icon at an end of a pill as tall as the header’s buttons; the thumb slides under the one that is on, and clicking it anywhere switches it. Here, what an app looks like and its code, beside a button to show they are the same height)">
       <div className="flex items-center gap-2">
-        <IconSwitch aria-label="Show the code" title={code ? 'Show the app' : 'Show the code'} icons={{ off: EyeIcon, on: CodeIcon }} checked={code} onCheckedChange={setCode} />
-        <Button icon={GearSixIcon} aria-label="Settings" />
+        <IconSwitch aria-label="Show the code" title={code ? 'Show the app' : 'Show the code'} icons={{ off: ViewIcon, on: CodeIcon }} checked={code} onCheckedChange={setCode} />
+        <Button icon={Settings02Icon} aria-label="Settings" />
         <Button>A button</Button>
         <span className="text-sm text-kumo-subtle">{code ? 'Code' : 'Preview'}</span>
       </div>
@@ -59,7 +57,7 @@ export const HeaderPreview = () => {
               <div key={workspace.id} className="flex w-full items-center">
                 <WorkspaceCrumb {...workspace} expanded />
                 <HeaderBubble className="ms-auto">
-                  <Button variant="primary" icon={NotePencilIcon} onClick={() => setPage({ workspaceId: workspace.id, chat: 'New chat' })}>New chat</Button>
+                  <Button variant="primary" icon={PencilEdit02Icon} onClick={() => setPage({ workspaceId: workspace.id, chat: 'New chat' })}>New chat</Button>
                 </HeaderBubble>
               </div>
             )}

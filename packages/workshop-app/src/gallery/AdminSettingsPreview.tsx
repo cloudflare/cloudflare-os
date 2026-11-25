@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { AdminSettingsView } from '@gadgets/workshop-shared/api'
-import { Select } from '@/components/Select'
+import { Select } from '@gadgets/ui'
 import { AdminCapabilityProvider } from '@/settings/admin/AdminContext'
 import { AdminAccessSettings } from '@/settings/admin/AdminAccessSettings'
 import { AdminGeneralSettings } from '@/settings/admin/AdminGeneralSettings'

@@ -1,27 +1,17 @@
-import { CirclesFourIcon, ClockCounterClockwiseIcon, CompassIcon, LayoutIcon, PlusIcon } from '@phosphor-icons/react'
+import { DashboardCircleIcon, DiscoverCircleIcon, HistoryIcon, Layout01Icon, PlusSignIcon } from '@/components/icons'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { LibraryCard } from '@/blocks/LibraryCard'
 import type { LibraryMoreActions } from '@/blocks/LibraryMoreMenu'
 import { LibraryRow } from '@/blocks/LibraryRow'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { NoMatches } from '@/blocks/NoMatches'
-import { Button } from '@/components/Button'
+import { Button, DropdownMenu, EmptyState, HeaderBubble, ListToolbar, type ListView, NoMatches, PageLayout, Tabs, formatActivity, useNarrowScreen } from '@gadgets/ui'
 import { CardGrid } from '@/components/CardGrid'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EmptyState } from '@/components/EmptyState'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GroupedList } from '@/components/GroupedList'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
-import type { ListView } from '@/hooks/useListView'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
-import { formatActivity } from '@/workspaces/formatActivity'
-import type { WorkspaceLooksById } from '@/workspaces/WorkspaceLooks'
+import type { WorkspaceLooksById } from '@/workspaces/useWorkspaceLooks'
 import { APP, outputDetail, outputKey, outputTitle, outputWorkspace, type LibraryOrder } from './libraryList'
 import { needingYou, recentOutputs } from './libraryRecent'
 import { withStar, withStarOrder } from './libraryStars'
-import type { LibraryState } from './useLibrary'
+import type { LibraryState } from './OutputsFeed'
 
 /** The tab of what needs the user and what they opened last, and the tab of everything. The others are a type's id each. */
 export const RECENT_TAB = 'recent'
@@ -43,7 +33,7 @@ export type LibraryViewProps = {
   /** The keys of the starred outputs, in their order. */
   stars: string[]
   onStarsChange: (stars: string[]) => void
-  /** The keys of the outputs opened last on this device, latest first, which the Recent tab lists. */
+  /** The keys of the outputs the user opened last, latest first, which the Recent tab lists. */
   opened: readonly string[]
   onOpenOutput: (output: OutputSummary) => void
   /** An output's page, for its row to link to so that it can be opened in another tab. */
@@ -173,17 +163,17 @@ export const LibraryView = ({
         </DropdownMenu.Item>
       ))}
       <DropdownMenu.Separator />
-      <DropdownMenu.Item icon={LayoutIcon} onSelect={onExplore}>From a template…</DropdownMenu.Item>
+      <DropdownMenu.Item icon={Layout01Icon} onSelect={onExplore}>From a template…</DropdownMenu.Item>
     </>
   )
   // Its icon alone on a narrow screen. With no formats to choose between, or until they are known,
   // it starts a chat at once.
   const startNew = formats.length > 0
     ? narrow
-      ? <DropdownMenu icon={PlusIcon} aria-label="New" triggerVariant="primary" align="end" inPlace>{newItems}</DropdownMenu>
+      ? <DropdownMenu icon={PlusSignIcon} aria-label="New" triggerVariant="primary" align="end" inPlace>{newItems}</DropdownMenu>
       : <DropdownMenu label="New" caret triggerVariant="primary" align="end" inPlace>{newItems}</DropdownMenu>
     : narrow
-      ? <Button variant="primary" icon={PlusIcon} aria-label="New" title="New" onClick={() => onNew()} />
+      ? <Button variant="primary" icon={PlusSignIcon} aria-label="New" title="New" onClick={() => onNew()} />
       : <Button variant="primary" onClick={() => onNew()}>New</Button>
 
   const note = 'flex flex-wrap items-center justify-center gap-x-3 px-4 text-center text-base text-kumo-subtle'
@@ -198,7 +188,7 @@ export const LibraryView = ({
         <>
           <HeaderBubble>
             <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-              <CirclesFourIcon aria-hidden="true" />
+              <DashboardCircleIcon aria-hidden="true" />
               Library
             </h1>
           </HeaderBubble>
@@ -207,8 +197,8 @@ export const LibraryView = ({
             <HeaderBubble origin="end">
               {/* A word of it at least on a narrow screen, where New is its icon alone: a compass by itself says little. */}
               {narrow
-                ? <Button icon={CompassIcon} aria-label="Explore templates" onClick={onExplore}>Explore</Button>
-                : <Button icon={CompassIcon} onClick={onExplore}>Explore templates</Button>}
+                ? <Button icon={DiscoverCircleIcon} aria-label="Explore templates" onClick={onExplore}>Explore</Button>
+                : <Button icon={DiscoverCircleIcon} onClick={onExplore}>Explore templates</Button>}
             </HeaderBubble>
             <HeaderBubble origin="end">{startNew}</HeaderBubble>
           </div>
@@ -219,14 +209,14 @@ export const LibraryView = ({
         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 pt-2 pb-8">
           {problem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{problem}</p>}
           <EmptyState
-            icon={CirclesFourIcon}
+            icon={DashboardCircleIcon}
             title="Nothing in your library yet"
             description="The apps, documents and other things your chats make are kept here, to open, star and share. Ask for something in a chat, or start from a template."
             actions={[
               formats.length > 0
-                ? { label: 'Make something', icon: PlusIcon, variant: 'primary', menu: newItems }
-                : { label: 'Make something', icon: PlusIcon, variant: 'primary', onClick: () => onNew() },
-              { label: 'Explore templates', icon: CompassIcon, onClick: onExplore },
+                ? { label: 'Make something', icon: PlusSignIcon, variant: 'primary', menu: newItems }
+                : { label: 'Make something', icon: PlusSignIcon, variant: 'primary', onClick: () => onNew() },
+              { label: 'Explore templates', icon: DiscoverCircleIcon, onClick: onExplore },
             ]}
           />
         </div>
@@ -247,7 +237,7 @@ export const LibraryView = ({
                 <EmptyState
                   size="section"
                   tinted
-                  icon={onRecent ? ClockCounterClockwiseIcon : CirclesFourIcon}
+                  icon={onRecent ? HistoryIcon : DashboardCircleIcon}
                   title={onRecent ? 'Nothing recent' : 'Nothing here yet'}
                   description={onRecent ? 'What needs you, and what you open, shows here, so you can find your way back to it.' : undefined}
                   actions={[{ label: 'Show all', onClick: () => onTabChange(ALL_TAB) }]}

@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Banner } from '@cloudflare/kumo'
 import { motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { InfoIcon, XIcon } from '@phosphor-icons/react'
+import { useReducedMotion } from '@gadgets/ui'
+import { Cancel01Icon, InformationCircleIcon } from '@/components/icons'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
 
@@ -34,11 +34,11 @@ export const ComposerProblem = ({ message, onDismiss }: {
         {written !== undefined && <Banner
           role="alert"
           variant="error"
-          icon={<InfoIcon className="size-4" />}
+          icon={<InformationCircleIcon className="size-4" />}
           title={written}
           // Centred on the first line. The text and icon get 1px more padding above than below,
           // and the button reaches 1px further above its row than below to keep its place.
-          action={<Banner.Action variant="ghost" icon={<XIcon weight="bold" />} aria-label="Dismiss" onClick={onDismiss} shape="circle" className="-mt-[3px] -mb-px" />}
+          action={<Banner.Action variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Dismiss" onClick={onDismiss} shape="circle" className="-mt-[3px] -mb-px" />}
           // The icon's own box is one line tall; the text and the button need to be held to the top.
           className="items-start rounded-[21px] pt-[11px] pb-[9px] ps-4 pe-2 [&>div]:items-start"
         />}

@@ -1,5 +1,5 @@
-import { FileIcon, MusicNotesIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { Markdown } from '@/components/Markdown'
+import { AlertCircleIcon, FileEmpty02Icon, MusicNote03Icon } from '@/components/icons'
+import { Markdown } from '@gadgets/ui'
 import { DrawnPreview, type DrawnPreviewKind } from './file-preview/DrawnPreview'
 import { PaneNotice } from './PaneNotice'
 
@@ -33,7 +33,7 @@ export const FileView = (props: FileViewProps) => {
       return (
         <div className="appears flex flex-1 flex-col items-center justify-center gap-4 p-6">
           <span className="grid size-12 place-items-center rounded-2xl bg-kumo-base text-kumo-subtle ring-1 ring-kumo-line">
-            <MusicNotesIcon aria-hidden="true" className="size-6" />
+            <MusicNote03Icon aria-hidden="true" className="size-6" />
           </span>
           <audio controls src={props.url} aria-label={name} className="w-full max-w-md" />
         </div>
@@ -71,7 +71,7 @@ export const FileView = (props: FileViewProps) => {
             mimeType={props.mimeType}
             bytes={props.bytes}
             loading={<PaneNotice title="Loading…" />}
-            failed={(message) => <PaneNotice onTint icon={WarningCircleIcon} title={`Couldn’t show ${name}`} description={message} action={{ label: 'Download', onClick: onDownload }} />}
+            failed={(message) => <PaneNotice onTint icon={AlertCircleIcon} title={`Couldn’t show ${name}`} description={message} action={{ label: 'Download', onClick: onDownload }} />}
           />
         </div>
       )
@@ -79,7 +79,7 @@ export const FileView = (props: FileViewProps) => {
       return (
         <PaneNotice
           onTint
-          icon={FileIcon}
+          icon={FileEmpty02Icon}
           title="This file can’t be shown here"
           description={details}
           action={{ label: 'Download', onClick: onDownload }}

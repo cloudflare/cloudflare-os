@@ -1,17 +1,12 @@
 import { answerProse } from './answerParts'
-import type { AssistantItem, ChatItem, UserItem } from './chatItems'
+import type { AssistantItem, UserItem } from './chatItems'
 
-// A reply carries what it answers inside its own text, as a Markdown blockquote ahead of what was
-// written. There is no reply in the protocol: this way the agent reads the quote as anyone would,
-// and a client that knows nothing of replies shows it as the quote it is.
-//
-// TODO: this wants support from the backend: a message that names the sequence of the one it
-// replies to (on `sendChatMessage` and `AiChatMessage`). Without it a reply can only be matched to
-// its message by the quoted line, which is a guess when two messages read the same, breaks if
-// how a line is made here ever changes, and means paging back through history to find a message
-// that a sequence would let be fetched directly (see `ChatSession.findQuoted`).
+// A reply names the message it answers (`replyToSequence`), which is what links it there, and
+// carries a line of that message inside its own text, as a Markdown blockquote ahead of what was
+// written: the agent is not shown what a reply answers, so this way it reads the quote as anyone
+// would, and a client that knows nothing of replies shows it as the quote it is.
 
-/** How much of a message is quoted. Enough to tell which one it was, not to repeat it. */
+/** How much of a message is quoted. Enough to recall it by, not to repeat it. */
 const QUOTE_LENGTH = 240
 
 /**
@@ -39,24 +34,14 @@ export const quoteLine = (item: UserItem | AssistantItem): string =>
     ? answerProse(item.parts)
     : item.parts.map((part) => (part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`)).join(''))
 
-/**
- * The message a reply answers, among the rows of the conversation: the nearest one before the
- * reply that would be quoted as the line the reply carries, which is all it has to go by.
- */
-export const quotedBy = (reply: UserItem, rows: readonly ChatItem[]): UserItem | AssistantItem | undefined => {
-  if (reply.quote === undefined) return undefined
-  const at = rows.findIndex(({ key }) => key === reply.key)
-  return rows.slice(0, at === -1 ? rows.length : at)
-    .findLast((row): row is UserItem | AssistantItem => (row.kind === 'user' || row.kind === 'assistant') && quoteLine(row) === reply.quote)
-}
-
 /** The text to send for a reply: the quote, then what was written. */
 export const withQuote = (quote: string, text: string) => `> ${quote}\n\n${text}`
 
 /**
- * Takes a message that opens with a blockquote apart again: the quote as one line, what was
- * written, and where in the message that starts, for anything that points into the message by
- * position. A message that is nothing but a quote has no reply in it, and is left whole.
+ * Takes a reply apart again: the quote it opens with as one line, what was written, and where in
+ * the message that starts, for anything that points into the message by position. Only for a
+ * message that names what it replies to: another that opens with a blockquote is as it was written.
+ * A message that is nothing but a quote is left whole.
  */
 export const splitQuote = (message: string): { quote?: string; body: string; offset: number } => {
   const opening = /^(?:>.*\n)+\n+/.exec(message)?.[0]

@@ -33,7 +33,7 @@ Reviewing a pull request: follow `REVIEW.md` as well.
 ## Packages
 
 * packages/workshop-frontend: The Gadgets Workshop UI, a pure client-side single-page app (React, Kumo UI (https://kumo-ui.com/api/component-registry), Phosphor icons, Vite) that speaks to the backend over a persistent WebSocket RPC connection.
-* packages/workshop-app: The in-progress rework of the Workshop frontend, built beside `workshop-frontend` with a reduced scope (chat, Library, Workspaces). Not yet served by the router.
+* packages/workshop-app: The in-progress rework of the Workshop frontend, built beside `workshop-frontend` with a reduced scope (chat, Library, Workspaces). Served by the router in PR previews; production still serves `workshop-frontend`.
 * packages/workshop-backend: The Gadgets Workshop server, on Cloudflare Workers. This is the **kernel** (see below).
 * packages/workshop-shared: The application's RPC interface, shared by client and server. The protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC while being able to run in a browser over WebSocket.
 * packages/bundled-blueprints: The blueprints the deployment ships with; `blueprints/<name>/` holds each blueprint's `blueprint.json` plus its gadget code under `files/`, which may be TypeScript.
@@ -42,6 +42,7 @@ Reviewing a pull request: follow `REVIEW.md` as well.
 * packages/gatekeeper-*: Gatekeeper workers for external service integrations. Scheduled Tasks (`gatekeeper-scheduler`) and GitLab (`gatekeeper-gitlab`, design record `plans/gitlab-gatekeeper.md`) are described in their READMEs.
 * packages/mcp-shared: The library behind the two MCP gatekeepers, `gatekeeper-mcp` and `gatekeeper-mcp-portal`.
 * packages/office-content: Dependency-free readers for Word, PowerPoint and Excel files (ZIP, XML, Markdown conversion, cell values) that run in a Worker or a browser. The Microsoft gatekeeper reads files for agents with it, and the Workshop previews chat attachments with it.
+* packages/billow: The editor a draft is written in, in the Workshop app's composer: plain text with inline items, such as a skill's pill, that are written among it as one character each.
 * packages/observability, packages/error-reporting: Server logging/issue reporting/metrics, and the opt-in frontend error-reporting contract.
 * packages/router: The public origin of a deployed instance. Serves the workshop-frontend assets and routes `/api/*` and `/blueprint-screenshot/*` to the backend and `/gatekeeper/<name>/*` to whichever `GATEKEEPER_*` service bindings it has; with no `ASSETS` binding it doubles as the dev router (`pnpm dev-server`), which serves the API but not the frontend: open `pnpm dev-client` on :3000, or use `pnpm run-local` for both on one origin.
 

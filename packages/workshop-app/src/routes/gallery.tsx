@@ -1,31 +1,28 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
-import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
-import { Composer } from '@/blocks/Composer'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import {
+  ArrowLeft01Icon, DashboardCircleIcon, FileTextIcon, Logout05Icon, PlusSignIcon, Presentation01Icon,
+  Search01Icon, TableIcon,
+} from '@/components/icons'
+import { WORKSPACE_ICON_COLORS, WORKSPACE_ICON_SHAPES, type WorkspaceLook } from '@/prefs/preferenceFields'
+import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { DraftFormat } from '@/blocks/composerDraft'
+import type { ComposerCommand } from '@/blocks/composerCommand'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
-import { MemberListItem } from '@/blocks/MemberListItem'
+import { Avatar, Banner, Button, ConfirmMenu, DropdownMenu, type DropdownMenuProps, MemberListItem, Switch, Tabs as PageTabs, Tag } from '@gadgets/ui'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarActions, type SidebarChat, type SidebarWorkspace } from '@/blocks/Sidebar'
-import { Avatar } from '@/components/Avatar'
-import { Tag } from '@/components/Tag'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { Switch } from '@/components/Switch'
 import { ShimmerText } from '@/components/ShimmerText'
-import { Tabs as PageTabs } from '@/components/Tabs'
 import { ConnectButton } from '@/components/ConnectButton'
-import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AdminAuditPreview } from '@/gallery/AdminAuditPreview'
 import { AdminFormatsPreview } from '@/gallery/AdminFormatsPreview'
 import { AdminModelsPreview } from '@/gallery/AdminModelsPreview'
@@ -62,6 +59,8 @@ import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpCon
 import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
+import { UserPickerPreview } from '@/gallery/UserPickerPreview'
+import { previewComposerOffers } from '@/gallery/composerOffersPreview'
 import { SignInPreview } from '@/gallery/SignInPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
@@ -99,6 +98,13 @@ const manyCommands: ComposerCommand[] = [
     }),
   ),
   { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
+]
+
+// A made-up icon, a book's outline, as a gatekeeper's app may have one.
+const PREVIEW_APP_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><path fill="none" stroke="black" stroke-width="16" d="M40 48h72a32 32 0 0 1 32 32v128a24 24 0 0 0-24-24H40ZM216 48h-72a32 32 0 0 0-32 32v128a24 24 0 0 1 24-24h80Z"/></svg>')}`
+const PREVIEW_APPS = [
+  { id: 'example-library', title: 'Example Library', iconUrl: PREVIEW_APP_ICON },
+  { id: 'example-tool', title: 'Example Tool' },
 ]
 
 const previewWorkspaces: SidebarWorkspace[] = [
@@ -213,7 +219,7 @@ const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
   <>
     <DropdownMenu.Item icon={FileTextIcon} onSelect={() => onSelect('Document')}>Document</DropdownMenu.Item>
     <DropdownMenu.Item icon={TableIcon} onSelect={() => onSelect('Spreadsheet')}>Spreadsheet</DropdownMenu.Item>
-    <DropdownMenu.Item icon={PresentationIcon} onSelect={() => onSelect('Presentation')}>Presentation</DropdownMenu.Item>
+    <DropdownMenu.Item icon={Presentation01Icon} onSelect={() => onSelect('Presentation')}>Presentation</DropdownMenu.Item>
   </>
 )
 
@@ -234,9 +240,9 @@ const DURATIONS = [280, 360, 420, 840, 1680]
 
 const triggerContent = (kind: TriggerKind) =>
   kind === 'icon'
-    ? ({ icon: PlusIcon, 'aria-label': 'New' } as const)
+    ? ({ icon: PlusSignIcon, 'aria-label': 'New' } as const)
     : kind === 'icon-text'
-      ? ({ icon: PlusIcon, label: 'New' } as const)
+      ? ({ icon: PlusSignIcon, label: 'New' } as const)
       : ({ label: 'Create' } as const)
 
 /** One trigger with toggles for every placement, so each opening direction can be reviewed. */
@@ -289,17 +295,17 @@ const BasicsPage = () => (
   <>
     <Section title="Button">
       <Button>Refactor conditional rendering logic</Button>
-      <Button icon={CaretLeftIcon}>Back to chat</Button>
-      <Button icon={CirclesFourIcon} aria-label="Apps" />
+      <Button icon={ArrowLeft01Icon}>Back to chat</Button>
+      <Button icon={DashboardCircleIcon} aria-label="Apps" />
       <Button disabled>Disabled</Button>
-      <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+      <Button icon={Search01Icon} aria-label="Search" />
       <Button variant="ghost">Ghost</Button>
       <Button variant="primary">Primary</Button>
       <Button variant="danger">Danger</Button>
     </Section>
     <Section title="ConfirmMenu (what cannot be taken back, asked in place: growing up from the end, and down from an icon)">
       <ConfirmMenu label="Delete chat" title="Delete this chat?" description="What was said in it goes for everyone in the workspace. What it made stays in the library." confirmLabel="Delete chat" onConfirm={() => {}} />
-      <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
+      <ConfirmMenu icon={Logout05Icon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
     </Section>
     <Section title="Banner (something wrong: said alone, and with what to do about it and the way to)">
       <div className="flex w-full max-w-lg flex-col gap-3">
@@ -351,13 +357,13 @@ const WorkspaceIconsPage = () => (
     <Section title="WorkspaceIcon (every shape, and small; every colour)">
       <div className="flex w-full flex-col gap-4">
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
+          {WORKSPACE_ICON_SHAPES.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
+          {WORKSPACE_ICON_SHAPES.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceColors.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={workspaceShapes[index % workspaceShapes.length]} color={color} />)}
+          {WORKSPACE_ICON_COLORS.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={WORKSPACE_ICON_SHAPES[index % WORKSPACE_ICON_SHAPES.length]} color={color} />)}
         </div>
       </div>
     </Section>
@@ -417,7 +423,7 @@ const ListRowsPage = () => (
 const SidebarPage = () => {
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | undefined>('greeting')
   const [selectedChat, setSelectedChat] = useState<string>()
-  const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'connections' | 'settings'>()
+  const [sidebarPage, setSidebarPage] = useState<string>()
   const [chats, setChats] = useState(previewChats)
   const [hidden, setHidden] = useState<string[]>([])
   const [pinned, setPinned] = useState(['greeting', 'dashboard'])
@@ -499,6 +505,9 @@ const SidebarPage = () => {
                   connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
                   library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
                   workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
+                  automationsPage={{ current: sidebarPage === 'automations', onOpen: () => setSidebarPage('automations') }}
+                  // Made up: one with an icon of its own, and one with none, which has a window's.
+                  apps={PREVIEW_APPS.map((app) => ({ ...app, current: sidebarPage === `app:${app.id}`, onOpen: () => setSidebarPage(`app:${app.id}`) }))}
                   connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
                   // The user's own menu has the settings and signing out.
                   settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage('settings') }}
@@ -530,16 +539,43 @@ const BubblesPage = () => (
   </>
 )
 
+// What a connection of each made-up service is called, for the pill it is in a draft.
+const CONNECTED: Record<string, string> = {
+  Google: 'Q3 forecast',
+  GitHub: 'cloudflare/gadgets',
+  Email: 'Support inbox',
+  Jira: 'Platform board',
+  Slack: '#launch-week',
+  Notion: 'Product roadmap',
+  Salesforce: 'Pipeline report',
+}
+
 // The composer in each of the ways it is written in, and the home page around it.
 const ComposerPage = () => {
-  const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
-  const addActions = {
-    onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-  }
-  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
+  const [menuAction, setMenuAction] = useState('Open + to preview files, formats, connections, skills and templates.')
+  // The first composer does what its + menu offers: a format or a template starts the draft, and
+  // a service gives it a connection at once, with no dialog to choose one in.
+  const first = useRef<ComposerHandle>(null)
+  const [firstStartsWith, setFirstStartsWith] = useState<DraftFormat>()
+  const connected = useRef(0)
+  const [firstActions] = useState(() => ({
+    offers: previewComposerOffers(setMenuAction, {
+      onStartWith: setFirstStartsWith,
+      onConnect: ({ service, kinds }) => first.current?.addConnection({
+        key: `preview:${(connected.current += 1)}`,
+        title: CONNECTED[service.name] ?? service.name,
+        kind: kinds[0]?.title,
+        service,
+      }),
+      onDraft: (text) => first.current?.appendToDraft(text),
+    }),
+  }))
+  const [addActions] = useState(() => ({ offers: previewComposerOffers(setMenuAction) }))
+  const previewSend = (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
+    const given = connections?.length ? `, given ${connections.map(({ title }) => title).join(' and ')}` : ''
     setMenuAction(command
       ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
-      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}${given}.`)
     return true
   }
   const [replying, setReplying] = useState(true)
@@ -556,16 +592,23 @@ const ComposerPage = () => {
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
-            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft; the + menu lists them too, under a field to find one by. Backspace at the start or Escape takes it off.
+            What the + menu gives the draft is a pill at its start, ahead of the words, in the order they are added: a skill or command takes the place of any the draft had, and so does a format or a template; connections are as many as are added. The cursor stays in the words, never ahead of a pill or between two, and a pill is only taken off: by Backspace at the start of the words, the last one first, or selected with the words. A slash or an at sign typed at the start of a word opens the + menu as its button does, with the focus in its field: choosing something takes the one typed out of the draft. It never takes what is being written, though: a space straight away, words that find nothing, an arrow key or Escape put it away with what was typed written in the draft, and Backspace takes the slash back, so “3 / 4”, “/usr/bin” and “@zoe” can be typed straight through. A command typed out in full after such a slash is sent as that command too.
+            The + menu has everything the draft can be given or started with, a line each with what choosing it does, or what tells it apart, at its end: uploading, the formats, Automation and Agent, a handful of services, then See all skills… and See all connections…, which go on to all of them, over a field that finds any of them, and the templates, by typing.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
+          <Composer
+            ref={first}
+            onSend={previewSend}
+            addActions={firstActions}
+            commands={previewCommands}
+            format={{ value: firstStartsWith, onChange: setFirstStartsWith }}
+          />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
           </div>
         </div>
       </Section>
-      <Section title="Composer (150 skills: the + menu opens at the height it keeps, its list scrolling, with the field nearest the composer and the focus in it; typing narrows the list as a slash does, the arrow keys move, Enter or Tab chooses and Escape closes. The second is still reading its skills, and keeps their room)">
+      <Section title="Composer (150 skills: the + menu is as tall as what it lists, up to five rows and a half, its list then scrolling, with the field nearest the composer and the focus in it; typing lists what fits of everything, best first, the arrow keys move, Enter or Tab chooses and Escape closes; See all skills… lists them all, with Back, Escape or Backspace in the empty field going back. The second is still reading its skills, and says so)">
         <div className="flex w-full flex-col gap-3">
           <Composer onSend={previewSend} addActions={addActions} commands={manyCommands} />
           <Composer onSend={previewSend} addActions={addActions} commandsLoading />
@@ -595,14 +638,14 @@ const ComposerPage = () => {
           <div><Button disabled={replying} onClick={() => setReplying(true)}>Reply to a message</Button></div>
         </div>
       </Section>
-      <Section title="Composer (starting with a format, as from the library’s New menu: what the message asks for something as sits above the draft, which can then be sent with no words; the cross makes it an ordinary message again)">
+      <Section title="Composer (starting with a format, as from the library’s New menu: what the message asks for something as is a pill at the start of the draft, which can then be sent with no words; deleting it makes it an ordinary message again, and undoing that has it back)">
         <div className="flex w-full flex-col gap-3">
           <Composer
             onSend={(text, files) => {
               setMenuAction(`Preview: sent “${startsWithFormat ? ['Document', text].filter(Boolean).join(' ') : text}”, with ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}.`)
               return true
             }}
-            format={startsWithFormat ? { noun: 'Document', icon: 'fileText', onRemove: () => setStartsWithFormat(false) } : undefined}
+            format={{ value: startsWithFormat ? { noun: 'Document', icon: 'fileText' } : undefined, onChange: (next) => setStartsWithFormat(next !== undefined) }}
           />
           <div><Button disabled={startsWithFormat} onClick={() => setStartsWithFormat(true)}>Start with a document</Button></div>
         </div>
@@ -707,6 +750,7 @@ const PAGES: GalleryPage[] = [
   { id: 'agents', group: 'Workspace', name: 'Agents', Page: AgentsPreview },
   { id: 'automations', group: 'Workspace', name: 'Automations', Page: AutomationsPreview },
   { id: 'sharing', group: 'Workspace', name: 'Sharing', Page: SharingPreview },
+  { id: 'user-picker', group: 'Workspace', name: 'User picker', Page: UserPickerPreview },
   { id: 'workspace-removal', group: 'Workspace', name: 'Removing a workspace', Page: WorkspaceRemovalPreview },
 
   { id: 'library', group: 'Library', name: 'Library page', Page: LibraryPagePreview },

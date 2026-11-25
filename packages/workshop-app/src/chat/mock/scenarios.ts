@@ -1,5 +1,5 @@
-import type { ActionLogEntry, BlueprintOutput } from '@gadgets/workshop-shared/api'
-import { EXAMPLE_AGENT_SETUPS } from '@/automations/exampleAgents'
+import type { ActionLogEntry, AgentSpawnerInfo, AiChatMetadata, BlueprintOutput } from '@gadgets/workshop-shared/api'
+import { EXAMPLE_AGENT_SPAWNERS, EXAMPLE_GADGETS } from '@/automations/exampleAgents'
 import { withQuote } from '../replyQuote'
 import { PLANS_ANSWER } from './liveViews'
 import { agentRuns, team } from './teamScenario'
@@ -77,6 +77,13 @@ const liveView: Scenario = {
   ],
 }
 
+/** Has the first of `steps` wait `delay` milliseconds. */
+const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
+  if (!first) return []
+  const { on: _on, ...effect } = first
+  return [{ ...effect, delay } as ScriptStep, ...rest]
+}
+
 const read = (filename: string) => call('readFile', { workpiece: 'DASHBOARD', filename })
 const reads = [read('src/worker.ts'), read('src/chart.tsx'), read('package.json')]
 const edit = call('editFile', {
@@ -100,13 +107,39 @@ const failedEdit = call(
 )
 const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: 'src' }, { output: 'src/worker.ts:18:    maxResults: 50,\n' })
 
+// Long enough, streamed slowly, to open the steps while the first of them is still being thought.
+const toolRunPlan =
+  'The user wants the tickets chart to show twelve weeks instead of four. The window is probably a constant ' +
+  'somewhere in the chart component, but the worker that fetches the tickets may also cap how far back it ' +
+  'looks, or how many it returns per page, and twelve weeks could be several times as many tickets as four. ' +
+  'If the worker pages through results, raising the window alone might silently drop the oldest weeks. So: ' +
+  'read the worker and the chart first, check package.json for the Jira client version in case its search ' +
+  'API changed, then change the window and, if needed, the cap, and run a query to confirm the count looks right.'
+const toolRunOpening = agent({ text: 'I’ll read the chart code first.', reasoning: toolRunPlan })
+
+const toolRunThought =
+  'The search found `maxResults: 50` in the worker, not `limit`, which is why the edit failed. Fifty per page ' +
+  'is fine as long as the worker pages: it does, it follows `nextPageToken` until there is none, so 148 tickets ' +
+  'come back in three pages. Raising it would only make each request heavier for no gain, and the count from ' +
+  'the query matches what the chart will show. Nothing else depends on the four-week window: the trend ' +
+  'helper works on whatever points it is given. Say what changed, and why the worker was left alone.'
+const toolRunReply = agent({
+  text:
+    'The chart now covers **12 weeks** (148 tickets). One edit to `src/worker.ts` failed because the ' +
+    'limit is named `maxResults` there; I left it alone since 50 per page is enough.',
+  reasoning: toolRunThought,
+})
+
 const toolRun: Scenario = {
   id: 'tool-run',
   title: 'Jira dashboard',
-  description: 'Reads, edits, code with output and a failing tool. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
+  description: 'A wait before anything happens, a long first thought, reads, edits, code with output, a failing tool and a long thought before the reply. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
   history: history([user('Show twelve weeks of tickets on the chart instead of four.')]),
   script: turn(
-    say(agent({ text: 'I’ll read the chart code first.' })),
+    // Nothing for a while, as when the model is slow to answer: the steps, opened, say they wait for the agent.
+    after(3000, streamReasoning(toolRunPlan, 160)),
+    streamText(toolRunOpening.message),
+    { message: toolRunOpening, delay: 300 },
     reads.flatMap((toolCall) => streamTool(toolCall)),
     { message: agent({ toolCalls: reads }), delay: 300 },
     streamReasoning('The window is a constant in chart.tsx. The worker also caps results, so check that as well.'),
@@ -125,11 +158,10 @@ const toolRun: Scenario = {
     { message: agent({ toolCalls: [failedEdit] }), delay: 300 },
     streamTool(search),
     { message: agent({ toolCalls: [search] }), delay: 300 },
-    say(agent({
-      text:
-        'The chart now covers **12 weeks** (148 tickets). One edit to `src/worker.ts` failed because the ' +
-        'limit is named `maxResults` there; I left it alone since 50 per page is enough.',
-    })),
+    streamReasoning(toolRunThought, 140),
+    // Written slowly, a few words at a time, for long enough that the status saying so can be seen.
+    streamText(toolRunReply.message, 240),
+    { message: toolRunReply, delay: 300 },
   ),
 }
 
@@ -393,6 +425,8 @@ const appendDone = (id: number, task: string, minutesAgo: number): Extract<Actio
   type: 'action',
   state: 'pending',
   gatekeeperId: NOTES.target,
+  from: 'gadget',
+  gadgetId: 41,
   resourceTitle: NOTES.resourceTitle,
   createdAt: new Date(Date.now() - minutesAgo * MINUTE),
   description: {
@@ -422,6 +456,7 @@ const gadgetAsks: Scenario = {
     agent({ text: 'Done. Each task you tick off asks to add a line to Q3 notes, so nothing is written there without you.' }),
   ]),
   gadgetAsks: {
+    gadgetId: 41,
     connection: NOTES,
     waiting: [
       appendDone(1001, 'Summarise the quarter’s incidents', 180),
@@ -577,13 +612,6 @@ const untrustedContent: Scenario = {
   script: when('onSend', turn(say(agent({ text: 'Noted.' })))),
 }
 
-/** Has the first of `steps` wait `delay` milliseconds. */
-const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
-  if (!first) return []
-  const { on: _on, ...effect } = first
-  return [{ ...effect, delay } as ScriptStep, ...rest]
-}
-
 const hiring = 'I’ll add a hiring section after the highlights: two backend engineers in Q4, and a platform lead early next year. It is in the document now.'
 
 const workspaceRestart: Scenario = {
@@ -720,13 +748,19 @@ const longRound = (round: number): Array<MessageSource | MessageSource[]> => {
   ]
 }
 
+const longRounds = Array.from({ length: 60 }, (_, round) => longRound(round).flat())
+
 const longHistory: Scenario = {
   id: 'long-history',
   title: 'A long conversation',
   description: 'More than 300 mixed messages, to exercise paging and virtual pages. It ends in a reply to a message from near the start, with an image to open beside the chat: click its quote to go there. Send a message for a new answer.',
   history: history([
-    ...Array.from({ length: 60 }, (_, round) => longRound(round)).flat(),
-    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?'), { attachments: [REVIEW_FILES[0]] }),
+    ...longRounds.flat(),
+    // The third request opens the third round.
+    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?'), {
+      attachments: [REVIEW_FILES[0]],
+      replyToSequence: longRounds[0].length + longRounds[1].length,
+    }),
     agent({ text: 'Yes: `src/module-2.ts` has passed every check since.' }),
   ]),
   script: when('onSend', turn(say(agent({ text: 'Noted. That makes sixty-one.' })))),
@@ -739,8 +773,90 @@ const agents: Scenario = {
   history: history([user('Which of our agents answers the support inbox?')]),
   script: turn(say(agent({ text: 'The **Inbox helper**: Inbox starts it for each email that arrives. Its runs are on the workspace’s Chats tab, and under its Agents tab.' }))),
   // Its runs are among its chats, each with what it said.
-  agents: { setups: EXAMPLE_AGENT_SETUPS, runs: [] },
+  agents: { spawners: EXAMPLE_AGENT_SPAWNERS, gadgets: [...EXAMPLE_GADGETS].map(([id, title]) => ({ id, title })), runs: [] },
   workspace: agentRuns(),
+}
+
+// The agents of the workspace the launch chat's agent starts runs of.
+const spawner = (id: number, displayName: string): AgentSpawnerInfo => ({ id, config: { displayName, modelId: 'auto' }, modelName: 'Auto', bindings: [] })
+const LAUNCH_AGENTS = [spawner(40, 'Jira triage'), spawner(41, 'Code reviewer'), spawner(42, 'Design QA'), spawner(43, 'General'), spawner(44, 'Researcher')]
+// What it starts them on, a run of each.
+const LAUNCH_RUNS = [
+  { id: 101, agent: LAUNCH_AGENTS[0], title: 'Processing tasks from Jira', brief: 'Go through the PLAT board: close what shipped, and list what has no owner.' },
+  { id: 102, agent: LAUNCH_AGENTS[1], title: 'Reviewing gadget code', brief: 'Review the Launch board gadget’s code for anything that would break on launch day.' },
+  { id: 103, agent: LAUNCH_AGENTS[2], title: 'Testing user interface designs', brief: 'Click through the new onboarding screens and note what reads wrong.' },
+  { id: 104, agent: LAUNCH_AGENTS[3], title: 'Updating project documentation', brief: 'Bring the launch runbook up to date with what changed this sprint.' },
+  { id: 105, agent: LAUNCH_AGENTS[4], title: 'Conducting user feedback sessions', brief: 'Summarise this week’s feedback calls into what to fix first.' },
+]
+const spawnRuns = call(
+  'executeCode',
+  { code: `for (const { agent, title, brief } of TASKS) {\n  runs.push(await env[agent].spawn(title, brief))\n}\n` },
+  { output: 'Started 5 agents.\n' },
+)
+// Waiting for them, which runs for as long as they take: it says how each ended as it does, and
+// ends once none is at work.
+const WAIT_LINES = [
+  'Reviewing gadget code: finished\n',
+  'Processing tasks from Jira: waiting on you\n',
+  'Testing user interface designs: failed\n',
+  'Updating project documentation: finished, with changes to keep\n',
+  'Conducting user feedback sessions: finished\n',
+]
+const waitRuns = call(
+  'executeCode',
+  { code: 'for await (const run of settled(runs)) {\n  console.log(`${run.title}: ${run.status}`)\n}\n' },
+  { output: WAIT_LINES.join('') },
+)
+const waitLine = (line: number): ScriptStep => ({ stream: { type: 'toolOutputDelta', toolCallId: waitRuns.toolCallId, delta: WAIT_LINES[line] }, delay: 0 })
+// One of them, at some point in its run.
+const runStep = (index: number, delay: number, metadata: Partial<Omit<AiChatMetadata, 'id'>>, text?: string): ScriptStep => ({
+  run: { id: LAUNCH_RUNS[index].id, metadata, ...(text ? { message: agent({ text }) } : {}) },
+  delay,
+})
+const LAUNCH_REASONING = 'Five separate pieces of work, and the workspace has an agent for each. I can wait for them.'
+
+const agentRunsScenario: Scenario = {
+  id: 'agent-runs',
+  title: 'Launch prep',
+  description: 'The agent starts five agents and says so, then waits for them. Their start is marked under what it says, without a spinner; beside the composer their clouds go round while they work, each leaving as it ends, with a dot once one waits on you. Each end is marked where it happened, and the agent sums up once none is at work. Open one from a pill or the button’s list: its header goes back. Answer the one that waits to see it finish too.',
+  history: history([user('Get the launch ready: triage Jira, review the gadget code, test the new screens, update the runbook and sum up the feedback calls.')]),
+  script: [
+    ...turn(
+      streamReasoning(LAUNCH_REASONING),
+      streamTool(spawnRuns),
+      // Started as the code runs, which is written down once it is done, as the server does.
+      LAUNCH_RUNS.map(({ id, agent: { id: spawnerId, config }, title, brief }, index): ScriptStep => ({
+        run: { id, metadata: { title, spawnerId, spawnerName: config.displayName, spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
+        delay: index === 0 ? 300 : 120,
+      })),
+      { message: agent({ reasoning: LAUNCH_REASONING, toolCalls: [spawnRuns] }), delay: 300 },
+      say(agent({ text: 'I’ve set up five agents to work on these in the background, one for each part. I’m waiting for them to finish, and I’ll bring what they find together here.' })),
+      streamTool({ ...waitRuns, output: '' }),
+      runStep(1, 3500, { activeAgent: undefined }, 'Nothing would break on launch day. Two handlers swallow errors; I listed them in the review.'),
+      waitLine(0),
+      runStep(0, 2500, { activeAgent: undefined, awaitingDecision: true }, 'Twelve open issues have no owner. Shall I assign them to the platform on-call?'),
+      waitLine(1),
+      runStep(2, 2500, { activeAgent: undefined, lastTurnFailed: true }),
+      { run: { id: LAUNCH_RUNS[2].id, message: error('The model provider returned 529 (overloaded).') }, delay: 0 },
+      waitLine(2),
+      runStep(3, 3000, { activeAgent: undefined, proposedChangeWorkpieces: [7] }, 'The runbook now covers the new deploy step and the rollback flag.'),
+      waitLine(3),
+      runStep(4, 3500, { activeAgent: undefined }, 'Three things came up in most calls: slow first load, the hidden export button, and unclear pricing.'),
+      waitLine(4),
+      { message: agent({ toolCalls: [waitRuns] }), delay: 400 },
+      say(agent({
+        text:
+          'Four of the five are back. The code review found nothing that would break on launch day, the runbook is updated ' +
+          '(its changes are waiting for you to keep), and the feedback calls agree on slow first load, the hidden export ' +
+          'button and unclear pricing. The screen tests failed when the model provider was overloaded, so they need another go.\n\n' +
+          'The Jira agent found **twelve open issues with no owner** and is waiting on you: shall it assign them to the platform on-call?',
+      })),
+    ),
+    ...when('onSend', turn(say(agent({ text: 'I’ve told the Jira agent to go ahead: it’s assigning the twelve issues now.' })))),
+    runStep(0, 600, { awaitingDecision: undefined, activeAgent: AGENT }),
+    runStep(0, 3500, { activeAgent: undefined }, 'Assigned all twelve to the platform on-call.'),
+  ],
+  agents: { spawners: LAUNCH_AGENTS, gadgets: [], runs: [] },
 }
 
 /** Every scripted chat, in the order the picker lists them. */
@@ -765,5 +881,6 @@ export const SCENARIOS: Scenario[] = [
   steerSlash,
   longHistory,
   agents,
+  agentRunsScenario,
   team,
 ]

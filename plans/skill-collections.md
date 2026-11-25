@@ -1,5 +1,10 @@
 # Skill collections in workshop-app
 
+**Since:** the design below no longer lives in workshop-app. It moved, screens and `SkillStore`
+and all, into the Context Library's own app (`packages/gatekeeper-context/app/skills/`, see its
+`README.md`), which replaced the Skills Navigator there. Workshop's Settings has no Skills part
+and no `/skills` routes. Read "Settings › Skills" below as that app's skills view.
+
 ## Did Balint's version lose them?
 
 On purpose, as a concept on screen. It never lost the data. The scaffold's `SkillStore` kept

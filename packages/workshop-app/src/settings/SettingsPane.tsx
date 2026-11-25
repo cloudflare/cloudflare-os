@@ -1,11 +1,8 @@
 import type { ReactNode } from 'react'
-import { CaretLeftIcon, GearIcon } from '@phosphor-icons/react'
+import { ArrowLeft01Icon, Settings01Icon } from '@/components/icons'
 import { SettingsMenu } from '@/blocks/SettingsMenu'
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, HeaderBubble, PageLayout, useNarrowScreen } from '@gadgets/ui'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useApi } from '@/rpc/ApiContext'
 import { AdminAccessSettings } from './admin/AdminAccessSettings'
 import { AdminAuditSettings } from './admin/AdminAuditSettings'
@@ -21,7 +18,6 @@ import { NotificationSettings } from './NotificationSettings'
 import { PreferenceSettings } from './PreferenceSettings'
 import { ProfileSettings } from './ProfileSettings'
 import { FIRST_SECTION, isAdminSection, sectionInfo, settingsNavGroups, type SettingsSection } from './settingsSections'
-import { SkillSettings } from './SkillSettings'
 import { UsageSettings } from './UsageSettings'
 import { useOwnAvatar } from './useOwnAvatar'
 import { signOut } from '@/rpc/signOut'
@@ -36,14 +32,6 @@ export type SettingsPaneProps = {
   onSectionChange: (section: SettingsSection | undefined) => void
   /** A part's address, so that it can be opened in another tab. */
   sectionHref?: (section: SettingsSection) => string
-  /** One of the skills listed was opened, which has a page of its own. */
-  onOpenSkill: (id: string) => void
-  /** A skill's page, so that it can be opened in another tab. */
-  skillHref?: (id: string) => string
-  /** One of the collections listed under the skills was opened, which has a page of its own. */
-  onOpenCollection: (id: string) => void
-  /** A collection's page, so that it can be opened in another tab. */
-  collectionHref?: (id: string) => string
 }
 
 /**
@@ -53,7 +41,7 @@ export type SettingsPaneProps = {
  * for one thing at a time: the list of the parts is the page, and a part is gone into from it,
  * with the way back at the start of its header.
  */
-export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkill, skillHref, onOpenCollection, collectionHref }: SettingsPaneProps) => {
+export const SettingsPane = ({ section, onSectionChange, sectionHref }: SettingsPaneProps) => {
   const { user } = useApi()
   const avatarUrl = useOwnAvatar()
   const narrow = useNarrowScreen()
@@ -69,7 +57,6 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
     profile: <ProfileSettings />,
     usage: <UsageSettings />,
     models: <ModelSettings />,
-    skills: <SkillSettings onOpenSkill={onOpenSkill} skillHref={skillHref} onOpenCollection={onOpenCollection} collectionHref={collectionHref} />,
     preferences: <PreferenceSettings />,
     notifications: <NotificationSettings />,
     'admin-general': <AdminGeneralSettings />,
@@ -83,7 +70,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
 
   // What the page is, which its header says and nothing under it repeats: the part that is
   // showing, or the settings, where the page is the list of them.
-  const Glyph = info?.icon ?? GearIcon
+  const Glyph = info?.icon ?? Settings01Icon
   const name = (
     // The one bubble from part to part, which grows or shrinks to the next one's name.
     <HeaderBubble name="settings">
@@ -103,7 +90,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
               // Gone into from the list, which the way back is to, before what it is.
               <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
                 <HeaderBubble>
-                  <Button icon={CaretLeftIcon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
+                  <Button icon={ArrowLeft01Icon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
                 </HeaderBubble>
                 {name}
               </nav>

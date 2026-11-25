@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { MagnifyingGlassIcon, PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon, Search01Icon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ChangeMark, changeLabel, EditDot, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'
 import { CodeFileMenu } from './CodeFileMenu'
@@ -82,7 +82,7 @@ export const CodeFileStrip = ({ files, message, shown, onShow, onFind, editing, 
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-1 px-2 pt-2 pb-1">
-        <CodeIconButton icon={MagnifyingGlassIcon} aria-label="Go to file" onClick={onFind} />
+        <CodeIconButton icon={Search01Icon} aria-label="Go to file" onClick={onFind} />
         {message ? (
           <p role="status" className="min-w-0 flex-1 truncate px-2 text-(length:--control-text) text-kumo-subtle">{message}</p>
         ) : (
@@ -162,7 +162,7 @@ export const CodeFileStrip = ({ files, message, shown, onShow, onFind, editing, 
           </ul>
         )}
         {editing && (
-          <CodeIconButton icon={PlusIcon} aria-label="New file" title={editing.blocked ?? 'New file'} disabled={!!editing.blocked || adding !== undefined} onClick={onAdd} />
+          <CodeIconButton icon={PlusSignIcon} aria-label="New file" title={editing.blocked ?? 'New file'} disabled={!!editing.blocked || adding !== undefined} onClick={onAdd} />
         )}
       </div>
       {problem && <p id={problemId} role="alert" className="px-3 pb-1 text-sm text-kumo-danger">{problem}</p>}

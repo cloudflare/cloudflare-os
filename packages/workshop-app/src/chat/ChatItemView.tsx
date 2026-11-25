@@ -7,19 +7,25 @@ import { WebFetchRequestCard } from '@/blocks/WebFetchRequestCard'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
-import { messageInfo } from '@/blocks/messageInfo'
+import { messageInfo, thinkingOf } from '@/blocks/messageInfo'
 import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import { useDevMode } from '@/hooks/useDevMode'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, UserItem } from './chatItems'
+import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, MessagePart, NoticeItem, OutputItem, TraceEntry, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
   /** A message as the server sent it, written out in full, where it can be. */
   rawMessage: (sequence: number) => string | undefined
+  /**
+   * What is known of something a message mentions beyond its name, for the card over its chip:
+   * what a skill is for, where the workspace still offers it. Asked as the card is about to show.
+   */
+  describeMention?: (part: MessagePart) => { description?: string; facts?: readonly string[] } | undefined
   /** Start a reply to a message. */
   onReply: (item: UserItem | AssistantItem) => void
   /** Marks the chat unread from a message on. Left out where that is not the viewer's to do. */
@@ -57,6 +63,16 @@ export type ChatItemViewProps = {
   /** The row carries on from the message before it, or is carried on by the one after (`continuesRun`). */
   joinsAbove?: boolean
   joinsBelow?: boolean
+  /**
+   * A reply that arrived while the steps behind it were showing: how it came about is open above it, as they
+   * were, until it is put away, and is there already as it arrives.
+   */
+  tracedWhileShown?: boolean
+  /**
+   * Of the steps that led to a reply, those shown above it: the others are above the pills of the
+   * agents it started, among them (`RunMarkView`). All of them where it started none.
+   */
+  shownTrace?: readonly TraceEntry[]
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
@@ -69,13 +85,17 @@ const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
  * while a reply streams in, so the conversation above it is not rendered again for every piece of
  * text that arrives.
  */
-export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow }: ChatItemViewProps) {
-  // A reply's row also remembers which steps behind it are open, for when its details are shown.
-  const open = useOpenKeys(disclosure, item.kind === 'assistant' ? [item.key, ...item.trace.map(({ key }) => key)] : [item.key])
+export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow, tracedWhileShown, shownTrace }: ChatItemViewProps) {
+  // A reply's row also remembers which steps behind it were opened or put away, for when its details are shown.
+  const thinkingKey = `${item.key}:thinking`
+  const open = useOpenKeys(disclosure, item.kind === 'assistant' ? [item.key, thinkingKey, ...item.trace.map(({ key }) => key)] : [item.key])
   const isOpen = open.has(item.key)
   const toggle = () => disclosure.toggle(item.key)
   const joins = { above: joinsAbove, below: joinsBelow }
   const devMode = useDevMode()
+  // With thinking always shown, how a reply came about is open unless it was put away, as the one that
+  // is alone starts out open in `WorkLog`.
+  const [alwaysShowThinking] = useLiveWorkOpen()
   // In developer mode, what else a message's more menu copies.
   const developerCopies = devMode ? { id: String(item.id), json: () => handlers.rawMessage(item.id) } : undefined
 
@@ -84,6 +104,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       return (
         <UserMessage
           parts={item.parts}
+          describe={handlers.describeMention}
           quote={item.quote}
           onShowQuoted={() => handlers.onShowQuoted(item)}
           attachments={item.attachments}
@@ -95,7 +116,8 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           }}
           loadAttachment={handlers.loadAttachment}
           joins={joins}
-          onReply={() => handlers.onReply(item)}
+          // One the agent has not read yet has no sequence to reply to.
+          onReply={item.sentAt ? () => handlers.onReply(item) : undefined}
           onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
           developerCopies={developerCopies}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
@@ -117,10 +139,19 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
             ...messageInfo({
               sender: item.sender,
               sentAt: item.sentAt,
-              trace: { steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle },
+              reply: true,
               workedFor: devMode ? item.workedFor : undefined,
             }),
           }}
+          thinking={item.trace.length > 0
+            ? {
+                open: open.has(thinkingKey) !== (alwaysShowThinking || !!tracedWhileShown),
+                onToggle: () => disclosure.toggle(thinkingKey),
+                // Its steps open where they were watched as it came, and one line each where it is looked back on.
+                content: thinkingOf({ steps: [...(shownTrace ?? item.trace)], toggledSteps: open, onToggleStep: disclosure.toggle, startOpen: tracedWhileShown }),
+                shownAlready: tracedWhileShown,
+              }
+            : undefined}
         />
       )
     case 'output':

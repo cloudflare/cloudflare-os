@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { ArrowBendUpLeftIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button, useReducedMotion } from '@gadgets/ui'
+import { Cancel01Icon, ReplyIcon } from '@/components/icons'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
 
@@ -42,14 +41,14 @@ export const ComposerReply = ({ quote, onShow, onCancel }: {
             onClick={onShow}
             className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-s-[inherit] ps-3 pe-2 text-start enabled:cursor-pointer enabled:hover:text-kumo-default"
           >
-            <ArrowBendUpLeftIcon aria-hidden="true" className="size-4 shrink-0" />
+            <ReplyIcon aria-hidden="true" className="size-4 shrink-0" />
             <span className="sr-only">Replying to:</span>
             <span className="min-w-0 flex-1 truncate">{written}</span>
           </button>
           {/* Quiet until pointed at, as the actions beside a message are. */}
           <Button
             variant="ghost"
-            icon={<XIcon weight="bold" />}
+            icon={<Cancel01Icon weight="bold" />}
             aria-label="Cancel reply"
             title="Cancel reply"
             onClick={onCancel}

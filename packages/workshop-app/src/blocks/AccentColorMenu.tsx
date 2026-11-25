@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { EyedropperIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { PipetteIcon } from '@/components/icons'
+import { DropdownMenu } from '@gadgets/ui'
 
 /** One of the colours offered, by what it is kept as: a hex colour, or `''` for the app's own. */
 export type AccentColorPreset = { label: string; value: string }
@@ -49,7 +49,7 @@ export const AccentColorMenu = ({ value, presets, defaultColor, onChange }: Acce
           ))}
         </DropdownMenu.SwatchGroup>
         <DropdownMenu.Separator />
-        <DropdownMenu.Item icon={EyedropperIcon} onSelect={() => input.current?.showPicker?.()}>Custom color…</DropdownMenu.Item>
+        <DropdownMenu.Item icon={PipetteIcon} onSelect={() => input.current?.showPicker?.()}>Custom color…</DropdownMenu.Item>
       </DropdownMenu>
       <input
         // Started afresh from the colour kept, whatever was passed over in the picker before.

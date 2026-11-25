@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Dialog as BaseDialog } from '@cloudflare/kumo/primitives/dialog'
 import { cn } from '@cloudflare/kumo/utils'
-import { ArrowLeftIcon, MagnifyingGlassIcon } from '@phosphor-icons/react'
+import { ArrowLeft02Icon, Search01Icon } from '@/components/icons'
 import { SwitchIndicator } from '@/components/SwitchIndicator'
 import { useHandler } from '@/hooks/useHandler'
 import { carriedInto, searchMatches, type Searchable } from './searchMatches'
@@ -231,10 +231,10 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
                       onClick={goBack}
                       className="-mx-1 flex shrink-0 cursor-pointer items-center rounded-full p-1 text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default"
                     >
-                      <ArrowLeftIcon aria-hidden="true" className="size-[1.125em]" />
+                      <ArrowLeft02Icon aria-hidden="true" className="size-[1.125em]" />
                     </button>
                   )
-                : <MagnifyingGlassIcon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />}
+                : <Search01Icon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />}
               <input
                 ref={inputRef}
                 {...(text

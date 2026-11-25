@@ -1,8 +1,7 @@
 import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { XIcon } from '@phosphor-icons/react'
+import { Cancel01Icon } from '@/components/icons'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
+import { Button, TextField } from '@gadgets/ui'
 import { addAllowedNames, PROVIDER_LABELS, type AllowedModelSuggestion } from './modelForm'
 
 const POOL_DOCS = 'https://developers.cloudflare.com/ai-gateway/features/auto-router/#models'
@@ -74,7 +73,7 @@ export const AllowedModelsEditor = ({ modelName, allowedModels, providers, sugge
           {names.map((name) => (
             <li key={name} className="flex min-h-(--control-size) items-center gap-2 ps-3">
               <span className="min-w-0 flex-1 font-mono text-sm wrap-anywhere text-kumo-default">{name}</span>
-              <Button variant="ghost" icon={<XIcon weight="bold" />} aria-label={`Take ${name} out`} disabled={busy} className="text-kumo-subtle" onClick={() => setDraft(names.filter((other) => other !== name))} />
+              <Button variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label={`Take ${name} out`} disabled={busy} className="text-kumo-subtle" onClick={() => setDraft(names.filter((other) => other !== name))} />
             </li>
           ))}
         </ul>

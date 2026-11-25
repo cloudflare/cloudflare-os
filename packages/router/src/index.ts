@@ -43,6 +43,32 @@ function forwardToBackend(req: Request, env: Env): Promise<Response> {
   return env.WORKSHOP_BACKEND.fetch(new Request(req, { headers }));
 }
 
+/**
+ * Where a Workshop browser asks what a fresh request reaches; the copy of VERSION_PATH in
+ * workshop-shared. The backend answers its own version, to which a router serving the frontend
+ * adds `assets`, the build id of the frontend it serves.
+ */
+const VERSION_PATH = "/api/version";
+
+/** The file holding the build id, at the root of the assets (ASSETS_BUILD_ID_FILE in scripts/assets-build-id.ts). */
+const ASSETS_BUILD_ID_PATH = "/assets-build-id";
+
+/** A build id as scripts/assets-build-id.ts names one. */
+const ASSETS_BUILD_ID = /^[0-9a-f]+$/;
+
+/** Answers VERSION_PATH: the backend's answer, with the build id of the frontend `assets` serve. */
+async function answerVersion(req: Request, env: Env, assets: Fetcher): Promise<Response> {
+  const [backend, build] = await Promise.all([
+    forwardToBackend(req, env),
+    assets.fetch(new URL(ASSETS_BUILD_ID_PATH, req.url)),
+  ]);
+  if (!backend.ok) return backend;
+  // A build without the file is answered with its index.html, which is no build id.
+  const id = build.ok ? (await build.text()).trim() : "";
+  return Response.json({ ...await backend.json<object>(), assets: ASSETS_BUILD_ID.test(id) ? id : null },
+      { headers: { "Cache-Control": "no-store" } });
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -54,6 +80,10 @@ export default {
       if (url.pathname === prefix || url.pathname.startsWith(prefix + "/")) {
         return (env[key] as Fetcher).fetch(req);
       }
+    }
+
+    if (url.pathname === VERSION_PATH && req.method === "GET" && env.ASSETS) {
+      return answerVersion(req, env, env.ASSETS);
     }
 
     if (url.pathname === "/api" || url.pathname.startsWith("/api/") ||

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { SavedExport } from '@/prefs/preferenceFields'
 import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
-import type { SavedExport } from '@/prefs/savedExports'
 import { exportFileName, GadgetExports, savedExportKey, saveTargetsOf, type ExportGadget, type ExportSaving, type GadgetExportsOptions } from './GadgetExports'
 
 const PDF: GadgetExportFormat = { id: 'pdf', label: 'PDF', mode: 'browser', contentType: 'application/pdf', fileExtension: '.pdf' }
@@ -71,12 +71,12 @@ describe('saveTargetsOf', () => {
 })
 
 describe('savedExportKey', () => {
-  it('keeps a save apart by user, workspace, gadget, service and kind', () => {
+  it('keeps a save apart by workspace, gadget, service and kind', () => {
     const target = { vendor: GOOGLE, resource: DOCS, format: DOCX }
-    const key = savedExportKey('ada', { workspaceId: 'w1', workpieceId: 7 }, target)
-    expect(savedExportKey('grace', { workspaceId: 'w1', workpieceId: 7 }, target)).not.toBe(key)
-    expect(savedExportKey('ada', { workspaceId: 'w2', workpieceId: 7 }, target)).not.toBe(key)
-    expect(savedExportKey('ada', { workspaceId: 'w1', workpieceId: 7 }, { ...target, format: PDF })).toBe(key)
+    const key = savedExportKey({ workspaceId: 'w1', workpieceId: 7 }, target)
+    expect(savedExportKey({ workspaceId: 'w2', workpieceId: 7 }, target)).not.toBe(key)
+    expect(savedExportKey({ workspaceId: 'w1', workpieceId: 8 }, target)).not.toBe(key)
+    expect(savedExportKey({ workspaceId: 'w1', workpieceId: 7 }, { ...target, format: PDF })).toBe(key)
   })
 })
 

@@ -1,19 +1,19 @@
 import {
-  AppWindowIcon, ChartBarIcon, FileTextIcon, FlowArrowIcon, GridNineIcon, KanbanIcon, ListChecksIcon,
-  NotebookIcon, PresentationIcon, TableIcon, type Icon, type IconProps,
-} from '@phosphor-icons/react'
+  AppWindowIcon, ChartUpIcon, CheckListIcon, FileTextIcon, GridTableIcon, KanbanIcon, Notebook02Icon,
+  Presentation01Icon, SplineIcon, TableIcon, type Icon, type IconProps,
+} from './icons'
 
 const ICONS = {
   fileText: FileTextIcon,
-  gridNine: GridNineIcon,
-  presentation: PresentationIcon,
+  gridNine: GridTableIcon,
+  presentation: Presentation01Icon,
   appWindow: AppWindowIcon,
-  flowArrow: FlowArrowIcon,
+  flowArrow: SplineIcon,
   kanban: KanbanIcon,
-  chartBar: ChartBarIcon,
+  chartBar: ChartUpIcon,
   table: TableIcon,
-  notebook: NotebookIcon,
-  listChecks: ListChecksIcon,
+  notebook: Notebook02Icon,
+  listChecks: CheckListIcon,
 } satisfies Record<string, Icon>
 
 /** The glyphs an output format (a Document, a Spreadsheet, …) can be drawn with. */

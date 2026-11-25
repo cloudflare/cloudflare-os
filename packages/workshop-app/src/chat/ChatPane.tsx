@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
-import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerCommand } from '@/blocks/composerCommand'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import type { AddableService } from '@/connections/connectionChoices'
+import type { CreationAction } from '@/connections/ApproveCreation'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -24,10 +26,11 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatContextSide } from './ChatContextSide'
 import { chatContextOf, contextCount } from './chatContext'
+import { useAvailableToChat } from './useAvailableToChat'
 import { useContextOpen } from './useContextOpen'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { useNarrowScreen } from '@gadgets/ui'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatAttachment, type ChatItem, type HookItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type MessagePart, type OutputItem, type WorkEntry } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
@@ -40,13 +43,21 @@ import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
+import { THINKING, WRITING } from './statusWords'
 import { useLinkConnections } from './useLinkConnections'
+import { startWithFormat, type StartFormat } from './startWithFormat'
+import { useComposerOffers } from './useComposerOffers'
+import { ConnectResource } from '@/connections/SetUpConnection'
 import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
 import { firstMessageOf } from './firstMessage'
-import { useGadgetAgents } from '@/automations/useGadgetAgents'
+import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
+import { STATUS_WORDS } from '@/automations/agents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
+import { AgentRunsButton } from '@/blocks/AgentRunsButton'
+import { placeRunMarks, runsStartedBy, sameRuns, splitSteps, type ChatRun, type RunMark } from './chatRuns'
+import { RunMarkView, type MarkSteps } from './RunMarkView'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -55,12 +66,17 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
-  /** Goes to the page of the agent whose run the chat is, or that its gadgets start, by its key. */
+  /** Goes to the page of the agent whose run the chat is, by its key. */
   onOpenAgent?: (agentKey: string) => void
-  /** Goes to the workspace's Agents, for the several the chat's gadgets start. */
-  onOpenAgents?: () => void
   /** Opens the chat's settings, from its title. */
   onOpenSettings?: () => void
+  /**
+   * Opens another chat of the workspace, by its id: a run the chat's agent started, or, from such
+   * a run, the chat that started it. Left out, neither is offered.
+   */
+  onOpenChat?: (chatId: number) => void
+  /** A chat's address, by its id, so that a run can be opened in another tab. */
+  chatHref?: (chatId: number) => string
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -78,7 +94,7 @@ export type ChatPaneProps = {
    * Approves an action that creates something (`ActionItem.creation`), asking where. Left out,
    * it is approved as any other, which the workspace refuses. Rejects with why it was not made.
    */
-  onApproveCreation?: (action: ActionItem & { creation: { gatekeeperId: number } }) => Promise<void>
+  onApproveCreation?: (action: CreationAction) => Promise<void>
   /**
    * The chat was deleted, here or by anyone else in the workspace: go somewhere else, in place of
    * it in the history, so that going back does not come back to it.
@@ -96,6 +112,10 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) => outputOf(i
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 const NO_IDS: number[] = []
+const NO_RUNS: ChatRun[] = []
+const NO_SPLIT: { before: WorkEntry[][]; rest: WorkEntry[] } = { before: [], rest: [] }
+const sameSplit = (a: typeof NO_SPLIT, b: typeof NO_SPLIT) =>
+  a.before.length === b.before.length && a.before.every((steps, index) => steps.length === b.before[index].length && steps.every((step, at) => step === b.before[index][at]))
 // What is asked about is opened to as a row is, kept as the conversation's own rows are: each
 // ask afresh, folded, once the changes asked about before are kept.
 const keepKey = ({ epoch }: KeepAsk) => `keep:${epoch ?? ''}`
@@ -120,7 +140,7 @@ const keptOutput = (items: readonly ChatItem[], changes: ProposedChanges, gadget
   outputOf(items, gadgetId)
     ?? { kind: 'output', id: 0, key: `keep-${gadgetId}`, workpieceId: gadgetId, title: title ?? 'Untitled', type: 'gadget', draft: changes.created.some((made) => made.gadgetId === gadgetId) }
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenSettings, onOpenChat, chatHref, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keeping = chat.status === 'ready' ? chat.keep?.changes : undefined
@@ -149,31 +169,89 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // What a row asked for that this app cannot do yet.
   const [notice, setNotice] = useState<string>()
   const [disclosure] = useState(() => new DisclosureStore())
-  // The message the draft replies to: its row, and the line of it that will be quoted.
-  const [reply, setReply] = useState<{ key: string; quote: string }>()
+  // The message the draft replies to: its row, its sequence, and the line of it that will be quoted.
+  const [reply, setReply] = useState<{ key: string; sequence: number; quote: string }>()
   const composer = useRef<ComposerHandle>(null)
   const list = useRef<MessageListHandle>(null)
   const [sentFirst] = useState(() => firstMessageOf(workspaceId, chatId))
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
-  // Shown or put away for every chat at once, and kept: developer mode turns it on (`writeDevMode`).
-  const [liveWorkOpen, setLiveWorkOpen] = useLiveWorkOpen()
-  const openWork = useOpenKeys(disclosure, work.map(({ key }) => key))
+  // Open to start with where thinking is always shown (`prefs/liveWork`), and opened or put away by hand for
+  // this chat alone: that is not the setting, which would open how every reply came about with it. The
+  // setting changed since then wins again.
+  const [alwaysShowThinking] = useLiveWorkOpen()
+  const [liveWorkToggled, setLiveWorkToggled] = useState<{ open: boolean; setting: boolean }>()
+  const liveWorkOpen = liveWorkToggled?.setting === alwaysShowThinking ? liveWorkToggled.open : alwaysShowThinking
+  // Watched as they happen, the steps start open, and a step's key is toggled to put it away (`WorkLog`'s
+  // `startOpen`), which the reply they go to keeps where it arrives into them.
+  const toggledWork = useOpenKeys(disclosure, work.map(({ key }) => key))
+  // The work handed over to a reply as it arrives (`work` is empty again): what showed it folds at
+  // once (see `closingWork`), until there are steps again.
+  const lastWork = useRef(work)
+  if (work.length > 0) lastWork.current = work
+  const [handedOver, setHandedOver] = useState({ over: false, length: work.length })
+  const working = chat.status === 'ready' && chat.activity !== undefined
+  if (work.length !== handedOver.length || (!working && handedOver.over)) {
+    setHandedOver({ over: working && work.length === 0 && handedOver.length > 0, length: work.length })
+  }
   const keepKeys = useMemo(() => (chat.status === 'ready' && chat.keep ? [keepKey(chat.keep)] : []), [chat])
   const keepOpen = useOpenKeys(disclosure, keepKeys)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+  // The replies that arrived while the steps behind them were showing: each comes with how it came about open
+  // above it, where the steps were, so that it arrives into them as a message does into the conversation.
+  // Only those: the next reply is as the setting has it.
+  const showingWork = working && liveWorkOpen && !handedOver.over
+  const [handedTraces, setHandedTraces] = useState<{ items: ChatItem[] | undefined; showing: boolean; keys: ReadonlySet<string> }>({ items, showing: showingWork, keys: new Set() })
+  if (handedTraces.items !== items || handedTraces.showing !== showingWork) {
+    const after = handedTraces.items?.at(-1)?.id ?? Infinity
+    const arrived = handedTraces.showing
+      ? (items ?? []).filter((item) => item.kind === 'assistant' && item.trace.length > 0 && item.id > after).map(({ key }) => key)
+      : []
+    setHandedTraces({ items, showing: showingWork, keys: arrived.length > 0 ? new Set([...handedTraces.keys, ...arrived]) : handedTraces.keys })
+  }
+  const latest = items?.at(-1)
+  // The reply the steps went into is the last thing said, and nothing has been done since.
+  const handingOver = !!latest && handedTraces.keys.has(latest.key) && work.length === 0
+  // What the steps show as they close, once the work is handed over to a reply (`work` is empty again): the
+  // steps as they were, rather than for a moment saying there is nothing to show, but for those now above
+  // the reply, which are there already. A new turn's are its own, from nothing.
+  const closingWork = work.length === 0 && (handedOver.over || !working)
+    ? handingOver ? lastWork.current.filter(({ type }) => type === 'writing') : lastWork.current
+    : work
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
-  // The agents the chat's gadgets start, for the header, read again as each turn ends.
-  const gadgetIds = useMemo(() => (items ?? []).flatMap((item) => (item.kind === 'output' && item.type === 'gadget' ? [item.workpieceId] : [])), [items])
-  const turns = useRef(0)
-  const idle = chat.status === 'ready' && chat.activity === undefined
-  const lastIdle = useRef(idle)
-  if (idle !== lastIdle.current) {
-    lastIdle.current = idle
-    if (idle) turns.current += 1
-  }
-  const gadgetAgents = useGadgetAgents(workspaceId, chatId, gadgetIds, turns.current)
+  // The agents the chat's agent started, as the workspace's runs say how each stands, and where
+  // the conversation marks them.
+  const workspaceAgents = useWorkspaceAgents(workspaceId).state
+  // Kept as they were while they stand as they did, as the workspace's runs change with every
+  // run of every chat, which would otherwise draw the conversation and the composer again.
+  const readRuns = useMemo(() => (workspaceAgents.status === 'ready' ? runsStartedBy(workspaceAgents.agents, chatId) : NO_RUNS), [workspaceAgents, chatId])
+  const [runs, setRuns] = useState(readRuns)
+  if (readRuns !== runs && !sameRuns(readRuns, runs)) setRuns(readRuns)
+  const earlierToRead = chat.status === 'ready' && chat.hasEarlier
+  const runMarks = useMemo(() => placeRunMarks(items ?? [], runs, earlierToRead), [items, runs, earlierToRead])
+  // The steps under way among which agents the chat started have started or ended since the last
+  // row: those before each are above its pill, so that it is among them where it happened, and the
+  // thinking indicator has the rest. Kept as they were while they split the same, as the work
+  // changes with every word of a reply being written.
+  const afterMarks = runMarks.after
+  // The reply being written is the reply's, after them all.
+  const readLiveSplit = useMemo(() => (working && afterMarks.length > 0 ? splitSteps(work.filter(({ type }) => type !== 'writing'), afterMarks) : NO_SPLIT), [working, work, afterMarks])
+  const [liveSplit, setLiveSplit] = useState(readLiveSplit)
+  if (readLiveSplit !== liveSplit && !sameSplit(readLiveSplit, liveSplit)) setLiveSplit(readLiveSplit)
+  const liveWorkShown = liveWorkOpen && !handedOver.over
+  const movedWork = liveSplit.before.flat()
+  const indicatorWork = movedWork.length > 0 ? closingWork.filter((step) => !movedWork.includes(step)) : closingWork
+  // A run is opened only where the page can open another chat; elsewhere its pills are not pressed.
+  const openRun = useHandler((runId: number) => onOpenChat?.(runId))
+  const opensRuns = onOpenChat !== undefined
+  // Those under way are before the composer; each leaves it as it ends, which the conversation marks.
+  const heldRuns = useMemo(() => runs.flatMap(({ chatId: id, title: runTitle, agent, status }) =>
+    status === 'running' || status === 'waiting'
+      ? [{ key: String(id), title: runTitle, agent: agent.name, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) }]
+      : []), [runs, chatHref])
+  const openHeldRun = useHandler((key: string) => openRun(Number(key)))
+  const focusComposer = useHandler(() => composer.current?.focus())
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
@@ -182,19 +260,33 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const ranOut = items && outOfCreditsAt(items)
   const [creditsShown, setCreditsShown] = useState<{ open: boolean; seen?: string }>({ open: false })
   const outOfCredits = creditsShown.open || (ranOut !== undefined && ranOut !== creditsShown.seen)
-  // Add a connection is open; and the connections made for the draft, by their line's key.
-  const [adding, setAdding] = useState(false)
+  // The service a connection is being added of, from the + menu; and the connections made for the draft,
+  // by their pill's key.
+  const [adding, setAdding] = useState<AddableService>()
+  const changeAdding = useHandler((open: boolean) => {
+    if (!open) setAdding(undefined)
+  })
   const added = useRef(new Map<string, AddedConnection>())
   // One made from the menu: the chat has it once the message goes with it. Stable, as it uses
   // only refs, so that the dialog is not drawn again for each word of a reply.
   const [onAdded] = useState(() => async (made: AddedConnection) => {
     const key = `gatekeeper:${made.gatekeeperId}`
     added.current.set(key, made)
-    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service, snippet: made.description.snippet })
   })
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
-  const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  const links = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  // The format or the template the next message asks for something as, chosen from the + menu,
+  // whose formats and templates are read once the composer is pointed at or written in.
+  const [startsWith, setStartsWith] = useState<StartFormat>()
+  const [offersWanted, setOffersWanted] = useState(false)
+  const wantOffers = useHandler(() => setOffersWanted(true))
+  const offers = useComposerOffers({ wanted: offersWanted, builds, onConnect: setAdding, onStartWith: setStartsWith, onDraft: (text) => composer.current?.appendToDraft(text) })
+  const addActions = useMemo(() => ({ offers }), [offers])
+  const startsWithFormat = useMemo(() => ({ value: startsWith, onChange: setStartsWith }), [startsWith])
+  const draftLinks = links?.draft
+  const linkForm = links?.form
   // Left once, whether the workspace says it was deleted first or the call returns first.
   const left = useRef(false)
   const leave = () => {
@@ -243,21 +335,30 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     return actions.send(message, model.id)
   })
 
+  // What the workspace says of a skill or command a message was sent with, while it still offers
+  // it: what it is for, and where it is kept. Of anything else a message mentions, no more than
+  // the message says itself.
+  const describeMention = useHandler((part: MessagePart) => {
+    const known = part.type === 'command' ? commands.commands.find(({ name }) => name === part.name) : undefined
+    return known && { description: known.description, facts: [known.kind === 'skill' ? 'Skill' : 'Command', ...(known.source ? [known.source] : [])] }
+  })
+
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
       rawMessage: actions.rawMessage,
+      describeMention,
       onMarkUnread: builds ? (item) => {
         setNotice(undefined)
         if (connection?.blocked()) return
         actions.markUnreadFrom(item.id).catch((error: unknown) => setNotice(`Couldn’t mark the chat unread: ${messageOf(error)}`))
       } : undefined,
       onReply: (item) => {
-        setReply({ key: item.key, quote: quoteLine(item) })
+        setReply({ key: item.key, sequence: item.id, quote: quoteLine(item) })
         composer.current?.focus()
       },
       // The message may have had to be fetched. The list has its row by the next frame.
-      onShowQuoted: (replying) => void actions.findQuoted(replying).then((key) => {
+      onShowQuoted: (replying) => void actions.findReplied(replying).then((key) => {
         if (key) requestAnimationFrame(() => list.current?.scrollToMessage(key))
       }),
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
@@ -267,7 +368,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onApprove: (action) => {
         const { creation } = action
         if (!creation || !onApproveCreation) return actions.approveAction(action.actionId)
-        return onApproveCreation({ ...action, creation }).catch((error: unknown) => setNotice(messageOf(error)))
+        return onApproveCreation({ actionId: action.actionId, title: action.title, gatekeeperId: creation.gatekeeperId }).catch((error: unknown) => setNotice(messageOf(error)))
       },
       onDeny: actions.rejectAction,
       onAlwaysApprove: onAlwaysApprove ?? actions.alwaysApprove,
@@ -280,16 +381,30 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }
-  }, [actions, builds, connection, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
+  }, [actions, describeMention, builds, connection, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
 
 
   const messages = useMemo(() => {
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
-    return items?.map((item, index) => {
+    // What is said of the agents the chat started comes between rows, which then run on no more,
+    // or after them all, as rows of the conversation too: one stays the same row as what is said
+    // after it arrives, rather than moving into the conversation from under it.
+    // Each among the steps it happened among, where they are shown: those before it are above it.
+    const { before, after } = runMarks
+    const markRow = (mark: RunMark, steps?: MarkSteps) => ({
+      id: mark.key,
+      sequence,
+      content: <RunMarkView mark={mark} onOpen={opensRuns ? openRun : undefined} href={chatHref} steps={steps} disclosure={disclosure} />,
+    })
+    const rows = items?.flatMap((item, index) => {
+      const here = before.get(index) ?? []
+      const split = item.kind === 'assistant' && item.trace.length > 0 && here.length > 0 ? splitSteps(item.trace, here) : undefined
+      const tracedWhileShown = handedTraces.keys.has(item.key)
+      const marks = here.map((mark, at) => markRow(mark, split && { entries: split.before[at], thinkingKey: `${item.key}:thinking`, tracedWhileShown }))
       sequence = Math.max(sequence, item.id)
-      return {
+      return [...marks, {
         id: item.key,
         sequence,
         content: (
@@ -299,13 +414,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             handlers={handlers}
             restricted={restricted}
             // The list wraps every row, so messages in a run are told about each other.
-            joinsAbove={continuesRun(items[index - 1], item)}
-            joinsBelow={index + 1 < items.length && continuesRun(item, items[index + 1])}
+            joinsAbove={!before.has(index) && continuesRun(items[index - 1], item)}
+            joinsBelow={index + 1 < items.length && !before.has(index + 1) && continuesRun(item, items[index + 1])}
+            tracedWhileShown={tracedWhileShown}
+            shownTrace={split?.rest}
           />
         ),
-      }
+      }]
     }) ?? []
-  }, [items, disclosure, handlers, restricted])
+    return [...rows, ...after.map((mark, at) => markRow(mark, { entries: liveSplit.before[at] ?? [], live: liveWorkShown }))]
+  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted, handedTraces.keys, liveSplit, liveWorkShown])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
   const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -324,7 +442,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     setProblem(undefined)
     setNotice(undefined)
     const replied = reply
-    const words = replied ? withQuote(replied.quote, text) : text
+    // A skill is sent as itself, so a format does not go with it.
+    const asked = command ? undefined : startsWith
+    const named = asked && startWithFormat(asked, text)
+    const said = named?.text ?? text
+    const words = replied ? withQuote(replied.quote, said) : said
+    // Where the name is in all of what is sent, which a quote ahead of it moves along.
+    const formats = named?.formats.map((format) => ({ ...format, position: format.position + words.length - said.length }))
     // A skill or command goes as the workspace offers it, given the words; one it no longer
     // offers, such as a skill deleted since, does not go.
     const request = command && slashRequestFor(commands.choices, command, words)
@@ -335,9 +459,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // The connections after the words, each where its capsule shows it.
     const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
     const { text: written, capsules } = withCapsules(words, given)
-    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined)
-    // Unless another message has been chosen to reply to meanwhile.
-    if (sent) setReply((current) => (current === replied ? undefined : current))
+    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined, replied?.sequence, formats)
+    // Unless another message has been chosen to reply to meanwhile, or another format to start with.
+    if (sent) {
+      setReply((current) => (current === replied ? undefined : current))
+      setStartsWith((current) => (current === asked ? undefined : current))
+    }
     return sent
   })
 
@@ -350,27 +477,28 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const agentKey = ready ? chat.agent?.key : undefined
   const agentName = ready ? chat.agent?.name : undefined
   const openAgent = useHandler(() => agentKey !== undefined && onOpenAgent?.(agentKey))
-  // A run's own agent is its crumb already.
-  const startsAgents = gadgetAgents.filter(({ key }) => key !== agentKey)
-  const agentNames = startsAgents.map(({ name }) => name).join('\n')
-  const firstAgentKey = startsAgents[0]?.key
-  const several = startsAgents.length > 1
-  const openStarted = useHandler(() => (several ? onOpenAgents?.() : firstAgentKey !== undefined && onOpenAgent?.(firstAgentKey)))
   const hasAgentPage = onOpenAgent !== undefined
   const hasSettings = onOpenSettings !== undefined
   const workspaceTitle = workspace?.title
+  // The chat whose agent started this one, which it goes back to.
+  const startedBy = ready ? chat.startedBy : undefined
+  const backTo = startedBy !== undefined && onOpenChat ? startedBy : undefined
+  const goBack = useHandler(() => backTo !== undefined && onOpenChat?.(backTo))
   const header = useMemo(() => (workspaceTitle !== undefined || title) && (
     <ChatHeader
+      back={backTo !== undefined ? { onBack: goBack } : undefined}
       workspace={workspaceTitle !== undefined ? { id: workspaceId, title: workspaceTitle, label: workspaceLabel(workspaceTitle), look, onOpen: openWorkspace } : undefined}
       agent={agentKey !== undefined && agentName !== undefined ? { agentKey, name: agentName, onOpen: hasAgentPage ? openAgent : undefined } : undefined}
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
-      agents={agentNames ? { names: agentNames.split('\n'), onOpen: openStarted } : undefined}
     />
-  ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
+  ), [backTo, goBack, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
 
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
-  const context = useMemo(() => chatContextOf([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
+  const artifacts = chat.status === 'ready' ? chat.artifacts : undefined
+  const own = useMemo(() => chatContextOf(artifacts, [...(items ?? []), ...(pinned ?? [])]), [artifacts, items, pinned])
+  // What it can use: the workspace's, rather than only what the chat has touched.
+  const context = useAvailableToChat(workspaceId, chatId, own)
   const hasContext = contextCount(context) > 0
   const [contextOpen, changeContextOpen] = useContextOpen()
   // Not on a phone, where the conversation has the screen to itself.
@@ -418,8 +546,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     />
   ), [workspaceId, context, minimizeContext, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
 
-  const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
-  const hasPasteLinks = pasteLinks !== undefined
   const stopAgent = useHandler(() => {
     if (connection?.blocked()) return false
     setProblem(undefined)
@@ -456,20 +582,31 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onAdd={addLogs}
       onDiscard={discardLogs}
     />
-    <Composer
-      ref={composer}
-      onSend={sendMessage}
-      commands={composerCommands}
-      commandsLoading={commandsLoading}
-      onPasteLinks={hasPasteLinks ? onPasteLinks : undefined}
-      addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
-      stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
-      problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
-      reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
-    />
+    {/* The agents it started that are under way are before it, where they are seen first, level
+        with its first line, as its own buttons are. */}
+    <div className="flex items-end">
+      <div className="mb-[calc((var(--composer-button)+12px-2.25rem)/2)]">
+        <AgentRunsButton runs={heldRuns} onOpen={opensRuns ? openHeldRun : undefined} onLeaveFocus={focusComposer} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <Composer
+          ref={composer}
+          onSend={sendMessage}
+          commands={composerCommands}
+          commandsLoading={commandsLoading}
+          onCommandsWanted={wantOffers}
+          links={draftLinks}
+          addActions={addActions}
+          format={startsWithFormat}
+          stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
+          problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
+          reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
+        />
+      </div>
+    </div>
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun, opensRuns, focusComposer])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -525,11 +662,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           <AssistantPresence
             working={chat.activity !== undefined}
             status={chat.activity}
+            writing={chat.activity === WRITING}
             details={{
-              open: liveWorkOpen,
-              onToggle: () => setLiveWorkOpen(!liveWorkOpen),
+              open: liveWorkOpen && !handedOver.over,
+              onToggle: () => setLiveWorkToggled({ open: !liveWorkOpen, setting: alwaysShowThinking }),
+              handedOver: handingOver,
               content: (
-                <WorkLog steps={work} openSteps={openWork} onToggleStep={disclosure.toggle} />
+                <WorkLog steps={indicatorWork} toggledSteps={toggledWork} onToggleStep={disclosure.toggle} startOpen continues={movedWork.length > 0} />
               ),
             }}
           />
@@ -543,7 +682,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
               ? <span role="status" className="text-sm text-kumo-subtle">This chat was deleted.</span>
               : sentFirst
                 // Just sent from the page before, drawn as it was there while the history is read.
-                ? <><UserMessage {...sentFirst} /><AssistantPresence working status="Thinking…" /></>
+                ? <><UserMessage {...sentFirst} /><AssistantPresence working status={THINKING} /></>
                 : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
@@ -551,8 +690,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       {outOfCredits && <OutOfCredits onClose={() => setCreditsShown({ open: false, seen: ranOut })} />}
       {/* Only while it is open, as what it lists is read afresh for it. */}
       {adding && (
-        <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
+        <AddConnection workspaceId={workspaceId} open start={adding} onOpenChange={changeAdding} to="this chat" onAdded={onAdded} />
       )}
+      {linkForm && <ConnectResource {...linkForm} />}
     </ChatLayout>
   )
 }

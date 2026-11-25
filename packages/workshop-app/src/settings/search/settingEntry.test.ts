@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { GearIcon } from '@phosphor-icons/react'
+import { Settings01Icon } from '@/components/icons'
 import type { SearchPage } from '@/blocks/SearchDialog'
 import type { ChoiceSetting, TextSetting, ToggleSetting } from '../settingDefinition'
 import { settingEntry } from './settingEntry'
 
-const shared = { section: 'preferences', description: '', icon: GearIcon } as const
+const shared = { section: 'preferences', description: '', icon: Settings01Icon } as const
 
 const toggle = (overrides: Partial<ToggleSetting> = {}): ToggleSetting => ({ ...shared, kind: 'toggle', title: 'Auto-open outputs', checked: true, set: vi.fn<ToggleSetting['set']>(), ...overrides })
 const choice = (overrides: Partial<ChoiceSetting> = {}): ChoiceSetting => ({

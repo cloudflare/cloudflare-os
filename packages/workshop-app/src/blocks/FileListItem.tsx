@@ -1,10 +1,8 @@
 import { useState, type ReactElement, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { EditableTitle } from '@/components/EditableTitle'
-import { LinkButton } from '@/components/LinkButton'
+import { EditableTitle, LIST_ACTION, LinkButton } from '@gadgets/ui'
 import { LibraryMoreMenu, type LibraryMoreActions } from './LibraryMoreMenu'
 import { RowAction } from './RowAction'
-import { LIST_ACTION } from './StarButton'
 import { WaitingBadge } from './WaitingBadge'
 
 export type FileListItemProps = {

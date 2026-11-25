@@ -1,8 +1,7 @@
 import type { ReactNode } from 'react'
-import { ChatCircleIcon, StarIcon } from '@phosphor-icons/react'
+import { MessageCircleIcon, StarIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Avatar } from '@/components/Avatar'
-import { LinkButton } from '@/components/LinkButton'
+import { Avatar, LinkButton } from '@gadgets/ui'
 import { LogoIcon } from '@/components/LogoIcon'
 import { ShimmerText } from '@/components/ShimmerText'
 import { formatCost } from '@/components/usageFormat'
@@ -81,7 +80,7 @@ export const ChatListItem = ({ title, time, shortTime, unread = 0, waiting = fal
       ? <span aria-hidden="true" className="grid size-8 place-items-center rounded-full bg-kumo-base text-kumo-default ring-1 ring-kumo-line"><LogoIcon mono /></span>
       : icon
         ? <span className="grid size-8 place-items-center">{icon}</span>
-        : <span className="grid size-8 place-items-center rounded-full bg-kumo-base ring-1 ring-kumo-line"><ChatCircleIcon aria-hidden="true" className="size-4.5 text-kumo-default" /></span>
+        : <span className="grid size-8 place-items-center rounded-full bg-kumo-base ring-1 ring-kumo-line"><MessageCircleIcon aria-hidden="true" className="size-4.5 text-kumo-default" /></span>
   return (
     <div className="group/row flex items-center rounded-2xl hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5">
       <LinkButton
@@ -97,7 +96,7 @@ export const ChatListItem = ({ title, time, shortTime, unread = 0, waiting = fal
               {mark !== 'unread' && unread > 0 && <span className="sr-only">, {unread} unread</span>}
             </span>
           )
-          : icon ?? <ChatCircleIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-default" />}
+          : icon ?? <MessageCircleIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-default" />}
         <span className="flex min-w-0 flex-1 flex-col leading-snug">
           <span className="truncate font-medium text-kumo-default">{title}</span>
           {twoLines && (

@@ -1,17 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, ConfirmMenu, DropdownMenu, Markdown, useReducedMotion } from '@gadgets/ui'
 import {
-  ArrowLeftIcon, CheckIcon, ClockCounterClockwiseIcon, CopyIcon, DotsThreeIcon, DownloadSimpleIcon, LinkSimpleIcon, ListNumbersIcon,
-  GitDiffIcon, MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, TextAlignLeftIcon, WarningCircleIcon, XIcon,
-} from '@phosphor-icons/react'
+  AlertCircleIcon, ArrowLeft02Icon, Cancel01Icon, Copy01Icon, Download01Icon, GitCompareIcon, HistoryIcon,
+  LeftToRightListNumberIcon, Link04Icon, MoreHorizontalIcon, PanelLeftIcon, PlusSignIcon, Search01Icon,
+  TextAlignLeftIcon, Tick02Icon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
 import type { CodeEditorHandle, CodeEditorStatus, CodeLines, CodeTextChange } from '@/components/CodeEditor'
 import { CODE_LANGUAGE_NAMES } from '@/components/codeLanguages'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Markdown } from '@/components/Markdown'
 import { codeLanguage } from '@/files/codeLanguage'
 import { codePrefs, type CodePrefs } from '@/prefs/codePrefs'
 import { changeLabel, CodeChangeList, CodeFileTree, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'
@@ -173,7 +170,7 @@ const Segmented = <Value extends string>({ value, options, onChange, label }: {
 // What went wrong with edits, under the status line, with what can be done about it.
 const Problem = ({ message, children }: { message: string; children?: ReactNode }) => (
   <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-kumo-line px-4 py-2.5 text-sm text-kumo-default">
-    <WarningCircleIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-danger" />
+    <AlertCircleIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-danger" />
     <span className="min-w-0 flex-1">{message}</span>
     {children && <span className="flex shrink-0 gap-2">{children}</span>}
   </div>
@@ -327,7 +324,7 @@ export const CodeBrowser = ({
   if (files.status === 'failed') {
     return (
       <div className={cn('flex flex-col items-center justify-center gap-3 p-8 text-center', frame === 'card' && 'rounded-3xl bg-kumo-tint', className)}>
-        <WarningCircleIcon aria-hidden="true" className="size-5 text-kumo-subtle" />
+        <AlertCircleIcon aria-hidden="true" className="size-5 text-kumo-subtle" />
         <p className="text-base/6 text-kumo-subtle">Couldn’t read its code: {files.message}</p>
         {onRetry && <Button onClick={onRetry}>Try again</Button>}
       </div>
@@ -345,13 +342,13 @@ export const CodeBrowser = ({
           onClick={() => setFinding(true)}
           className="flex h-(--control-size) min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-xl bg-kumo-base ps-3.5 pe-2 text-left text-(length:--control-text) text-kumo-subtle ring-1 ring-kumo-line outline-none hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring"
         >
-          <MagnifyingGlassIcon aria-hidden="true" className="size-4 shrink-0" />
+          <Search01Icon aria-hidden="true" className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">Go to file</span>
           <span aria-hidden="true" className="flex gap-0.5"><Kbd>{MOD.trim()}</Kbd><Kbd>P</Kbd></span>
         </button>
         {editing && (
           <CodeIconButton
-            icon={PlusIcon}
+            icon={PlusSignIcon}
             aria-label="New file"
             title={editing.blocked ?? 'New file'}
             disabled={!!editing.blocked || saving}
@@ -420,7 +417,7 @@ export const CodeBrowser = ({
             className="shrink-0 overflow-hidden"
           >
             <div className="flex items-center gap-2 px-3 pt-3 pb-1">
-              <Button variant="ghost" icon={ArrowLeftIcon} aria-label="Back to the code as it is" title="Back to the code as it is" onClick={() => history.onCompare(undefined)} />
+              <Button variant="ghost" icon={ArrowLeft02Icon} aria-label="Back to the code as it is" title="Back to the code as it is" onClick={() => history.onCompare(undefined)} />
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
                 <span className="truncate text-base font-medium text-kumo-default">{compared.summary}</span>
                 <span className="truncate text-sm text-kumo-subtle">
@@ -463,7 +460,7 @@ export const CodeBrowser = ({
             <span className="hidden @4xl:inline">
               <Button
                 variant="ghost"
-                icon={SidebarSimpleIcon}
+                icon={PanelLeftIcon}
                 aria-label={prefs.files ? 'Hide the files' : 'Show the files'}
                 title={prefs.files ? 'Hide the files' : 'Show the files'}
                 aria-pressed={prefs.files}
@@ -507,13 +504,13 @@ export const CodeBrowser = ({
             )}
             {history && (
               <DropdownMenu
-                icon={ClockCounterClockwiseIcon}
+                icon={HistoryIcon}
                 aria-label="History"
                 triggerVariant="ghost"
                 triggerClassName="text-kumo-subtle"
                 align="end"
               >
-                <DropdownMenu.Item icon={comparing === undefined ? CheckIcon : undefined} label="As it is" onSelect={() => history.onCompare(undefined)}>
+                <DropdownMenu.Item icon={comparing === undefined ? Tick02Icon : undefined} label="As it is" onSelect={() => history.onCompare(undefined)}>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">As it is</span>
                     {note && <span className="block truncate text-sm text-kumo-subtle">{note}</span>}
@@ -523,7 +520,7 @@ export const CodeBrowser = ({
                 {history.commits.status === 'loading' && <p role="status" className="px-3 py-2 text-sm text-kumo-subtle">Reading its history…</p>}
                 {history.commits.status === 'failed' && <p className="px-3 py-2 text-sm text-kumo-subtle">Couldn’t read its history.</p>}
                 {commits.map((commit) => (
-                  <DropdownMenu.Item key={commit.id} icon={commit.id === comparing ? CheckIcon : undefined} label={commit.summary} onSelect={() => history.onCompare(commit.id)}>
+                  <DropdownMenu.Item key={commit.id} icon={commit.id === comparing ? Tick02Icon : undefined} label={commit.summary} onSelect={() => history.onCompare(commit.id)}>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{commit.summary}</span>
                       <span className="block truncate text-sm text-kumo-subtle">{[commit.author, commit.time].filter(Boolean).join(' · ')}</span>
@@ -535,40 +532,40 @@ export const CodeBrowser = ({
             {file.status === 'text' && (
               <Button
                 variant="ghost"
-                icon={copied === 'copied' ? CheckIcon : copied === 'failed' ? XIcon : CopyIcon}
+                icon={copied === 'copied' ? Tick02Icon : copied === 'failed' ? Cancel01Icon : Copy01Icon}
                 aria-label={copied === 'copied' ? 'Copied' : copied === 'failed' ? 'Couldn’t copy' : `Copy ${name}`}
                 title={copied === 'copied' ? 'Copied' : `Copy ${name}`}
                 onClick={() => copy(file.text)}
                 className="text-kumo-subtle"
               />
             )}
-            <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${name || 'the code'}`} triggerVariant="ghost" triggerClassName="text-kumo-subtle" align="end">
+            <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${name || 'the code'}`} triggerVariant="ghost" triggerClassName="text-kumo-subtle" align="end">
               <DropdownMenu.Item icon={TextAlignLeftIcon} onSelect={() => changePrefs({ wrap: !prefs.wrap })}>
                 <span className="min-w-0 flex-1">Wrap lines</span>
-                {prefs.wrap ? <CheckIcon aria-label="On" weight="bold" className="size-4" /> : <span className="text-sm text-kumo-subtle">⌥Z</span>}
+                {prefs.wrap ? <Tick02Icon aria-label="On" weight="bold" className="size-4" /> : <span className="text-sm text-kumo-subtle">⌥Z</span>}
               </DropdownMenu.Item>
-              <DropdownMenu.Item icon={MagnifyingGlassIcon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openFind()}>
+              <DropdownMenu.Item icon={Search01Icon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openFind()}>
                 <span className="min-w-0 flex-1">Find in file</span>
                 <span className="text-sm text-kumo-subtle">{MOD}F</span>
               </DropdownMenu.Item>
-              <DropdownMenu.Item icon={ListNumbersIcon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openGoToLine()}>
+              <DropdownMenu.Item icon={LeftToRightListNumberIcon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openGoToLine()}>
                 <span className="min-w-0 flex-1">Go to line</span>
                 <span className="text-sm text-kumo-subtle">⌃G</span>
               </DropdownMenu.Item>
               {comparing === undefined && shownFile?.change !== undefined && shownFile.change !== 'removed' && (
-                <DropdownMenu.Item icon={GitDiffIcon} onSelect={() => setWhole(!whole)}>
+                <DropdownMenu.Item icon={GitCompareIcon} onSelect={() => setWhole(!whole)}>
                   <span className="min-w-0 flex-1">Show the change</span>
-                  {!whole && <CheckIcon aria-label="On" weight="bold" className="size-4" />}
+                  {!whole && <Tick02Icon aria-label="On" weight="bold" className="size-4" />}
                 </DropdownMenu.Item>
               )}
               <DropdownMenu.Separator />
-              {shown && <DropdownMenu.Item icon={CopyIcon} onSelect={() => copy(shown)}>Copy path</DropdownMenu.Item>}
+              {shown && <DropdownMenu.Item icon={Copy01Icon} onSelect={() => copy(shown)}>Copy path</DropdownMenu.Item>}
               {shown && linkTo && (
-                <DropdownMenu.Item icon={LinkSimpleIcon} onSelect={() => copy(linkTo(shown, lines))}>
+                <DropdownMenu.Item icon={Link04Icon} onSelect={() => copy(linkTo(shown, lines))}>
                   {lines ? (lines.from === lines.to ? `Copy link to line ${lines.from}` : `Copy link to lines ${lines.from}–${lines.to}`) : 'Copy link to file'}
                 </DropdownMenu.Item>
               )}
-              <DropdownMenu.Item icon={DownloadSimpleIcon} disabled={file.status !== 'text'} onSelect={download}>Download</DropdownMenu.Item>
+              <DropdownMenu.Item icon={Download01Icon} disabled={file.status !== 'text'} onSelect={download}>Download</DropdownMenu.Item>
             </DropdownMenu>
           </header>
 

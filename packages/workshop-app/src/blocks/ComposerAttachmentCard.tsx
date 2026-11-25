@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react'
-import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Tooltip } from '@/components/Tooltip'
+import { Cancel01Icon } from '@/components/icons'
+import { Button, Tooltip } from '@gadgets/ui'
 import { attachmentKind } from '@/files/attachmentKind'
 import { previewFormat } from '@/files/previewFormat'
 import { useImageUrl } from '@/hooks/useImageUrl'
@@ -40,7 +39,7 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
         )}
         <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-[inherit] ring-1 ring-kumo-line ring-inset" />
         <Button
-          icon={<XIcon weight="bold" />}
+          icon={<Cancel01Icon weight="bold" />}
           aria-label={`Remove ${name}`}
           onClick={onRemove}
           className="absolute top-1 right-1 size-6 bg-kumo-canvas transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0 [&>svg]:size-3"

@@ -3,7 +3,7 @@ import { byRecentUse } from './recentCommands'
 
 describe('byRecentUse', () => {
   it('puts those chosen last first, latest first, and keeps the rest in their order', () => {
-    const commands = ['alpha', 'brief', 'compact', 'digest'].map((name) => ({ name }))
-    expect(byRecentUse(commands, ['digest', 'gone', 'brief']).map(({ name }) => name)).toEqual(['digest', 'brief', 'alpha', 'compact'])
+    const commands = ['alpha', 'brief', 'compact', 'digest'].map((key) => ({ key }))
+    expect(byRecentUse(commands, ['digest', 'gone', 'brief']).map(({ key }) => key)).toEqual(['digest', 'brief', 'alpha', 'compact'])
   })
 })

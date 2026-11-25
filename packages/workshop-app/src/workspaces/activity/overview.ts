@@ -1,5 +1,4 @@
-import type { AiChatAuthorInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { isAgentRun } from '@/automations/agents'
+import { isAgentRun, type AiChatAuthorInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { chatTitle } from '../chatList'
 import type { ActionEntry } from './activityEntries'
 

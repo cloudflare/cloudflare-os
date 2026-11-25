@@ -1,7 +1,10 @@
 import { useId, type ReactNode } from 'react'
-import { CaretRightIcon, ChatCircleIcon, CheckCircleIcon, ClockClockwiseIcon, EyeIcon, HandPalmIcon, LightningIcon, XCircleIcon } from '@phosphor-icons/react'
+import {
+  ArrowRight01Icon, CancelCircleIcon, CheckmarkCircle02Icon, FlashIcon, HandIcon, HistoryClockwiseIcon,
+  MessageCircleIcon, ViewIcon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Markdown } from '@/components/Markdown'
+import { Markdown } from '@gadgets/ui'
 import { ActionFields, type ActionField } from './ActionFields'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 
@@ -29,13 +32,13 @@ export type ActivityRowProps = {
   links?: ReactNode
 }
 
-const MARKS: Record<ActivityRowOutcome, { Icon: typeof CheckCircleIcon; colour: string; words: string }> = {
-  waiting: { Icon: HandPalmIcon, colour: 'text-kumo-warning', words: 'text-kumo-warning' },
-  approved: { Icon: CheckCircleIcon, colour: 'text-kumo-success', words: 'text-kumo-subtle' },
-  auto: { Icon: LightningIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
-  denied: { Icon: XCircleIcon, colour: 'text-kumo-danger', words: 'text-kumo-danger' },
-  read: { Icon: EyeIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
-  automation: { Icon: ClockClockwiseIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
+const MARKS: Record<ActivityRowOutcome, { Icon: typeof CheckmarkCircle02Icon; colour: string; words: string }> = {
+  waiting: { Icon: HandIcon, colour: 'text-kumo-warning', words: 'text-kumo-warning' },
+  approved: { Icon: CheckmarkCircle02Icon, colour: 'text-kumo-success', words: 'text-kumo-subtle' },
+  auto: { Icon: FlashIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
+  denied: { Icon: CancelCircleIcon, colour: 'text-kumo-danger', words: 'text-kumo-danger' },
+  read: { Icon: ViewIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
+  automation: { Icon: HistoryClockwiseIcon, colour: 'text-kumo-subtle', words: 'text-kumo-subtle' },
 }
 
 /**
@@ -62,11 +65,11 @@ export const ActivityRow = ({ outcome, title, status, time, resource, chat, open
         <span className="min-w-0 flex-1 truncate text-kumo-default">{title}</span>
         <span className={cn('w-28 shrink-0 truncate text-sm sm:w-44', words)}>{status}</span>
         <span className="flex w-48 shrink-0 items-center gap-1.5 text-sm text-kumo-subtle max-md:hidden">
-          {chat && <ChatCircleIcon aria-hidden="true" className="size-4 shrink-0" />}
+          {chat && <MessageCircleIcon aria-hidden="true" className="size-4 shrink-0" />}
           <span className="truncate">{chat}</span>
         </span>
         <span className="w-24 shrink-0 truncate text-end text-sm text-kumo-subtle">{time}</span>
-        <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
+        <ArrowRight01Icon aria-hidden="true" weight="bold" className={cn('size-3 shrink-0 text-kumo-subtle transition-transform motion-reduce:transition-none', open && 'rotate-90')} />
       </button>
       {open && (
         <div id={`${id}-details`} className="flex flex-col gap-3 px-3 pb-3 md:ps-11">

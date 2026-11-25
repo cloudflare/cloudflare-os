@@ -1,30 +1,57 @@
-import type { ReactNode } from 'react'
-import { cn } from '@cloudflare/kumo/utils'
-import { webUrl } from './webUrl'
+import { useRef, useState, type ReactNode } from 'react'
+import { webUrl } from '@gadgets/ui'
+import { ChipTooltip, type ChipAbout } from './ChipTooltip'
+import './Chip.css'
+
+// What is said of a chip by whoever draws it: all but what is the chip's own to know, its icon
+// and whether its name is cut short.
+type About = Omit<ChipAbout, 'icon' | 'cut'>
 
 export type ChipProps = {
   children: ReactNode
-  /** An icon element, shown before the text. */
+  /** What it is, drawn before its name: a glyph, or a service's logo. */
   icon?: ReactNode
   /** Makes the chip a link that opens in a new tab, when it is a web address. */
   href?: string
+  /**
+   * What there is to say of it beyond its name, in a card over it while it is pointed at, by its
+   * own icon: as it is, or the way to find out, asked as the card is about to show. Where that
+   * is nothing, there is no card.
+   */
+  about?: About | (() => About | undefined)
 }
 
-// Tinted with the surrounding text colour, so it reads on a dark bubble as well as a light one.
-// One piece, as a name is: it moves to the next line whole rather than breaking between its icon
-// and its words, and a name too long for the line is cut short, whole on hover.
-const CHIP = 'mx-0.5 inline-flex max-w-full items-center gap-1 rounded-full bg-current/12 px-2 py-0.5 align-[-0.3em] text-[0.9em]/[1.25] font-medium whitespace-nowrap [&>svg]:size-[1em] [&>svg]:shrink-0'
-
-/** Something named inside running text: a resource, a format, a command. */
-export const Chip = ({ children, icon, href: given }: ChipProps) => {
+/**
+ * Something named among words: a skill, a format, a connection. A small bubble of the app's own
+ * with what it is before its name, the same in a draft being written and in the message it is
+ * sent as. One piece, as a name is: it moves to the next line whole, and a name too long for the
+ * line is cut short, whole on hover. It is 21px, or less on lines too short for that, in the
+ * middle of its line (`Chip.css`).
+ */
+export const Chip = ({ children, icon, href: given, about }: ChipProps) => {
   const href = webUrl(given)
+  const name = typeof children === 'string' ? children : undefined
+  // A name cut short is whole on hover: as the browser says it, or in its card where it has one,
+  // which is then worth showing for that alone. Found out as the chip is gone to.
+  const nameRef = useRef<HTMLSpanElement>(null)
+  const [cut, setCut] = useState(false)
+  const measure = about ? () => setCut(!!nameRef.current && nameRef.current.scrollWidth > nameRef.current.clientWidth) : undefined
+  const title = about ? undefined : name
   const content = (
     <>
       {icon}
-      <span className="min-w-0 truncate">{children}</span>
+      <span ref={nameRef} className="chip-name">{children}</span>
     </>
   )
-  return href
-    ? <a href={href} target="_blank" rel="noreferrer noopener" title={typeof children === 'string' ? children : undefined} className={cn(CHIP, 'underline-offset-2 hover:underline')}>{content}</a>
-    : <span title={typeof children === 'string' ? children : undefined} className={CHIP}>{content}</span>
+  const chip = href
+    ? <a href={href} target="_blank" rel="noreferrer noopener" title={title} onPointerEnter={measure} onFocus={measure} className="chip">{content}</a>
+    : <span title={title} onPointerEnter={measure} className="chip">{content}</span>
+  if (!about) return chip
+  // Its card goes where the chip does.
+  const said = () => {
+    const found = typeof about === 'function' ? about() : about
+    if (found) return { icon, cut, href, ...found }
+    return cut && name !== undefined ? { icon, cut, href, title: name } : undefined
+  }
+  return <ChipTooltip about={said} linked={href !== undefined}>{chip}</ChipTooltip>
 }

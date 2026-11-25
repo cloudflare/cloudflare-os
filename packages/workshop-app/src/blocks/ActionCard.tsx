@@ -1,10 +1,9 @@
 import { useId } from 'react'
 import { Badge } from '@cloudflare/kumo'
-import { ShieldCheckIcon, ShieldWarningIcon, WarningIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Alert02Icon, SecurityCheckIcon, SecurityWarningIcon } from '@/components/icons'
+import { Button, Markdown } from '@gadgets/ui'
 import { Card } from '@/components/Card'
 import { Disclosure } from '@/components/Disclosure'
-import { Markdown } from '@/components/Markdown'
 import { ActionFields, type ActionField } from './ActionFields'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import { usePending, type ActionResult } from './usePending'
@@ -44,7 +43,7 @@ export type ActionCardProps = Request & {
 )
 
 const Note = ({ id, tone, children }: { id: string; tone: 'warning' | 'caution'; children: string }) => {
-  const NoteIcon = tone === 'warning' ? ShieldWarningIcon : WarningIcon
+  const NoteIcon = tone === 'warning' ? SecurityWarningIcon : Alert02Icon
   return (
     <p id={id} role="note" className="flex items-start gap-2 rounded-xl bg-kumo-warning-tint px-3 py-2 text-sm text-kumo-default">
       <NoteIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-kumo-warning" />
@@ -81,7 +80,7 @@ export const ActionCard = (props: ActionCardProps) => {
   const heading = (
     <div className="flex items-start gap-3">
       <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-        <ShieldCheckIcon aria-hidden="true" className="size-5" />
+        <SecurityCheckIcon aria-hidden="true" className="size-5" />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">

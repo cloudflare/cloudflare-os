@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
-import { AppWindowIcon, ChatsCircleIcon, CirclesFourIcon, ClockIcon, CompassIcon, FileTextIcon, FolderIcon, LayoutIcon, LightningIcon, NotePencilIcon, PlusIcon, PuzzlePieceIcon, TrayIcon } from '@phosphor-icons/react'
-import { NoMatches } from '@/blocks/NoMatches'
+import {
+  AppWindowIcon, Clock01Icon, DashboardCircleIcon, DiscoverCircleIcon, FileTextIcon, FlashIcon, Folder02Icon,
+  InboxIcon, Layout01Icon, MessageMultiple02Icon, PencilEdit02Icon, PlusSignIcon, PuzzleIcon,
+} from '@/components/icons'
+import { DropdownMenu, EmptyState, NoMatches } from '@gadgets/ui'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { Sidebar } from '@/blocks/Sidebar'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EmptyState } from '@/components/EmptyState'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -28,38 +29,38 @@ export const EmptyStatePreview = () => {
         <div className="flex flex-wrap gap-4">
           <Surface>
             <EmptyState
-              icon={CirclesFourIcon}
+              icon={DashboardCircleIcon}
               title="Nothing in your library yet"
               description="The apps, documents and other things your chats make are kept here, to open, star and share. Ask for something in a chat, or start from a template."
               actions={[
                 {
                   label: 'Make something',
-                  icon: PlusIcon,
+                  icon: PlusSignIcon,
                   variant: 'primary',
                   menu: (
                     <>
                       <DropdownMenu.Item icon={AppWindowIcon} onSelect={() => say('Make an app')}>App</DropdownMenu.Item>
                       <DropdownMenu.Item icon={FileTextIcon} onSelect={() => say('Make a document')}>Document</DropdownMenu.Item>
                       <DropdownMenu.Separator />
-                      <DropdownMenu.Item icon={LayoutIcon} onSelect={() => say('From a template')}>From a template…</DropdownMenu.Item>
+                      <DropdownMenu.Item icon={Layout01Icon} onSelect={() => say('From a template')}>From a template…</DropdownMenu.Item>
                     </>
                   ),
                 },
-                { label: 'Explore templates', icon: CompassIcon, onClick: () => say('Explore templates') },
+                { label: 'Explore templates', icon: DiscoverCircleIcon, onClick: () => say('Explore templates') },
               ]}
             />
           </Surface>
           <Surface>
             <EmptyState
-              icon={FolderIcon}
+              icon={Folder02Icon}
               title="No workspaces yet"
               description="A workspace keeps chats together with everything they make, for you and whoever you invite. Each chat you start makes one."
-              actions={[{ label: 'New workspace', icon: PlusIcon, variant: 'primary', onClick: () => say('New workspace') }]}
+              actions={[{ label: 'New workspace', icon: PlusSignIcon, variant: 'primary', onClick: () => say('New workspace') }]}
             />
           </Surface>
           <Surface>
             <EmptyState
-              icon={PuzzlePieceIcon}
+              icon={PuzzleIcon}
               title="Nothing to connect yet"
               description="Services like email, calendars and documents show here once this deployment offers them. Connected, your chats and apps can use them on your behalf."
             />
@@ -68,17 +69,17 @@ export const EmptyStatePreview = () => {
             <EmptyState
               size="section"
               tinted
-              icon={ChatsCircleIcon}
+              icon={MessageMultiple02Icon}
               title="No chats yet"
               description="Chats in this workspace show here. Ask for an app, a document or something to run by itself, and it’s made here."
-              actions={[{ label: 'New chat', icon: NotePencilIcon, variant: 'primary', onClick: () => say('New chat') }]}
+              actions={[{ label: 'New chat', icon: PencilEdit02Icon, variant: 'primary', onClick: () => say('New chat') }]}
             />
           </Surface>
           <Surface>
             <EmptyState
               size="section"
-              icon={LightningIcon}
-              badge={ClockIcon}
+              icon={FlashIcon}
+              badge={Clock01Icon}
               title="Nothing runs by itself yet"
               description="Ask in a chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email."
             />
@@ -90,7 +91,7 @@ export const EmptyStatePreview = () => {
             <Sidebar user={{ name: 'Ada Lovelace' }} workspaces={[]} onSelectWorkspace={() => {}} empty={{ onNewWorkspace: () => say('New workspace, from the sidebar') }} onSignOut={() => {}} />
           </div>
           <Surface tint>
-            <PaneNotice onTint icon={TrayIcon} title="Nothing made here yet" description="The apps, documents and files this workspace’s chats make open here, beside the page." />
+            <PaneNotice onTint icon={InboxIcon} title="Nothing made here yet" description="The apps, documents and files this workspace’s chats make open here, beside the page." />
           </Surface>
         </div>
       </div>

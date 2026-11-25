@@ -1,8 +1,7 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { TrashIcon, UploadSimpleIcon } from '@phosphor-icons/react'
-import { Avatar } from '@/components/Avatar'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Delete02Icon, Upload01Icon } from '@/components/icons'
+import { Avatar, DropdownMenu } from '@gadgets/ui'
 
 export type ProfilePictureProps = {
   /** Whose picture it is, for their initials while there is none. */
@@ -34,8 +33,8 @@ export const ProfilePicture = ({ name, src, busy = false, onChoose, onRemove }: 
         keepTrigger
         align="center"
       >
-        <DropdownMenu.Item icon={UploadSimpleIcon} disabled={busy} onSelect={() => input.current?.click()}>Upload</DropdownMenu.Item>
-        <DropdownMenu.Item icon={TrashIcon} disabled={busy || !src} onSelect={onRemove}>Remove</DropdownMenu.Item>
+        <DropdownMenu.Item icon={Upload01Icon} disabled={busy} onSelect={() => input.current?.click()}>Upload</DropdownMenu.Item>
+        <DropdownMenu.Item icon={Delete02Icon} disabled={busy || !src} onSelect={onRemove}>Remove</DropdownMenu.Item>
       </DropdownMenu>
       <input
         ref={input}

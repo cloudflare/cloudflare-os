@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { DeleteChatDialog } from '@/blocks/DeleteChatDialog'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

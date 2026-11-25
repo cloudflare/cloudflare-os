@@ -1,7 +1,6 @@
-import { isMotionOff } from '@/prefs/motion'
+import { isMotionOff, motionCurve } from '@gadgets/ui'
 import { SPACING, boundaryOf, dragPlace, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
 import { planList, type PlanItem, type PlannedItem } from './groupedPlan'
-import { motionCurve } from './springCurve'
 
 /** A group as the motion knows it: its rows' keys, and how to put them in another order, if it can. */
 export type MotionGroup = { key: string; rows: string[]; reorder?: (keys: string[]) => void }

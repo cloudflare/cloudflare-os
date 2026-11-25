@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
+import { composerOffers } from '@/chat/composerOffers'
 import { SetUpAgentDialog } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog } from '@gadgets/ui'
 import { Section } from './Section'
 
 const GITHUB = { name: 'GitHub', logoUrl: 'https://github.githubassets.com/favicons/favicon.svg' }
@@ -97,15 +98,62 @@ export const AddConnectionPreview = () => {
   const [chosen, setChosen] = useState<ConnectionChoice>()
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [said, setSaid] = useState('Open + and choose Add a new connection, or paste a Google Doc’s link.')
+  const [said, setSaid] = useState('Open + and choose a service, or paste or type a Google Doc’s, GitHub’s or Notion’s link.')
+  // The services as the + menu offers them, each opening the dialog at its kinds, or at the form of its one.
+  const [within, setWithin] = useState<string>()
+  const [addActions] = useState(() => ({
+    offers: composerOffers({
+      formats: [],
+      templates: [],
+      stars: [],
+      services: [...new Set(CHOICES.map(({ service }) => service.name))].map((name) => {
+        const kinds = CHOICES.filter(({ service }) => service.name === name)
+        return { key: name, service: kinds[0]!.service, connected: kinds[0]!.connected, kinds }
+      }),
+      onStartWith: () => {},
+      onConnect: ({ service, kinds }) => {
+        setWithin(kinds.length > 1 ? service.name : undefined)
+        setChosen(kinds.length > 1 ? undefined : kinds[0])
+        setChoosing(true)
+      },
+    }),
+  }))
+  // The links found in the draft, each as far as it has come: a Google Doc's connects by itself,
+  // a GitHub one waits for the service to be connected, and a Notion one for an account to be chosen.
+  const [links, setLinks] = useState<{ url: string; step: 'asked' | 'connecting' | 'made' | 'failed' }[]>([])
+  const step = (url: string, next: 'connecting' | 'made' | 'failed') => setLinks((current) => current.map((link) => (link.url === url ? { ...link, step: next } : link)))
+  const make = (url: string) => {
+    step(url, 'connecting')
+    setTimeout(() => {
+      step(url, url.includes('missing') ? 'failed' : 'made')
+      const github = url.includes('github.com')
+      if (!url.includes('missing')) composer.current?.addConnection({ key: `link:${url}`, title: github ? 'cloudflare/gadgets' : 'Q3 plan', kind: github ? 'Repository' : url.includes('notion.so') ? 'Page' : 'Google Doc', service: { name: github ? 'GitHub' : url.includes('notion.so') ? 'Notion' : 'Google', logoUrl: github ? GITHUB.logoUrl : undefined } }, url)
+    }, 900)
+  }
+  const found = (urls: string[]) => {
+    const known = urls.filter((url) => /docs\.google\.com\/document|github\.com|notion\.so/.test(url) && !links.some((link) => link.url === url))
+    setLinks((current) => [...current, ...known.map((url) => ({ url, step: 'asked' as const }))])
+    for (const url of known) if (url.includes('docs.google.com')) make(url)
+  }
+  const lines = links.map(({ url, step: at }): ComposerConnection => {
+    const github = url.includes('github.com')
+    const line = { key: `link:${url}`, title: github ? 'Repository' : url.includes('notion.so') ? 'Page' : 'Google Doc', kind: github ? 'Repository' : url.includes('notion.so') ? 'Page' : 'Google Doc', service: { name: github ? 'GitHub' : url.includes('notion.so') ? 'Notion' : 'Google', logoUrl: github ? GITHUB.logoUrl : undefined } }
+    if (at === 'made') return { ...line, title: github ? 'cloudflare/gadgets' : 'Q3 plan' }
+    if (at === 'connecting') return { ...line, pending: true }
+    if (at === 'failed') return { ...line, problem: 'Couldn’t connect it: Requested entity was not found.', ask: { label: 'Choose…', onAct: () => close(true) } }
+    if (github) return { ...line, note: 'Connect GitHub to add it', ask: { label: 'Connect', onAct: () => make(url) } }
+    return { ...line, note: 'Which account?', ask: { label: 'Choose account', choices: [{ id: '1', label: 'ada@example.com' }, { id: '2', label: 'ada@work.example' }], onChoose: () => make(url) } }
+  })
   // Each opening starts at the choice; closing leaves the page shown as it is, to close.
   const close = (next: boolean) => {
     setChoosing(next)
-    if (next) setChosen(undefined)
+    if (!next) return
+    setChosen(undefined)
+    setWithin(undefined)
   }
 
   return (
-    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a new connection: what kind, found by typing, your services first; then which, in the service’s form, or Back to the list, the one dialog going from page to page, its surface taking each one’s size; then it sits above the draft, to go with the message, and is refused beside a skill; a pasted Google Doc link connects by itself, connecting, then named in the words, or says why not, with “missing” in it)">
+    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s services, found by typing, yours first, each opening at which of its kinds, or at the form of its one, with Back to the list, which the button opens at with every service’s, the one dialog going from page to page, its surface taking each one’s size; then it is a pill at the start of the draft, to go with the message, and is refused beside a skill; a link pasted, or typed and ended with a space, is a line over the draft while it waits on something: a Google Doc’s connects by itself, connecting, then a pill at the start of the draft, the link gone from the words, or says why not, with “missing” in it, offering the form; GitHub’s waits for Connect; Notion’s for which account; taking a line off leaves the link as it was written)">
       <Button onClick={() => { setLoading(false); close(true) }}>Add a connection</Button>
       <Button onClick={() => { setLoading(true); close(true) }}>While services are read</Button>
       <div className="w-full">
@@ -115,29 +163,15 @@ export const AddConnectionPreview = () => {
             setSaid(`Sent “${text}”${connections?.length ? ` with ${connections.map(({ title }) => title).join(' and ')}` : ''}${command ? ` using ${command.title}` : ''}.`)
             return true
           }}
-          addActions={{ onAddConnection: () => close(true) }}
-          onPasteLinks={(urls) => {
-            for (const url of urls.filter((each) => each.includes('docs.google.com/document'))) {
-              const key = `link:${url}`
-              const service = { name: 'Google' }
-              composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, pending: true })
-              setTimeout(() => {
-                if (url.includes('missing')) {
-                  composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, problem: 'Couldn’t connect it: Requested entity was not found.' })
-                  return
-                }
-                composer.current?.addConnection({ key, title: 'Q3 plan', kind: 'Google Doc', service })
-                composer.current?.replaceInDraft(url, 'Q3 plan')
-              }, 900)
-            }
-          }}
+          addActions={addActions}
+          links={{ lines, onFound: found, onRemove: (key) => setLinks((current) => current.filter((link) => `link:${link.url}` !== key)), onSent: () => setLinks([]) }}
           commands={[{ key: 'brief', name: 'meeting-brief', title: 'Meeting Brief', description: 'Before a meeting, gather who is coming.', kind: 'skill' }]}
         />
       </div>
       <p role="status" className="w-full text-sm text-kumo-subtle">{said}</p>
       <Dialog open={choosing} onOpenChange={close} wide={chosen !== undefined} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
         {!chosen ? (
-          <AddConnectionDialog open={choosing} onOpenChange={close} to="this chat" choices={loading ? undefined : CHOICES} onChoose={setChosen} />
+          <AddConnectionDialog open={choosing} onOpenChange={close} to="this chat" service={within} choices={loading ? undefined : CHOICES.filter(({ service }) => within === undefined || service.name === within)} onChoose={setChosen} />
         ) : (
           <SetUpConnectionDialog
             open={choosing}

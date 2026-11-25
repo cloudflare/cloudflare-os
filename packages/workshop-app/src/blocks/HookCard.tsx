@@ -1,7 +1,6 @@
-import { LightningIcon } from '@phosphor-icons/react'
+import { FlashIcon } from '@/components/icons'
 import { Card } from '@/components/Card'
-import { Markdown } from '@/components/Markdown'
-import { Switch } from '@/components/Switch'
+import { Markdown, Switch } from '@gadgets/ui'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import { usePending, type ActionResult } from './usePending'
 
@@ -20,7 +19,7 @@ export const HookCard = ({ title, description, resource, enabled, onEnabledChang
   return (
     <Card className="flex-row items-start">
       <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-        <LightningIcon aria-hidden="true" className="size-5" />
+        <FlashIcon aria-hidden="true" className="size-5" />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="font-medium text-kumo-default">Hook: {title}</span>

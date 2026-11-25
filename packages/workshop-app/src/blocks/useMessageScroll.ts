@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from 'react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { useReducedMotion } from '@gadgets/ui'
 import { useStickToBottom } from 'use-stick-to-bottom'
 
 // Where a row the reader can see is in the conversation: how far down the content its top is. Not
@@ -67,6 +67,32 @@ export const useMessageScroll = () => {
     }
     capture()
   }, [contentRef, state, capture])
+
+  /**
+   * Puts the end of the conversation at the bottom of the view now, if it is being followed. For what changes
+   * the conversation's height a little every frame, such as the thinking indicator's rows coming in and
+   * its steps opening, where the library's eased catching-up would run a little behind, and the end of
+   * the conversation would sway. Called from a resize observer, it is in the same frame as the change.
+   */
+  const followNow = useCallback(() => {
+    if (state.isAtBottom) state.scrollTop = state.targetScrollTop
+  }, [state])
+
+  /** `MessageScroll.keepPlace`: what the reader sees stays where it is as something above it changes height. */
+  const keepPlace = useCallback((change: number, at: Element) => {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    // At the end of the conversation, it is kept there, in step.
+    if (state.isAtBottom) {
+      state.scrollTop = state.targetScrollTop
+      return
+    }
+    // What is below `at` moved by `change`: for a reader looking at it, or past it, the view goes with it.
+    if (at.getBoundingClientRect().top < scroll.getBoundingClientRect().bottom) {
+      state.scrollTop += change
+      capture()
+    }
+  }, [scrollRef, state, capture])
 
   const jumpToLatest = useCallback(() => {
     void scrollToBottom({ animation })
@@ -237,5 +263,5 @@ export const useMessageScroll = () => {
   // Preserve React-driven replacements before paint; observers cover subsequent layout changes.
   useLayoutEffect(reconcile)
 
-  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile }
+  return { scrollRef, contentRef, atBottom: isAtBottom, scrollToBottom: jumpToLatest, scrollToRow, reconcile, followNow, keepPlace }
 }

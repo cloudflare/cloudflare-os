@@ -6,7 +6,6 @@ import { ConnectResource } from '@/connections/SetUpConnection'
 import { useConnections } from '@/connections/useConnections'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { initialAnswers, modelsFor, setupNeedsOf, shortResource, type ModelsByKind, type SetupAnswers, type SetupNeed } from './templateSetup'
 import type { Template } from './templates'
 
@@ -52,7 +51,6 @@ const useSetupModels = (open: boolean, decision: boolean) => {
 export const UseTemplate = ({ template, open, onOpenChange, onMade }: UseTemplateProps) => {
   const { api, user } = useApi()
   const connection = useConnectionNotice()
-  const refreshWorkspaces = useRefreshWorkspaces()
   const { state: services } = useConnections()
   const preferred = useDefaultModel()
   const { metadata } = template
@@ -115,7 +113,6 @@ export const UseTemplate = ({ template, open, onOpenChange, onMade }: UseTemplat
     const overseer = api.newWorkspaceFromBlueprint(template.id, answers)
     try {
       const [, made] = await Promise.all([overseer.setTitle(metadata.title), overseer.getMetadata()])
-      refreshWorkspaces()
       if (made.defaultGadgetId === undefined) throw new Error('It was made without anything in it.')
       onMade({ workspaceId: made.id, gadgetId: made.defaultGadgetId, app: !metadata.output })
       return true

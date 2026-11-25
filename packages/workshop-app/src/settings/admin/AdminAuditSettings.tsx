@@ -1,11 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ArrowsClockwiseIcon } from '@phosphor-icons/react'
+import { RefreshCwIcon } from '@/components/icons'
 import { ADMIN_WORKSPACE_ACCESS_LEVELS, MAX_ADMIN_AUDIT_RETENTION_DAYS, type AdminAuditStats, type AdminWorkspaceAccess } from '@gadgets/workshop-shared/api'
-import { SettingField, type SaveOutcome } from '@/blocks/SettingField'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { Button } from '@/components/Button'
-import { Select } from '@/components/Select'
+import { Button, type SaveOutcome, Select, SettingField, SettingRow, SettingsGroup } from '@gadgets/ui'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { messageOf, useAttempt } from '../useAttempt'
 import type { AdminCapability } from './AdminContext'
@@ -102,7 +98,7 @@ const AuditParts = ({ admin, settings, onSettingsChanged }: AuditPartsProps) => 
       <SettingsGroup
         title="Admin activity"
         description={`Every change an admin makes to the deployment’s settings, and every admin call into a workspace or a user’s account, kept for ${NUMBER.format(retention.effective)} days.`}
-        action={<Button icon={ArrowsClockwiseIcon} disabled={refreshing} onClick={reload}>Refresh</Button>}
+        action={<Button icon={RefreshCwIcon} disabled={refreshing} onClick={reload}>Refresh</Button>}
         plain
       >
         {stats === undefined && statsFailed === undefined && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading what admins did this week…</p>}

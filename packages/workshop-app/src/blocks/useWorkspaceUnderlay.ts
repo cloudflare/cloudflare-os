@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from 'react'
-import { isMotionOff, subscribeMotionLevel } from '@/prefs/motion'
+import { isMotionOff, subscribeMotionLevel } from '@gadgets/ui'
 import { slidBy } from './useRowSlide'
 
 type Bounds = { top: number; height: number; left: number; width: number }

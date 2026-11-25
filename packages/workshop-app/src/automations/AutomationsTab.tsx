@@ -2,17 +2,13 @@ import { useMemo, useState } from 'react'
 import { asideItemFor, type AsideItem } from '@/aside/asideItems'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { AutomationRow } from '@/blocks/AutomationRow'
-import { ListGroup } from '@/blocks/ListGroup'
-import { LightningIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { EmptyState, type EmptyStateAction } from '@/components/EmptyState'
-import { useNow } from '@/hooks/useNow'
+import { FlashIcon } from '@/components/icons'
+import { Button, EmptyState, type EmptyStateAction, ListGroup } from '@gadgets/ui'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { ActionEntry } from '@/workspaces/activity/activityEntries'
 import { approvalsWords, asksOfAutomations } from './automationAsks'
 import type { Automation } from './automations'
-import { cadenceWords, scheduleState } from './cadence'
 import { OutsideAsksRow } from './OutsideAsksRow'
 import { useAutomations } from './useAutomations'
 import { useGadgetConnections } from './useGadgetConnections'
@@ -38,19 +34,18 @@ export type AutomationsTabProps = {
 }
 
 const GROUPS = [
-  { kind: 'schedule', label: 'Scheduled' },
-  { kind: 'event', label: 'When something happens' },
+  { key: 'on', label: 'On', has: (automation: Automation) => automation.hook.enabled },
+  { key: 'paused', label: 'Paused', has: (automation: Automation) => !automation.hook.enabled },
 ] as const
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
  * What runs by itself in a workspace, as a tab of a page: what waits on someone that it asked
- * outside any chat, where `waiting` is given, then the scheduled tasks, then what an event sets
- * off, each saying when it runs and when next or why it stopped, what it does and the gadget it
- * runs, with its switch and its deletion for whoever builds there. The agents those gadgets start
- * have a tab of their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5
- * minutes" stays true.
+ * outside any chat, where `waiting` is given, then what is on, then what is paused, newest first,
+ * each saying what it does, what it watches and the gadget it runs, with its switch and its
+ * deletion for whoever builds there. The agents those gadgets start have a tab of their own
+ * (`AgentsTab`).
  */
 export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty, waiting }: AutomationsTabProps) => {
   const { state, setEnabled, remove } = useAutomations(workspaceId)
@@ -61,7 +56,6 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
   const connection = useConnectionNotice()
   // Why the last change to each, by its key, was refused.
   const [problems, setProblems] = useState<Record<string, string>>({})
-  const now = useNow()
 
   const shown = useMemo(
     () => (state.status === 'ready' ? (filter ? state.automations.filter(filter) : state.automations) : []),
@@ -104,19 +98,15 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
   }
 
   const row = (automation: Automation) => {
-    const { hook, schedule } = automation
+    const { hook } = automation
     const { item, title } = gadgetOf(hook.gadgetId)
     const its = asked.byAutomation.get(automation.key)
     return (
       <AutomationRow
         key={automation.key}
-        kind={automation.kind}
         title={hook.description.title}
-        when={schedule && cadenceWords(schedule.cadence)}
-        {...(schedule && scheduleState(schedule, now))}
         description={hook.description.description || undefined}
-        // A schedule's resource is the scheduler itself, which says nothing.
-        resource={automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
+        resource={hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
         gadget={{ title, href: itemHref?.(item), onOpen: () => onOpenItem(item) }}
         enabled={hook.enabled}
         onEnabledChange={canChange ? (enabled) => change(automation, enabled) : undefined}
@@ -134,7 +124,7 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
         <EmptyState
           size="section"
           tinted
-          icon={LightningIcon}
+          icon={FlashIcon}
           title="Nothing runs by itself yet"
           description={empty.description}
           actions={empty.action && [empty.action]}
@@ -149,11 +139,11 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
           </ListGroup>
         </section>
       )}
-      {GROUPS.map(({ kind, label }) => {
-        const rows = shown.filter((automation) => automation.kind === kind && !asked.byAutomation.has(automation.key))
+      {GROUPS.map(({ key, label, has }) => {
+        const rows = shown.filter((automation) => has(automation) && !asked.byAutomation.has(automation.key))
         if (rows.length === 0) return null
         return (
-          <section key={kind} className="flex flex-col gap-2">
+          <section key={key} className="flex flex-col gap-2">
             <h2 className="px-4 text-sm font-medium text-kumo-subtle">{label}</h2>
             <ListGroup label={label}>{rows.map(row)}</ListGroup>
           </section>

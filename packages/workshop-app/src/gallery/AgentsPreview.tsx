@@ -1,17 +1,16 @@
 import { useState } from 'react'
 import { AgentRow } from '@/blocks/AgentRow'
+import { AgentRunPill } from '@/blocks/AgentRunPill'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
+import { AgentRunsButton, type HeldRun } from '@/blocks/AgentRunsButton'
 import { ChatHeader } from '@/blocks/ChatHeader'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Banner, Button, ListGroup, Tabs } from '@gadgets/ui'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { WorkspaceRailItem } from '@/blocks/WorkspaceRailItem'
 import { agentsOf, STATUS_WORDS, type Agent, type AgentRun, type AgentSetup } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AgentView } from '@/automations/AgentPane'
 import type { WorkspaceAgentsSnapshot } from '@/automations/WorkspaceAgents'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Tabs } from '@/components/Tabs'
 import { useReport } from './previewState'
 import { Section } from './Section'
 import { EXAMPLE_AGENT_CHATS, EXAMPLE_AGENT_SETUPS, EXAMPLE_NOW, EXAMPLE_SIGNALS } from '@/automations/exampleAgents'
@@ -21,19 +20,60 @@ const STATES = ['ready', 'loading', 'failed', 'empty'] as const
 const stateOf = (which: (typeof STATES)[number], setups: readonly AgentSetup[] = EXAMPLE_AGENT_SETUPS): WorkspaceAgentsSnapshot =>
   which === 'loading' ? { status: 'loading' }
     : which === 'failed' ? { status: 'failed', message: 'The workspace could not be reached.' }
-      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true, chatsWaiting: new Set() }
-        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true, chatsWaiting: new Set() }
+      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true, allRuns: true, actionsWaiting: new Set() }
+        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true, allRuns: true, actionsWaiting: new Set() }
 
 // An agent run on a schedule, many times over: the same digest every few hours, now and then
-// failing, waiting on the user or leaving changes.
+// failing, waiting on the user or leaving changes; more of its runs are still to be read.
 const BUSY: Agent = (() => {
   const runs = Array.from({ length: 273 }, (_, index): AgentRun => {
     const lastActive = new Date(EXAMPLE_NOW.getTime() - index * 3 * 60 * 60 * 1000)
     const status = index === 2 || index === 40 ? 'waiting' : index % 37 === 5 ? 'failed' : index % 23 === 11 ? 'changes' : 'done'
     return { chatId: 10_000 - index, title: index % 9 === 4 ? 'Weekly digest' : 'Digest of new tickets', started: lastActive, lastActive, status }
   })
-  return { key: 'busy', name: 'Ticket digest', model: 'claude-sonnet-5-5', gadget: { id: 99, title: 'Triage', bindingName: 'DIGEST' }, runs, waiting: 2, running: 0, failed: false }
+  return { key: 'busy', spawnerId: 99, name: 'Ticket digest', model: 'claude-sonnet-5-5', gadgets: [{ id: 99, title: 'Triage', bindingName: 'DIGEST' }], runs, waiting: 2, running: 0, failed: false }
 })()
+
+// The runs a chat's agent started, for the button beside its composer.
+const LAUNCH = [
+  { key: '101', agent: 'Jira triage', title: 'Processing tasks from Jira' },
+  { key: '102', agent: 'Code reviewer', title: 'Reviewing gadget code' },
+  { key: '103', agent: 'Design QA', title: 'Testing user interface designs' },
+  { key: '104', agent: 'General', title: 'Updating project documentation' },
+  { key: '105', agent: 'Researcher', title: 'Conducting user feedback sessions' },
+]
+const held = (statuses: ReadonlyArray<HeldRun['status']>): HeldRun[] =>
+  statuses.map((status, index) => ({ ...LAUNCH[index]!, status, statusWords: STATUS_WORDS[status] }))
+const RUNS_BUTTON_STATES = [
+  { name: 'One at work', runs: held(['running']) },
+  { name: 'Three at work', runs: held(['running', 'running', 'running']) },
+  { name: 'Five at work', runs: held(['running', 'running', 'running', 'running', 'running']) },
+  { name: 'One waiting on you', runs: held(['waiting', 'running', 'running']) },
+  { name: 'Only waiting, held still', runs: held(['waiting', 'waiting']) },
+]
+
+// The button over a chat's agents as they start and end, a step at a time.
+const LiveRunsButton = ({ say }: { say: (words: string) => void }) => {
+  const [runs, setRuns] = useState<HeldRun[]>(() => held(['running', 'running', 'running']))
+  const next = LAUNCH.find(({ key }) => !runs.some((run) => run.key === key))
+  return (
+    <div className="flex items-end gap-3">
+      <div className="flex items-end">
+        <AgentRunsButton runs={runs} onOpen={(key) => say(`opened run ${key}`)} />
+        <div className="flex h-11 w-80 items-center rounded-full bg-kumo-elevated px-4 text-kumo-subtle ring-1 ring-kumo-line">Ask anything…</div>
+      </div>
+      <div className="ms-4 flex flex-wrap gap-2">
+        <Button disabled={!next} onClick={() => next && setRuns([...runs, { ...next, status: 'running', statusWords: STATUS_WORDS.running }])}>Start one</Button>
+        <Button disabled={runs.length === 0} onClick={() => setRuns(runs.slice(1))}>End the first</Button>
+        <Button disabled={runs.length === 0} onClick={() => setRuns(runs.slice(0, -1))}>End the last</Button>
+        <Button disabled={!runs.some(({ status }) => status === 'running')} onClick={() => {
+          const index = runs.findIndex(({ status }) => status === 'running')
+          setRuns(runs.map((run, at) => (at === index ? { ...run, status: 'waiting', statusWords: STATUS_WORDS.waiting } : run)))
+        }}>One waits on you</Button>
+      </div>
+    </div>
+  )
+}
 
 /** A workspace's agents, their runs and what of them waits on the user, in each of their states. */
 export const AgentsPreview = () => {
@@ -90,7 +130,7 @@ export const AgentsPreview = () => {
           </div>
         </div>
       </Section>
-      <Section title="AgentView (an agent’s page: what wants the user, with the way to that run, the gadget that starts it, its model, when it runs and how often it has, then its runs by when; choose an agent)">
+      <Section title="AgentView (an agent’s page: what wants the user, with the way to that run, the gadgets that start it, its model and how often it has run, then its runs by when, with the way to read more; choose an agent)">
         <div className="flex w-full flex-col gap-4">
           <div className="flex flex-wrap gap-2">
             {agents.map(({ key, name }) => <Button key={key} variant={shown === key ? 'primary' : 'secondary'} onClick={() => setShown(key)}>{name}</Button>)}
@@ -99,8 +139,7 @@ export const AgentsPreview = () => {
           </div>
           <div className="w-full rounded-3xl bg-kumo-base">
             <AgentView
-              state={agent ? { status: 'ready', agent } : { status: 'gone' }}
-              when={agent?.gadget?.title === 'Inbox' ? ['When a new email arrives'] : agent?.gadget?.title === 'Changelog' ? ['Every Friday at 4:30 PM'] : []}
+              state={agent === BUSY ? { status: 'ready', agent, all: false, more: { reading: false, onMore: () => say('read more runs') } } : agent ? { status: 'ready', agent, all: true } : { status: 'gone' }}
               now={EXAMPLE_NOW.getTime()}
               onOpenRun={({ title }) => say(`opened the run “${title}”`)}
               runHref={() => '#'}
@@ -116,6 +155,40 @@ export const AgentsPreview = () => {
           title="Reply to “Invoice 4471 overdue”"
           onOpenSettings={() => say('opened the run’s settings')}
         />
+      </Section>
+      <Section title="ChatHeader for a run another chat’s agent started (back to that chat in place of the workspace’s crumb, then the agent’s and the title)">
+        <ChatHeader
+          back={{ onBack: () => say('went back to the chat that started it') }}
+          workspace={{ id: 'launch', title: 'Launch prep', label: 'LP', onOpen: () => say('opened Launch prep') }}
+          agent={{ agentKey: '40', name: 'General', onOpen: () => say('opened General') }}
+          title="Processing tasks from Jira"
+          onOpenSettings={() => say('opened the run’s settings')}
+        />
+      </Section>
+      <Section title="AgentRunPill (one agent’s run in a chat: the agent’s cloud, its name and what the run was started to do, its title trailing off for having started, a spinner at its end while at work, and its mark in the cloud’s place once it waits on you or ended; it opens the run)">
+        <div className="flex w-full flex-col items-start gap-1.5">
+          <AgentRunPill agent="Jira triage" title="Processing tasks from Jira" status="started" statusWords="Started" onOpen={() => say('opened the Jira run')} />
+          <AgentRunPill agent="Researcher" title="Conducting user feedback sessions" status="running" statusWords="Running" onOpen={() => say('opened the feedback run')} />
+          <AgentRunPill agent="Jira triage" title="Processing tasks from Jira" status="waiting" statusWords="Waiting on you" onOpen={() => say('opened the waiting run')} />
+          <AgentRunPill agent="Code reviewer" title="Reviewing gadget code" status="done" statusWords="Done" onOpen={() => say('opened the review')} />
+          <AgentRunPill agent="General" title="Updating project documentation" status="changes" statusWords="Changes to keep" onOpen={() => say('opened the docs run')} />
+          <AgentRunPill agent="Design QA" title="Testing user interface designs" status="failed" statusWords="Failed" onOpen={() => say('opened the failed run')} />
+          <AgentRunPill agent="Code reviewer" title="Where nothing can open it, not pressed" status="done" statusWords="Done" />
+          <AgentRunPill agent="An agent whose name is long enough to be cut off too" title="A run with a title long enough to be cut off where the pill reaches the end of the column it is in, however wide that is" status="done" statusWords="Done" onOpen={() => say('opened the long one')} />
+        </div>
+      </Section>
+      <Section title="AgentRunsButton (before the composer, on its left: the agents a chat started that are under way, going round in depth, a dot while one waits on you; a run that ends leaves the ring, and the button goes after the last; it opens to a pill for each)">
+        <div className="flex w-full flex-col gap-8 pt-72">
+          <div className="flex flex-wrap items-end gap-6">
+            {RUNS_BUTTON_STATES.map(({ name, runs }) => (
+              <div key={name} className="flex flex-col items-center gap-2">
+                <AgentRunsButton runs={runs} onOpen={(key) => say(`opened run ${key}`)} />
+                <span className="text-sm text-kumo-subtle">{name}</span>
+              </div>
+            ))}
+          </div>
+          <LiveRunsButton say={say} />
+        </div>
       </Section>
       <Section title="What waits on the user, over a workspace’s tabs (Banner’s warning, and its danger) and counted on its Agents tab">
         <div className="flex w-full max-w-3xl flex-col gap-4">

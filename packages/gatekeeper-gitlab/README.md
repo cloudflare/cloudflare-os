@@ -92,16 +92,15 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   first, so an erased log is never served, and a cached log is served only while the connected
   account still holds Developer on the project; otherwise the log is read from GitLab, which
   decides.
-- **Sharing.** A collaborator needs the **Developer** role on the project, not Reporter, to
-  observe a job log or a test report the workspace read. A job run with `CI_DEBUG_TRACE` writes
-  every CI/CD variable, masked or not, into its log, and GitLab shows such logs only to Developers
-  and above ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed
-  test's recorded output comes from the job that ran it, so test reports count too. A test report
-  needs **Maintainer** instead unless the connected account was a project member below Maintainer
-  and not an instance administrator when it was read: a job can restrict its reports to
-  Maintainers ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab
-  includes those for a Maintainer and for an administrator, whatever its membership. See
-  [Sharing with collaborators](#sharing-with-collaborators).
+- **Sharing.** A collaborator who is a project member (Reporter or above) can observe a job log or
+  a test report the workspace read unless GitLab would withhold that job's data from them: a job
+  run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab
+  shows only to Developers and above
+  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)), and a job can restrict
+  its artifacts, test reports included, to Developers or Maintainers
+  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)). Neither setting is
+  visible to the connected account, so each read names its jobs and the collaborator's own account
+  asks GitLab. See [Sharing with collaborators](#sharing-with-collaborators).
 
 Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
 `blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
@@ -138,17 +137,24 @@ can still hold confidential issues and internal notes; job logs and test reports
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, which the Workshop checks collaborators against (see
   [docs/observers.md](../../docs/observers.md) §10). A job log reports
-  `project/<projectId>/role/developer`. A test report reports `project/<projectId>/role/developer`
-  when it was read through a member below Maintainer who is not an administrator, and
-  `project/<projectId>/role/maintainer` otherwise: chosen as the report is fetched, beside the
-  connected account's role and fenced to one connection, and kept for every page of it, however
-  the account's role changes later.
+  `project/<projectId>/jobTrace/<jobId>` instead, and a test report
+  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports it holds (the project
+  alone if none), since checking a job ID checks the membership too: the summary names them
+  (`build_ids`), and the failed-tests read, whose report does not, lists the pipeline's jobs with
+  a `junit` report after reading it, retried attempts and same-project child pipelines included,
+  refusing the read if a listing is cut short. The
+  `project/<projectId>/role/developer` and `.../role/maintainer` IDs earlier releases reported
+  read as `project/<projectId>` alone.
 - **Checks.** A collaborator's account is asked `GET /projects/<id>/members/all?user_ids[]=` for
-  its own GitLab user, with its own token: a membership at the role the ID names (Reporter for a
-  project alone) allows; none, a lower one, an invitation not yet accepted, an expired one, or a
-  project GitLab hides from them denies; anything else fails the check rather than deny. Their
-  account reuses a grant for up to 15 minutes and a denial for up to 15 seconds, so a removed
-  membership can still admit them for 15 minutes; it asks afresh after a reconnect, which may sign
+  its own GitLab user, with its own token: a membership at Reporter or above allows; none, a lower
+  one, an invitation not yet accepted, an expired one, or a project GitLab hides from them denies;
+  anything else fails the check rather than deny. For a job's log, a member's account then reads
+  the job and its `/trace` (a 403 denies); for its artifacts, GraphQL's
+  `job.userPermissions.readJobArtifacts`. A job that is erased or gone allows, since it holds
+  nothing left to withhold. Their account reuses a grant for up to 15 minutes and a denial for up
+  to 15 seconds, so a removed membership can still admit them for 15 minutes; a grant for a job
+  still running is reused only 15 seconds, since its log may yet become a debug trace and its
+  artifacts restricted. It asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
   grant dead: the check fails. Bindings created since subresource reporting (marked
   `reportsSubresources: true` in their immutable props) have no reads that predate it, so they
@@ -158,7 +164,7 @@ can still hold confidential issues and internal notes; job logs and test reports
   their original path names now (read at the project's root first, following a moved project's
   redirect from that path, as GitHub's name check does), since earlier path-addressed reads may
   have disclosed a project that later took it. For those older bindings, no stored id means the path is all they are checked
-  by; recorded CI data still needs its role the same way. Caches filled before conversion are
+  by; recorded CI data needs nothing beyond that. Caches filled before conversion are
   discarded on upgrade. Their legacy history is not exported, so these checks remain.
 
 ## Setting up GitLab OAuth credentials
@@ -339,25 +345,10 @@ even on an `internal` or `public` one: a project can hold confidential issues an
 that only members at those roles see, and the workspace may have read them. The remedy is for a
 project maintainer to add the collaborator as a Reporter (inherited group membership counts).
 
-### "This workspace has read CI job logs or test reports from this GitLab project …"
+### "… cannot be allowed to observe" after the workspace read a job log or a test report
 
-The collaborator is a member below **Developer**, and a release that recorded CI reads itself
-read a job log or a test report through this connection, which raises the bar from Reporter to
-Developer (see [CI status](#ci-status)). A project maintainer can grant the collaborator
-Developer; otherwise share a workspace that has not read CI job logs or test reports. Reads made
-since are checked by the Workshop, which refuses the read, or the collaborator, in its own words.
+The collaborator is a project member, but GitLab withholds that job's log (it ran with a debug
+trace, which needs **Developer**) or its artifacts (`artifacts:access` restricts them to
+Developers or Maintainers) from them. A project maintainer can grant the role; otherwise share a
+workspace that has not read that job's data.
 
-### "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access …"
-
-As above, for a test report such a release read through a connected account that was a
-Maintainer, an instance administrator, or not a project member, so it may include ones a job
-keeps from anyone below Maintainer, and the collaborator is below Maintainer (see
-[CI status](#ci-status)). A project owner can grant the collaborator Maintainer; otherwise share a
-workspace that has not read them.
-
-### "This binding already answers for 50 collaborators …"
-
-A binding created before subresource reporting can be shared with at most 50 collaborators at
-once: it records each one it admits, as the releases that checked every one of them on each
-job-log or test-report read did. Remove a collaborator from the workspace before adding another,
-or bind the project again: a binding created since has no cap.

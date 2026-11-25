@@ -1,7 +1,7 @@
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { FOCUS_RING } from '@/components/focusRing'
 import { UnreadDot } from './UnreadDot'
 

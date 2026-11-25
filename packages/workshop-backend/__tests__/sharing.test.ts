@@ -3,7 +3,7 @@ import * as fc from "fast-check";
 import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import {
-  SharingManager, SharingStorage, accessIncludesGadget,
+  SharingManager, SharingStorage, accessIncludesGadget, accessIncludesLiveGadget,
 } from "../src/sharing.js";
 import {
   makeOverseerStorage, type CollaboratorRecord, type ShareKeyRecord,
@@ -129,6 +129,9 @@ function collab(id: string) {
   return { profileId: id, isOwner: false };
 }
 
+// For newShareLinkKey(): a deployment that allows view grants.
+async function allowViews(): Promise<void> {}
+
 describe("authorization", () => {
   it("isCollaborator reflects the collaborators table", () => {
     let { storage, mgr } = makeManager();
@@ -176,11 +179,11 @@ describe("redeemShareKey", () => {
     let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
     let fetched = 0;
-    await mgr.redeemShareKey({
+    expect(await mgr.redeemShareKey({
       rawKey: key,
       profileId: "newbie",
       fetchProfile: async () => { fetched++; return profile("newbie"); },
-    });
+    })).toBe(true);
 
     expect(fetched).toBe(1);
     expect(edgesOf(storage, "newbie"))
@@ -212,10 +215,10 @@ describe("redeemShareKey", () => {
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
 
     let fetched = 0;
-    await mgr.redeemShareKey({
+    expect(await mgr.redeemShareKey({
       rawKey: key, profileId: "a",
       fetchProfile: async () => { fetched++; return profile("a"); },
-    });
+    })).toBe(true);
 
     expect(fetched).toBe(0);
     expect(edgesOf(storage, "a")).toHaveLength(2);
@@ -227,25 +230,65 @@ describe("redeemShareKey", () => {
     let { storage, mgr } = makeManager();
     let { key } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
 
-    await mgr.redeemShareKey({
+    let redeem = () => mgr.redeemShareKey({
       rawKey: key, profileId: "a",
       fetchProfile: async () => profile("a"),
     });
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
+    expect(await redeem()).toBe(true);
+    expect(await redeem()).toBe(true);
 
     expect(edgesOf(storage, "a")).toHaveLength(1);
   });
 
-  it("is a no-op for an unknown key", async () => {
+  it("says the link works for a collaborator who already had what it gives", async () => {
     let { storage, mgr } = makeManager();
-    // A syntactically-valid raw key (hex) that was never created.
-    await mgr.redeemShareKey({
-      rawKey: "00112233445566778899aabbccddeeff", profileId: "a",
+    let { key } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 } });
+    seedCollaborator(storage, "a", [userEdge(OWNER)]);
+
+    expect(await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
       fetchProfile: async () => profile("a"),
-    });
+    })).toBe(true);
+    expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
+  });
+
+  it("redeems nothing from a revoked link or its deleted copy", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
+    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    mgr.revokeShareLink(owner, linkId, []);
+
+    for (let rawKey of [key, copy]) {
+      expect(await mgr.redeemShareKey({
+        rawKey, profileId: "a",
+        fetchProfile: async () => profile("a"),
+      })).toBe(false);
+    }
+    expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("says a link whose creator can no longer share does not work", async () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "bob", [userEdge(OWNER)]);
+    let { key } = await mgr.createShareLink({ caller: collab("bob"), grant: "workspace" });
+    mgr.removeCollaborator(owner, "bob", []);
+
+    expect(await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    })).toBe(false);
+    expect(mgr.getEffectiveAccess("a")).toBeUndefined();
+  });
+
+  it("is a no-op for an unknown key, or one that is no key at all", async () => {
+    let { storage, mgr } = makeManager();
+    // A syntactically-valid raw key (hex) that was never created, and strings no key can be.
+    for (let rawKey of ["00112233445566778899aabbccddeeff", "bogus", "abc", ""]) {
+      expect(await mgr.redeemShareKey({
+        rawKey, profileId: "a",
+        fetchProfile: async () => profile("a"),
+      })).toBe(false);
+    }
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
@@ -290,7 +333,8 @@ describe("redeemShareKey", () => {
     seedCollaborator(storage, "a", [keyEdge(linkId, "use", 2)]);
     gadgets.delete(2);
 
-    await mgr.redeemShareKey({ rawKey: key, profileId: "b", fetchProfile: async () => profile("b") });
+    expect(await mgr.redeemShareKey({ rawKey: key, profileId: "b", fetchProfile: async () => profile("b") }))
+        .toBe(false);
 
     expect(storage.collaborators.get("b")).toBeUndefined();
     // The existing recipient's grant confers nothing either, and its edge is not rewritten.
@@ -371,6 +415,27 @@ describe("addCollaborator", () => {
     // Re-granting a gadget that build covers narrows nothing.
     mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 1 }, note: "n" });
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
+  });
+
+  it("never narrows a live gadget grant to a view, but widens a view grant in place", () => {
+    let { storage, mgr } = makeManager();
+    let view = { gadgetId: 1, mode: "view" } as const;
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: { gadgetId: 1 } });
+    let info = mgr.addCollaborator({ caller: owner, profile: profile("a"), grant: view, note: "n" });
+    expect(info.access).toEqual(only(1));
+    expect(edgesOf(storage, "a")).toEqual([
+      expect.objectContaining({ role: "use", gadgetId: 1, note: "n" }),
+    ]);
+    expect(edgesOf(storage, "a")[0]).not.toHaveProperty("mode");
+
+    info = mgr.addCollaborator({ caller: owner, profile: profile("b"), grant: view, note: "s" });
+    expect(info.access).toEqual({ ...only(1), viewOnly: [1] });
+    info = mgr.addCollaborator({ caller: owner, profile: profile("b"), grant: { gadgetId: 1 } });
+    expect(info.access).toEqual(only(1));
+    expect(edgesOf(storage, "b")).toEqual([
+      expect.objectContaining({ role: "use", gadgetId: 1, note: "s" }),
+    ]);
+    expect(edgesOf(storage, "b")[0]).not.toHaveProperty("mode");
   });
 });
 
@@ -690,6 +755,27 @@ describe("removeCollaborator", () => {
     expect(() => mgr.removeCollaborator(collab("a"), "c", [], 2)).toThrow(/only remove users/);
     expect(mgr.getEffectiveAccess("c")).toEqual(only(1));
   });
+
+  it("leaves a view of the gadget in the same step when asked, live only through other grants", () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "b", [gadgetEdge(OWNER, 1), gadgetEdge(OWNER, 2)]);
+    seedCollaborator(storage, "c", [gadgetEdge("a", 1), gadgetEdge(OWNER, 1)]);
+    let viewOf1 = { role: "use", gadgetIds: [1, 2], viewOnly: [1] };
+
+    expect(mgr.removeCollaborator(owner, "b", [], 1, true)).toEqual([
+      expect.objectContaining({ profile: profile("b"), oldAccess: only(1, 2), newAccess: viewOf1 }),
+    ]);
+    expect(mgr.getEffectiveAccess("b")).toEqual(viewOf1);
+
+    // Someone else's live grant still stands, so nobody narrows.
+    expect(mgr.removeCollaborator(collab("a"), "c", [], 1, true)).toEqual([]);
+    expect(mgr.getEffectiveAccess("c")).toEqual(only(1));
+
+    // Refused before anything is severed.
+    expect(() => mgr.removeCollaborator(owner, "b", [], undefined, true)).toThrow(/keep its view/);
+    expect(mgr.getEffectiveAccess("b")).toEqual(viewOf1);
+  });
 });
 
 describe("revokeShareLink", () => {
@@ -769,17 +855,26 @@ describe("revokeShareLink", () => {
     expect(mgr.getEffectiveAccess("b")).toEqual(only(1, 2, 3));
   });
 
-  it("a revoked link's keys can no longer be redeemed", async () => {
+  it("keeps everyone, including whoever joined since the preview, when asked to", async () => {
     let { storage, mgr } = makeManager();
     let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
+    let join = (profileId: string) =>
+        mgr.redeemShareKey({ rawKey: key, profileId, fetchProfile: async () => profile(profileId) });
+    await join("a");
+    seedCollaborator(storage, "c", [gadgetEdge(OWNER, 2)]);
+    expect(ids(mgr.previewRevokeShareLink(owner, linkId))).toEqual(["a"]);
+    // Between the preview and the revocation, someone else joins through the link.
+    await join("b");
 
-    mgr.revokeShareLink(owner, linkId, []);
-
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
-    expect(storage.collaborators.get("a")).toBeUndefined();
+    expect(mgr.revokeShareLink(owner, linkId, "everyone")).toEqual([]);
+    for (let id of ["a", "b"]) {
+      expect(mgr.getEffectiveAccess(id)).toEqual(only(1));
+      expect(edgesOf(storage, id)).toContainEqual(
+          expect.objectContaining({ type: "user", sharer: OWNER, role: "use", gadgetId: 1 }));
+    }
+    // Nobody gains what they did not have through the link.
+    expect(mgr.getEffectiveAccess("c")).toEqual(only(2));
+    expect(await join("d")).toBe(false);
   });
 
   it("forbids a non-owner from revoking a link they didn't create", () => {
@@ -883,7 +978,7 @@ describe("newShareLinkKey", () => {
     let { key: key1, linkId } =
         await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, note: "team" });
 
-    let { key: key2 } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    let { key: key2 } = await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
     expect(key2).not.toBe(key1);
 
     // Two secret records, one logical link: listing still shows a single entry, and the new
@@ -903,7 +998,7 @@ describe("newShareLinkKey", () => {
   it("revoking a link revokes every key minted for it", async () => {
     let { storage, mgr } = makeManager();
     let { key: key1, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-    let { key: key2 } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    let { key: key2 } = await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
 
     mgr.revokeShareLink(owner, linkId, []);
     expect(link(storage, linkId).revoked).toBe(true);
@@ -920,7 +1015,7 @@ describe("newShareLinkKey", () => {
   it("copies a link to several gadgets to a key that redeems to the same gadgets", async () => {
     let { storage, mgr } = makeManager();
     let { linkId } = await linkToGadgets(storage, mgr, [1, 3]);
-    let { key } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    let { key } = await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
 
     await mgr.redeemShareKey({ rawKey: key, profileId: "a", fetchProfile: async () => profile("a") });
 
@@ -935,7 +1030,8 @@ describe("newShareLinkKey", () => {
     let { storage, gadgets, mgr } = makeManager();
     let { linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 } });
     gadgets.delete(2);
-    await expect(mgr.newShareLinkKey({ caller: owner, linkId })).rejects.toThrow(/not found/);
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews }))
+        .rejects.toThrow(/not found/);
     expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
   });
 
@@ -943,7 +1039,7 @@ describe("newShareLinkKey", () => {
     let { storage, mgr } = makeManager();
     seedLink(storage, "k1", OWNER);
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
+    await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1", requireViewSharing: allowViews }))
         .rejects.toThrow(/only copy/);
   });
 
@@ -954,21 +1050,42 @@ describe("newShareLinkKey", () => {
     seedLink(storage, "k2", "a", "use", 1);
     seedCollaborator(storage, "a", [gadgetEdge(OWNER, 1)]);
     for (let linkId of ["k1", "k2"]) {
-      await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId }))
+      await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId, requireViewSharing: allowViews }))
           .rejects.toThrow("You do not have permission to share this workspace.");
     }
+  });
+
+  it("asks whether views are allowed only for a view link the caller may copy", async () => {
+    let { storage, mgr } = makeManager();
+    let view = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1, mode: "view" } });
+    let live = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    let refuseViews = vi.fn(async () => { throw new Error("views forbidden"); });
+
+    await expect(mgr.newShareLinkKey(
+        { caller: collab("a"), linkId: view.linkId, requireViewSharing: refuseViews }))
+        .rejects.toThrow(/only copy/);
+    await mgr.newShareLinkKey({ caller: owner, linkId: live.linkId, requireViewSharing: refuseViews });
+    expect(refuseViews).not.toHaveBeenCalled();
+
+    let keys = [...storage.shareKeys.list()];
+    await expect(mgr.newShareLinkKey(
+        { caller: owner, linkId: view.linkId, requireViewSharing: refuseViews }))
+        .rejects.toThrow("views forbidden");
+    expect([...storage.shareKeys.list()]).toEqual(keys);
   });
 
   it("cannot manage a link through the id of one of its copies", async () => {
     let { storage, mgr } = makeManager();
     let { linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-    await mgr.newShareLinkKey({ caller: owner, linkId });
+    await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
 
     // A copy has its own hash in the same table. Mistaking one for a link would make revocation a
     // silent no-op: redemption resolves the copy through to the link, which would go untouched.
     let aliasId = [...storage.shareKeys.list()].find(r => r.alias !== undefined)!.id;
     expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual([linkId]);
-    await expect(mgr.newShareLinkKey({ caller: owner, linkId: aliasId })).rejects.toThrow(/not found/);
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId: aliasId, requireViewSharing: allowViews }))
+        .rejects.toThrow(/not found/);
     expect(() => mgr.updateShareLink(owner, aliasId, "x")).toThrow(/not found/);
     expect(() => mgr.revokeShareLink(owner, aliasId, [])).toThrow(/not found/);
   });
@@ -988,7 +1105,7 @@ describe("pre-copy share keys", () => {
     expect(mgr.getEffectiveAccess("a")).toEqual(BUILD);
 
     // Such a link can also be copied, and the copy grants the same access.
-    let { key } = await mgr.newShareLinkKey({ caller: owner, linkId: "hash1" });
+    let { key } = await mgr.newShareLinkKey({ caller: owner, linkId: "hash1", requireViewSharing: allowViews });
     await mgr.redeemShareKey(
         { rawKey: key, profileId: "b", fetchProfile: async () => profile("b") });
     expect(mgr.getEffectiveAccess("b")).toEqual(BUILD);
@@ -1047,7 +1164,7 @@ describe("ownerInvitesOnly", () => {
 
     await expect(mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } }))
         .rejects.toThrow(/Share links are disabled/);
-    await expect(mgr.newShareLinkKey({ caller: owner, linkId: "k1" }))
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId: "k1", requireViewSharing: allowViews }))
         .rejects.toThrow(/Share links are disabled/);
     expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
 
@@ -1062,7 +1179,7 @@ describe("ownerInvitesOnly", () => {
 
     // Both calls park in #mintKey's await, and check the flag only once it resolves.
     let created = mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
-    let copied = mgr.newShareLinkKey({ caller: owner, linkId: "k1" });
+    let copied = mgr.newShareLinkKey({ caller: owner, linkId: "k1", requireViewSharing: allowViews });
     flags.ownerInvitesOnly = true;
 
     await expect(created).rejects.toThrow(/Share links are disabled/);
@@ -1259,18 +1376,19 @@ describe("ownerInvitesOnly", () => {
 // Property: the sharing graph under the actions the Share dialog offers. fast-check generates a
 // sequence of steps by the owner and four other people -- invite someone by name, create a share
 // link, copy it, open a link, revoke a link, remove someone -- and replays it against a
-// SharingManager. Each invite and link grants the workspace or one gadget. Removal and revocation
-// go through the dialog's flow: preview, then confirm with some of the previewed people kept.
-// After every step each person's access is checked against a model.
+// SharingManager. Each invite and link grants the workspace, or one gadget live or as a view.
+// Removal and revocation go through the dialog's flow: preview, then confirm with some of the
+// previewed people kept. After every step each person's access is checked against a model.
 //
 // The model keeps only the grants: what each person granted whom (all of it, since a repeat
 // invite from the same person never narrows what they granted), which links each person opened,
 // and which links are revoked. Access follows the rule the module documents: a grant counts only
 // while its sharer (a link's creator) holds "build", and the owner holds "build". So "build" is
 // reachability from the owner over grants of the workspace, and anyone else may use each gadget a
-// "build" holder granted them. A link's grants come from its creator. Removal and revocation never
-// touch other people's grants; downstream people just stop being reachable, and come back when a
-// path does. Keeping someone gives them fresh grants from the actor of what they lost.
+// "build" holder granted them, live if any such grant of it is live. A link's grants come from its
+// creator. Removal and revocation never touch other people's grants; downstream people just stop
+// being reachable, and come back when a path does. Keeping someone gives them fresh grants from
+// the actor of what they lost.
 //
 // Steps only take actions the Workshop offers the acting person: only someone with "build" can
 // share (a "use" session is refused every sharing call), so someone who lost it cannot act at
@@ -1297,28 +1415,34 @@ type Step =
   | { kind: "revoke"; choice: number; keep: number }
   | { kind: "remove"; choice: number; keep: number };
 
-// One grant in the model: "build" of the workspace, or use of one gadget.
-type ModelGrant = "build" | WorkpieceId;
+// One grant in the model: "build" of the workspace, or use of one gadget, live or as a view.
+type ModelGrant = "build" | `${"use" | "view"}:${WorkpieceId}`;
 
 function modelGrant(grant: CollaboratorGrant): ModelGrant {
-  return grant === "workspace" ? "build" : grant.gadgetId;
+  return grant === "workspace" ? "build" : `${grant.mode ?? "use"}:${grant.gadgetId}`;
 }
 
 function describeGrant(grant: CollaboratorGrant): string {
-  return grant === "workspace" ? "the workspace" : `gadget ${grant.gadgetId}`;
+  return grant === "workspace" ? "the workspace"
+      : `gadget ${grant.gadgetId}${grant.mode === "view" ? " as a view" : ""}`;
 }
 
 // Whether going from `before` to `after` (undefined: no access) narrows what someone may do.
 function narrows(before: CollaboratorAccess, after: CollaboratorAccess | undefined): boolean {
   if (!after) return true;
   if (before.role === "build") return after.role !== "build";
-  return SHARED_GADGETS.some(id => accessIncludesGadget(before, id) && !accessIncludesGadget(after, id));
+  return SHARED_GADGETS.some(id =>
+      (accessIncludesGadget(before, id) && !accessIncludesGadget(after, id)) ||
+      (accessIncludesLiveGadget(before, id) && !accessIncludesLiveGadget(after, id)));
 }
 
 // The grants restoring what someone with `prior` access lost on dropping to `now`.
 function lostGrants(prior: CollaboratorAccess, now: CollaboratorAccess | undefined): ModelGrant[] {
   if (prior.role === "build") return ["build"];
-  return SHARED_GADGETS.filter(id => accessIncludesGadget(prior, id) && !(now && accessIncludesGadget(now, id)));
+  return SHARED_GADGETS.flatMap((id): ModelGrant[] =>
+      accessIncludesLiveGadget(prior, id) && !(now && accessIncludesLiveGadget(now, id)) ? [`use:${id}`]
+      : accessIncludesGadget(prior, id) && !(now && accessIncludesGadget(now, id)) ? [`view:${id}`]
+      : []);
 }
 
 type ModelLink = { id: string; creator: string; grant: ModelGrant; revoked: boolean; keys: string[] };
@@ -1365,16 +1489,24 @@ class SharingModel {
         }
       }
     }
-    let users = new Map<string, Set<WorkpieceId>>();
+    // person -> gadget -> whether any grant of it is live.
+    let users = new Map<string, Map<WorkpieceId, boolean>>();
     for (let edge of edges) {
       if (edge.grant !== "build" && builders.has(edge.from) && !builders.has(edge.to)) {
-        users.set(edge.to, (users.get(edge.to) ?? new Set()).add(edge.grant));
+        let [mode, id] = edge.grant.split(":");
+        let gadgets = users.get(edge.to) ?? new Map<WorkpieceId, boolean>();
+        gadgets.set(Number(id), gadgets.get(Number(id)) === true || mode === "use");
+        users.set(edge.to, gadgets);
       }
     }
     builders.delete(OWNER);
     let result = new Map<string, CollaboratorAccess>();
     for (let id of builders) result.set(id, BUILD);
-    for (let [id, gadgetIds] of users) result.set(id, only(...[...gadgetIds].toSorted((a, b) => a - b)));
+    for (let [id, gadgets] of users) {
+      let gadgetIds = [...gadgets.keys()].toSorted((a, b) => a - b);
+      let viewOnly = gadgetIds.filter(gadgetId => !gadgets.get(gadgetId));
+      result.set(id, viewOnly.length > 0 ? { ...only(...gadgetIds), viewOnly } : only(...gadgetIds));
+    }
     return result;
   }
 
@@ -1473,7 +1605,8 @@ async function replaySharing(steps: Step[]) {
         if (!chosen) break;
         let { actor, shareLink } = chosen;
         label += `: ${actor} copies link ${model.links.indexOf(shareLink)}`;
-        let { key } = await mgr.newShareLinkKey({ caller: caller(actor), linkId: shareLink.id });
+        let { key } = await mgr.newShareLinkKey(
+            { caller: caller(actor), linkId: shareLink.id, requireViewSharing: allowViews });
         shareLink.keys.push(key);
         break;
       }
@@ -1540,7 +1673,9 @@ async function replaySharing(steps: Step[]) {
 describe("sharing graph property", () => {
   const grant = fc.oneof(
       fc.constant<CollaboratorGrant>("workspace"),
-      fc.constantFrom(...SHARED_GADGETS).map((gadgetId): CollaboratorGrant => ({ gadgetId })));
+      fc.constantFrom(...SHARED_GADGETS).map((gadgetId): CollaboratorGrant => ({ gadgetId })),
+      fc.constantFrom(...SHARED_GADGETS)
+          .map((gadgetId): CollaboratorGrant => ({ gadgetId, mode: "view" })));
   const person = fc.integer({ min: 1, max: 4 });
   const choice = fc.nat({ max: 15 });
   const keep = fc.nat({ max: (1 << PEOPLE.length) - 1 });
@@ -1606,6 +1741,21 @@ describe("sharing graph property", () => {
       { kind: "remove", choice: 0, keep: 1 << BEN },  // owner removes ana, keeping ben
       { kind: "remove", choice: 1, keep: 0 },  // owner removes cy
       { kind: "invite", actor: 0, target: CY, grant: "workspace" },
+    ]],
+    // A view grant never narrows a live one, from the same sharer or another, and a live grant
+    // takes over a view one: removing the live path leaves the view, and keeping someone
+    // who lost only the live gadget restores it live.
+    [[
+      { kind: "invite", actor: 0, target: ANA, grant: "workspace" },
+      { kind: "invite", actor: 0, target: BEN, grant: { gadgetId: 1 } },
+      { kind: "invite", actor: 0, target: BEN, grant: { gadgetId: 1, mode: "view" } },
+      { kind: "invite", actor: 1, target: CY, grant: { gadgetId: 2, mode: "view" } },  // ana
+      { kind: "invite", actor: 1, target: CY, grant: { gadgetId: 2 } },  // ana
+      { kind: "createLink", actor: 0, grant: { gadgetId: 2, mode: "view" } },
+      { kind: "open", person: CY, link: 0, key: 0 },
+      { kind: "remove", choice: 0, keep: 0 },  // owner removes ana: cy keeps the view
+      { kind: "invite", actor: 0, target: ANA, grant: "workspace" },
+      { kind: "remove", choice: 0, keep: 1 << CY },  // owner removes ana, keeping cy live
     ]],
   ];
 
@@ -1683,7 +1833,7 @@ describe("migrateToFrozenGadgetGrants", () => {
   it("freezes a link to every gadget to those gadgets, and its keys still redeem", async () => {
     let { storage, gadgets, mgr, host } = makeMigrationManager([1, 2]);
     let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
     // As stored before schema version 7.
     let original = { ...link(storage, linkId), role: "use" as const, note: "trip" };
     storage.shareKeys.put(original);
@@ -1718,7 +1868,7 @@ describe("migrateToFrozenGadgetGrants", () => {
   it("revokes a link to every gadget of a workspace with none, dropping its grants", async () => {
     let { storage, gadgets, mgr, host } = makeMigrationManager([]);
     let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: "workspace" });
-    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId });
+    let { key: copy } = await mgr.newShareLinkKey({ caller: owner, linkId, requireViewSharing: allowViews });
     storage.shareKeys.put({ ...link(storage, linkId), role: "use" });
     seedCollaborator(storage, "a", [keyEdge(linkId, "use"), userEdge(OWNER, "use")]);
 

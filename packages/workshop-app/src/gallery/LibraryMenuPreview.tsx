@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { DeleteGadgetDialog } from '@/blocks/DeleteGadgetDialog'
 import { LibraryCard } from '@/blocks/LibraryCard'
 import { LibraryRow } from '@/blocks/LibraryRow'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

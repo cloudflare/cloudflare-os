@@ -21,6 +21,21 @@
   from { margin-top: 0; }
 }
 
+/* A reply whose steps were showing as it arrived, with them open above it (`trace.shownAlready`): they are
+   there already, where the thinking indicator had them under its heading and above its own line, and
+   glide up into their place as the reply comes in under them, on the reply's clock. 2.625rem is the
+   heading (2rem), the indicator's top padding (0.5rem) and the list's gap, which the row takes back as it
+   starts to open (0.5rem), less the trace's own top padding (0.375rem). */
+[data-arriving] [data-role][data-traced-already] {
+  animation:
+    message-bubble-draws-up 300ms ease-out backwards,
+    message-trace-settles var(--arrival-duration) var(--arrival-easing) backwards;
+}
+
+@keyframes message-trace-settles {
+  from { translate: 0 2.625rem; }
+}
+
 /* A message that was gone to (the message list marks its row) stands out for a moment: its
    bubble takes a stronger fill, holds it for a second and a half, and fades back. The fill is
    laid over the bubble's own in the colour of its text, so a light bubble darkens and a dark one
@@ -156,5 +171,39 @@
 :root[data-motion='off'] .message-details-surface,
 :root[data-motion='off'] .message-details[data-stage='leaving'] .message-details-surface,
 :root[data-motion='off'] .message-details-more {
+  transition: none;
+}
+
+/* What led to a reply, above it, comes and goes with its details (see `MessageTrace`): a row of a grid
+   going between none and all of its content, so nothing is measured, with the content fading as it goes.
+   It is there while the details are in any stage but gone; it is shut from the stage they fold in. */
+.message-trace {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 160ms ease-out;
+}
+
+.message-trace > div {
+  min-height: 0;
+  /* Only downwards: what is in it may be set out wider than the rows, such as a row's pointed-at ring. */
+  overflow-y: clip;
+}
+
+.message-trace:is([data-stage='row'], [data-stage='leaving']) {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+@starting-style {
+  .message-trace[data-stage='arriving'] {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+:root[data-motion='off'] .message-trace {
   transition: none;
 }

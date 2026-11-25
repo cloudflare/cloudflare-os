@@ -1,24 +1,20 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useTransform } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, DropdownMenu, HeaderBubble, motionTransition, useReducedMotion } from '@gadgets/ui'
 import {
-  ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowSquareOutIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, FileArrowDownIcon, GearSixIcon, ShareNetworkIcon, XIcon,
-} from '@phosphor-icons/react'
+  ArrowLeft02Icon, ArrowRight03Icon, Cancel01Icon, CodeIcon, CollapseIcon, Download01Icon, FileDownIcon,
+  FullScreenIcon, LinkSquare02Icon, MoreHorizontalIcon, RedoIcon, Settings02Icon, Share08Icon, Tick02Icon,
+  ViewIcon,
+} from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
 import { Illustration } from '@/components/Illustration'
 import { Grabber } from '@/components/Grabber'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
 import { IconSwitch } from '@/components/IconSwitch'
-import { motionTransition } from '@/hooks/motionTransition'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportItems, type ExportItemsProps } from './ExportItems'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
-import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { SidePaneTitle } from './SidePaneTitle'
 
 export type SidePaneItem = {
@@ -104,8 +100,6 @@ export type SidePaneProps = Placement & {
    * full screen, and the step down is a back button at the start of the header.
    */
   narrow?: boolean
-  /** The agents the one shown, a gadget, starts, after its title (`AgentsBubble`). */
-  agents?: AgentsBubbleProps
   /** What is shown of the one shown. */
   children: ReactNode
 }
@@ -168,7 +162,7 @@ const AWAY_AFTER = 1000
  * pull. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, agents, onFullScreenChange, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, onFullScreenChange, narrow = false, children } = props
   const fullScreen = !narrow && props.fullScreen === true
   const reduceMotion = useReducedMotion() ?? false
 
@@ -258,7 +252,7 @@ export const SidePane = (props: SidePaneProps) => {
         <header ref={header} style={{ height: HEADER_HEIGHT }} className="flex items-center gap-1.5 px-3">
           {narrow && stepDown && (
             <HeaderBubble key="back">
-              <Button icon={ArrowLeftIcon} aria-label="Back" title="Back" onClick={stepDown} />
+              <Button icon={ArrowLeft02Icon} aria-label="Back" title="Back" onClick={stepDown} />
             </HeaderBubble>
           )}
           {/* First, so that it stays where it is whatever follows, and apart from what can be done with the one shown. */}
@@ -268,7 +262,7 @@ export const SidePane = (props: SidePaneProps) => {
               <IconSwitch
                 aria-label="Show the code"
                 title={viewingCode ? 'Show the app' : 'Show the code'}
-                icons={{ off: EyeIcon, on: CodeIcon }}
+                icons={{ off: ViewIcon, on: CodeIcon }}
                 checked={viewingCode}
                 onCheckedChange={() => onViewCode()}
               />
@@ -287,7 +281,6 @@ export const SidePane = (props: SidePaneProps) => {
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
             {/* Something the one shown has, among what can be done with it rather than in the
                 path to it, where it would read as a step further in. */}
-            {active && agents && !viewingCode && <AgentsBubble {...agents} compact />}
             {people.length > 0 && (
               <HeaderBubble origin="end" className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />
@@ -295,26 +288,26 @@ export const SidePane = (props: SidePaneProps) => {
             )}
             {active && (openPage || onReload || onDownload || exports || shareInMore || codeInMore || onOpenSettings) && (
               <HeaderBubble origin="end">
-                <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
+                <DropdownMenu icon={MoreHorizontalIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {codeInMore && (viewingCode
-                    ? <DropdownMenu.Item icon={EyeIcon} onSelect={onViewCode}>Show the app</DropdownMenu.Item>
+                    ? <DropdownMenu.Item icon={ViewIcon} onSelect={onViewCode}>Show the app</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>Show the code</DropdownMenu.Item>)}
                   {shareInMore && (
-                    <DropdownMenu.Submenu label="Share" icon={ShareNetworkIcon}>
+                    <DropdownMenu.Submenu label="Share" icon={Share08Icon}>
                       <ShareItems onInvite={onInvite} template={template} />
                     </DropdownMenu.Submenu>
                   )}
-                  {openPage && <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={openPage.onOpen}>{openPage.label}</DropdownMenu.Item>}
-                  {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
-                  {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
+                  {openPage && <DropdownMenu.Item icon={LinkSquare02Icon} onSelect={openPage.onOpen}>{openPage.label}</DropdownMenu.Item>}
+                  {onReload && <DropdownMenu.Item icon={RedoIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
+                  {onDownload && <DropdownMenu.Item icon={Download01Icon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {exports && (
                     // Its items are only there while it is open, so that each opening reads what there is again.
-                    <DropdownMenu.Submenu label="Export" icon={FileArrowDownIcon}>
+                    <DropdownMenu.Submenu label="Export" icon={FileDownIcon}>
                       <ExportItems {...exports} />
                     </DropdownMenu.Submenu>
                   )}
                   {onOpenSettings && (openPage || onReload || onDownload || exports || shareInMore || codeInMore) && <DropdownMenu.Separator />}
-                  {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
+                  {onOpenSettings && <DropdownMenu.Item icon={Settings02Icon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
                 </DropdownMenu>
               </HeaderBubble>
             )}
@@ -322,7 +315,7 @@ export const SidePane = (props: SidePaneProps) => {
             {active && shares && !crammed && (
               <HeaderBubble key="share" origin="end">
                 <DropdownMenu
-                  icon={template?.copy === 'copied' ? CheckIcon : template?.copy === 'failed' ? XIcon : ShareNetworkIcon}
+                  icon={template?.copy === 'copied' ? Tick02Icon : template?.copy === 'failed' ? Cancel01Icon : Share08Icon}
                   aria-label={template?.copy === 'copied' ? 'Template link copied' : template?.copy === 'failed' ? 'Couldn’t copy the template link' : 'Share'}
                   align="end"
                   inPlace
@@ -340,16 +333,16 @@ export const SidePane = (props: SidePaneProps) => {
               // Keyed, so that the one button swaps for the other.
               <HeaderBubble key={fullScreen ? 'exit-full-screen' : 'full-screen'} origin="end">
                 {fullScreen
-                  ? <Button icon={CornersInIcon} aria-label="Exit full screen" title="Exit full screen" onClick={() => onFullScreenChange(false)} />
-                  : <Button icon={CornersOutIcon} aria-label="Full screen" title="Full screen" onClick={() => onFullScreenChange(true)} />}
+                  ? <Button icon={CollapseIcon} aria-label="Exit full screen" title="Exit full screen" onClick={() => onFullScreenChange(false)} />
+                  : <Button icon={FullScreenIcon} aria-label="Full screen" title="Full screen" onClick={() => onFullScreenChange(true)} />}
               </HeaderBubble>
             )}
             {/* Last, towards the edge it goes to. In full screen the way out is the one before it. On a narrow screen the back button at the start puts it away. */}
             {beside && !narrow && !fullScreen && (
               <HeaderBubble key="hide" origin="end">
                 {beside.expanded && beside.onShrink
-                  ? <Button icon={ArrowLineRightIcon} aria-label="Side by side" title="Side by side" onClick={beside.onShrink} />
-                  : <Button icon={ArrowLineRightIcon} aria-label="Hide pane" title="Hide pane" onClick={beside.onHide} />}
+                  ? <Button icon={ArrowRight03Icon} aria-label="Side by side" title="Side by side" onClick={beside.onShrink} />
+                  : <Button icon={ArrowRight03Icon} aria-label="Hide pane" title="Hide pane" onClick={beside.onHide} />}
               </HeaderBubble>
             )}
             {/* As the page, the header's one primary action is at its far end. */}

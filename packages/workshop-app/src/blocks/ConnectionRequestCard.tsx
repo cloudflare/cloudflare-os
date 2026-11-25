@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Badge } from '@cloudflare/kumo'
-import { PlugsIcon, RobotIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { ConnectIcon, RoboticIcon } from '@/components/icons'
+import { Button } from '@gadgets/ui'
 import { Card } from '@/components/Card'
 import { usePending, type ActionResult } from './usePending'
 
@@ -35,10 +35,10 @@ export const ConnectionRequestCard = ({ vendorName, agent = false, logoUrl, scop
       <div className="flex items-start gap-3">
         <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-full bg-kumo-fill text-kumo-default">
           {agent
-            ? <RobotIcon aria-hidden="true" className="size-5" />
+            ? <RoboticIcon aria-hidden="true" className="size-5" />
             : logoUrl && !logoFailed
               ? <img src={logoUrl} alt="" className="size-6 object-contain" onError={() => setLogoFailed(true)} />
-              : <PlugsIcon aria-hidden="true" className="size-5" />}
+              : <ConnectIcon aria-hidden="true" className="size-5" />}
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">

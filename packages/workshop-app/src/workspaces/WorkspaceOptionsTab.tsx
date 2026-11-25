@@ -1,11 +1,8 @@
 import { useState } from 'react'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import { REMOVAL_WORDS } from '@/blocks/RemoveWorkspaceDialog'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard } from '@/blocks/SettingsGroup'
+import { Button, ConfirmMenu, SettingRow, SettingsCard } from '@gadgets/ui'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { messageOf } from '@/settings/useAttempt'
 

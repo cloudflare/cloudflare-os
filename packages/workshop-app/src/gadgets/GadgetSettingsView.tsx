@@ -1,37 +1,29 @@
 import { useState, type ReactNode } from 'react'
-import { CaretLeftIcon, FileArrowDownIcon, PlugIcon, PlusIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import {
+  AlertCircleIcon, ArrowLeft01Icon, FileDownIcon, PlugSocketIcon, PlusSignIcon, RoboticIcon, Share08Icon,
+} from '@/components/icons'
 import { BindingRow } from '@/blocks/BindingRow'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
-import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
+import type { MadeTemplate, TemplateChanges } from '@/blocks/CreateTemplateDialog'
 import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, ConfirmMenu, DropdownMenu, EditableTitle, EmptyState, HeaderBubble, ListGroup, PageLayout, type SaveOutcome, SettingRow, SettingsCard, Tabs } from '@gadgets/ui'
 import { MadeTemplateSettings } from '@/blocks/MadeTemplateSettings'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
-import type { SaveOutcome } from '@/blocks/useEditedField'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EditableTitle } from '@/components/EditableTitle'
-import { EmptyState } from '@/components/EmptyState'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
-import type { WorkspaceLook } from '@/components/workspaceLook'
-import { PageLayout } from '@/layouts/PageLayout'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from './GadgetSettings'
 import type { BindingService } from './useGadgetSettings'
 
 /** What a gadget's settings page shows beneath its name. */
-export type GadgetSettingsTab = 'connections' | 'settings'
+export type GadgetSettingsTab = 'connections' | 'agents' | 'settings'
 
 export const GADGET_SETTINGS_TABS: { value: GadgetSettingsTab; label: string }[] = [
   { value: 'settings', label: 'Settings' },
   { value: 'connections', label: 'Connections' },
+  { value: 'agents', label: 'Agents' },
 ]
 
 /** The tab a gadget's settings start at, which an address leaves out. */
@@ -63,9 +55,8 @@ export type GadgetSettingsViewProps = {
    */
   templateUpdate?: { status?: 'available' | 'upToDate'; onUpdate: () => void }
   /**
-   * Templates: the way to the dialog that creates one from it, and those its workspace has made,
-   * once they are read, each of which can be released an update or deleted. The backend does not
-   * say which gadget each was made from. Left out where it cannot be.
+   * Templates: the way to the dialog that creates one from it, and those it has made, once they
+   * are read, each of which can be released an update or deleted. Left out where it cannot be.
    */
   template?: {
     made?: MadeTemplate[]
@@ -74,7 +65,8 @@ export type GadgetSettingsViewProps = {
     onOpen: (id: string) => void
     /** Keeps a new title and what it is for, rejecting with why it could not. */
     onEdit: (id: string, fields: { title: string; description: string }) => Promise<void>
-    onRelease: (id: string) => void
+    /** Releases what its gadget has changed since, as the template lists it. */
+    onRelease: (id: string, changes: TemplateChanges) => void
     onDelete: (id: string) => void
     /** The one being released to or deleted, and why the last of those did not go through. */
     busy?: string
@@ -132,7 +124,7 @@ export type GadgetSettingsViewProps = {
 /**
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
- * connected to, with the agents it can start apart, where an AI model is added and changed, and its
+ * connected to, where an AI model is added and changed, the agents its code can start, and its
  * settings, which are updating it from its template, creating a template from it, exporting it, and
  * deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
@@ -149,7 +141,7 @@ export const GadgetSettingsView = ({
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
       {workspace && onOpenWorkspace && <WorkspaceCrumb id={workspace.id} title={workspace.title} label={workspace.label} look={workspace.look} onOpen={onOpenWorkspace} />}
       <HeaderBubble>
-        <Button icon={CaretLeftIcon} onClick={onBack}>Back to app</Button>
+        <Button icon={ArrowLeft01Icon} onClick={onBack}>Back to app</Button>
       </HeaderBubble>
     </nav>
   )
@@ -165,14 +157,14 @@ export const GadgetSettingsView = ({
       <>
         <div className="flex min-h-[60vh] flex-col">
           {state.status === 'denied' ? (
-            <PaneNotice icon={WarningCircleIcon} title={`You don’t have access to ${title || 'this gadget'}`} description="Ask whoever shared it to add you to its workspace." />
+            <PaneNotice icon={AlertCircleIcon} title={`You don’t have access to ${title || 'this gadget'}`} description="Ask whoever shared it to add you to its workspace." />
           ) : state.status === 'gone' ? (
-            <PaneNotice icon={WarningCircleIcon} title="This gadget isn’t here" description="It may have been deleted, or the link is wrong." />
+            <PaneNotice icon={AlertCircleIcon} title="This gadget isn’t here" description="It may have been deleted, or the link is wrong." />
           ) : state.status === 'failed' ? (
-            <PaneNotice icon={WarningCircleIcon} title="Couldn’t load the gadget" description={state.message} action={{ label: 'Try again', onClick: state.onRetry }} />
+            <PaneNotice icon={AlertCircleIcon} title="Couldn’t load the gadget" description={state.message} action={{ label: 'Try again', onClick: state.onRetry }} />
           ) : (
             <PaneNotice
-              icon={ShareNetworkIcon}
+              icon={Share08Icon}
               title={`${title || 'This gadget'} was shared with you`}
               description="Its settings are for whoever builds in its workspace."
               action={{ label: 'Back to app', onClick: onBack }}
@@ -232,7 +224,7 @@ export const GadgetSettingsView = ({
         {state.status === 'ready' && (
           <Tabs value={tab} onValueChange={onTabChange} tabs={GADGET_SETTINGS_TABS} aria-label="Gadget" className="gap-6">
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
-              {/* The tab says what they are, so they have no heading of their own; the agents, after them, do. */}
+              {/* The tab says what they are, so they have no heading of their own. */}
               {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
               {bindings.status === 'failed' && <p role="alert" className="px-5 text-base text-kumo-subtle">Couldn’t load its connections: {bindings.message}</p>}
               {bindings.status === 'ready' && (connections.length === 0
@@ -240,10 +232,10 @@ export const GadgetSettingsView = ({
                     <EmptyState
                       size="section"
                       tinted
-                      icon={PlugIcon}
+                      icon={PlugSocketIcon}
                       title="No connections yet"
                       description="The services and models it uses on your behalf show here. Ask the agent in a chat to connect it to something."
-                      actions={onConnect && [{ label: 'Add connection', icon: PlusIcon, variant: 'primary', onClick: onConnect }]}
+                      actions={onConnect && [{ label: 'Add connection', icon: PlusSignIcon, variant: 'primary', onClick: onConnect }]}
                     />
                   )
                 : (
@@ -251,14 +243,26 @@ export const GadgetSettingsView = ({
                       <ul className="flex flex-col">{connections.map(row)}</ul>
                     </ListGroup>
                   ))}
-              {/* Only once it has any: most gadgets start none. */}
-              {agents.length > 0 && (
-                <SettingsGroup title="Agents" description="Agents its code can start, each with a conversation of its own." plain>
-                  <ListGroup label="Agents">
-                    <ul className="flex flex-col">{agents.map(row)}</ul>
-                  </ListGroup>
-                </SettingsGroup>
-              )}
+            </Tabs.Panel>
+            <Tabs.Panel value="agents" className="flex flex-col gap-12">
+              {/* Bindings too, read with its connections. */}
+              {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its agents…</p>}
+              {bindings.status === 'failed' && <p role="alert" className="px-5 text-base text-kumo-subtle">Couldn’t load its agents: {bindings.message}</p>}
+              {bindings.status === 'ready' && (agents.length === 0
+                ? (
+                    <EmptyState
+                      size="section"
+                      tinted
+                      icon={RoboticIcon}
+                      title="No agents yet"
+                      description="Agents its code can start, each with a conversation of its own, show here. Ask the agent in a chat to give it one."
+                    />
+                  )
+                : (
+                    <ListGroup label="Agents">
+                      <ul className="flex flex-col">{agents.map(row)}</ul>
+                    </ListGroup>
+                  ))}
             </Tabs.Panel>
             <Tabs.Panel value="settings" className="flex flex-col gap-4">
               <SettingsCard>
@@ -286,7 +290,7 @@ export const GadgetSettingsView = ({
                 )}
                 {exports && (
                   <SettingRow title="Export" description="Save it to this device as a file, or to one of your accounts.">
-                    <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+                    <DropdownMenu icon={FileDownIcon} label="Export" caret keepTrigger align="end">
                       <ExportItems {...exports} />
                     </DropdownMenu>
                   </SettingRow>
@@ -314,7 +318,7 @@ export const GadgetSettingsView = ({
                       busy={template.busy !== undefined}
                       onOpen={() => template.onOpen(each.id)}
                       onEdit={(fields) => template.onEdit(each.id, fields)}
-                      onRelease={() => template.onRelease(each.id)}
+                      onRelease={() => each.changes && template.onRelease(each.id, each.changes)}
                       onDelete={() => template.onDelete(each.id)}
                     />
                   ))}

@@ -1,11 +1,14 @@
 import { useReducer } from 'react'
-import { CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
+import {
+  AiMagicIcon, Brain03Icon, CodeIcon, ComputerIcon, Moon02Icon, PaintBoardIcon, PanelLeftIcon, Sun03Icon,
+} from '@/components/icons'
 import { useDevMode } from '@/hooks/useDevMode'
-import { useMotionLevel } from '@/hooks/useMotionLevel'
+import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
+import { type MotionLevel, useMotionLevel } from '@gadgets/ui'
 import { readTheme, writeTheme, type Theme } from '@/prefs/appearance'
 import { writeDevMode } from '@/prefs/devMode'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { writeMotionLevel, type MotionLevel } from '@/prefs/motion'
+import { writeMotionLevel } from '@/prefs/motion'
 import { MOTION_OPTIONS, THEME_OPTIONS } from './preferenceOptions'
 import type { ChoiceSetting, ToggleSetting } from './settingDefinition'
 
@@ -15,6 +18,7 @@ export const usePreferenceSettings = () => {
   const [, changed] = useReducer((count: number) => count + 1, 0)
   const motion = useMotionLevel()
   const devMode = useDevMode()
+  const [liveWorkOpen, writeLiveWorkOpen] = useLiveWorkOpen()
   const theme = readTheme()
   const opensNewOutputs = readLayoutPrefs().opensNewOutputs !== false
 
@@ -24,10 +28,10 @@ export const usePreferenceSettings = () => {
     title: 'Theme',
     description: 'Follows your system unless you choose. Saved in this browser.',
     keywords: ['appearance', 'color', 'colour', 'mode'],
-    icon: PaletteIcon,
+    icon: PaintBoardIcon,
     value: theme,
     options: THEME_OPTIONS,
-    optionIcons: { system: DesktopIcon, light: SunIcon, dark: MoonIcon },
+    optionIcons: { system: ComputerIcon, light: Sun03Icon, dark: Moon02Icon },
     placeholder: 'System',
     set: (next) => {
       writeTheme(next)
@@ -40,7 +44,7 @@ export const usePreferenceSettings = () => {
     title: 'Animations',
     description: 'Follows your system unless you choose. Saved in this browser.',
     keywords: ['motion', 'reduce', 'reduced', 'transitions'],
-    icon: SparkleIcon,
+    icon: AiMagicIcon,
     value: motion,
     options: MOTION_OPTIONS,
     placeholder: 'Full',
@@ -52,12 +56,24 @@ export const usePreferenceSettings = () => {
     title: 'Auto-open outputs',
     description: 'Open apps, documents and other outputs in the side pane as soon as the assistant creates them. Saved in this browser.',
     keywords: ['side pane', 'apps', 'documents', 'open'],
-    icon: SidebarSimpleIcon,
+    icon: PanelLeftIcon,
     checked: opensNewOutputs,
     set: (next) => {
       writeLayoutPrefs({ opensNewOutputs: next })
       changed()
     },
+  }
+  // Where a chat's thinking starts out open (`prefs/liveWork`). Opening or closing it in a chat is that chat's
+  // alone, and changes nothing here.
+  const alwaysShowThinking: ToggleSetting = {
+    kind: 'toggle',
+    section: 'preferences',
+    title: 'Always show thinking',
+    description: 'Show what the assistant is doing while it works, and how each reply came about, without having to open it. Saved in this browser.',
+    keywords: ['thinking', 'reasoning', 'steps', 'work', 'tools', 'history', 'trace', 'expand'],
+    icon: Brain03Icon,
+    checked: liveWorkOpen,
+    set: writeLiveWorkOpen,
   }
   const developerMode: ToggleSetting = {
     kind: 'toggle',
@@ -69,5 +85,5 @@ export const usePreferenceSettings = () => {
     checked: devMode,
     set: writeDevMode,
   }
-  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs, developerMode }
+  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs, alwaysShowThinking, developerMode }
 }

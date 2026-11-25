@@ -1,22 +1,15 @@
 import { useEffect, useState } from 'react'
-import { PuzzlePieceIcon } from '@phosphor-icons/react'
+import { PuzzleIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { ConnectDialog } from '@/blocks/ConnectDialog'
 import { ConnectionCard } from '@/blocks/ConnectionCard'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { NoMatches } from '@/blocks/NoMatches'
+import { Button, EmptyState, HeaderBubble, ListToolbar, NoMatches, PageLayout, useListView, useNarrowScreen } from '@gadgets/ui'
 import { ManageConnectionDialog } from '@/blocks/ManageConnectionDialog'
-import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
-import { EmptyState } from '@/components/EmptyState'
 import { GroupedList } from '@/components/GroupedList'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
-import { useListView } from '@/hooks/useListView'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { openConnectWindow } from './connectHandoff'
@@ -53,7 +46,7 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
   const inDialog = dialog && (all.find(({ key }) => key === dialog.connection.key) ?? dialog.connection)
   // What was asked for in the dialog is done, or is the service's own window's from here.
   const closeDialog = () => setDialog((current) => current && { ...current, open: false })
-  const list = useListView('connections', connectionList(all))
+  const list = useListView('connections', connectionList())
   const shown = list.narrow(all)
   const groups = list.arrange(shown)
 
@@ -132,7 +125,7 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
-            <PuzzlePieceIcon aria-hidden="true" />
+            <PuzzleIcon aria-hidden="true" />
             Connections
           </h1>
         </HeaderBubble>
@@ -152,7 +145,7 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
         )}
         {state.status === 'ready' && all.length === 0 && (
           <EmptyState
-            icon={PuzzlePieceIcon}
+            icon={PuzzleIcon}
             title="Nothing to connect yet"
             description="Services like email, calendars and documents show here once this deployment offers them. Connected, your chats and apps can use them on your behalf."
           />

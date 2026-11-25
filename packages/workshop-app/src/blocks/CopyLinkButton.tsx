@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
-import { CheckIcon, LinkIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Cancel01Icon, Link04Icon, Tick02Icon } from '@/components/icons'
+import { Button } from '@gadgets/ui'
 
 export type CopyLinkButtonProps = {
-  /** The address to copy. */
-  link: string
+  /**
+   * The address to copy, or a way to make it when clicked, as a share link's key is minted only
+   * for the copy that needs it.
+   */
+  link: string | (() => Promise<string>)
   /** What it links to, for the button's name: "Copy a link to Q3 review". */
   title: string
   /** Says what it does beside its icon, for one of a dialog's buttons rather than a header's. */
@@ -21,9 +24,9 @@ export type CopyLinkButtonProps = {
 const SHOWN_FOR = 1500
 
 const STATES = {
-  ready: { icon: LinkIcon, label: (title: string) => `Copy a link to ${title}`, text: 'Copy link' },
-  copied: { icon: CheckIcon, label: () => 'Link copied', text: 'Copied' },
-  failed: { icon: XIcon, label: () => 'Couldn’t copy the link', text: 'Couldn’t copy' },
+  ready: { icon: Link04Icon, label: (title: string) => `Copy a link to ${title}`, text: 'Copy link' },
+  copied: { icon: Tick02Icon, label: () => 'Link copied', text: 'Copied' },
+  failed: { icon: Cancel01Icon, label: () => 'Couldn’t copy the link', text: 'Couldn’t copy' },
 }
 
 /** Puts a link on the clipboard, then shows a tick for a moment, or a cross when that was refused. */
@@ -34,10 +37,13 @@ export const CopyLinkButton = ({ link, title, labelled = false, disabled, primar
     const timer = setTimeout(() => setState('ready'), SHOWN_FOR)
     return () => clearTimeout(timer)
   }, [state])
-  // The clipboard is refused without permission and missing on a page not served securely.
+  // The clipboard is refused without permission and missing on a page not served securely. An
+  // address still being made is handed over as a promise, since a write after an await would be
+  // refused once the click's user activation has passed.
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(link)
+      if (typeof link === 'string') await navigator.clipboard.writeText(link)
+      else await navigator.clipboard.write([new ClipboardItem({ 'text/plain': link().then((text) => new Blob([text], { type: 'text/plain' })) })])
       setState('copied')
     } catch {
       setState('failed')

@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
-import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Cancel01Icon } from '@/components/icons'
+import { Button, Dialog } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 export type ServiceDialogHeaderProps = {
@@ -26,6 +25,6 @@ export const ServiceDialogHeader = ({ name, logoUrl, color, title, children, pen
       <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
       {children}
     </div>
-    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+    <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<Cancel01Icon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
   </header>
 )

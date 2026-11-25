@@ -2,6 +2,7 @@ import {
   ADMIN_SETTING_METHODS,
   ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
+  ADMIN_WRITE_ACTIONS,
   type AdminAuditKind,
   type AdminAuditRecord,
 } from '@gadgets/workshop-shared/api'
@@ -10,7 +11,7 @@ import {
 export type AuditMethod = AdminAuditRecord['method']
 
 /** The kinds of record, in the order the filter lists them. */
-export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'setting']
+export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'setting']
 
 /**
  * What the audit log is narrowed to, each passed to `AdminApi.listAdminAudit()` as it is. Kept for
@@ -50,6 +51,7 @@ export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
  */
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
   { label: 'Inspection calls', methods: [...new Set([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS])].toSorted() },
+  { label: 'Workspace writes', methods: ADMIN_WRITE_ACTIONS.toSorted() },
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS.toSorted() },
 ]
 

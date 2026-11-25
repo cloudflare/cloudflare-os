@@ -1,9 +1,8 @@
 import { useId, type MouseEvent } from 'react'
 import { Collapsible } from '@cloudflare/kumo/primitives/collapsible'
-import { ArrowUpRightIcon, CaretDownIcon, GitMergeIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { ArrowDown01Icon, ArrowUpRight01Icon, GitMergeIcon } from '@/components/icons'
+import { Button, ConfirmMenu } from '@gadgets/ui'
 import { Card } from '@/components/Card'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { usePending, type ActionResult } from './usePending'
 import '@/components/Disclosure.css'
@@ -65,7 +64,7 @@ const AppRow = ({ app, onOpen }: { app: KeepChangesApp; onOpen?: (gadgetId: numb
       className="group flex w-full cursor-pointer items-center gap-2.5 rounded-xl p-1.5 pe-3 text-left outline-none hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
       {content}
-      <ArrowUpRightIcon aria-hidden="true" weight="bold" className="size-4 shrink-0 text-kumo-subtle group-hover:text-kumo-default" />
+      <ArrowUpRight01Icon aria-hidden="true" weight="bold" className="size-4 shrink-0 text-kumo-subtle group-hover:text-kumo-default" />
     </button>
   )
 }
@@ -96,7 +95,7 @@ export const KeepChangesCard = ({ changes, reason, onKeep, sending, onDiscard, a
               <h3 id={`${id}-title`} className="flex min-w-0 font-medium text-kumo-default">
                 <Collapsible.Trigger className="group -mx-2 flex min-w-0 cursor-pointer items-center gap-2 rounded-full px-2 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring">
                   <span className="min-w-0 break-words">{questionOf(apps)}</span>
-                  <CaretDownIcon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-default transition-transform group-data-panel-open:rotate-180 motion-reduce:transition-none" />
+                  <ArrowDown01Icon aria-hidden="true" weight="bold" className="size-3.5 shrink-0 text-kumo-default transition-transform group-data-panel-open:rotate-180 motion-reduce:transition-none" />
                 </Collapsible.Trigger>
               </h3>
             </div>

@@ -1,12 +1,10 @@
 import { useState } from 'react'
-import { FileArrowDownIcon } from '@phosphor-icons/react'
+import { FileDownIcon } from '@/components/icons'
 import { ExportItems, type ExportChoices } from '@/blocks/ExportItems'
 import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
 import { SetUpConnectionDialog } from '@/blocks/SetUpConnectionDialog'
 import { UpdateFileDialog } from '@/blocks/UpdateFileDialog'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { TextField } from '@/components/TextField'
+import { Button, DropdownMenu, TextField } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -71,7 +69,7 @@ export const ExportPreview = () => {
         {Object.entries(MENUS).map(([key, label]) => (
           <Button key={key} variant={key === menu ? 'primary' : 'secondary'} onClick={() => setMenu(key as keyof typeof MENUS)}>{label}</Button>
         ))}
-        <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+        <DropdownMenu icon={FileDownIcon} label="Export" caret keepTrigger align="end">
           <ExportItems
             choices={choices}
             onOpen={() => setOpened((count) => count + 1)}

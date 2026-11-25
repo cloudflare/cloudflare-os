@@ -1,9 +1,6 @@
 import { Badge } from '@cloudflare/kumo'
-import { CopyIcon, DotsThreeIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Tag } from '@/components/Tag'
-import { LIST_ACTION } from './StarButton'
+import { Copy01Icon, Delete02Icon, MoreHorizontalIcon, PenIcon } from '@/components/icons'
+import { ConfirmMenu, DropdownMenu, LIST_ACTION, Tag } from '@gadgets/ui'
 
 export type ModelListItemProps = {
   /** What the model is called. */
@@ -40,14 +37,14 @@ export const ModelListItem = ({ name, id, builtIn = false, roles = [], onEdit, o
     {roles.map((role) => <Badge key={role} variant="info">{ROLE[role]}</Badge>)}
     {builtIn && <Tag>Built-in</Tag>}
     {(onEdit || onDuplicate) && (
-      <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${name}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
-        {onEdit && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={onEdit} disabled={busy}>Edit…</DropdownMenu.Item>}
-        {onDuplicate && <DropdownMenu.Item icon={CopyIcon} onSelect={onDuplicate} disabled={busy}>Duplicate…</DropdownMenu.Item>}
+      <DropdownMenu icon={MoreHorizontalIcon} aria-label={`More for ${name}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} align="end">
+        {onEdit && <DropdownMenu.Item icon={PenIcon} onSelect={onEdit} disabled={busy}>Edit…</DropdownMenu.Item>}
+        {onDuplicate && <DropdownMenu.Item icon={Copy01Icon} onSelect={onDuplicate} disabled={busy}>Duplicate…</DropdownMenu.Item>}
       </DropdownMenu>
     )}
     {onRemove && (
       <ConfirmMenu
-        icon={TrashIcon}
+        icon={Delete02Icon}
         aria-label={`Remove ${name}`}
         triggerVariant="ghost"
         triggerClassName={LIST_ACTION}

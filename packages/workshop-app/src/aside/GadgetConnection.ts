@@ -1,5 +1,6 @@
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from 'capnweb'
 import {
+  getAccessConfirmationErrorCode,
   getOpenWorkspaceErrorCode,
   OPEN_WORKSPACE_ERROR_CODES,
   type AiChatAuthorInfo,
@@ -27,6 +28,11 @@ export type GadgetUi =
   | { status: 'ready'; page: string; load: number }
   /** The gadget has no UI: it is new, or an agent with no code. */
   | { status: 'none' }
+  /**
+   * Shared with the user, it reads what is kept at other services, and their access to that was
+   * not confirmed (`ACCESS_CONFIRMATION_ERROR_CODES`): asking them again can put it right.
+   */
+  | { status: 'unconfirmed' }
   /**
    * It could not be loaded, and why: `refused` where its workspace does not let the viewer in, and
    * `gone` where there is no such workspace, as one that was deleted.
@@ -69,6 +75,8 @@ export type GadgetOverseer = {
 export type GadgetConnectionOptions = {
   /** Shows the gadget with the changes proposed in this chat. */
   chatId?: number
+  /** What is shown is a snapshot of the gadget, which its page is told (`gadgetPage`). */
+  renderMode?: 'snapshot'
   /** The signed-in user, who is not among the `people`. */
   viewerId?: string
   /** Escape was pressed in the gadget's page, which keeps its keys from the app. */
@@ -379,13 +387,17 @@ export class GadgetConnection {
       if (!current()) return
       this.#retryDelay = 0
       if (!bundle) this.#unlink()
-      const page = bundle && gadgetPage(bundle)
+      const page = bundle && gadgetPage(bundle, this.options.renderMode)
       if (page) this.#pathsByUrl = page.pathsByUrl
       this.#publish({ ui: page ? { status: 'ready', page: page.html, load } : { status: 'none' } })
     } catch (error) {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
       this.#unlink()
+      if (getAccessConfirmationErrorCode(error)) {
+        this.#publish({ ui: { status: 'unconfirmed' } })
+        return
+      }
       const code = getOpenWorkspaceErrorCode(error)
       const reason = code === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied ? 'refused' : code === OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound ? 'gone' : undefined
       this.#publish({ ui: { status: 'failed', message: messageOf(error), ...(reason ? { reason } : {}) } })

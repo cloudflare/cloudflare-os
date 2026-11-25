@@ -1,7 +1,6 @@
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon } from '@/components/icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { LinkButton, Tooltip } from '@gadgets/ui'
 
 export type NewWorkspaceRowProps = {
   /** Where a new workspace is started, so that it can be opened in another tab. */
@@ -18,7 +17,7 @@ const SUBTITLE = 'Start with a chat'
 // Where a workspace's icon would be: its size, outlined and dashed, as a place still to fill.
 const Slot = ({ small }: { small?: boolean }) => (
   <span aria-hidden="true" className={cn('grid shrink-0 place-items-center rounded-lg border border-dashed border-kumo-line text-kumo-subtle', small ? 'h-5 w-5.5' : 'h-7.5 w-8')}>
-    <PlusIcon weight="bold" className={small ? 'size-3' : 'size-3.5'} />
+    <PlusSignIcon weight="bold" className={small ? 'size-3' : 'size-3.5'} />
   </span>
 )
 

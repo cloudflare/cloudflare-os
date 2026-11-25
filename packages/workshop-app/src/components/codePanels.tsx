@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { ArrowDownIcon, ArrowUpIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowDown02Icon, ArrowUp02Icon, Cancel01Icon } from './icons'
 import { cn } from '@cloudflare/kumo/utils'
 import { EditorSelection, StateEffect, StateField, type EditorState } from '@codemirror/state'
 import { EditorView, showPanel, type Panel, type ViewUpdate } from '@codemirror/view'
@@ -154,9 +154,9 @@ const FindBar = ({ view, subscribe }: { view: EditorView; subscribe: (listener: 
         <Toggle on={query.regexp} label="Use a regular expression" onToggle={() => change({ regexp: !query.regexp })}>.*</Toggle>
       </span>
       <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-kumo-line" />
-      <IconButton label="Previous match (Shift Enter)" disabled={total === 0} onClick={() => findPrevious(view)}><ArrowUpIcon weight="bold" /></IconButton>
-      <IconButton label="Next match (Enter)" disabled={total === 0} onClick={() => findNext(view)}><ArrowDownIcon weight="bold" /></IconButton>
-      <IconButton label="Close (Escape)" onClick={() => { closeSearchPanel(view); view.focus() }}><XIcon weight="bold" /></IconButton>
+      <IconButton label="Previous match (Shift Enter)" disabled={total === 0} onClick={() => findPrevious(view)}><ArrowUp02Icon weight="bold" /></IconButton>
+      <IconButton label="Next match (Enter)" disabled={total === 0} onClick={() => findNext(view)}><ArrowDown02Icon weight="bold" /></IconButton>
+      <IconButton label="Close (Escape)" onClick={() => { closeSearchPanel(view); view.focus() }}><Cancel01Icon weight="bold" /></IconButton>
     </div>
   )
 }
@@ -201,7 +201,7 @@ const GoToBar = ({ view }: { view: EditorView }) => {
         onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); close() } }}
         className="min-w-0 flex-1 bg-transparent font-mono text-[13px] tabular-nums outline-none placeholder:font-sans placeholder:text-kumo-subtle"
       />
-      <IconButton label="Close (Escape)" onClick={close}><XIcon weight="bold" /></IconButton>
+      <IconButton label="Close (Escape)" onClick={close}><Cancel01Icon weight="bold" /></IconButton>
     </form>
   )
 }

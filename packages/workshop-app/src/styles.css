@@ -1,11 +1,13 @@
+@import "@fontsource-variable/inter/wght.css";
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@source "../../ui/src/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles";
 @import "tailwindcss";
+/* The shared components' tokens, control and menu sizes, motion variants, `.appears` and
+   `.chat-fade` (`@gadgets/ui`); this app's own tokens are in `theme.css`. */
+@import "@gadgets/ui/styles.css";
 @import "./theme.css";
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
-/* The motion variants follow the app's motion level (`prefs/motion.ts`), not only the system's. */
-@custom-variant motion-reduce (&:where(:root[data-motion="off"] *));
-@custom-variant motion-safe (&:where(:root:not([data-motion="off"]) *));
 
 /* Without this macOS thickens text with subpixel rendering, so browser weights read heavier than
    the same weights in Figma. On `html` so portaled content (menus, dialogs) inherits it. */
@@ -30,45 +32,16 @@
   }
 }
 
-/* The size of everything that is fully rounded: buttons, a header's badges, tabs, the search
-   field. Larger on a narrow screen, where they are pressed with a thumb, which wants 44px. They
-   all read these, so they are one size wherever they are; a button that sets its own size, such
-   as the composer's, keeps it. The breakpoint is `useNarrowScreen`'s. */
+/* The composer's own buttons, which are in its field and so smaller than the other controls
+   (`--control-size`, `@gadgets/ui/styles.css`), and larger with them on a narrow screen: its
+   geometry is worked out from this (`Composer.css`). Here rather than on the composer, as its
+   menu's popup, which is drawn outside it, has a copy of one. */
 :root {
-  /* How tall, and how wide for an icon alone. */
-  --control-size: 2.25rem;
-  --control-text: 0.875rem;
-  /* The room at each end of its text, and before an icon that starts it. */
-  --control-pad: 1rem;
-  --control-pad-icon: 0.75rem;
-  /* The composer's own buttons, which are in its field and so smaller: its geometry is worked out
-     from this (`Composer.css`). Here rather than on the composer, as its menu's popup, which is
-     drawn outside it, has a copy of one. */
   --composer-button: 1.875rem;
-  /* What a menu opened from one of them holds (`DropdownMenu`, `OptionPicker`), which grows with
-     them: a line's text, its height and the room at its ends, its icon, and what is said in
-     smaller type, such as a label over a choice or an item's description. */
-  --menu-text: 0.875rem;
-  --menu-line: 1.25rem;
-  --menu-pad-x: 0.75rem;
-  --menu-pad-y: 0.625rem;
-  --menu-icon: 1rem;
-  --menu-detail-text: 0.8125rem;
-  --menu-detail-line: calc(1 / 0.85);
 }
 @media (max-width: 767px) {
   :root {
-    --control-size: 2.75rem;
-    --control-text: 1rem;
-    --control-pad: 1.25rem;
-    --control-pad-icon: 1rem;
     --composer-button: 2.25rem;
-    --menu-text: 1rem;
-    --menu-line: 1.5rem;
-    --menu-pad-x: 1rem;
-    --menu-pad-y: 0.75rem;
-    --menu-icon: 1.125rem;
-    --menu-detail-text: 0.9375rem;
   }
 }
 
@@ -107,135 +80,17 @@
   }
 }
 
-/* What comes up over a page, or takes a moment to load (a conversation, a file, a notice), is faded in
-   rather than cut to. A page, tab or list that is changed to is not: it is simply there.
-   The note that something is loading is held back first: most loads are over before it is due,
-   and it would only flash by. */
-@keyframes appears {
-  from {
-    opacity: 0;
-  }
-}
-.appears {
-  animation: appears 200ms ease-out;
-}
-.appears-late {
-  animation: appears 200ms 300ms ease-out backwards;
-}
-/* Below full motion nothing is faded to: a page, or what is on it, is simply there. */
-:root:not([data-motion='full']) .appears {
-  animation: none;
-}
-/* Still held back, then simply there. */
-:root:not([data-motion='full']) .appears-late {
-  animation-duration: 0s;
-}
-
-/* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while
-   the conversation rests at that end (nothing is under the header at the first message; the newest
-   message sits clear of the composer), eased in over the first pixels scrolled away from it. The
-   timeline runs from the first message to the newest: the top fade runs in at once and the bottom
-   fade runs out over the last stretch.
-   Browsers without scroll-driven animations get the same two numbers from useScrollFadeFallback.
-
-   The gradients are eased, not linear: a straight ramp shows a hard line where it starts and stops
-   (https://larsenwork.com/easing-gradients/); each is a sine in-out sampled at ten steps. The top
-   fades to a floor, never to nothing; the bottom to nothing, where the messages end, measured from
-   the composer's midline, so half the composer's height of it is behind the composer itself.
-
-   The strip on the right is left unmasked so the scrollbar does not fade. It matches the
-   messages' own side padding, so it never covers a bubble. Not expressible with utilities, which
-   cannot declare a timeline. */
-@property --chat-fade-top {
-  syntax: '<number>';
-  inherits: false;
-  initial-value: 0;
-}
-@property --chat-fade-bottom {
-  syntax: '<number>';
-  inherits: false;
-  initial-value: 0;
-}
-@keyframes chat-fade-top {
-  from {
-    --chat-fade-top: 0;
-  }
-  to {
-    --chat-fade-top: 1;
-  }
-}
-@keyframes chat-fade-bottom {
-  from {
-    --chat-fade-bottom: 1;
-  }
-  to {
-    --chat-fade-bottom: 0;
-  }
-}
-.chat-fade {
-  --chat-fade-top: 0;
-  --chat-fade-bottom: 0;
-  --chat-fade-floor: calc(1 - 0.8 * var(--chat-fade-top));
-  --chat-fade-length: calc(var(--chat-fade-top) * (var(--header-height, 0px) + 2.5rem) * 1.25);
-  --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * (var(--composer-half, 0px) + 1.25rem));
-  mask-image:
-    linear-gradient(#000 0 0),
-    linear-gradient(
-      to bottom,
-        rgb(0 0 0 / var(--chat-fade-floor)) 0,
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.024)) calc(var(--chat-fade-length) * 0.1),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.095)) calc(var(--chat-fade-length) * 0.2),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.206)) calc(var(--chat-fade-length) * 0.3),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.345)) calc(var(--chat-fade-length) * 0.4),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.5)) calc(var(--chat-fade-length) * 0.5),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.655)) calc(var(--chat-fade-length) * 0.6),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.794)) calc(var(--chat-fade-length) * 0.7),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.905)) calc(var(--chat-fade-length) * 0.8),
-        rgb(0 0 0 / calc(var(--chat-fade-floor) + (1 - var(--chat-fade-floor)) * 0.976)) calc(var(--chat-fade-length) * 0.9),
-        #000 var(--chat-fade-length)
-    ),
-    linear-gradient(
-      to top,
-        transparent 0,
-        rgb(0 0 0 / 0.024) calc(var(--chat-fade-bottom-length) * 0.1),
-        rgb(0 0 0 / 0.095) calc(var(--chat-fade-bottom-length) * 0.2),
-        rgb(0 0 0 / 0.206) calc(var(--chat-fade-bottom-length) * 0.3),
-        rgb(0 0 0 / 0.345) calc(var(--chat-fade-bottom-length) * 0.4),
-        rgb(0 0 0 / 0.5) calc(var(--chat-fade-bottom-length) * 0.5),
-        rgb(0 0 0 / 0.655) calc(var(--chat-fade-bottom-length) * 0.6),
-        rgb(0 0 0 / 0.794) calc(var(--chat-fade-bottom-length) * 0.7),
-        rgb(0 0 0 / 0.905) calc(var(--chat-fade-bottom-length) * 0.8),
-        rgb(0 0 0 / 0.976) calc(var(--chat-fade-bottom-length) * 0.9),
-        #000 var(--chat-fade-bottom-length)
-    );
-  mask-composite: add, intersect, intersect;
-  mask-size: 0.75rem 100%, 100% 100%, 100% 100%;
-  mask-position: right top, 0 0, 0 0;
-  mask-repeat: no-repeat;
-}
-/* The sidebar's workspaces fade the same way, by the same two amounts, but to nothing at either
-   end and over the same length: nothing floats over them, so what scrolls goes at the list's own
-   edges. There is no scrollbar to leave a strip for. The top comes in whole over the first
-   quarter of the range (12px), so that a row cut by the pinned tiles over the list is never seen
-   cut off, as it would be while it was still coming in. */
+/* The sidebar's workspaces fade the way the chat does (`.chat-fade`, `@gadgets/ui/styles.css`), by
+   the same two amounts, but to nothing at either end and over the same length: nothing floats over
+   them, so what scrolls goes at the list's own edges. There is no scrollbar to leave a strip for.
+   The top comes in whole over the first quarter of the range (12px), so that a row cut by the
+   pinned tiles over the list is never seen cut off, as it would be while it was still coming in. */
 .chat-fade.sidebar-fade {
   --chat-fade-floor: calc(1 - min(1, var(--chat-fade-top) * 4));
   --chat-fade-length: calc(min(1, var(--chat-fade-top) * 4) * 3rem);
   --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * 3rem);
   mask-size: 0 0, 100% 100%, 100% 100%;
 }
-@supports (animation-timeline: scroll()) {
-  .chat-fade {
-    animation:
-      chat-fade-top linear both,
-      chat-fade-bottom linear both;
-    animation-timeline: scroll(self block), scroll(self block);
-    animation-range:
-      0 3rem,
-      calc(100% - 3rem) 100%;
-  }
-}
-
 /* A workspace's icon being dragged in the sidebar jiggles as an app on a phone's home screen does
    while it is being moved. Nothing moves with motion off. */
 @keyframes jiggle {

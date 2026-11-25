@@ -5,16 +5,18 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
-import { gadgetsWaitingIn, waitingWords } from '@/workspaces/waitingWords'
-import { useAgentsWaiting } from '@/automations/AgentsWaitingContext'
-import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
-import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
+import { waitingCountsOf, waitingWords } from '@/workspaces/waitingWords'
 import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar, type SidebarActions, type SidebarChat, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
-import { useWaitingAsks, WaitingAsksProvider } from '@/gadgets/WaitingAsksProvider'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { totalGadgetAsks } from '@/workspaces/WorkspaceSummaries'
+import { useWorkspaceSummaries } from '@/workspaces/WorkspaceSummariesContext'
+import { WorkspaceSummariesProvider } from '@/workspaces/WorkspaceSummariesProvider'
+import { OutputsFeedProvider } from '@/library/OutputsFeedProvider'
+import { formatActivity, useNarrowScreen } from '@gadgets/ui'
+import { usePreferences, usePreferencesSnapshot } from '@/prefs/UserPreferencesContext'
+import { UserPreferencesProvider } from '@/rpc/UserPreferencesProvider'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
 import { useUnread } from '@/notifications/UnreadContext'
@@ -22,7 +24,6 @@ import { UnreadProvider } from '@/notifications/UnreadProvider'
 import { useBrowserPushSync } from '@/notifications/useBrowserPush'
 import { useTaskNotices } from '@/notifications/useTaskNotices'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { useStarOrder, writeStarOrder } from '@/prefs/starOrder'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -36,16 +37,15 @@ import { siteLogoUrl } from '@/rpc/siteLook'
 import { OnboardingGate } from '@/settings/OnboardingGate'
 import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
-import { useReadSkills } from '@/skills/useSkills'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
 import { useSetWorkspaceMuted, useSetWorkspacePinned, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { recentChatKey } from '@/workspaces/recentChats'
-import { orderStarred } from '@/workspaces/starredOrder'
+import { keepStarredOrder, orderStarred } from '@/workspaces/starredOrder'
 import { useRecentChats } from '@/workspaces/useRecentChats'
 import { useGhostChats, type GhostChat } from '@/workspaces/useGhostChats'
 import { isWorkspaceMuted } from '@/workspaces/workspaceMute'
+import { RecentChatsProvider } from '@/workspaces/RecentChatsProvider'
 import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -54,6 +54,8 @@ import { joinedWorkspaces, workspaceTitle } from '@/workspaces/workspaceList'
 import { ObserverAccessProvider, usePageAccessQuestion } from '@/connections/ObserverAccessProvider'
 import { sidebarConnections } from '@/connections/sidebarConnections'
 import { useConnections } from '@/connections/useConnections'
+import { GatekeeperAppsProvider } from '@/gatekeeperApps/GatekeeperAppsProvider'
+import { useGatekeeperApps } from '@/gatekeeperApps/GatekeeperAppsContext'
 import { AppSearch, type SearchContext } from './-AppSearch'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
@@ -70,13 +72,19 @@ export const Route = createFileRoute('/_app')({
               <ShareLinkGate>
                 <WorkspacesProvider>
                   <UnreadProvider>
-                    <AgentsWaitingProvider>
-                      <ChatSessionsProvider>
-                        <WaitingAsksProvider>
-                          <AppFrame />
-                        </WaitingAsksProvider>
-                      </ChatSessionsProvider>
-                    </AgentsWaitingProvider>
+                    <WorkspaceSummariesProvider>
+                      <UserPreferencesProvider>
+                        <RecentChatsProvider>
+                          <ChatSessionsProvider>
+                            <OutputsFeedProvider>
+                              <GatekeeperAppsProvider>
+                                <AppFrame />
+                              </GatekeeperAppsProvider>
+                            </OutputsFeedProvider>
+                          </ChatSessionsProvider>
+                        </RecentChatsProvider>
+                      </UserPreferencesProvider>
+                    </WorkspaceSummariesProvider>
                   </UnreadProvider>
                 </WorkspacesProvider>
               </ShareLinkGate>
@@ -110,7 +118,8 @@ const AppFrame = () => {
   const workspacesState = useWorkspaces()
   const unread = useUnread()
   const looks = useWorkspaceLooks()
-  const waiting = useAgentsWaiting()
+  const summaries = useWorkspaceSummaries()
+  const preferences = usePreferences()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -119,12 +128,10 @@ const AppFrame = () => {
   const narrow = useNarrowScreen()
   // Whether the deployment's own settings are listed after the user's.
   const admin = useIsAdmin()
-  const asks = useWaitingAsks()
   // The logos on the sidebar's connect button, once the services are read.
   const { state: connectionsState } = useConnections()
   const connectionLogos = connectionsState.status === 'ready' ? sidebarConnections(connectionsState.connections) : undefined
-  // Read ahead, so that a composer's + menu opens with them in it.
-  useReadSkills()
+  const gatekeeperApps = useGatekeeperApps()
 
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
@@ -140,23 +147,14 @@ const AppFrame = () => {
   const templatePage = useMatch({ from: '/_app/library/templates/$templateId', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const automationsPage = useMatch({ from: '/_app/automations', shouldThrow: false })
+  const gatekeeperAppPage = useMatch({ from: '/_app/apps/$appId', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const settingsPage = useMatch({ from: '/_app/settings', shouldThrow: false })
-  // A skill's page is part of the settings, where the skills are listed.
-  const skillPage = useMatch({ from: '/_app/skills/$skillId', shouldThrow: false })
-  const inSettings = settingsPage !== undefined || skillPage !== undefined
+  const inSettings = settingsPage !== undefined
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
   // The workspace that is open, whose title and the viewer's role in it are kept live.
   useLiveWorkspace(workspaceId ?? pageItem?.workspaceId)
-  // What waits on the user in the workspace they are in, kept up as it changes, so that the sidebar
-  // says so as soon as they answer it; its own page and an agent's keep it up already.
-  // Not one the user can only use an app of, which has no agents of theirs.
-  const agentPage = useMatch({ from: '/_app/workspace/$workspaceId/agent/$agentKey', shouldThrow: false })
-  const liveWaitingCandidate = workspacePage || agentPage ? undefined : workspaceId ?? pageItem?.workspaceId
-  const onlyUses = (inWorkspace: string) =>
-    workspacesState.status === 'ready' && workspacesState.workspaces.some(({ id, role }) => id === inWorkspace && role === 'use')
-  const liveWaitingIn = liveWaitingCandidate !== undefined && !onlyUses(liveWaitingCandidate) ? liveWaitingCandidate : undefined
 
   // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
   const besideOf: { workspaceId: string; open: string | undefined } | undefined = chatPage
@@ -263,7 +261,7 @@ const AppFrame = () => {
     // otherwise, such as by a link, it is going to that chat with it beside it.
     const openedHere = router.state.location.state.fromChat === true
     const toChat = (chat: { id: number; title?: string }) => {
-      rememberShown(pageWorkspaceId, chat.id, open)
+      rememberShown(preferences, pageWorkspaceId, chat.id, open)
       void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: chat.id }, search: { open }, state: { chatTitle: chat.title } })
     }
     asideElement = (
@@ -324,7 +322,7 @@ const AppFrame = () => {
       workspaceLabel: workspaceLabel(title),
       workspaceLook: looks[id],
       subtitle: formatActivity(lastActive),
-      attention: waitingWords({ runs: waiting.get(id)?.runs ?? 0, chats: waiting.get(id)?.chats ?? 0, gadgets: gadgetsWaitingIn(id, asks.byGadget) }),
+      attention: waitingWords(waitingCountsOf(summaries.workspaces.get(id))),
       unread: unread?.totals.workspaces.has(id),
       href: workspaceHref(id),
       pinned: workspace.pinned === true,
@@ -340,7 +338,6 @@ const AppFrame = () => {
   const ghosts = useGhostChats(
     chatPage && { workspaceId: chatPage.params.workspaceId, chatId: chatPage.params.chatId, title: openedTitle },
     (key) => recentById.has(key),
-    recentChats.refresh,
   )
   const ghostById = new Map(ghosts.map((ghost) => [ghost.key, ghost]))
   const ghostChatOf = (ghost: GhostChat): SidebarChat[] => {
@@ -376,7 +373,6 @@ const AppFrame = () => {
       workspaceLabel: workspaceLabel(workspaceTitle(workspace)),
       workspaceLook: looks[workspace.id],
       preview: chat.latest?.text,
-      previewLoading: chat.reading,
       // A chat's own assistant is not named: it is whose the chat is.
       speaker: author?.type === 'user' ? (author.id === user.id ? 'You' : author.name) : chat.agent,
       working: chat.working,
@@ -390,31 +386,24 @@ const AppFrame = () => {
   })]
   // The pinned workspaces, in the order the Workspaces page has them; with none of them and no recent
   // chats to list either, the latest workspaces, as the sidebar had before there were chats in it.
-  const starOrder = useStarOrder()
-  const pinnedWorkspaces = orderStarred(joined.filter(({ pinned }) => pinned), starOrder).map(sidebarWorkspaceOf)
+  const { starredWorkspaces } = usePreferencesSnapshot()
+  const pinnedWorkspaces = orderStarred(joined.filter(({ pinned }) => pinned), starredWorkspaces).map(sidebarWorkspaceOf)
   const workspaces = pinnedWorkspaces.length === 0 && sidebarChats.length === 0 && recentChats.known
     ? joined.slice(0, FALLBACK_WORKSPACES).map(sidebarWorkspaceOf)
     : []
   const selectedChatId = chatPage ? recentChatKey(chatPage.params.workspaceId, chatPage.params.chatId) : undefined
-  // A chat just opened is read again with its workspace, so that it is listed as soon as it is the viewer's.
-  const refreshRecent = recentChats.refresh
-  const openedIn = chatPage?.params.workspaceId
-  const openedChat = chatPage?.params.chatId
-  useEffect(() => {
-    if (openedIn !== undefined && openedChat !== undefined) refreshRecent(openedIn)
-  }, [openedIn, openedChat, refreshRecent])
   // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
   const openWorkspace = (id: string) => {
     leaveSidebar()
     // What is shown beside one of the workspace's pages stays beside its own.
-    const open = besideOf?.workspaceId === id ? carryAside(besideOf.open, { workspaceId: id }) : undefined
+    const open = besideOf?.workspaceId === id ? carryAside(preferences, besideOf.open, { workspaceId: id }) : undefined
     void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
   }
   const openChat = (chat: SidebarChat) => {
     const recent = recentOf(chat) ?? ghostById.get(chat.id)
     if (!recent) return
     leaveSidebar()
-    const open = besideOf?.workspaceId === recent.workspaceId ? carryAside(besideOf.open, { workspaceId: recent.workspaceId, chatId: recent.chatId }) : undefined
+    const open = besideOf?.workspaceId === recent.workspaceId ? carryAside(preferences, besideOf.open, { workspaceId: recent.workspaceId, chatId: recent.chatId }) : undefined
     void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: recent.workspaceId, chatId: recent.chatId }, search: { open }, state: { chatTitle: recent.title } })
   }
   const setPinned = useSetWorkspacePinned()
@@ -433,7 +422,7 @@ const AppFrame = () => {
       // Where it was dropped among the pinned as they are shown, else first, as the latest pinned is on the Workspaces page.
       const order = pinnedWorkspaces.map((workspace) => workspace.id).filter((other) => other !== id)
       if (pinned) order.splice(Math.min(at, order.length), 0, id)
-      writeStarOrder(order)
+      keepStarredOrder(preferences, order)
       return setPinned(id, pinned)
     }),
     onMuteWorkspace: (id, muted) => attempt(muted ? 'mute the workspace' : 'unmute the workspace', () => setWorkspaceMuted(id, muted)),
@@ -471,13 +460,12 @@ const AppFrame = () => {
   const settingsSidebar = (collapsed: boolean) => (
     <SettingsSidebar
       groups={settingsNavGroups((section) => router.buildLocation({ to: '/settings', search: { section } }).href, admin)}
-      current={skillPage ? 'skills' : (settingsPage?.search.section ?? FIRST_SECTION)}
+      current={settingsPage?.search.section ?? FIRST_SECTION}
       // In place, so that going back leaves the settings rather than going through their parts.
-      // Not from a skill's page, which is somewhere to go back to.
       onSelect={(section) => {
         // The ids are the parts' own, which the block knows only as strings.
         if (!isSettingsSection(section)) return
-        void navigate({ to: '/settings', search: { section }, ...(skillPage ? {} : { replace: true, state: true }) })
+        void navigate({ to: '/settings', search: { section }, replace: true, state: true })
       }}
       onClose={toggleSettings}
       collapsed={collapsed}
@@ -488,7 +476,7 @@ const AppFrame = () => {
     <Sidebar
       user={{ name: user.name, avatarUrl }}
       pinned={pinnedWorkspaces}
-      onReorderPinned={writeStarOrder}
+      onReorderPinned={(order) => keepStarredOrder(preferences, order)}
       workspaces={workspaces}
       // The chat open is marked where it is listed, and its workspace only on the rail, or where it is not.
       selectedWorkspaceId={collapsed || selectedChatId === undefined || !sidebarChats.some(({ id }) => id === selectedChatId) ? workspaceId : undefined}
@@ -518,7 +506,7 @@ const AppFrame = () => {
       connections={connectionLogos}
       library={{
         current: [libraryPage, libraryItemPage, templatesPage, templatePage].some((match) => match !== undefined),
-        waiting: asks.total,
+        waiting: totalGadgetAsks(summaries),
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })
@@ -538,6 +526,16 @@ const AppFrame = () => {
           void navigate({ to: '/automations' })
         },
       }}
+      apps={gatekeeperApps.map(({ id, title, icon }) => ({
+        id,
+        title,
+        iconUrl: icon?.url,
+        current: gatekeeperAppPage?.params.appId === id,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/apps/$appId', params: { appId: id } })
+        },
+      }))}
       connectionsPage={{
         current: connectionsPage !== undefined,
         onOpen: () => {
@@ -582,7 +580,7 @@ const AppFrame = () => {
   // the library has been read, the pane opens empty until it has.
   const openAside = besideRef && besideKey && !named && !openedEmpty
     ? () => {
-        const open = lastShown(besideRef.workspaceId, besideRef.chatId) ?? items[0]?.key
+        const open = lastShown(preferences.getSnapshot(), besideRef.workspaceId, besideRef.chatId) ?? items[0]?.key
         if (open !== undefined) return aside.show(open, besideRef)
         writeLayoutPrefs({ asideOpen: true })
         setOpenedEmptyAt(besideKey)
@@ -642,7 +640,7 @@ const AppFrame = () => {
           // On the pages the sidebar goes to. Those further in have their way up already, such as
           // a chat's workspace crumb, or an item's own back button.
           // The settings' list of parts is one of them; a part has its way back to the list.
-          button: [homePage, workspacePage, libraryPage, workspacesPage, automationsPage, connectionsPage, settingsPage?.search.section === undefined ? settingsPage : undefined].some((match) => match !== undefined),
+          button: [homePage, workspacePage, libraryPage, workspacesPage, automationsPage, gatekeeperAppPage, connectionsPage, settingsPage?.search.section === undefined ? settingsPage : undefined].some((match) => match !== undefined),
         }}
         status={status}
         aside={pageItem ? undefined : asideElement}
@@ -653,7 +651,6 @@ const AppFrame = () => {
         {asked(pageItem ? asideElement : <Outlet />, true)}
       </NarrowShell>
       {search}
-      {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
       </>
     )
   }
@@ -679,10 +676,4 @@ const AppFrame = () => {
     {search}
     </>
   )
-}
-
-/** Keeps what waits on the user in a workspace up as it changes, for the sidebar (`useWorkspaceAgents` reports it). Draws nothing. */
-function LiveWaiting({ workspaceId }: { workspaceId: string }) {
-  useWorkspaceAgents(workspaceId)
-  return null
 }

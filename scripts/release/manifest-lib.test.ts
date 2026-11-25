@@ -200,6 +200,75 @@ test("worker entries carry the deploy contract", () => {
   }
 });
 
+// An internal worker is part of the core: nothing installs it, routes to it or asks the user for
+// anything on its behalf, so its entry carries none of what a gatekeeper's does. `preinstall` in
+// particular stays absent, because it means a gatekeeper install (a slug, a GATEKEEPER_<SLUG>
+// binding, a route), which is exactly what an internal worker must not get.
+test("an internal worker ships with the core and is reached only by a service binding", () => {
+  const { workers } = buildTestManifest();
+  const renderer = workers["pdf-renderer"];
+  assert.equal(renderer.kind, "internal");
+  assert.equal(renderer.installable, false);
+  for (const key of ["shortName", "preinstall", "singleton", "inputs",
+    "gatekeeperBindingExpansion", "assetsConfig"] as const) {
+    assert.equal(renderer[key], undefined, `pdf-renderer: unexpected ${key}`);
+  }
+  assert.deepEqual(renderer.bindings, []);
+  assert.deepEqual(renderer.vars, {});
+  assert.deepEqual(renderer.migrations, []);
+
+  // Its WebAssembly travels as a module of its own, typed for the script-upload API.
+  assert.equal(renderer.mainModule, "worker.js");
+  assert.deepEqual(renderer.modules.map((m) => [m.name, m.type]),
+      [["abc123-pdfium.wasm", "wasm"], ["worker.js", "esm"]]);
+
+  // The gatekeeper that uses it names it by templated worker name and RPC entrypoint.
+  assert.deepEqual(
+      workers["gatekeeper-google"].bindings.find((b) => b.name === "PDF_RENDERER"),
+      { type: "service", name: "PDF_RENDERER", service: "$WORKER_NAME(pdf-renderer)",
+        entrypoint: "PdfRenderer" });
+});
+
+// A Worker's limits are the platform's unless its config says otherwise, and the deploy service
+// uploads what the entry carries: a limit dropped here would leave customer instances on the
+// default with nothing to say so.
+test("a worker's limits travel verbatim, and only where its config sets them", () => {
+  const { workers } = buildTestManifest();
+  assert.deepEqual(workers["pdf-renderer"].limits, { cpu_ms: 300_000 });
+  assert.equal("limits" in workers["workshop-backend"], false);
+
+  const renderer = readTestWorkerBuilds().find((w) => w.pkgName === "pdf-renderer");
+  assert.ok(renderer);
+  const limits = { cpu_ms: 60_000, subrequests: 20_000 };
+  const entry = buildTestManifest([{ ...renderer, config: { ...renderer.config, limits } }]);
+  assert.deepEqual(entry.workers["pdf-renderer"].limits, limits);
+});
+
+// A service binding's target is deployed from the same manifest, so a name no entry answers to
+// would leave the deploy service with a worker name it cannot resolve.
+test("every service binding names a worker of the release", () => {
+  const { workers } = buildTestManifest();
+  for (const [name, entry] of Object.entries(workers)) {
+    for (const binding of entry.bindings) {
+      if (binding.type !== "service") continue;
+      const target = /^\$WORKER_NAME\(([a-z0-9-]+)\)$/.exec(String(binding.service))?.[1];
+      assert.ok(target !== undefined && workers[target] !== undefined,
+          `${name}: ${binding.name} binds ${String(binding.service)}, which is not in the release`);
+    }
+  }
+});
+
+// Internal workers are a list of names. A package that merely resembles one stays unclassified,
+// which fails the release build until someone decides what it is.
+test("a worker is internal by name, never by resemblance", () => {
+  const renderer = readTestWorkerBuilds().find((w) => w.pkgName === "pdf-renderer");
+  assert.ok(renderer, "expected pdf-renderer among the deployable packages");
+  for (const pkgName of ["pdf-renderer-two", "pdf-thumbnailer", "internal-pdf-renderer"]) {
+    assert.throws(() => buildTestManifest([{ ...renderer, pkgName }]),
+        new RegExp(`cannot classify deployable package: ${pkgName}`));
+  }
+});
+
 // The deploy wizard sends a gatekeeper's manifest shortName as the install slug verbatim, and
 // the slug becomes a GATEKEEPER_<SLUG> binding name, so the deploy service rejects anything
 // outside this charset (packages/deploy/src/naming.ts). A shortName that fails here reaches

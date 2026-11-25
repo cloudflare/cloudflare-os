@@ -1,11 +1,12 @@
 import {
-  FileCodeIcon, FileCssIcon, FileHtmlIcon, FileImageIcon, FileJsIcon, FileMdIcon, FileTextIcon, FileTsIcon, GearSixIcon, type Icon,
-} from '@phosphor-icons/react'
+  CssFile01Icon, FileCodeIcon, FileImageIcon, FileTextIcon, FileTypeIcon, HtmlFile01Icon, JavaScriptIcon,
+  Settings02Icon, Typescript02Icon, type Icon,
+} from '@/components/icons'
 import { codeLanguage } from '@/files/codeLanguage'
 
 const BY_LANGUAGE = {
-  typescript: FileTsIcon, tsx: FileTsIcon, javascript: FileJsIcon, jsx: FileJsIcon,
-  css: FileCssIcon, html: FileHtmlIcon, markdown: FileMdIcon, json: FileCodeIcon,
+  typescript: Typescript02Icon, tsx: Typescript02Icon, javascript: JavaScriptIcon, jsx: JavaScriptIcon,
+  css: CssFile01Icon, html: HtmlFile01Icon, markdown: FileTypeIcon, json: FileCodeIcon,
 } as const
 
 const IMAGE = /\.(png|jpe?g|gif|webp|avif|ico|bmp)$/i
@@ -14,7 +15,7 @@ const SETUP = /(^|\/)(package\.json|blueprint\.json|tsconfig[^/]*\.json|wrangler
 
 /** The icon a file is listed with: what it is written in, a picture, or what sets the project up. */
 export const codeFileIcon = (path: string): Icon => {
-  if (SETUP.test(path)) return GearSixIcon
+  if (SETUP.test(path)) return Settings02Icon
   if (IMAGE.test(path)) return FileImageIcon
   const language = codeLanguage(path)
   return language ? BY_LANGUAGE[language] : FileTextIcon

@@ -1,8 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import { ArrowCounterClockwiseIcon, GitCommitIcon, PauseIcon, PlayIcon, SkipForwardIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Tooltip } from '@/components/Tooltip'
+import { GitCommitHorizontalIcon, NextIcon, PauseIcon, PlayIcon, UndoIcon } from '@/components/icons'
+import { Button, DropdownMenu, Tooltip } from '@gadgets/ui'
 import type { ScriptPlayer } from './ScriptPlayer'
 import type { Scenario, Trigger } from './scenario'
 
@@ -49,15 +47,15 @@ export const MockControls = ({ scenarios, scenario, player, onSelectScenario, on
         {onKeepElsewhere && (
           <>
             <DropdownMenu.Separator />
-            <DropdownMenu.Item icon={GitCommitIcon} onSelect={onKeepElsewhere}>Someone else changes the gadget’s client.js</DropdownMenu.Item>
+            <DropdownMenu.Item icon={GitCommitHorizontalIcon} onSelect={onKeepElsewhere}>Someone else changes the gadget’s client.js</DropdownMenu.Item>
           </>
         )}
       </DropdownMenu>
-      <Button variant="ghost" icon={ArrowCounterClockwiseIcon} aria-label="Restart scenario" title="Restart scenario" onClick={onRestart} />
+      <Button variant="ghost" icon={UndoIcon} aria-label="Restart scenario" title="Restart scenario" onClick={onRestart} />
       {playing
         ? <Button variant="ghost" icon={PauseIcon} aria-label="Pause" title="Pause" onClick={player.pause} />
         : <Button variant="ghost" icon={PlayIcon} aria-label="Play" title="Play" disabled={done} onClick={player.play} />}
-      <Button variant="ghost" icon={SkipForwardIcon} aria-label="Step" title="Run the next step" disabled={done || !!waitingFor} onClick={player.step} />
+      <Button variant="ghost" icon={NextIcon} aria-label="Step" title="Run the next step" disabled={done || !!waitingFor} onClick={player.step} />
       <Tooltip content={scenario.description}>
         {/* One width for whatever it says, so the buttons before it stay where they are as the
             script moves on. */}

@@ -2,6 +2,7 @@ import { RpcTarget } from 'capnweb'
 import {
   getOpenWorkspaceErrorCode,
   OPEN_WORKSPACE_ERROR_CODES,
+  type AgentSpawnerInfo,
   type GadgetBindingInfo,
   type GadgetClient,
   type GadgetSummary,
@@ -18,7 +19,7 @@ export type { GadgetSummary }
  * One of what a gadget is bound to, with what it is: a service's resource, an agent the gadget
  * can start, or a model its code can call, each by the name its code knows it by (`env.NAME`).
  */
-export type GadgetBinding = GadgetBindingInfo & {
+export type GadgetBinding = Omit<GadgetBindingInfo, 'kind'> & {
   kind: 'service' | 'agent' | 'model'
   /** The model an agent thinks with, or the model itself, by name; absent where it has none. */
   model?: string
@@ -44,15 +45,17 @@ export type GadgetSettingsSnapshot =
     }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'bind' | 'unbind' | 'renameBinding' | 'getBlueprintAnnotation' | 'setBlueprintAnnotation'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'unbind' | 'renameBinding' | 'rebind'> & Disposable
 
-/** The part of a connection the settings use, to say what it is, and the lease that must be disposed. */
+/** The part of a model's connection the settings use, to say which model it is, and the lease that must be disposed. */
 export type SettingsGatekeeper = { getCreationSpec(): Promise<GatekeeperCreationSpec> } & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
 export type SettingsOverseer = {
   getGadget(id: number): SettingsGadget
   getGatekeeperById(id: number): SettingsGatekeeper
+  /** Its agent spawners, for the model each of the gadget's agents thinks with. */
+  listAgentSpawners(): Promise<AgentSpawnerInfo[]>
   /** A connection to one of the user's models, made in the workspace and bound to nothing yet. */
   newAiModelGatekeeper(modelId: string): { getId(): Promise<number> } & Disposable
   subscribeToWorkpieces(subscriber: WorkpiecesSubscriber & RpcTarget): Promise<Disposable>
@@ -72,15 +75,22 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 const failed = (error: unknown) => ({ status: 'failed', message: messageOf(error) }) as const
 
 /**
- * What a binding is, from how its connection was made (`getCreationSpec`). One with a service is
- * that service's, which is all a row needs, so only the rest are asked: `spec` is absent for those.
+ * What a binding is, by what it reaches (`GadgetBindingInfo.kind`): an agent, with the model its
+ * spawner thinks with (`spawners`, from `listAgentSpawners()`); a model, with which one (`spec`,
+ * how its connection was made); or else a service's resource, or one whose kind is not recorded,
+ * which its title says.
  */
-export const describeBinding = (binding: GadgetBindingInfo, spec?: GatekeeperCreationSpec): GadgetBinding => {
-  switch (spec?.type) {
-    case 'agentSpawner':
-      return { ...binding, kind: 'agent', ...(spec.modelName ? { model: spec.modelName } : {}) }
+export const describeBinding = (
+  { kind, ...binding }: GadgetBindingInfo,
+  { spawners = [], spec }: { spawners?: readonly AgentSpawnerInfo[]; spec?: GatekeeperCreationSpec } = {},
+): GadgetBinding => {
+  switch (kind) {
+    case 'agentSpawner': {
+      const model = spawners.find(({ id }) => id === binding.target)?.modelName
+      return { ...binding, kind: 'agent', ...(model ? { model } : {}) }
+    }
     case 'aiModel':
-      return { ...binding, kind: 'model', model: spec.modelName, modelId: spec.modelId }
+      return { ...binding, kind: 'model', ...(spec?.type === 'aiModel' ? { model: spec.modelName, modelId: spec.modelId } : {}) }
     default:
       return { ...binding, kind: 'service' }
   }
@@ -255,27 +265,16 @@ export class GadgetSettings {
 
   /**
    * Has a model binding reach another of the user's models under the same name, so its code goes
-   * on as it was. There is no call to point a binding elsewhere, so a connection to the new model
-   * replaces it, with the blueprint annotation it had; if that cannot be bound, the old one is put
-   * back. The old connection stays in the workspace, as one taken away does.
+   * on as it was: a connection to the new model, then the binding pointed at it in one step
+   * (`rebind`), which keeps its blueprint annotation and is refused if the binding changed since
+   * it was read. The old connection stays in the workspace, as one taken away does.
    */
   changeModel = async (name: string, modelId: string) => {
     const binding = this.#listed().find((each) => each.name === name)
     if (!binding) throw new Error(`It no longer has env.${name}.`)
     if (binding.modelId === modelId) return
     const target = await this.#newModel(modelId)
-    await this.#with(async (gadget) => {
-      const annotation = await gadget.getBlueprintAnnotation(name).catch(() => null)
-      await gadget.unbind(name)
-      try {
-        await gadget.bind(name, target)
-      } catch (error) {
-        await gadget.bind(name, binding.target).catch(() => {})
-        throw error
-      }
-      // Only what it says when published as a template, which the binding works without.
-      if (annotation) await gadget.setBlueprintAnnotation(name, annotation).catch(() => {})
-    })
+    await this.#with((gadget) => gadget.rebind(name, binding.target, target))
     this.#readBindings(this.#run)
   }
 
@@ -304,22 +303,25 @@ export class GadgetSettings {
     const gadget = this.#gadget
     const overseer = this.#overseer
     if (!gadget || !overseer) return
-    gadget.listBindings().then((items) => Promise.all(items.map((binding) => this.#describe(overseer, binding)))).then(
+    gadget.listBindings().then(async (items) => {
+      // Read only for an agent's model: an agent is listed without one where they could not be.
+      const spawners = items.some(({ kind }) => kind === 'agentSpawner') ? await overseer.listAgentSpawners().catch(() => []) : []
+      return Promise.all(items.map(async (binding) => describeBinding(binding, { spawners, spec: binding.kind === 'aiModel' ? await this.#spec(overseer, binding.target) : undefined })))
+    }).then(
       (items) => this.#update(run, { status: 'ready', items }),
       (error: unknown) => this.#update(run, failed(error)),
     )
   }
 
-  // A binding with no service is an agent or a model, which only its connection can say.
-  async #describe(overseer: SettingsOverseer, binding: GadgetBindingInfo) {
-    if (binding.vendorId !== undefined) return describeBinding(binding)
+  // Which model a model's connection reaches, which only it can say.
+  async #spec(overseer: SettingsOverseer, target: number) {
     // Pipelined: the connection is asked what it is as it is reached.
-    const gatekeeper = overseer.getGatekeeperById(binding.target)
+    const gatekeeper = overseer.getGatekeeperById(target)
     try {
-      return describeBinding(binding, await gatekeeper.getCreationSpec())
+      return await gatekeeper.getCreationSpec()
     } catch {
       // It is still listed, by its title, which is all a row needs.
-      return describeBinding(binding)
+      return undefined
     } finally {
       gatekeeper[Symbol.dispose]()
     }

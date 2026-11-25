@@ -71,7 +71,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { COLLECTION_ROLE_LABELS } from "./skills/collectionRole";
 import { ShareCollectionDialog } from "./skills/ShareCollectionDialog";
-import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
+import { useSkillsState } from "./skills/useSkills";
 import { fileToBase64, readUploadFile } from "./uploadFiles";
 
 function baseName(path: string): string {
@@ -427,49 +427,6 @@ function DeletePermanentlyDescription({
       ) : null}
       . This cannot be undone.
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-export default function ContextLibraryPage() {
-  // Iframe-local selection state (no router/URL).
-  const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
-
-  const goToCollection = useCallback((id: string | null) => {
-    setSelectedCollection(id);
-    setSelectedDoc(null);
-  }, []);
-  const goToDoc = useCallback((path: string | null) => {
-    setSelectedDoc(path);
-  }, []);
-
-  if (selectedCollection) {
-    return (
-      <div className="h-full bg-kumo-base">
-        <CollectionEditor
-          collectionId={selectedCollection}
-          selectedPath={selectedDoc}
-          onSelectPath={goToDoc}
-          onBack={() => {
-            goToCollection(null);
-          }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <SkillsNavigatorPage
-      onSelectSkill={(collectionId, manifestPath) => {
-        setSelectedCollection(collectionId);
-        setSelectedDoc(manifestPath);
-      }}
-      onOpenCollection={goToCollection}
-    />
   );
 }
 
@@ -1600,18 +1557,32 @@ const NO_PERMISSIONS: ContextCollectionPermissions = {
   canDelete: false,
 };
 
-function CollectionEditor({
+/**
+ * Everything in one collection, skills or not, as a tree of folders and documents beside the one
+ * that is open (`selectedPath`), with the collection's details, its settings and Git tokens, and
+ * sharing. `onBack` returns to the page it was opened from, which `backLabel` names; `onGone` is
+ * for when the collection was deleted or left from here, so there is no page of it to go back to.
+ */
+export function CollectionEditor({
   collectionId,
   selectedPath,
   onSelectPath,
+  backLabel,
   onBack,
+  onGone,
 }: {
   collectionId: string;
   selectedPath: string | null;
-  onSelectPath: (path: string | null) => void;
+  /** `replace` is for a host that keeps history, which this app's own navigation does not. */
+  onSelectPath: (path: string | null, replace?: boolean) => void;
+  backLabel: string;
   onBack: () => void;
+  onGone: () => void;
 }) {
   const context = useContextApi();
+  const skillState = useSkillsState();
+  // Shared from the collection as the skills list it, whose sharing it changes.
+  const listed = skillState.status === "ready" ? skillState.collections.find(({ id }) => id === collectionId) : undefined;
   const toasts = useKumoToastManager();
   const [docs, setDocs] = useState<ContextDocumentSummary[]>([]);
   const [metadata, setMetadata] = useState<ContextCollectionMetadata | null>(
@@ -1808,7 +1779,7 @@ function CollectionEditor({
       await context.moveContextDocument(collectionId, from, dest);
     }
     if (selectedPath === from || selectedPath?.startsWith(from + "/")) {
-      setSelectedPath(replacePathPrefix(selectedPath, from, dest));
+      setSelectedPath(replacePathPrefix(selectedPath, from, dest), true);
     }
     await loadDocs();
   };
@@ -1885,9 +1856,9 @@ function CollectionEditor({
       afterDeleteExitRef.current = () => {
         if (isDir) {
           if (selectedPath === path || selectedPath?.startsWith(path + "/"))
-            setSelectedPath(null);
+            setSelectedPath(null, true);
         } else if (selectedPath === path) {
-          setSelectedPath(null);
+          setSelectedPath(null, true);
         }
         void loadDocs();
       };
@@ -1971,7 +1942,7 @@ function CollectionEditor({
             className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            {backLabel}
           </button>
           <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
             <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
@@ -1998,7 +1969,7 @@ function CollectionEditor({
           collectionId={collectionId}
           onClose={() => setSettingsOpen(false)}
           onUpdated={loadDocs}
-          onDeleted={onBack}
+          onDeleted={onGone}
         />
       )}
 
@@ -2011,12 +1982,16 @@ function CollectionEditor({
         />
       )}
 
-      {shareOpen && metadata && (
+      {listed && (
         <ShareCollectionDialog
-          collection={{ id: collectionId, title: metadata.title }}
-          onChanged={() => void loadDocs()}
-          onLeft={onBack}
-          onClose={() => setShareOpen(false)}
+          collection={listed}
+          open={shareOpen}
+          onOpenChange={(open) => {
+            setShareOpen(open);
+            // Who has it labels the overview.
+            if (!open) void loadDocs();
+          }}
+          onLeft={onGone}
         />
       )}
 
@@ -2082,11 +2057,11 @@ function CollectionEditor({
       >
         <div className="flex h-14 shrink-0 items-center px-5">
           <button
-            onClick={onBack}
+            onClick={() => onBack()}
             className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            {backLabel}
           </button>
         </div>
           {metadata && (
@@ -2234,10 +2209,11 @@ function CollectionEditor({
                   onChanged={loadDocs}
                   onRenamed={(newPath) => {
                     setDirty(false);
-                    setSelectedPath(newPath);
+                    setSelectedPath(newPath, true);
                     loadDocs();
                   }}
                   onRequestDelete={() => deletePath(selectedPath, false)}
+                  onUnavailable={() => setSelectedPath(null, true)}
                 />
               </div>
             </>
@@ -2436,6 +2412,7 @@ function DocumentEditor({
   onRenamed,
   onRequestDelete,
   onDirtyChange,
+  onUnavailable,
 }: {
   collectionId: string;
   path: string;
@@ -2447,6 +2424,8 @@ function DocumentEditor({
   onRenamed: (newPath: string) => void;
   onRequestDelete: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  // Leaves a document that doesn't exist (e.g. a stale link) for the collection overview.
+  onUnavailable: () => void;
 }) {
   const context = useContextApi();
   const toasts = useKumoToastManager();
@@ -2460,6 +2439,8 @@ function DocumentEditor({
   // fallback while the document loads.
   const [contentType, setContentType] = useState(() => contentTypeFromPath(path));
   const [loading, setLoading] = useState(true);
+  // A link can name a document that doesn't exist; never present it as an empty, editable file.
+  const [unavailable, setUnavailable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const savedDocumentRef = useRef<{ description: string; body: string } | null>(null);
@@ -2500,8 +2481,9 @@ function DocumentEditor({
         setSkillName(d.skillName ?? null);
         setDirty(false);
         setMode(readOnly || initialMode !== "edit" ? "read" : "edit");
+      } else {
+        setUnavailable(true);
       }
-      // Also clears loading for not-found.
       setLoading(false);
     }).catch((err) => {
       if (cancelled) return;
@@ -2589,6 +2571,25 @@ function DocumentEditor({
     return (
       <div className="flex h-full items-center justify-center text-sm text-kumo-subtle">
         Loading…
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <FileText size={32} className="text-kumo-subtle" />
+        <div>
+          <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
+            This document is unavailable
+          </p>
+          <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+            It may have been renamed or deleted.
+          </p>
+        </div>
+        <WorkshopButton tone="secondary" className="!h-8" onClick={onUnavailable}>
+          Back to collection
+        </WorkshopButton>
       </div>
     );
   }

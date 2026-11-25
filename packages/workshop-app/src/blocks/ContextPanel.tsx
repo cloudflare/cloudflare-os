@@ -1,8 +1,6 @@
 import type { ReactNode, Ref } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, DropdownMenu, HeaderBubble } from '@gadgets/ui'
 
 export type ContextStat = {
   key: string
@@ -17,7 +15,7 @@ export type ContextStat = {
 export type ContextPanelProps = {
   /** How many there are of each kind, as an icon and a number each, which are the button. */
   stats: ContextStat[]
-  /** What there is, in words, as the button's name: "3 outputs · 1 automation". */
+  /** What there is, in words, as the button's name: "3 library items · 1 automation". */
   summary: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -54,7 +52,7 @@ export const ContextPanel = ({ stats, summary, open, onOpenChange, floating = fa
       {count}
     </span>
   ))
-  const name = `What this chat has: ${summary}`
+  const name = `What this chat can use: ${summary}`
 
   return (
     <HeaderBubble origin="end">

@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent } from 'react'
-import { ArrowsClockwiseIcon, CloudArrowUpIcon, DownloadSimpleIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { CloudUploadIcon, Download01Icon, RefreshCwIcon } from '@/components/icons'
+import { DropdownMenu } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 
 /** A kind of file the gadget can be saved as in one of the user's accounts. */
@@ -55,7 +55,7 @@ export const ExportItems = ({ choices, onOpen, exporting, onExport, onSave, onUp
     return (
       <>
         <Note>Export formats could not be loaded.</Note>
-        <DropdownMenu.Item icon={ArrowsClockwiseIcon} keepOpen onSelect={onOpen}>Try again</DropdownMenu.Item>
+        <DropdownMenu.Item icon={RefreshCwIcon} keepOpen onSelect={onOpen}>Try again</DropdownMenu.Item>
       </>
     )
   }
@@ -63,7 +63,7 @@ export const ExportItems = ({ choices, onOpen, exporting, onExport, onSave, onUp
   return (
     <>
       {choices.formats.map(({ id, label }) => (
-        <DropdownMenu.Item key={id} icon={DownloadSimpleIcon} disabled={exporting !== undefined} onSelect={() => onExport(id)}>
+        <DropdownMenu.Item key={id} icon={Download01Icon} disabled={exporting !== undefined} onSelect={() => onExport(id)}>
           <span className={exporting !== undefined && exporting !== id ? 'text-kumo-inactive' : undefined}>
             {exporting === id ? <ShimmerText>{label}</ShimmerText> : label}
           </span>
@@ -72,11 +72,11 @@ export const ExportItems = ({ choices, onOpen, exporting, onExport, onSave, onUp
       {choices.saves.length > 0 && <DropdownMenu.Separator />}
       {choices.saves.flatMap(({ key, title, iconUrl, saved }) => [
         saved !== undefined && (
-          <DropdownMenu.Item key={`${key}:update`} icon={ArrowsClockwiseIcon} label={`Update ${saved}`} onSelect={() => onUpdate(key)}>
+          <DropdownMenu.Item key={`${key}:update`} icon={RefreshCwIcon} label={`Update ${saved}`} onSelect={() => onUpdate(key)}>
             <span className="min-w-0 truncate">Update “{saved}”…</span>
           </DropdownMenu.Item>
         ),
-        <DropdownMenu.Item key={key} icon={iconUrl ? undefined : CloudArrowUpIcon} label={`Save to ${title}`} onSelect={() => onSave(key)}>
+        <DropdownMenu.Item key={key} icon={iconUrl ? undefined : CloudUploadIcon} label={`Save to ${title}`} onSelect={() => onSave(key)}>
           {iconUrl && <img src={iconUrl} alt="" className="size-(--menu-icon) shrink-0 object-contain" />}
           <span className="min-w-0 truncate">Save to {title}…</span>
         </DropdownMenu.Item>,

@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { UserIcon } from '@phosphor-icons/react'
+import { UserIcon } from '@/components/icons'
 import { ClampedText } from '@/components/ClampedText'
-import { Switch } from '@/components/Switch'
-import { Tooltip } from '@/components/Tooltip'
+import { Switch, Tooltip } from '@gadgets/ui'
 
 /** A kind of thing a service gives access to, such as its mail or its calendar, as a dialog lists it. */
 export type ServiceAccess = {

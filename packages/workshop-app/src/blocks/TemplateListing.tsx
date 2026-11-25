@@ -1,6 +1,5 @@
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { LinkButton, Tooltip } from '@gadgets/ui'
 import { TemplateByline, type TemplateCreator } from './TemplateByline'
 
 export type TemplateListingProps = {

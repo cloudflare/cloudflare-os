@@ -6,7 +6,7 @@ import type {
   Overseer,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { grantOf, ownLinkOf, removalOutcome, withShareKey, type RemovalOutcome, type ShareTarget } from './sharingRules'
+import { grantOf, holdsOnlyView, removalOutcome, withShareKey, type GadgetAccess, type RemovalOutcome, type ShareTarget } from './sharingRules'
 
 type Calls =
   | 'getMetadata'
@@ -18,7 +18,6 @@ type Calls =
   | 'listShareLinks'
   | 'createShareLink'
   | 'newShareLinkKey'
-  | 'previewRevokeShareLink'
   | 'revokeShareLink'
 
 /** The part of a workspace's Overseer that sharing uses, and the lease that must be disposed. */
@@ -29,15 +28,15 @@ export type SharingOverseer = Pick<Overseer, Calls> & Disposable & {
 
 /**
  * The viewer's own link to what is shared: whether anyone who can sign in to the deployment gets
- * what sharing it gives from its address. On, it carries a key minted for this session, ready to
- * copy: a clipboard write is refused once the click that asked for it has passed, so the key
- * cannot be waited for then.
+ * what sharing it gives from its address. On, it carries a key only when it was just turned on;
+ * otherwise Copy link mints one (see `linkToCopy`).
  */
 export type LinkState =
   | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'off' }
-  | { status: 'on'; linkId: string; url?: string }
+  /** `access` is what a gadget's link gives: its use, or only a view of its snapshot. */
+  | { status: 'on'; linkId: string; access: GadgetAccess; url?: string }
 
 export type SharingSnapshot =
   | { status: 'loading' }
@@ -64,9 +63,9 @@ export type SharingSource = {
   /**
    * For a dialog that shares it, rather than a page that lists who has it: what is shared (the
    * workspace, or one of its gadgets), the page a link lets people in to, which its key is added
-   * to, who is sharing it, whose own link is theirs to turn on and off, and the services there
-   * are, for what its connections ask of whoever it is shared with. Without it only the people
-   * are read.
+   * to, and the services there are, for what its connections ask of whoever it is shared with.
+   * Without it only the people are read. `viewerId` is the viewer's profile id, whose own link is
+   * the one shown.
    */
   sharing?: { target: ShareTarget; page: string; viewerId: string; vendors: () => Promise<GatekeeperVendorInfo[]> }
 }
@@ -164,17 +163,33 @@ export class SharingSession {
     void this.#loadLink(run, overseer, sharing)
   }
 
-  async #loadLink(run: number, overseer: SharingOverseer, { target, page, viewerId }: NonNullable<SharingSource['sharing']>) {
+  async #loadLink(run: number, overseer: SharingOverseer, { target, viewerId }: NonNullable<SharingSource['sharing']>) {
     try {
-      const own = ownLinkOf(await overseer.listShareLinks(), target, viewerId)
-      if (run !== this.#run) return
-      if (!own) return this.#update({ link: { status: 'off' } })
-      this.#update({ link: { status: 'on', linkId: own.linkId } })
-      const { key } = await overseer.newShareLinkKey(own.linkId)
-      if (run === this.#run) this.#update({ link: { status: 'on', linkId: own.linkId, url: withShareKey(page, key) } })
+      // The viewer's default link granting `target`: that gadget, or the whole workspace to build.
+      const own = (await overseer.listShareLinks()).find((link) =>
+        link.default === true &&
+        link.createdBy.id.toLowerCase() === viewerId.toLowerCase() &&
+        (target.kind === 'gadget'
+          ? link.gadgetId === target.gadgetId
+          : (link.role ?? 'build') === 'build' && link.gadgetId === undefined && link.gadgets === undefined))
+      if (run === this.#run) this.#update({ link: own ? { status: 'on', linkId: own.linkId, access: own.mode ?? 'use' } : { status: 'off' } })
     } catch {
       if (run === this.#run) this.#update({ link: { status: 'failed' } })
     }
+  }
+
+  /**
+   * The address Copy link copies: the page while the viewer's own link is off, or else the link
+   * with a key, minted now unless the link was just turned on and came with one.
+   */
+  async linkToCopy(): Promise<string> {
+    const snapshot = this.#snapshot
+    const sharing = this.source.sharing
+    const link = snapshot.status === 'ready' ? snapshot.link : undefined
+    if (!sharing || link?.status !== 'on') return sharing?.page ?? ''
+    if (link.url) return link.url
+    const { key } = await this.#require().newShareLinkKey(link.linkId)
+    return withShareKey(sharing.page, key)
   }
 
   /** Reads who it is shared with again, keeping what is shown up meanwhile. */
@@ -197,15 +212,42 @@ export class SharingSession {
   }
 
   /**
-   * Shares it with `username`: the workspace, to edit, or the gadget, to use. Resolves to who they
-   * are, or to nothing when there is no such account. The people are read again before it
-   * resolves, so they are listed by then.
+   * Shares it with `username`: the workspace, to edit, or the gadget, to use or, for `access`
+   * "view", only to view. Resolves to who they are, or to nothing when there is no such account.
+   * Sharing never narrows what someone has, so whoever could use a gadget still can once given a
+   * view of it. The people are read again before it resolves, so they are listed by then.
    */
-  async invite(username: string): Promise<CollaboratorInfo | null> {
+  async invite(username: string, access: GadgetAccess = 'use'): Promise<CollaboratorInfo | null> {
     const target = this.source.sharing?.target ?? { kind: 'workspace' }
-    const person = await this.#require().addCollaborator(username, grantOf(target))
+    const person = await this.#require().addCollaborator(username, grantOf(target, access))
     if (person) await this.#reloadPeople()
     return person
+  }
+
+  /**
+   * Changes what someone has of the gadget shared, and resolves to what they have after: its use,
+   * given, or only a view. Sharing never narrows, so going down to a view takes away the viewer's
+   * grants of the gadget and gives the view in one call (`keepView`), which the restart that
+   * narrowing schedules cannot come between; they keep its use where someone else gave it to them.
+   */
+  async changeAccess(profileId: string, access: GadgetAccess): Promise<GadgetAccess> {
+    const gadgetId = this.#gadgetId()
+    if (gadgetId === undefined) throw new Error('Only a gadget is shared to use or to view.')
+    const overseer = this.#require()
+    let held: GadgetAccess
+    try {
+      if (access === 'view') {
+        const narrowed = await overseer.removeCollaborator(profileId, [], gadgetId, true)
+        held = narrowed.some(({ profile }) => profile.id === profileId) ? 'view' : 'use'
+      } else {
+        const person = await overseer.addCollaborator(profileId, grantOf({ kind: 'gadget', gadgetId, title: '' }, access))
+        held = person && holdsOnlyView(person.access, gadgetId) ? 'view' : 'use'
+      }
+    } finally {
+      // Whatever came of it, what is listed is what there is.
+      await this.#reloadPeople().catch(() => {})
+    }
+    return held
   }
 
   /** What taking someone's access away would do: what is left to them, and who else would lose it. */
@@ -225,27 +267,28 @@ export class SharingSession {
   }
 
   /**
-   * Turns the viewer's own link on or off. Turned off, it stops letting anyone in, but whoever
-   * already came in by it keeps what it gave them: they are listed with the rest and taken off one
-   * at a time, never all at once by a switch.
+   * Sets what the viewer's own link gives: nothing ("off"), or what is shared, a gadget for its
+   * use or only a view. Turned off, it stops letting anyone in, but whoever already came in by it
+   * keeps what it gave them: they are listed with the rest and taken off one at a time, never all
+   * at once by a switch. Changed from one to the other, the new link is made before the old one is
+   * turned off, so that there is never none.
    */
-  async setLink(on: boolean) {
+  async setLink(access: GadgetAccess | 'off') {
     const snapshot = this.#snapshot
     const sharing = this.source.sharing
     if (snapshot.status !== 'ready' || !snapshot.link || !sharing) return
     const { link } = snapshot
-    if (link.status === 'loading' || link.status === 'failed' || on === (link.status === 'on')) return
+    if (link.status === 'loading' || link.status === 'failed') return
+    if (access === (link.status === 'on' ? link.access : 'off')) return
     const overseer = this.#require()
     const run = this.#run
-    if (on) {
-      const { key, linkId } = await overseer.createShareLink(grantOf(sharing.target), undefined, { default: true })
-      if (run === this.#run) this.#update({ link: { status: 'on', linkId, url: withShareKey(sharing.page, key) } })
-      return
+    if (access !== 'off') {
+      const { key, linkId } = await overseer.createShareLink(grantOf(sharing.target, access), undefined, { default: true })
+      if (run === this.#run) this.#update({ link: { status: 'on', linkId, access, url: withShareKey(sharing.page, key) } })
     }
     if (link.status !== 'on') return
-    const affected = await overseer.previewRevokeShareLink(link.linkId)
-    await overseer.revokeShareLink(link.linkId, affected.map(({ profile }) => profile.id))
-    if (run === this.#run) this.#update({ link: { status: 'off' } })
+    await overseer.revokeShareLink(link.linkId, 'everyone')
+    if (run === this.#run && access === 'off') this.#update({ link: { status: 'off' } })
     await this.#reloadPeople()
   }
 }

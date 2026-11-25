@@ -1,4 +1,4 @@
-import { BellIcon, BellSlashIcon } from '@phosphor-icons/react'
+import { Notification01Icon, NotificationOff01Icon } from '@/components/icons'
 import type { SearchEntry } from '@/blocks/SearchDialog'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useBrowserPushSetting } from '@/notifications/useBrowserPush'
@@ -50,7 +50,7 @@ export const useNotificationEntries = (): SearchEntry[] => {
           keywords: ['push', 'alerts', 'tasks', 'approvals'],
           detail: BROWSER_DETAIL[browser.status],
           on: browser.status === 'on',
-          icon: browser.status === 'on' ? <BellIcon weight="fill" /> : <BellIcon />,
+          icon: browser.status === 'on' ? <Notification01Icon weight="fill" /> : <Notification01Icon />,
           keepOpen: true,
           onSelect: () => {
             if (browser.pending || browser.status === 'loading') return
@@ -67,7 +67,7 @@ export const useNotificationEntries = (): SearchEntry[] => {
           group: GROUP,
           title: 'Mute workspace…',
           keywords: ['notifications', 'quiet', 'silence'],
-          icon: <BellSlashIcon />,
+          icon: <NotificationOff01Icon />,
           onSelect: () => ({ kind: 'list', title: 'Mute workspace', placeholder: 'Find a workspace to mute', entries: choices(others, true) }),
         } satisfies SearchEntry]
       : []),
@@ -78,7 +78,7 @@ export const useNotificationEntries = (): SearchEntry[] => {
           title: 'Unmute workspace…',
           keywords: ['notifications', 'quiet', 'silence'],
           detail: `${muted.length} muted`,
-          icon: <BellIcon />,
+          icon: <Notification01Icon />,
           onSelect: () => ({ kind: 'list', title: 'Unmute workspace', placeholder: 'Find a workspace to unmute', entries: choices(muted, false) }),
         } satisfies SearchEntry]
       : []),

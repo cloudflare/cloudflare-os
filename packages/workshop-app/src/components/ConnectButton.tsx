@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusSignIcon } from './icons'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from './Button'
+import { Button } from '@gadgets/ui'
 
 export type ConnectButtonProps = {
   /** The logos of the apps already connected, shown after the add control. */
@@ -24,7 +24,7 @@ export const ConnectButton = ({ children, onConnect, current }: ConnectButtonPro
     )}
     icon={
       <span className="grid size-7 place-items-center rounded-full bg-kumo-tint">
-        <PlusIcon />
+        <PlusSignIcon />
       </span>
     }
   >

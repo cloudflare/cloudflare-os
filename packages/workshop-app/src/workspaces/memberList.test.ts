@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { narrowList } from '@/components/listView'
+import { narrowList } from '@gadgets/ui'
 import { memberList } from './memberList'
 import type { WorkspaceMember } from './workspaceMembers'
 

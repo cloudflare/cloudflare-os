@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
-import { AppWindowIcon, PaperPlaneRightIcon, PlayIcon, StopIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AlertCircleIcon, AppWindowIcon, PlayIcon, SendHorizontalIcon, StopIcon } from '@/components/icons'
 import { newMessagePortRpcSession, type RpcStub } from 'capnweb'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 import {
   INLINE_VIEW_HANDSHAKE,
@@ -111,7 +111,7 @@ export const InlineView = ({ html, title, error, onSend }: InlineViewProps) => {
     <div className="flex flex-col">
       {error !== undefined ? (
         <p className="flex items-center gap-2 px-4 pt-3 text-sm/5 text-kumo-danger">
-          <WarningCircleIcon aria-hidden="true" className="size-4 shrink-0" />
+          <AlertCircleIcon aria-hidden="true" className="size-4 shrink-0" />
           {error}
         </p>
       ) : !stopped && (
@@ -169,14 +169,14 @@ const SuggestedMessage = ({ message, sending, onSend, onDismiss }: SuggestedMess
   // 21px corners less a 5px inset leave 16px, as a tile's in a bubble.
   <div role="group" aria-label="Message to send" className="arrives m-[5px] mt-0 flex flex-col gap-2 rounded-2xl bg-kumo-tint p-3 ps-4">
     <p className="flex items-center gap-1.5 text-xs text-kumo-subtle">
-      <PaperPlaneRightIcon aria-hidden="true" className="size-3.5" />
+      <SendHorizontalIcon aria-hidden="true" className="size-3.5" />
       The view suggests sending
     </p>
     {/* A keyboard user has to be able to scroll a long one to read it all. */}
     <p tabIndex={0} className="max-h-32 overflow-y-auto text-base/5 whitespace-pre-wrap wrap-anywhere text-kumo-default">{message}</p>
     <div className="flex flex-wrap justify-end gap-2">
       <Button variant="ghost" disabled={sending} onClick={onDismiss}>Dismiss</Button>
-      <Button variant="primary" icon={PaperPlaneRightIcon} disabled={sending} onClick={onSend}>Send</Button>
+      <Button variant="primary" icon={SendHorizontalIcon} disabled={sending} onClick={onSend}>Send</Button>
     </div>
   </div>
 )
