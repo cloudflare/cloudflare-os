@@ -290,6 +290,21 @@ describe("images read from a worktree", () => {
     expect(results(requests[0]).flatMap(msg => msg.content.filter(part => part.type === "image"))).toHaveLength(20);
   }));
 
+  it("keeps an accepted reference upload when the provider refuses a subsequent file image", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Compare this reference", {attachments: [{oid: blob.oid, mimeType: "image/png", name: "reference.png"}]});
+    await expect(scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"}),
+    ])).rejects.toThrow("400 Invalid image");
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(requests[0].flatMap(msg => msg.role === "user" && Array.isArray(msg.content)
+      ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
+    expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
+  }));
+
   it("does not send reverted image reads", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await turn(impl, chatId, [[read()]]);

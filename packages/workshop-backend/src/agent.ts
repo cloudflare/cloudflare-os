@@ -2470,7 +2470,6 @@ async function runAgentPass(
         keptAttachmentBytes + attachment.size <= MAX_INLINE_MESSAGE_BYTES) {
       promptAttachmentIds.add(attachment.id);
       inlineAttachmentIds.add(attachment.id);
-      unansweredAttachmentIds.push(attachment.id);
       ++keptAttachments;
       keptAttachmentBytes += attachment.size;
     }
@@ -2480,7 +2479,10 @@ async function runAgentPass(
     if (!answered && startsAgentTurn(msg)) prompt ??= msg.sequence;
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
-    if (msg === activePrompt && promptAttachmentIds.size > 0) continue;
+    if (msg === activePrompt && promptAttachmentIds.size > 0) {
+      if (!answered) unansweredAttachmentIds.push(...promptAttachmentIds);
+      continue;
+    }
     // File-tool images share attachment admission, byte/count limits and compaction. Their
     // immutable references let this pass choose what fits before opening any image blobs.
     const candidates = [
