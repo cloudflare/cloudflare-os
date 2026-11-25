@@ -86,7 +86,10 @@ it.each([
   }
 })
 
-it('shows a gatekeeper setting an admin picks at once, and what is stored again when the save is refused', async () => {
+it.each([
+  { outcome: 'succeeds', refreshFails: false },
+  { outcome: 'fails', refreshFails: true },
+])('shows a gatekeeper setting an admin picks at once, and what is stored again when the save is refused and the refresh $outcome', async ({ refreshFails }) => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   const vendor = {
     vendorId: 'websearch', displayName: 'Web Search', autoProvisions: true, ambientMode: 'optional',
@@ -100,6 +103,9 @@ it('shows a gatekeeper setting an admin picks at once, and what is stored again 
     ],
   } satisfies AdminResourceVendor
   const getSettings = vi.fn<AdminApi['getSettings']>().mockResolvedValue(viewOf(vendor))
+  if (refreshFails) {
+    getSettings.mockResolvedValueOnce(viewOf(vendor)).mockRejectedValue(new Error('Settings unavailable'))
+  }
   const save = Promise.withResolvers<void>()
   const setGatekeeperSetting = vi.fn<AdminApi['setGatekeeperSetting']>(() => save.promise)
   getAdminApi.mockResolvedValue({ getSettings, setGatekeeperSetting, getUpdateStatus: async () => null })
@@ -131,6 +137,7 @@ it('shows a gatekeeper setting an admin picks at once, and what is stored again 
     expect(addToast.mock.calls).toEqual([[{ title: 'The gatekeeper refused it.', variant: 'error' }]])
     expect(select('Search provider')?.textContent).toBe('Ceramic')
     expect(select('Fallback search provider')).toBeNull()
+    expect(getSettings).toHaveBeenCalledTimes(2)
   } finally {
     delete view.PointerEvent
     await act(async () => { root.unmount() })

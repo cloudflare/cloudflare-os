@@ -262,8 +262,9 @@ export default function AdminPage() {
     }
   }
 
-  // Shows a change to a gatekeeper at once and saves it. If the save fails, says why and reads
-  // back what is stored.
+  // Shows a change to a gatekeeper at once and saves it. If the save fails, says why, puts back
+  // what was shown, and reads what is stored. The read can fail too, and the controls must not
+  // go on showing a change that was not saved.
   const changeGatekeeper = async (
     vendorId: string,
     change: (vendor: AdminResourceVendor) => AdminResourceVendor,
@@ -271,6 +272,7 @@ export default function AdminPage() {
   ) => {
     if (!admin) return
     const key = `gk\u0000${vendorId}`
+    const shown = resourceVendors.find((v) => v.vendorId === vendorId)
     setResourceBusy((prev) => new Set(prev).add(key))
     setResourceVendors((prev) => prev.map((v) => (v.vendorId === vendorId ? change(v) : v)))
     try {
@@ -278,6 +280,7 @@ export default function AdminPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })
+      setResourceVendors((prev) => prev.map((v) => (v.vendorId === vendorId ? shown ?? v : v)))
       await reloadResources().catch(() => {})
     } finally {
       setResourceBusy((prev) => {
