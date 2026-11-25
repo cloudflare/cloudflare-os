@@ -92,6 +92,27 @@ tracks Context source/config edits for watch reruns while excluding its generate
 
 Run just these cases with `pnpm --filter @gadgets/integration-tests test:run __tests__/context-sharing.test.ts`.
 
+### The real admin gatekeeper
+
+`__tests__/admin-gatekeeper.test.ts` boots the real `gatekeeper-admin` beside the Workshop, on a
+deployment with three admins, and drives both through the public RPC API and scripted agent turns
+whose code uses the connection. It covers who can connect the gatekeeper, how each read is
+recorded, what an agent is refused, who the observer check lets open a workspace that has read
+through it, and what removing the account or demoting its admin does.
+`__tests__/admin-gatekeeper-actions.test.ts` covers its two action kinds: a write and a content
+request each wait for a person, and run once approved. Nothing of the gatekeeper or of the Admin
+API is faked.
+
+`__tests__/admin-gatekeeper-harness.ts` holds what the suite uses. An account is connected as the
+Gatekeepers page connects one: `connectAccount()`, the gatekeeper's connect link, then
+`completeConnectHandoff()`. Its scripted model (`turnModels()`) finds a turn's steps by a marker in
+the message that starts the turn, not by the order requests arrive in.
+
+Both test entrypoints build `@gadgets/gatekeeper-admin#build:integration-worker`, which generates
+the gatekeeper's schema first, and `src/worker-inputs.ts` tracks the gatekeeper's source and config
+for watch reruns. Run one alone with
+`pnpm --filter @gadgets/integration-tests test:run __tests__/admin-gatekeeper.test.ts`.
+
 ### Storage isolation is by convention, because the alternative is worse
 
 `server.reset()` exists, and measuring it settles the question: **~3 s per call**, which is more than

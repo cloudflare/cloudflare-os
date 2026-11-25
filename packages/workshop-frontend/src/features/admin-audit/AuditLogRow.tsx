@@ -20,7 +20,7 @@ import { KindBadge } from './KindBadge'
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
 export const AUDIT_LOG_COLUMNS = 6
 
-const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI' }
+const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI', gatekeeper: 'Admin gatekeeper' }
 
 // The settings stored as lists of entries with ids, whose keyless change is a change of order.
 const ORDERED_SETTING_NAMES = new Map([

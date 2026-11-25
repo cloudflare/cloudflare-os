@@ -12436,8 +12436,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * Refuses, writing and recording nothing:
    *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
    *     and again once its owner has been read;
-   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not "api" or
-   *     "cli", or arguments that are not the action's;
+   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not an
+   *     AdminVia, or arguments that are not the action's;
    *   - an admin who is no longer a deployment admin (`notAdmin`), and writes turned off
    *     (`writesOff`), both read from this workspace's own environment.
    *
@@ -12457,8 +12457,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let reason = validateAdminAccessReason(call.reason);
-    if (call.via !== "api" && call.via !== "cli") {
-      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    if (call.via !== "api" && call.via !== "cli" && call.via !== "gatekeeper") {
+      throw new TypeError("An admin write's via must be \"api\", \"cli\" or \"gatekeeper\".");
     }
     let args = adminWriteArgs(call.action, call.args);
 

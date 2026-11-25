@@ -189,6 +189,14 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(workers["gatekeeper-mcp"].singleton, true);
   assert.equal(workers["gatekeeper-mcp-portal"].singleton, true);
   assert.equal(workers["gatekeeper-homeassistant"].singleton, true);
+  // So is the admin gatekeeper, for the same reason, and it is preinstalled without being
+  // ambient: it takes no inputs and no bindings, since what it can do is what the Workshop hands
+  // each account at connect.
+  const adminGatekeeper = workers["gatekeeper-admin"];
+  assert.equal(adminGatekeeper.singleton, true);
+  assert.equal(adminGatekeeper.preinstall, true);
+  assert.deepEqual(adminGatekeeper.inputs, []);
+  assert.deepEqual(adminGatekeeper.bindings, []);
 
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
@@ -331,6 +339,17 @@ test("releaseShortName rejects names that don't fold to a legal slug", () => {
   }
   // The cap itself is inclusive.
   assert.equal(releaseShortName(`gatekeeper-${"a".repeat(20)}`), "a".repeat(20));
+});
+
+// A deployment admin's connect flow hands their Admin API to whatever Worker is bound as
+// GATEKEEPER_ADMIN, so only the admin gatekeeper's own package may fold to that slug.
+test("releaseShortName reserves the admin gatekeeper's slug for its package", () => {
+  assert.equal(releaseShortName("gatekeeper-admin"), "admin");
+  for (const pkgName of ["gatekeeper-ad-min", "gatekeeper-ad.min"]) {
+    assert.throws(() => releaseShortName(pkgName),
+        /folds to "admin", which is reserved for gatekeeper-admin/,
+        `expected ${pkgName} to be rejected`);
+  }
 });
 
 test("every gatekeeper shortName is unique", () => {
