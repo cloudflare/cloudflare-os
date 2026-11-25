@@ -231,7 +231,8 @@ export const startMascotMotion = (frame: HTMLElement, options: { swells?: boolea
     const outsideY = Math.max(bounds.top - y, 0, y - bounds.bottom)
     const distance = Math.hypot(outsideX, outsideY)
     const falloff = Math.max(bounds.width, bounds.height) * reach
-    pointer.influence = 1 - smoothstep(distance / falloff)
+    // Inside it is drawn fully, which a reach of 0 would make 0 / 0 and lose its shape to.
+    pointer.influence = distance === 0 ? 1 : 1 - smoothstep(distance / falloff)
     pointer.active = true
   }
   const resetPointer = () => { moved = undefined; pointer.x = 0; pointer.y = 0; pointer.influence = 0; pointer.active = false }

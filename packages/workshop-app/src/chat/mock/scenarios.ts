@@ -756,18 +756,20 @@ const agents: Scenario = {
   workspace: agentRuns(),
 }
 
-// The agents the launch chat's agent starts, as runs of the workspace's General agent.
-const GENERAL: AgentSpawnerInfo = { id: 40, config: { displayName: 'General', modelId: 'auto' }, modelName: 'Auto', bindings: [] }
+// The agents of the workspace the launch chat's agent starts runs of.
+const spawner = (id: number, displayName: string): AgentSpawnerInfo => ({ id, config: { displayName, modelId: 'auto' }, modelName: 'Auto', bindings: [] })
+const LAUNCH_AGENTS = [spawner(40, 'Jira triage'), spawner(41, 'Code reviewer'), spawner(42, 'Design QA'), spawner(43, 'General'), spawner(44, 'Researcher')]
+// What it starts them on, a run of each.
 const LAUNCH_RUNS = [
-  { id: 101, title: 'Processing tasks from Jira', brief: 'Go through the PLAT board: close what shipped, and list what has no owner.' },
-  { id: 102, title: 'Reviewing gadget code', brief: 'Review the Launch board gadget’s code for anything that would break on launch day.' },
-  { id: 103, title: 'Testing user interface designs', brief: 'Click through the new onboarding screens and note what reads wrong.' },
-  { id: 104, title: 'Updating project documentation', brief: 'Bring the launch runbook up to date with what changed this sprint.' },
-  { id: 105, title: 'Conducting user feedback sessions', brief: 'Summarise this week’s feedback calls into what to fix first.' },
+  { id: 101, agent: LAUNCH_AGENTS[0], title: 'Processing tasks from Jira', brief: 'Go through the PLAT board: close what shipped, and list what has no owner.' },
+  { id: 102, agent: LAUNCH_AGENTS[1], title: 'Reviewing gadget code', brief: 'Review the Launch board gadget’s code for anything that would break on launch day.' },
+  { id: 103, agent: LAUNCH_AGENTS[2], title: 'Testing user interface designs', brief: 'Click through the new onboarding screens and note what reads wrong.' },
+  { id: 104, agent: LAUNCH_AGENTS[3], title: 'Updating project documentation', brief: 'Bring the launch runbook up to date with what changed this sprint.' },
+  { id: 105, agent: LAUNCH_AGENTS[4], title: 'Conducting user feedback sessions', brief: 'Summarise this week’s feedback calls into what to fix first.' },
 ]
 const spawnRuns = call(
   'executeCode',
-  { code: `for (const [title, brief] of TASKS) {\n  await env.GENERAL.spawn(title, brief)\n}\n` },
+  { code: `for (const { agent, title, brief } of TASKS) {\n  runs.push(await env[agent].spawn(title, brief))\n}\n` },
   { output: 'Started 5 agents.\n' },
 )
 // Waiting for them, which runs for as long as they take: it says how each ended as it does, and
@@ -781,7 +783,7 @@ const WAIT_LINES = [
 ]
 const waitRuns = call(
   'executeCode',
-  { code: 'for await (const run of env.GENERAL.settled(runs)) {\n  console.log(`${run.title}: ${run.status}`)\n}\n' },
+  { code: 'for await (const run of settled(runs)) {\n  console.log(`${run.title}: ${run.status}`)\n}\n' },
   { output: WAIT_LINES.join('') },
 )
 const waitLine = (line: number): ScriptStep => ({ stream: { type: 'toolOutputDelta', toolCallId: waitRuns.toolCallId, delta: WAIT_LINES[line] }, delay: 0 })
@@ -790,7 +792,7 @@ const runStep = (index: number, delay: number, metadata: Partial<Omit<AiChatMeta
   run: { id: LAUNCH_RUNS[index].id, metadata, ...(text ? { message: agent({ text }) } : {}) },
   delay,
 })
-const LAUNCH_REASONING = 'Five separate pieces of work. Each can go to an agent of its own, and I can wait for them.'
+const LAUNCH_REASONING = 'Five separate pieces of work, and the workspace has an agent for each. I can wait for them.'
 
 const agentRunsScenario: Scenario = {
   id: 'agent-runs',
@@ -802,8 +804,8 @@ const agentRunsScenario: Scenario = {
       streamReasoning(LAUNCH_REASONING),
       streamTool(spawnRuns),
       { message: agent({ reasoning: LAUNCH_REASONING, toolCalls: [spawnRuns] }), delay: 300 },
-      LAUNCH_RUNS.map(({ id, title, brief }, index): ScriptStep => ({
-        run: { id, metadata: { title, spawnerId: GENERAL.id, spawnerName: 'General', spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
+      LAUNCH_RUNS.map(({ id, agent: { id: spawnerId, config }, title, brief }, index): ScriptStep => ({
+        run: { id, metadata: { title, spawnerId, spawnerName: config.displayName, spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
         delay: index === 0 ? 300 : 120,
       })),
       say(agent({ text: 'I’ve set up five agents to work on these in the background, one for each part. I’m waiting for them to finish, and I’ll bring what they find together here.' })),
@@ -832,7 +834,7 @@ const agentRunsScenario: Scenario = {
     runStep(0, 600, { awaitingDecision: undefined, activeAgent: AGENT }),
     runStep(0, 3500, { activeAgent: undefined }, 'Assigned all twelve to the platform on-call.'),
   ],
-  agents: { spawners: [GENERAL], gadgets: [], runs: [] },
+  agents: { spawners: LAUNCH_AGENTS, gadgets: [], runs: [] },
 }
 
 /** Every scripted chat, in the order the picker lists them. */

@@ -1,7 +1,14 @@
 import { LinkButton } from '@gadgets/ui'
-import { RUN_STATUS_WORDS_COLOUR, RunStatusMark, type AgentRunStatus } from './RunStatusMark'
+import { RunStatusMark, type AgentRunStatus } from './RunStatusMark'
 
-export type { AgentRunStatus }
+/** The colour of how a run stands in words, for those that want the user: waiting on them, failed. */
+const WORDS_COLOUR: Record<AgentRunStatus, string> = {
+  running: 'text-kumo-subtle',
+  waiting: 'text-kumo-brand',
+  failed: 'text-kumo-danger',
+  changes: 'text-kumo-subtle',
+  done: 'text-kumo-subtle',
+}
 
 export type AgentRunRowProps = {
   title: string
@@ -34,7 +41,7 @@ export const AgentRunRow = ({ title, status, statusWords, time, agent, href, onS
       <span className="truncate font-medium text-kumo-default">{title}</span>
       <span className="truncate text-kumo-subtle">
         {agent && <>{agent} · </>}
-        <span className={RUN_STATUS_WORDS_COLOUR[status]}>{statusWords}</span>
+        <span className={WORDS_COLOUR[status]}>{statusWords}</span>
       </span>
     </span>
     {time && <span className="shrink-0 self-start text-kumo-subtle">{time}</span>}

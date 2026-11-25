@@ -333,24 +333,43 @@ reply is drafted its views are only named (`InlineViewDraft`); a block the agent
 shown as code. The `live-view` scenario plays one.
 
 The agents a chat's agent starts (runs whose `spawnedByChatId` is the chat, from the workspace's
-runs, `useWorkspaceAgents`) are marked under what it says next, which is where it tells of them
-("I've set up five agents… waiting for them to finish"), or at the end of its turn where it says
-nothing more, as one group ("Started 5 agents", `AgentRunsStarted`): a pill each
-(`AgentRunPill`), which opens the run, with no spinner, as it stays in the history. Each run's end
-is a pill of its own where it ended, saying how ("Finished", "Failed"), never above its start
-(`chat/chatRuns.ts`, plain and tested); those of the last turn are after the live output. How the
-call was made stays in the trace. Neither pills nor the button draw the mascot, which moves and
-is played with: they have the still cloud (`AgentIcon`, `fill` in the button). What is under way
-is beside the composer (`AgentRunsButton`): up to three of their clouds going round a ring in
-depth, tilted as a planet's, the far side smaller, fainter and blurred, while a light sweeps the button for as long as
-any works (one alone stays still in the middle; held still at `off`, with no sweep), and a dot
-while one waits on the user. A run that ends leaves the ring as it goes round, fading and blurring
-out as the others space out again (`--presence` and `--offset`, eased by motion; the ring's turn
-is CSS on the ring, which each cloud inherits), and the button goes after the last, the composer
-taking its room. It opens to a pill for each, with how it stands, stacked over it at its end. A
-run's header starts with the way back to the chat that started it (`ChatHeader`'s `back`, from `ChatSnapshot.startedBy`), given where the page
-can open another chat (`ChatPane`'s `onOpenChat`). The `agent-runs` scenario plays five, which end
-in each way, its agent waiting for them in the same turn and summing up once none is at work.
+runs, `useWorkspaceAgents`) are marked where each started, a row of its own (`RunMarkView`), so
+that what it says of them next ("I've set up five agents… waiting for them to finish") comes after
+them: a pill (`AgentRunPill`: the agent's name, a chevron and the run's title, as the run's header
+has them, its title trailing off: "Processing tasks from Jira…"), which opens the run, with no
+spinner, as it stays in the history. Each run's end is a pill of its own where it ended, its mark
+in the cloud's place saying how (a tick, a hand in the primary colour for what wants the user, a
+danger mark), the words only read out, never above its start (`chat/chatRuns.ts`, plain and
+tested). They are rows of the conversation even after everything said, so that one stays where
+it is as what is said next arrives, and each arrives as a message does, its row opening to its
+height: a row grows to no more than the height it arrived at until it has arrived, so several
+started at once are not one row that grows. While the earlier history is to be read, what
+happened before it is left out until it is. The runs are those of the workspace's latest
+(`RUNS_READ`), so in a busy workspace an older chat's are no longer marked; listing a chat's runs
+by `spawnedByChatId` would end that. What the workspace says of runs changes with every run of
+every chat, so the chat keeps its own while they stand as they did (`sameRuns`). How the call was
+made stays in the trace. The pills have the still cloud (`AgentIcon`), not the mascot, which
+moves and is played with, and are not pressed where the page cannot open another chat. What is
+under way is before the composer, on its left, where it is seen first (`AgentRunsButton`): one
+alone as the mascot, thinking, or alarmed while it waits on the user; more as up to five solid
+clouds (`AgentIcon`'s `fill`) going round a ring in depth, tilted as a planet's, the far side
+smaller and fainter, the more so and the ring the wider the more go round (`--depth`), held
+still at `off`, and a dot pops in at its foot while one waits on the user. A run that ends fades out of the ring as it goes on turning, and the others close the
+gap from where they are; one that starts fades in as they make room (`--presence` and `--offset`,
+eased by motion, the shares kept by `spaceRing` so the rest move as little as they can; the
+ring's turn is CSS on the ring, which each cloud inherits), and the button goes after the last,
+the composer taking its room and the focus, where the button had it. It opens to a pill for each,
+with how it stands (a spinner at its end while at work, the hand in the cloud's place while it
+waits), stacked over it at its start, each lifted by a wide shadow all round rather than from
+below, growing out of the button and back into it as a `DropdownMenu` does, on its springs
+(`--runs-open`), the nearest first; the button closes it again. While it is open, a pill folds
+away as its run ends, the others closing up, and one opens in as one starts; a pill's spinner folds
+away and its cloud fades into the hand as it stops to wait (only the height is animated, the gap
+kept inside, so that it closes to nothing). A run's header starts with the way
+back to the chat that started it, in place of the workspace's crumb (`ChatHeader`'s `back`, from
+`ChatSnapshot.startedBy`), given where the page can open another chat (`ChatPane`'s
+`onOpenChat`). The `agent-runs` scenario plays five, of five agents, which end in each way, its
+agent waiting for them in the same turn and summing up once none is at work.
 
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the

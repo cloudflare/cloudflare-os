@@ -6,7 +6,10 @@ import { AgentCrumb, type AgentCrumbProps } from './AgentCrumb'
 import { WorkspaceCrumb } from './WorkspaceCrumb'
 
 export type ChatHeaderProps = {
-  /** Back to the chat whose agent started this one, an agent's run, first of all. */
+  /**
+   * Back to the chat whose agent started this one, an agent's run, first of all. That chat is in
+   * the workspace, so the workspace's crumb is left out then.
+   */
   back?: { onBack: () => void }
   /** The workspace the chat is in, once it is known. */
   workspace?: {
@@ -32,8 +35,8 @@ export type ChatHeaderProps = {
 }
 
 /**
- * A chat's header: for a run another chat's agent started, the way back to that chat; the way to
- * its workspace, and for an agent's run to its agent, then the chat's title, which opens its
+ * A chat's header: for a run another chat's agent started, the way back to that chat in place of
+ * the way to its workspace; else the way to its workspace; for an agent's run the way to its agent, then the chat's title, which opens its
  * settings, then the agents its gadgets start. Each is a bubble of its own, so it pops in as the
  * first is set up.
  */
@@ -44,7 +47,7 @@ export const ChatHeader = ({ back, workspace, agent, title, onOpenSettings, agen
         <Button icon={ArrowLeft02Icon} aria-label="Back to the chat that started it" title="Back to the chat that started it" onClick={back.onBack} />
       </HeaderBubble>
     )}
-    {workspace && <WorkspaceCrumb {...workspace} />}
+    {workspace && !back && <WorkspaceCrumb {...workspace} />}
     {agent && <AgentCrumb {...agent} />}
     {title && (
       // Cut off where there is not room for all of it, as on a phone.

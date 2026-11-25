@@ -57,7 +57,7 @@ import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { STATUS_WORDS } from '@/automations/agents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 import { AgentRunsButton } from '@/blocks/AgentRunsButton'
-import { ENDED, placeRunMarks, runsStartedBy, type ChatRun } from './chatRuns'
+import { placeRunMarks, runsStartedBy, sameRuns, type ChatRun, type RunMark } from './chatRuns'
 import { RunMarkView } from './RunMarkView'
 
 export type ChatPaneProps = {
@@ -211,14 +211,23 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // The agents the chat's agent started, as the workspace's runs say how each stands, and where
   // the conversation marks them.
   const workspaceAgents = useWorkspaceAgents(workspaceId).state
-  const runs = useMemo(() => (workspaceAgents.status === 'ready' ? runsStartedBy(workspaceAgents.agents, chatId) : NO_RUNS), [workspaceAgents, chatId])
-  const runMarks = useMemo(() => placeRunMarks(items ?? [], runs), [items, runs])
+  // Kept as they were while they stand as they did, as the workspace's runs change with every
+  // run of every chat, which would otherwise draw the conversation and the composer again.
+  const readRuns = useMemo(() => (workspaceAgents.status === 'ready' ? runsStartedBy(workspaceAgents.agents, chatId) : NO_RUNS), [workspaceAgents, chatId])
+  const [runs, setRuns] = useState(readRuns)
+  if (readRuns !== runs && !sameRuns(readRuns, runs)) setRuns(readRuns)
+  const earlierToRead = chat.status === 'ready' && chat.hasEarlier
+  const runMarks = useMemo(() => placeRunMarks(items ?? [], runs, earlierToRead), [items, runs, earlierToRead])
+  // A run is opened only where the page can open another chat; elsewhere its pills are not pressed.
   const openRun = useHandler((runId: number) => onOpenChat?.(runId))
-  // Those under way are beside the composer; each leaves it as it ends, which the conversation marks.
-  const heldRuns = useMemo(() => runs
-    .filter(({ status }) => !ENDED.has(status))
-    .map(({ chatId: id, title: runTitle, status }) => ({ key: String(id), title: runTitle, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) })), [runs, chatHref])
+  const opensRuns = onOpenChat !== undefined
+  // Those under way are before the composer; each leaves it as it ends, which the conversation marks.
+  const heldRuns = useMemo(() => runs.flatMap(({ chatId: id, title: runTitle, agent, status }) =>
+    status === 'running' || status === 'waiting'
+      ? [{ key: String(id), title: runTitle, agent: agent.name, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) }]
+      : []), [runs, chatHref])
   const openHeldRun = useHandler((key: string) => openRun(Number(key)))
+  const focusComposer = useHandler(() => composer.current?.focus())
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
@@ -355,14 +364,17 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
-    // What is said of the agents the chat started comes between rows, which then run on no more.
-    const { before } = runMarks
-    return items?.flatMap((item, index) => {
-      const marks = (before.get(index) ?? []).map((mark) => ({
-        id: mark.key,
-        sequence,
-        content: <RunMarkView mark={mark} onOpen={openRun} href={chatHref} />,
-      }))
+    // What is said of the agents the chat started comes between rows, which then run on no more,
+    // or after them all, as rows of the conversation too: one stays the same row as what is said
+    // after it arrives, rather than moving into the conversation from under it.
+    const { before, after } = runMarks
+    const markRow = (mark: RunMark) => ({
+      id: mark.key,
+      sequence,
+      content: <RunMarkView mark={mark} onOpen={opensRuns ? openRun : undefined} href={chatHref} />,
+    })
+    const rows = items?.flatMap((item, index) => {
+      const marks = (before.get(index) ?? []).map(markRow)
       sequence = Math.max(sequence, item.id)
       return [...marks, {
         id: item.key,
@@ -380,7 +392,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         ),
       }]
     }) ?? []
-  }, [items, runMarks, openRun, chatHref, disclosure, handlers, restricted])
+    return [...rows, ...after.map(markRow)]
+  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
   const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -546,8 +559,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onAdd={addLogs}
       onDiscard={discardLogs}
     />
-    {/* The agents it started that are under way are beside it, level with its foot. */}
+    {/* The agents it started that are under way are before it, where they are seen first, level
+        with its first line, as its own buttons are. */}
     <div className="flex items-end">
+      <div className="mb-[calc((var(--composer-button)+12px-2.25rem)/2)]">
+        <AgentRunsButton runs={heldRuns} onOpen={opensRuns ? openHeldRun : undefined} onLeaveFocus={focusComposer} />
+      </div>
       <div className="min-w-0 flex-1">
         <Composer
           ref={composer}
@@ -563,11 +580,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
         />
       </div>
-      <AgentRunsButton runs={heldRuns} onOpen={openHeldRun} />
     </div>
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun, opensRuns, focusComposer])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -598,11 +614,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             {chat.pinned.map((item) => (
               <LiveRows.Row key={item.key}>
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
-              </LiveRows.Row>
-            ))}
-            {runMarks.after.map((mark) => (
-              <LiveRows.Row key={mark.key}>
-                <RunMarkView mark={mark} onOpen={openRun} href={chatHref} />
               </LiveRows.Row>
             ))}
             {chat.keep && (
