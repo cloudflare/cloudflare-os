@@ -116,7 +116,7 @@ export async function requestAnthropicCompaction(
   const result = await response.result();
   if (result.stopReason === "error" || result.stopReason === "aborted") {
     const message = result.errorMessage ?? "The compaction request failed.";
-    throw new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    throw new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse), result);
   }
   if (block === undefined || block.content.trim() === "") {
     throw new Error(`Compaction produced no summary (stop reason ${result.rawStopReason}).`);

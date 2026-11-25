@@ -1,4 +1,5 @@
-import type { Message, ProviderHeaders, Usage } from "@earendil-works/pi-ai";
+import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ProviderHeaders, Usage } from "@earendil-works/pi-ai";
 import type { ModelHandle } from "./ai-models.js";
 
 /**
@@ -22,9 +23,15 @@ export class AgentTurnError extends Error {
   /** HTTP status of the failing request, when the handle observed a response for it. */
   readonly statusCode?: number;
 
-  constructor(message: string, statusCode?: number) {
+  /** SDK failure classifications, without retaining the response or its content. */
+  readonly retryable: boolean;
+  readonly contextOverflow: boolean;
+
+  constructor(message: string, statusCode?: number, result?: AssistantMessage) {
     super(message);
     this.statusCode = statusCode;
+    this.retryable = result !== undefined && isRetryableAssistantError(result);
+    this.contextOverflow = result !== undefined && isContextOverflow(result);
   }
 }
 
@@ -105,7 +112,7 @@ export async function completeText(handle: ModelHandle, args: {
     // Surface a cancellation as the abort reason, like a directly-aborted request would.
     args.signal?.throwIfAborted();
     const errorMessage = message.errorMessage ?? "The model request failed.";
-    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle.lastResponse));
+    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle.lastResponse), message);
   }
   return message.content
       .filter(block => block.type === "text")

@@ -10,7 +10,7 @@ import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
 import {
-  getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
+  getSystemMessageText, toToolDeclaration,
 } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, SystemMessage, TextContent, ToolCall,
@@ -2468,9 +2468,10 @@ async function runAgentPass(
   };
   // Ordinary turns and native compaction may send different slices of the same saved reads.
   const rejectFileImages = (messages: readonly Message[], error: AgentTurnError): boolean => {
+    if (error.retryable) return false;
     const status = error.statusCode;
     const inputError = (status === undefined || status === 200 || status === 400) &&
-      /(?:\b|_)images?(?:\b|_)|context[\s_]+(?:length|window)|(?:prompt|input).{0,20}too long/i.test(error.message);
+      (error.contextOverflow || /(?:\b|_)images?(?:\b|_)/i.test(error.message));
     if (status !== 413 && !inputError) return false;
     const refused = new Map<number, Set<string>>();
     for (const msg of messages) if (msg.role === "toolResult") {
@@ -5065,8 +5066,8 @@ async function runAgentPass(
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let statusCode = httpStatusFromError(message, handle.lastResponse);
-    let error = new AgentTurnError(message, statusCode);
-    if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
+    let error = new AgentTurnError(message, statusCode, turnFailure);
+    if (error.retryable) return {type: "transientFailure", error};
     // A provider that refuses the pass's first request may be refusing an attachment the model
     // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
     // Those go by path from now on. The model answered nothing after them, so no thinking

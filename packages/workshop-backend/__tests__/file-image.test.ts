@@ -430,7 +430,8 @@ describe("images read from a worktree", () => {
   }));
 
   it.each(["400 Invalid image", "Error Code image_parse_error: Could not process image", "invalid_image_data", "Images are unsupported",
-    "400 context_length_exceeded", "400 prompt is too long"])(
+    "400 context_length_exceeded", "400 prompt is too long",
+    "400 The input token count (130000) exceeds the maximum number of tokens allowed (128000)"])(
     "surfaces a permanent failure without repeating effects and leaves the chat usable: %s", failure => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await expect(scriptedTurn(impl, chatId, [
@@ -584,7 +585,7 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
-  it.each([[400, false], [413, false], [401, false], [400, true]] as const)(
+  it.each([[400, false], [413, false], [401, false], [200, false], [400, true]] as const)(
     "recovers from native-compaction image refusals: status=%s automatic=%s", (status, automatic) => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     recordReads(impl, chatId, blob.oid, 1);
@@ -601,6 +602,9 @@ describe("file images in provider requests", () => {
     handle.stream = (model, context, options) => actualStream(model, context, {...options, maxRetries: 0,
       fetch: async (input, init) => {
         payloads.push(await new Request(input, init).text());
+        if (payloads.length === 1 && status === 200) return new Response(
+          'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Internal server error while processing an image"}}\n\n',
+          {headers: {"content-type": "text/event-stream"}});
         if (payloads.length === 1) return Response.json({type: "error", error: {
           type: status === 401 ? "authentication_error" : "invalid_request_error", message: "Could not process image",
         }}, {status});
@@ -620,13 +624,13 @@ describe("file images in provider requests", () => {
     const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
     if (automatic) await run();
     else {
-      await expect(run()).rejects.toThrow("Could not process image");
+      await expect(run()).rejects.toThrow(status === 200 ? "Internal server error" : "Could not process image");
       await run(); // Retry the same explicit command, without adding another prompt.
     }
     expect(payloads[0]).toContain(PNG.toBase64());
     expect(JSON.parse(payloads[0]).compaction).toBeDefined();
-    expect(payloads[1].includes(PNG.toBase64())).toBe(status === 401);
-    expect(Boolean(JSON.parse(payloads[1]).compaction)).toBe(status === 401);
+    expect(payloads[1].includes(PNG.toBase64())).toBe(status === 401 || status === 200);
+    expect(Boolean(JSON.parse(payloads[1]).compaction)).toBe(status === 401 || status === 200);
     expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({summary: "Summary"});
   }));
 
@@ -724,7 +728,7 @@ describe("file images in provider requests", () => {
   }));
 });
 
-// Genuine JPEG; extra COM segments below exercise the same pixels with a long metadata header.
+// Genuine 1x1 JPEG for format recognition.
 const JPEG = Uint8Array.fromBase64("/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A+L6KKK/lM/38P//Z");
 
 describe("file image headers", () => {
