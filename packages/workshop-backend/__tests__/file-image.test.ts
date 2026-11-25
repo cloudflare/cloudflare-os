@@ -230,7 +230,7 @@ describe("images read from a worktree", () => {
     expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
   }));
 
-  it.each(["401 Unauthorized", "402 Billing required", "403 Forbidden", "404 Unknown model", "Policy refused this request"])(
+  it.each(["400 You have reached your specified API usage limits", "401 Unauthorized", "402 Billing required", "403 Forbidden", "404 Unknown model", "Policy refused this request"])(
     "keeps valid pixels available after a non-image failure: %s", failure => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await expect(scriptedTurn(impl, chatId, [
