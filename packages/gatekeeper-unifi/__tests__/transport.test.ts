@@ -43,6 +43,8 @@ describe("request URLs", () => {
   it("refuses paths and console IDs that could escape their place", () => {
     expect(() => requestUrl(CLOUD, { ...sites, path: "/v1/sites/../../hosts" })).toThrow(/Not a UniFi API path/);
     expect(() => requestUrl(CLOUD, { ...sites, path: "/v2/sites" })).toThrow(/Not a UniFi API path/);
+    // A path can carry IDs from a console's own answer, which the error never quotes.
+    expect(() => requestUrl(CLOUD, { ...sites, path: "/v1/sites/echoed secret" })).toThrow(/^Not a UniFi API path\.$/);
     expect(() => requestUrl(CLOUD, { ...sites, target: { kind: "app", app: "network", consoleId: "a/b" } })).toThrow(/console ID/);
     expect(() => requestUrl(DIRECT, { target: { kind: "siteManager" }, method: "GET", path: "/v1/hosts" })).toThrow(/cloud connection/);
   });

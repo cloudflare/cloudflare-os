@@ -25,8 +25,11 @@ export interface ProtectPickerRpc {
   listLights(consoleId: string, query: string): Promise<PickerOption[]>;
 }
 
+/** What a pre-filled form's IDs name, shown until the user changes a field. */
+type Prefilled = { prefilled?: string | null };
+
 /** Values of the site and hotspot pickers. */
-export type SiteValues = { consoleId?: string | null; siteId?: string | null };
+export type SiteValues = Prefilled & { consoleId?: string | null; siteId?: string | null };
 
 /** Values of the device picker; `clients` is "1" when the device's clients are included. */
 export type DeviceValues = SiteValues & { deviceId?: string | null; clients?: string | null };
@@ -35,7 +38,7 @@ export type DeviceValues = SiteValues & { deviceId?: string | null; clients?: st
 export type WifiValues = SiteValues & { wifiNetworkId?: string | null };
 
 /** Values of the Protect picker. */
-export type ProtectValues = { consoleId?: string | null };
+export type ProtectValues = Prefilled & { consoleId?: string | null };
 
 /** Values of the camera picker. */
 export type CameraValues = ProtectValues & { cameraId?: string | null };

@@ -114,6 +114,16 @@ describe("a direct console's Network identity", () => {
     expect(facts.appMacs.network).toEqual(["70:a7:41:97:83:ed"]);
   });
 
+  it("skips a listed site whose ID isn't one, rather than building a request from it", async () => {
+    const console = homeConsole();
+    const home = console.network!.sites[0]!;
+    console.network!.sites.unshift({ ...home, site: { ...home.site, id: "echoed secret/../x" }, devices: [] });
+    const unifi = new FakeUnifi().addDirectConsole("https://odd.example", console, DIRECT.apiKey);
+    const facts = await probeDirectConsole(request =>
+      sendUnifiRequest({ ...DIRECT, baseUrl: "https://odd.example" }, request, unifi.fetch));
+    expect(facts.appMacs.network).toEqual(["70:a7:41:97:83:ed"]);
+  });
+
   it("is found past the first page of a site's devices", async () => {
     const console = homeConsole();
     const { devices } = console.network!.sites[0]!;

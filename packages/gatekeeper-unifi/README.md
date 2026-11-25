@@ -74,7 +74,9 @@ sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` with every request.
 
 The URLs are identifiers, not where requests go. `:consoleId` is the Site Manager host ID for a
 cloud connection, and the `local-…` ID for a direct one. An agent may write `-` for an ID it
-doesn't know, and the user chooses it in the resource picker.
+doesn't know, and the user chooses it in the resource picker. A picker opened with IDs filled in
+names what they are before it can be submitted, and leaves one it can't find, with what's under
+it, for the user to choose.
 
 ## Approvals
 

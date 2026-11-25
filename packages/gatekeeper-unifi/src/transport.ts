@@ -87,7 +87,8 @@ export function requestUrl(credentials: UnifiCredentials, request: UnifiRequest)
   // A `.` or `..` segment would be resolved away by URL parsing, climbing out of where the path
   // was built to point.
   if (!PATH_PATTERN.test(request.path) || request.path.split("/").some(s => s === "." || s === "..")) {
-    throw new Error(`Not a UniFi API path: ${request.path}`);
+    // The path isn't quoted: it can carry IDs a console's own answer supplied.
+    throw new Error("Not a UniFi API path.");
   }
   const query = request.query && Object.keys(request.query).length > 0
     ? `?${new URLSearchParams(request.query).toString()}`

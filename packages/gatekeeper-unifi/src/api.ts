@@ -453,17 +453,17 @@ export class UnifiApi {
 
   /** Turns a PTZ camera to a preset; `-1` is home. */
   async ptzGoTo(cameraId: string, slot: number): Promise<void> {
-    await this.#json("protect", "POST", `/v1/cameras/${id(cameraId, "camera")}/ptz/goto/${slot}`);
+    await this.#ptz(`/v1/cameras/${id(cameraId, "camera")}/ptz/goto/${slot}`);
   }
 
   /** Starts a PTZ patrol. */
   async ptzStartPatrol(cameraId: string, slot: number): Promise<void> {
-    await this.#json("protect", "POST", `/v1/cameras/${id(cameraId, "camera")}/ptz/patrol/start/${slot}`);
+    await this.#ptz(`/v1/cameras/${id(cameraId, "camera")}/ptz/patrol/start/${slot}`);
   }
 
   /** Stops a PTZ patrol. */
   async ptzStopPatrol(cameraId: string): Promise<void> {
-    await this.#json("protect", "POST", `/v1/cameras/${id(cameraId, "camera")}/ptz/patrol/stop`);
+    await this.#ptz(`/v1/cameras/${id(cameraId, "camera")}/ptz/patrol/stop`);
   }
 
   /** Every sensor. */
@@ -494,6 +494,19 @@ export class UnifiApi {
     const updated = await this.#json("protect", "PATCH", `/v1/lights/${id(lightId, "floodlight")}`, patch);
     answering(parseLight(updated), lightId, "floodlight");
     showsPatch(updated, patch, "floodlight");
+  }
+
+  /**
+   * Sends a PTZ command, which Protect answers with 204 once carried out.
+   * @throws UnifiError (protocol) on any other success, such as a proxy's empty 200, which doesn't
+   * show the camera took the command.
+   */
+  async #ptz(path: string): Promise<void> {
+    const response = await this.#send({ target: this.#target("protect"), method: "POST", path });
+    if (!response.ok) throw new UnifiError(response.failure);
+    if (response.status !== 204) {
+      throw new UnifiError({ kind: "protocol", status: response.status, message: "UniFi's answer doesn't show the camera took the command." });
+    }
   }
 
   // -------------------------------------------------------------------------

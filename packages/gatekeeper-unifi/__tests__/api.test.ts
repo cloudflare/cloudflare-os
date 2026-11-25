@@ -195,6 +195,17 @@ describe("an item's details", () => {
     await receipt({ ...light, lightDeviceSettings: {} }).patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
   });
 
+  it("counts a PTZ command as carried out only when Protect answers 204", async () => {
+    const { api } = setup();
+    await api.ptzGoTo(HOME.ptzId, -1);
+    await api.ptzStartPatrol(HOME.ptzId, 1);
+    await api.ptzStopPatrol(HOME.ptzId);
+    // A proxy's empty 200, or any other success, doesn't show the camera took it.
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.ptzStopPatrol(HOME.ptzId)).rejects.toMatchObject({ kind: "protocol" });
+    await expect(receipt({}).ptzGoTo(HOME.ptzId, 1)).rejects.toMatchObject({ kind: "protocol" });
+  });
+
   it("finds a device listed under its ID in another case", async () => {
     const { api } = setup();
     expect((await api.getDevice(HOME.siteId, HOME.apId.toUpperCase())).id).toBe(HOME.apId);

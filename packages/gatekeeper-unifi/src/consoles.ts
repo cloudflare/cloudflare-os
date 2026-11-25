@@ -14,6 +14,7 @@ import {
   asObject, isUsableMac, normalizeMac, parseDevice, parseNetworkInfo, parseNetworkPage, parseNvr,
   parseProtectInfo, parseSite, parseSiteManagerHost, parseSiteManagerList, type SiteManagerConsole,
 } from "./parse";
+import { isValidId } from "./resources";
 import type { UnifiApp, UnifiRequest, UnifiResponse } from "./transport";
 
 /** Sends one request: `sendUnifiRequest` bound to credentials, or the account's egress. */
@@ -188,7 +189,8 @@ export async function networkIdentity(send: UnifiSend, onlySite?: string): Promi
   } else {
     const sites = await send({ ...probeRequest("network", "/v1/sites"), query: { limit: String(MAX_IDENTITY_SITES) } });
     if (!sites.ok) return { macs: [], name: null, bySite: {} };
-    siteIds = parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite).map(site => site.id);
+    // A site ID that isn't one can't name a site to read.
+    siteIds = parseNetworkPage(jsonOf(sites), "site list").data.map(parseSite).map(site => site.id).filter(isValidId);
   }
   const macs = new Set<string>();
   const bySite: Record<string, string[]> = {};

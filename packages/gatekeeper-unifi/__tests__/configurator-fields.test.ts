@@ -15,6 +15,7 @@ vi.mock("@gadgets/configurator-ui", () => {
     Field: runtimeComponent("Field"),
     Autocomplete: runtimeComponent("Autocomplete"),
     RadioCards: runtimeComponent("RadioCards"),
+    Notice: runtimeComponent("Notice"),
   };
 });
 
@@ -91,6 +92,18 @@ describe.each([
   it("disables what depends on something not yet chosen", () => {
     const { tree } = renderWith(picker, Object.fromEntries(Object.keys(values).map(k => [k, null])));
     for (const dependent of dependents) expect(control(tree, dependent).disabled).toBe(true);
+  });
+});
+
+describe.each(Object.entries(pickers))("the %s picker, filled in for the user", (_name, picker) => {
+  it("names what it holds until a field changes", () => {
+    const { tree, events } = renderWith(picker, { consoleId: "a", prefilled: "console “Home”" });
+    const notice = find(tree, n => n.component.componentName === "Notice");
+    expect(notice?.children.join("")).toBe("Filled in: console “Home”.");
+    control(tree, "consoleId").onChange("b");
+    expect(events.find(([kind]) => kind === "set")![1]).toMatchObject({ consoleId: "b", prefilled: null });
+    expect(find(renderWith(picker, { consoleId: "a", prefilled: null }).tree,
+      n => n.component.componentName === "Notice")).toBeUndefined();
   });
 });
 

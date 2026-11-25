@@ -20,6 +20,15 @@ type Values = Record<string, string | null | undefined>;
 type Picker = ConfiguratorUISpec<never, Values>;
 
 const ui = new Proxy({}, { get() { throw new Error("URL handling must not call the ui capability"); } }) as never;
+/** Lists whatever ID it's asked about, named after it: a gatekeeper that reaches every resource. */
+const offering = (title: (id: string) => string | null = id => `Name of ${id}`) =>
+  new Proxy({}, {
+    get: () => async (...args: string[]) => {
+      const id = args.at(-1)!;
+      const name = title(id);
+      return name === null ? [] : [{ value: id, title: name }];
+    },
+  }) as never;
 const CONSOLE = "70A7419783ED0000000006797F060000000006C719490000000062ABD4EA:1261206302";
 const SITE = "88f7af54-98f8-306a-a1c7-c9349722b1f6";
 
@@ -44,8 +53,8 @@ const CASES: [string, Picker, Values, UnifiResource][] = [
     { kind: "light", consoleId: CONSOLE, lightId: "66d025b30096e903e4000700" }],
 ];
 
-function prefill(picker: Picker, resourceUrl: string, kind: UnifiResource["kind"]) {
-  return picker.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern: UNIFI_RESOURCES[kind].urlPattern, ui });
+function prefill(picker: Picker, resourceUrl: string, kind: UnifiResource["kind"], lists: never = offering()) {
+  return picker.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern: UNIFI_RESOURCES[kind].urlPattern, ui: lists });
 }
 
 describe.each(CASES)("the %s picker", (_name, picker, values, resource) => {
@@ -55,8 +64,12 @@ describe.each(CASES)("the %s picker", (_name, picker, values, resource) => {
     expect(parseResourceUrl(url)).toEqual(resource);
   });
 
-  it("prefills from the URL an agent requested", async () => {
-    expect(await prefill(picker, buildResourceUrl(resource), resource.kind)).toEqual(values);
+  it("prefills from the URL an agent requested, naming what it filled in", async () => {
+    const seeded = await prefill(picker, buildResourceUrl(resource), resource.kind);
+    expect(seeded).toEqual({ ...values, prefilled: expect.stringContaining(`console “Name of ${values.consoleId}”`) });
+    for (const [key, id] of Object.entries(values)) {
+      if (key !== "clients") expect(seeded.prefilled).toContain(`“Name of ${id}”`);
+    }
   });
 
   it("is ready only once everything is chosen", () => {
@@ -84,9 +97,33 @@ describe("placeholders below a known console", () => {
   it("keeps the console and asks for the rest", async () => {
     expect(await prefill(device as Picker,
       `https://unifi.ui.com/consoles/${CONSOLE}/network/sites/${SITE}/devices/-?clients=1`, "device"))
-      .toEqual({ consoleId: CONSOLE, siteId: SITE, deviceId: null, clients: "1" });
+      .toEqual({
+        consoleId: CONSOLE, siteId: SITE, clients: "1",
+        prefilled: `console “Name of ${CONSOLE}”, site “Name of ${SITE}”`,
+      });
     expect(await prefill(camera as Picker, `https://unifi.ui.com/consoles/${CONSOLE}/protect/cameras/-`, "camera"))
-      .toEqual({ consoleId: CONSOLE, cameraId: null });
+      .toEqual({ consoleId: CONSOLE, prefilled: `console “Name of ${CONSOLE}”` });
+  });
+
+  it("leaves an ID its list doesn't offer, and everything under it, for the user to choose", async () => {
+    // The form shows a pre-filled ID rather than its name, so one that can't be named isn't filled in.
+    const url = `https://unifi.ui.com/consoles/${CONSOLE}/network/sites/${SITE}/devices/dev-1`;
+    expect(await prefill(device as Picker, url, "device", offering(id => id === CONSOLE ? "Home" : null)))
+      .toEqual({ consoleId: CONSOLE, clients: null, prefilled: "console “Home”" });
+    const failing = new Proxy({}, { get: () => () => Promise.reject(new Error("offline")) }) as never;
+    expect(await prefill(device as Picker, url, "device", failing)).toEqual({ clients: null });
+  });
+
+  it("fills in an ID as its list spells it", async () => {
+    const lists = new Proxy({}, {
+      get: () => async (...args: string[]) => {
+        const id = args.at(-1)!;
+        return [{ value: id.toLowerCase() === SITE ? SITE : id, title: "Default" }];
+      },
+    }) as never;
+    const seeded = await prefill(site as Picker,
+      `https://unifi.ui.com/consoles/${CONSOLE}/network/sites/${SITE.toUpperCase()}`, "site", lists);
+    expect(seeded.siteId).toBe(SITE);
   });
 
   it("ignores a URL for another kind of resource", async () => {
