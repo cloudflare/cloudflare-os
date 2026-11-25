@@ -49,7 +49,8 @@ observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
 that data (`AdminConfig.restrictedWebFetchHosts`, none by default) or, where the admin allows it
-(`AdminConfig.restrictedWebFetchApprovals`, off by default), a URL a user approves for the turn, and
+(`AdminConfig.restrictedWebFetchApprovals`, off by default), a URL a user approves for the turn,
+the agent's model is not given its provider's own web search (`AiModelConfig.webSearch`), and
 every action requires manual approval (auto-approval rules are suspended), the approver checking
 the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
@@ -783,7 +784,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    for that admission. Scope widening restarts live sessions (see "Restarting when verification
    scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
-   that data or, where the admin allows it, a URL a user approves, and every action requires manual
+   that data or, where the admin allows it, a URL a user approves, the agent's model is not given
+   its provider's own web search, and every action requires manual
    approval (auto-approval rules are suspended), the
    approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
@@ -898,7 +900,8 @@ its resource types.
   or admits only an observer whose verifier stands for the very account the binding reads with,
   whose holder sees nothing new (MCP Server Portals).
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (web fetches reach only admin-trusted hosts or user-approved URLs, and every action requires
+  mode (web fetches reach only admin-trusted hosts or user-approved URLs, the agent's model is not
+  given its provider's own web search, and every action requires
   manual approval —
   auto-approval rules are suspended — the approver checking the action text for restricted data) is
   available separately; combined with strategy A it makes the workspace effectively private once
