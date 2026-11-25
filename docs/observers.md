@@ -1134,12 +1134,15 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   advances the watermark to the batch's end; a record changed meanwhile ends the check
   unrecorded, and the handoff judges the record as it now stands.
 
-  A denial, whichever handoff finds it, keeps the watermark and marks the choice `denied` in the
-  same write that has the collaborator's User DO forget the workspace's chat state: the heads,
-  previews and notifications it was handed are dropped, and the listing is marked to seed them
-  again on the next admitted open, as a first admission. Denial is the trigger, so this happens
-  once. Every later handoff withholds, calling nothing, until a workspace admission re-verifies
-  the choice and clears the mark, or an admission replaces the account. An admission refused by
+  A denial, whichever handoff finds it, keeps the watermark and marks the choice `denied`. The
+  collaborator's User DO keeps the chat state it was handed, which was verified when sent, and
+  is told an open is required: the workspace listing's `chatAccess` part, read for each "build"
+  collaborator as it stands when sent, names each in-scope connection whose choice is denied or
+  missing (one added since they chose accounts), and the User DO shows it as
+  `WorkspaceMetadata.chatAccessRequired` and marks the listing to seed, on the next admitted open,
+  the chats begun meanwhile. Every later handoff withholds, calling nothing, until a workspace
+  admission re-verifies the choice and clears the mark, or an admission replaces the account;
+  either write sends the part again, now empty. An admission refused by
   a definitive denial (the account gone, or `addObserver()` or `verifyObserverAccess()` refusing
   it; any `addObserver()` throw counts, since gatekeepers don't tell a refusal from an outage)
   marks a choice with a watermark `denied` the same way, unless another admission published the

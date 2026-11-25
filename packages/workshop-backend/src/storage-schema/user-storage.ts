@@ -131,8 +131,9 @@ export type GadgetRecord = WorkspaceMetadata & {
   sharedTitleRev?: number;
   /**
    * Present on a shared listing recorded as "build" without the chat starting points
-   * (ChatAdmissionBaseline) its workspace withheld: the next open that brings them seeds them as a
-   * first admission would.
+   * (ChatAdmissionBaseline) its workspace withheld, or paused for chat access
+   * (WorkspaceMetadata.chatAccessRequired): the next open that brings them seeds them as a first
+   * admission would.
    */
   chatSeedPending?: true;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from

@@ -474,8 +474,9 @@ describe("background reads of an offline builder", () => {
     await vi.waitFor(async () => expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]));
     await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(1));
 
-    // Denied what is new: no previews, and their account forgets the chats it holds of the
-    // workspace, owing them to the next open that admits them. Attention still reaches them.
+    // Denied what is new: no previews, and their account keeps the chats it holds of the
+    // workspace and is told an open is required, owing what began meanwhile to the next open that
+    // admits them. Attention still reaches them.
     state.denied.add("doc:2");
     state.previews = [];
     const checkedThrough = await watermark();
@@ -488,7 +489,9 @@ describe("background reads of an offline builder", () => {
     expect(state.checks).toEqual([["doc:1"], ["doc:2"]]);
     expect(state.previews.every(id => id === fixture.user.id.toString())).toBe(true);
     expect(await watermark()).toBe(checkedThrough);
-    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
+    expect(await reader.getWorkspace(fixture.workspaceId)).toMatchObject(
+      {chatAccessRequired: [expect.objectContaining({gatekeeperId: 7, reason: "denied"})]});
     expect(await chatSeedPending(reader, fixture.workspaceId)).toBe(true);
     await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(2));
 
@@ -502,7 +505,7 @@ describe("background reads of an offline builder", () => {
     await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(3));
     expect(state.checks).toHaveLength(2);
     expect(state.previews.every(id => id === fixture.user.id.toString())).toBe(true);
-    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
   });
 
   it("retries previews when the check fails, without counting it as a denial, and sends attention regardless", async () => {
@@ -694,7 +697,7 @@ describe("background reads of an offline builder", () => {
       expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
     });
 
-    it("seeds again at the next open admitted to them the chats a denial made them forget", async () => {
+    it("tells them an open is required on a denial, keeping their chats, and clears it at the next admitted open, seeding chats begun meanwhile", async () => {
       const {fixture, reader, profile, state} = await admitReader();
       await withImpl(fixture.workspace, impl => publish(impl));
       await vi.waitFor(async () => expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]));
@@ -704,12 +707,32 @@ describe("background reads of an offline builder", () => {
         await readDoc2(impl);
         await publish(impl);
         await impl.userUpdateAttempt(reader.id.toString());
+        // Begun while they are paused: nothing of it reaches them.
+        impl.storage.chatMeta.put({id: 3, title: "Later", started: new Date(3), lastActive: new Date(3)});
+        impl.addChatMessages(3, AGENT, [{type: "message", message: "New."}]);
+        await impl.deliverDirtyChats();
       });
-      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
+      expect((await reader.getWorkspace(fixture.workspaceId))?.chatAccessRequired).toEqual(
+        [{gatekeeperId: 7, vendorId: "testvendor", reason: "denied"}]);
 
       state.denied.delete("doc:2");
       await openAcross(fixture, reader, profile, state);
-      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2, 3]);
+      await withImpl(fixture.workspace, impl => impl.userUpdateAttempt(reader.id.toString()));
+      await vi.waitFor(async () =>
+        expect(await reader.getWorkspace(fixture.workspaceId)).not.toHaveProperty("chatAccessRequired"));
+    });
+
+    it("tells them an open is required for a connection added since they chose accounts", async () => {
+      const {fixture, reader} = await admitReader();
+      await withImpl(fixture.workspace, async impl => {
+        impl.storage.gatekeepers.put({id: 8, resourceTitle: "More", class: {} as never,
+          creationSpec: {type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/8", typeUrlPattern: "https://*"}});
+        await impl.userUpdateAttempt(reader.id.toString());
+      });
+      expect((await reader.getWorkspace(fixture.workspaceId))?.chatAccessRequired).toEqual(
+        [{gatekeeperId: 8, vendorId: "testvendor", reason: "notChosen"}]);
     });
   });
 });

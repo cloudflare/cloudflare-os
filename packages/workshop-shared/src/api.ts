@@ -4258,10 +4258,37 @@ export type WorkspaceMetadata = {
    */
   storageBytes?: number;
 
+  /**
+   * Set on a workspace shared with the user as "build" while their background view of its chats
+   * (previews, working and waiting state, unread counts, notifications) is paused, until they
+   * open the workspace and confirm an account for each connection listed: what they have stays as
+   * it was last sent, and nothing new arrives. Absent when nothing is required. Listings only
+   * (`listWorkspaces()`, `subscribeToWorkspaces()`); the Overseer's metadata never sets it.
+   */
+  chatAccessRequired?: ChatAccessRequirement[];
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
 }
+
+/**
+ * A connection in a shared workspace for which the user must confirm an account, by opening the
+ * workspace, before its chats update in their background view again (see
+ * `WorkspaceMetadata.chatAccessRequired`).
+ */
+export type ChatAccessRequirement = {
+  /** The connection's workpiece ID in that workspace. */
+  gatekeeperId: WorkpieceId;
+  /** The connection's vendor, as `listVendors()` names it, for the client to say which service. */
+  vendorId: string;
+  /**
+   * `"notChosen"`: the user has no account chosen for the connection, as when it was added after
+   * they last opened the workspace. `"denied"`: the account they chose is disconnected, or the
+   * service says it cannot see something read through the connection since.
+   */
+  reason: "notChosen" | "denied";
+};
 
 /**
  * WorkspaceMetadata extended with timestamps. These are available when listing workspaces from the

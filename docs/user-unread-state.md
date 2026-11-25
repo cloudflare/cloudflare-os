@@ -255,12 +255,15 @@ After a pass checkpoints, denied recipients are not retained for retry; another 
 cannot revisit them after re-authorization. The exception is the accepted source-reset window
 before that checkpoint described above. No separate skip receipt or per-user denial flag is stored.
 
-A denial found by a background check (see "Background reads" in docs/observers.md §10) also
-clears what was handed over before it: the workspace queues `forgetChats` on the collaborator's
-`pendingUserUpdates` row, in the write that marks the choice denied, and the User DO forgets the
-workspace's cursors and queued alerts and marks the listing `chatSeedPending`. The next open that
-admits them seeds the chats' starting points again as a first admission would. Denial is the
-trigger, so this happens once per denial, not on every pass that withholds.
+A denial found by a background check (see "Background reads" in docs/observers.md §10) clears
+nothing that was handed over before it, which was verified when sent. The workspace listing's
+`chatAccess` part tells the User DO an open is required, naming each connection whose account
+choice is denied or missing; the User DO shows it as `WorkspaceMetadata.chatAccessRequired` and
+marks the listing `chatSeedPending`. Cursors, unread counts and queued alerts stay as they were,
+and nothing new reaches them until the next open that admits them, which merges current heads
+into the chats they track and seeds the chats begun meanwhile as a first admission would; the
+admission's write of the choice sends the part again, empty, which clears the flag. Alerts
+withheld meanwhile are not sent later.
 
 Once accepted, a queued alert is authorized durable delivery intent and retries locally. Existing
 revocation, downgrade, dismissal and workspace-removal callbacks clear the listing's cursors and

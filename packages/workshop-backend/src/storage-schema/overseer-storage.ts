@@ -1534,14 +1534,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     collections: {
       // What still needs to be sent to a user's User DO: a new role (e.g. downgraded to use-only),
       // removal (`role: null`), which also clears their unread state and queued notifications for
-      // this workspace, the parts of the workspace listing and the hooks they are owed (see
-      // markListingDirty() and resyncListingTo() in OverseerImpl), and, for a collaborator found
-      // denied background reads, that their account forget the chat state it holds. When the
+      // this workspace, and the parts of the workspace listing and the hooks they are owed (see
+      // markListingDirty() and resyncListingTo() in OverseerImpl). When the
       // workspace is deleted, every user gets a removal, which drops whatever else they were owed.
       // Retried from the alarm until each User DO confirms. Before each attempt, the user's current
       // access is checked again (via `profileId`), so an outdated role is updated or dropped, and
       // each owed part is read as it stands, scoped by that access. The owner's entries and deletion
-      // entries have no `profileId`. `parts`, `hookIds`, `forgetChats` and `seq` are optional fields
+      // entries have no `profileId`. `parts`, `hookIds` and `seq` are optional fields
       // added without a version bump: a row from before has none of them.
       pendingUserUpdates: collection<PendingUserUpdate>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
@@ -1925,11 +1924,6 @@ export type PendingUserUpdate = {
   parts?: ListingPart[];
   /** The hooks they are owed (see WorkspaceListing.hooks), each sent as it stands when sent. */
   hookIds?: number[];
-  /**
-   * Set when the collaborator is found denied background reads: their account is to forget the
-   * chat state it holds of the workspace (see WorkspaceListing.forgetChats).
-   */
-  forgetChats?: true;
   /**
    * Bumped by every write that queues something here, so that a delivery deletes the row only if
    * nothing was queued during its send.

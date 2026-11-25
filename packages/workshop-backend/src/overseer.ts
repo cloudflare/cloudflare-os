@@ -14,7 +14,7 @@ import {
   type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
   type ObserverBindingPathStep,
   type AgentSpawnerInfo,
-  type ChatAttachmentInfo, type ChatListOptions, type WaitingAsk, type WorkspaceWaiting,
+  type ChatAccessRequirement, type ChatAttachmentInfo, type ChatListOptions, type WaitingAsk, type WorkspaceWaiting,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -1544,13 +1544,12 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
-  // Queue `parts` of the workspace listing and the hooks `hookIds` for user `userId`, that their
-  // account forget the workspace's chat state when `forgetChats`, and a new `role` when given
-  // (null: removal, which drops what they were owed), bumping the row's `seq`. A new role, or
-  // removal, may take away what their account acknowledged, so it forgets that.
+  // Queue `parts` of the workspace listing and the hooks `hookIds` for user `userId`, and a new
+  // `role` when given (null: removal, which drops what they were owed), bumping the row's `seq`. A
+  // new role, or removal, may take away what their account acknowledged, so it forgets that.
   #queueUserUpdate(userId: string, profileId: string | undefined,
-      {parts = [], hookIds = [], forgetChats, role}: {parts?: readonly ListingPart[],
-        hookIds?: readonly number[], forgetChats?: true, role?: CollaboratorRole | null}): void {
+      {parts = [], hookIds = [], role}: {parts?: readonly ListingPart[],
+        hookIds?: readonly number[], role?: CollaboratorRole | null}): void {
     let row = this.storage.pendingUserUpdates.get(userId);
     let update: PendingUserUpdate = {userId, seq: (row?.seq ?? 0) + 1};
     let owed = role === null ? [] : [...new Set([...row?.parts ?? [], ...parts])];
@@ -1562,7 +1561,6 @@ class OverseerImpl implements AgentHooks {
     if (role !== undefined && role !== row?.role) this.#listingAcks.delete(userId);
     if (owed.length) update.parts = owed;
     if (owedHooks.length) update.hookIds = owedHooks;
-    if (role !== null && (forgetChats || row?.forgetChats)) update.forgetChats = true;
     this.storage.pendingUserUpdates.put(update);
   }
 
@@ -1656,12 +1654,14 @@ class OverseerImpl implements AgentHooks {
         if (owner || access) {
           this.#listingAcks.set(userId, acks);
           for (let part of update.parts ?? []) {
-            // A collaborator is sent neither blueprints nor activity, nor attention unless "build".
+            // A collaborator is sent neither blueprints nor activity, nor attention unless
+            // "build"; the owner no chat access, which is a collaborator's, read for each.
             if (access && (part === "blueprintChanges" || part === "activity" ||
-                (part === "attention" && access.role !== "build"))) continue;
+                ((part === "attention" || part === "chatAccess") && access.role !== "build"))) continue;
+            if (owner && part === "chatAccess") continue;
             let value = part === "outputs" && access
                 ? whole.outputs?.filter(output => accessIncludesGadget(access, output.workpieceId))
-                : whole[part];
+                : part === "chatAccess" ? this.#chatAccessRequired(profileId!) : whole[part];
             if (value === undefined) continue;
             let json = canonicalJson(value);
             if (acks.get(part) === json) continue;
@@ -1671,9 +1671,8 @@ class OverseerImpl implements AgentHooks {
           if (update.hookIds && (owner || access?.role === "build")) {
             listing.hooks = update.hookIds.map(id => ({id, hook: hooks.get(id) ?? null}));
           }
-          if (update.forgetChats && access) listing.forgetChats = true;
         }
-        if (!deleting && update.role === undefined && !sent.size && !listing.hooks && !listing.forgetChats) {
+        if (!deleting && update.role === undefined && !sent.size && !listing.hooks) {
           // Owed nothing they have not acknowledged.
           this.storage.pendingUserUpdates.delete(userId);
           this.#userRetryAt.delete(userId);
@@ -1766,7 +1765,9 @@ class OverseerImpl implements AgentHooks {
         if (access?.role !== "build") {
           delete listing.attention;
           delete listing.hooks;
+          delete listing.chatAccess;
           sent.delete("attention");
+          sent.delete("chatAccess");
         }
         if (!access) {
           delete listing.outputs;
@@ -1780,7 +1781,7 @@ class OverseerImpl implements AgentHooks {
       }
       // Checked again after the awaits above, as a shared open's seeding does: once deletion has
       // begun, nothing of the listing is sent, and the removal it queued (a new seq) follows.
-      if ((sent.size || listing.hooks || listing.forgetChats) && !this.storage.deleting.get()) {
+      if ((sent.size || listing.hooks) && !this.storage.deleting.get()) {
         await boundedUserUpdate(user.syncWorkspaceListing(workspaceId, listing));
         // Unless forgotten meanwhile.
         if (this.#listingAcks.get(userId) === acks) {
@@ -2237,21 +2238,29 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Marks `current`'s choice for `gatekeeperId` `denied`, so neither background publish admits
-  // them until a workspace admission re-verifies it, and, in the same write, queues that their
-  // account forget the chat state it holds of this workspace, which the next open admitting them
-  // seeds again (see WorkspaceListing.forgetChats).
+  // them until a workspace admission re-verifies it. Their account keeps the chat state it holds
+  // of this workspace and is told an open is required (see #chatAccessRequired()), by the write.
   #denyBackgroundReads(current: ObserverRecord, gatekeeperId: number): void {
-    this.storage.transaction(() => {
-      this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
-        [gatekeeperId]: {...current.accountChoices[gatekeeperId]!, denied: true}}});
-      if (this.ownerId) {
-        this.#queueUserUpdate(this.users.idFromName(current.profileId).toString(), current.profileId,
-            {forgetChats: true});
-      }
-    });
-    if (this.ownerId) this.#requestUserUpdates();
+    this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
+      [gatekeeperId]: {...current.accountChoices[gatekeeperId]!, denied: true}}});
     this.logger.warn("background reads withheld from a collaborator", {
       event: "observer.background.withheld", gatekeeperId, observerId: current.observerId,
+    });
+  }
+
+  // The in-scope connections for which "build" collaborator `profileId` must confirm an account,
+  // by opening the workspace, before mayReadChatState() admits them again: those with no choice,
+  // and those whose choice is denied. A choice merely behind is checked in the background, so
+  // requires nothing of them. None while a legacy connection admits nobody: that is the owner's
+  // to remove.
+  #chatAccessRequired(profileId: string): ChatAccessRequirement[] {
+    let gatekeepers: GatekeeperRecord[];
+    try { gatekeepers = this.#inScopeGatekeepers("workspace"); } catch { return []; }
+    let choices = this.storage.observers.get(profileId)?.accountChoices ?? {};
+    return gatekeepers.flatMap(gk => {
+      let choice = choices[gk.id];
+      if (choice && !choice.denied) return [];
+      return [{gatekeeperId: gk.id, vendorId: observerVendorId(gk)!, reason: choice ? "denied" : "notChosen"} as const];
     });
   }
 
@@ -7822,15 +7831,22 @@ class OverseerImpl implements AgentHooks {
   // when their listing goes or narrows to "use". Which chats work or wait is on their heads.
 
   // An action becoming pending or no longer pending changes the attention; a hook bound, changed
-  // or unbound is sent alone.
+  // or unbound is sent alone. What collaborators must do to be admitted to background reads (see
+  // #chatAccessRequired()) changes with their account choices and with the connections in scope:
+  // one added, removed or re-configured, or one whose creation is pending (creationPending()).
   #initializeAttentionTracking(): void {
     let dirty = () => this.markListingDirty("attention");
+    let access = () => this.markListingDirty("chatAccess");
+    let pendingChanged = (record: ActionRecord) => {
+      dirty();
+      if (record.type === "action" && record.action === "create") access();
+    };
     this.storage.actions.subscribe({
-      add: record => { if (record.state === "pending") dirty(); },
+      add: record => { if (record.state === "pending") pendingChanged(record); },
       update: (old, record) => {
-        if ((old.state === "pending") !== (record.state === "pending")) dirty();
+        if ((old.state === "pending") !== (record.state === "pending")) pendingChanged(record);
       },
-      remove: record => { if (record.state === "pending") dirty(); },
+      remove: record => { if (record.state === "pending") pendingChanged(record); },
     });
     let hookDirty = ({id}: {id: number}) => {
       if (!this.ownerId) return;
@@ -7839,6 +7855,22 @@ class OverseerImpl implements AgentHooks {
       this.#requestUserUpdates();
     };
     this.storage.boundHooks.subscribe({add: hookDirty, update: (_old, record) => hookDirty(record), remove: hookDirty});
+    // Only what #chatAccessRequired() reads of a choice: whether there is one, and whether denied.
+    let required = (record: ObserverRecord) => canonicalJson(Object.entries(record.accountChoices)
+        .map(([id, choice]) => [id, choice.denied === true]));
+    this.storage.observers.subscribe({
+      add: access,
+      update: (old, record) => { if (required(old) !== required(record)) access(); },
+      remove: access,
+    });
+    this.storage.gatekeepers.subscribe({
+      add: access,
+      // Its vendor, and whether it is in scope at all, follow from its creation spec.
+      update: (old, record) => {
+        if (canonicalJson(old.creationSpec) !== canonicalJson(record.creationSpec)) access();
+      },
+      remove: access,
+    });
   }
 
   // The actions waiting here, by gadget (WorkspaceSummary.waiting): one outside any chat counts
@@ -7865,7 +7897,8 @@ class OverseerImpl implements AgentHooks {
   //   title and the last-active time and cost;
   // - a collaborator with a session open here (see joinOutputsFanout()), and one once on opening
   //   it (see resyncListingTo()): the outputs their access holds;
-  // - a "build" collaborator: the attention and hooks;
+  // - a "build" collaborator: the attention and hooks, and what they must do before chat state
+  //   reaches them in the background again (see #chatAccessRequired());
   // - every collaborator: the title they list it under (see
   //   UserDurableObject.recordSharedWorkspaceOpen() for where a listing starts).
   // Durable, through pendingUserUpdates: a change marks the parts or hooks it may have changed in
@@ -7916,8 +7949,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Turn the parts and hooks marked since the last pass into what each recipient is owed, in one
-  // transaction: the owner every part and hook, each collaborator the title, each "build" one the
-  // attention and hooks, and each with a session open here the outputs.
+  // transaction: the owner every part and hook but chat access, each collaborator the title, each
+  // "build" one the attention, chat access and hooks, and each with a session open here the outputs.
   #queueDirtyListingParts(collaborators: readonly CollaboratorInfo[]): void {
     let dirty = this.storage.listingDirty.get();
     let hookIds = this.storage.listingDirtyHooks.get();
@@ -7928,7 +7961,7 @@ class OverseerImpl implements AgentHooks {
       for (let {profile, access} of collaborators) {
         let userId = this.users.idFromName(profile.id).toString();
         let build = access.role === "build";
-        let parts = dirty.filter(part => part === "title" || (part === "attention" && build) ||
+        let parts = dirty.filter(part => part === "title" || ((part === "attention" || part === "chatAccess") && build) ||
             (part === "outputs" && this.#connectedIndexes.has(userId)));
         if (parts.length || (build && hookIds.length)) {
           this.#queueUserUpdate(userId, profile.id, {parts, hookIds: build ? hookIds : []});

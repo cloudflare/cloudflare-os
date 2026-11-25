@@ -1418,7 +1418,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * seeds, or null where the workspace withheld them (see OverseerImpl.mayReadChatState): the
    * listing is then recorded without them, still owed to a later open, which seeds them without
    * resetting the read horizons or notification receipts of chats tracked meanwhile. A listing
-   * whose chat state was forgotten on a denial (WorkspaceListing.forgetChats) is owed them so too.
+   * paused for chat access (WorkspaceMetadata.chatAccessRequired) is owed them so too, for chats
+   * begun while it was.
    *
    * `listingRev` is the workspace's listing revision as of the access check that admitted them,
    * which raises the floor of the revisions syncWorkspaceListing() takes parts from: one read
@@ -1507,6 +1508,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let record = this.storage.gadgets.get(workspaceId);
     if (!record?.owner) return;
     record.role = role;
+    // Only "build" listings are paused for chat access (see syncWorkspaceListing()).
+    if (role === "use") delete record.chatAccessRequired;
     this.storage.gadgets.put(record);
     if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
   }
@@ -1879,9 +1882,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * - `attention` and `hooks` are ignored for a workspace the user doesn't list, or only uses: the
    *   `gadgets` subscription drops them when either becomes true, so nothing here can outlive it.
    *   Each hook replaces the one held, or drops it when null.
-   * - `forgetChats` forgets the chat state held of a shared workspace (read state, heads and
-   *   queued notifications), its collaborator found denied background reads, and has the next
-   *   open that admits them seed it again (see recordSharedWorkspaceOpen()).
+   * - `chatAccess` replaces what the user must do before chats of a workspace shared with them as
+   *   "build" update again (WorkspaceMetadata.chatAccessRequired, dropped when empty). The chat
+   *   state held stays; a non-empty one has the next open that admits them seed the chats begun
+   *   meanwhile (see recordSharedWorkspaceOpen()).
    * - `blueprintChanges` are taken for blueprints recorded as published from this workspace; a
    *   push racing a first publication finds none. They also bring the gadget a blueprint is
    *   published from to records stored before updateBlueprint() was sent it.
@@ -1907,7 +1911,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let summary = this.#workspaceSummary(workspaceId);
       this.#summarySubscribers.send(listener => listener.updated(workspaceId, summary));
     }
-    if (newer && listing.forgetChats) this.#forgetUnreadWorkspace(workspaceId);
     for (let {blueprintId, changes, gadgetId} of newer ? listing.blueprintChanges ?? [] : []) {
       let record = this.storage.blueprints.get(blueprintId);
       if (!record || record.gadgetId !== workspaceId) continue;
@@ -1931,8 +1934,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let {lastActive, totalCost} = listing.activity;
       updated = {...updated, lastActive, ...(totalCost ? {totalCost} : {})};
     }
-    if (listing.forgetChats && newer && record.owner && record.role === "build" && !record.chatSeedPending) {
-      updated = {...updated, chatSeedPending: true};
+    if (listing.chatAccess && newer && record.owner && record.role === "build" &&
+        (listing.chatAccess.length || record.chatAccessRequired)) {
+      let {chatAccessRequired: _was, ...rest} = updated;
+      updated = listing.chatAccess.length
+        ? {...rest, chatAccessRequired: listing.chatAccess, chatSeedPending: true} : rest;
     }
     if (updated !== record) this.storage.gadgets.put(updated);
   }
