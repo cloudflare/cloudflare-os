@@ -247,8 +247,36 @@ export type DriveFileBytes = {
 };
 
 /**
+ * A format `exportFile()` converts a Google Docs, Sheets or Slides file to, as Google Drive's
+ * "Download" menu does. A Google Doc exports to `docx`, `odt`, `rtf`, `pdf`, `txt`, `html`, `epub`
+ * or `md` (Markdown); a Google Sheet to `xlsx`, `ods`, `pdf`, `csv` or `tsv`, of which `csv` and
+ * `tsv` hold its first sheet alone; a Google Slides presentation to `pptx`, `odp`, `pdf` or `txt`.
+ */
+export type DriveExportFormat =
+  | "docx" | "odt" | "rtf" | "pdf" | "txt" | "html" | "epub" | "md"
+  | "xlsx" | "ods" | "csv" | "tsv"
+  | "pptx" | "odp";
+
+/** A Google Docs, Sheets or Slides file exported to another format, streamed. */
+export type DriveExport = {
+  /** The exported content's MIME type, such as `application/pdf` for `pdf`. */
+  mimeType: string;
+  /** When the file was last modified as it was opened for export, as `DriveEntry.modifiedTime` gives it. */
+  modifiedTime: Date;
+  /**
+   * The exported bytes, read from Google as you read them. Pass it to a worktree's `writeBytes()`
+   * to save the export, read it whole with `await new Response(content).arrayBuffer()` (or
+   * `.text()`, for `txt`, `html`, `md`, `csv` and `tsv`, which are UTF-8), or use a reader to stop
+   * early. Read it straight away, and cancel it if you will not: a stream left unread for a minute
+   * is ended. A stream that fails partway did not deliver the whole export: export the file again.
+   */
+  content: ReadableStream<Uint8Array>;
+};
+
+/**
  * Read-only Google Drive access for an account or exact-file binding: metadata discovery, native
- * Google Docs/Sheets/Slides content, PDF text, the bytes of any other file, and comments.
+ * Google Docs/Sheets/Slides content and exports, PDF text, the bytes of any other file, and
+ * comments.
  *
  * A read-only binding changes nothing, and the native sessions it opens have no write methods.
  * Editing Google Docs, Sheets and Slides files, commenting on files, seeing or changing who they
@@ -353,13 +381,26 @@ export interface GoogleDriveReadSession {
   /**
    * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
    * other uploaded file, whatever its type or size. `options` selects part of it; omitted, the
-   * whole file. Google Docs, Sheets and Slides are refused naming the method that opens them, as
-   * are folders, shortcuts and other Google-native files (MIME types starting
+   * whole file. Google Docs, Sheets and Slides are refused naming the methods that open and export
+   * them, as are folders, shortcuts and other Google-native files (MIME types starting
    * `application/vnd.google-apps.`), which have no content to download. Fails when Google does not
    * let the account download the file, and asks to reconnect when the account was connected before
    * Drive bindings could read file content.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
+
+  /**
+   * Export an in-scope Google Docs, Sheets or Slides file to another format, such as a Doc to
+   * `docx` or `pdf` or a Sheet to `xlsx`, as a stream of bytes. Google exports at most 10 MB of
+   * any file: a larger export fails, and a leaner format (`md` or `txt` rather than `pdf`, `csv`
+   * for one sheet) may fit. Fails for any other file, whose own bytes `readFile()` reads, for a
+   * format the file's type does not export to, when Google does not let the account download the
+   * file, and asks to reconnect when the account was connected before Drive bindings could read
+   * file content. Google exports the file as it is on Drive, so on a connection that edits files
+   * the export fails while edits queued to the file wait for approval: export it once they are
+   * decided.
+   */
+  exportFile(fileId: string, format: DriveExportFormat): Promise<DriveExport>;
 
   /**
    * List an in-scope file's comments, each with its replies. Fails for a file the connected
@@ -376,7 +417,7 @@ export interface GoogleDriveReadSession {
 /**
  * Read-only navigation within the originally selected folder, with its direct children's content
  * and comments. A shortcut among those children stands for its target, file or folder, wherever
- * that lives: `getEntry`, the native opens, `readPdf`, `readFile` and `openFolder` take the
+ * that lives: `getEntry`, the native opens, `readPdf`, `readFile`, `exportFile` and `openFolder` take the
  * target's ID as they take a direct child's; `listComments` does not. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
  * a binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
  */
@@ -427,6 +468,12 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
    * `GoogleDriveReadSession.readFile()` does.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
+
+  /**
+   * Export a live direct child Google Docs, Sheets or Slides file, or a shortcut's target, to
+   * another format, as `GoogleDriveReadSession.exportFile()` does.
+   */
+  exportFile(fileId: string, format: DriveExportFormat): Promise<DriveExport>;
 
   /**
    * List a live direct child's comments, as {@link GoogleDriveReadSession.listComments} does. A

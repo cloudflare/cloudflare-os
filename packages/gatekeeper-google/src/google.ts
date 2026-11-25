@@ -47,7 +47,7 @@ import {
   DRIVE_ACTIONS, type DriveAction, type DriveActions, type DriveQueue,
 } from "./drive-actions";
 import {
-  DriveFileEditors, editorOfMimeType, editorOfTag, type DriveEditorName,
+  DriveFileEditors, editedFile, editorOfMimeType, editorOfTag, type DriveEditorName,
 } from "./drive-editors";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, requireQuote, savedDoc,
@@ -77,7 +77,9 @@ import {
   CONVERSION_FAILED, pdfConverter, pdfUpload, releasedAtEnd, TranscriptionRefusal,
   type PdfConverter, type PdfRangeReader, type PdfRead,
 } from "./drive-pdf";
-import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
+import {
+  downloadableFile, exactRange, exportMimeType, fileReadRange, FILE_CHANGED, idleTimed,
+} from "./drive-file-read";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, parseFileSubresource,
@@ -86,15 +88,16 @@ import {
 } from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
-  DriveFolderSessionCore, DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE,
-  GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF, MOVE_SINGLE_FILE, PDF_MIME_TYPE,
-  requireDriveBindingScope, type DriveBindingScope, type DriveCore,
+  driveModifiedTime, DriveFolderSessionCore, DriveSessionCore, GOOGLE_DOC_MIME_TYPE,
+  GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF, MOVE_SINGLE_FILE,
+  PDF_MIME_TYPE, requireDriveBindingScope, type DriveBindingScope, type DriveCore,
   type DriveFolderSessionCoreOptions, type DriveWriteTarget, type NativeRead,
   type NativeReadOptions,
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
-  DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfText, DriveScope,
+  DriveExport, DriveExportFormat, DriveFileBytes, DriveFileReadOptions, DriveGrantee,
+  DriveListOptions, DrivePdfText, DriveScope,
   DriveSessionSearchQuery, DriveShareOptions, DriveShareRole,
   DriveSuggestEditOptions, GoogleDriveFolderReadSession, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
@@ -2474,7 +2477,7 @@ export class GoogleDriveGatekeeperImpl
     // The title is where a connection's level is said to people and to the agent.
     let titled = (title: string) => write ? `${title} (read and write)` : title;
     if (scope.kind === "account") {
-      let reads = "find files anywhere this Google account can read in Drive, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
+      let reads = "find files anywhere this Google account can read in Drive, read native Google Docs, Sheets and Slides and export them with exportFile(), read PDFs' text with readPdf() and any other file's bytes with readFile()";
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: titled("Google Drive Account"),
@@ -2490,7 +2493,7 @@ export class GoogleDriveGatekeeperImpl
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
       let folder = await readFolderRoot(scope.folderId, id => api.getFile(id));
-      let reads = "list and search direct children, navigate child folders, follow shortcuts among them to files and folders elsewhere in Drive for reading, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
+      let reads = "list and search direct children, navigate child folders, follow shortcuts among them to files and folders elsewhere in Drive for reading, read native Google Docs, Sheets and Slides and export them with exportFile(), read PDFs' text with readPdf() and any other file's bytes with readFile()";
       return {
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
@@ -2509,8 +2512,8 @@ export class GoogleDriveGatekeeperImpl
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: titled(file.name),
       snippet: write
-        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", queue edits to it when it is a Google Docs, Sheets or Slides file, read and queue comments on it, and change who it is shared with`
-        : `Read-only: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, and comments, from Drive file "${file.name}"`,
+        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content or with exportFile() an export of it, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", queue edits to it when it is a Google Docs, Sheets or Slides file, read and queue comments on it, and change who it is shared with`
+        : `Read-only: read metadata and, when native, Google Doc, Sheet or Slides content or with exportFile() an export of it, with readPdf() a PDF's text, or with readFile() the bytes of any other file, and comments, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: write ? "GoogleDriveFileSession" : "GoogleDriveReadSession",
     };
@@ -2744,6 +2747,26 @@ function fileReadError(error: unknown): unknown {
   if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
   // Only a file that shrank since its size was read refuses a range inside that size.
   if (error instanceof DriveApiRequestError && error.status === 416) return new Error(FILE_CHANGED);
+  return error;
+}
+
+/** Said of an export of a file with edits this binding queued that are still waiting. */
+const EXPORT_EDITS_WAITING =
+  "That file has changes waiting for approval, which an export would leave out: Google Drive " +
+  "exports the file as it is on Drive. Export it once they are decided.";
+
+/** Said of an export Google refuses for its size. */
+const EXPORT_TOO_LARGE =
+  "Google Drive exports at most 10 MB, and this file is larger in that format. Export it to a " +
+  "leaner one, such as md or txt rather than pdf, or csv for one sheet of a spreadsheet.";
+
+/** A failed export as an export reports it. */
+function fileExportError(error: unknown): unknown {
+  if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
+  if (error instanceof DriveApiRequestError && error.status === 403 &&
+      error.reason === "exportSizeLimitExceeded") {
+    return new Error(EXPORT_TOO_LARGE);
+  }
   return error;
 }
 
@@ -3077,6 +3100,41 @@ export class GoogleDriveSessionImpl extends RpcTarget
       ? exactRange(download, length)
       : new ReadableStream<Uint8Array>({ start: controller => controller.close() });
     return {mimeType, size, modifiedTime, offset, length, content};
+  }
+
+  async exportFile(fileId: string, format: DriveExportFormat): Promise<DriveExport> {
+    // As readFile(): the stream needs no queue of its own.
+    let core = this.#core;
+    let file = await core.openFile(fileId, "file");
+    let {nativeMimeType, mimeType} = exportMimeType(file, format);
+    // Drive exports the file as Google has it. The binding's own reads show its edits still
+    // waiting as if made, so an export without them would pass for one of the file as read.
+    await this.#writes.waiting(async pending => {
+      if (pending.some(({ action }) => editedFile(action)?.target.fileId === file.id)) {
+        throw new Error(EXPORT_EDITS_WAITING);
+      }
+    });
+    let modifiedTime = driveModifiedTime(file);
+    let opened: ReadableStream<Uint8Array> | undefined;
+    // An export is the file's content, so it needs leave to download as readFile() does, and a
+    // folder binding refuses one of a file that changed since it was opened, as readFile() does.
+    let content = await core.nativeRead(file.id, nativeMimeType, {
+      content: true,
+      unchanged: current => {
+        if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+      },
+    })(async () => {
+      opened = await this.#driveApi.openExport(file.id, mimeType)
+        .catch((error: unknown) => { throw fileExportError(error); });
+      return opened;
+    }, () => ({
+      title: "Export file from Google Drive",
+      description: `Export Drive file ${file.id} as ${format}.`,
+    })).catch(async (error: unknown) => {
+      await opened?.cancel().catch(() => undefined);
+      throw error;
+    });
+    return {mimeType, modifiedTime, content: idleTimed(content)};
   }
 
   async listComments(fileId: string): Promise<Cursor<DriveComment>> {
@@ -3602,6 +3660,10 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
   }
 
   async readFile(_fileId: string, _options?: DriveFileReadOptions): Promise<DriveFileBytes> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async exportFile(_fileId: string, _format: DriveExportFormat): Promise<DriveExport> {
     throw new Error(UNCREATED_FOLDER);
   }
 

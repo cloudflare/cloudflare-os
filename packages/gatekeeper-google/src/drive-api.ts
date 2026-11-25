@@ -360,6 +360,22 @@ async function readBoundedText(
   return chunks.join("");
 }
 
+/**
+ * `fetch`'s answer, which must begin within {@link DOWNLOAD_TIMEOUT_MS}. Its body is not timed: it
+ * is read at the caller's pace, for as long as a file of any size takes.
+ */
+async function beginTimed(fetch: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
+  let begin = new AbortController();
+  let timer = setTimeout(
+    () => begin.abort(new DOMException("Google Drive did not answer in time.", "TimeoutError")),
+    DOWNLOAD_TIMEOUT_MS);
+  try {
+    return await fetch(begin.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** A 206's `Content-Range`: where its bytes start and end, and the whole file's size unless `*`. */
 const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
 
@@ -1345,18 +1361,9 @@ export class DriveApi {
   async downloadRange(
     fileId: string, offset: number, length: number,
   ): Promise<{ content: ReadableStream<Uint8Array>; length?: number; fileSize?: number }> {
-    let begin = new AbortController();
-    let timer = setTimeout(
-      () => begin.abort(new DOMException("Google Drive did not answer in time.", "TimeoutError")),
-      DOWNLOAD_TIMEOUT_MS);
-    let response: Response;
-    try {
-      response = await this.#fetchMedia(fileId, {
-        headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal: begin.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    let response = await beginTimed(signal => this.#fetchMedia(fileId, {
+      headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal,
+    }));
     let range = response.status === 206
       ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
       : undefined;
@@ -1374,6 +1381,26 @@ export class DriveApi {
       ...range ? { length: Number(range[2]) - offset + 1 } : {},
       ...total == null || total === "*" ? {} : { fileSize: Number(total) },
     };
+  }
+
+  /**
+   * A Google Docs, Sheets or Slides file's content exported as `mimeType`, as a stream nothing has
+   * yet been read from: this resolves once Drive begins its answer, and nothing is buffered. Drive
+   * refuses an export of more than 10 MB with `exportSizeLimitExceeded`. Only the wait for the
+   * answer to begin is timed, as for {@link downloadRange}, and with it a refusal's body, which is
+   * read for its reason.
+   */
+  async openExport(fileId: string, mimeType: string): Promise<ReadableStream<Uint8Array>> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({ mimeType });
+    let response = await beginTimed(async signal => {
+      let answer = await fetchWithAuthRetry(
+        `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/export?${params}`, { signal },
+        this.getAccessToken);
+      if (!answer.ok) throw await driveError(answer);
+      return answer;
+    });
+    return response.body ?? new ReadableStream({ start: controller => controller.close() });
   }
 
   /**

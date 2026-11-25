@@ -2168,7 +2168,8 @@ describe("a deployment that keeps Drive read-only", () => {
   it("makes a read and write binding read-only in every respect, asking Google nothing", async () => {
     let { id: commentId } = provider.post("doc-1", "First");
     provider.give("doc-1", { ...BOB, role: "reader" });
-    let reads = "read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and " +
+    let reads = "read native Google Docs, Sheets and Slides and export them with exportFile(), " +
+      "read PDFs' text with readPdf() and " +
       "any other file's bytes with readFile()";
     let bindings: [DriveBindingScope, Record<string, string>][] = [
       [ACCOUNT, {
@@ -2192,7 +2193,8 @@ describe("a deployment that keeps Drive read-only", () => {
         url: FILE_URL,
         title: "doc-1",
         snippet: "Read-only: read metadata and, when native, Google Doc, Sheet or Slides " +
-          "content, with readPdf() a PDF's text, or with readFile() the bytes of any other " +
+          "content or with exportFile() an export of it, with readPdf() a PDF's text, or with " +
+          "readFile() the bytes of any other " +
           "file, and comments, from Drive file \"doc-1\"",
         suggestedBindingName: "GOOGLE_DRIVE_FILE",
         tsType: "GoogleDriveReadSession",

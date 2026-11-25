@@ -1581,6 +1581,38 @@ describe("downloadRange", () => {
   });
 });
 
+describe("openExport", () => {
+  it("asks Drive for the file's export in the MIME type given, and streams it", async () => {
+    let calls = stubFetch([new Response("exported")]);
+
+    let content = await api().openExport("doc-1", "text/markdown");
+
+    expect(await new Response(content).text()).toBe("exported");
+    expect(calls.map(({ url }) => url.toString())).toEqual([
+      "https://www.googleapis.com/drive/v3/files/doc-1/export?mimeType=text%2Fmarkdown",
+    ]);
+  });
+
+  // A refusal's body is read for its reason, so a refusal whose body Drive stops sending must end
+  // within the wait for Drive's answer rather than hold the export open for good.
+  it("times a refusal's body as part of the wait for Drive to answer", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      let signal = init.signal!;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener("abort", () => controller.error(signal.reason));
+        },
+      }), { status: 403 });
+    });
+
+    let refused = api().openExport("doc-1", "application/pdf").catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(await Promise.race([refused, "still waiting"])).toMatchObject({ status: 403 });
+  });
+});
+
 describe("lacksFileContentAccess", () => {
   it("recognizes a 403 appNotAuthorizedToFile or insufficientPermissions only", () => {
     expect(lacksFileContentAccess(new DriveApiRequestError(403, "appNotAuthorizedToFile"))).toBe(true);
