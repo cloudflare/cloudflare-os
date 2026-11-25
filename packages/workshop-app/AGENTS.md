@@ -532,8 +532,8 @@ so the focus is handed back unless the draft is where to carry on. A link in the
 line over it while it waits on something (`ComposerConnectionLines`), as a pill has nothing to
 press in it, and is a pill with the others once it is made, the link gone from the words. Why a draft cannot go as it is
 (files or connections with a skill, which goes alone) is a line over it (`ComposerNote`). A pill
-is as tall as its line less 2px, so the draft's lines are 24px, and a message with pills is drawn
-on lines as tall. Pointed at, a pill has a card over it of what it names (`components/ChipTooltip`:
+is 21px, in the middle of its line, and a person's message is drawn on 23px lines, with pills or
+without, which leave room between pills on lines that follow. Pointed at, a pill has a card over it of what it names (`components/ChipTooltip`:
 its name, what it is for, and what it is): in a message the chip is the card's own trigger, and in
 the draft, where nothing in a pill can be pointed at, the field is asked which pill the pointer is
 over (`ComposerPillTooltip`). A card says only what is known of the thing and is not on its pill,

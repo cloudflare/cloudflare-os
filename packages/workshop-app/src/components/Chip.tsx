@@ -25,8 +25,8 @@ export type ChipProps = {
  * Something named among words: a skill, a format, a connection. A small bubble of the app's own
  * with what it is before its name, the same in a draft being written and in the message it is
  * sent as. One piece, as a name is: it moves to the next line whole, and a name too long for the
- * line is cut short, whole on hover. It is as tall as the line it is on, less the room round it
- * (`Chip.css`).
+ * line is cut short, whole on hover. It is 21px, or less on lines too short for that, in the
+ * middle of its line (`Chip.css`).
  */
 export const Chip = ({ children, icon, href: given, about }: ChipProps) => {
   const href = webUrl(given)

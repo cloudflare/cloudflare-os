@@ -1,16 +1,17 @@
-/* With the room over and under it, a pill is exactly as tall as the line it is on and hangs from
-   the line's top, which puts it about the line's middle whatever is in it: no line with one is
-   taller than a line without, and two on lines that follow have room between them. So it is as
-   big as its lines let it be: 22px on lines of 24px, which is what it is drawn for. */
+/* A pill is 21px, small enough for a message's lines (23px), or less on lines too short for that,
+   and is in the middle of the line it is on whatever is in it: no line with one is taller than a
+   line without, and two on lines that follow have room between them, as its edge is inside it. */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
   min-width: 0;
   max-width: 100%;
-  height: 1.375rem;
-  height: calc(1lh - 2px);
+  --chip-height: min(1.3125rem, calc(1lh - 2px));
+  height: 1.3125rem;
+  height: var(--chip-height);
   margin-block: 1px;
+  margin-block: calc((1lh - var(--chip-height)) / 2);
   padding-inline: 0.375rem 0.5625rem;
   vertical-align: top;
   border-radius: 9999px;
@@ -18,12 +19,14 @@
      `chips-on-dark` has the other. Its edge is a hairline of the colour of the words it is
      among, fainter on a light surface, where any line tells. */
   --chip-fill: var(--color-chip);
-  --chip-edge: light-dark(color-mix(in oklch, currentColor 6%, transparent), color-mix(in oklch, currentColor 11%, transparent));
+  --chip-edge: light-dark(color-mix(in oklch, currentColor 4%, transparent), color-mix(in oklch, currentColor 6%, transparent));
   background-color: var(--chip-fill);
-  box-shadow: 0 0 0 1px var(--chip-edge);
+  box-shadow: inset 0 0 0 1px var(--chip-edge);
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
+  /* One thing, not words to select: the arrow over it, and a link's hand over one that is a link. */
+  cursor: default;
   /* For the wash it has when pointed at, which is under what it says. */
   position: relative;
   isolation: isolate;
@@ -33,16 +36,16 @@
    own, which whoever puts chips there says. */
 .chips-on-dark .chip {
   --chip-fill: var(--color-chip-on-dark);
-  --chip-edge: color-mix(in oklch, currentColor 11%, transparent);
+  --chip-edge: color-mix(in oklch, currentColor 6%, transparent);
 }
 
 /* Pointed at, it fills: a wash more of the words' colour, which eases in. Where there is
    something to point with, as a finger's press would leave it filled. */
 .chip::after {
   position: absolute;
-  /* Over its edge too, which is outside it: left as it was, the edge would be a ring darker than
-     what it is round, on a dark surface. */
-  inset: -1px;
+  /* Over its edge too: left as it was, the edge would be a ring darker than what it is round, on
+     a dark surface. */
+  inset: 0;
   border-radius: inherit;
   background-color: currentColor;
   content: '';
@@ -78,7 +81,6 @@
   text-overflow: ellipsis;
 }
 
-.chip:is(a):hover > .chip-name {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.chip:is(a) {
+  cursor: pointer;
 }

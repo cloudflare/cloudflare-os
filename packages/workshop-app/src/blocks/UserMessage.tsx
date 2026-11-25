@@ -158,10 +158,9 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], desc
                 </span>
               </button>
             )}
-            {/* On lines as tall as the draft's were, which a pill is drawn for. */}
-            {parts.some(({ type }) => type !== 'text')
-              ? <div className="chips-on-dark leading-6">{shown}{more}</div>
-              : <>{shown}{more}</>}
+            {/* On lines a little taller than a reply's, with or without pills, which leave room
+                between pills on lines that follow. */}
+            <div className={cn('leading-[23px]', parts.some(({ type }) => type !== 'text') && 'chips-on-dark')}>{shown}{more}</div>
           </MessageBubble>
         )}
       </div>
