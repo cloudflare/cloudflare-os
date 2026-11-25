@@ -1,7 +1,6 @@
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
-import type { CursorInjection } from "../src/cursors";
 import { createSimulationView, ProvisionalIds, type SimulationRecord } from "../src/simulation";
 import {
   createSimulationStore,
@@ -966,6 +965,30 @@ describe("simulatedList", () => {
     expect(onStandIn.inject.items).toEqual([]);
     onStandIn.refresh();
     expect(onStandIn.inject.revalidate(task("~1", 5))).toBeNull();
+
+    // A stand-in shown until a record its fold cannot replay is staged is hidden from the next
+    // refresh on.
+    const store = createSimulationStore<string, Task, Task, Staged>({
+      initial: row => row,
+      reduce: (row, { action }) => {
+        if (action.kind === "finish") return { kind: "unsupported", reason: "it cannot be replayed" };
+        if (action.kind === "open") return { kind: "applied", value: task(action.ref, action.at) };
+        return { kind: "known-no-effect" };
+      },
+    });
+    let staged = [opens(1, "~1", 5)];
+    const later = simulatedList({
+      store,
+      view: () => createSimulationView(staged, taskIds),
+      id: row => row.id,
+      compare: newestFirst,
+      created: () => ["~1"],
+    });
+    expect(later.inject.items).toEqual([task("~1", 5)]);
+    expect(later.inject.revalidate(task("~1", 5))).toEqual(task("~1", 5));
+    staged = [...staged, finishes(2, "~1")];
+    later.refresh();
+    expect(later.inject.revalidate(task("~1", 5))).toBeNull();
   });
 
   it("folds a provider row and drops one its records delete or the listing no longer keeps", () => {
@@ -1135,15 +1158,6 @@ describe("simulatedList", () => {
     expect(first).toEqual(asServed);
     expect(list.inject.revalidate(first)).toEqual(task("~1", 5, "later"));
     expect(list.inject.revalidate(first)).not.toBe(first);
-  });
-
-  it("gives a cursor's inject its items, compare and revalidate", () => {
-    const { list } = listing([opens(1, "~1", 5)], ["~1"]);
-    const inject: Pick<CursorInjection<Task>, "items" | "compare" | "revalidate"> = list.inject;
-    const complete: CursorInjection<Task> = { ...list.inject, authorize: true, identity: row => row.id };
-
-    expect(inject.items).toEqual([task("~1", 5)]);
-    expect(complete.revalidate?.(inject.items[0])).toEqual(task("~1", 5));
   });
 
   it("reads the view at every fold, and the pending creates only at refresh", () => {

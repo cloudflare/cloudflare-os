@@ -192,7 +192,8 @@ describe("an incident listing over an OffsetCursor", () => {
       id: row => row.id,
       compare: newestFirst,
       keeps,
-      created: () => pending.flatMap(({ action }) =>
+      // The journal as it is now: a create settled before its stand-in is admitted drops it.
+      created: () => host.pending().flatMap(({ action }) =>
         action.kind === "createIncident" && resolve(action.ref) === action.ref ? [action.ref] : []),
     });
     const authorized: string[][] = [];
@@ -411,6 +412,21 @@ describe("an incident listing over an OffsetCursor", () => {
     expect((await drain(cursor)).flat().map(({ id }) => id)).not.toContain(ref);
   });
 
+  it("drops the stand-in of a create rejected while the page that would serve it is fetched", async () => {
+    const host = incidentProvider();
+    // Triggered and newer than every provider row, so it sorts first on the first page.
+    const ref = host.open(99);
+    // The create is rejected while the first page is being fetched, after that call's refresh ran.
+    host.hooks.fetching = () => {
+      host.hooks.fetching = undefined;
+      host.settle(1);
+    };
+
+    const { cursor } = listIncidents(host, ["triggered", "acknowledged"]);
+    expect(idsOf(await cursor.next())).toEqual(["P01", "P02", "P03", "P04"]);
+    expect((await drain(cursor)).flat().map(({ id }) => id)).not.toContain(ref);
+  });
+
   it("shows an action staged mid-walk on the rows served after it", async () => {
     const host = incidentProvider();
 
@@ -620,7 +636,7 @@ describe("a message listing over a TokenCursor", () => {
       compare: newestFirst,
       keeps: row => row.folderId === listedFolder,
       // Pending drafts are in Drafts and nowhere else.
-      created: () => listedFolder !== DRAFTS ? [] : pending.flatMap(({ action }) =>
+      created: () => listedFolder !== DRAFTS ? [] : host.pending().flatMap(({ action }) =>
         action.kind === "createDraft" && resolve(action.ref) === action.ref ? [action.ref] : []),
     });
 
@@ -643,7 +659,7 @@ describe("a message listing over a TokenCursor", () => {
         list.refresh();
       },
       overlay: list.overlay,
-      inject: { ...list.inject, identity: row => row.id },
+      inject: { ...list.inject, authorize: true, identity: row => row.id },
       fetchPage: async (token, perPage) => {
         const moved = first ? movedIn.flatMap(id => host.read(id) ?? []) : [];
         first = false;
