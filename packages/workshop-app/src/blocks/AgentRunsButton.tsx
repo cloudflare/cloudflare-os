@@ -1,11 +1,11 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Menu } from '@cloudflare/kumo/primitives/menu'
-import { useMotionTransition } from '@gadgets/ui'
-import { AnimatePresence, motion, useIsPresent, type TargetAndTransition } from 'motion/react'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { DropdownMenu, useMotionTransition } from '@gadgets/ui'
+import { AnimatePresence, motion, type TargetAndTransition } from 'motion/react'
 import { AgentIcon } from '@/components/AgentIcon'
+import { ArrowRight01Icon } from '@/components/icons'
 import { Mascot } from '@/components/mascot/Mascot'
-import { AgentRunPill } from './AgentRunPill'
 import { sameOrder } from './heldOrder'
+import { RunStatusMark } from './RunStatusMark'
 import { spaceRing } from './ringSpacing'
 import './AgentRunsButton.css'
 
@@ -21,6 +21,10 @@ export type HeldRun = {
   /** The run's address, so that it can be opened in another tab. */
   href?: string
 }
+
+// What starts a run's item: its agent's cloud while it works, the hand while it waits on the user.
+const WorkingMark = ({ className }: { className?: string }) => <AgentIcon weight="fill" className={className} />
+const WaitingMark = ({ className }: { className?: string }) => <RunStatusMark status="waiting" className={className} />
 
 export type AgentRunsButtonProps = {
   /** The runs under way, in the order they were started. With none, it goes. */
@@ -47,12 +51,6 @@ const MARK = { duration: 0.5, ease: EASE }
 // The button coming before the composer, or going once the last cloud has left.
 const BUTTON = { duration: 0.3, ease: EASE }
 const LEAVING = { ...BUTTON, delay: MARK.duration }
-// The room round the list for its pills' shadows to fade out in: its padding (`p-11`) and half the
-// gap between two pills (`py-1` each).
-const SHADOW_ROOM = 48
-// How far over the button the list is, and how far in from the window's edges.
-const OVER_BUTTON = 10
-const FROM_EDGES = 12
 
 // "2 agents: 2 working, 1 waiting on you", or for one alone "An agent working".
 const labelOf = (working: number, waiting: number) => {
@@ -75,27 +73,6 @@ const ALONE_HIDDEN = { opacity: 0, scale: 0.6 }
 const DOT_IN = { type: 'spring', visualDuration: 0.35, bounce: 0.55 } as const
 const DOT_OUT = { duration: 0.15, ease: EASE }
 const ALONE_SHOWN = { opacity: 1, scale: 1 }
-// A pill joining the list while it is open, or leaving it as its run ends: its room opens or
-// closes, the others moving up or down to make it or take it, as it grows or shrinks in place.
-// Only its height is opened and closed, the gap round it (`py-1`) inside, so that it closes to nothing.
-const ITEM_AWAY = { height: 0, opacity: 0, scale: 0.8 }
-const ITEM_HERE = { height: 'auto', opacity: 1, scale: 1 }
-
-// A pill of the list, which is not pressed or pointed at once it is leaving.
-const ListedRun = ({ transition, children }: { transition: ReturnType<typeof useMotionTransition>; children: (leaving: boolean) => ReactNode }) => {
-  const leaving = !useIsPresent()
-  return (
-    <motion.div
-      initial={ITEM_AWAY}
-      animate={ITEM_HERE}
-      exit={ITEM_AWAY}
-      transition={transition}
-      className="flex max-w-full origin-left"
-    >
-      <div className="flex max-w-full py-1">{children(leaving)}</div>
-    </motion.div>
-  )
-}
 
 /**
  * The agents a chat started that are under way, before its composer, where they are seen first: one
@@ -103,8 +80,8 @@ const ListedRun = ({ transition, children }: { transition: ReturnType<typeof use
  * round a ring in depth, the far side smaller and fainter, and a dot is at its foot while any
  * waits on the user. A run that ends
  * fades out of the ring as it goes on turning, the others closing the gap, and one that starts
- * fades in as they make room; the button goes after the last. It opens to a pill for each, which
- * opens its run, and which folds away there as its run ends.
+ * fades in as they make room; the button goes after the last. It opens a menu of them
+ * (`DropdownMenu`), an item each, which opens its run.
  */
 export const AgentRunsButton = ({ runs, onOpen, onLeaveFocus }: AgentRunsButtonProps) => {
   const [open, setOpen] = useState(false)
@@ -132,9 +109,65 @@ export const AgentRunsButton = ({ runs, onOpen, onLeaveFocus }: AgentRunsButtonP
   const [spacing, setSpacing] = useState(() => ({ keys, shares: spaceRing(new Map(), keys) }))
   if (!sameOrder(spacing.keys, keys)) setSpacing({ keys, shares: spaceRing(spacing.shares, keys) })
   const label = shown ? labelOf(working, waiting) : undefined
-  // The list closes with the last run as it was, rather than its pill leaving it as it closes.
+  // The menu closes with the last run as it was, rather than its item leaving it as it closes.
   const [listed, setListed] = useState(runs)
   if (shown && listed !== runs) setListed(runs)
+
+  // What the button holds: the clouds going round, or the mascot alone, and the dot while one waits.
+  const marks = (
+    <>
+      <motion.span
+        aria-hidden="true"
+        data-working={working > 0}
+        initial={false}
+        animate={ring(orbiting.length)}
+        transition={mark}
+        className="agent-orbit absolute inset-0"
+      >
+        <AnimatePresence initial={false}>
+          {orbiting.map(({ key }) => (
+            <motion.span
+              key={key}
+              className="agent-orbit-mark"
+              initial={at(spacing.shares.get(key) ?? 0, 0)}
+              animate={at(spacing.shares.get(key) ?? 0, 1)}
+              exit={{ '--presence': 0 } as TargetAndTransition}
+              transition={mark}
+            >
+              <AgentIcon weight="fill" className="size-4" />
+            </motion.span>
+          ))}
+        </AnimatePresence>
+      </motion.span>
+      <AnimatePresence initial={false}>
+        {alone && (
+          <motion.span
+            key="alone"
+            aria-hidden="true"
+            initial={ALONE_HIDDEN}
+            animate={ALONE_SHOWN}
+            exit={ALONE_HIDDEN}
+            transition={mark}
+            className="absolute inset-0 grid place-items-center"
+          >
+            <Mascot emotion={alone.status === 'running' ? 'thinking' : 'error'} reach={0} hdr={false} className="w-5" />
+          </motion.span>
+        )}
+      </AnimatePresence>
+      <AnimatePresence initial={false}>
+        {waiting > 0 && (
+          <motion.span
+            key="waiting"
+            aria-hidden="true"
+            initial={{ scale: 0 }}
+            animate={{ scale: 1, transition: dotIn }}
+            exit={{ scale: 0, opacity: 0, transition: dotOut }}
+            className="absolute end-0 bottom-0 size-2 rounded-full bg-kumo-brand ring-3 ring-kumo-base"
+          />
+        )}
+      </AnimatePresence>
+    </>
+  )
 
   return (
     <motion.div
@@ -147,109 +180,40 @@ export const AgentRunsButton = ({ runs, onOpen, onLeaveFocus }: AgentRunsButtonP
       inert={!shown}
       className="flex shrink-0 justify-center"
     >
-      <Menu.Root open={open && shown} onOpenChange={setOpen}>
-        <Menu.Trigger
-          aria-label={label}
-          title={label}
-          className="relative grid size-9 shrink-0 cursor-pointer place-items-center rounded-full bg-kumo-elevated text-kumo-default ring-1 ring-kumo-line outline-none hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-ring data-popup-open:bg-kumo-tint"
-        >
-          <motion.span
-            aria-hidden="true"
-            data-working={working > 0}
-            initial={false}
-            animate={ring(orbiting.length)}
-            transition={mark}
-            className="agent-orbit absolute inset-0"
+      {/* The button stays as it is while the menu is open, so that what it says of them stays in sight. */}
+      <DropdownMenu
+        icon={marks}
+        aria-label={label ?? 'Agents'}
+        triggerClassName="relative size-9 bg-kumo-elevated"
+        side="top"
+        keepTrigger
+        open={open && shown}
+        onOpenChange={setOpen}
+      >
+        {listed.map((run) => (
+          <DropdownMenu.Item
+            key={run.key}
+            icon={run.status === 'running' ? WorkingMark : WaitingMark}
+            label={run.title}
+            disabled={!onOpen}
+            onSelect={() => onOpen?.(run.key)}
           >
-            <AnimatePresence initial={false}>
-              {orbiting.map(({ key }) => (
-                <motion.span
-                  key={key}
-                  className="agent-orbit-mark"
-                  initial={at(spacing.shares.get(key) ?? 0, 0)}
-                  animate={at(spacing.shares.get(key) ?? 0, 1)}
-                  exit={{ '--presence': 0 } as TargetAndTransition}
-                  transition={mark}
-                >
-                  <AgentIcon weight="fill" className="size-4" />
-                </motion.span>
-              ))}
-            </AnimatePresence>
-          </motion.span>
-          <AnimatePresence initial={false}>
-            {alone && (
-              <motion.span
-                key="alone"
-                aria-hidden="true"
-                initial={ALONE_HIDDEN}
-                animate={ALONE_SHOWN}
-                exit={ALONE_HIDDEN}
-                transition={mark}
-                className="absolute inset-0 grid place-items-center"
-              >
-                <Mascot emotion={alone.status === 'running' ? 'thinking' : 'error'} reach={0} hdr={false} className="w-5" />
-              </motion.span>
-            )}
-          </AnimatePresence>
-          <AnimatePresence initial={false}>
-            {waiting > 0 && (
-              <motion.span
-                key="waiting"
-                aria-hidden="true"
-                initial={{ scale: 0 }}
-                animate={{ scale: 1, transition: dotIn }}
-                exit={{ scale: 0, opacity: 0, transition: dotOut }}
-                className="absolute end-0 bottom-0 size-2 rounded-full bg-kumo-brand ring-3 ring-kumo-base"
-              />
-            )}
-          </AnimatePresence>
-        </Menu.Trigger>
-        <Menu.Portal>
-          {/* Its padding is where the pills' shadows fade out, so it is set back by as much. That
-              reaches over the button, so nothing but the pills is pressed: the button is, again,
-              to put it away. */}
-          <Menu.Positioner side="top" align="start" sideOffset={OVER_BUTTON - SHADOW_ROOM} alignOffset={-SHADOW_ROOM} collisionPadding={FROM_EDGES - SHADOW_ROOM} className="pointer-events-none z-50">
-            <Menu.Popup
-              aria-label="Agents"
-              className={[
-                // Padded, so that what scrolls does not cut the pills' shadows off; only the pills
-                // are pressed, so the padding over the button and the conversation is not there.
-                'agent-runs-menu pointer-events-none flex max-h-(--available-height) max-w-[min(var(--available-width),36rem)] flex-col items-start overflow-y-auto p-11 outline-none',
-              ].join(' ')}
-            >
-              <AnimatePresence initial={false}>
-                {listed.map((run, index) => (
-                  <ListedRun key={run.key} transition={mark}>
-                    {(leaving) => (
-                      <Menu.Item
-                        label={run.title}
-                        disabled={!onOpen || leaving}
-                        // A pill is a link where the run has an address, and a button where it has none.
-                        nativeButton={onOpen !== undefined && run.href === undefined}
-                        render={(props) => (
-                          <AgentRunPill
-                            {...props}
-                            href={run.href}
-                            title={run.title}
-                            agent={run.agent}
-                            status={run.status}
-                            statusWords={run.statusWords}
-                            onOpen={onOpen && (() => onOpen(run.key))}
-                            style={{ '--from-button': listed.length - index } as CSSProperties}
-                            // Over the conversation, lifted off it as glass is: by a shadow all round it,
-                            // faint and blurred far out, from no side, which its ring stays inside of.
-                            className={`agent-runs-pill ${leaving ? 'pointer-events-none' : 'pointer-events-auto'} bg-kumo-elevated shadow-[0_0_2px_rgb(0_0_0/0.04),0_0_16px_rgb(0_0_0/0.05),0_0_48px_rgb(0_0_0/0.1)]`}
-                          />
-                        )}
-                      />
-                    )}
-                  </ListedRun>
-                ))}
-              </AnimatePresence>
-            </Menu.Popup>
-          </Menu.Positioner>
-        </Menu.Portal>
-      </Menu.Root>
+            {/* The agent's name, a chevron and the run's title, as the run's header has them. */}
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              {run.agent && (
+                <>
+                  <span className="max-w-40 shrink-0 truncate text-kumo-subtle">{run.agent}</span>
+                  <ArrowRight01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
+                  <span className="sr-only">, </span>
+                </>
+              )}
+              <span className="min-w-0 truncate">{run.title}</span>
+              <span className="sr-only">, {run.statusWords}</span>
+            </span>
+            {run.status === 'running' && <RunStatusMark status="running" className="size-4" />}
+          </DropdownMenu.Item>
+        ))}
+      </DropdownMenu>
     </motion.div>
   )
 }

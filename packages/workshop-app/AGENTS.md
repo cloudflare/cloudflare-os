@@ -378,14 +378,10 @@ still at `off`, and a dot pops in at its foot while one waits on the user. A run
 gap from where they are; one that starts fades in as they make room (`--presence` and `--offset`,
 eased by motion, the shares kept by `spaceRing` so the rest move as little as they can; the
 ring's turn is CSS on the ring, which each cloud inherits), and the button goes after the last,
-the composer taking its room and the focus, where the button had it. It opens to a pill for each,
-with how it stands (a spinner at its end while at work, the hand in the cloud's place while it
-waits), stacked over it at its start, each lifted by a wide shadow all round rather than from
-below, growing out of the button and back into it as a `DropdownMenu` does, on its springs
-(`--runs-open`), the nearest first; the button closes it again. While it is open, a pill folds
-away as its run ends, the others closing up, and one opens in as one starts; a pill's spinner folds
-away and its cloud fades into the hand as it stops to wait (only the height is animated, the gap
-kept inside, so that it closes to nothing). A run's header starts with the way
+the composer taking its room and the focus, where the button had it. It is the trigger of a
+`DropdownMenu`, kept in sight while the menu is open (`keepTrigger`), whose items are the runs:
+the cloud, or the hand while it waits on the user, the agent's name, a chevron and the run's
+title, and a spinner at its end while it works, each opening its run. A run's header starts with the way
 back to the chat that started it, in place of the workspace's crumb (`ChatHeader`'s `back`, from
 `ChatSnapshot.startedBy`), given where the page can open another chat (`ChatPane`'s
 `onOpenChat`). The `agent-runs` scenario plays five, of five agents, which end in each way, its
