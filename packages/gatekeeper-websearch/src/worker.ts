@@ -1,5 +1,6 @@
 // Web Search: an auto-provisioned gatekeeper whose account gives the agent a `WEB_SEARCH` binding
-// that searches the public web with Cloudflare's Web Search API. README.md explains the design.
+// that searches the public web with the provider the deployment's admin chose. README.md explains
+// the design.
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
@@ -19,7 +20,7 @@ import type {
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
-import { search } from "./search.js";
+import { FALLBACK_SETTING, PROVIDER_SETTING, search } from "./search.js";
 import type { WebSearchResult, WebSearchSession } from "./types.js";
 import TYPES_CODE from "./types.txt";
 
@@ -43,9 +44,10 @@ class WebSearchSessionImpl extends RpcTarget implements WebSearchSession {
     this.#approvalQueue = approvalQueue;
   }
 
-  /** Searches the web, recording the query first. */
-  search(query: string): Promise<WebSearchResult[]> {
-    return search(this.#env, query,
+  /** Searches the web with the provider the admin chose, recording the query first. */
+  async search(query: string): Promise<WebSearchResult[]> {
+    const settings = await this.#approvalQueue.getAdminSettings();
+    return search(this.#env, settings, query,
         description => this.#approvalQueue.authorizeObservation(description));
   }
 
@@ -194,9 +196,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       url: "https://developers.cloudflare.com/web-search/",
       logo: WEB_SEARCH_ICON,
       tagline: "Search the public web",
-      description: "Let the agent and gadgets search the public web with Cloudflare's Web Search API.",
+      description: "Let the agent and gadgets search the public web.",
       autoProvisionsAccount: true,
       providesAuth: false,
+      adminSettings: [PROVIDER_SETTING, FALLBACK_SETTING],
     };
   }
 
