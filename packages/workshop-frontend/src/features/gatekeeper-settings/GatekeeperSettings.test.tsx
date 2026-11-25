@@ -43,13 +43,17 @@ const select = (name: string) => {
   return element
 }
 
+/** The options of the list that `from` opens, which is left open. */
+const openOptions = async (from: HTMLElement) => {
+  if (from.getAttribute('aria-expanded') !== 'true') await act(async () => { from.click() })
+  const list = document.getElementById(from.getAttribute('aria-controls') ?? '')
+  return Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
+}
+
 // By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom lacks,
 // so the window has a stand-in for as long as the choice takes.
 const choose = async (from: HTMLElement, label: string) => {
-  await act(async () => { from.click() })
-  const list = document.getElementById(from.getAttribute('aria-controls') ?? '')
-  const option = Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
-    .find((element) => element.textContent === label)
+  const option = (await openOptions(from)).find((element) => element.textContent === label)
   if (!option) throw new Error(`No option ${label}`)
   const view: { PointerEvent?: typeof MouseEvent } = window
   view.PointerEvent = MouseEvent
@@ -84,20 +88,25 @@ it('reports the option an admin picks, and not the one in effect', async () => {
   expect(onChoose).toHaveBeenCalledExactlyOnceWith('provider', 'model')
 })
 
-it('holds every other select while a pick is saved, and takes no second pick from that one', async () => {
+it('holds every other select while a pick is saved, and offers no second pick from that one', async () => {
   const save = Promise.withResolvers<void>()
   const onSave = vi.fn<(settingId: string, value: string) => Promise<void>>(() => save.promise)
   await render(<SettingsPanel initial={webSearch('ceramic')} onSave={onSave} />)
   const provider = () => select('Search provider for Web Search')
   const fallback = () => select('Fallback search provider for Web Search')
+  const unavailable = async (from: HTMLElement) =>
+    (await openOptions(from)).map((option) => option.getAttribute('aria-disabled') === 'true')
 
   await choose(provider(), 'The model’s provider')
   expect(provider().hasAttribute('disabled')).toBe(false)
   expect(fallback().hasAttribute('disabled')).toBe(true)
+  expect(await unavailable(provider())).toEqual([true, true, true, true])
   await choose(provider(), 'Linkup')
   expect(onSave.mock.calls).toEqual([['provider', 'model']])
 
   await act(async () => { save.resolve() })
+  expect(await unavailable(provider())).toEqual([false, false, false, false])
+  await act(async () => { provider().click() })
   expect(fallback().hasAttribute('disabled')).toBe(false)
   await choose(fallback(), 'Ceramic')
   expect(onSave.mock.calls).toEqual([['provider', 'model'], ['fallback', 'ceramic']])

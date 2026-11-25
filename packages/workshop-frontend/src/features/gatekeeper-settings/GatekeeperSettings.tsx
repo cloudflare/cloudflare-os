@@ -10,14 +10,14 @@ export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
   vendorName: string
   /** Every setting the gatekeeper declares, with the value in effect. */
   settings: Setting[]
-  /** Whether a change to the gatekeeper is being saved. No pick is taken meanwhile. */
+  /** Whether a change to the gatekeeper is being saved. No select offers a pick meanwhile. */
   saving: boolean
   /** Called with the option an admin picked for the setting `settingId`. */
   onChoose: (settingId: string, value: string) => void
 }) => {
-  // The setting whose pick is being saved. Its select stays enabled: focus returns to a select
-  // when its list closes, and a disabled one drops it. Every other select is disabled until the
-  // save ends, so that none takes a pick that is not saved.
+  // The setting whose pick is being saved. Its select stays enabled, with its options disabled:
+  // focus returns to a select when its list closes, and a disabled one drops it. Every other
+  // select is disabled until the save ends.
   const [picked, setPicked] = useState<string>()
   if (!saving && picked !== undefined) setPicked(undefined)
 
@@ -40,7 +40,7 @@ export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
             // Only a pick is the admin's. The select also reports changes of its own: to the
             // value it started with, when the stored value is not one of its options, and to an
             // option whose first letter is typed while it is closed.
-            if (saving || reason !== 'item-press' || !value || value === setting.value) return
+            if (reason !== 'item-press' || !value || value === setting.value) return
             setPicked(setting.id)
             onChoose(setting.id, value)
           }}
@@ -51,7 +51,9 @@ export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
               `${value} (no longer offered)`}
         >
           {setting.options.map((option) => (
-            <Select.Option key={option.value} value={option.value}>{option.label}</Select.Option>
+            <Select.Option key={option.value} value={option.value} disabled={saving}>
+              {option.label}
+            </Select.Option>
           ))}
         </Select>
       ))}
