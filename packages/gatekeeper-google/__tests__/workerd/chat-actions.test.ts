@@ -129,6 +129,8 @@ function chatBackend() {
     uploadFailure: 0,
     /** Someone who joins the conversation this long after the next upload or message create. */
     joinAfterWrite: undefined as {member: ChatMembershipRaw; ms: number} | undefined,
+    /** Refuse the next message create with a 429, posting nothing, as Google's write quota does. */
+    throttleNextCreate: false,
     /** When each upload and message create arrived, to see how a send spaces its writes. */
     writeTimes: [] as number[],
     /** Profiles in the organization's directory, matched by email or name prefix. */
@@ -151,7 +153,8 @@ function chatBackend() {
     if (!state.joinAfterWrite) return;
     const {member, ms} = state.joinAfterWrite;
     state.joinAfterWrite = undefined;
-    setTimeout(() => state.members.push(member), ms);
+    if (ms === 0) state.members.push(member);
+    else setTimeout(() => state.members.push(member), ms);
   };
   /** A page of `items` no longer than asked for, nor than `state.pageSize`, as Google may return. */
   const pageOf = <T>(items: T[], url: URL) => {
@@ -285,6 +288,10 @@ function chatBackend() {
       }
       state.writeTimes.push(Date.now());
       joinLater();
+      if (state.throttleNextCreate) {
+        state.throttleNextCreate = false;
+        return json({error: {status: "RESOURCE_EXHAUSTED"}}, 429);
+      }
       const body = JSON.parse(init.body as string) as typeof state.creates[number]["body"];
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
@@ -1940,6 +1947,29 @@ describe("Starting Google Chat conversations", () => {
     ]);
     expect(backend.state.creates[0].body).toEqual(
       {attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}]});
+  });
+
+  it("uploads nothing for a group chat someone joined before the send was applied", async () => {
+    const {backend, chat} = accountChat({groupChat: true});
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "Impact", {
+      attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
+    })).message;
+    backend.state.members.push(joined("400"));
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.uploads).toEqual([]);
+    expect(backend.state.creates).toEqual([]);
+  });
+
+  it("doesn't resend a throttled post to a group chat someone joined meanwhile", async () => {
+    const {backend, chat} = accountChat({groupChat: true});
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 42")).message;
+    backend.state.throttleNextCreate = true;
+    backend.state.joinAfterWrite = {member: joined("400"), ms: 0};
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.writeTimes).toHaveLength(1);
+    expect(backend.state.creates).toEqual([]);
   });
 
   it("posts nothing to a group chat someone joined while the message waited its turn", async () => {

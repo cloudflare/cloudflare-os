@@ -64,6 +64,11 @@ export type FetchWithAuthRetryOptions = {
   idempotent?: boolean;
   /** What the request does, a literal, for the metrics. The HTTP method unless given. */
   operation?: string;
+  /**
+   * Runs before each resend, whatever its reason, to recheck what the request depends on. It
+   * throwing ends the request with its error, sending nothing more.
+   */
+  beforeResend?: () => Promise<void>;
 };
 
 const BASE_DELAY_MS = 500;
@@ -144,8 +149,11 @@ export async function fetchWithAuthRetry(
   let reloaded = false;
   let token = await getAccessToken();
   let attempt = 0;
+  let sent = false;
 
   while (true) {
+    if (sent) await opts.beforeResend?.();
+    sent = true;
     // A fresh timeout signal per attempt so a retry gets the full budget, combined with any
     // caller-supplied signal.
     let signals: AbortSignal[] = [];

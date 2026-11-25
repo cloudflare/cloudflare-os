@@ -718,19 +718,19 @@ export class ChatApi {
   async #request<T>(
     operation: string,
     path: string,
-    init?: RequestInit & { idempotent?: boolean; base?: string },
+    init?: RequestInit & { idempotent?: boolean; base?: string; beforeResend?: () => Promise<void> },
   ): Promise<T> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
     if (init?.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const { idempotent, base = CHAT_API_BASE, ...rest } = init ?? {};
+    const { idempotent, base = CHAT_API_BASE, beforeResend, ...rest } = init ?? {};
     const response = await fetchWithAuthRetry(
       `${base}${path}`,
       { ...rest, headers },
       this.getAccessToken,
-      idempotent === undefined ? { operation } : { operation, idempotent },
+      { operation, ...(idempotent !== undefined ? { idempotent } : {}), ...(beforeResend ? { beforeResend } : {}) },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;
@@ -1009,7 +1009,7 @@ export class ChatApi {
   async createMessage(
     spaceName: string,
     message: { text: string; threadName?: string; attachments?: readonly ChatAttachmentDataRef[] },
-    options: { requestId?: string; messageId?: string } = {},
+    options: { requestId?: string; messageId?: string; beforeResend?: () => Promise<void> } = {},
   ): Promise<ChatMessageInfo> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams();
@@ -1036,7 +1036,10 @@ export class ChatApi {
     return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
       "messages.create",
       `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
-      { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined }));
+      {
+        method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined,
+        ...(options.beforeResend ? { beforeResend: options.beforeResend } : {}),
+      }));
   }
 
   /** Returns the text as Chat stored it, in the `formattedText` form a later read compares against. */

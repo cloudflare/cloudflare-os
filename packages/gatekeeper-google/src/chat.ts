@@ -1936,6 +1936,17 @@ export class GoogleChatGatekeeperImpl
           };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
+          // A send to exactly some people must reach only them. Google has no create that holds
+          // only while the members are unchanged, so someone added between a check and the post
+          // still receives it. A retry may follow a post that landed, so a refusal leaves the
+          // attempt mark as it is.
+          const requireAudience = async (resending = false) => {
+            if (recipients && !await hasExactly(api, spaceName, recipients)) {
+              throw new Error(audienceChanged(retried || resending));
+            }
+          };
+          // Checked before uploading, too, so no file goes to a conversation it couldn't be posted in.
+          if (action.attachments?.length) await requireAudience();
           // Uploads go to the conversation the message is posted to. Google is expected not to show
           // one until a message attaches it, though no live conversation has confirmed that yet, so
           // one a lost response leaves behind is simply uploaded again.
@@ -1946,14 +1957,9 @@ export class GoogleChatGatekeeperImpl
               () => api.uploadAttachment(spaceName, { filename, mimeType, content })));
           }
           const { id } = await this.#spaceWrites.run(spaceName, async () => {
-            // A send to exactly some people must reach only them, so who is in the conversation is
-            // checked as late as it can be: after any uploads and this write's wait for its turn.
-            // Google has no create that holds only while the members are unchanged, so someone
-            // added between this check and the post still receives it. A retry may follow a post
-            // that landed, so a refusal here leaves the attempt mark as it is.
-            if (recipients && !await hasExactly(api, spaceName, recipients)) {
-              throw new Error(audienceChanged(retried));
-            }
+            // Checked as late as it can be: after any uploads and this write's wait for its turn, and
+            // again before each resend, which can follow a pause of seconds.
+            await requireAudience();
             // The request id makes Chat itself idempotent, so a retry after a lost response returns
             // the message the first attempt created rather than posting a second one.
             return store.attemptWrite(actionId, () => api.createMessage(spaceName, {
@@ -1963,6 +1969,7 @@ export class GoogleChatGatekeeperImpl
             }, {
               requestId: action.requestId,
               messageId: clientMessageId(action),
+              ...(recipients ? { beforeResend: () => requireAudience(true) } : {}),
             }));
           });
           // A replayed create echoes the request, not the message Chat stored.
