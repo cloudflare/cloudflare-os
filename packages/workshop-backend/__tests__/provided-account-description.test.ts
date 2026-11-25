@@ -126,7 +126,8 @@ it("shares discovery between the app list and a simultaneous direct app open", a
   expect(await listing).toContainEqual(expect.objectContaining({ accountId: id }));
   expect(await direct).toContainEqual(expect.objectContaining({ accountId: id }));
   const frame = await user.startAccountAppUi(id, { isAdmin: false });
-  frame.ui[Symbol.dispose]();
+  expect(frame).not.toBeNull();
+  frame!.ui[Symbol.dispose]();
 });
 
 it.each([
@@ -144,7 +145,7 @@ it.each([
   await hooks.pauseAccountDescriptions(userId, false);
   expect(await listing).toEqual([]);
   expect(await user.listProvidedAccounts(true)).toEqual([]);
-  expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
+  expect(await hooks.openAppUi(userId, id, userId, "")).toBeNull();
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });
 
@@ -161,7 +162,7 @@ it("preserves the cached singleton when its management app is disabled", async (
   // Workspace reconciliation must still see the account, or it deletes its saved binding edges.
   expect(await user.listProvidedAccounts()).toMatchObject([{ accountId: id, description: { singleton } }]);
   expect(await user.listProvidedAccounts(true)).toEqual([]);
-  expect(await hooks.openAppUi(userId, id, userId, "")).toEqual({ error: "No such app." });
+  expect(await hooks.openAppUi(userId, id, userId, "")).toBeNull();
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });
 
@@ -183,7 +184,7 @@ it("loads the account after the app availability check yields", async () => {
       (instance as unknown as { storage: UserStorage }).storage.connectedAccounts.delete(id);
     });
   } finally { release.resolve(null); }
-  expect(await opening).toEqual({ error: "No such app." });
+  expect(await opening).toBeNull();
   expect(await hooks.accountCalls(userId)).toEqual(["describe", "describe"]);
 });
 

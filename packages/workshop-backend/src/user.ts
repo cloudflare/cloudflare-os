@@ -2417,13 +2417,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
-   * fresh by the caller so admin-gated features reflect the user's current status.
+   * fresh by the caller so admin-gated features reflect the user's current status. Return null if
+   * the app is no longer available when it is opened.
    */
   async startAccountAppUi(
       accountId: number, options: Pick<AppUiContext, "isAdmin">,
-  ): Promise<GatekeeperUiFrame> {
+  ): Promise<GatekeeperUiFrame | null> {
     let record = await this.#uiAccountRecord(accountId);
-    if (!record) throw new Error("No such app.");
+    if (!record) return null;
     let userSelectionExchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
       props: { selectorUserId: this.ctx.id.toString(), appAccountId: accountId },
     });

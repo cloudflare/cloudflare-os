@@ -260,11 +260,12 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
    */
   async openAppUi(
       viewerId: string, accountId: number, accountName: string, ticket: string,
-  ): Promise<{ error: string } | undefined> {
+  ): Promise<{ error: string } | null | undefined> {
     stashedTickets.set(accountName, ticket);
     try {
       const frame = await this.ctx.exports.UserDurableObject.getByName(viewerId)
         .startAccountAppUi(accountId, { isAdmin: false });
+      if (!frame) return null;
       frame.ui[Symbol.dispose]();
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
