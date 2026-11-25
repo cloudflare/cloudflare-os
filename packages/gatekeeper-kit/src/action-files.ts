@@ -124,8 +124,9 @@ export class ActionFileStore {
   /**
    * Captures a stream's bytes as they arrive, storing a chunk at a time. Beside the piece the stream
    * last gave, whose size is the stream's to choose, it holds one chunk of its own and a copy of the
-   * rest of a piece that spills into the next chunk, so a producer may reuse a piece's buffer once
-   * the capture has read it.
+   * rest of a piece that spills into the next chunk. A piece is copied when the capture reads it,
+   * not when it is enqueued, so a producer must leave an enqueued piece unchanged until then or
+   * enqueue a copy; with `highWaterMark: 0`, reusing a buffer in the next `pull()` is safe.
    * Until it resolves, the chunks stored so far count toward `maxTotalBytes` under an allocation
    * dated when the capture began, which `pruneUnreferenced()` may delete, failing the capture.
    * If the stream errors, gives more than `maxFileBytes` or anything but `Uint8Array` chunks, or
@@ -182,11 +183,15 @@ export class ActionFileStore {
       this.#storeManifest(file, startedAt, chunks);
       return file;
     } catch (error) {
-      this.#delete(handle);
-      // Started, not awaited: the producer's cancel may never settle, and neither the refusal nor
-      // the freed chunks wait on it. A stream that failed by itself refuses the cancel. The
-      // unfinished digest is left to be collected: aborting it would reject its `digest` unheard.
-      reader.cancel(error).catch(() => {});
+      try {
+        this.#delete(handle);
+      } finally {
+        // Started, not awaited, and even when cleanup fails: the producer's cancel may never
+        // settle, and neither the refusal nor the freed chunks wait on it. A stream that failed by
+        // itself refuses the cancel. The unfinished digest is left to be collected: aborting it
+        // would reject its `digest` unheard.
+        reader.cancel(error).catch(() => {});
+      }
       throw error;
     } finally {
       reader.releaseLock();

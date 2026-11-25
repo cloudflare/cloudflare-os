@@ -157,6 +157,27 @@ describe("ActionFileStore streams", () => {
     }, { maxFileBytes: 2 * CHUNK + 5 });
   });
 
+  it("cancels the source of a refused capture even when its cleanup fails", async () => {
+    const host = env.STORAGE_HOST.getByName(`action-files-${stores++}`);
+    await runInDurableObject(host, async (_instance, state) => {
+      let transactions = 0;
+      // The first transaction stores the first chunk; the second is the refusal's cleanup.
+      const store = new ActionFileStore({
+        kv: state.storage.kv,
+        transactionSync<T>(callback: () => T): T {
+          if (++transactions === 2) throw new Error("cleanup failed");
+          return state.storage.transactionSync(callback);
+        },
+      }, { ...OPTIONS, maxFileBytes: CHUNK + 5 });
+      const cancelled: unknown[] = [];
+
+      await expect(store.captureStream(source(bytes(2 * CHUNK), CHUNK, { cancelled })))
+        .rejects.toThrow(/cleanup failed/);
+
+      expect(cancelled).toHaveLength(1);
+    });
+  });
+
   it("refuses and frees its chunks without waiting for a source whose cancel never settles", async () => {
     await withStore(async (store, storage) => {
       const release = Promise.withResolvers<void>();
