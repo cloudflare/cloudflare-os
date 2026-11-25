@@ -3,6 +3,8 @@ node_modules/
 
 # Build outputs
 dist/
+# workshop-app's build beside workshop-frontend's (`build:workshop-assets`)
+packages/workshop-app/dist-workshop/
 # Generated gatekeeper UI bundles, rebuilt as a prerequisite of build/deploy
 packages/gatekeeper-*/src/generated/*-configurator-ui.txt
 packages/gatekeeper-*/src/generated/*-configurator-ui.js*

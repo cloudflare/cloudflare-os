@@ -9,7 +9,7 @@ import { FeatureFlagsContext, uiFeatureFlagsOf, type FeatureFlagsState } from '.
  */
 export const FeatureFlagsProvider = ({ children }: { children: ReactNode }) => {
   const { api, reconnecting } = useApi()
-  const [state, setState] = useState<FeatureFlagsState>(() => ({ flags: uiFeatureFlagsOf(undefined), loading: true }))
+  const [state, setState] = useState<FeatureFlagsState>(() => ({ flags: uiFeatureFlagsOf(undefined), loading: true, read: false }))
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` reads them.
@@ -17,7 +17,7 @@ export const FeatureFlagsProvider = ({ children }: { children: ReactNode }) => {
     let cancelled = false
     api.getUiFeatureFlags().then(
       (read) => {
-        if (!cancelled) setState({ flags: uiFeatureFlagsOf(read), loading: false })
+        if (!cancelled) setState({ flags: uiFeatureFlagsOf(read), loading: false, read: true })
       },
       () => {
         // What was read before stays.

@@ -8,5 +8,5 @@
     // which Vite resolves ahead of `vite.config.ts`.
     "noEmit": true
   },
-  "include": ["vite.config.ts", "vitest.browser.config.ts", "vite-pdfjs-assets.ts"]
+  "include": ["vite.config.ts", "vitest.browser.config.ts", "vite-pdfjs-assets.ts", "scripts/workshop-assets.ts"]
 }
