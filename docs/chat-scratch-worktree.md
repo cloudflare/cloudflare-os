@@ -122,10 +122,13 @@ the provider's cache. Every request resends them all, so once the chat's inline 
 `MAX_INLINE_ATTACHMENTS_TOTAL_BYTES` (20 MiB; about 28 MB encoded, within the 100 MB Gemini
 allows inline), the turn compacts first. Compaction summarizes the prompt as earlier requests sent
 it, so the request reuses their cache and the thinking it keeps stays valid, and keeps the newest
-messages whose attachments fit. Only if compaction fails or can't cut are the older attachments
-named by workspace path instead, and the thinking after the first of them dropped; that turn's
-replies are stored without their thinking, which is signed over the rewritten prompt, so later
-turns replay and compact the prompt as first sent. A provider that
+messages whose attachments fit. If compaction fails, the turn fails, and Retry compacts again:
+showing earlier messages any other way would invalidate the model's thinking after them, which is
+what it remembers its turn by. Images the agent views with `readFile` count toward the same
+limits in the step that read them: a step whose reads take the next request past either limit
+ends the pass, so that the turn compacts before sending it, cutting between the turn's own steps
+if it must. One step's reads fit one message's budget, so a cut that keeps the step can always be
+found. A provider that
 refuses a turn's first request, say for a PDF of more pages than it takes, has its message's inline
 attachments named by path from then on; the model has answered nothing after them. Replay reads no
 attachment's bytes unless it could inline them. Originals remain unchanged. New images are read from the same
