@@ -4,12 +4,13 @@ import type { AdminResourceVendor } from '@gadgets/workshop-shared/api'
 type Setting = NonNullable<AdminResourceVendor['settings']>[number]
 
 /** A gatekeeper's own settings, each a select that a deployment admin chooses from. */
-export const GatekeeperSettings = ({ vendorName, settings, disabled, onChoose }: {
+export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
   /** The gatekeeper's name, which goes in each select's accessible name. */
   vendorName: string
   /** Every setting the gatekeeper declares, with the value in effect. */
   settings: Setting[]
-  disabled: boolean
+  /** Whether a change to the gatekeeper is being saved. A pick made meanwhile is not taken. */
+  saving: boolean
   /** Called with the option an admin picked for the setting `settingId`. */
   onChoose: (settingId: string, value: string) => void
 }) => {
@@ -26,13 +27,14 @@ export const GatekeeperSettings = ({ vendorName, settings, disabled, onChoose }:
           aria-label={`${setting.label} for ${vendorName}`}
           description={setting.help}
           className="w-full sm:max-w-xs"
-          disabled={disabled}
+          // Never disabled while a choice is saved: focus returns to a select when its list
+          // closes, and a disabled one drops it.
           value={setting.value}
           onValueChange={(value, { reason }) => {
             // Only a pick is the admin's. The select also reports changes of its own: to the
             // value it started with, when the stored value is not one of its options, and to an
             // option whose first letter is typed while it is closed.
-            if (reason !== 'item-press' || !value || value === setting.value) return
+            if (saving || reason !== 'item-press' || !value || value === setting.value) return
             onChoose(setting.id, value)
           }}
           // A stored value that the gatekeeper no longer offers shows as it is stored. The

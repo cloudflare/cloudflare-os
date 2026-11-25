@@ -1036,7 +1036,7 @@ export default function AdminPage() {
                 <GatekeeperSettings
                   vendorName={vendor.displayName}
                   settings={vendor.settings}
-                  disabled={resourceBusy.has(gkKey)}
+                  saving={resourceBusy.has(gkKey)}
                   onChoose={(settingId, value) => handleGatekeeperSetting(vendor.vendorId, settingId, value)}
                 />
               )

@@ -39,14 +39,14 @@ afterEach(() => {
   host = undefined
 })
 
-const show = async (settings: Setting[]) => {
+const show = async (settings: Setting[], saving = false) => {
   const onChoose = vi.fn<(settingId: string, value: string) => void>()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root?.render(
-      <GatekeeperSettings vendorName="Web Search" settings={settings} disabled={false} onChoose={onChoose} />)
+      <GatekeeperSettings vendorName="Web Search" settings={settings} saving={saving} onChoose={onChoose} />)
   })
   return onChoose
 }
@@ -98,6 +98,12 @@ it('reports the option an admin picks, and not the one in effect', async () => {
 
   await choose(select('Search provider for Web Search'), 'The model’s provider')
   expect(onChoose).toHaveBeenCalledExactlyOnceWith('provider', 'model')
+})
+
+it('takes no pick while a change is being saved', async () => {
+  const onChoose = await show(webSearch('ceramic'), true)
+  await choose(select('Search provider for Web Search'), 'The model’s provider')
+  expect(onChoose).not.toHaveBeenCalled()
 })
 
 it('chooses nothing for a letter typed while a select is closed', async () => {
