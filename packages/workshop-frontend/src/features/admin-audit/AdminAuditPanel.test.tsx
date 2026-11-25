@@ -1397,6 +1397,34 @@ describe('AdminAuditPanel', () => {
       expect(listAdminAudit.mock.lastCall?.[0]?.pending).toBeUndefined()
     })
 
+    it('clears Content reads and a workspace Kind when switching to the pending queue', async () => {
+      const { listAdminAudit, onFilterChange } =
+        await render(contentLevel(), fakeAdmin(), { admin: 'admin', kind: 'workspace', exposed: 'content' })
+
+      await toggleCheckbox(pendingCheckbox())
+      expect(onFilterChange.mock.lastCall?.[0]).toStrictEqual({ admin: 'admin', pending: true })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', pending: true }))
+      expect(listAdminAudit.mock.lastCall?.[0]?.exposed).toBeUndefined()
+      expect(listAdminAudit.mock.lastCall?.[0]?.kind).toBeUndefined()
+    })
+
+    it('moves focus to the Admin field when unchecking hides Pending below Content', async () => {
+      await render(settingsWith(), fakeAdmin(), { pending: true })
+      await toggleCheckbox(pendingCheckbox())
+      expect(card('Activity log').textContent).not.toContain('Pending requests only')
+      expect(document.activeElement).toBe(card('Activity log').querySelector('input[role="combobox"]'))
+    })
+
+    it('drops Pending when Content reads is chosen as Exposed after it', async () => {
+      const { listAdminAudit, onFilterChange } = await render(contentLevel(), fakeAdmin(), { admin: 'admin', pending: true })
+
+      await choose(exposedSelect(), 'Content reads')
+      expect(onFilterChange.mock.lastCall?.[0]).toStrictEqual({ admin: 'admin', exposed: 'content', pending: undefined })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', exposed: 'content' }))
+      expect(listAdminAudit.mock.lastCall?.[0]?.pending).toBeUndefined()
+      expect(pendingCheckbox().getAttribute('aria-checked')).toBe('false')
+    })
+
     it('asks for pending requests when the URL does', async () => {
       const { listAdminAudit } = await render(contentLevel(), fakeAdmin(), { pending: true })
       expect(listAdminAudit).toHaveBeenCalledExactlyOnceWith(pageQuery({ pending: true }))

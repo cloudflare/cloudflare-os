@@ -91,5 +91,32 @@ export const auditFilterOf = (search: Record<string, unknown>): AuditFilter => {
   return filter
 }
 
+/**
+ * `filter` with Pending requests only set. A pending request's records are its
+ * `requestContentAccess` grant records, which expose nothing: an Exposed choice, or a Kind or an
+ * Action they do not have, would leave the queue empty, so those go, and the other filters stay.
+ */
+export const withPendingRequests = (filter: AuditFilter): AuditFilter => {
+  const { kind, method, exposed, ...kept } = filter
+  return {
+    ...kept,
+    ...(kind === 'grant' && { kind }),
+    ...(method === 'requestContentAccess' && { method }),
+    pending: true,
+  }
+}
+
+/**
+ * `filter` without Pending requests only when another of its filters rules out every request
+ * record: an Exposed choice, or a Kind or an Action a request's record does not have. The queue
+ * would otherwise look empty while requests wait.
+ */
+export const withoutUnmatchedPending = (filter: AuditFilter): AuditFilter =>
+  filter.pending && (filter.exposed !== undefined ||
+      (filter.kind !== undefined && filter.kind !== 'grant') ||
+      (filter.method !== undefined && filter.method !== 'requestContentAccess'))
+    ? { ...filter, pending: undefined }
+    : filter
+
 /** Whether any filter is set. */
 export const isFiltered = (filter: AuditFilter) => Object.values(filter).some((value) => value !== undefined)

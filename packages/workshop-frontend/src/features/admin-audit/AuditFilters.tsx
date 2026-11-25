@@ -7,6 +7,8 @@ import {
   AUDIT_KINDS,
   AUDIT_METHOD_GROUPS,
   isFiltered,
+  withPendingRequests,
+  withoutUnmatchedPending,
   type AuditFilter,
   type AuditMethod,
 } from './auditFilter'
@@ -81,7 +83,8 @@ export const AuditFilters = ({
           label="Action"
           items={ACTION_GROUPS}
           value={filter.method ?? null}
-          onValueChange={(method) => onFilterChange({ ...filter, method: (method as AuditMethod | null) ?? undefined })}
+          onValueChange={(method) =>
+            onFilterChange(withoutUnmatchedPending({ ...filter, method: (method as AuditMethod | null) ?? undefined }))}
         >
           <Combobox.TriggerInput placeholder="Search actions…" clearLabel="Any action" />
           <Combobox.Content>
@@ -108,7 +111,7 @@ export const AuditFilters = ({
           value={filter.kind ?? ANY_KIND}
           onValueChange={(kind) => {
             if (kind === null) return
-            onFilterChange({ ...filter, kind: kind === ANY_KIND ? undefined : kind })
+            onFilterChange(withoutUnmatchedPending({ ...filter, kind: kind === ANY_KIND ? undefined : kind }))
           }}
           renderValue={(kind) => kind === ANY_KIND ? 'Any kind' : KIND_NAMES[kind]}
         >
@@ -123,7 +126,7 @@ export const AuditFilters = ({
           value={filter.exposed ?? ANY_EXPOSURE}
           onValueChange={(exposed) => {
             if (exposed === null) return
-            onFilterChange({ ...filter, exposed: exposed === ANY_EXPOSURE ? undefined : exposed })
+            onFilterChange(withoutUnmatchedPending({ ...filter, exposed: exposed === ANY_EXPOSURE ? undefined : exposed }))
           }}
           renderValue={(exposed) => EXPOSURE_CHOICE_NAMES[exposed]}
         >
@@ -151,7 +154,11 @@ export const AuditFilters = ({
               <Checkbox
                 label="Pending requests only"
                 checked={filter.pending === true}
-                onCheckedChange={(checked) => onFilterChange({ ...filter, pending: checked ? true : undefined })}
+                onCheckedChange={(checked) => {
+                  onFilterChange(checked ? withPendingRequests(filter) : { ...filter, pending: undefined })
+                  // Below Content the box shows only while it is checked: unchecking it removes it.
+                  if (!checked && !offerPending) focusAdminField()
+                }}
               />
             </div>
           )}

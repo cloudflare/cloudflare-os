@@ -8,7 +8,9 @@ import {
   type AdminSettingRecord,
   type AdminUserAccessRecord,
 } from '@gadgets/workshop-shared/api'
-import { AUDIT_METHOD_GROUPS, auditFilterOf, targetUserOf } from './auditFilter'
+import {
+  AUDIT_METHOD_GROUPS, auditFilterOf, targetUserOf, withPendingRequests, withoutUnmatchedPending,
+} from './auditFilter'
 
 const AT = new Date('2026-10-21T09:15:00Z')
 
@@ -98,6 +100,35 @@ describe('auditFilterOf', () => {
   it('keeps a write action as a method, and "write" as a kind', () => {
     for (const method of ADMIN_WRITE_ACTIONS) expect(auditFilterOf({ method })).toEqual({ method })
     expect(auditFilterOf({ kind: 'write' })).toEqual({ kind: 'write' })
+  })
+})
+
+describe('withPendingRequests', () => {
+  it('drops what a request cannot match and keeps who and where', () => {
+    expect(withPendingRequests({
+      admin: 'ada', workspace: 'ws-1', owner: 'olive', exposed: 'content', kind: 'workspace', method: 'readFile',
+    })).toStrictEqual({ admin: 'ada', workspace: 'ws-1', owner: 'olive', pending: true })
+  })
+
+  it('keeps the Kind and Action of a request', () => {
+    expect(withPendingRequests({ kind: 'grant', method: 'requestContentAccess' }))
+      .toStrictEqual({ kind: 'grant', method: 'requestContentAccess', pending: true })
+  })
+})
+
+describe('withoutUnmatchedPending', () => {
+  it('drops Pending once Exposed, or a Kind or Action no request record has, is chosen', () => {
+    for (const chosen of [{ exposed: 'content' }, { kind: 'workspace' }, { method: 'readFile' }] as const) {
+      expect(withoutUnmatchedPending({ admin: 'ada', pending: true, ...chosen }))
+        .toStrictEqual({ admin: 'ada', pending: undefined, ...chosen })
+    }
+  })
+
+  it('keeps Pending with a request\'s Kind or Action, and a filter without Pending as it is', () => {
+    const request = { pending: true, kind: 'grant', method: 'requestContentAccess' } as const
+    expect(withoutUnmatchedPending(request)).toBe(request)
+    const unpending = { exposed: 'content' } as const
+    expect(withoutUnmatchedPending(unpending)).toBe(unpending)
   })
 })
 
