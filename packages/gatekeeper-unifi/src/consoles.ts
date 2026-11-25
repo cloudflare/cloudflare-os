@@ -157,6 +157,9 @@ export async function probeDirectConsole(send: UnifiSend): Promise<DirectConsole
 
 /** The most sites read looking for a console's gateway. */
 const MAX_IDENTITY_SITES = 50;
+/** A page of a site's device list, and the most devices read looking for its gateway. */
+const DEVICE_PAGE = 200;
+const MAX_IDENTITY_DEVICES = 1000;
 
 /** What an application says its console's hardware is, and the name it gives it. */
 export type AppIdentity = { macs: string[]; name: string | null };
@@ -174,8 +177,9 @@ export async function protectIdentity(send: UnifiSend): Promise<AppIdentity> {
 
 /**
  * Network's identity: the MACs of the gateways on its sites, whichever site each is on -- the
- * first listed may have none -- reading up to `MAX_IDENTITY_SITES` sites, or only `onlySite`.
- * Empty when none can be read.
+ * first listed may have none -- reading up to `MAX_IDENTITY_SITES` sites, or only `onlySite`. A
+ * site has one gateway, so its device list is read only as far as the page that lists it, up to
+ * `MAX_IDENTITY_DEVICES`. Empty when none can be read.
  */
 export async function networkIdentity(send: UnifiSend, onlySite?: string): Promise<NetworkIdentity> {
   let siteIds: string[];
@@ -190,15 +194,21 @@ export async function networkIdentity(send: UnifiSend, onlySite?: string): Promi
   const bySite: Record<string, string[]> = {};
   let name: string | null = null;
   for (const siteId of siteIds) {
-    const devices = await send({
-      ...probeRequest("network", `/v1/sites/${encodeURIComponent(siteId)}/devices`), query: { limit: "200" },
-    });
-    if (!devices.ok) continue;
-    for (const device of parseNetworkPage(jsonOf(devices), "device list").data.map(parseDevice)) {
-      if (!device.roles.includes("gateway") || !isUsableMac(device.macAddress)) continue;
-      macs.add(device.macAddress);
-      (bySite[siteId.toLowerCase()] ??= []).push(device.macAddress);
-      name ??= device.name;
+    const site = siteId.toLowerCase();
+    for (let offset = 0; offset < MAX_IDENTITY_DEVICES && !bySite[site]; offset += DEVICE_PAGE) {
+      const devices = await send({
+        ...probeRequest("network", `/v1/sites/${encodeURIComponent(siteId)}/devices`),
+        query: { offset: String(offset), limit: String(DEVICE_PAGE) },
+      });
+      if (!devices.ok) break;
+      const page = parseNetworkPage(jsonOf(devices), "device list");
+      for (const device of page.data.map(parseDevice)) {
+        if (!device.roles.includes("gateway") || !isUsableMac(device.macAddress)) continue;
+        macs.add(device.macAddress);
+        (bySite[site] ??= []).push(device.macAddress);
+        name ??= device.name;
+      }
+      if (page.data.length < DEVICE_PAGE || offset + page.data.length >= page.totalCount) break;
     }
   }
   return { macs: [...macs], name, bySite };

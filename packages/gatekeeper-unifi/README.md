@@ -105,8 +105,10 @@ everyone the workspace is shared with, which is fine for names, but an approval 
 password or voucher code that still works: a new password is described as changing.
 
 Nothing is reverted automatically. A change UniFi refuses, or whose target is gone, fails
-without a retry. A restart, power-cycle, guest grant, or voucher batch interrupted after it was
-sent is reported as having an unknown outcome and is never sent again. WiFi changes are written
+without a retry. A restart, power-cycle, guest grant, voucher batch, patrol stop, or doorbell
+message on the default timeout interrupted after it was sent is reported as having an unknown
+outcome and is never sent again: a patrol stop ends whichever patrol is running, and each send of
+such a message restarts its timeout. WiFi changes are written
 one at a time per network, from a fresh read, across every connection in the deployment (two
 people's keys to one console included), so changes approved at once all take effect. UniFi's error messages aren't passed on, since a console or a proxy in front of
 it can echo what a request carried; errors are described by their status.

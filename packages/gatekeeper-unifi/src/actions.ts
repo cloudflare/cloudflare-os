@@ -378,6 +378,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     // Rule 2: shows text to whoever comes to the door, outside the binding's audience.
     autoApprovable: false,
     delivery: "continue-with-simulation",
+    // A message left to the default timeout gets it afresh from each PATCH, so a replay would keep
+    // it up longer: claimed, it isn't sent twice. One with its own expiry is safe to send again.
+    claimBeforeApply: true,
     describe: p => {
       const { doorbellMessage: message, until } = p.change;
       return present(`Change the message on doorbell ${quoted(p.cameraName)}`,
@@ -389,7 +392,7 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
           b.inline("Until", until === null ? "the doorbell's default timeout" : new Date(until).toISOString());
         });
     },
-    apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, cameraPatch(p.change)), { idempotent: true }),
+    apply: (p, { api }) => carryOut(() => api.patchCamera(p.cameraId, cameraPatch(p.change)), { idempotent: p.change.until !== null }),
   },
   cameraMicVolume: {
     kind: KINDS.cameraMicVolume,
@@ -405,6 +408,9 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     kind: KINDS.cameraPtz,
     autoApprovable: true,
     delivery: "await-decision",
+    // Stopping ends whichever patrol is running, so a replay could stop one started since: claimed,
+    // it isn't sent twice. Moving to a preset or starting a patrol is safe to send again.
+    claimBeforeApply: true,
     describe: p => {
       const command = p.command;
       if ("goToPreset" in command) {
@@ -423,7 +429,7 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
       if ("goToPreset" in command) await api.ptzGoTo(p.cameraId, command.goToPreset);
       else if ("startPatrol" in command) await api.ptzStartPatrol(p.cameraId, command.startPatrol);
       else await api.ptzStopPatrol(p.cameraId);
-    }, { idempotent: true }),
+    }, { idempotent: !("stopPatrol" in p.command) }),
   },
   lightSettings: {
     kind: KINDS.lightSettings,

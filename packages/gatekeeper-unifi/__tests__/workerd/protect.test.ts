@@ -4,8 +4,9 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
-import { HOME, homeConsole, SNAPSHOT_BYTES } from "../fake-unifi.js";
+import { FakeConsole, HOME, homeConsole, SNAPSHOT_BYTES } from "../fake-unifi.js";
 import { NetworkSiteSession } from "../../src/network-session.js";
 import { ProtectSession } from "../../src/protect-session.js";
 import { SessionContext, type SessionShared } from "../../src/session-context.js";
@@ -14,6 +15,22 @@ import type { Step } from "../worker.js";
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+/**
+ * Lets `method` requests take effect at the console but loses their answers, as a connection
+ * dropped mid-request would.
+ * @returns Puts the console back.
+ */
+function loseAnswersTo(console: FakeConsole, method: string): () => void {
+  const handle = console.handle.bind(console);
+  console.handle = (app, m, path, query, body) => {
+    const answer = handle(app, m, path, query, body);
+    if (m !== method) return answer;
+    return new Response(JSON.stringify({ code: "DeviceTimeout", message: "Device connection timeout" }),
+      { status: 408, headers: { "Content-Type": "application/json" } });
+  };
+  return () => { console.handle = handle; };
+}
 
 function lastSubmitted(queue: { submitted: { actionId: number; description: ActionDescription }[] }) {
   const entry = queue.submitted.at(-1);
@@ -290,6 +307,30 @@ describe("a camera", () => {
     expect(console.writes()[0]!.body).toEqual({ lcdMessage: { type: "DO_NOT_DISTURB", resetAt: until.valueOf() } });
   });
 
+  it("never sends a doorbell message on the default timeout twice, since each send restarts the timeout", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setDoorbellMessage", { kind: "doNotDisturb" });
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const restore = loseAnswersTo(console, "PATCH");
+    expect(await doorbell.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    expect(await doorbell.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toHaveLength(1);
+  });
+
+  it("sends a doorbell message with its own end time again after a lost answer", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setDoorbellMessage", { kind: "doNotDisturb" }, { until: new Date(Date.now() + 3_600_000) });
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const restore = loseAnswersTo(console, "PATCH");
+    expect(await doorbell.applyOutcome(actionId)).not.toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(2);
+  });
+
   it("refuses doorbell messages Protect would refuse", async () => {
     installFake();
     const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
@@ -335,6 +376,19 @@ describe("a camera", () => {
       `/v1/cameras/${HOME.ptzId}/ptz/goto/-1`, `/v1/cameras/${HOME.ptzId}/ptz/patrol/start/1`, `/v1/cameras/${HOME.ptzId}/ptz/patrol/stop`,
     ]);
     expect(await driveway.failure("startPatrol", 5)).toMatch(/whole number from 0 to 4/);
+  });
+
+  it("never sends a patrol stop twice, since it stops whichever patrol is running", async () => {
+    // The first stop lands but its answer is lost; a patrol started since mustn't be stopped by a retry.
+    const { console } = installFake();
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    await driveway.call("stopPatrol");
+    const { actionId } = lastSubmitted(await driveway.queue());
+    const restore = loseAnswersTo(console, "POST");
+    expect(await driveway.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    expect(await driveway.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toHaveLength(1);
   });
 
   it("reports Protect's refusal when a camera can't pan, and doesn't send it again", async () => {

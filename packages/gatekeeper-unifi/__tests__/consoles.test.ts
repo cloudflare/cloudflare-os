@@ -7,7 +7,7 @@ import {
 } from "../src/consoles";
 import { UnifiError } from "../src/errors";
 import { sendUnifiRequest, type UnifiCredentials } from "../src/transport";
-import { FakeConsole, FakeUnifi, HOME, homeConsole } from "./fake-unifi";
+import { FakeConsole, FakeUnifi, HOME, homeConsole, rawDevice } from "./fake-unifi";
 
 const CLOUD: UnifiCredentials = { mode: "cloud", apiKey: "cloud-key-0123456789abcdef" };
 const DIRECT: UnifiCredentials = { mode: "direct", baseUrl: "https://192.168.1.1", apiKey: "local-key-0123456789abcdef" };
@@ -112,5 +112,20 @@ describe("a direct console's Network identity", () => {
     const facts = await probeDirectConsole(request =>
       sendUnifiRequest({ ...DIRECT, baseUrl: "https://two.example" }, request, unifi.fetch));
     expect(facts.appMacs.network).toEqual(["70:a7:41:97:83:ed"]);
+  });
+
+  it("is found past the first page of a site's devices", async () => {
+    const console = homeConsole();
+    const { devices } = console.network!.sites[0]!;
+    const gateway = devices.shift()!;
+    devices.unshift(...Array.from({ length: 200 }, (_, i) => rawDevice({
+      id: `aa000000-0000-4000-8000-${String(i).padStart(12, "0")}`, name: `Switch ${i}`, model: "USWLITE8POE",
+      mac: `e4:38:83:01:${(i >> 8).toString(16).padStart(2, "0")}:${(i & 255).toString(16).padStart(2, "0")}`,
+      ip: "192.168.1.50", roles: ["switching"],
+    })), gateway);
+    const unifi = new FakeUnifi().addDirectConsole("https://big.example", console, DIRECT.apiKey);
+    const facts = await probeDirectConsole(request =>
+      sendUnifiRequest({ ...DIRECT, baseUrl: "https://big.example" }, request, unifi.fetch));
+    expect(facts.siteGateways).toEqual({ [HOME.siteId.toLowerCase()]: ["70:a7:41:97:83:ed"] });
   });
 });
