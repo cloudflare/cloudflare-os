@@ -1405,7 +1405,10 @@ apply has not yet bound its id (`isResolved`), both its stand-in and the provide
 `identity` cannot match. For the rows a page fetches, a listing that must not show these runs the
 fetch, its journal read and the stand-ins it serves together against apply (`runExclusive`), or
 tells from a row what it already holds (a version or a marker the provider keeps on it) and matches
-a created row to its create before the id binds. Neither makes a row the cursor buffered before a
+a created row to its create before the id binds. The fence orders only what this activation
+applies: a record an earlier one dispatched and never settled (left `claimed`) is still listed, and
+whether the provider took it is known only from the provider, so an exact listing needs that
+evidence for it or shows its row as not yet known. Neither makes a row the cursor buffered before a
 record applied current: a listing that must show settled changes reads the rows such a change
 touches again, or starts the walk again.
 
