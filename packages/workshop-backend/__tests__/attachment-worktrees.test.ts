@@ -1065,6 +1065,27 @@ describe("attachment worktree ingress", () => {
     expect(imageParts(requests[0])).toHaveLength(2);
   }));
 
+  // After a switch to a model that can't take images, replay names an image read without
+  // reading the image.
+  it("replays an image read as a note for a model that can't view images", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+      [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
+    await scriptedTurn(impl, chatId, [fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "dot.png"})]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Now in words");
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    faux.setResponses([fauxAssistantMessage(fauxText("Done"))]);
+    await runAgent(impl, {model: {...faux.getModel(), input: ["text"]}, stream: (model, context, options) => {
+      requests.push(structuredClone(context.messages));
+      return faux.stream(model, context, options);
+    }}, chatId, AUTHOR, new AbortController().signal, USER,
+    {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    expect(fileToolResults(requests[0])).toEqual([{toolName: "readFile", isError: false, content:
+      [{type: "text", text: "dot.png: image not shown to you: this model can't view images."}]}]);
+  }));
+
   // One step's image reads fit one message's budget, as a message's attachments do, so the
   // compaction that keeps the newest messages can always keep the step whole.
   it("refuses image reads past one message's budget within a step", () => inKernel(crypto.randomUUID(), async impl => {

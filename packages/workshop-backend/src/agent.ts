@@ -2744,6 +2744,11 @@ async function runAgentPass(
                         "request can carry. Read the file again to see it."};
                     unreadParts.add(marker);
                     toolOutput = {content: [marker]};
+                  } else if (toolCall.imageBytes !== undefined &&
+                             !handle.model.input.includes("image")) {
+                    // Read with a model that takes images; this one doesn't, so the image isn't read.
+                    toolOutput = {text: `${toolCall.input.filename}: image not shown to you: ` +
+                        "this model can't view images."};
                   } else if (toolCall.observedOid !== undefined ||
                              toolCall.observedCommit !== undefined) {
                     // The read was served from committed code (the workpiece was unpinned, or
