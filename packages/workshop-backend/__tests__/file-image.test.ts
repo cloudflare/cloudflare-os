@@ -189,6 +189,18 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
+  it("keeps the active user prompt verbatim when file images exceed the media limit", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage(Array.from({length: 20}, () => read()), {stopReason: "toolUse"}),
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const last = requests.at(-1)!;
+    expect(last).toContainEqual({role: "user", content: "Read the image", timestamp: expect.any(Number)});
+    expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
+  }));
+
   it("summarizes over-limit image history as text instead of sending it to native compaction", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     recordReads(impl, chatId, blob.oid, 20);

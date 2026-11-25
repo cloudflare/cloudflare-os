@@ -238,6 +238,7 @@ type AgentProgress = {
   executionId: string;
   barrierSequence: number;
   observedHeads: Map<WorkpieceId, string>;
+  prompt?: number;
 };
 
 /**
@@ -2454,8 +2455,8 @@ async function runAgentPass(
   const unreadFileImages = new Set<AiToolCall>();
   const fileImageReads = new Map<ImageContent, {sequence: number; id: string}>();
   let attachmentsFitFrom: number | undefined;
-  // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
-  let prompt: number | undefined;
+  // An image reload keeps the active prompt verbatim after its tool calls are persisted.
+  let prompt = progress.prompt;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
@@ -4962,6 +4963,7 @@ async function runAgentPass(
       if (toolResults.length === 0) return;
       // Otherwise reload when that request won't fit, or can't be measured: the turn-start check
       // then estimates the whole prompt, as it does for that case there.
+      if (stepImageCount > 0) progress.prompt ??= prompt;
       if (!nextRequestFits || stepImageCount > 0) {
         reloadForCompaction = true;
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,
