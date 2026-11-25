@@ -694,8 +694,9 @@ What a gatekeeper wants kept between reads (a copy of the provider's state, a fo
 keeps itself. A listing whose rows are the entities takes its cursor's hooks from the same module:
 see [A listing over a simulation store](#a-listing-over-a-simulation-store).
 
-The store runs no callback but the reducer's. A reducer that cannot replay a record on the entity
-returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
+The store runs no callback but `initial`, on the base it is given, and the reducer. A reducer that
+cannot replay a record on the entity returns `refused` with its reason and the fold goes on; the
+result lists what that call refused, and
 the gatekeeper marks those records after the fold and leaves marked records out of the lists it
 folds. A mark outlives the read, so the fetch, the fold and the marks run against apply and reject
 (`runExclusive`): a read then waits for an apply in flight. Inside a resource Durable Object that
@@ -850,9 +851,9 @@ A reducer on a draft:
 
 Sharp edges:
 
-- **The store runs no callback but the reducer's and writes nothing.** `unsupported` stops the fold
-  and the result names the record; `refused` goes on past it, and the gatekeeper acts on the
-  result's `refused` after the fold.
+- **The store runs no callback but `initial` and the reducer, and writes nothing.** `unsupported`
+  stops the fold and the result names the record; `refused` goes on past it, and the gatekeeper
+  acts on the result's `refused` after the fold.
 - **Transactions.** `fold` is synchronous, so it belongs inside `transactionSync` with the journal
   change it goes with. Nothing outside storage keeps a fold, so a rollback leaves nothing to undo.
 - **A store whose reducer reads what only one call knows** (who is asking) is made for that call.

@@ -153,9 +153,9 @@ export type SimulationStore<
  * reducer, which reports what could not be replayed. What it returns holds the reducer and
  * nothing else, so no fold leaves anything for the next: the gatekeeper keeps the reducer, the
  * listing and whatever it wants kept between two reads. It keeps no storage and runs no
- * callback but the reducer's. Make one where the reducer is known: once for a module or a
- * Durable Object, or with a listing where the reducer reads what only that call knows (who is
- * asking, the folder listed).
+ * callback but `initial`, on each base it is given, and the reducer. Make one where the reducer
+ * is known: once for a module or a Durable Object, or with a listing where the reducer reads
+ * what only that call knows (who is asking, the folder listed).
  * @param options The reducer and the entity with nothing applied.
  * @returns A frozen object whose one member is `fold`.
  *
@@ -288,7 +288,9 @@ export type SimulatedList<Row> = {
   readonly inject: {
     /**
      * The stand-ins of the pending creates as the hooks were made: each folded from nothing
-     * with the records that target it, kept when `keeps` holds, sorted by `compare`.
+     * with the records that target it, kept when `keeps` holds, sorted by `compare`. The cursor
+     * injects only these, so a stand-in `keeps` left out here, or a create staged after, is not
+     * served in this walk though it holds by then.
      */
     readonly items: readonly Row[];
     /** The caller's `compare`. */
