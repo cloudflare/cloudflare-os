@@ -1904,6 +1904,22 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(dropTable(read(holding({ 0: "deletion" })), 0)).toMatchObject({ suggested: 3 });
   });
 
+  it("counts a suggestion on an image in a cell, which deleting the cell would discard", () => {
+    let imaged = (suggested: boolean) => {
+      let tab = buildTab([para("Before"), grid(["a", "b"], ["c", "d"]), para("After")]);
+      makeInlineImage(tab, 1, 0);
+      let { paragraph } = cellParagraph(tab, 1, 0);
+      if (suggested) paragraph.elements[0].inlineObjectElement!.suggestedDeletionIds = ["suggest.image"];
+      return tab;
+    };
+    // The image reads the same with the suggestion and without it.
+    expect(read(imaged(true)).markdown).toBe(read(imaged(false)).markdown);
+    expect(refusal(imaged(true), dropRows(read(imaged(false)), 0, 1))).toBe(suggestedRefusal("deleteTableRows"));
+    expect(refusal(imaged(true), dropTable(read(imaged(false)), 0))).toBe(
+      "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
+      "cells, or to their text, since this change was queued.");
+  });
+
   it("carries what a deletion would remove through the changes queued before it", () => {
     let content = read(dropdownTab());
     let grown = renderTab(applyDocEdit(dropdownTab(), addRows(content, 0, 0, [["new", "row"]])));

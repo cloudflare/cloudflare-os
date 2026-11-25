@@ -1576,10 +1576,10 @@ function paragraphSuggestions(
 }
 
 /**
- * How many suggestions the table, its rows and its cells are marked with, those on the text and
- * the paragraphs of its cells and those of a table inside one of its cells included: deleting
- * the cell discards that suggestion too. The table's own fields count beside those of its rows
- * and cells, since a table that is itself a suggestion may mark only itself.
+ * How many suggestions the table, its rows and its cells are marked with, those on the text,
+ * the images and the paragraphs of its cells and those of a table inside one of its cells
+ * included: deleting the cell discards that suggestion too. The table's own fields count beside
+ * those of its rows and cells, since a table that is itself a suggestion may mark only itself.
  */
 function suggestionsIn(table: Table): number {
   let count = suggestionsOf(table);
@@ -1593,6 +1593,7 @@ function suggestionsIn(table: Table): number {
         count += suggestionsOf(element.paragraph);
         for (let part of element.paragraph.elements) {
           if (part.textRun) count += suggestionsOf(part.textRun);
+          if (part.inlineObjectElement) count += suggestionsOf(part.inlineObjectElement);
         }
       }
     }

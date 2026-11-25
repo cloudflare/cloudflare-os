@@ -41,12 +41,12 @@ const RECORDED: { name: string; tab: GoogleDocsTab }[] = FIXTURES.flatMap(fixtur
 // --- A tab as Google sends it: with what the gatekeeper does not read
 
 /**
- * The parts of which the copy keeps no suggestion ids (it keeps those of text runs, tables, rows
- * and cells).
+ * The parts of which the copy keeps no suggestion ids (it keeps those of text runs, images,
+ * tables, rows and cells).
  */
 const SUGGESTIBLE: ReadonlySet<string> = new Set([
   "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference",
-  "equation", "inlineObjectElement", "person", "richLink", "dateElement", "dropdown",
+  "equation", "person", "richLink", "dateElement", "dropdown",
   "sectionBreak", "tableOfContents",
 ]);
 
@@ -154,7 +154,12 @@ const ELEMENTS: Record<string, Omit<ParagraphElement, "startIndex" | "endIndex">
   [EQUATION]: { equation: {} },
   [PAGE_BREAK]: { pageBreak: { textStyle: { bold: true } } },
   [COLUMN_BREAK]: { columnBreak: { textStyle: { italic: true } } },
-  [IMAGE]: { inlineObjectElement: { inlineObjectId: "inline.1", textStyle: { strikethrough: true } } },
+  [IMAGE]: {
+    inlineObjectElement: {
+      inlineObjectId: "inline.1", textStyle: { strikethrough: true },
+      suggestedInsertionIds: ["suggest.image.in"], suggestedDeletionIds: ["suggest.image.out"],
+    },
+  },
   [DROPDOWN]: {
     dropdown: {
       dropdownId: "dropdown.1",
@@ -894,7 +899,7 @@ it("keeps which style changes a row's and a cell's suggestions make, by ID alone
 it("keeps exactly these fields under this format version", () => {
   let tabs = [RICHEST, ...RECORDED.map(({ tab }) => tab)].map(tab => pruneTab(dressed(tab)));
   expect({ version: DOC_COPY_FORMAT_VERSION, fields: keptFields(tabs) }).toStrictEqual({
-    version: 8,
+    version: 9,
     fields: {
       autoText: "textStyle type",
       backgroundColor: "color",
@@ -922,7 +927,7 @@ it("keeps exactly these fields under this format version", () => {
       horizontalRule: "",
       indentFirstLine: "magnitude unit",
       indentStart: "magnitude unit",
-      inlineObjectElement: "inlineObjectId textStyle",
+      inlineObjectElement: "inlineObjectId suggestedDeletionIds suggestedInsertionIds textStyle",
       link: "bookmark bookmarkId heading headingId tabId url",
       listProperties: "nestingLevels",
       // The keys of `lists` are the lists' ids, which no version names.

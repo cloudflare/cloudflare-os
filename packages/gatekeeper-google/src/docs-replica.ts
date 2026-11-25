@@ -22,7 +22,7 @@ import type { CutRun, RunSizes } from "./docs-runs";
  * would go on lacking a field the rendering or the model reads. What code derives of a stored
  * tab is versioned apart, by the digest of that code (`DOC_DERIVED`).
  */
-export const DOC_COPY_FORMAT_VERSION = 8;
+export const DOC_COPY_FORMAT_VERSION = 9;
 
 // ---------------------------------------------------------------------------
 // Named ranges and write markers
@@ -222,7 +222,10 @@ const PARAGRAPH_ELEMENT = {
   columnBreak: whole({ textStyle }),
   footnoteReference: whole({ footnoteId: value, footnoteNumber: value, textStyle }),
   equation: present,
-  inlineObjectElement: whole({ inlineObjectId: value, textStyle }),
+  // The suggestions on an image, by ID: deleting its cell would discard them.
+  inlineObjectElement: whole({
+    inlineObjectId: value, textStyle, suggestedInsertionIds: values, suggestedDeletionIds: values,
+  }),
   person: whole({ textStyle, personProperties: part({ name: value, email: value }) }),
   richLink: whole({ textStyle, richLinkProperties: part({ title: value, uri: value }) }),
   dateElement: whole({ textStyle, dateElementProperties: part({ displayText: value }) }),

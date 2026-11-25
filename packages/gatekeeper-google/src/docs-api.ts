@@ -244,7 +244,10 @@ export type ParagraphElement = {
   columnBreak?: { textStyle?: TextStyle };
   footnoteReference?: { footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle };
   equation?: {};
-  inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle };
+  inlineObjectElement?: {
+    inlineObjectId?: string; textStyle?: TextStyle;
+    suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
+  };
   person?: {
     textStyle?: TextStyle;
     personProperties?: { name?: string; email?: string };
