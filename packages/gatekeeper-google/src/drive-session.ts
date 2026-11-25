@@ -647,8 +647,8 @@ abstract class DriveCoreBase {
    * My Drive root is refused before anything is reported, relative to that account: no other
    * account can see that folder, so its unit would be a requirement nobody passes. A shared
    * drive's root is refused after its units are reported: that it is one is the file's own
-   * metadata. A rename target the account cannot rename is refused before them too, so the
-   * refusal is the call's one report.
+   * metadata. A rename target the account cannot rename is refused before the file is reported,
+   * with only the units of the folder the refusal shows the file is in, as its one report.
    */
   protected async authorizeTarget(
     file: DriveFile, units: DriveObservation[], purpose: TargetPurpose,
@@ -661,7 +661,9 @@ abstract class DriveCoreBase {
       throw new Error(roots.myDrive);
     }
     let sharedDriveRoot = file.driveId === file.id ? roots?.sharedDrive : undefined;
-    if (purpose.renames && sharedDriveRoot === undefined) await this.requireRenamable(file.id);
+    if (purpose.renames && sharedDriveRoot === undefined) {
+      await this.requireRenamable(file.id, units.filter(unit => unit.kind === "folder"));
+    }
     await this.authorizeUnits(units, purpose.title, description);
     if (sharedDriveRoot !== undefined) throw new Error(sharedDriveRoot);
   }
@@ -676,12 +678,13 @@ abstract class DriveCoreBase {
 
   /**
    * Refuses a file the connected account cannot rename. The answer is that account's own, so a
-   * refusal is the call's one report and names no subresource.
+   * refusal is the call's one report and names no file; `folders` are the units of the folder a
+   * refusal shows the file to be in, which a folder binding reports.
    */
-  async requireRenamable(fileId: string): Promise<void> {
+  async requireRenamable(fileId: string, folders: DriveObservation[] = []): Promise<void> {
     let [file] = await this.api.getScopeNodes([fileId]);
     if (file?.canRename === true) return;
-    await this.authorizeAccountRelative("Check Google Drive file access",
+    await this.authorizeUnits(folders, "Check Google Drive file access",
       `Check whether the connected account can rename Drive file ${fileId}.`);
     throw new Error(`The connected account cannot rename Drive file ${fileId}.`);
   }

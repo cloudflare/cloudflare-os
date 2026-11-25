@@ -1375,8 +1375,9 @@ describe("positioned Drive folder session", () => {
     expect(reports(mine.authorizations)).toEqual([["Rename a Google Drive file", []]]);
   });
 
-  // What the account may do is its own answer, so the target is not reported before it.
-  it("refuses a child the account cannot rename, reporting nothing", async () => {
+  // What the account may do is its own answer, so the target is not reported before it: only
+  // the folder the refusal shows it to be in.
+  it("refuses a child the account cannot rename, reporting only the folder", async () => {
     const { session, authorizations } = positioned(
       [root, directDoc, child("D3", "R")], undefined, undefined,
       { abilities: { D0: { canRename: false }, D3: { canRename: true } } });
@@ -1386,7 +1387,7 @@ describe("positioned Drive folder session", () => {
     expect(authorizations).toEqual([{
       title: "Check Google Drive file access",
       description: "Check whether the connected account can rename Drive file D0.",
-      subresources: [],
+      subresources: ["drive/folder/R"],
     }]);
     await expect(session.renameTarget("D3")).resolves.toMatchObject({ fileId: "D3" });
     expect(reports(authorizations.slice(1)))
