@@ -408,6 +408,33 @@ describe("Drive rename sends and their markers", () => {
     expect(names.F).toBe("Budget 2026");
   });
 
+  // A send cut off by a timeout can still land after the next approval's look found the old name.
+  // The check then finds the new name: that send's own, so it is not failed as someone else's.
+  it("applies a rename an earlier send made between the look and the check", async () => {
+    let { api, journal, attempts, names, submit, apply } = harness();
+    api.renameFile.mockRejectedValueOnce(unconfirmed());
+    let id = await submit(renameF());
+    expect(await apply(id)).toBe(UNCONFIRMED_RENAME);
+    let look = api.getScopeNodes.getMockImplementation()!;
+    api.getScopeNodes.mockImplementationOnce(async (...args) => {
+      let read = await look(...args);
+      names.F = "Budget 2027";
+      return read;
+    });
+    expect(await apply(id)).toBeNull();
+    expect(journal.get(id)).toBeUndefined();
+    expect(attempts.has(id)).toBe(true);
+    expect(names.F).toBe("Budget 2027");
+    // Sent again with the same name, which changes nothing.
+    expect(api.renameFile.mock.calls).toEqual([["F", "Budget 2027"], ["F", "Budget 2027"]]);
+
+    // With no send of its own on record, the new name is someone else's.
+    let other = harness();
+    let queued = await other.submit(renameF());
+    other.names.F = "Budget 2027";
+    expect(await other.apply(queued)).toBe(ALREADY_RENAMED);
+  });
+
   it("ends as of unknown outcome when a look finds another name, or cannot see the file", async () => {
     let again = harness();
     again.api.renameFile.mockRejectedValueOnce(unconfirmed());

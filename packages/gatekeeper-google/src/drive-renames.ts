@@ -132,9 +132,13 @@ async function proveRename(
  * Refuses a rename that may not be made at apply, having renamed nothing: for good, except for a
  * refusal a later approval can pass, which leaves the rename pending. What the file is now comes
  * before what the account may still do, so that a rename someone else made is said as that.
+ *
+ * `sentBefore` says an earlier send of this rename is on record. A file found with the new name
+ * is then not refused as renamed by someone else: that send may have landed after the look that
+ * found the old name, and sending the same name again changes nothing.
  */
 async function requireStillRenamable(
-  host: DriveWritesHost, payload: DriveRenameActions["renameFile"],
+  host: DriveWritesHost, payload: DriveRenameActions["renameFile"], sentBefore: boolean,
 ): Promise<void> {
   await requireWritable(host);
   let proved = await proveRename(host, payload);
@@ -142,7 +146,10 @@ async function requireStillRenamable(
   let { file, name } = proved;
   // Google renames a file that is in the trash, where it stays.
   if (file.trashed !== false) throw new ActionApplyError(FILE_IN_TRASH);
-  if (name === payload.toName) throw new ActionApplyError(ALREADY_RENAMED);
+  if (name === payload.toName) {
+    if (sentBefore) return;
+    throw new ActionApplyError(ALREADY_RENAMED);
+  }
   // Someone else's name is not overwritten with one chosen before theirs.
   if (name !== payload.fromName) throw new ActionApplyError(RENAMED_SINCE);
   if (file.canRename !== true) throw new ActionApplyError(CANNOT_RENAME);
@@ -188,7 +195,8 @@ function rename(
     events: "drive.renames",
     look: () => findRenamed(host, payload),
     check: async () => {
-      await requireStillRenamable(host, payload);
+      // A look that found the old name leaves the earlier send's marker until this send's.
+      await requireStillRenamable(host, payload, host.attempts.get(id) !== undefined);
       return {};
     },
     send: async () => {
