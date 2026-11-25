@@ -1562,6 +1562,20 @@ describe("sharing", () => {
     expect(provider.requests.filter(({ token }) => token === OTHER_TOKEN)).toEqual([]);
   });
 
+  it("makes an approved rename under the one token its approval loaded", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
+    // A reconnect as the second account that lands inside the approval, after its one load.
+    await account().setDriveToken(OTHER_TOKEN, 1);
+    provider.nextWrite = { status: 401 };
+    provider.forget();
+
+    expect(await drive.apply(actionId)).not.toBeNull();
+    expect(provider.calls().filter(call => call === "PATCH /drive/v3/files/doc-1")).toHaveLength(1);
+    expect(provider.requests.filter(({ token }) => token === OTHER_TOKEN)).toEqual([]);
+    expect(await drive.waiting()).toEqual([actionId]);
+  });
+
   it("never sends a refused change again under credentials installed during its approval", async () => {
     let drive = binding();
     let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");

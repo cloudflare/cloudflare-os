@@ -2608,13 +2608,16 @@ export class GoogleDriveGatekeeperImpl
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
         // A write staged under no account is checked and made as the account connected now: a
-        // reconnect does not revoke the token this object kept of the one before it.
-        if (!settled) await this.#getAccessToken({ reloadStored: true });
+        // reconnect does not revoke the token this object kept of the one before it. Every
+        // request goes out under that one token, so a reconnect meanwhile cannot split the scope
+        // proof from the change, as for a fenced write below.
+        if (!settled) this.#approvalToken = await this.#getAccessToken({ reloadStored: true });
         this.#adoptOrphanedClaim(actionId);
         let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
         try {
           await this.#actions.apply(actionId);
         } finally {
+          this.#approvalToken = undefined;
           // Also for a send that failed, which may have landed: the snapshot held of a Doc
           // commented on builds no edit after it.
           if (comment) {
