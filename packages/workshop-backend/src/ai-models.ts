@@ -586,28 +586,32 @@ function makeHandle(args: HandleArgs): ModelHandle {
       }
       const transcript = normalizeContext(
           {...context, messages: context.messages.map(wellFormedToolCalls)});
-      // Manual-thinking Claude needs the thinking that accompanied an unfinished tool turn.
+      // API defaults first, so an explicit per-call option can override them. A handle with a
+      // reasoning level sends that level's options in their place. `thinking: false` replaces
+      // either with a quick request. Managed-effort Anthropic models must use adaptive
+      // thinking, so select their lowest effort; other Anthropic models disable it (or omit
+      // the unsupported off setting). For OpenAI Responses, passing no reasoningEffort disables
+      // reasoning.
+      let reasoning: Record<string, unknown> = thinking
+          ? (args.reasoning === undefined
+              ? apiExtras
+              : reasoningOptions(args.model, args.reasoning, options.maxTokens, args.formatId))
+          : args.model.api === "anthropic-messages"
+              ? (anthropicCompat?.supportsMidConvoEffort === true
+                  ? { effort: "low" } : { thinkingEnabled: false })
+              : {};
+      // Manual-thinking Claude needs the thinking that opened an unfinished tool turn.
       // Replay can omit it after rewriting image inputs; finish that turn without thinking.
-      if (args.model.api === "anthropic-messages" && anthropicCompat?.forceAdaptiveThinking !== true) {
+      if (args.model.api === "anthropic-messages" && reasoning.thinkingEnabled === true &&
+          anthropicCompat?.forceAdaptiveThinking !== true) {
         const start = transcript.messages.findLastIndex(message => message.role === "user");
         const turn = transcript.messages.slice(start + 1).find(message => message.role === "assistant");
-        if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) thinking = false;
+        if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) {
+          reasoning = {...reasoning, thinkingEnabled: false};
+        }
       }
       const merged: SimpleStreamOptions = {
-        // API defaults first, so an explicit per-call option can override them. A handle with a
-        // reasoning level sends that level's options in their place. `thinking: false` replaces
-        // either with a quick request. Managed-effort Anthropic models must use adaptive
-        // thinking, so select their lowest effort; other Anthropic models disable it (or omit
-        // the unsupported off setting). For OpenAI Responses, passing no reasoningEffort disables
-        // reasoning.
-        ...(thinking
-            ? (args.reasoning === undefined
-                ? apiExtras
-                : reasoningOptions(args.model, args.reasoning, options.maxTokens, args.formatId))
-            : args.model.api === "anthropic-messages"
-                ? (anthropicCompat?.supportsMidConvoEffort === true
-                    ? { effort: "low" } : { thinkingEnabled: false })
-                : {}),
+        ...reasoning,
         ...options,
         ...(fetch !== undefined ? { fetch } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
