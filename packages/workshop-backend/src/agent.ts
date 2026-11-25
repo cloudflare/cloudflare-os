@@ -2469,8 +2469,9 @@ async function runAgentPass(
   // Ordinary turns and native compaction may send different slices of the same saved reads.
   const rejectFileImages = (messages: readonly Message[], error: AgentTurnError): boolean => {
     const status = error.statusCode;
-    const imageInputError = (status === undefined || status === 200 || status === 400) && /(?:\b|_)images?(?:\b|_)/i.test(error.message);
-    if (status !== 413 && !imageInputError) return false;
+    const inputError = (status === undefined || status === 200 || status === 400) &&
+      /(?:\b|_)images?(?:\b|_)|context[\s_]+(?:length|window)|(?:prompt|input).{0,20}too long/i.test(error.message);
+    if (status !== 413 && !inputError) return false;
     const refused = new Map<number, Set<string>>();
     for (const msg of messages) if (msg.role === "toolResult") {
       for (const part of msg.content) if (part.type === "image") {
