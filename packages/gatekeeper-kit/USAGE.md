@@ -1390,10 +1390,11 @@ is served and the stand-ins are folded at each `refresh()`, which `revalidate` t
 dropping one whose create `created` no longer lists, so a create bound before its stand-in is served
 leaves the provider's row to be served, where a later fetch of the walk returns it; one bound after
 (between two fetches of one `next()` included) leaves the stand-in, and the cursor's `identity` keeps
-the provider's row out of the walk. A walk by offset can miss that row: a create that lands ahead
-of the offset it resumes at shifts the rows past it, so the walk serves neither the stand-in, now
-dropped, nor the row. A listing that must serve every row restarts an offset walk when an apply
-lands among the rows it has passed, or walks by a cursor the provider keeps.
+the provider's row out of the walk. A walk that resumes where it stopped can miss that row: a
+create that lands ahead of that point, an offset or the sort key a provider's cursor resumes
+after, is in neither the pages served nor those to come, so the walk serves neither the stand-in,
+now dropped, nor the row. A listing that must serve every row starts the walk again when an apply
+lands among the rows it has passed.
 So above, where `refresh` reads the pending records before each page, a record staged between two
 pages shows on every row served after it, a buffered one included, and an id bound while a page is
 being fetched shows on the provider's rows of that page, since the view is built on the call. No
