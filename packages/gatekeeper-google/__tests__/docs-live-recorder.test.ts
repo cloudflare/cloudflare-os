@@ -966,6 +966,14 @@ describe("the command line", () => {
     expect(line.model.documents.size).toBe(0);
   });
 
+  it("refuses a token file of more than one line before any request", async () => {
+    let line = commandLine();
+    writeFileSync(line.tokenFile, `${TOKEN}\nanother line\n`);
+    expect(await line.run(line.tokenFile, "--only", "paragraph-splits")).toBe(2);
+    expect(line.tokens).toEqual([]);
+    expect(line.lines.join("\n")).not.toContain(TOKEN);
+  });
+
   it("reads a directory's recordings in the order of their file names, and refuses a misnamed one", () => {
     let [first, second] = FIXTURES;
     let line = commandLine([second, first]);

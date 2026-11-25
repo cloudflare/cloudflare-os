@@ -35,6 +35,7 @@ import type { DocTabSnapshot } from "../src/markdown-converter";
 import {
   comparable, FIXTURE_DIRECTORY, prunedTab, rowsGoogleSizes,
 } from "./docs-live-fixtures";
+import { isBearerToken } from "./docs-fields-check";
 import type { DocsLiveFixture } from "./docs-live-fixtures";
 
 /** The calls a recording makes, so that a test can stand the model in for Google. */
@@ -1396,7 +1397,8 @@ function readArguments(argv: readonly string[]): Arguments | undefined {
  * The command line: `<token-file> [--only name] [--check] [--template <docId>]`. Records
  * every scenario, or one, and writes each to its file; with `--check` writes nothing and
  * reports drift. Gives the exit code: 0, 1 for drift or a failed scenario, 2 for arguments it
- * cannot read. `io` lets a test give the transport, the directory, the output and the wait
+ * cannot read, which a token that is not `isBearerToken` is: a header Node refuses would
+ * print it in the error. `io` lets a test give the transport, the directory, the output and the wait
  * between a batch and the read after it.
  */
 export async function main(
@@ -1414,7 +1416,7 @@ export async function main(
     ? SCENARIOS : SCENARIOS.filter(scenario => scenario.name === read.only);
   let token = read && existsSync(read.tokenFile)
     ? readFileSync(read.tokenFile, "utf8").trim() : undefined;
-  if (!read || selected.length === 0 || !token) {
+  if (!read || selected.length === 0 || !token || !isBearerToken(token)) {
     print(USAGE);
     print(`scenarios: ${SCENARIOS.map(scenario => scenario.name).join(", ")}`);
     return 2;
