@@ -72,7 +72,7 @@ export type MessageDetails = {
  * and keeps the reader's place as it does: what it grows above is pushed down, and the view goes with it,
  * so that the message stays where it was looked at (see `MessageScrollContext`).
  */
-const MessageTrace = ({ ref, id, stage, shownAlready, children }: { ref: RefObject<HTMLDivElement | null>; id: string; stage: string; shownAlready?: boolean; children: ReactNode }) => {
+export const MessageTrace = ({ ref, id, stage, shownAlready, children }: { ref: RefObject<HTMLDivElement | null>; id: string; stage: string; shownAlready?: boolean; children: ReactNode }) => {
   const scroll = useContext(MessageScrollContext)
   useLayoutEffect(() => {
     const element = ref.current!
@@ -210,7 +210,9 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
   const stage = useDetailsStage(open, details?.more != null)
   // What is above the message is there as long as it is asked for, and goes as the details do.
   const traceStage = useDetailsStage(thought?.open ?? false, false)
-  const traced = !!thought && traceStage !== 'gone'
+  // Nothing is above it where all that led to it is shown elsewhere (the pills of the agents it
+  // started, among the steps before them).
+  const traced = !!thought?.content && traceStage !== 'gone'
   const traceFolded = traceStage === 'row' || traceStage === 'leaving'
   // The message's own bubble meets the panel as it would the next message, while it is there.
   const joinsDetails = stage !== 'gone' && stage !== 'leaving'

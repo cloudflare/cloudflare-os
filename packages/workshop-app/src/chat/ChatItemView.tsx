@@ -14,7 +14,7 @@ import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, MessagePart, NoticeItem, OutputItem, UserItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, MessagePart, NoticeItem, OutputItem, TraceEntry, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
@@ -68,6 +68,11 @@ export type ChatItemViewProps = {
    * were, until it is put away, and is there already as it arrives.
    */
   tracedWhileShown?: boolean
+  /**
+   * Of the steps that led to a reply, those shown above it: the others are above the pills of the
+   * agents it started, among them (`RunMarkView`). All of them where it started none.
+   */
+  shownTrace?: readonly TraceEntry[]
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
@@ -80,7 +85,7 @@ const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
  * while a reply streams in, so the conversation above it is not rendered again for every piece of
  * text that arrives.
  */
-export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow, tracedWhileShown }: ChatItemViewProps) {
+export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow, tracedWhileShown, shownTrace }: ChatItemViewProps) {
   // A reply's row also remembers which steps behind it were opened or put away, for when its details are shown.
   const thinkingKey = `${item.key}:thinking`
   const open = useOpenKeys(disclosure, item.kind === 'assistant' ? [item.key, thinkingKey, ...item.trace.map(({ key }) => key)] : [item.key])
@@ -143,7 +148,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
                 open: open.has(thinkingKey) !== (alwaysShowThinking || !!tracedWhileShown),
                 onToggle: () => disclosure.toggle(thinkingKey),
                 // Its steps open where they were watched as it came, and one line each where it is looked back on.
-                content: thinkingOf({ steps: item.trace, toggledSteps: open, onToggleStep: disclosure.toggle, startOpen: tracedWhileShown }),
+                content: thinkingOf({ steps: [...(shownTrace ?? item.trace)], toggledSteps: open, onToggleStep: disclosure.toggle, startOpen: tracedWhileShown }),
                 shownAlready: tracedWhileShown,
               }
             : undefined}

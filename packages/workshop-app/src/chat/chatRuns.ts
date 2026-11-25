@@ -80,3 +80,26 @@ export const placeRunMarks = (items: readonly ChatItem[], runs: readonly ChatRun
   after.sort(order)
   return { before, after }
 }
+
+/**
+ * The steps among which `marks` happened, split at them: for each mark, those started before it
+ * and after the mark before it, and the rest, started after them all, so that where the steps are
+ * shown each mark is after the step that was under way when it happened (the code that started an
+ * agent, or waited for it to end). Steps are taken one after another, and a step says when it was
+ * done (`at`: when the message it is in was written, once it was): one starts as the one before it
+ * is done, the first before anything is marked. One after a step that does not say (being taken
+ * still, or what was thought) is never before a mark.
+ */
+export const splitSteps = <Step extends object>(steps: readonly Step[], marks: readonly RunMark[]): { before: Step[][]; rest: Step[] } => {
+  const doneAt = (step: Step) => ('at' in step && step.at instanceof Date ? step.at.getTime() : Infinity)
+  const startedBefore = (index: number, at: Date) => index === 0 || doneAt(steps[index - 1]) < at.getTime()
+  let from = 0
+  const before = marks.map(({ at }) => {
+    let to = from
+    while (to < steps.length && startedBefore(to, at)) to++
+    const these = steps.slice(from, to)
+    from = to
+    return these
+  })
+  return { before, rest: steps.slice(from) }
+}

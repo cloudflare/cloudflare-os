@@ -13,6 +13,11 @@ export type WorkLogProps = {
    * was, rather than what is looked back on, whose steps start as one line each.
    */
   startOpen?: boolean
+  /**
+   * The steps before these are shown above, in the conversation (among the pills of the agents the
+   * chat started): with none of its own, the mascot does not say that it waits for the agent.
+   */
+  continues?: boolean
 }
 
 /**
@@ -21,7 +26,7 @@ export type WorkLogProps = {
  * it waits for the agent until there are steps, and alone after; the steps come in above it, and it goes
  * down with them. Above a message it is the history that led up to it, with the same rows.
  */
-export const WorkLog = ({ steps, toggledSteps, onToggleStep, startOpen = false }: WorkLogProps) => {
+export const WorkLog = ({ steps, toggledSteps, onToggleStep, startOpen = false, continues = false }: WorkLogProps) => {
   // The steps there were when it was first shown: the ones after come in, as they are made, and these are simply there.
   const first = useRef(new Set(steps.map((step) => step.key)))
   const withMascot = !!usePresenceSlot()
@@ -36,7 +41,7 @@ export const WorkLog = ({ steps, toggledSteps, onToggleStep, startOpen = false }
       {withMascot && (
         <div className="group flex min-h-10 items-center gap-2 px-1.5 text-[13px]/5">
           <MascotSlot holdUntilArrived />
-          {steps.length === 0 && (
+          {steps.length === 0 && !continues && (
             <span className="min-w-0 truncate text-kumo-default transition-opacity duration-500 group-has-data-waiting:opacity-0 group-has-data-waiting:transition-none motion-reduce:transition-none">
               Waiting for the agent…
             </span>

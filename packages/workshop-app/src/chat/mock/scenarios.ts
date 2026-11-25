@@ -824,11 +824,12 @@ const agentRunsScenario: Scenario = {
     ...turn(
       streamReasoning(LAUNCH_REASONING),
       streamTool(spawnRuns),
-      { message: agent({ reasoning: LAUNCH_REASONING, toolCalls: [spawnRuns] }), delay: 300 },
+      // Started as the code runs, which is written down once it is done, as the server does.
       LAUNCH_RUNS.map(({ id, agent: { id: spawnerId, config }, title, brief }, index): ScriptStep => ({
         run: { id, metadata: { title, spawnerId, spawnerName: config.displayName, spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
         delay: index === 0 ? 300 : 120,
       })),
+      { message: agent({ reasoning: LAUNCH_REASONING, toolCalls: [spawnRuns] }), delay: 300 },
       say(agent({ text: 'I’ve set up five agents to work on these in the background, one for each part. I’m waiting for them to finish, and I’ll bring what they find together here.' })),
       streamTool({ ...waitRuns, output: '' }),
       runStep(1, 3500, { activeAgent: undefined }, 'Nothing would break on launch day. Two handlers swallow errors; I listed them in the review.'),

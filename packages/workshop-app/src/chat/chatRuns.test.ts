@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Agent, RunStatus } from '@/automations/agents'
 import type { ChatItem } from './chatItems'
-import { placeRunMarks, runsStartedBy, sameRuns, type ChatRun } from './chatRuns'
+import { placeRunMarks, runsStartedBy, sameRuns, splitSteps, type ChatRun, type RunMark } from './chatRuns'
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 10, 25, 12, minutes))
 const said = (id: number, kind: 'user' | 'assistant', minutes: number) =>
@@ -86,5 +86,29 @@ describe('sameRuns', () => {
     expect(sameRuns(runs, [runs[0], { ...runs[1], status: 'failed' }])).toBe(false)
     expect(sameRuns(runs, [runs[0], { ...runs[1], lastActive: at(6) }])).toBe(false)
     expect(sameRuns(runs, runs.slice(1))).toBe(false)
+  })
+})
+
+const step = (key: string, minutes?: number) => ({ key, at: minutes === undefined ? undefined : at(minutes) })
+const mark = (minutes: number, kind: RunMark['kind'] = 'started') => ({ kind, key: `${kind}:${minutes}`, at: at(minutes), run: run(20, minutes) })
+const split = (steps: ReturnType<typeof step>[], marks: RunMark[]) => {
+  const { before, rest } = splitSteps(steps, marks)
+  return { before: before.map((these) => these.map(({ key }) => key)), rest: rest.map(({ key }) => key) }
+}
+
+describe('splitSteps', () => {
+  it('puts each mark after the step under way when it happened, which is done after it, and leaves the rest after them all', () => {
+    // The code that starts the agents is written down once it is done, after they started; the
+    // one waiting for them after they ended.
+    const steps = [step('read', 1), step('spawn', 4), step('wait', 9), step('after', 10)]
+    expect(split(steps, [mark(3), mark(3), mark(6, 'ended'), mark(8, 'ended')])).toEqual({ before: [['read', 'spawn'], [], ['wait'], []], rest: ['after'] })
+  })
+
+  it('puts a mark after the first step, before anything was done', () => {
+    expect(split([step('spawn', 5), step('next', 6)], [mark(2)])).toEqual({ before: [['spawn']], rest: ['next'] })
+  })
+
+  it('puts a mark after the step under way that does not say when it is done yet, and never one after it', () => {
+    expect(split([step('read', 1), step('running'), step('next')], [mark(3)])).toEqual({ before: [['read', 'running']], rest: ['next'] })
   })
 })

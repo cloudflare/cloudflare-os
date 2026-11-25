@@ -30,7 +30,7 @@ import { useAvailableToChat } from './useAvailableToChat'
 import { useContextOpen } from './useContextOpen'
 import { useNarrowScreen } from '@gadgets/ui'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type MessagePart, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type MessagePart, type OutputItem, type WorkEntry } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
@@ -57,8 +57,8 @@ import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { STATUS_WORDS } from '@/automations/agents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 import { AgentRunsButton } from '@/blocks/AgentRunsButton'
-import { placeRunMarks, runsStartedBy, sameRuns, type ChatRun, type RunMark } from './chatRuns'
-import { RunMarkView } from './RunMarkView'
+import { placeRunMarks, runsStartedBy, sameRuns, splitSteps, type ChatRun, type RunMark } from './chatRuns'
+import { RunMarkView, type MarkSteps } from './RunMarkView'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -116,6 +116,9 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) => outputOf(i
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 const NO_IDS: number[] = []
 const NO_RUNS: ChatRun[] = []
+const NO_SPLIT: { before: WorkEntry[][]; rest: WorkEntry[] } = { before: [], rest: [] }
+const sameSplit = (a: typeof NO_SPLIT, b: typeof NO_SPLIT) =>
+  a.before.length === b.before.length && a.before.every((steps, index) => steps.length === b.before[index].length && steps.every((step, at) => step === b.before[index][at]))
 // What is asked about is opened to as a row is, kept as the conversation's own rows are: each
 // ask afresh, folded, once the changes asked about before are kept.
 const keepKey = ({ epoch }: KeepAsk) => `keep:${epoch ?? ''}`
@@ -240,6 +243,18 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   if (readRuns !== runs && !sameRuns(readRuns, runs)) setRuns(readRuns)
   const earlierToRead = chat.status === 'ready' && chat.hasEarlier
   const runMarks = useMemo(() => placeRunMarks(items ?? [], runs, earlierToRead), [items, runs, earlierToRead])
+  // The steps under way among which agents the chat started have started or ended since the last
+  // row: those before each are above its pill, so that it is among them where it happened, and the
+  // thinking indicator has the rest. Kept as they were while they split the same, as the work
+  // changes with every word of a reply being written.
+  const afterMarks = runMarks.after
+  // The reply being written is the reply's, after them all.
+  const readLiveSplit = useMemo(() => (working && afterMarks.length > 0 ? splitSteps(work.filter(({ type }) => type !== 'writing'), afterMarks) : NO_SPLIT), [working, work, afterMarks])
+  const [liveSplit, setLiveSplit] = useState(readLiveSplit)
+  if (readLiveSplit !== liveSplit && !sameSplit(readLiveSplit, liveSplit)) setLiveSplit(readLiveSplit)
+  const liveWorkShown = liveWorkOpen && !handedOver.over
+  const movedWork = liveSplit.before.flat()
+  const indicatorWork = movedWork.length > 0 ? closingWork.filter((step) => !movedWork.includes(step)) : closingWork
   // A run is opened only where the page can open another chat; elsewhere its pills are not pressed.
   const openRun = useHandler((runId: number) => onOpenChat?.(runId))
   const opensRuns = onOpenChat !== undefined
@@ -389,14 +404,18 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // What is said of the agents the chat started comes between rows, which then run on no more,
     // or after them all, as rows of the conversation too: one stays the same row as what is said
     // after it arrives, rather than moving into the conversation from under it.
+    // Each among the steps it happened among, where they are shown: those before it are above it.
     const { before, after } = runMarks
-    const markRow = (mark: RunMark) => ({
+    const markRow = (mark: RunMark, steps?: MarkSteps) => ({
       id: mark.key,
       sequence,
-      content: <RunMarkView mark={mark} onOpen={opensRuns ? openRun : undefined} href={chatHref} />,
+      content: <RunMarkView mark={mark} onOpen={opensRuns ? openRun : undefined} href={chatHref} steps={steps} disclosure={disclosure} />,
     })
     const rows = items?.flatMap((item, index) => {
-      const marks = (before.get(index) ?? []).map(markRow)
+      const here = before.get(index) ?? []
+      const split = item.kind === 'assistant' && item.trace.length > 0 && here.length > 0 ? splitSteps(item.trace, here) : undefined
+      const tracedWhileShown = handedTraces.keys.has(item.key)
+      const marks = here.map((mark, at) => markRow(mark, split && { entries: split.before[at], thinkingKey: `${item.key}:thinking`, tracedWhileShown }))
       sequence = Math.max(sequence, item.id)
       return [...marks, {
         id: item.key,
@@ -410,13 +429,14 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             // The list wraps every row, so messages in a run are told about each other.
             joinsAbove={!before.has(index) && continuesRun(items[index - 1], item)}
             joinsBelow={index + 1 < items.length && !before.has(index + 1) && continuesRun(item, items[index + 1])}
-            tracedWhileShown={handedTraces.keys.has(item.key)}
+            tracedWhileShown={tracedWhileShown}
+            shownTrace={split?.rest}
           />
         ),
       }]
     }) ?? []
-    return [...rows, ...after.map(markRow)]
-  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted, handedTraces.keys])
+    return [...rows, ...after.map((mark, at) => markRow(mark, { entries: liveSplit.before[at] ?? [], live: liveWorkShown }))]
+  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted, handedTraces.keys, liveSplit, liveWorkShown])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
   const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -668,7 +688,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
               onToggle: () => setLiveWorkToggled({ open: !liveWorkOpen, setting: alwaysShowThinking }),
               handedOver: handingOver,
               content: (
-                <WorkLog steps={closingWork} toggledSteps={toggledWork} onToggleStep={disclosure.toggle} startOpen />
+                <WorkLog steps={indicatorWork} toggledSteps={toggledWork} onToggleStep={disclosure.toggle} startOpen continues={movedWork.length > 0} />
               ),
             }}
           />

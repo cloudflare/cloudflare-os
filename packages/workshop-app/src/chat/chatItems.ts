@@ -39,8 +39,10 @@ export type ToolEntry =
       sections: ToolSection[]
       /** Still being written or run. */
       running?: boolean
+      /** When it was taken: when the message it is in was written. */
+      at?: Date
     }
-  | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[] }
+  | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[]; at?: Date }
 
 /**
  * One thing in the making of a reply: a step taken, what was thought before something was said
@@ -707,7 +709,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           const created = creationOf(call, (gadget) => creationState(gadget, id))
           if (!created) {
             const before = reasoning
-            work.push(emitStep<CallEntry>(call.toolCallId, [call, before], () => callEntry(call, before)))
+            work.push(emitStep<CallEntry>(call.toolCallId, [call, before], () => ({ ...callEntry(call, before), at: message.timestamp })))
             reasoning = undefined
             continue
           }
@@ -726,7 +728,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         carryOn()
         const log = message.actionLog
         if (!log) notice(message, 'unknown', 'An action whose details are not available')
-        else if (log.type === 'observation') work.push(emitStep<ObservationEntry>(`observation:${id}`, [message], () => observationEntry(log)))
+        else if (log.type === 'observation') work.push(emitStep<ObservationEntry>(`observation:${id}`, [message], () => ({ ...observationEntry(log), at: message.timestamp })))
         else if (log.type === 'bindHook') {
           pinned.push(emit<HookItem>(`hook:${id}`, [message], () => ({
             kind: 'hook',
@@ -789,7 +791,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         carryOn()
         const last = work.at(-1)
         if (last?.type !== 'call' || last.icon !== 'plug') {
-          work.push(emitStep<CallEntry>(`gadget:${id}`, [], () => ({ type: 'call', icon: 'plug', label: 'Used the gadget', sections: [] })))
+          work.push(emitStep<CallEntry>(`gadget:${id}`, [], () => ({ type: 'call', icon: 'plug', label: 'Used the gadget', sections: [], at: message.timestamp })))
         }
         break
       }
