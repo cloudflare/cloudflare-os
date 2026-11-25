@@ -51,7 +51,7 @@ import {
 import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
-import {fileImageMimeType, readFileImage} from "./file-image";
+import {fileImageMimeType, loadFileImage, readFileImage} from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -2450,7 +2450,7 @@ async function runAgentPass(
   const unreadAttachmentIds = new Set<string>();
   const inlineFileImages = new Set<AiToolCall>();
   const unreadFileImages = new Set<AiToolCall>();
-  const replayFileImages = new Map<number, Set<string>>();
+  const fileImageReads = new Map<ImageContent, {sequence: number; id: string}>();
   let attachmentsFitFrom: number | undefined;
   // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
   let prompt: number | undefined;
@@ -2498,9 +2498,6 @@ async function runAgentPass(
     for (let candidate of admitted) {
       if (candidate.read) {
         inlineFileImages.add(candidate.read);
-        let reads = replayFileImages.get(msg.sequence);
-        if (!reads) replayFileImages.set(msg.sequence, reads = new Set());
-        reads.add(candidate.id);
       } else {
         inlineAttachmentIds.add(candidate.id);
         if (!answered) unansweredAttachmentIds.push(candidate.id);
@@ -2981,6 +2978,7 @@ async function runAgentPass(
 
             const content: (TextContent | ImageContent)[] = [{type: "text", text: toolOutput.text},
               ...toolOutput.image ? [toolOutput.image] : []];
+            if (toolOutput.image) fileImageReads.set(toolOutput.image, {sequence: msg.sequence, id: toolCall.toolCallId});
             if (unreadFileImages.has(toolCall) || (toolCall.toolName === "readFile" && toolCall.image?.rejected)) unreadParts.add(content[0]);
             if (toolOutput.image && attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
               pastLimitParts.set(content[0], {type: "text", text:
@@ -3750,14 +3748,13 @@ async function runAgentPass(
             const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
             const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
             if (!oid) throw new Error("Image file has no immutable blob.");
-            const image = readFileImage(file.source.reader)!;
+            // The pass ends at the durable barrier; only replay needs encoded pixels.
+            loadFileImage(file.source.reader);
             ++stepImageCount;
             stepImageBytes += byteLength;
             markFileRead(resolved.workpieceId, filename, file.oid);
-            return {
-              content: [{type: "text" as const, text: "Image file."}, image],
-              details: {image: {oid, byteLength}, ...file.oid ? {observedOid: file.oid} : {}},
-            };
+            return toolResult("Image file.", {image: {oid, byteLength},
+              ...file.oid ? {observedOid: file.oid} : {}});
           }
           let shown = readFileWindow(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
@@ -4996,23 +4993,27 @@ async function runAgentPass(
     // depends on how they were shown. Rejected historical file reads instead invalidate dependent
     // thinking through the replay markers above.
     // Admission can omit a file batch: only images actually sent can be refused.
-    const sentImageReads = new Set(modelMessages.flatMap(msg => msg.role === "toolResult" &&
-        msg.content.some(part => part.type === "image") ? [msg.toolCallId] : []));
-    for (const [sequence, reads] of replayFileImages) {
-      for (const id of reads) if (!sentImageReads.has(id)) reads.delete(id);
-      if (reads.size === 0) replayFileImages.delete(sequence);
+    const sentImages = new Set(modelMessages.flatMap(msg => msg.role === "toolResult"
+      ? msg.content.filter(part => part.type === "image") : []));
+    const refusedFileImages = new Map<number, Set<string>>();
+    for (const [part, {sequence, id}] of fileImageReads) {
+      if (!sentImages.has(part)) continue;
+      let reads = refusedFileImages.get(sequence);
+      if (!reads) refusedFileImages.set(sequence, reads = new Set());
+      reads.add(id);
     }
     const refuseAttachments = (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
     // A first-request input failure can involve history accepted by a different model, or arrive
     // inside an HTTP 200 stream. Preserve pixels on credential/configuration and server failures.
-    const refuseFileImages = (statusCode === undefined || statusCode === 200 ||
-        statusCode === 400 || statusCode === 413) && replayFileImages.size > 0;
+    const imageStreamError = (statusCode === undefined || statusCode === 200) && /\bimage(?:\b|_)/i.test(message);
+    const refuseFileImages = (statusCode === 400 || statusCode === 413 || imageStreamError) && refusedFileImages.size > 0;
     if (!stepFinished && (refuseAttachments || refuseFileImages)) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
-      if (refuseFileImages) hooks.rejectChatFileImages(chatId, replayFileImages);
-      const retryHint = refuseFileImages
-        ? "Retrying keeps these image inputs as workspace files instead."
-        : "Retrying sends this message's images and PDFs as workspace files instead.";
+      if (refuseFileImages) hooks.rejectChatFileImages(chatId, refusedFileImages);
+      const retryHint = refuseAttachments
+        ? "Retrying sends this message's images and PDFs as workspace files instead." +
+          (refuseFileImages ? " Saved file images are omitted too." : "")
+        : "Retrying keeps these image inputs as workspace files instead.";
       throw new AgentTurnError(`${message}\n\n${retryHint}`, statusCode);
     }
     throw error;

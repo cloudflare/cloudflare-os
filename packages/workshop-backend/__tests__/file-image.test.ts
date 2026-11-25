@@ -63,7 +63,11 @@ describe("images read from a worktree", () => {
     let chatId: number;
     await inKernel(name, async impl => {
       ({chatId} = await setup(impl));
+      const encode = vi.spyOn(Uint8Array.prototype, "toBase64");
       const {requests} = await turn(impl, chatId, [[read()]]);
+      const encodings = encode.mock.instances.filter(bytes => bytes.length === PNG.length).length;
+      encode.mockRestore();
+      expect(encodings).toBe(1);
       const shown = results(requests.at(-1)!)[0];
       expect(shown.isError).toBe(false);
       expect(shown.content).toContainEqual({type: "image", data: PNG.toBase64(), mimeType: "image/png"});
@@ -226,12 +230,13 @@ describe("images read from a worktree", () => {
     expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
   }));
 
-  it.each([401, 402, 403, 404])("keeps valid pixels available after a %s credential/configuration error", status => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["401 Unauthorized", "402 Billing required", "403 Forbidden", "404 Unknown model", "Policy refused this request"])(
+    "keeps valid pixels available after a non-image failure: %s", failure => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await expect(scriptedTurn(impl, chatId, [
       fauxAssistantMessage([read()], {stopReason: "toolUse"}),
-      fauxAssistantMessage([], {stopReason: "error", errorMessage: `${status} Fix credentials or configuration`}),
-    ])).rejects.toThrow(`${status}`);
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: failure}),
+    ])).rejects.toThrow(failure);
     const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : []);
     expect(calls.find(call => call.toolName === "readFile")).not.toHaveProperty("image.rejected");
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Credentials repaired; retry"}]);
@@ -256,6 +261,36 @@ describe("images read from a worktree", () => {
     const {requests} = await turn(impl, chatId, []);
     expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
     expect(requests[0].flatMap(msg => msg.role === "assistant" ? msg.content.filter(part => part.type === "thinking") : [])).toEqual([]);
+  }));
+
+  it("preserves saved pixels when an HTTP 200 stream reports invalid credentials", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await turn(impl, chatId, [[read()]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const config = {provider: "openai" as const, model: "gpt-6-astra", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const stream = handle.stream;
+    handle.stream = (model, context, options) => stream(model, context, {...options, maxRetries: 0,
+      fetch: async () => new Response('event: error\ndata: {"type":"error","code":"invalid_api_key","message":"Invalid API key provided","param":null,"sequence_number":0}\n\n',
+        {headers: {"content-type": "text/event-stream"}}),
+    });
+    await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow("Invalid API key provided");
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Credentials repaired; retry"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(results(requests[0])[0].content).toContainEqual({type: "image", data: PNG.toBase64(), mimeType: "image/png"});
+  }));
+
+  it("names both uploads and saved images when both are refused", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await turn(impl, chatId, [[read()]]);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Uploaded", {attachments: [{oid: blob.oid, mimeType: "image/png", name: "upload.png"}]});
+    await expect(scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"}),
+    ])).rejects.toThrow("Retrying sends this message's images and PDFs as workspace files instead. Saved file images are omitted too.");
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Retry"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(requests[0].flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toEqual([]);
   }));
 
   it("retains unread pixels across transient provider retries", () => inKernel(crypto.randomUUID(), async impl => {

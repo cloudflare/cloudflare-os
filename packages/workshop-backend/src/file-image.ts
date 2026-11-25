@@ -14,7 +14,7 @@ export function fileImageMimeType(reader: BlobReader): string | undefined {
 }
 
 /** Load a bounded image using the same formats and dimension guard as uploaded attachments. */
-export function readFileImage(reader: BlobReader): ImageContent | undefined {
+export function loadFileImage(reader: BlobReader): {mimeType: string; bytes: Uint8Array} | undefined {
   const mimeType = fileImageMimeType(reader);
   if (!mimeType) return undefined;
   if (reader.size > MAX_INLINE_ATTACHMENT_BYTES) {
@@ -24,5 +24,11 @@ export function readFileImage(reader: BlobReader): ImageContent | undefined {
   if (!canInlineChatAttachmentImage(mimeType, bytes)) {
     throw new Error("Image header is unsupported or dimensions exceed 8000 pixels. Crop, resize or convert it first.");
   }
-  return {type: "image", mimeType, data: bytes.toBase64()};
+  return {mimeType, bytes};
+}
+
+/** Encode pixels only for an admitted replay request. */
+export function readFileImage(reader: BlobReader): ImageContent | undefined {
+  const image = loadFileImage(reader);
+  return image && {type: "image", mimeType: image.mimeType, data: image.bytes.toBase64()};
 }
