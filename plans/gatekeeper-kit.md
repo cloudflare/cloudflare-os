@@ -1597,11 +1597,20 @@ checks this one reads the stored binding rather than the shape of the IDs, so it
 consumer that supplies no classifier.
 
 `createSimulationView` sorts once by action ID, indexes each action under every target it affects
-(deduplicated per record), and returns frozen snapshots. `replaySimulation` folds records in
-order; `known-no-effect` continues, and the first `unsupported` stops replay, because projecting
-later actions onto a state already known to be wrong produces confident nonsense. Provider
-reducers stay in each gatekeeper as pure functions; the kit deliberately ships no generic
-collection overlay and no recursive ID substitution.
+(deduplicated per record), and returns frozen snapshots. It is the index the simulation store
+(§4.25) reads: a store folds `forTarget(id)`, the records of one entity, and holds no index of its
+own. Its `targets` function is where an id is resolved through `ProvisionalIds` when a pending
+create will make the entity, so that the records queued under the provisional id and those queued
+under the provider's id fold as one entity. `replaySimulation` folds records in order;
+`known-no-effect` continues, and the first `unsupported` stops replay, because projecting later
+actions onto a state already known to be wrong produces confident nonsense. Provider
+reducers stay in each gatekeeper, each giving the same step for the same input however often it is
+called, and changing none of what it is given but, for a simulation store's reducer, the draft its
+fold hands it (§4.25, which says what else such a reducer may do); the kit deliberately ships no
+generic collection overlay and no recursive ID substitution. What it does share around those
+reducers (`./simulation-store`, §4.25) is the fold of one entity, the report of what was refused,
+and the stand-in, hide and resolve mechanics a listing needs. What it does not share is any filter,
+order or page: those stay each gatekeeper's.
 
 `targets` returns an array, not an `Iterable<Target>`. Every simulating gatekeeper's target is a
 scalar string — notion's `actionPageId(action): string | null`, linear's `issueRef: string`,
@@ -2180,7 +2189,9 @@ export type ActionFileStorage = { readonly kv: KvScannable;
 export class ActionFileStore {
   constructor(storage: ActionFileStorage, options: ActionFileStoreOptions);
   capture(bytes: Uint8Array): Promise<ActionFileReference>;
+  captureStream(content: ReadableStream<Uint8Array>): Promise<ActionFileReference>;
   read(file: ActionFileReference): Promise<Uint8Array>;
+  readStream(file: ActionFileReference): Promise<ReadableStream<Uint8Array>>;
   delete(file: ActionFileReference | undefined): void;
   pruneUnreferenced(referencedHandles: ReadonlySet<string>, createdBefore: number): void;
 }
@@ -2189,7 +2200,11 @@ export class ActionFileStore {
 `ActionFileStore` keeps queued-action bytes out of action records as bounded, SHA-256-checked
 one-MiB chunks. Capture writes the manifest, chunks, allocation, and aggregate accounting in one
 synchronous transaction; deletion removes the same record family and releases its allocation in
-one transaction (`action-files.ts:4-35,53-221`). It is consumed today
+one transaction (`action-files.ts`). `captureStream()` takes a file too large to hold, storing each
+chunk with its allocation and counter in a transaction of its own and the manifest last, and
+`readStream()` gives a file back a chunk at a time, holding the final chunk until the whole file's
+digest matches; both use workerd's `crypto.DigestStream`. A file is limited to 10,000 chunks, the
+most four-digit chunk keys keep in index order. It is consumed today
 by google's `GmailForwardSnapshotStore` for exact inline-forward source snapshots
 (`gmail-state.ts:5-34`; `gmail.ts:255-273,730-744`) and by `ConfluenceStore` for pending attachment
 uploads, including orphan pruning and release after resolution
@@ -2555,6 +2570,287 @@ Until then the escape hatch is the storage itself: the records live nowhere else
 read them directly, and may delete all of its storage at once, disposing each `caps:` record's
 stubs as it does. It must not delete one hook's records alone: only `remove()` also ends the hook's
 queued deliveries, which would otherwise reach it when it is enabled again.
+
+### 4.25 `./simulation-store`
+
+```ts
+export type EntityStep<Entity, Refusal = never> =
+  | SimulationStep<Entity>                              // applied, known-no-effect, unsupported
+  | { kind: "deleted" }
+  | { kind: "refused"; refusal: Refusal };
+export type EntityContext<Id extends string, Base, Refusal> = {
+  readonly id: Id;
+  readonly base: Base | undefined;
+  readonly refusals: readonly Refusal[];                // of this call, oldest first
+};
+export type SimulationStoreOptions<Id extends string, Base, Entity,
+  R extends SimulationRecord<unknown>, Refusal = never> = {
+  readonly initial: (base: Base) => Entity;
+  readonly reduce: (entity: Entity | undefined, record: R,
+    context: EntityContext<Id, Base, Refusal>) => EntityStep<Entity, Refusal>;
+};
+export type EntityFold<Entity, R, Refusal> = {
+  readonly entity: Entity | undefined;
+  readonly refused: readonly { readonly record: R; readonly refusal: Refusal }[];
+  readonly stopped?: { readonly record: R; readonly reason: string };
+};
+export type SimulationStore<Id extends string, Base, Entity,
+  R extends SimulationRecord<unknown>, Refusal = never> = {
+  readonly fold: (id: Id, base: Base | undefined, records: readonly R[])
+    => EntityFold<Entity, R, Refusal>;
+};
+export function createSimulationStore<Id extends string, Base, Entity,
+  R extends SimulationRecord<unknown>, Refusal = never>(
+  options: SimulationStoreOptions<Id, Base, Entity, R, Refusal>,
+): SimulationStore<Id, Base, Entity, R, Refusal>;
+
+export type SimulatedListOptions<Id extends string, Row extends object,
+  R extends SimulationRecord<unknown>> = {
+  readonly store: SimulationStore<Id, Row, Row, R, unknown>;
+  readonly view: () => SimulationView<R, Id>;           // §4.9's view; read at every fold
+  readonly id: (row: Row) => Id;
+  readonly compare: (a: Row, b: Row) => number;
+  readonly keeps?: (row: Row) => boolean;               // the gatekeeper's filter
+  readonly created?: () => readonly Id[];               // provisional ids of pending creates
+};
+export type SimulatedList<Row> = {
+  readonly overlay: (row: Row) => readonly Row[];
+  readonly inject: {
+    readonly items: readonly Row[];
+    readonly compare: (a: Row, b: Row) => number;
+    readonly revalidate: (row: Row) => Row | null;
+  };
+  readonly refresh: () => void;
+};
+export function simulatedList<Id extends string, Row extends object,
+  R extends SimulationRecord<unknown>>(
+  options: SimulatedListOptions<Id, Row, R>,
+): SimulatedList<Row>;
+```
+
+Two things a gatekeeper that replays pending actions needs around its own reducer, and nothing of
+the reducer itself: a fold of the pending records over one entity at a time that holds nothing
+between two calls (`createSimulationStore`), and the values a kit cursor takes for a listing whose
+rows are such entities (`simulatedList`). The list hooks sit on the fold, and hold only a listing's
+stand-in rows between two calls (**What the hooks hold.**, below).
+
+The fold:
+
+**One fold, per entity.** An entity is named by the provider's own id: a document's tab, a grid, a
+deck, an incident, a message. The fold hands that id to the reducer and reads nothing by it. It is
+never a connection's or a session's id, so an entity is the same entity whichever connection or
+session reads it. A record declares the entities it targets
+through the view (§4.9), a read folds only the records that target what it reads, and a record that
+targets several entities is folded for each, by the call that folds that entity. Each of those folds
+stands alone: refused on one entity, the record still applies to the others until the caller leaves
+it out or removes it, so a caller whose record must take effect on all of its entities or none, where
+only one of them can refuse it, folds that one first and leaves what that fold refused out of the
+lists it folds next; where more than one can, no order of folds decides it, and the caller folds an
+entity that holds them all or checks every target first. The store holds no index and no resolver: the view is the one index and `ProvisionalIds` the
+one resolver. An editor whose state is one thing folds it as its one entity.
+
+**One queue.** Action ids are private to the queue that issued them. The fold takes records in the
+order that one queue gives and compares no id across queues, so the store has no way to fold the
+records of two queues together, by design: ids say nothing about the order between two queues'
+records.
+
+**Five steps.** `reduce` is given one entity, or `undefined` for one the provider does not hold and
+no earlier record made, and one record:
+
+| Step | The entity | The fold |
+|---|---|---|
+| `applied` | becomes the step's value, which may be the draft itself, changed in place | goes on |
+| `deleted` | becomes `undefined`, as for an entity the provider does not hold | goes on; a later record may create it again |
+| `refused` | stays as it was | goes on; the result's `refused` lists the record with its refusal |
+| `known-no-effect` | stays as it was | goes on |
+| `unsupported` | stays as it was | stops; the result's `stopped` names the record and the reason |
+
+A pending create is the record that returns the entity as `applied` when given `undefined`, under
+the provisional id the create was given.
+
+**A refusal carries no entity.** A refused record leaves the entity exactly as it was, so a fold of
+a list the record was left out of gives the entity the fold that refused it gave. That is what lets
+the caller mark the record and leave it out, or remove it, and read the same thing afterwards. A
+step that refused a record and changed the entity as well (the refusal recorded in the state) would
+give another entity as soon as the record left the list.
+
+**`context.refusals` may only make a reducer refuse.** A gatekeeper whose failures close a gate (a
+later record depends on an earlier one having applied) reads the refusals the call has recorded on
+the entity so far, and refuses. They are the call's alone: a later call starts with none, because
+the refused records have by then left the list. So a step that applies, deletes or has no effect
+must be the same whatever they hold, or the entity would change when the caller leaves the refused
+records out.
+
+**The fold remembers nothing.** What `createSimulationStore` returns holds the reducer and has no
+state to hold anything else in. Every call reduces its records again from the first, up to and
+including the first `unsupported` one, on a draft of its own, and a base is any value, passed
+through to `initial` and `reduce` and not kept. The fold keeps no reference to the entity it
+returns: that entity is the base itself, or a part of it, only where `initial` returned that and no
+record replaced it, and with an `initial` that copies it is the draft.
+
+An earlier shape of this leaf kept a memory: the latest fold of each base object, weakly, and of
+each entity folded with no base, each extended by a suffix when a list began with the records it
+had folded. It was taken out. What it gave each kind of user:
+
+- **The editors that fold one entity per read**, over a base that read fetched. The memory never
+  answered a second fold for them and went with the request.
+- **The list gatekeepers**, whose store is built with a listing and lives for its walk. There the
+  memory did serve, and what it spared is a count, which the kit's test "the folds of one walk" (in
+  the workerd list suite) asserts. A walk of six provider rows, two to a page, with two pending
+  records on one provider row and a pending create with one more record on its stand-in, takes five
+  `next()` calls (four that answer a page and the one that reports the end); each record on the
+  provider row is reduced once, and each record on the stand-in six times (once when the hooks are
+  made and once at every `next()`, where the cursor refreshes them), fourteen reductions in all.
+  With the first page refused and asked for again it takes six calls, and the counts are two and
+  seven, eighteen in all. The earlier shape reduced each of the four records once in either walk.
+  The rule behind the numbers: a stand-in's records are reduced once more for every `next()` of the
+  walk, and a provider row's once for each time the cursor reads the row for a page (the page it is
+  served on, a refused page's retry, and a page that reads it and leaves it for the next, as a retry
+  does with a row the refusal did not cover). No result changes: the reducers of the two list
+  gatekeepers write nothing (each step returns another row, reports the row deleted or reports no
+  effect), so a fold made again gives the row the remembered one gave, and the two listings of that
+  suite, which stand for them ("an incident listing over an OffsetCursor", "a message listing over a
+  TokenCursor"), pass with no test of theirs edited. That CPU is accepted for a fold with nothing to
+  hold, because memory is what this design spends least, and because the memory imposed rules on
+  every reducer and every caller (below).
+- **The one gatekeeper that keeps its base between requests.** It is better served by keeping what
+  it wants of a fold itself, in storage, where it outlives an eviction and where a rolled-back
+  transaction leaves nothing pointing at a fold that was not stored.
+
+What the memory cost every user: a record had to be known by its id alone; `forget` was owed after
+a rewrite, after a rolled-back submit and for a stand-in whose create left; a base had to be an
+object the caller kept and never changed; and a reducer had to return another object for every step
+that applied. All of that went with it.
+
+**The store reads no mark, and has no option for one.** A record the gatekeeper has marked as not to
+be replayed is one it leaves out of the list, and the store reduces a marked record as any other.
+That serves a gatekeeper that marks a record in place and one whose journal removes a failed record
+alike. An option naming the mark would have had the first as its one caller, and it would have
+bought nothing: leaving the record out of the list is all it takes.
+
+**The store takes no callback.** Every fold reduces its records again from the first, so a hook the
+store ran mid-fold (asked what to do with a record that cannot be replayed, or told of a stop)
+would run again at every read: it would have to be idempotent, and its durable effect could be
+undone by a rollback the store never sees. A `refused` step needs none of that: an earlier refusal
+reaches the records judged after it through `context.refusals`, and the gatekeeper marks the
+records after the fold, from the result's `refused`. This is about a hook the store would call.
+What a gatekeeper's reducer keeps beyond its draft is not one, and its rule is in **A reducer may
+work on a draft.** below.
+
+**`unsupported` stops the fold**, as `replaySimulation` does: the result's `stopped` names the
+record and the reason, and no later record is reduced.
+
+**A reducer may work on a draft.** `initial` makes the fold's draft of the entity, and `reduce` may
+change that draft in place and return it as `applied`. Four rules come with that. Whoever writes
+the reducer keeps them, since the fold cannot check them and copies nothing:
+
+- What `initial` returns is the fold's. Where the reducer writes its entity in place, it is a value
+  of its own, copied as deep as `reduce` writes, and never the caller's base or a part of it: the
+  caller keeps the base and may fold it again.
+- A value given as `applied` is the fold's too. Where a later step may change it in place, a record
+  that creates the entity builds it, and does not hand over an object the record or the caller
+  keeps.
+- A `refused`, a `known-no-effect` and an `unsupported` step leave the draft exactly as it was
+  given, so a reducer that works in place decides before it writes, or puts back what it wrote
+  before it answers.
+- A `deleted` step ends the draft. The next record is given `undefined`, and a create after it
+  starts another draft, which holds nothing of the one deleted.
+
+What the fold and a listing need of a reducer: the same step for the same record, context and
+entity, however often it is called, because every read folds again and a cursor folds a row each
+time it serves it; `record`, `context.base` and `context.refusals` left as they were; and anything
+it does beyond the draft safe to repeat and changing no step. There are two kinds: a count of the
+work done, and a result kept under the content it was computed from (in memory by the object it
+came from, or in storage as an immutable row under the hash of its content), which a repeated call
+finds, or writes again the same. The fold has only locals, so nothing a reducer does can reach a
+fold in progress, and there is no rule against calling the store from a reducer.
+
+It is allowed because, with no memory, nothing else holds the entity between two steps, and a
+reducer that must copy its entity for every pending record pays the entity's size times the queue's
+length (a grid's overlay maps for every pending change, a slide for every batch). A reducer that
+never writes its entity may still return the base from `initial`, which is what the gatekeepers
+whose entities are small do.
+
+**A throw passes through** `fold`, and the draft goes with the call.
+
+**No stored base.** The leaf keeps none of a provider's state in Durable Object storage, and the
+kit ships no store for a value larger than one stored value. A gatekeeper that keeps a copy of a
+provider's state keeps the copy's lifecycle with it (the fetch, the revision pin, noting a write,
+the recheck, the drop): one does today, for a Google Doc, and by the package's rule a leaf is for
+behaviour several gatekeepers share. The fold needs neither.
+
+The list hooks:
+
+**This is not the generic collection overlay §4.9 declines.** `simulatedList` is the mechanics a
+listing needs when its rows are entities of a simulation store, as the values a kit cursor's
+`inject`, `overlay` and `refresh` take (§4.11): the stand-in of a pending create, folded from
+nothing with the records that target its provisional id; the per-row fold of a provider row; hiding,
+since a row a pending record deleted is served as no row; and revalidation, which answers a stand-in
+as the last refresh left it and drops one whose create is not pending. It is not an overlay of a
+collection. It holds no filter, sort or page. It does not decide which provider rows to read again
+or where they are placed. And it neither touches nor imports `./cursors`: it produces values for
+three of a cursor's options and leaves `authorize` and `identity` for the gatekeeper to add.
+
+**Listing policy stays in the gatekeeper**, because the policies of the two listings these mechanics
+were read from share nothing, while the mechanics around them are the same. One lists
+incidents: it filters by status, urgency and service, reads again the incidents its pending actions
+touch, since the provider filters before those actions apply and can leave one out, and injects
+those that still match at their sort position. The other lists messages: it filters by folder,
+reads the rows pending moves bring into the folder with its first page, and lists them first. So
+`keeps` and `compare` are the gatekeeper's functions, which the adapter calls and does not
+implement, and a row the gatekeeper reads itself goes through `overlay` like any provider row.
+There is no option for such rows: which they are and where they go is the policy.
+
+**A list gatekeeper builds its store with its listing**, because its reducer reads the caller: who
+is asking, the folder listed, names read ahead of the walk (the reducer is synchronous). A row is
+folded each time the cursor reads it for a page (the page it is served on; a refused page's retry;
+and a page that reads it and leaves it for the next: a retry that meets a row the refusal did not
+cover, or, where a gatekeeper's own `overlay` makes several rows of one, a page with no room for
+them) and each stand-in at every `refresh()`, each from the row the cursor holds or from nothing. So
+a reducer that works in place makes its draft of the row in `initial`, and the row is folded the
+same every time.
+
+**The adapter keeps no view.** `view` is read at every fold, so when pending records are read again,
+and when their provisional ids resolve, stays the gatekeeper's choice. `inject.items` is fixed when
+the hooks are made, since a cursor reads it once, and `refresh()` folds the stand-ins again.
+
+**What the hooks hold.** Between two calls the list hooks hold the stand-in rows the last
+`refresh()` folded (and `inject.items`, those rows as the hooks were made), for as long as the
+gatekeeper keeps the hooks (a walk), and nothing else. It is the listing's own state and the one
+thing this leaf holds between calls: a cursor asks `inject.revalidate` about a stand-in
+synchronously, so the row must exist when it asks. `revalidate` reads `created` as it then is, so a
+create bound after the last `refresh()` and before its stand-in is served drops the stand-in, and
+the provider's row is served where a page lists it. Bound after the stand-in is served (between two
+fetches of one `next()` included), the stand-in stays and the cursor's `identity` drops the
+provider's row, as for any create that applies mid-walk. No fold of a provider row is kept, and the store under the hooks has no
+state.
+
+Who uses what:
+
+| | Entities | List hooks | Status |
+|---|---|---|---|
+| Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | in the tree |
+| Sheets | one: the grid | none | planned |
+| Slides | one: the deck | none | planned |
+| PagerDuty | incidents | the incident listing | planned |
+| Outlook | messages | the message listing | planned |
+
+A list gatekeeper that moves onto the store serves what its own overlay serves only under these
+conditions, which are rules of the store and its adapter:
+
+- A pending create targets its provisional ref only while the ref is unresolved. Once the provider
+  has named the entity, the records behind the ref target that id, and the create targets nothing,
+  so it is never reduced onto the provider's row.
+- A gatekeeper whose overlay resolves provisional ids when a row is served builds its view on each
+  call (the adapter reads `view` at every fold and keeps none), so that a row is folded with the ids
+  as they are then.
+- A gatekeeper whose overlay is not an in-order fold of a row's records (one that compares a pending
+  move with the folder the provider reports, or ranks its pending rows) writes its reducer to that
+  result. The overlay's body does not become the reducer as it is, and a sequence whose answer
+  depends on more than the row and its records in order is outside what the fold computes.
+
+**Left out**: the queueing around a file's changes (gating reads against resolution, preparing one
+change at a time, applying in order, restarting on a reject), which is not part of this leaf.
 
 ## 5. Layer 2: the assembly
 
@@ -3635,5 +3931,5 @@ recorded here because the pass found it. Each entry names why it waits and what 
   frontier }` that both can call.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
-Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
-general retry executor (the policies differ, not the loops).
+Zylo returns `expires_on`) and a general retry executor (the policies differ, not the loops).
+Streaming `ActionFileStore` capture, rejected while nothing needed it, is now in the leaf (§4.17).

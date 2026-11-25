@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
+import { parseInlineHtmlBlocks, quotedFileUrls } from "@gadgets/workshop-shared/inline-html-blocks";
 
 const lines = (...parts: string[]) => parts.join("\n");
 const kinds = (...parts: string[]) => parseInlineHtmlBlocks(lines(...parts)).map(s => s.kind);
@@ -170,6 +170,32 @@ describe("parseInlineHtmlBlocks", () => {
         if (segment.kind === "block") expect(segment).toEqual(block);
         else expect(block.html.slice(0, segment.html.length)).toBe(segment.html);
       });
+    }
+  });
+});
+
+describe("quotedFileUrls", () => {
+  const url = "worktree://OUTPUTS/spending.json";
+
+  it("takes a complete URL in each kind of quote, wherever the view's text has it", () => {
+    expect(quotedFileUrls(`<script>embeds.json("${url}"); embeds.text('${url}'); x = \`${url}\`;</script>`))
+      .toEqual([url, url, url]);
+    // A raw-text scan, not a tokenizer: a comment and a quoted substring count, as does an attribute.
+    expect(quotedFileUrls(`// "${url}"\nconst help = "Example: '${url}'";<p data-x="${url}">`))
+      .toEqual([url, url, url]);
+    // Of a joined string, the quoted prefix counts as its own URL; the joined URL does not.
+    expect(quotedFileUrls(`"worktree://OUTPUTS/report" + ".json"`)).toEqual(["worktree://OUTPUTS/report"]);
+  });
+
+  it("skips a URL with ${, an unclosed or mismatched quote, whitespace, a backslash, or no quote", () => {
+    for (let text of [
+      "`worktree://OUTPUTS/${name}.json`", `"${url}`, `"${url}'`, `"worktree://OUTPUTS/a b.json"`,
+      `"worktree:\\/\\/OUTPUTS/a.json"`, `"worktree://OUTPUTS/a\\u0062.json"`, `src=${url}>`,
+      // A character reference is the img path's to decode (see chat-embeds.ts).
+      `"worktree://OUTPUTS/a&amp;b.png"`,
+      `[Download](${url})`, `"worktree://OUTPUTS/<b>"`,
+    ]) {
+      expect(quotedFileUrls(text), text).toEqual([]);
     }
   });
 });

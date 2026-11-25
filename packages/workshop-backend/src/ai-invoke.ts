@@ -33,14 +33,29 @@ export class AgentTurnError extends Error {
  * error text only, and its onResponse callback never fires for a request the SDK failed (so
  * the request's `response` metadata is unset then) -- but the error text conventionally opens
  * with the status code: bare in the provider SDKs' own messages (e.g. "400 {...}"), and in
- * parentheses behind the prefix pi's OpenAI adapter adds ("OpenAI API error (400): ..."). Either
- * is enough for the overseer's triage (report 5xx/unknown, skip expected 4xx). Only the opening
- * of the text is read, so digits a provider puts elsewhere in it are never taken for a status.
+ * parentheses behind the prefix pi's OpenAI adapter adds ("OpenAI API error (400): ..."). The
+ * Google SDK's message is instead the error's JSON body, whose `error.code` is the status: all of
+ * it, or after "got status: STATUS. " for an error that arrived mid-stream. Any of these is enough
+ * for the overseer's triage (report 5xx/unknown, skip expected 4xx), and for a refused attachment
+ * (see the refusal in agent.ts). Only the opening of the text is read, or a body that is the whole
+ * of it, so digits a provider puts elsewhere in it are never taken for a status.
  */
 export function httpStatusFromError(errorMessage: string, response: ModelHandle["lastResponse"])
     : number | undefined {
-  const match = /^(?:(\d{3})\b|OpenAI API error \((\d{3})\))/.exec(errorMessage.trim());
+  const text = errorMessage.trim();
+  const match = /^(?:(\d{3})\b|OpenAI API error \((\d{3})\))/.exec(text);
   if (match) return Number(match[1] ?? match[2]);
+  const body = /^(?:got status: [A-Z_]+\. )?(\{.*\})$/s.exec(text)?.[1];
+  if (body !== undefined) {
+    try {
+      const code: unknown = JSON.parse(body)?.error?.code;
+      if (typeof code === "number" && Number.isInteger(code) && code >= 100 && code < 600) {
+        return code;
+      }
+    } catch {
+      // Braces, but not JSON: not the Google SDK's message.
+    }
+  }
   return response?.status;
 }
 

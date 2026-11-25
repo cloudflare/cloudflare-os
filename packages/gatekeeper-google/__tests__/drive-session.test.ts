@@ -677,6 +677,10 @@ describe("positioned Drive folder session", () => {
         abilities?: MoveAbilities;
         /** Runs after each batched scope read is answered, with how many were answered so far. */
         afterScopeRead?: (reads: number, provider: ReturnType<typeof tree>) => void;
+        /** Told of each refused file, as `DriveFolderSessionCoreOptions.refused` is. */
+        refused?: (
+          fileId: string, file: DriveScopeNode | undefined, path: readonly DriveScopeNode[],
+        ) => Promise<void>;
       } = {},
   ) {
     const provider = tree(nodes, overrides.abilities);
@@ -717,6 +721,7 @@ describe("positioned Drive folder session", () => {
         authorizations.push(description);
         events.push("authorize");
       },
+      ...(overrides.refused ? { refused: overrides.refused } : {}),
     });
     return {
       session, provider, queries, authorizations, events, scopeBatches, getFile, findShortcut,
@@ -1446,6 +1451,151 @@ describe("positioned Drive folder session", () => {
       await expect(session.commentTarget("X")).rejects.toThrow(/outside this Drive binding/);
       await expect(session.sharingTarget("X")).rejects.toThrow(/outside this Drive binding/);
       await expect(session.moveTarget("X", "A")).rejects.toThrow(/outside this Drive binding/);
+    });
+  });
+
+  describe("what a refusal tells `refused`", () => {
+    const inner = folder("B", { parents: ["A"] });
+    const NODES = [root, nested, inner, directDoc, nestedDoc];
+    type Core = ReturnType<typeof positioned>["session"];
+    const native = (session: Core, id: string) => session.nativeRead(id, docMime)(
+      async () => "content", () => ({ title: "Read file", description: "Read content." }));
+
+    /**
+     * A `refused` that notes what it was told, and how many observations `authorized()` says
+     * the session had authorized by then.
+     */
+    function hook(authorized: () => number = () => 0) {
+      let told: { fileId: string; file: DriveScopeNode | undefined; path: string[]; authorized: number }[] = [];
+      return {
+        told,
+        refused: async (fileId: string, node: DriveScopeNode | undefined, path: readonly DriveScopeNode[]) => {
+          told.push({ fileId, file: node, path: path.map(({ id }) => id), authorized: authorized() });
+        },
+      };
+    }
+
+    /** The seven places a file is proved a direct child, each asked for an id that is none. */
+    const PLACES: { place: string; id: string; refuse(session: Core, id: string): Promise<unknown> }[] = [
+      { place: "getEntry", id: "D1", refuse: (session, id) => session.getEntry(id) },
+      { place: "openFile", id: "D1", refuse: (session, id) => session.openFile(id, "Google Doc") },
+      { place: "openFolder", id: "B", refuse: (session, id) => session.openFolder(id) },
+      { place: "a read target", id: "D1", refuse: (session, id) => session.commentTarget(id) },
+      { place: "a move target", id: "D1", refuse: (session, id) => session.moveTarget(id, "A") },
+      { place: "a comment pager's first page", id: "D1", refuse: (session, id) => session.commentPager(id, plainPages).next() },
+      { place: "nativeRead", id: "D1", refuse: native },
+    ];
+
+    it.each(PLACES)("tells `refused` once, with the id, of a file refused at $place", async ({ id, refuse }) => {
+      let { told, refused } = hook();
+      let { session } = positioned(NODES, undefined, undefined, { refused });
+
+      await expect(refuse(session, id)).rejects.toThrow(/outside this Drive binding/);
+
+      expect(told.map(({ fileId }) => fileId)).toEqual([id]);
+    });
+
+    it("tells `refused` of a file that is no direct child of the session's folder, with the file and the proved path, before it refuses", async () => {
+      let { told, refused } = hook();
+      let { session, scopeBatches, getFile } = positioned(
+        NODES, { folderIds: ["R", "A"] }, undefined, { refused });
+      let failed = false;
+
+      // A file of the folder above the one the session stands on.
+      await session.getEntry("D0").catch(() => { failed = true; });
+
+      expect(failed).toBe(true);
+      expect(told).toEqual([{ fileId: "D0", file: directDoc, path: ["R", "A"], authorized: 0 }]);
+      // The refusal read the path once and the file once, as with no hook: it is told what
+      // those answered, and asks nothing itself.
+      expect(scopeBatches).toEqual([["R", "A"]]);
+      expect(getFile.mock.calls).toEqual([["D0"]]);
+    });
+
+    it("tells `refused` of a file the account cannot see, with no file, once that answer is authorized", async () => {
+      let events: string[] = [];
+      let { told, refused } = hook(() => events.length);
+      let { session, authorizations, events: authorized } = positioned(
+        NODES, undefined, undefined, { refused });
+      events = authorized;
+
+      await expect(session.openFile("gone", "Google Doc")).rejects.toThrow(/outside this Drive binding/);
+
+      // The answer relative to the account was reported before the hook was told.
+      expect(told).toEqual([{ fileId: "gone", file: undefined, path: ["R"], authorized: 1 }]);
+      expectReported(authorizations[0], []);
+    });
+
+    it("tells `refused` of a file in the trash, which the file itself says", async () => {
+      let { told, refused } = hook();
+      let trashed = child("D0", "R", { mimeType: docMime, trashed: true });
+      let { session } = positioned([root, trashed], undefined, undefined, { refused });
+
+      await expect(native(session, "D0")).rejects.toThrow(/outside this Drive binding/);
+
+      expect(told).toEqual([{ fileId: "D0", file: trashed, path: ["R"], authorized: 0 }]);
+    });
+
+    it.each([
+      ["is no direct child of the session's folder", "D0"],
+      ["the account cannot see", "gone"],
+    ])("refuses a file that %s only once `refused` has answered", async (_, id) => {
+      let release!: () => void;
+      let answer = new Promise<void>(resolve => { release = resolve; });
+      let asked = 0;
+      let { session } = positioned(NODES, { folderIds: ["R", "A"] }, undefined, {
+        refused: () => { asked++; return answer; },
+      });
+      let settled = false;
+      let refusal = session.getEntry(id);
+      refusal.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.waitFor(() => expect(asked).toBe(1));
+      // A turn of the event loop, in which a refusal that did not wait would have settled.
+      await new Promise(resolve => setTimeout(resolve));
+      expect(settled).toBe(false);
+
+      release();
+      await expect(refusal).rejects.toThrow(/outside this Drive binding/);
+    });
+
+    it("tells no one when the session's own saved path fails its proof", async () => {
+      let { told, refused } = hook();
+      // The folder the session stands on left the binding's folder.
+      let { session } = positioned(
+        [root, folder("A", { parents: ["U"] }), nestedDoc], { folderIds: ["R", "A"] }, undefined,
+        { refused });
+
+      for (let { id, refuse } of PLACES) {
+        await expect(refuse(session, id)).rejects.toThrow(/outside this Drive binding/);
+      }
+      expect(told).toEqual([]);
+
+      // And where the path fails the proof that follows the file's read.
+      let moved = positioned(NODES, { folderIds: ["R", "A"] }, undefined, {
+        refused,
+        afterScopeRead: (reads, provider) => {
+          if (reads === 1) provider.byId.set("A", folder("A", { parents: ["U"] }));
+        },
+      });
+      await expect(moved.session.getEntry("D1")).rejects.toThrow(/outside this Drive binding/);
+      expect(told).toEqual([]);
+    });
+
+    it.each(PLACES)("refuses the same with and without the hook at $place", async ({ id, refuse }) => {
+      for (let nodes of [NODES, [root, nested]]) {
+        let outcomes = [];
+        for (let refused of [undefined, hook().refused]) {
+          let { session, authorizations, scopeBatches, getFile } = positioned(
+            nodes, undefined, undefined, refused ? { refused } : {});
+          let error = await refuse(session, id).then(() => undefined, (thrown: unknown) => thrown);
+          outcomes.push({
+            error, reports: reports(authorizations), scopeBatches, files: getFile.mock.calls,
+          });
+        }
+        expect(outcomes[0].error).toBeInstanceOf(Error);
+        expect(outcomes[1]).toEqual(outcomes[0]);
+      }
     });
   });
 

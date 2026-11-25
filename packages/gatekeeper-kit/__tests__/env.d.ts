@@ -4,7 +4,7 @@
 // `ctx.exports` from `GlobalProps.mainModule`, so both are declared here: the kit ships no
 // wrangler.jsonc of its own, so there is no generated `worker-configuration.d.ts` to carry them.
 
-import type { HookHost, TrackerHost } from "./workerd/worker.js";
+import type { HookHost, StorageHost, TrackerHost } from "./workerd/worker.js";
 import type { ConformanceAccount, ConformanceResource } from "./workerd/conformance/gatekeeper.js";
 import type { BranchGatekeeper } from "./workerd/branch-gatekeeper.js";
 
@@ -13,7 +13,7 @@ declare global {
     interface GlobalProps {
       mainModule: typeof import("./workerd/worker.js");
       durableNamespaces: "TrackerHost" | "HookHost" | "ConformanceAccount" | "ConformanceResource"
-        | "BranchGatekeeper";
+        | "BranchGatekeeper" | "StorageHost";
     }
     interface Env {
       TRACKER_HOST: DurableObjectNamespace<TrackerHost>;
@@ -21,6 +21,7 @@ declare global {
       CONFORMANCE_ACCOUNT: DurableObjectNamespace<ConformanceAccount>;
       CONFORMANCE_RESOURCE: DurableObjectNamespace<ConformanceResource>;
       BRANCH_GATEKEEPER: DurableObjectNamespace<BranchGatekeeper>;
+      STORAGE_HOST: DurableObjectNamespace<StorageHost>;
     }
   }
 }

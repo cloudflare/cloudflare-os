@@ -156,6 +156,59 @@ describe("ActionFileStore", () => {
     expect(kv.get("test:allocation:totalBytes")).toBe(0);
   });
 
+  it("deletes a file's chunks by key, never reading them back", async () => {
+    const kv = fakeKv();
+    const listed: string[] = [];
+    const storage = {
+      kv: {
+        ...kv,
+        list: <T>(options: Parameters<FakeKv["list"]>[0]) => {
+          const found = [...kv.list<T>(options)];
+          listed.push(...found.map(([key]) => key));
+          return found;
+        },
+      },
+      transactionSync<T>(callback: () => T): T { return callback(); },
+    };
+    const store = new ActionFileStore(storage, OPTIONS);
+    const file = await store.capture(bytes(2 * ACTION_FILE_CHUNK_BYTES + 1));
+
+    store.delete(file);
+
+    expect(listed.filter(key => key.includes(":chunk:"))).toEqual([]);
+    expect(kv.keys()).toEqual(["test:allocation:totalBytes"]);
+  });
+
+  it("deletes a file whose damaged allocation claims more chunks than the key format holds", () => {
+    const kv = fakeKv();
+    let deletes = 0;
+    const storage = {
+      kv: {
+        ...kv,
+        delete: (key: string) => {
+          // Fails fast rather than looping toward the billions of chunks the allocation claims.
+          if (++deletes > 10_010) throw new Error("deleted chunk keys past the key format");
+          kv.delete(key);
+        },
+      },
+      transactionSync<T>(callback: () => T): T { return callback(); },
+    };
+    const store = new ActionFileStore(storage, OPTIONS);
+    const handle = "00000000-0000-4000-8000-000000000002";
+    kv.put(`test:file:${handle}:chunk:0000`, Uint8Array.from([1]));
+    kv.put(`test:allocation:${handle}`, {
+      version: 1,
+      size: Number.MAX_SAFE_INTEGER,
+      chunks: Math.ceil(Number.MAX_SAFE_INTEGER / ACTION_FILE_CHUNK_BYTES),
+      createdAt: 1,
+    });
+    kv.put("test:allocation:totalBytes", 1);
+
+    store.delete({ handle, size: 1, digest: "0".repeat(64) });
+
+    expect(kv.keys()).toEqual(["test:allocation:totalBytes"]);
+  });
+
   it("prunes stale unreferenced files while retaining referenced and young files", async () => {
     const { store, kv } = actionFiles();
     const retained = await store.capture(bytes(1));
@@ -215,6 +268,8 @@ describe("ActionFileStore", () => {
   it.each([
     [{ maxFileBytes: 0 }, /maxFileBytes must be a positive safe integer/],
     [{ maxTotalBytes: 0 }, /maxTotalBytes must be a positive safe integer/],
+    // Chunk keys carry four-digit indices, which stop sorting in index order past 10,000 chunks.
+    [{ maxFileBytes: 10_000 * ACTION_FILE_CHUNK_BYTES + 1 }, /maxFileBytes must be at most/],
   ] as const)("rejects invalid limits %#", (overrides, error) => {
     expect(() => actionFiles(overrides)).toThrow(error);
   });

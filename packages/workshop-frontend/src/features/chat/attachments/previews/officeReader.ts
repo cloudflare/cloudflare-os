@@ -109,11 +109,21 @@ export const readOffice = <R extends OfficeRead>(
     reject(aborted(signal));
     return;
   }
+  const cancel = () => lanes[lane].cancel(job, aborted(signal!));
+  // A settled read lets go of the signal, whose listener would otherwise keep the file's bytes
+  // for as long as the signal lives, such as a card's.
+  const settled = () => signal?.removeEventListener("abort", cancel);
   const job: Job = {
     request: { id: nextId++, read, bytes, options },
-    resolve: (result) => resolve(result as OfficeReadResult<R>),
-    reject,
+    resolve: (result) => {
+      settled();
+      resolve(result as OfficeReadResult<R>);
+    },
+    reject: (error) => {
+      settled();
+      reject(error);
+    },
   };
-  signal?.addEventListener("abort", () => lanes[lane].cancel(job, aborted(signal)), { once: true });
+  signal?.addEventListener("abort", cancel, { once: true });
   lanes[lane].add(job);
 });

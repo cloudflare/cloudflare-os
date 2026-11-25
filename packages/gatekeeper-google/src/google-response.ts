@@ -28,8 +28,8 @@ type GoogleJsonResponseOptions = {
 };
 
 /**
- * A failed Google API request, carrying Google's status code, its google.rpc status and the reasons
- * it gave, but none of its response prose.
+ * A failed Google API request, carrying the HTTP status Google answered with, its google.rpc
+ * status and the reasons it gave, but none of its response prose.
  */
 export class GoogleApiError extends Error {
   constructor(
@@ -38,6 +38,8 @@ export class GoogleApiError extends Error {
     readonly providerReasons: readonly string[] = [],
     /** Whether Google's error body was read and parsed; see `GoogleProviderDiagnostics`. */
     readonly providerErrorRead: boolean = false,
+    /** The HTTP status of the answer; absent where an error is made without one. */
+    readonly httpStatus?: number,
   ) {
     super(message);
   }
@@ -163,7 +165,7 @@ export async function readGoogleJson<T>(
     let diagnostics = await reportGoogleRequestFailure(response, provider, operation);
     throw new GoogleApiError(`${provider} ${operation} failed [http=${response.status}]`,
       diagnostics.providerStatus, diagnostics.providerReasons,
-      diagnostics.providerErrorRead === true);
+      diagnostics.providerErrorRead === true, response.status);
   }
 
   let text = await readBoundedText(response, maxBytes, provider);

@@ -40,7 +40,7 @@ import { obsContext } from "./observability";
 import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
 import { callsOnlySpreadsheetFunctions } from "./sheets-formula";
 import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
-import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
+import { guardDigest, guardFits, guardOf, mergedSheets, planSheet } from "./sheets-plan";
 import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
 import type { SheetBorder, SheetNumberFormat } from "./sheets-read-types";
 import type { SheetCellInput, SheetFormatChange } from "./sheets-types";
@@ -102,12 +102,25 @@ const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formattin
 const EDIT_SPREADSHEET: ActionKind = {
   tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column",
 };
-// Everything else always waits for approval: deleting a sheet, rows or columns removes their
-// contents, and a formula calling any other function, which may be one of the spreadsheet's named
-// functions, can make Google fetch a URL carrying the spreadsheet's data. A change this module
-// does not classify lands here too.
+// What a user may let apply without asking: such a batch that also sizes rows or columns,
+// freezes lines or unmerges cells, none of which changes what a cell holds. A tag of its own,
+// so a rule a user enabled for the kind above covers no more than it did.
+const LAYOUT_SPREADSHEET: ActionKind = {
+  tag: "layout-spreadsheet",
+  label: "Spreadsheet edits that resize rows or columns, freeze lines or unmerge cells",
+};
+// What a user may let apply without asking: such a batch that also deletes a sheet, rows or
+// columns, or merges cells, which clears all but the top-left of each, all of which the
+// spreadsheet's version history restores.
+const DELETE_SPREADSHEET_CONTENT: ActionKind = {
+  tag: "delete-spreadsheet-content",
+  label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values",
+};
+// Everything else always waits for approval: a formula calling any other function, which may be
+// one of the spreadsheet's named functions, can make Google fetch a URL carrying the
+// spreadsheet's data. A change this module does not classify lands here too.
 const UPDATE_SPREADSHEET: ActionKind = {
-  tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas",
+  tag: "update-spreadsheet", label: "Spreadsheet changes that run unchecked formulas",
 };
 
 // The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
@@ -115,6 +128,17 @@ const KEEPING_OPS: ReadonlySet<string> = new Set([
   "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
   "insertRows", "insertColumns",
 ]);
+
+// A batch otherwise as safe as `editSpreadsheet` that makes one of these changes, and none of
+// the deleting ones, is queued as `layoutSpreadsheet`.
+const LAYOUT_OPS: ReadonlySet<string> =
+  new Set(["resizeRows", "resizeColumns", "freeze", "unmergeCells"]);
+
+// A batch otherwise as safe as `editSpreadsheet` that makes one of these changes is queued as
+// `deleteSpreadsheetContent`. A merge counts whether or not the cells it clears hold anything,
+// which only a read could say.
+const DELETING_OPS: ReadonlySet<string> =
+  new Set(["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"]);
 
 /**
  * The kind a batch is queued as, so approving a kind approves no more than it says. A batch that
@@ -129,9 +153,11 @@ export function batchKind(
     change.op === "writeCells" ? change.values!.flat().filter(isFormula) : []);
   let cellsOnly = changes.every(change => change.op === "clearRange" || change.op === "writeCells");
   if (cellsOnly && formulas.length === 0) return "editSheetValues";
-  let keeps = changes.every(change => KEEPING_OPS.has(change.op)) &&
-    formulas.every(callsOnlySpreadsheetFunctions);
-  return keeps ? "editSpreadsheet" : "updateSpreadsheet";
+  if (!formulas.every(callsOnlySpreadsheetFunctions)) return "updateSpreadsheet";
+  let classified = (op: string) => KEEPING_OPS.has(op) || LAYOUT_OPS.has(op) || DELETING_OPS.has(op);
+  if (!changes.every(change => classified(change.op))) return "updateSpreadsheet";
+  if (changes.some(change => DELETING_OPS.has(change.op))) return "deleteSpreadsheetContent";
+  return changes.some(change => LAYOUT_OPS.has(change.op)) ? "layoutSpreadsheet" : "editSpreadsheet";
 }
 
 // Sending a batch: the first send, and resends once an answer was lost.
@@ -174,9 +200,11 @@ async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] |
   if (unapplied !== undefined) {
     throw new ChangeConflict(`it builds on change ${unapplied}, which was not applied`);
   }
-  let metadata = await host.api.getMetadata(host.spreadsheetId);
-  let { requests } = planSheet(gridOf(metadata), batch.changes);
   let guard = guardOf(batch);
+  // The batch is checked against the merges of the sheets it acts on alone, of those whose
+  // changes consult them.
+  let metadata = await host.api.getMetadataWithMerges(host.spreadsheetId, mergedSheets(batch.changes));
+  let { requests } = planSheet(gridOf(metadata), batch.changes);
   // Cells the sheets no longer hold cannot be read, and have changed.
   if (!guardFits(metadata.sheets, guard.cells)) return undefined;
   let entered = await host.api.readEntered(host.spreadsheetId, guard.cells);
@@ -396,6 +424,21 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
     }
     case "formatCells":
       return `In ${named(change.sheetId)}, format ${rectName(change.rect)}: ${formatWords(change.format, field)}`;
+    case "mergeCells": {
+      let { rect } = change;
+      let where = `In ${named(change.sheetId)}, merge`;
+      if (change.merge === "ALL") {
+        return `${where} ${rectName(rect)} into one cell, clearing every cell but ` +
+          cellName(rect.startRow, rect.startColumn);
+      }
+      return change.merge === "ROWS"
+        ? `${where} each row of ${rectName(rect)} into one cell, clearing every cell but those of column ` +
+          columnLetters(rect.startColumn)
+        : `${where} each column of ${rectName(rect)} into one cell, clearing every cell but those of row ` +
+          String(rect.startRow + 1);
+    }
+    case "unmergeCells":
+      return `In ${named(change.sheetId)}, unmerge the merged cells within ${rectName(change.rect)}`;
     case "addSheet":
       titles.set(change.sheetId, change.title);
       return `Add a sheet ${named(change.sheetId, "Title")} of ${plural(change.rowCount, "row")} and ` +
@@ -427,6 +470,20 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
     case "deleteColumns":
       return `In ${named(change.sheetId)}, delete ` +
         band(change.op === "deleteRows" ? "rows" : "columns", change.start, change.count);
+    case "resizeRows":
+      return `In ${named(change.sheetId)}, make ${band("rows", change.start, change.count)} ` +
+        `${change.size.toLocaleString("en-US")} pixels high`;
+    case "resizeColumns":
+      return `In ${named(change.sheetId)}, make ${band("columns", change.start, change.count)} ` +
+        `${change.size.toLocaleString("en-US")} pixels wide`;
+    case "freeze": {
+      let frozen = (count: number, noun: string) => count === 0 ? `no ${noun}s` : `the first ${plural(count, noun)}`;
+      let parts = [
+        ...(change.rows === undefined ? [] : [frozen(change.rows, "row")]),
+        ...(change.columns === undefined ? [] : [frozen(change.columns, "column")]),
+      ];
+      return `In ${named(change.sheetId)}, freeze ${parts.join(" and ")}`;
+    }
   }
 }
 
@@ -470,6 +527,9 @@ export const SHEETS_DEFINITIONS: { [K in keyof SheetsActions]: ActionDefinition<
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
   formatSheets: sheetBatch(FORMAT_SHEETS, true),
   editSpreadsheet: sheetBatch(EDIT_SPREADSHEET, true),
+  layoutSpreadsheet: sheetBatch(LAYOUT_SPREADSHEET, true),
+  deleteSpreadsheetContent: sheetBatch(DELETE_SPREADSHEET_CONTENT, true),
+  // Runs a formula that may make Google fetch a URL carrying the spreadsheet's data.
   updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),
 };
 

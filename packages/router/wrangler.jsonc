@@ -28,5 +28,7 @@
       "/gatekeeper/*"
     ],
     "directory": "../workshop-frontend/dist"
-  }
+  },
+  "minify": true,
+  "upload_source_maps": true
 }

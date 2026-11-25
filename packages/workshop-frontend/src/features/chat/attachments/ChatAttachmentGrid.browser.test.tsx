@@ -39,8 +39,13 @@ const buildPdf = (text: string, mediaBox = "0 0 612 792"): Uint8Array => {
   return encoder.encode(pdf);
 };
 
-const ref = (name: string, mimeType: string, content?: Uint8Array): ChatAttachmentRef =>
-  ({ id: name, name, mimeType, size: 2048, ...(content ? { content } : {}) });
+const ref = (name: string, mimeType: string, content?: Uint8Array, size = 2048): ChatAttachmentRef =>
+  ({ id: name, name, mimeType, size, ...(content ? { content } : {}) });
+
+/** A 1×1 PNG. */
+const PNG = Uint8Array.from(atob(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg=="),
+  (character) => character.charCodeAt(0));
 
 let host: HTMLDivElement | undefined;
 let root: Root | undefined;
@@ -54,9 +59,10 @@ const mount = async (
   attachments: ChatAttachmentRef[],
   files: Record<string, Uint8Array | Error | Promise<Uint8Array>>,
 ) => {
-  const loadContent = vi.fn<(attachment: ChatAttachmentRef) => Promise<Uint8Array>>(async (attachment) => {
+  const loadContent = vi.fn<(attachment: ChatAttachmentRef, signal: AbortSignal, limit?: number) => Promise<Uint8Array>>(async (attachment, _, limit) => {
     const file = files[attachment.id];
     if (file instanceof Promise) return file;
+    if (file instanceof Uint8Array && limit !== undefined) return file.subarray(0, limit);
     if (!file || file instanceof Error) throw file ?? new Error("missing");
     return file;
   });
@@ -187,6 +193,8 @@ it("steps through a message's attachments with the arrow keys and closes on Esca
 it("shows an SVG from a data URL, which has no origin to run its script as if opened on its own", async () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
   await mount([ref("logo.svg", "image/svg+xml")], { "logo.svg": encoder.encode(svg) });
+  // Its card's thumbnail too.
+  await expect.poll(() => host!.querySelector("img")?.getAttribute("src") ?? "").toMatch(/^data:image\/svg\+xml;base64,/);
   await userEvent.click(page.getByRole("button", { name: "Preview logo.svg" }));
   const image = page.getByRole("dialog").getByRole("img", { name: "logo.svg" });
   await expect.poll(() => image.element().getAttribute("src") ?? "").toMatch(/^data:image\/svg\+xml;base64,/);
@@ -238,6 +246,164 @@ it("says so when a file cannot be loaded or read, and retries on reopening", asy
   await userEvent.keyboard("{Escape}");
   await userEvent.click(page.getByRole("button", { name: "Preview notes.md" }));
   await expect.element(page.getByRole("heading", { name: "Recovered" })).toBeVisible();
-  // Each card's thumbnail, the first opening, and the retry; the second file's is shared.
-  expect(loadContent).toHaveBeenCalledTimes(4);
+  // Each card's thumbnail, each opening, and the retry: a card keeps no bytes once its thumbnail
+  // is made, so the viewer reads the second file again.
+  expect(loadContent).toHaveBeenCalledTimes(5);
+});
+
+// A message carries only small images' bytes; the card of a larger one fetches it to draw.
+it("fetches the image of a card whose message doesn't carry it", async () => {
+  const loadContent = await mount([ref("photo.png", "image/png", undefined, 6 * 1024 * 1024)],
+    { "photo.png": PNG });
+  await expect.poll(() => host!.querySelector("img")?.getAttribute("src")).toMatch(/^blob:/);
+  expect(loadContent).toHaveBeenCalledOnce();
+});
+
+it("offers a file over 25 MB for download instead of fetching it to preview", async () => {
+  const loadContent = await mount([ref("forecast.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", undefined, 80 * 1024 * 1024)], {});
+  await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+  await expect.element(page.getByText("This file is too large to preview.")).toBeVisible();
+  expect(loadContent).not.toHaveBeenCalled();
+});
+
+// A card shows a few lines of a text file, so it reads no more of it than that.
+it("reads only the start of a text file for its card, and all of a PDF", async () => {
+  const loadContent = await mount(
+    [ref("rows.csv", "text/csv", undefined, 20 * 1024 * 1024), ref("report.pdf", "application/pdf")],
+    { "rows.csv": encoder.encode("name,team\n".repeat(1000)), "report.pdf": buildPdf("Quarterly report") },
+  );
+  await expect.poll(() => loadContent.mock.calls.length).toBe(2);
+  const limits = Object.fromEntries(loadContent.mock.calls.map(([attachment, , limit]) => [attachment.id, limit]));
+  expect(limits).toEqual({ "rows.csv": 4096, "report.pdf": undefined });
+});
+
+it("lets a download finish when the chat is left, and saves it once on coming back", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  const workbook = [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    undefined, 80 * 1024 * 1024)];
+  const loadContent = await mount(workbook,
+    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) });
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    await userEvent.click(page.getByRole("button", { name: "Download" }).last());
+    await act(async () => root!.unmount());
+    host!.remove();
+    expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+
+    // Back in the chat, its grid made anew, the download is still under way.
+    const again = await mount(workbook, { "forecast.xlsx": new Promise<Uint8Array>(() => {}) });
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    const header = page.getByRole("button", { name: "Download" }).first();
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(header, { force: true });
+    expect(again).not.toHaveBeenCalled();
+
+    resolve(encoder.encode("workbook"));
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+    await expect.element(header).toHaveAttribute("aria-busy", "false");
+  } finally {
+    saves.mockRestore();
+  }
+});
+
+// Only the download outlives the chat: a preview opened after coming back still stops on leaving.
+it("lets only a download's read finish when the chat is left", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  // Over 25 MB, so only the viewer reads it, and an image, so the viewer does.
+  const photo = [ref("photo.png", "image/png", undefined, 40 * 1024 * 1024)];
+  const first = await mount(photo, { "photo.png": new Promise<Uint8Array>((settle) => { resolve = settle; }) });
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview photo.png" }));
+    await userEvent.click(page.getByRole("button", { name: "Download" }));
+    await act(async () => root!.unmount());
+    host!.remove();
+    // The download shares the viewer's read, which goes on.
+    expect(first).toHaveBeenCalledOnce();
+    expect(first.mock.calls[0][1].aborted).toBe(false);
+
+    const again = await mount(photo, { "photo.png": new Promise<Uint8Array>(() => {}) });
+    await userEvent.click(page.getByRole("button", { name: "Preview photo.png" }));
+    await expect.poll(() => again.mock.calls.length).toBe(1);
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(again.mock.calls[0][1].aborted).toBe(true);
+    expect(first.mock.calls[0][1].aborted).toBe(false);
+
+    resolve(PNG);
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+  } finally {
+    saves.mockRestore();
+  }
+});
+
+it("aborts its fetches when it goes", async () => {
+  const loadContent = await mount([ref("notes.txt", "text/plain")], { "notes.txt": new Promise(() => {}) });
+  await expect.poll(() => loadContent.mock.calls.length).toBe(1);
+  const [, signal] = loadContent.mock.calls[0];
+  expect(signal.aborted).toBe(false);
+  await act(async () => root!.unmount());
+  root = undefined;
+  expect(signal.aborted).toBe(true);
+});
+
+it("stops reading a file the viewer moves on from or closes on", async () => {
+  // Over 25 MB, so no card reads them for a thumbnail: only the viewer does, while it shows them.
+  const size = 40 * 1024 * 1024;
+  const loadContent = await mount(
+    [ref("a.png", "image/png", undefined, size), ref("b.png", "image/png", undefined, size)],
+    { "a.png": new Promise(() => {}), "b.png": new Promise(() => {}) },
+  );
+  await userEvent.click(page.getByRole("button", { name: "Preview a.png" }));
+  await expect.poll(() => loadContent.mock.calls.length).toBe(1);
+  const [, first] = loadContent.mock.calls[0];
+
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.poll(() => loadContent.mock.calls.length).toBe(2);
+  await expect.poll(() => first.aborted).toBe(true);
+  const [, second] = loadContent.mock.calls[1];
+  expect(second.aborted).toBe(false);
+
+  await userEvent.keyboard("{Escape}");
+  await expect.poll(() => second.aborted).toBe(true);
+});
+
+it("saves a file once however often Download is pressed while it loads, even after reopening", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  const loadContent = await mount(
+    [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      undefined, 80 * 1024 * 1024)],
+    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) },
+  );
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    const header = page.getByRole("button", { name: "Download" }).first();
+    const body = page.getByRole("button", { name: "Download" }).last();
+    await userEvent.click(body);
+    // Both say it is under way, and pressing either again saves nothing more.
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await expect.element(body).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(header, { force: true });
+    await userEvent.click(body, { force: true });
+
+    // Closing the viewer leaves the download to finish, and reopened, it still shows it.
+    await userEvent.keyboard("{Escape}");
+    expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(body, { force: true });
+    expect(loadContent).toHaveBeenCalledOnce();
+
+    resolve(encoder.encode("workbook"));
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+    await expect.element(header).toHaveAttribute("aria-busy", "false");
+    // Saved, so pressing Download again downloads it again.
+    await userEvent.click(header);
+    await expect.poll(() => saves.mock.calls.length).toBe(2);
+  } finally {
+    saves.mockRestore();
+  }
 });

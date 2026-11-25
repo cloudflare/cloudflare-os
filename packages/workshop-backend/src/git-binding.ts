@@ -82,7 +82,7 @@ export class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost
     let existing = this.#files.get(path);
     if (existing !== undefined) return textOf(existing);
     if (this.#removed.has(path)) return undefined;
-    let text = await this.gitCache.readFileAtCommitIfExists(this.base, path);
+    let text = await this.gitCache.readFileAtCommitIfExists(this.base, path, { limited: true });
     // A concurrent call may have written or deleted the file while the read was in flight;
     // its change wins over the base text.
     if (this.#files.has(path)) return textOf(this.#files.get(path)!);

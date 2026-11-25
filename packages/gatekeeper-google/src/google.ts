@@ -50,11 +50,12 @@ import {
   DriveFileEditors, editorOfMimeType, editorOfTag, type DriveEditorName,
 } from "./drive-editors";
 import {
-  checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
+  checkSuggestion, composeComment, composeReply, composeResolve, requireQuote, savedDoc,
   selectTab,
 } from "./drive-comment-body";
 import {
-  ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentParent, hasPendingResolve, overlayPending,
+  ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentEntries, commentParent, hasPendingResolve,
+  overlayPending,
   pendingComment, pendingCommentRefusal, pendingReply, pendingSuggestion, readLiveComment,
   REPLY_RESOLVE_PENDING, RESOLVE_PENDING, toDriveComment, type CommentTargetPayload,
   type DriveCommentActions,
@@ -87,8 +88,9 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE,
   GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF, MOVE_SINGLE_FILE, PDF_MIME_TYPE,
-  requireDriveBindingScope, type DriveBindingScope, type DriveCore, type DriveWriteTarget,
-  type NativeRead, type NativeReadOptions,
+  requireDriveBindingScope, type DriveBindingScope, type DriveCore,
+  type DriveFolderSessionCoreOptions, type DriveWriteTarget, type NativeRead,
+  type NativeReadOptions,
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
@@ -151,10 +153,12 @@ import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, type AccessTokenProvider } from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";
+import type { GoogleDocSnapshot } from "./doc-actions";
 import {
-  driveDocSource, getGoogleDocTypesCode, GoogleDocEditSessionImpl, GoogleDocReadSessionImpl,
-  type GoogleDocGatekeeperImplProps,
+  docSourceUnder, driveDocSource, getGoogleDocTypesCode, GoogleDocEditSessionImpl,
+  GoogleDocReadSessionImpl, type DocFreshness, type DocSource, type GoogleDocGatekeeperImplProps,
 } from "./docs";
+import { inHandDocCopies, lazyDocStore, type DriveDocCopies } from "./docs-copy";
 import { ReadGate } from "./read-gate";
 import { saveFile } from "./save-file";
 import {
@@ -2365,6 +2369,8 @@ export class GoogleDriveGatekeeperImpl
   };
   #actions = DRIVE_ACTIONS.bind(this.#journal, this.#host);
   #reads = new ReadGate();
+  /** The connection's Doc store, made at the first Doc it opens, since most connections open none. */
+  #docs = lazyDocStore(this.ctx.storage);
   #editors = new DriveFileEditors({
     kv: this.ctx.storage.kv,
     sheets: this.#editApis.sheets,
@@ -2377,6 +2383,7 @@ export class GoogleDriveGatekeeperImpl
     reject: id => this.#actions.reject(id),
     writeRefusal: () => this.#writeRefusal(),
     locate: target => proveTarget(this.#host, target),
+    docStore: this.#docs,
   });
 
   #account() {
@@ -2559,6 +2566,13 @@ export class GoogleDriveGatekeeperImpl
       writes,
       // A read-only binding's native sessions have no write method at all.
       this.#writes ? this.#editors : undefined,
+      undefined,
+      // They keep their Docs with the file's pending edits all the same: an edit waits in the
+      // journal while the deployment's setting refuses writes, and what it made stays stored.
+      fileId => this.#editors.docCopies(fileId),
+      // A refused file the connection stores a copy of loses it where the connection does not
+      // reach the file, on a read-only connection as on any other.
+      (fileId, file, path) => this.#editors.docRefused(fileId, file, path),
     );
   }
 
@@ -2577,6 +2591,8 @@ export class GoogleDriveGatekeeperImpl
    * it and looks for what that send made.
    */
   applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    // A decision is a use of the connection: a stored Doc past its expiry goes before it.
+    this.#editors.tendDocCopies();
     // An edit is applied in its file's turn, which a comment's reads need not wait for.
     let edit = this.#editors.apply(actionId);
     if (edit) return edit;
@@ -2589,7 +2605,16 @@ export class GoogleDriveGatekeeperImpl
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
         this.#adoptOrphanedClaim(actionId);
-        await this.#actions.apply(actionId);
+        let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
+        try {
+          await this.#actions.apply(actionId);
+        } finally {
+          // Also for a send that failed, which may have landed: the snapshot held of a Doc
+          // commented on builds no edit after it.
+          if (comment) {
+            this.#editors.commented(comment.action.payload.fileId, comment.action.kind === "suggestEdit");
+          }
+        }
         this.#attempts.delete(actionId);
         return;
       }
@@ -2629,6 +2654,8 @@ export class GoogleDriveGatekeeperImpl
    * and nothing applies the action again, so its attempt marker goes with it.
    */
   rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    // A decision is a use of the connection: a stored Doc past its expiry goes before it.
+    this.#editors.tendDocCopies();
     let edit = this.#editors.reject(actionId);
     if (edit) return edit;
     return this.#reads.resolve(async () => {
@@ -2772,6 +2799,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #writes: DriveQueue;
   /** The binding's edits of native files; absent on a read-only binding. */
   #editors: DriveFileEditors | undefined;
+  /** What the connection's store keeps of a Doc; absent for a session built with no storage. */
+  #docCopies: ((fileId: string) => DriveDocCopies) | undefined;
+  /** Told of each file a folder session is refused; a function of the connection's editors. */
+  #docRefused: DriveFolderSessionCoreOptions["refused"];
 
   constructor(
     driveApi: DriveApi,
@@ -2784,6 +2815,17 @@ export class GoogleDriveSessionImpl extends RpcTarget
     writes: DriveQueue,
     editors: DriveFileEditors | undefined,
     location?: FolderLocation,
+    /**
+     * What the connection's Doc store keeps of a file, with the file's pending edits
+     * (`DriveFileEditors.docCopies`). A session built with none reads each Doc in hand
+     * (`inHandDocCopies`) and stores nothing.
+     */
+    docCopies?: (fileId: string) => DriveDocCopies,
+    /**
+     * Told of each file a folder session of the connection is refused
+     * (`DriveFileEditors.docRefused`). A session built with none tells no one.
+     */
+    docRefused?: DriveFolderSessionCoreOptions["refused"],
   ) {
     super();
     this.#driveApi = driveApi;
@@ -2798,6 +2840,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#approvalQueue = approvalQueue;
     this.#writes = writes;
     this.#editors = editors;
+    this.#docCopies = docCopies;
+    this.#docRefused = docRefused;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -2827,22 +2871,53 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, this.#writes, this.#editors, location,
+        this.#scope, queue, this.#writes, this.#editors, location, this.#docCopies,
+        this.#docRefused,
       );
     });
+  }
+
+  /** The Drive folder this session stands on; none for a file binding or the whole account. */
+  #folder(): string | undefined {
+    return this.#location?.folderIds.at(-1);
+  }
+
+  /**
+   * What the connection's store keeps of Doc `documentId`, or a copy read in hand for a
+   * session built with no storage.
+   */
+  #docCopiesOf(documentId: string): DriveDocCopies {
+    return this.#editors?.docCopies(documentId) ?? this.#docCopies?.(documentId) ??
+      inHandDocCopies();
+  }
+
+  /**
+   * The source of Doc `documentId` for this session: the binding's shared one where it edits
+   * files, and otherwise one over the connection's copies, or in hand for a session built
+   * with no storage; under the folder the session stands on. Call it only for a file the
+   * scope check let this session reach: it makes what the connection keeps of the file.
+   */
+  #docSource(documentId: string): DocSource {
+    let docs = this.#docCopiesOf(documentId);
+    let open = (freshness?: DocFreshness) =>
+      driveDocSource(this.#docsApi, this.#driveApi, documentId, docs, freshness);
+    return docSourceUnder(
+      this.#editors ? this.#editors.docsSource(documentId, open) : open(), this.#folder());
   }
 
   async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession | GoogleDocEditSession> {
     let editors = this.#editors;
     return this.#openNative(fileId, GOOGLE_DOC_MIME_TYPE, "Google Doc",
       (documentId, queue, read, target) => editors
+        // Made here, which an open the scope check refuses never reaches.
         ? new GoogleDocEditSessionImpl({
           docsApi: this.#docsApi, driveApi: this.#driveApi, documentId, approvalQueue: queue, read,
           changes: editors.docs(target, queue),
-          source: driveDocSource(
-            this.#docsApi, this.#driveApi, documentId, editors.docsFreshness(documentId)),
+          source: this.#docSource(documentId),
         })
-        : new GoogleDocReadSessionImpl(this.#docsApi, this.#driveApi, documentId, queue, read));
+        : new GoogleDocReadSessionImpl(
+          this.#docsApi, this.#driveApi, documentId, queue, read,
+          this.#docCopiesOf(documentId), this.#folder()));
   }
 
   async openGoogleSheet(
@@ -3352,7 +3427,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   /**
    * The ID of the tab of a Google Doc in which `quote` occurs exactly once; with `wholeChips`, as
-   * for text a suggestion replaces, refused when it takes in part of a chip. Reading the Doc is a
+   * for text a suggestion replaces, refused when it takes in part of a chip. The text is read
+   * from the connection's stored copy of the Doc, a run at a time, and the Doc is fetched, and
+   * kept once the read is authorized, only where no copy is fresh. Reading the Doc is a
    * content read, authorized as one.
    */
   async #quotedTab(
@@ -3362,15 +3439,35 @@ export class GoogleDriveSessionImpl extends RpcTarget
       throw new Error("Quoting and suggested edits work only on Google Docs.");
     }
     let documentId = target.fileId;
-    let document = await this.#core.nativeRead(documentId, GOOGLE_DOC_MIME_TYPE)(
-      () => this.#docsApi.getDocument(documentId),
+    let source = this.#docSource(documentId);
+    let used: GoogleDocSnapshot | undefined;
+    let found = await this.#core.nativeRead(documentId, GOOGLE_DOC_MIME_TYPE)(
+      async () => {
+        // A snapshot inside its TTL, or the Doc fetched: never a revision probe, so the
+        // lookup asks Google for one thing at most.
+        used = await source.snapshot({ confirm: false });
+        // Read in the stretch the snapshot arrived in; a snapshot just fetched is read in a
+        // trial, which stores nothing of it. A failed search is answered, not thrown, so
+        // that the read it made is authorized before the caller hears of it.
+        return source.read(used, ({ copy }): { tabId: string } | { failure: unknown } => {
+          try {
+            let doc = savedDoc(copy);
+            let tab = selectTab(doc, tabId);
+            doc.locate(tab.tabId, quote, { wholeChips });
+            return { tabId: tab.tabId };
+          } catch (failure) {
+            return { failure };
+          }
+        });
+      },
       () => ({
         title: "Read Google Doc content",
         description: `Read the text of Google Doc ${documentId} to find the quoted text.`,
       }));
-    let tab = selectTab(document, tabId);
-    locateQuote(tab, quote, { wholeChips });
-    return tab.tabId;
+    // Authorized: a Doc just fetched is kept as the file's copy, whatever the search found.
+    if (used) source.approved(used);
+    if ("failure" in found) throw found.failure;
+    return found.tabId;
   }
 
   async #liveComment(fileId: string, commentId: string) {
@@ -3388,6 +3485,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     if (this.#scope.kind === "folder") {
       return new DriveFolderSessionCore({
         ...common, location: this.#location ?? {folderIds: [this.#scope.folderId]},
+        refused: this.#docRefused,
       });
     }
     return new DriveSessionCore({...common, scope: this.#scope});

@@ -62,6 +62,11 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
+  // The wider run of the Docs tests: `vitest.config.ts` gives its tests a longer allowance, and the
+  // `test` task declares the variable.
+  "packages/gatekeeper-google": {
+    forwarded: ["GOOGLE_DOCS_WIDER_TESTS"],
+  },
   // The live-tenant suite (`vitest.contract.config.ts`) and its sign-in and rendering tooling under
   // `scripts/` run as package.json scripts and by hand, never as vp tasks.
   "packages/gatekeeper-microsoft": {

@@ -147,13 +147,15 @@ export interface Worktree {
    * Returns results in the format `grep -n` would return, intended to be viewed by a human or
    * agent. This format is useful if you just intend to console.log() it. Do not try to parse this
    * format; if you intend to operate on the result programmatically, use `structuredGrep()`
-   * instead.
+   * instead. At most about 1 MiB of matching lines is returned, with a note of how many more
+   * there were. A line over a million characters is not searched, and is noted instead.
    */
   grep(pattern: RegExp, path?: string | Array<string>): Promise<string>;
 
   /**
    * Like grep but returns a structured format useful for analyzing in code. The files `grep()`
-   * would skip with a note are reported in `errors`.
+   * would skip with a note are reported in `errors`. Throws if the matching lines would come to
+   * more than about 1 MiB: narrow the pattern or the path.
    */
   structuredGrep(pattern: RegExp, path?: string | Array<string>): Promise<StructuredGrepResult>;
 

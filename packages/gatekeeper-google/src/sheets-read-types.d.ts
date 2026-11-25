@@ -15,6 +15,10 @@ export type SpreadsheetSheetInfo = {
   columnCount: number;
   /** Whether the worksheet is hidden. */
   hidden?: boolean;
+  /** How many of its leading rows are frozen, when any are. */
+  frozenRowCount?: number;
+  /** How many of its leading columns are frozen, when any are. */
+  frozenColumnCount?: number;
 };
 
 /** Metadata about the connected spreadsheet. */
@@ -119,8 +123,30 @@ export type SpreadsheetFormats = {
   /** Rectangular rows of formats. A cell with no formatting set is `null`. */
   formats: (SheetCellFormat | null)[][];
   /**
+   * The merged cells that overlap the range, each as its whole A1 range with no sheet, such as
+   * `B2:C3`, which can reach past the range read, in reading order: by first row, then first
+   * column. A merge shows its top-left cell's value and formatting. Absent when none does.
+   */
+  merges?: string[];
+  /**
+   * The height of each row of the range, in pixels: 21 unless resized. `null` where it is not
+   * known: for a row past the sheet's last, one a queued change inserts, whose height Google gives
+   * it, and, where every cell of the range is one a queued change inserts and the connected
+   * account may only read the spreadsheet, for every row, since the rows beside them cannot be
+   * read for their sizes.
+   */
+  rowHeights: (number | null)[];
+  /**
+   * The width of each column of the range, in pixels: 100 unless resized. `null` where it is not
+   * known: for a column past the sheet's last, one a queued change inserts, and, as for
+   * `rowHeights`, every column of a range of inserted cells read with an account that may only
+   * read the spreadsheet.
+   */
+  columnWidths: (number | null)[];
+  /**
    * A1 names (no sheet, such as `B3`) of cells in this range whose formatting is not known until
-   * queued changes apply: cells of rows or columns a queued change inserts. They read `null`.
+   * queued changes apply: cells of rows or columns a queued change inserts, and cells a queued
+   * merge covers, which take its top-left cell's. They read `null`.
    */
   pendingCells?: string[];
   /**
@@ -159,8 +185,8 @@ export interface GoogleSpreadsheetReadSession {
 
   /**
    * Read the formatting of a bounded A1 range, such as `'Sales 2026'!A1:F20`, accepted as
-   * `readRange` accepts one. At most 10,000 cells may be requested, and the response must not
-   * exceed 5 MiB.
+   * `readRange` accepts one, with the merged cells it overlaps and the size of its rows and
+   * columns. At most 10,000 cells may be requested, and the response must not exceed 5 MiB.
    */
   readFormats(range: string): Promise<SpreadsheetFormats>;
 }

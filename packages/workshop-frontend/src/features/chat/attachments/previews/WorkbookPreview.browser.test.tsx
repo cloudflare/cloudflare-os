@@ -32,8 +32,10 @@ const mount = async (fixture: StyledXlsxFixture) => {
       </div>
     </ThemeProvider>,
   ));
-  // The workbook is read in a worker, so the grid arrives after the render.
-  await expect.poll(() => host!.querySelector("table")).toBeTruthy();
+  // The workbook is read in a worker, so the grid arrives after the render. The first read of a run
+  // also starts the worker and loads the reader, which on a busy CI runner takes past the second
+  // a poll waits by default.
+  await expect.poll(() => host!.querySelector("table"), { timeout: 10_000 }).toBeTruthy();
 };
 
 const text = (reference: string, value: string, style = 0) =>

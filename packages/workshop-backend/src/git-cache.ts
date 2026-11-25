@@ -42,8 +42,10 @@
 //   records (`headCommit`/`pinBase`/`baseCommit`), live chats' pinned commits, the pin
 //   declarations in chat logs and compaction checkpoints (closed epochs are reconstructed from
 //   them), and the `observedOid` blob stamps (and legacy `observedCommit` stamps) on chats'
-//   readFile tool calls, attachment originals, and whole-file `setBytes` references in live chat
-//   changes. A future GC must root read stamps or let agent replay tolerate a missing object by
+//   readFile tool calls, attachment originals, whole-file `setBytes` references in live chat
+//   changes, and the blob OIDs in chat messages' `embeds` (a pin of an unaccepted text file writes
+//   a blob that only its message names once the change is reverted). A future GC must root read
+//   stamps or let agent replay tolerate a missing object by
 //   eliding the read. Objects pulled from remotes are re-pullable through their metadata. A
 //   chunked blob's index row keeps its chunk rows alive: a chunk is live iff it is reachable
 //   as an object in its own right, or is named by a live index row.
@@ -185,15 +187,52 @@ export interface GitPullDelegate {
 // Errors
 
 /**
- * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL) or is not
- * valid UTF-8. Never a matter of size. The message is the agent-visible, path-flavored
- * description. Distinct from path-shape errors (symlink/gitlink/directory) and from
- * transient pull failures so callers can tell "fine to overwrite whole, but unreadable and
- * undiffable" apart from errors that must propagate: the Worktree binding's writeFile falls
- * back to a whole-file `set` on this error (and only this error), and its grep/diff render it
- * as a skip note.
+ * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL), is not
+ * valid UTF-8, or is too large for a new read to hold whole (assertWholeTextFits). The message
+ * is the agent-visible, path-flavored description. Distinct from path-shape errors
+ * (symlink/gitlink/directory) and from transient pull failures so callers can tell "fine to
+ * overwrite whole, but unreadable and undiffable" apart from errors that must propagate: the
+ * Worktree binding's writeFile falls back to a whole-file `set` on this error (and only this
+ * error), and its grep/diff render it as a skip note.
  */
 export class UnreadableContentError extends Error {}
+
+/**
+ * The largest file a new read or edit holds whole as text. Its bytes and its decoded text are
+ * held together, which for a larger one, such as a 100 MiB upload, would crowd the Durable
+ * Object's 128 MB of memory; it is read by window or as bytes instead.
+ */
+export const MAX_WHOLE_TEXT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The most lines, counted as line breaks, that a new read or edit holds as whole text. An edit
+ * holds its file as a string per line, which for a file of short lines, such as a long
+ * single-column CSV of millions of rows, takes many times its bytes.
+ */
+export const MAX_WHOLE_TEXT_LINES = 1_000_000;
+
+/** Whether a new read or edit may hold a blob whole as text; see MAX_WHOLE_TEXT_BYTES and MAX_WHOLE_TEXT_LINES. */
+export function fitsWholeText(reader: BlobReader): boolean {
+  return reader.size <= MAX_WHOLE_TEXT_BYTES && reader.newlines <= MAX_WHOLE_TEXT_LINES;
+}
+
+/**
+ * Options for a whole-text read. `limited` refuses a file that doesn't fitsWholeText()
+ * (UnreadableContentError) before any of it is read, as every new read or edit must. Replay and the
+ * folding of a chat's saved changes leave it unset: an edit saved before the limit existed must
+ * still apply to its base.
+ */
+export interface WholeTextReadOptions { limited?: boolean }
+
+/** Refuses a whole-text read of a blob that doesn't fitsWholeText(); see WholeTextReadOptions. */
+export function assertWholeTextFits(reader: BlobReader, path: string): void {
+  if (!fitsWholeText(reader)) {
+    throw new UnreadableContentError(`${path} is ${reader.size} bytes in ${reader.newlines} ` +
+        "lines, too large to read or edit as whole text (the most is " +
+        `${MAX_WHOLE_TEXT_BYTES / (1024 * 1024)} MiB and ${MAX_WHOLE_TEXT_LINES} lines). Read it ` +
+        "by window (readFile with startLine and lineCount), search it with grep, or read its bytes.");
+  }
+}
 
 /** A regular file's tree entry, given as is: its mode and its blob's oid. */
 export interface FileEntry {
@@ -276,7 +315,14 @@ const TEXT_DECODER_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: t
  * gatekeeper-facing paths (submitAction, lazy reads) all funnel through it.
  */
 export class WorkspaceGitCache {
-  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate) {}
+  /**
+   * `assertRoom` refuses a new blob over CHUNK_MAX_SIZE the workspace has no room for, by
+   * throwing: it is called with such a blob's size, when known, before any of it is stored, and
+   * with each new chunk's size as that is stored. Only a blob over CHUNK_MAX_SIZE stores chunks,
+   * so a smaller one, even streamed, is never refused.
+   */
+  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate,
+              private assertRoom: (byteLength: number) => void = () => {}) {}
 
   // -------------------------------------------------------------------------------------
   // Local object access
@@ -370,7 +416,7 @@ export class WorkspaceGitCache {
       }
       this.storage.gitObjects.put(object.record);
     } else if (object.type === "blob" && object.payload.byteLength > CHUNK_MAX_SIZE) {
-      let writer = new BlobWriter(this.storage.gitObjects, object.payload.byteLength);
+      let writer = this.#blobWriter(object.payload.byteLength);
       writer.write(object.payload);
       let blob = writer.finish();
       if (blob.record === undefined || blob.oid !== oid) {
@@ -381,6 +427,20 @@ export class WorkspaceGitCache {
       this.storage.gitObjects.put({ oid, data: encodeLooseObject(object.type, object.payload) });
     }
     this.#extendToReferents(oid, object);
+  }
+
+  // A writer for a blob over CHUNK_MAX_SIZE, whose chunk rows are refused once the workspace has
+  // no room for them (see the constructor).
+  #blobWriter(byteLength: number | undefined): BlobWriter {
+    if (byteLength !== undefined && byteLength > CHUNK_MAX_SIZE) this.assertRoom(byteLength);
+    let objects = this.storage.gitObjects;
+    return new BlobWriter({
+      get: oid => objects.get(oid),
+      put: record => {
+        this.assertRoom(record.data.byteLength);
+        objects.put(record);
+      },
+    }, byteLength);
   }
 
   // Stores an object authored here -- a file's blob, a tree, a commit -- unless it is already
@@ -420,7 +480,13 @@ export class WorkspaceGitCache {
    */
   async writeBlobStream(stream: ReadableStream<Uint8Array>, byteLength?: number)
       : Promise<BytesRef> {
-    let writer = new BlobWriter(this.storage.gitObjects, byteLength);
+    let writer: BlobWriter;
+    try {
+      writer = this.#blobWriter(byteLength);
+    } catch (err) {
+      await stream.cancel(err).catch(() => {});
+      throw err;
+    }
     for await (let piece of readStreamPieces(stream)) writer.write(piece);
     let blob = writer.finish();
     if (!this.hasLocalObject(blob.oid)) {
@@ -827,7 +893,7 @@ export class WorkspaceGitCache {
       resolveLargeBase: oid => usable(oid) ? this.openLocalBlob(oid) : undefined,
       openBlobSink: size => {
         if (size <= CHUNK_MAX_SIZE) return undefined;
-        let writer = new BlobWriter(this.storage.gitObjects, size);
+        let writer = this.#blobWriter(size);
         return {
           write: piece => writer.write(piece),
           finish: () => {
@@ -923,7 +989,8 @@ export class WorkspaceGitCache {
    * recorded sources (`onRemote ∪ pullableFrom`, trying each recorded gatekeeper on failure).
    * All requests in one call share `hints` (batch callers group by expected type).
    *
-   * Throws if an object cannot be obtained. No object is ever refused for its size.
+   * Throws if an object cannot be obtained. No object is refused for its size, but one over
+   * CHUNK_MAX_SIZE is refused while the workspace has no room for it (see the constructor).
    */
   async ensureGitObjects(oids: GitOid[], hints: GitPullHints): Promise<void> {
     let missing = [...new Set(oids)].filter(oid => !this.hasLocalObject(oid));
@@ -1054,10 +1121,12 @@ export class WorkspaceGitCache {
    * full-tree materialization) and fault-pulling whatever is missing. Regular files only:
    * a symlink or submodule (gitlink) path throws a descriptive error naming its target, a
    * directory path or absent entry throws "no such file", and binary (non-UTF-8 / NUL-bearing)
-   * content throws a clean, path-specific error. A file of any size is read whole.
+   * content throws a clean, path-specific error. A file of any size is read whole unless
+   * `options.limited` (see WholeTextReadOptions).
    */
-  async readFileAtCommit(commitOid: GitOid, path: string): Promise<string> {
-    let text = await this.readFileAtCommitIfExists(commitOid, path);
+  async readFileAtCommit(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
+      : Promise<string> {
+    let text = await this.readFileAtCommitIfExists(commitOid, path, options);
     if (text === undefined) throw new Error(`${path}: no such file`);
     return text;
   }
@@ -1070,8 +1139,9 @@ export class WorkspaceGitCache {
    * content: "no base text" is an ordinary state there ("edit of absent file" is then the
    * change's own validation error), while the throwing errors describe the file itself.
    */
-  async readFileAtCommitIfExists(commitOid: GitOid, path: string): Promise<string | undefined> {
-    return (await this.readFileAtCommitWithOid(commitOid, path))?.text;
+  async readFileAtCommitIfExists(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
+      : Promise<string | undefined> {
+    return (await this.readFileAtCommitWithOid(commitOid, path, options))?.text;
   }
 
   /**
@@ -1098,11 +1168,12 @@ export class WorkspaceGitCache {
    * which a later `fileOidAtCommit` on another commit compares equal iff the content is
    * byte-identical. Same rules and errors otherwise.
    */
-  async readFileAtCommitWithOid(commitOid: GitOid, path: string)
+  async readFileAtCommitWithOid(commitOid: GitOid, path: string, options?: WholeTextReadOptions)
       : Promise<{ text: string, oid: GitOid } | undefined> {
     let file = await this.openFileAtCommit(commitOid, path);
-    return file && { text: decodeBlobText(file.reader.read(0, file.reader.size), path),
-                     oid: file.oid };
+    if (file === undefined) return undefined;
+    if (options?.limited) assertWholeTextFits(file.reader, path);
+    return { text: decodeBlobText(file.reader.read(0, file.reader.size), path), oid: file.oid };
   }
 
   /**
@@ -1564,7 +1635,11 @@ export class WorkspaceGitCache {
    */
   async readTextBlob(oid: GitOid, referencedBy: GitOid | undefined, path: string)
       : Promise<string> {
-    return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);
+    // Its callers are new reads (a binding's readFile, a diff, a replica's merge), never the
+    // replay of a saved change, so it refuses a file too large to hold as text, as `limited`.
+    let reader = await this.openBlob(oid, referencedBy);
+    assertWholeTextFits(reader, path);
+    return decodeBlobText(reader.read(0, reader.size), path);
   }
 
   /**
@@ -2091,6 +2166,27 @@ export function decodeBlobText(payload: Uint8Array, path: string): string {
   let text = blobText(payload);
   if (text === undefined) throw new UnreadableContentError(`${path} is not a text file`);
   return text;
+}
+
+/**
+ * Whether a blob is text by decodeBlobText's rules, checked a piece at a time rather than
+ * decoded whole, so that a file too large to hold as text can still be told from binary.
+ */
+export function isTextBlob(reader: BlobReader): boolean {
+  let decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  // Only a piece that fails to decode makes the blob binary; one that can't be read throws.
+  let decodes = (piece?: Uint8Array) => {
+    try {
+      decoder.decode(piece, { stream: piece !== undefined });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let piece of reader.pieces()) {
+    if (piece.includes(0) || !decodes(piece)) return false;
+  }
+  return decodes();
 }
 
 /**

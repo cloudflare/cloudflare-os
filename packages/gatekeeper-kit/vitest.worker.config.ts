@@ -14,6 +14,7 @@ export default defineConfig({
         CONFORMANCE_ACCOUNT: { className: "ConformanceAccount", useSQLite: true },
         CONFORMANCE_RESOURCE: { className: "ConformanceResource", useSQLite: true },
         BRANCH_GATEKEEPER: { className: "BranchGatekeeper", useSQLite: true },
+        STORAGE_HOST: { className: "StorageHost", useSQLite: true },
       },
     },
   })],

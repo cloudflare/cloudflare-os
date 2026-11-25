@@ -130,6 +130,9 @@ export class HookHost extends DurableObject {
   }
 }
 
+/** Nothing but real Durable Object storage, for suites that run inside it with `runInDurableObject`. */
+export class StorageHost extends DurableObject {}
+
 export default {
   fetch: () => new Response("fixture", { status: 404 }),
 };
