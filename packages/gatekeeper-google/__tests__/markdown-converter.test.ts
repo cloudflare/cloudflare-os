@@ -1869,7 +1869,7 @@ describe("Google Docs table map", () => {
   });
 
   it("pins the rendering version with the earlier versions it still replays", () => {
-    expect([MARKDOWN_RENDERING_VERSION, REPLAYABLE_TEXT_EDIT_VERSIONS]).toEqual([7, [6]]);
+    expect([MARKDOWN_RENDERING_VERSION, REPLAYABLE_TEXT_EDIT_VERSIONS]).toEqual([7, []]);
   });
 
   it("marks the paragraphs a positioned object is anchored to", () => {

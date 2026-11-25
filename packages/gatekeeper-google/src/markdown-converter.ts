@@ -227,12 +227,12 @@ export const MARKDOWN_RENDERING_VERSION = 7;
 
 /**
  * Earlier rendering versions whose text edits (a replacement outside tables, an append) still
- * replay under {@link MARKDOWN_RENDERING_VERSION}: they render everything outside tables as it
- * does, but a subtitle whose named style is not italic, which 6 read as italic (an edit quoting
- * one no longer finds its text, and says so), and could queue no edit inside one. Decide this
- * list again with every bump.
+ * replay under {@link MARKDOWN_RENDERING_VERSION}, because they render everything outside tables
+ * as it does. Decide this list again with every bump. Not 6: it read a subtitle whose named style
+ * is upright as italic, so a quote that was unique under 6 can be unique under 7 as another
+ * paragraph's, and the edit would change text its preview did not show changing.
  */
-export const REPLAYABLE_TEXT_EDIT_VERSIONS: readonly number[] = [6];
+export const REPLAYABLE_TEXT_EDIT_VERSIONS: readonly number[] = [];
 
 type ListType = "bullet" | "numbered";
 

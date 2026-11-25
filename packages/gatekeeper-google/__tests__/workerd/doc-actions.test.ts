@@ -2022,7 +2022,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
     ["a document of one tab behind a queued add", () => document("Draft"),
       [{ id: 1, action: add("pending-tab-a", {}) }]],
   ] as const)("in %s", (_name, fetched, ahead) => {
-    it.each([undefined, 5])(
+    it.each([undefined, 5, 6])(
       "refuses an edit that names no tab for its earlier Markdown format before it asks which tab it meant (version %s)",
       inStore(markdownVersion => {
         let pending: GoogleDocPendingAction[] = [
@@ -2037,7 +2037,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
       }));
   });
 
-  it.each([undefined, 5])(
+  it.each([undefined, 5, 6])(
     "refuses an edit that names no tab for its earlier Markdown format in a document of one tab, once (version %s)",
     inStore(markdownVersion => {
       let pending = [{ id: 1, action: { ...unnamed(appendTo("tab-1", "Old")), markdownVersion } }];

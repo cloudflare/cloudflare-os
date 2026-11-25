@@ -4368,26 +4368,21 @@ describe("Google Doc edits stored under an earlier rendering", () => {
   const previous = (action: Record<string, unknown>) =>
     [storedAction(1, { ...action, markdownVersion: PREVIOUS_RENDERING })];
 
-  it("applies an append stored under the previous rendering", async () => {
+  // 6 read an upright subtitle as italic, so a quote unique under it can be unique under the
+  // current rendering as another paragraph's. Neither kind is replayed or sent.
+  it.each([
+    ["an append", { type: "appendText", markdown: "added" }],
+    ["a replacement", { type: "replaceText", oldMarkdown: "base", newMarkdown: "BASE" }],
+  ])("refuses %s stored under the previous rendering, and sends nothing", async (_kind, action) => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
     docs.install();
-    let facet = "previous-rendering-append";
-    await hooks().applyStorage(facet, previous({ type: "appendText", markdown: "added" }));
+    let facet = `previous-rendering-${action.type}`;
+    await hooks().applyStorage(facet, previous(action));
 
-    expect(await hooks().readContent(facet)).toBe("base\n\nadded\n");
-    expect(await hooks().applyAction(facet, 1)).toBeNull();
-    expect(docs.text()).toBe("base\nadded");
-  });
-
-  it("keeps a previous-rendering replacement out of tables", async () => {
-    let docs = docsWithBody(tableBody());
-    let facet = "previous-rendering-cell";
-    await hooks().applyStorage(
-      facet, previous({ type: "replaceText", oldMarkdown: "Open", newMarkdown: "Done" }));
-
-    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
-    expect(await hooks().applyAction(facet, 1)).toContain(STRUCTURED);
+    expect(await hooks().readContent(facet)).toBe("base\n");
+    expect(await hooks().applyAction(facet, 1)).toContain("queued under an earlier Markdown format");
+    expect(docs.text()).toBe("base");
     expect(docs.contentBatches).toBe(0);
   });
 

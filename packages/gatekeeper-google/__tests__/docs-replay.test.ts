@@ -397,6 +397,8 @@ describe("materializeDocEdit", () => {
     let rows: DocEdit = { type: "deleteTableRows", at: 0, count: 1, expected: expectedOf(tab) };
     let refused: QueuedDocEdit[] = [
       { ...rows, tabId: TAB, markdownVersion: 6 },
+      { ...replace, tabId: TAB, markdownVersion: 6 },
+      { ...append, tabId: TAB, markdownVersion: 6 },
       { ...replace, tabId: TAB, markdownVersion: 5 },
       { ...append, tabId: TAB, markdownVersion: 5 },
       { ...replace, tabId: TAB },
@@ -410,13 +412,6 @@ describe("materializeDocEdit", () => {
       .toBeGreaterThan(0);
   });
 
-  it("builds a text edit previewed under the version before, as approval does", () => {
-    let tab = PROSE();
-    for (let edit of [replace, append]) {
-      expect(materializeDocEdit([tab], { ...edit, tabId: TAB, markdownVersion: 6 }).requests)
-        .toEqual(docEditRequests(docTabToMarkdown(tab), edit));
-    }
-  });
 
   it("gives the rendering of the tab the edit targets and the requests for it", () => {
     let first = PROSE();
@@ -760,8 +755,9 @@ describe("docTabReducer", () => {
       record(2, replaceWorld, TAB, { markdownVersion: 5 }),
       record(3, replaceWorld, TAB, { markdownVersion: 6 }),
     ]);
-    expect(refusedOf(fold)).toStrictEqual(new Map([[2, { reason: EARLIER_FORMAT }]]));
-    expect(markdownOf(stored, fold)).toBe("Hello there\n\nEnd\n");
+    expect(refusedOf(fold)).toStrictEqual(
+      new Map([[2, { reason: EARLIER_FORMAT }], [3, { reason: EARLIER_FORMAT }]]));
+    expect(markdownOf(stored, fold)).toBe("Hello world\n\nEnd\n");
   });
 
   it("refuses every edit of a tab the model cannot index for that reason, before the gate, " +
