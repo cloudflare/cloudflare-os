@@ -318,6 +318,11 @@ is the same row before and after, so being read only brings it to full strength.
 place among its turn's steers rather than its sequence, which it has only once read, and
 `ChatSession` keeps it between leaving the queue and arriving as a message.
 
+What a person sent that runs long (past 600 characters) is cut short with "more" right after it,
+as what is said at length in a connection's dialog is (`ClampedText`): where a word ends, by how
+many characters it has, what it mentions kept whole before the cut or left out after it
+(`blocks/clampParts.ts`, plain and tested). Copying it gives all of it.
+
 A message can be replied to. A reply names its message by sequence (`replyToSequence` on
 `sendChatMessage` and the message, kept through steering), and since the agent is not shown what a
 reply names, it also carries a line of that message at the front of its own text, as a Markdown

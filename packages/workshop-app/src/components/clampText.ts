@@ -2,12 +2,15 @@
 // behind "more" saves no room.
 const SLACK = 20
 
+/** Whether a text this many characters long is cut short at `limit`, rather than shown whole. */
+export const runsLong = (length: number, limit: number) => length > limit + SLACK
+
 /**
  * The start of a text that runs past `limit` characters, cut where a word ends, with nothing
  * left dangling at its end; or nothing, for a text that is shown whole.
  */
 export const clampText = (text: string, limit: number): string | undefined => {
-  if (text.length <= limit + SLACK) return undefined
+  if (!runsLong(text.length, limit)) return undefined
   const head = text.slice(0, limit + 1)
   const space = head.lastIndexOf(' ')
   // A word longer than the limit is cut where the limit falls.
