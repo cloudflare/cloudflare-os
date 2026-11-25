@@ -74,8 +74,6 @@ import {
   type GitLabProjectResponse,
   type GitLabSimpleUser,
   type PinnedProject,
-  type GitLabTestCaseResponse,
-  type GitLabTestReportResponse,
   type GitLabTestSuitePage,
   type GitLabTestReportSummaryResponse,
 } from "./gitlab-api";
@@ -252,6 +250,11 @@ const MAX_REPLY_TARGET_HOPS = 50;
 const MAX_CI_ROWS = 1000;
 /** How many pages of a suite's test cases (100 each) failed tests read before refusing it as too large. */
 const MAX_TEST_CASE_PAGES = 100;
+/**
+ * How many failed and errored cases one failed-tests read keeps before refusing it as too large:
+ * each holds at most TEST_OUTPUT_MAX_CHARS of output, so this bounds the read near 8 MiB.
+ */
+const MAX_FAILED_TEST_CASES = 2000;
 /**
  * How many of the project's latest push events are searched for one that left a ref at a commit:
  * one page, GitLab's most. A push older than that many others is outside the window anyway on all
@@ -1883,7 +1886,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * authorizeRead): the artifacts of each job whose reports it holds, which it names itself
    * (`build_ids`). GitLab decides per job who may read them: from 19.1.4 it leaves out of the
    * summary and the report every job whose test report artifacts the reader may not read
-   * (`artifacts:access`), so the observer's own account is asked of each (see canReadJobData).
+   * (`artifacts:access`), so the observer's own account is asked of each (see canReadJobTestReport).
    */
   async pipelineTestReport(pipelineId: number): Promise<{ subresources: string[]; report: GitLabTestReportSummary }> {
     const { id } = await this.#pinnedProject();
@@ -1907,39 +1910,47 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const summary = await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId));
     const failing = summary.test_suites.filter(suite => suite.failed_count + suite.error_count > 0);
     const pipelineOf = failing.length === 0 ? new Map<number, number>() : await this.#latestJobPipelines(pipelineId);
+    // A job the capped listings left out is looked up on its own, so no failing job goes unread.
+    for (const jobId of new Set(failing.flatMap(suite => suite.build_ids))) {
+      if (pipelineOf.has(jobId)) continue;
+      const job = await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
+      if (job?.pipeline.iid !== undefined) pipelineOf.set(jobId, job.pipeline.iid);
+    }
     const read = new Set<number>();
-    const suites: GitLabTestReportResponse["test_suites"] = [];
+    const cases: GitLabTestCase[] = [];
     for (const suite of failing) {
       const jobsByPipeline = Map.groupBy(suite.build_ids.filter(jobId => pipelineOf.has(jobId)), jobId => pipelineOf.get(jobId)!);
-      const cases: GitLabTestCaseResponse[] = [];
       for (const [pipelineIid, jobIds] of jobsByPipeline) {
         for (const jobId of jobIds) read.add(jobId);
-        cases.push(...await this.#testSuiteCases(projectId, pipelineId, pipelineIid, jobIds));
+        await this.#readFailedCases(projectId, pipelineId, suite.name, pipelineIid, jobIds, cases);
       }
-      suites.push({ name: suite.name, test_cases: cases });
     }
     return {
       subresources: [...read].map(jobId => jobSubresourceId(projectId, "artifacts", jobId)),
-      cases: new ArrayCursor(failedTestCases({ test_suites: suites }), pageSize),
+      cases: new ArrayCursor(cases, pageSize),
     };
   }
 
-  /** Every test case of jobs `jobIds` in the pipeline numbered `pipelineIid`, page after page. */
-  async #testSuiteCases(projectId: number, pipelineId: number, pipelineIid: number, jobIds: number[]):
-      Promise<GitLabTestCaseResponse[]> {
-    const cases: GitLabTestCaseResponse[] = [];
+  /**
+   * Appends to `cases` the failed and errored cases of jobs `jobIds` in the pipeline numbered
+   * `pipelineIid`, as suite `suite`, page after page. Each page is cut down to them, their output
+   * cut short, before the next is read, and a read holding more than MAX_FAILED_TEST_CASES of them,
+   * or a suite of more than MAX_TEST_CASE_PAGES pages, is refused: one bound on what it keeps.
+   */
+  async #readFailedCases(projectId: number, pipelineId: number, suite: string, pipelineIid: number,
+      jobIds: number[], cases: GitLabTestCase[]): Promise<void> {
+    const tooLarge = () => new Error(`Pipeline ${pipelineId}'s test report is too large to read here. Use ` +
+      `getTestReport() for its totals, and the failing jobs' logs for details.`);
     let after: string | null = null;
     for (let pages = 0; ; pages++) {
-      if (pages === MAX_TEST_CASE_PAGES) {
-        throw new Error(`Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its ` +
-          `totals, and the failing jobs' logs for details.`);
-      }
+      if (pages === MAX_TEST_CASE_PAGES) throw tooLarge();
       const cursor: string | null = after;
       const page: GitLabTestSuitePage | null =
         await this.#withApi(api => api.getPipelineTestSuitePage(projectId, pipelineIid, jobIds, cursor));
-      if (page === null) return cases;
-      cases.push(...page.cases);
-      if (page.endCursor === null) return cases;
+      if (page === null) return;
+      cases.push(...failedTestCases({ test_suites: [{ name: suite, test_cases: page.cases }] }));
+      if (cases.length > MAX_FAILED_TEST_CASES) throw tooLarge();
+      if (page.endCursor === null) return;
       after = page.endCursor;
     }
   }
@@ -1947,7 +1958,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * The pipeline number (`iid`) of each latest job of pipeline `pipelineId` and of its child
    * pipelines in the project, the jobs GitLab's test report gathers. A listing cut short leaves
-   * jobs out, which are then not read.
+   * jobs out, which the caller looks up on their own.
    */
   async #latestJobPipelines(pipelineId: number): Promise<Map<number, number>> {
     const projectId = await this.#boundProjectId();

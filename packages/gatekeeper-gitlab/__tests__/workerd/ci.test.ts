@@ -847,10 +847,10 @@ function summaryOf(suites: Array<{ name: string; jobId: number; total: number; f
   };
 }
 
-describe("test reports", () => {
-  const testCase = (status: string, testName: string, output: string | null = null): RestTestCase =>
-    ({ ...fx.testReportResponse.data.test_suites[0].test_cases[0], status, name: testName, system_output: output });
+const testCase = (status: string, testName: string, output: string | null = null): RestTestCase =>
+  ({ ...fx.testReportResponse.data.test_suites[0].test_cases[0], status, name: testName, system_output: output });
 
+describe("test reports", () => {
   it("pages the failed and errored cases of the suites that have them, their output cut short", async () => {
     const fake = new CiFake();
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
@@ -875,16 +875,34 @@ describe("test reports", () => {
     expect(asked.map(({ builds, after }) => [builds, after])).toEqual([[["101"], null], [["101"], "2"], [["102"], null]]);
   });
 
-  it("points at the totals and the job logs when a suite is too large to read", async () => {
+  it.each([
+    ["of more pages than it reads", 10_001, 1],
+    ["holding more failed cases than it keeps", 2001, 2001],
+  ])("points at the totals and the job logs when a suite is too large to read: one %s", async (_, total, failed) => {
     const fake = new CiFake();
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () =>
-      json(summaryOf([{ name: "unit", jobId: 66004, total: 10_001, failed: 1, errored: 0 }])));
+      json(summaryOf([{ name: "unit", jobId: 66004, total, failed: 1, errored: 0 }])));
     testReportJobs(fake);
-    testSuiteRoute(fake, { 66004: Array.from({ length: 10_001 }, (_, i) => testCase(i === 0 ? "failed" : "success", `t${i}`)) });
+    testSuiteRoute(fake, { 66004: Array.from({ length: total }, (_, i) => testCase(i < failed ? "failed" : "success", `t${i}`)) });
     const { props, name } = await setup(fake);
     await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" }))
       .rejects.toThrow(/too large to read here\. Use getTestReport\(\) for its totals, and the failing jobs' logs/);
+  });
+
+  it("reads a failing job the capped job listings leave out by looking it up", async () => {
+    const fake = new CiFake();
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () =>
+      json(summaryOf([{ name: "unit", jobId: 201, total: 1, failed: 1, errored: 0 }])));
+    // Past the listings' 1000 rows, as far as this read can tell.
+    testReportJobs(fake, []);
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/201$`), () => json(job(201)));
+    testSuiteRoute(fake, { 201: [testCase("failed", "a")] });
+    const { props, name } = await setup(fake);
+    expect((await session<GitLabTestCase[]>(name, props,
+      { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true })).map(c => c.name)).toEqual(["a"]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toContain(`project/${P}/jobArtifacts/201`);
   });
 });
 
