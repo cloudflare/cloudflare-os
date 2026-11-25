@@ -15,7 +15,7 @@
 // - anthropic-pause: asked for twelve searches one at a time with no cap on them, it runs ten
 //   and Anthropic pauses the turn on the eleventh, unanswered (run p2). Sent directly, since
 //   this code always caps the searches. Trimmed: each search's ten results are cut to the first.
-// Beside each Anthropic stream, `.content.json` is the response's content: the stream's events
+// A `.content.json` beside an Anthropic stream is that response's content: the stream's events
 // put together by the script that captured them, which Anthropic accepted back unchanged.
 
 import { describe, expect, it, vi } from "vitest";
