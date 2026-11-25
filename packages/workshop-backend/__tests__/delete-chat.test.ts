@@ -89,7 +89,6 @@ describe("deleteChat", () => {
     expect(remaining.some(msg => msg.chatId === other)).toBe(true);
     for (let fileId of files) expect(impl.storage.chatAttachmentContent.get(fileId)).toBeUndefined();
     expect(impl.storage.chatAttachmentContent.get(kept)).toBeDefined();
-    expect([...impl.storage.chats.pendingRequestsByChat.list()].map(({ chatId: id }) => id))
-        .toEqual([other]);
+    expect(new Set(Array.from(impl.storage.chats.byTimestamp.list(), ({ chatId: id }) => id))).toEqual(new Set([other]));
   }));
 });

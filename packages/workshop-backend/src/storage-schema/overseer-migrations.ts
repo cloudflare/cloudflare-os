@@ -18,7 +18,6 @@ import {
   chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
   type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
-import { isDecisionBoundary } from "../agent-compaction";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
 import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
@@ -431,27 +430,44 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
 }
 
 /**
- * Version 7 -> 8: backfill the index that answers for one chat what it waits on, and the chatMeta
- * byListing index, which Overseer.listChats() pages, without reading any chat's transcript whole,
- * since the migration blocks the workspace's start:
+ * Version 7 -> 8: backfill the chatMeta byListing index, which Overseer.listChats() pages, and
+ * the users each chat asked for a decision, and convert the observers' account choices, without
+ * reading any chat's transcript, since the migration blocks the workspace's start:
  * - chatMeta's byListing is rebuilt, as migrateToActionIndexes rebuilds the action indexes;
- * - chats' pendingRequestsByChat indexes only the requests of each chat's current decision
- *   segment, read back to its last decision boundary as OverseerImpl.#decisionWait() reads it:
- *   a request an earlier turn left pending is not what the chat waits on.
+ * - each live chat's `nextChatSequences.askedUsers` gets the recipient of every
+ *   permissionRequested notification it holds, so its working or waiting changes reach them;
  * - each ObserverRecord.accountChoices entry, a bare account id before, becomes
  *   `{accountId}`: a choice with no `verifiedThroughActionId`, which the next background check
  *   verifies from the first action.
  * The backfills, the conversion and the stamp are one transaction, so a crash midway retries
- * whole, and nothing can update a record before its indexes exist.
+ * whole, and nothing can update a record before its index exists. Returns the chats that may
+ * wait on a decision (a pending action or a permissionRequested notification), whose head the
+ * caller records, since version 7 stored no `waiting`; empty when the version is already 8.
  */
-export function migrateToChatIndexes(host: OverseerMigrationHost): void {
-  if (host.storage.version.get() !== 7) return;
+export function migrateToChatIndexes(host: OverseerMigrationHost): number[] {
+  if (host.storage.version.get() !== 7) return [];
   let {storage} = host;
+  let candidates = new Set<number>();
   host.ctx.storage.transactionSync(() => {
-    for (let chatId of Array.from(storage.chatMeta.list(), ({id}) => id)) {
-      storage.chats.pendingRequestsByChat.indexRecords(currentDecisionSegment(storage, chatId));
-    }
     storage.chatMeta.byListing.rebuild();
+    let asked = new Map<number, Set<string>>();
+    for (let event of storage.chatNotifications.list()) {
+      if (event.kind !== "permissionRequested") continue;
+      let users = asked.get(event.chatId) ?? new Set();
+      asked.set(event.chatId, users.add(event.userId));
+    }
+    for (let record of storage.actions.byHistoryFilter.get("pending")) {
+      if (record.caller.from !== "hook" && record.caller.chatId !== undefined) {
+        candidates.add(record.caller.chatId);
+      }
+    }
+    for (let [chatId, users] of asked) {
+      candidates.add(chatId);
+      let counter = storage.nextChatSequences.get(chatId);
+      if (!counter || !storage.chatMeta.get(chatId)) continue;
+      storage.nextChatSequences.put({...counter,
+        askedUsers: [...new Set([...counter.askedUsers ?? [], ...users])]});
+    }
     for (let record of Array.from(storage.observers.list())) {
       // Bare account ids at runtime, whatever the type says.
       let stored = record.accountChoices as unknown as V7AccountChoices;
@@ -463,15 +479,8 @@ export function migrateToChatIndexes(host: OverseerMigrationHost): void {
   host.logger.info("backfilled the chat indexes", {
     event: "storage.migration.chat-indexes.completed",
   });
+  return [...candidates].filter(chatId => storage.chatMeta.get(chatId));
 }
 
 /** ObserverRecord.accountChoices as stored before version 8: a bare account id per gatekeeper. */
 type V7AccountChoices = {[gatekeeperId: number]: number};
-
-// A chat's messages since its last decision boundary, newest first.
-function* currentDecisionSegment(storage: OverseerStorage, chatId: number) {
-  for (let msg of storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-    if (isDecisionBoundary(msg)) return;
-    yield msg;
-  }
-}

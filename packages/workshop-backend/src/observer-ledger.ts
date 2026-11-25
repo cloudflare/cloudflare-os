@@ -7,7 +7,7 @@
 //   attributed to a context by its caller (observerContextOf). A read must never commit without
 //   its record, nor a record land without its check.
 // - Every check fails closed, and no permission is cached between operations, but for one:
-//   background reads (the workspace summary, unread previews) rely on each account choice's
+//   background reads (chat heads and unread previews) rely on each account choice's
 //   ObserverAccountChoice.verifiedThroughActionId, so only requirements recorded since are
 //   checked before one is published (requirementsSince(), OverseerImpl.#ensureBackgroundAdmission).
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
@@ -54,6 +54,9 @@ const CHECK_OBSERVER_BATCH_SIZE = 100;
 
 /** How many action records requirementsSince() lists at a time. */
 const BACKGROUND_PAGE_SIZE = 500;
+
+/** How many pages of action records one requirementsSince() call reads at most. */
+const MAX_BACKGROUND_PAGES = 4;
 
 /**
  * How many times an admission or an observation re-runs its checks because what it must verify
@@ -399,22 +402,33 @@ export class ObserverLedger {
 
   /**
    * The subresources recorded through `gatekeeperId` after action `verifiedThrough`, up to action
-   * `target`, that admission has not checked: those of each observation with `subresources`
-   * through it, but for a requirement key also recorded at or before `verifiedThrough` (none can
-   * be at -1, which checked nothing). Reads action records BACKGROUND_PAGE_SIZE at a time until it
-   * holds MAX_SUBRESOURCES or more (one observation can add up to as many again), returning in
+   * `target`, that admission has not checked. With no watermark (-1, which checked nothing), every
+   * requirement recorded through it in any context, read from the `byObserverRequirement` keys
+   * alone as observerScope() does. Otherwise those of each observation with `subresources`
+   * through it, but for a requirement key also recorded at or before `verifiedThrough`, reading
+   * action records BACKGROUND_PAGE_SIZE at a time until it holds MAX_SUBRESOURCES or more (one
+   * observation can add up to as many again) or has read MAX_BACKGROUND_PAGES pages, returning in
    * `through` the last id it read when that stops it short of `target`, to call again from there.
    */
   requirementsSince(gatekeeperId: WorkpieceId, verifiedThrough: number, target: number)
       : {subresources: string[], through: number} {
     let index = this.#storage.actions.byObserverRequirement;
     let subresources = new Set<string>();
+    if (verifiedThrough < 0) {
+      for (let context of ["workspace", "chat", "gadget"] as const) {
+        let prefix = observerRequirementPrefix(gatekeeperId, context);
+        for (let key of index.listKeys({prefix})) {
+          subresources.add(observerRequirementSubresource(key));
+        }
+      }
+      return {subresources: [...subresources], through: target};
+    }
     // Requirement keys found recorded at or before the watermark, each looked up once.
     let checked = new Set<string>();
     let readThrough = verifiedThrough;
-    while (readThrough < target) {
-      // Listed up front: each probe of the index would end this listing. (`start`, as a
-      // watermark may be -1 before any action, and a negative key does not order before the ids.)
+    for (let pages = 0; readThrough < target; pages++) {
+      if (pages >= MAX_BACKGROUND_PAGES) return {subresources: [...subresources], through: readThrough};
+      // Listed up front: each probe of the index would end this listing.
       let page = Array.from(this.#storage.actions.list(
           {start: readThrough + 1, end: target + 1, limit: BACKGROUND_PAGE_SIZE}));
       for (let record of page) {
@@ -428,15 +442,13 @@ export class ObserverLedger {
         if (!record.description.subresources || !context) continue;
         for (let id of record.description.subresources) {
           if (subresources.has(id)) continue;
-          if (verifiedThrough >= 0) {
-            let key = observerRequirementKey(gatekeeperId, context, id);
-            if (checked.has(key)) continue;
-            // The index's primary keys alone: reading the record could load 10,000 IDs per key.
-            let earlier = index.listPrimaryKeys(key, {end: verifiedThrough + 1, limit: 1});
-            if ([...earlier].length > 0) {
-              checked.add(key);
-              continue;
-            }
+          let key = observerRequirementKey(gatekeeperId, context, id);
+          if (checked.has(key)) continue;
+          // The index's primary keys alone: reading the record could load 10,000 IDs per key.
+          let earlier = index.listPrimaryKeys(key, {end: verifiedThrough + 1, limit: 1});
+          if ([...earlier].length > 0) {
+            checked.add(key);
+            continue;
           }
           subresources.add(id);
         }

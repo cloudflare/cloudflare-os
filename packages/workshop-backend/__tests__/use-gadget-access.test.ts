@@ -262,9 +262,11 @@ describe("what a use session lists", () => {
 
     let listing = await pushed.promise;
     expect(listing.outputs?.map(entry => entry.workpieceId)).toEqual([101]);
-    // A "use" collaborator lists the workspace under its title, but is told nothing of its summary.
+    // A "use" collaborator lists the workspace under its title, but is told nothing of what waits
+    // there or its hooks.
     expect(listing.title?.title).toBe(impl.storage.title.get());
-    expect(listing.summary).toBeUndefined();
+    expect(listing.attention).toBeUndefined();
+    expect(listing.hooks).toBeUndefined();
     dispose(client);
   }));
 
@@ -319,7 +321,7 @@ describe("what a use session lists", () => {
 
     impl.resyncListingTo("owner-user");
     await vi.waitFor(() => expect(listings).toHaveLength(1));
-    expect(parts()).toEqual([["outputs", "summary", "title"]]);
+    expect(parts()).toEqual([["attention", "outputs", "title"]]);
 
     // A commit that rebinds the gadget leaves the outputs as acknowledged.
     seedGadget(impl, 100, { target: 7 });
@@ -345,7 +347,7 @@ describe("what a use session lists", () => {
 
     impl.resyncListingTo("owner-user");
     await vi.waitFor(() => expect(listings).toHaveLength(1));
-    expect(parts()).toEqual([["outputs", "summary", "title"]]);
+    expect(parts()).toEqual([["attention", "outputs", "title"]]);
   }));
 });
 
@@ -406,5 +408,28 @@ describe("recording a shared open", () => {
     await vi.waitFor(() => expect(record).toHaveBeenCalledOnce());
     let [, , , role, baselines] = record.mock.calls[0];
     expect({ role, baselines }).toEqual({ role: "use", baselines: null });
+  });
+
+  // Their User DO ignored the removal queued before the listing existed, so it is queued again.
+  it("queues a removal that lands while the open is recorded, after the resync", async () => {
+    let recording = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    let access: CollaboratorAccess | undefined = { role: "use", gadgetIds: [] };
+    let calls: unknown[][] = [];
+    using _client = await openFakeOverseer({}, { role: "use", access, userId: VIEWER_USER, impl: {
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      resyncListingTo: (...args: unknown[]) => { calls.push(["resync", ...args]); },
+      queueCollaboratorRole: (...args: unknown[]) => { calls.push(["role", ...args]); },
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => ({ type: "user", id: OWNER, name: "Owner" }),
+        recordSharedWorkspaceOpen: async () => { recording.resolve(); await release.promise; },
+      }) },
+    } }) as unknown as Disposable;
+    await recording.promise;
+
+    access = undefined;
+    release.resolve();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map(([kind, , , role]) => [kind, role])).toEqual([["resync", undefined], ["role", null]]);
   });
 });

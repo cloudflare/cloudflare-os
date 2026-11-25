@@ -632,8 +632,9 @@ Implement the `ObserverConfigCallback` on the client. When the overseer calls `c
    choice.
 4. Resolve `configure()` with one `ObserverAccountChoice` per binding, each carrying the account
    chosen for it. If the user cancels / can't provide an account, reject with
-   `createAccessConfirmationError(cancelled)` (or `notAsked` when the client chooses not to ask);
-   the overseer denies the open with that code and the UI shows an access-denied state.
+   `createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.cancelled)` (or `notAsked` when
+   the client chooses not to ask); the overseer denies the open with that code and the UI shows an
+   access-denied state.
 
 Messaging: "To open this Gadget, choose which of your «Vendor» accounts to use, so we can confirm
 you're allowed to see the data it uses."
@@ -1094,9 +1095,9 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   observer in the call, with no permission cached between operations.
 - **Background reads.** One rule decides every handoff of chat state from the workspace to a
   collaborator's User DO: chat state read through action R (chat heads, previews, notification
-  baselines, notifications and summaries) reaches them only if `mayReadChatState()` passes for R,
-  with the readers (`chatStateReaders()`) built in the same synchronous block as what they cover.
-  The owner receives everything. Three paths hand chat state over:
+  baselines and notifications) reaches them only if `mayReadChatState()` passes for R, with the
+  readers (`chatStateReaders()`) built in the same synchronous block as what they cover. The owner
+  receives everything. Two paths hand chat state over:
   - *Initial seeding.* A shared open reads the notification baselines, which carry chat heads,
     with its readers once the owner's profile is fetched, then checks the collaborator through
     them. Not admitted, or if the check throws (logged), the listing is still recorded, without
@@ -1104,15 +1105,13 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
     notification receipts of chats tracked meanwhile. Access is checked again right before the
     handoff: none left, or the workspace deleted, sends nothing; "use" sends the listing without
     them; the title, role and revisions are read then, but the baselines never again.
-  - *Unread fanout.* Each chat fanout batch, for previews and notifications.
-  - *Summary delivery.* Each listing pass. A collaborator's summary is compared with what they
-    acknowledged only after admission decides it, a clear included, so an older acknowledgement
-    never cancels a clear.
+  - *Unread fanout.* Each chat fanout batch, for heads, previews and notifications.
 
-  Two handoffs are ungated: a deletion notice carries no chat state, and a session command
-  (marking a chat read or unread, setting its notifications) is authorized by the caller's live
-  session, which every read checks. Title, role, outputs and removals need only current
-  effective access, and outputs stay outside observer admission.
+  Other handoffs are ungated. Hooks and per-gadget attention counts carry no agent-written text,
+  so they go to "build" collaborators on their role alone. A deletion notice carries no chat
+  state, and a session command (marking a chat read or unread, setting its notifications) is
+  authorized by the caller's live session, which every read checks. Title, role, outputs and
+  removals need only current effective access, and outputs stay outside observer admission.
 
   `mayReadChatState()` admits a "build" collaborator only once every in-scope connection's chosen
   account is verified against every requirement recorded through R, by its watermark:
@@ -1120,34 +1119,41 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   checked against its account. A workspace admission stamps the latest action for every
   connection in scope; any other admission keeps a choice's watermark only while its account is
   unchanged. A missing watermark means nothing has been checked yet, as for a new account a gadget
-  admission switches to or every choice the version-8 migration converted: the next check starts
-  from the first action, so nothing waits for a workspace open. A collaborator behind is verified
-  right before the handoff against what was recorded since: the subresources of later
+  admission switches to or every choice the version-8 migration converted: the next check covers
+  every requirement recorded through the connection, read from the `byObserverRequirement` keys
+  alone as admission does, so nothing waits for a workspace open. A collaborator behind is
+  verified right before the handoff against what was recorded since: the subresources of later
   observations through the connection, less any key whose earliest record is at or below the
-  watermark, read in pages of 500 actions until 10,000 keys or the target
-  (`ObserverLedger.requirementsSince`). One check per collaborator runs at a time, through the
-  latest action when it starts, and every handoff waiting on them shares it. Each batch looks up
-  the verifier (two-second limit; an account gone is a denial) and asks `verifyObserverAccess()`
-  (two-second limit), then, if the record still has the same observer id, account and watermark,
-  the choice was not denied meanwhile, and they are still "build", advances the watermark to the
-  batch's end; a record changed meanwhile ends the check unrecorded, and the handoff judges the
-  record as it now stands. A denial, whichever handoff finds it, keeps the watermark and marks the
-  choice `denied` in the same write that queues their summary again: every handoff withholds, the
-  summary they hold is cleared, and later handoffs call nothing until a workspace admission
-  re-verifies the choice and clears the mark, or an admission replaces the account. An admission
-  refused by a definitive denial (the account gone, or `addObserver()` or `verifyObserverAccess()`
-  refusing it; any `addObserver()` throw counts, since gatekeepers don't tell a refusal from an
-  outage) marks a choice with a watermark `denied` the same way, unless another admission
-  published the choice meanwhile (`admissionId`); a background check's progress does not stop it,
-  since it verified only what was recorded since, not what the admission was refused. Any other
-  operational failure marks
-  nothing. A failure or timeout of a background check records nothing and throws: the listing pass
-  sends the rest of the listing and retries the summary alone, and fanout keeps them as a failed
-  recipient. The rest of a collaborator's listing is re-scoped to their access as it stands once
-  the check is done: outputs refiltered, and outputs and title dropped if they have no access
-  left. A workspace with a legacy connection admits no collaborator. Requirements at or below a
-  watermark are not checked again, so a vendor-side revocation of a resource already checked waits
-  for the next open.
+  watermark, read in pages of 500 actions until 10,000 keys, four pages, or the target
+  (`ObserverLedger.requirementsSince`); a call stopped short returns how far it read, and the
+  check persists that progress and calls again. One check per collaborator runs at a time,
+  through the latest action when it starts, and every handoff waiting on them shares it. Each
+  batch looks up the verifier (two-second limit; an account gone is a denial) and asks
+  `verifyObserverAccess()` (two-second limit), then, if the record still has the same observer
+  id, account and watermark, the choice was not denied meanwhile, and they are still "build",
+  advances the watermark to the batch's end; a record changed meanwhile ends the check
+  unrecorded, and the handoff judges the record as it now stands.
+
+  A denial, whichever handoff finds it, keeps the watermark and marks the choice `denied` in the
+  same write that has the collaborator's User DO forget the workspace's chat state: the heads,
+  previews and notifications it was handed are dropped, and the listing is marked to seed them
+  again on the next admitted open, as a first admission. Denial is the trigger, so this happens
+  once. Every later handoff withholds, calling nothing, until a workspace admission re-verifies
+  the choice and clears the mark, or an admission replaces the account. An admission refused by
+  a definitive denial (the account gone, or `addObserver()` or `verifyObserverAccess()` refusing
+  it; any `addObserver()` throw counts, since gatekeepers don't tell a refusal from an outage)
+  marks a choice with a watermark `denied` the same way, unless another admission published the
+  choice after the refused pass began verifying (`admissionId`, read right before the pass's
+  checks, so a success that landed while the pass waited on an account prompt does not shield
+  the refusal); a background check's progress does not stop it, since it verified only what was
+  recorded since, not what the admission was refused. An observation whose `excludeObservers`
+  names a collaborator it cannot reach de-registers them from that connection and marks their
+  choice for it `denied` the same way: the read records nothing for them to check, so a stale
+  registration grants nothing. Any other operational failure marks nothing. A failure or timeout
+  of a background check records nothing and throws: the open owes the seeding to a later one, and
+  fanout keeps them as a failed recipient. A workspace with a legacy connection admits no
+  collaborator. Requirements at or below a watermark are not checked again, so a vendor-side
+  revocation of a resource already checked waits for the next open.
 - **Races.** After verifying, admission recomputes what it must verify and runs the pass again
   (at most three times) if a connection in its scope appeared or disappeared, or its requirements
   changed: one recorded meanwhile, one a gadget it newly reaches had recorded, or one dropped

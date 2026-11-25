@@ -6,7 +6,7 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, BlueprintUnpublishedChanges,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, BlueprintUnpublishedChanges, BoundHookInfo,
   WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, WorkspaceSummary, UserPreferences,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
@@ -196,8 +196,9 @@ export type ChatReadCursor = {
    */
   head?: ChatTimelineHead;
   /**
-   * The chat's `lastActive` time in the workspace when `head` was produced. Decides which of two
-   * heads with the same latest message (e.g. from before and after a rename) is newer.
+   * When the chat's head had last changed in the workspace as `head` was produced (see
+   * ChatMessageProgress.headUpdatedAt in user.ts). Decides which of two heads with the same latest
+   * message (e.g. from before and after a rename) is newer.
    */
   headUpdatedAt?: Date;
   /**
@@ -314,11 +315,18 @@ export function makeUserStorage(storage: DurableObjectStorage) {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
       }),
-      // Each listed workspace's summary (see AuthenticatedApi.subscribeToWorkspaceSummaries()),
+      // Each listed workspace's actions waiting, by gadget, and each hook bound there (see
+      // AuthenticatedApi.subscribeToWorkspaceSummaries(), whose summaries are assembled from them),
       // pushed by its Overseer to the owner and to "build" collaborators. Kept only while the
-      // workspace is listed for building: the `gadgets` subscription drops it otherwise.
-      workspaceSummaries: collection<WorkspaceSummary>()({
+      // workspace is listed for building: the `gadgets` subscription drops them otherwise.
+      workspaceAttention: collection<Pick<WorkspaceSummary, "workspaceId" | "waiting">>()({
         primaryKey: "workspaceId",
+      }),
+      workspaceHooks: collection<{workspaceId: string; hook: BoundHookInfo}>()({
+        primaryKey: record => `${record.workspaceId}:${record.hook.id}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: {workspaceId: string}) { return record.workspaceId; },
+        },
       }),
       // The newest listing revision taken from each listed workspace, owned or shared, or the floor
       // its shared listing started from (see UserDurableObject.syncWorkspaceListing() and

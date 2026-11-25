@@ -3,7 +3,7 @@
 // present only when this recipient is entitled to it, owes it, and has not acknowledged its
 // current value; an absent part leaves the recipient's copy as it is.
 
-import type { BlueprintUnpublishedChanges, WorkpieceId, WorkspaceSummary } from "@gadgets/workshop-shared/api";
+import type { BlueprintUnpublishedChanges, BoundHookInfo, WorkpieceId, WorkspaceWaiting } from "@gadgets/workshop-shared/api";
 import type { WorkspaceOutputEntry } from "./storage-schema/user-storage.js";
 
 /** One blueprint published from the workspace, and what it has not released. */
@@ -23,21 +23,30 @@ export type WorkspaceListing = {
   listingRev: number;
   /** The outputs the recipient may see: the owner all, a collaborator those their access holds. */
   outputs?: WorkspaceOutputEntry[];
-  /**
-   * The workspace summary: for the owner and admitted "build" collaborators. Null clears it for a
-   * collaborator no longer admitted.
-   */
-  summary?: WorkspaceSummary | null;
+  /** The actions waiting there, by gadget (WorkspaceSummary.waiting): for the owner and "build" collaborators. */
+  attention?: WorkspaceWaiting;
   /** Each blueprint published from here: for the owner. */
   blueprintChanges?: ListedBlueprintChanges[];
   /** The title: for the owner, and for each collaborator's shared listing with its revision. */
   title?: {title: string; titleRev: number};
   /** When the workspace was last active and what it has cost: for the owner. */
   activity?: {lastActive: Date; totalCost: number};
+  /**
+   * Each hook added, changed or removed since the recipient last took it, or every hook on a
+   * resync, each as it stands when sent (null: removed): for the owner and "build" collaborators.
+   * Not a part: owed per hook (see PendingUserUpdate.hookIds), and never acknowledged.
+   */
+  hooks?: {id: number; hook: BoundHookInfo | null}[];
+  /**
+   * Set once a collaborator is found denied background reads: their account forgets the chat state
+   * it holds of the workspace, and seeds it again at the next open that admits them. Not a part:
+   * owed once (see PendingUserUpdate.forgetChats).
+   */
+  forgetChats?: true;
 };
 
 /** A part of the listing, which the Overseer marks as it may change and sends whole. */
-export type ListingPart = Exclude<keyof WorkspaceListing, "listingRev">;
+export type ListingPart = Exclude<keyof WorkspaceListing, "listingRev" | "hooks" | "forgetChats">;
 
 /** Every part of the listing. */
-export const LISTING_PARTS: readonly ListingPart[] = ["outputs", "summary", "blueprintChanges", "title", "activity"];
+export const LISTING_PARTS: readonly ListingPart[] = ["outputs", "attention", "blueprintChanges", "title", "activity"];

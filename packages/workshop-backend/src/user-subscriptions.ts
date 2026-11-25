@@ -77,6 +77,9 @@ export class UserSubscriptions<T extends RpcTarget, D = void> {
   }
 
   #enqueue(listener: RpcStub<T>, entry: Listener<T, D>, delivery: Delivery<T, D>): void {
+    // A replacement snapshot not yet started reads the state when it runs, covering this update.
+    // (The first snapshot starts as it is queued, so a lone snapshot queued is a replacement.)
+    if (entry.queue.length === 1 && entry.queue[0] === entry.snapshot) return;
     if (entry.queue.length >= MAX_PENDING_DELIVERIES) {
       logger.warn("subscription queue overflowed", {event: "user.subscription.overflow", feed: this.feed});
       if (!entry.snapshot) return entry.release();

@@ -1239,6 +1239,101 @@ describe("background reads", () => {
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
     expect(watermark(world)).toBe(latestAction(world));
   }));
+
+  it("checks a choice with no watermark against every recorded requirement key", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedConnection(impl, CONN + 1);
+    addRows(impl, WORKSPACE, CONN, ["a"]);
+    addRows(impl, chat(1), CONN, ["b", "a"]);
+    addRows(impl, gadget(GADGET), CONN, ["c"]);
+    addRows(impl, WORKSPACE, CONN + 1, ["elsewhere"]);
+    impl.storage.observers.put({ profileId: "carol", observerId: "obs-c",
+      accountChoices: { [CONN]: { accountId: 20 }, [CONN + 1]: { accountId: 30 } } });
+    world.roles.set("carol", "build");
+    world.offline.add("carol");
+    expect(await background(world)).toBe(true);
+    expect(world.checks.map(check => check.ids.toSorted())).toEqual([["a", "b", "c"], ["elsewhere"]]);
+    expect(watermark(world)).toBe(latestAction(world));
+  }));
+
+  it("persists progress after each call's page limit and resumes from it", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    // Admitted through a recorded action: a watermark of -1 has checked nothing.
+    addRows(impl, WORKSPACE, CONN, ["seen"]);
+    await admitOffline(world);
+    let admittedAt = watermark(world)!;
+    expect(admittedAt).toBe(0);
+    world.checks.length = 0;
+    // Over four pages of actions, each recording a new requirement.
+    for (let i = 0; i < 2_100; i++) addRows(impl, WORKSPACE, CONN, [`doc:${i}`]);
+    let parked = Promise.withResolvers<void>(), reached = Promise.withResolvers<void>();
+    let calls = 0;
+    fakeFacets(impl, { verify: async (observers, ids) => {
+      if (++calls === 2) {
+        reached.resolve();
+        await parked.promise;
+      }
+      return verifyEachObserver(observers, ids);
+    } });
+    let admitted = background(world);
+    await reached.promise;
+    // The first call's progress stands while the second is in flight.
+    expect(watermark(world)).toBe(admittedAt + 2_000);
+    parked.resolve();
+    expect(await admitted).toBe(true);
+    expect(world.checks.map(check => check.ids.length)).toEqual([2_000, 100]);
+    expect(watermark(world)).toBe(latestAction(world));
+  }));
+
+  it("withholds once a reopen is refused after another admission published the choice", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    await read(world, ["x"]);
+    // A new connection leaves the reopen waiting on its account prompt.
+    seedConnection(impl, CONN + 1);
+    let prompted = Promise.withResolvers<void>(), answer = Promise.withResolvers<void>();
+    let prompts = 0;
+    let parkedConfigure = {
+      configure: async (needs: { gatekeeperId: number }[]) => {
+        if (++prompts > 1) throw new Error("gave up");
+        prompted.resolve();
+        await answer.promise;
+        return configureAll.configure(needs);
+      },
+    };
+    let reopen = expect(impl.ensureObserver(
+        "carol", world.clientUser("carol"), "workspace", parkedConfigure)).rejects.toThrow();
+    await prompted.promise;
+    // Meanwhile another open succeeds, publishing the choice under its own admission.
+    await impl.ensureObserver("carol", world.clientUser("carol"), "workspace", configureAll);
+    expect(denied(world)).toBeUndefined();
+
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+    answer.resolve();
+    await reopen;
+    expect(denied(world)).toBe(true);
+    world.verifiers.delete("carol");
+    expect(await background(world)).toBe(false);
+  }));
+
+  it("withholds once an excluded observer's connection is out of their reach", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    await admitOffline(world);
+    seedGadget(impl);
+    world.roles.set("carol", "use");
+    let { observerId } = impl.storage.observers.get("carol");
+    await impl.authorizeObservation(CONN, observation({ excludeObservers: [observerId] }),
+        { from: "user" });
+    expect(denied(world)).toBe(true);
+
+    world.roles.set("carol", "build");
+    expect(await background(world)).toBe(false);
+  }));
 });
 
 describe("admission against recorded requirements", () => {
@@ -1455,7 +1550,8 @@ describe("admission against recorded requirements", () => {
         check.ids.length === 1 && check.ids[0] === "remembered")).toBe(true);
   }));
 
-  it("lets a historical producer's new read through, dropping only that registration", () =>
+  it("lets a historical producer's new read through, dropping only that registration and " +
+      "denying that choice", () =>
       withWorld(async world => {
     let { impl } = world;
     seedConnection(impl);
@@ -1475,7 +1571,8 @@ describe("admission against recorded requirements", () => {
       gatekeeperId: CONN, type: "observation", state: "approved",
     });
     expect(callsTo(calls, "removeObserver")).toEqual([CONN]);
-    expect(impl.storage.observers.get("carol")).toEqual(record);
+    expect(impl.storage.observers.get("carol")).toEqual({ ...record,
+      accountChoices: { [CONN]: { ...record.accountChoices[CONN], denied: true } } });
   }));
 
   // Admission shares the observation path's answer validation (see refusingAnswers); a

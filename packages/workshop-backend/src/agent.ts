@@ -348,7 +348,7 @@ function formatUserFocus(focus: StampedMessageFocus, envName: string | undefined
 /**
  * A model step's usage as the agent loop hands it to AgentHooks.commitAgentStep: pi's report for
  * the step, and the prompt budget the turn sized its context against (getModelTokenLimits'
- * `inputBudget`), which the chat's AiChatMetadata.contextUsage records beside it.
+ * `inputBudget`), which the chat's AiChatMetadata.contextBudget records beside it.
  */
 export type StepUsage = {reported: Usage; inputBudget: number};
 

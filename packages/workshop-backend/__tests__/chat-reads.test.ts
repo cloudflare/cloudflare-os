@@ -98,6 +98,28 @@ describe("the version-8 migration", () => {
     }
     expect([...storage.chats.pendingRequestsByChat.list()]).toEqual([]);
   });
+
+  it("records who each live chat asked for a decision", () => {
+    let mock = makeMockStorage();
+    let storage = makeOverseerStorage(mock);
+    for (let chatId of [CHAT_ID, CHAT_ID + 1]) storage.nextChatSequences.put({ chatId, nextSequence: 5 });
+    storage.chatMeta.put({ id: CHAT_ID, title: "Chat", started: new Date(1), lastActive: new Date(1) });
+    let notify = (chatId: number, sequence: number, userId: string, kind: "permissionRequested" | "taskCompleted") =>
+      storage.chatNotifications.put({ id: crypto.randomUUID(), chatId, sequence, userId, kind });
+    notify(CHAT_ID, 1, "asked", "permissionRequested");
+    notify(CHAT_ID, 3, "asked", "permissionRequested");
+    notify(CHAT_ID, 2, "told", "taskCompleted");
+    // Its chat is gone.
+    notify(CHAT_ID + 1, 1, "asked", "permissionRequested");
+    storage.version.put(7);
+    let candidates = migrateToChatIndexes({
+      storage, ctx: { storage: mock }, logger: createWorkshopLogger("test.chat-reads"),
+    } as unknown as OverseerMigrationHost);
+    expect(storage.nextChatSequences.get(CHAT_ID)?.askedUsers).toEqual(["asked"]);
+    expect(storage.nextChatSequences.get(CHAT_ID + 1)?.askedUsers).toBeUndefined();
+    // The live chat that asked is returned for its waiting state to be recorded.
+    expect(candidates).toEqual([CHAT_ID]);
+  });
 });
 
 describe("one chat's reads", () => {

@@ -280,8 +280,9 @@ export type ChatReadState = {
 };
 
 /**
- * What a chat's most recent visible message looks like, used to display the chat in a list such as
- * the unread inbox. It's the same for every user, regardless of what they've read.
+ * What a chat's most recent visible message looks like, and whether its agent is working or it
+ * waits on someone, used to display the chat in a list such as the unread inbox or the user's
+ * recent chats. It's the same for every user, regardless of what they've read.
  */
 export type ChatTimelineHead = {
   /** The chat's current title. */
@@ -304,6 +305,19 @@ export type ChatTimelineHead = {
    * head was recorded before this field was.
    */
   latestAuthor?: Pick<AiChatAuthorInfo, "type" | "id" | "name">;
+  /**
+   * Present while the chat's agent is working on a turn (as `AiChatMetadata.activeAgent` says).
+   * Absent when its head was recorded before this field was.
+   */
+  working?: true;
+  /**
+   * Present while the chat waits on someone: on an action of its own to be approved
+   * (`"approval"`), or, with its agent stopped, on another decision, such as a connection request
+   * (`"action"`). `ask` is what it asks, where that can be told: one of its pending actions for
+   * `"approval"`, else its pending request. Absent when its head was recorded before this field
+   * was.
+   */
+  waiting?: {kind: "approval" | "action"; ask?: WaitingAsk};
 };
 
 /**
@@ -414,93 +428,40 @@ export interface UnreadStateSubscriber extends RpcTarget {
     summary: UnreadSummaryUpdate): Promise<void>;
 }
 
-/** What waits on the user in one workspace (see `WorkspaceSummary`). */
+/** The actions waiting on the user in one workspace, by gadget (see `WorkspaceSummary`). */
 export type WorkspaceWaiting = {
   /**
-   * Agent runs (chats an agent spawner started) stopped on a decision, or with an action of
-   * theirs waiting for approval.
-   */
-  runs: number;
-
-  /** Other chats, likewise. */
-  chats: number;
-
-  /**
    * The gadgets with actions waiting for approval, and how many each: those its code or its hooks
-   * asked for outside any chat, and those of the runs it started (which `runs` counts too). Each
-   * action counts for at most one gadget; gadgets with none are left out.
+   * asked for outside any chat, and those of the runs it started. Each action counts for at most
+   * one gadget; gadgets with none are left out. A chat waiting on someone says so on its head
+   * instead (see `ChatTimelineHead.waiting`).
    */
   gadgets: {gadgetId: WorkpieceId; actions: number}[];
 };
 
 /**
- * The most chats `WorkspaceSummary.waitingChats` lists; `WorkspaceWaiting` counts every one.
- */
-export const MAX_SUMMARY_WAITING_CHATS = 50;
-
-/**
- * What a chat waiting on the user asks of them (see `WorkspaceWaitingChat`): to approve an action
- * of its own (`action`, by its title), to connect a service (`connection`), or to approve fetching
- * a URL that restricted mode refuses (`webFetch`). Each string is cut off at 240 characters.
+ * What a chat waiting on the user asks of them (see `ChatTimelineHead.waiting`): to approve an
+ * action of its own (`action`, by its title), to connect a service (`connection`), or to approve
+ * fetching a URL that restricted mode refuses (`webFetch`). Each string is cut off at 240
+ * characters.
  */
 export type WaitingAsk =
     {type: "action"; title: string}
   | {type: "connection"; vendorName: string; reason: string}
   | {type: "webFetch"; url: string};
 
-/** A chat waiting on the user, as `WorkspaceSummary.waitingChats` lists it. */
-export type WorkspaceWaitingChat = {
-  /** The chat's id within the workspace (as `AiChatMetadata.id`). */
-  chatId: number;
-
-  /** The chat's title. */
-  title: string;
-
-  /** When the chat was last active (as `AiChatMetadata.lastActive`). */
-  lastActive: Date;
-
-  /**
-   * Whether it waits on an action of its own to be approved (`"approval"`), or only on another
-   * decision, such as a connection request (`"action"`).
-   */
-  waiting: "approval" | "action";
-
-  /**
-   * What it asks, where that can be told: one of its pending actions for `"approval"`, else its
-   * pending request.
-   */
-  ask?: WaitingAsk;
-
-  /** If it is an agent's run, the spawner that started it (as `AiChatMetadata` names it). */
-  spawnerId?: WorkpieceId;
-  /** The spawner's name when the run started (as `AiChatMetadata.spawnerName`). */
-  spawnerName?: string;
-};
-
 /**
- * One workspace, as summarized for `AuthenticatedApi.subscribeToWorkspaceSummaries()`: what waits
- * on the user there, the chats whose agents are working, and the hooks it has bound, as the
- * workspace last reported them.
+ * One workspace, as summarized for `AuthenticatedApi.subscribeToWorkspaceSummaries()`: the
+ * actions waiting on the user there, by gadget, and the hooks it has bound, as the workspace last
+ * reported them. Which chats are working or waiting on someone is on their heads, in the
+ * `"recent"` unread scope (see `ChatTimelineHead`).
  */
 export type WorkspaceSummary = {
   /** The workspace summarized. */
   workspaceId: string;
 
-  /** What waits on the user there. */
+  /** The actions waiting on the user there, by gadget. */
   waiting: WorkspaceWaiting;
-
-  /**
-   * The chats `waiting` counts (runs and chats both), the most recently active first, at most
-   * MAX_SUMMARY_WAITING_CHATS. Absent on a summary the account stored before workspaces said it,
-   * until the workspace's summary next changes.
-   */
-  waitingChats?: WorkspaceWaitingChat[];
-
-  /**
-   * The chats whose agents are working on a turn now (as `AiChatMetadata.activeAgent` says).
-   * Absent as `waitingChats` is.
-   */
-  workingChatIds?: number[];
 
   /** Every hook bound there, as `Overseer.listHooks()` lists them. */
   hooks: BoundHookInfo[];
@@ -1301,14 +1262,16 @@ export interface AuthenticatedApi extends RpcTarget {
   subscribeToOutputs(subscriber: RpcStub<OutputsSubscriber>): Promise<RpcStub<{}>>;
 
   /**
-   * Subscribe to a summary of each of the user's workspaces that they build in: what waits on them
-   * there and the hooks it has bound (see `WorkspaceSummary`), for the sidebar's and the Library's
-   * counts and the Automations page, without opening any workspace.
+   * Subscribe to a summary of each of the user's workspaces that they build in: the actions waiting
+   * on them there, by gadget, and the hooks it has bound (see `WorkspaceSummary`), for the
+   * sidebar's and the Library's counts and the Automations page, without opening any workspace.
+   * Chats working or waiting on someone come through `subscribeToUnreadState()` instead, as head
+   * fields (see `ChatTimelineHead`).
    *
-   * Served from the user's own account, which each workspace pushes its summary to whenever it
-   * changes and whenever the user opens it. A workspace shared with the user is included once they
-   * have opened it and confirmed access to what it reads, and dropped if their access is revoked or
-   * narrowed to using its gadgets. A workspace with no summary yet is unknown, not empty.
+   * Served from the user's own account, which each workspace pushes each change to as it happens
+   * and everything once whenever the user opens it. A workspace shared with the user is included
+   * once they have opened it, and dropped if their access is revoked or narrowed to using its
+   * gadgets. A workspace with no summary yet is unknown, not empty.
    *
    * The subscriber first gets every summary through `snapshot()`, then one workspace at a time
    * through `updated()`. Dispose of the returned stub to unsubscribe. If the connection drops,

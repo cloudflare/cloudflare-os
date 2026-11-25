@@ -6,7 +6,7 @@ import {
   ACCESS_CONFIRMATION_ERROR_CODES, ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   SNAPSHOT_SHARING_ERROR_CODES,
   createAccessConfirmationError, createAdminAccessError, createSnapshotSharingError,
-  getAccessConfirmationErrorCode, isAgentRun,
+  getAccessConfirmationErrorCode,
   type AccessConfirmationErrorCode,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
@@ -14,8 +14,7 @@ import {
   type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
   type ObserverBindingPathStep,
   type AgentSpawnerInfo,
-  type ChatAttachmentInfo, type ChatListOptions, type WorkspaceSummary,
-  type WorkspaceWaitingChat, MAX_SUMMARY_WAITING_CHATS,
+  type ChatAttachmentInfo, type ChatListOptions, type WaitingAsk, type WorkspaceWaiting,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -174,14 +173,16 @@ function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFan
     participatingUsers: left?.participatingUsers || right.participatingUsers ?
       [...new Set([...left?.participatingUsers ?? [], ...right.participatingUsers ?? []])] : undefined,
     notificationBaseline: left?.notificationBaseline === undefined ? right.notificationBaseline :
-      Math.max(left.notificationBaseline, right.notificationBaseline ?? -1)};
+      Math.max(left.notificationBaseline, right.notificationBaseline ?? -1),
+    headState: left?.headState || right.headState};
 }
 
 function sameChatFanoutStart(left: ChatFanoutStart, right: ChatFanoutStart): boolean {
   return left.firstMessageSequence === right.firstMessageSequence &&
     left.firstVisibleSequence === right.firstVisibleSequence &&
     left.notificationBaseline === right.notificationBaseline &&
-    left.participatingUsers?.join() === right.participatingUsers?.join();
+    left.participatingUsers?.join() === right.participatingUsers?.join() &&
+    left.headState === right.headState;
 }
 
 // `request`, rejected with `message` if it has not settled within two seconds.
@@ -773,7 +774,7 @@ function workpieceSummary(record: WorkpieceRecord, includeUpstream: boolean): Wo
 }
 
 // The gadget whose code made a call, or that the hook firing it wakes, for the action log, the
-// waiting summary and the runs a gadget starts. Never the default gadget for a caller that names
+// waiting counts by gadget and the runs a gadget starts. Never the default gadget for a caller that names
 // none: the default can change, and attribution must not (see GatekeeperCaller).
 function callerGadgetId(caller: GatekeeperCaller): WorkpieceId | undefined {
   return caller.from === "gadget" || caller.from === "hook" ? caller.gadgetId : undefined;
@@ -1396,7 +1397,8 @@ class OverseerImpl implements AgentHooks {
     }
 
     let times: number[] = [];
-    if (this.storage.listingDirty.get().length || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+    if (this.storage.listingDirty.get().length || this.storage.listingDirtyHooks.get().length ||
+        [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
       times.push(this.#userUpdatesRetryAt || Date.now() + 1_000);
     }
     if ([...this.storage.dirtyChats.list({limit: 1})].length) {
@@ -1502,6 +1504,9 @@ class OverseerImpl implements AgentHooks {
   #dirtyChatTokens = new Map<number, ChatFanoutStart>();
   #chatDeliveries = new Map<number, Promise<void>>();
   #chatDeliveryScheduled = false;
+  // Chats whose head state changed since #recordWaiting() last ran, each with whether what it
+  // waits on may be a request (see #headStateChanged()).
+  #waitingStale = new Map<number, boolean>();
   #userUpdatesRetryAt = 0;
   // The pass of deliverUserUpdates() reading the queue and starting sends, and what that call
   // settles with: once the sends it started, and those in flight it left alone, have settled.
@@ -1524,6 +1529,7 @@ class OverseerImpl implements AgentHooks {
     this.ctx.storage.transactionSync(() => {
       this.storage.deleting.put(true);
       this.storage.listingDirty.put([]);
+      this.storage.listingDirtyHooks.put([]);
       for (let pending of this.storage.pendingUserUpdates.list()) userIds.add(pending.userId);
       for (let userId of userIds) {
         // A new seq: a send in flight for the row this replaces must not delete it.
@@ -1538,20 +1544,25 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
-  // Queue `parts` of the workspace listing for user `userId`, and a new `role` when given (null:
-  // removal, which drops what they were owed), bumping the row's `seq`. A new role, or removal,
-  // may take away what their account acknowledged, so it forgets that.
+  // Queue `parts` of the workspace listing and the hooks `hookIds` for user `userId`, that their
+  // account forget the workspace's chat state when `forgetChats`, and a new `role` when given
+  // (null: removal, which drops what they were owed), bumping the row's `seq`. A new role, or
+  // removal, may take away what their account acknowledged, so it forgets that.
   #queueUserUpdate(userId: string, profileId: string | undefined,
-      {parts = [], role}: {parts?: readonly ListingPart[], role?: CollaboratorRole | null}): void {
+      {parts = [], hookIds = [], forgetChats, role}: {parts?: readonly ListingPart[],
+        hookIds?: readonly number[], forgetChats?: true, role?: CollaboratorRole | null}): void {
     let row = this.storage.pendingUserUpdates.get(userId);
     let update: PendingUserUpdate = {userId, seq: (row?.seq ?? 0) + 1};
     let owed = role === null ? [] : [...new Set([...row?.parts ?? [], ...parts])];
+    let owedHooks = role === null ? [] : [...new Set([...row?.hookIds ?? [], ...hookIds])];
     role = role === undefined ? row?.role : role;
     profileId ??= row?.profileId;
     if (profileId !== undefined) update.profileId = profileId;
     if (role !== undefined) update.role = role;
     if (role !== undefined && role !== row?.role) this.#listingAcks.delete(userId);
     if (owed.length) update.parts = owed;
+    if (owedHooks.length) update.hookIds = owedHooks;
+    if (role !== null && (forgetChats || row?.forgetChats)) update.forgetChats = true;
     this.storage.pendingUserUpdates.put(update);
   }
 
@@ -1591,6 +1602,7 @@ class OverseerImpl implements AgentHooks {
     this.#userUpdatesRequested = false;
     let waiters = this.#userUpdateWaiters;
     if (!waiters.size && !this.storage.deleting.get() && !this.storage.listingDirty.get().length &&
+        !this.storage.listingDirtyHooks.get().length &&
         ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
       return Promise.allSettled(this.#userSends.values()).then(() => {});
     }
@@ -1622,7 +1634,8 @@ class OverseerImpl implements AgentHooks {
       let listingRev = Math.max(now, this.storage.listingRev.get() + 1);
       if (updates.length) this.storage.listingRev.put(listingRev);
       let whole = this.#readListing(new Set(deleting ? [] : updates.flatMap(update => update.parts ?? [])));
-      let readers = sharing && this.chatStateReaders(sharing);
+      let hooks = new Map(!deleting && updates.some(update => update.hookIds)
+          ? boundHookInfos(this).map(hook => [hook.id, hook]) : []);
       let sends = updates.flatMap(update => {
         let {userId, profileId} = update;
         let owner = !deleting && userId === this.ownerId;
@@ -1643,28 +1656,30 @@ class OverseerImpl implements AgentHooks {
         if (owner || access) {
           this.#listingAcks.set(userId, acks);
           for (let part of update.parts ?? []) {
-            // A collaborator is sent neither blueprints nor activity, nor a summary unless "build".
+            // A collaborator is sent neither blueprints nor activity, nor attention unless "build".
             if (access && (part === "blueprintChanges" || part === "activity" ||
-                (part === "summary" && access.role !== "build"))) continue;
+                (part === "attention" && access.role !== "build"))) continue;
             let value = part === "outputs" && access
                 ? whole.outputs?.filter(output => accessIncludesGadget(access, output.workpieceId))
                 : whole[part];
             if (value === undefined) continue;
             let json = canonicalJson(value);
-            // A collaborator's summary is compared only once admission decides what they may hold
-            // (see #sendUserUpdate()).
-            if (acks.get(part) === json && !(access && part === "summary")) continue;
+            if (acks.get(part) === json) continue;
             sent.set(part, json);
             Object.assign(listing, {[part]: value});
           }
+          if (update.hookIds && (owner || access?.role === "build")) {
+            listing.hooks = update.hookIds.map(id => ({id, hook: hooks.get(id) ?? null}));
+          }
+          if (update.forgetChats && access) listing.forgetChats = true;
         }
-        if (!deleting && update.role === undefined && !sent.size) {
+        if (!deleting && update.role === undefined && !sent.size && !listing.hooks && !listing.forgetChats) {
           // Owed nothing they have not acknowledged.
           this.storage.pendingUserUpdates.delete(userId);
           this.#userRetryAt.delete(userId);
           return [];
         }
-        return [{update, listing, sent, acks, readers}];
+        return [{update, listing, sent, acks, sharing}];
       });
       for (let send of sends) {
         let {userId} = send.update;
@@ -1732,16 +1747,13 @@ class OverseerImpl implements AgentHooks {
   // Send one user what a pass of deliverUserUpdates() read for them, deleting their row unless
   // queued again meanwhile. A failed send is retried from the alarm, and forgets what it carried
   // as acknowledged: it may still land, having timed out, so what it replaced is no longer known
-  // to be there. A summary whose admission check fails is held back alone: the rest is sent, and
-  // the row is left owing only the summary, retried from the alarm. A collaborator's other parts
-  // were read under their access when the pass started, so they are re-scoped to it as it stands
-  // once the awaits before the send are done.
-  async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks, readers}: {
+  // to be there. A collaborator's parts and hooks were read under their access when the pass
+  // started, so they are re-scoped to it as it stands once the awaits before the send are done.
+  async #sendUserUpdate(workspaceId: string, deleting: boolean, {update: {userId, profileId, role, seq}, listing, sent, acks, sharing}: {
     update: PendingUserUpdate, listing: WorkspaceListing, sent: Map<ListingPart, string>,
-    acks: Map<ListingPart, string>, readers: ChatStateReaders | undefined,
+    acks: Map<ListingPart, string>, sharing: SharingManager | undefined,
   }): Promise<void> {
     let event = "shared.gadget.access.refresh.failed";
-    let summaryCheck: {error: unknown} | undefined;
     let landed = false;
     try {
       let user = this.users.get(this.users.idFromString(userId));
@@ -1749,28 +1761,13 @@ class OverseerImpl implements AgentHooks {
       else if (role === null) await boundedUserUpdate(user.forgetSharedWorkspace(workspaceId));
       else if (role) await boundedUserUpdate(user.updateSharedWorkspaceRole(workspaceId, role));
       event = "workspace.listing.push.failed";
-      // A collaborator's summary only while admitted (access to what this workspace reads
-      // confirmed): not admitted, the one they hold is cleared. What admission allows, a clear
-      // included, is then compared with what they acknowledged, so an acknowledgement of an older
-      // summary never cancels a clear.
-      if (sent.has("summary") && profileId !== undefined) {
-        try {
-          if (!readers || !await this.mayReadChatState(userId, profileId, readers)) {
-            listing.summary = null;
-            sent.set("summary", canonicalJson(null));
-          }
-          if (this.#listingAcks.get(userId) === acks && acks.get("summary") === sent.get("summary")) {
-            delete listing.summary;
-            sent.delete("summary");
-          }
-        } catch (error) {
-          summaryCheck = {error};
-          delete listing.summary;
-          sent.delete("summary");
+      if (profileId !== undefined && sharing) {
+        let access = sharing.getEffectiveAccess(profileId);
+        if (access?.role !== "build") {
+          delete listing.attention;
+          delete listing.hooks;
+          sent.delete("attention");
         }
-      }
-      if (profileId !== undefined && readers && (sent.has("outputs") || sent.has("title"))) {
-        let access = readers.sharing.getEffectiveAccess(profileId);
         if (!access) {
           delete listing.outputs;
           delete listing.title;
@@ -1783,7 +1780,7 @@ class OverseerImpl implements AgentHooks {
       }
       // Checked again after the awaits above, as a shared open's seeding does: once deletion has
       // begun, nothing of the listing is sent, and the removal it queued (a new seq) follows.
-      if (sent.size && !this.storage.deleting.get()) {
+      if ((sent.size || listing.hooks || listing.forgetChats) && !this.storage.deleting.get()) {
         await boundedUserUpdate(user.syncWorkspaceListing(workspaceId, listing));
         // Unless forgotten meanwhile.
         if (this.#listingAcks.get(userId) === acks) {
@@ -1791,14 +1788,9 @@ class OverseerImpl implements AgentHooks {
         }
       }
       landed = true;
-      // Unless queued again meanwhile: that row supersedes this one, with or without the summary.
+      // Unless queued again meanwhile: that row supersedes this one.
       if (this.storage.pendingUserUpdates.get(userId)?.seq === seq) {
-        if (!summaryCheck) this.storage.pendingUserUpdates.delete(userId);
-        else this.storage.pendingUserUpdates.put({userId, profileId, seq, parts: ["summary"]});
-      }
-      if (summaryCheck) {
-        event = "workspace.summary.check.failed";
-        throw summaryCheck.error;
+        this.storage.pendingUserUpdates.delete(userId);
       }
       this.#userRetryAt.delete(userId);
     } catch (error) {
@@ -1825,10 +1817,10 @@ class OverseerImpl implements AgentHooks {
 
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
   markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number,
-      participatingUser?: string): void {
+      participatingUser?: string, headState?: true): void {
     if (!this.ownerId) return;
     let incoming: ChatFanoutStart = {firstMessageSequence, firstVisibleSequence,
-      participatingUsers: participatingUser ? [participatingUser] : undefined};
+      participatingUsers: participatingUser ? [participatingUser] : undefined, headState};
     this.#dirtyChatTokens.set(chatId, mergeChatFanoutStarts(this.#dirtyChatTokens.get(chatId), incoming));
     let pending = this.storage.dirtyChats.get(chatId);
     let start = mergeChatFanoutStarts(pending?.retryOnly ? undefined : pending, incoming);
@@ -1893,7 +1885,7 @@ class OverseerImpl implements AgentHooks {
         let counter = this.storage.nextChatSequences.get(chatId);
         let latestMessage = counter?.latestVisibleMessageSequence === undefined ? undefined :
           this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
-        let head = meta ? headForMessage(meta, latestMessage) : undefined;
+        let head = meta ? this.#buildChatHead(meta, latestMessage, counter) : undefined;
         let latestVisibleSequence = counter?.visibleThroughSequence ?? 0;
         let participants = counter?.notificationParticipants === undefined ? undefined :
           new Set(counter.notificationParticipants.map(profileId => this.users.idFromName(profileId).toString()));
@@ -1905,10 +1897,16 @@ class OverseerImpl implements AgentHooks {
         let notifications = !meta || firstMessage === Infinity ? [] :
           [...this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId),
             start: chatKey(chatId, firstMessage)})];
+        // Besides those enrolled: someone asked for a decision here in this batch, and anyone
+        // ever asked, when what the chat works on or waits on changed, so a head that stops
+        // waiting on them reaches them as the one that started did.
+        let asked = new Set(counter?.askedUsers);
+        let notified = (userId: string, start: ChatFanoutStart) => notifications.some(event =>
+          event.userId === userId && event.kind === "permissionRequested" &&
+          start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence);
         let entries = [...targets].filter(([userId, start]) => participants === undefined || participants.has(userId) ||
           (!meta ? dirty.failedRecipients?.some(pending => pending.userId === userId) :
-            notifications.some(event => event.userId === userId && event.kind === "permissionRequested" &&
-              start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)));
+            notified(userId, start) || (start.headState && asked.has(userId))));
         // Read with the batch above: each collaborator is verified through it first.
         let readers = this.chatStateReaders(sharing);
         let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
@@ -1919,15 +1917,16 @@ class OverseerImpl implements AgentHooks {
           // Checked again after that await, as a shared open's seeding does: deletion begun
           // meanwhile sends no chat state. A deletion notice still goes out.
           if (meta && this.storage.deleting.get()) return;
-          let {participatingUsers, ...progress} = start;
+          let {participatingUsers, headState: _headState, ...progress} = start;
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
             this.ctx.id.toString(), chatId, meta ? {...progress, latestVisibleSequence, latestMessageAuthorId,
-              // A one-off approval must not mark earlier unattended messages read.
-              ...(participants && !participants.has(userId) ? {
+              // A one-off approval must not mark earlier unattended messages read, and a head
+              // sent to someone not enrolled for its messages carries none of them.
+              ...(participants && !participants.has(userId) ? notified(userId, start) ? {
                 firstMessageSequence: counter?.trackingStartSequence ?? counter?.nextSequence,
                 firstVisibleSequence: 1,
-              } : {}),
-              head: head!, headUpdatedAt: meta.lastActive,
+              } : {firstMessageSequence: undefined, firstVisibleSequence: undefined, latestVisibleSequence: 0} : {}),
+              head: head!, headUpdatedAt: this.chatHeadUpdatedAt(meta, counter),
               hasParticipated: participants === undefined ? undefined : participatingUsers?.includes(userId) ?? false,
               fanoutEnrolled: participants?.has(userId),
               notifications: notifications.filter(event => event.userId === userId &&
@@ -2018,9 +2017,78 @@ class OverseerImpl implements AgentHooks {
   chatHead(chatId: number): ChatTimelineHead | undefined {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
-    let latest = this.storage.nextChatSequences.get(chatId)?.latestVisibleMessageSequence;
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let latest = counter?.latestVisibleMessageSequence;
     let message = latest === undefined ? undefined : this.storage.chats.get(chatKey(chatId, latest));
-    return headForMessage(meta, message);
+    return this.#buildChatHead(meta, message, counter);
+  }
+
+  // When `meta`'s head last changed, which orders two heads with the same latest message (see
+  // ChatReadCursor.headUpdatedAt): its last activity, or a later change of its state.
+  chatHeadUpdatedAt(meta: AiChatMetadata, counter = this.storage.nextChatSequences.get(meta.id)): Date {
+    return counter?.headStateAt && counter.headStateAt > meta.lastActive ? counter.headStateAt : meta.lastActive;
+  }
+
+  // `meta`'s head at `message`, its latest visible message, with whether its agent is working and
+  // what it waits on, as last recorded on its sequence `counter` (see #headStateChanged()).
+  #buildChatHead(meta: AiChatMetadata, message: StoredChatMessage | undefined,
+      counter: {waiting?: ChatTimelineHead["waiting"]} | undefined): ChatTimelineHead {
+    let head = headForMessage(meta, message);
+    if (meta.activeAgent) head.working = true;
+    if (counter?.waiting) head.waiting = counter.waiting;
+    return head;
+  }
+
+  // What a chat waits on (see ChatTimelineHead.waiting): an action of its own while one is pending,
+  // asking by that action's title if any is one; otherwise, while its agent is stopped, the
+  // request its decision wait is pending on, unless `requests` is false (just past a decision
+  // boundary, which ends that wait). Scans the chat: run only when its state changes.
+  #chatWaiting(meta: AiChatMetadata, requests: boolean): ChatTimelineHead["waiting"] {
+    let approval: ChatTimelineHead["waiting"];
+    for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
+      if (record.caller.from === "hook" || record.caller.chatId !== meta.id) continue;
+      if (record.type === "action") {
+        return {kind: "approval", ask: {type: "action", title: record.description.title.slice(0, 240)}};
+      }
+      approval = {kind: "approval"};
+    }
+    if (approval || meta.activeAgent || !requests) return approval;
+    let request = this.#decisionWait(meta.id)?.request;
+    let ask: WaitingAsk | undefined = request?.type === "connectionRequest"
+      ? {type: "connection", vendorName: request.vendorName.slice(0, 240), reason: request.reason.slice(0, 240)}
+      : request?.type === "webFetchRequest" ? {type: "webFetch", url: request.url.slice(0, 240)} : undefined;
+    return ask && {kind: "action", ask};
+  }
+
+  // Note that a chat's head changed other than by a new message (see `headStateAt` on
+  // nextChatSequences), and send it. Called by pre-write storage hooks, `meta` being the chat as
+  // it is being written, so what it waits on is recorded from a microtask, once the write has
+  // landed; that runs before the delivery this schedules reads it. A decision `boundary` needs no
+  // look back for a request it waits on.
+  #headStateChanged(chatId: number, {meta = this.storage.chatMeta.get(chatId), boundary = false}:
+      {meta?: AiChatMetadata, boundary?: boolean} = {}): void {
+    if (!meta || !this.ownerId) return;
+    let counter = this.storage.nextChatSequences.get(chatId) ?? {chatId, nextSequence: 0};
+    this.storage.nextChatSequences.put({...counter, headStateAt: new Date(Math.max(Date.now(),
+      (counter.headStateAt?.getTime() ?? 0) + 1, meta.lastActive.getTime() + 1))});
+    if (!this.#waitingStale.size) queueMicrotask(() => this.#recordWaiting());
+    this.#waitingStale.set(chatId, boundary ? this.#waitingStale.get(chatId) ?? false : true);
+    this.markChatDirty(chatId, undefined, undefined, undefined, true);
+  }
+
+  // Record on their sequence counters what the chats #headStateChanged() noted wait on.
+  #recordWaiting(): void {
+    let stale = [...this.#waitingStale];
+    this.#waitingStale.clear();
+    for (let [chatId, requests] of stale) {
+      let meta = this.storage.chatMeta.get(chatId);
+      let counter = this.storage.nextChatSequences.get(chatId);
+      if (!meta || !counter) continue;
+      let waiting = this.#chatWaiting(meta, requests);
+      if (JSON.stringify(waiting) === JSON.stringify(counter.waiting)) continue;
+      let {waiting: _old, ...rest} = counter;
+      this.storage.nextChatSequences.put(waiting ? {...rest, waiting} : rest);
+    }
   }
 
   // A session command (this and setChatNotificationsEnabled()) hands the caller's User DO chat
@@ -2046,7 +2114,7 @@ class OverseerImpl implements AgentHooks {
       this.ctx.id.toString(), chatId, {
         readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
         latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
-        head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
+        head: this.chatHead(chatId)!, headUpdatedAt: this.chatHeadUpdatedAt(meta, counter),
         hasParticipated: this.chatParticipationDefault(chatId),
         notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
       }, rewind);
@@ -2064,10 +2132,10 @@ class OverseerImpl implements AgentHooks {
       });
   }
 
-  // Whether chat state (heads, previews, notification baselines, notifications, summaries) read
-  // through action `readers.throughActionId` may be handed to `userId`'s User DO: the owner always;
-  // a collaborator while "build", with an account chosen for every in-scope gatekeeper, each
-  // verified against every requirement recorded through that action (see
+  // Whether chat state (heads, with what they wait on, previews, notification baselines,
+  // notifications) read through action `readers.throughActionId` may be handed to `userId`'s User
+  // DO: the owner always; a collaborator while "build", with an account chosen for every in-scope
+  // gatekeeper, each verified against every requirement recorded through that action (see
   // #ensureBackgroundAdmission()). Throws, deciding nothing, if a check fails. The single rule for
   // every such handoff, and its exceptions: "Background reads" in docs/observers.md §10.
   async mayReadChatState(userId: string, profileId: string, readers: ChatStateReaders): Promise<boolean> {
@@ -2125,14 +2193,14 @@ class OverseerImpl implements AgentHooks {
   }
 
   // One background check of `profileId` (see #ensureBackgroundAdmission()): advances the
-  // watermark of each of `gatekeepers` to `throughActionId`, from the first action for a choice
-  // with none, one call per batch of new requirements (see ObserverLedger.requirementsSince),
-  // persisting each batch, and marks denied the first choice whose account is gone or refused,
-  // keeping its watermark. A batch's result is recorded only if, after its awaits, the record
-  // still has the same observer id, account and watermark, the choice was not denied meanwhile,
-  // and the profile is still "build"; otherwise the check ends, recording nothing, for the caller
-  // to judge the record anew. Throws, recording nothing, if the verifier lookup or the gatekeeper
-  // fails or times out.
+  // watermark of each of `gatekeepers` to `throughActionId`, one call per batch of new
+  // requirements (see ObserverLedger.requirementsSince: a choice with none is checked against
+  // every requirement key recorded through its connection), persisting each batch's progress,
+  // and marks denied the first choice whose account is gone or refused, keeping its watermark. A
+  // batch's result is recorded only if, after its awaits, the record still has the same observer
+  // id, account and watermark, the choice was not denied meanwhile, and the profile is still
+  // "build"; otherwise the check ends, recording nothing, for the caller to judge the record anew.
+  // Throws, recording nothing, if the verifier lookup or the gatekeeper fails or times out.
   async #checkInBackground(profileId: string, gatekeepers: GatekeeperRecord[],
                            throughActionId: number, sharing: SharingManager): Promise<void> {
     for (let gk of gatekeepers) {
@@ -2169,17 +2237,19 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Marks `current`'s choice for `gatekeeperId` `denied`, so neither background publish admits
-  // them until a workspace admission re-verifies it, and, in the same write, queues the summary
-  // they hold to be cleared, its acknowledgement forgotten so the pass re-judges it.
+  // them until a workspace admission re-verifies it, and, in the same write, queues that their
+  // account forget the chat state it holds of this workspace, which the next open admitting them
+  // seeds again (see WorkspaceListing.forgetChats).
   #denyBackgroundReads(current: ObserverRecord, gatekeeperId: number): void {
-    let summaryUser = this.users.idFromName(current.profileId).toString();
     this.storage.transaction(() => {
       this.storage.observers.put({...current, accountChoices: {...current.accountChoices,
         [gatekeeperId]: {...current.accountChoices[gatekeeperId]!, denied: true}}});
-      this.#queueUserUpdate(summaryUser, current.profileId, {parts: ["summary"]});
+      if (this.ownerId) {
+        this.#queueUserUpdate(this.users.idFromName(current.profileId).toString(), current.profileId,
+            {forgetChats: true});
+      }
     });
-    this.#listingAcks.get(summaryUser)?.delete("summary");
-    this.#requestUserUpdates();
+    if (this.ownerId) this.#requestUserUpdates();
     this.logger.warn("background reads withheld from a collaborator", {
       event: "observer.background.withheld", gatekeeperId, observerId: current.observerId,
     });
@@ -2211,18 +2281,29 @@ class OverseerImpl implements AgentHooks {
             isCountableChatMessage(message) ? message.visibleThroughSequence : undefined,
             isChatParticipation(message) ? this.users.idFromName(message.author.id).toString() : undefined);
         }
+        // A decision boundary ends what the chat waited on (see ChatTimelineHead.waiting).
+        if (isDecisionBoundary(message)) this.#headStateChanged(message.chatId, {boundary: true});
       },
       update: (old, message) => {
         stamp(message, old);
         if (isCountableChatMessage(old) || isCountableChatMessage(message)) {
           this.markChatDirty(message.chatId, isCountableChatMessage(old) ? undefined : message.sequence);
         }
+        // A request decided, or asked again.
+        if ((old.type === "connectionRequest" || old.type === "webFetchRequest") &&
+            (message.type === "connectionRequest" || message.type === "webFetchRequest") &&
+            (old.state === "pending") !== (message.state === "pending")) {
+          this.#headStateChanged(message.chatId);
+        }
       },
       remove: () => {}, // Whole-thread deletion is journaled by chatMeta.remove.
     });
     this.storage.chatMeta.subscribe({
       add: meta => this.markChatDirty(meta.id),
-      update: (old, meta) => { if (old.title !== meta.title) this.markChatDirty(meta.id); },
+      update: (old, meta) => {
+        if (!old.activeAgent !== !meta.activeAgent) this.#headStateChanged(meta.id, {meta});
+        else if (old.title !== meta.title) this.markChatDirty(meta.id);
+      },
       remove: meta => {
         // One-off approval recipients may have a private cursor/outbox without enrolling.
         let recipients = new Set<string>();
@@ -2233,8 +2314,28 @@ class OverseerImpl implements AgentHooks {
         this.markChatDirty(meta.id);
       },
     });
+    // An action of a chat's becoming pending, or no longer pending, changes what it waits on.
+    let actionChanged = (record: ActionRecord) => {
+      if (record.caller.from !== "hook" && record.caller.chatId !== undefined) {
+        this.#headStateChanged(record.caller.chatId);
+      }
+    };
+    this.storage.actions.subscribe({
+      add: record => { if (record.state === "pending") actionChanged(record); },
+      update: (old, record) => {
+        if ((old.state === "pending") !== (record.state === "pending")) actionChanged(record);
+      },
+      remove: record => { if (record.state === "pending") actionChanged(record); },
+    });
     this.storage.chatNotifications.subscribe({
-      add: event => this.markChatDirty(event.chatId, event.sequence),
+      add: event => {
+        // Everyone asked for a decision here, for the heads sent after (see deliverDirtyChats()).
+        let counter = this.storage.nextChatSequences.get(event.chatId);
+        if (event.kind === "permissionRequested" && counter && !counter.askedUsers?.includes(event.userId)) {
+          this.storage.nextChatSequences.put({...counter, askedUsers: [...counter.askedUsers ?? [], event.userId]});
+        }
+        this.markChatDirty(event.chatId, event.sequence);
+      },
       update: (_old, event) => this.markChatDirty(event.chatId, event.sequence),
       remove: () => {},
     });
@@ -2450,7 +2551,7 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
-      migrateToChatIndexes(this);
+      let mayWait = migrateToChatIndexes(this);
       // A snapshot dies with the instance whose sessions used it (see createGadgetSnapshot).
       for (let {facetName} of Array.from(this.storage.gadgetSnapshots.list())) {
         this.deleteGadgetSnapshot(facetName);
@@ -2462,8 +2563,11 @@ class OverseerImpl implements AgentHooks {
         this.#agentKeepAliveTime = this.#scheduledAlarm ?? undefined;
       }
       this.#initializeUnreadTracking();
-      this.#initializeSummaryTracking();
+      this.#initializeAttentionTracking();
       this.#initializeBlueprintChangesTracking();
+      // Version 7 stored no `waiting`: record it for the chats that may wait on a decision, once
+      // the alarm is cached and tracking is set up, since this arms the alarm for their fanout.
+      for (let chatId of mayWait) this.#headStateChanged(chatId);
       if (this.storage.deleting.get() || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
         this.#userUpdatesRetryAt = this.#scheduledAlarm ?? Date.now() + 1_000;
         this.#updateAlarm();
@@ -7289,7 +7393,10 @@ class OverseerImpl implements AgentHooks {
   //     requiring no account always block; otherwise some gadget their access includes, opened or
   //     not, must reach this gatekeeper (#gadgetReach).
   //   - Otherwise, an authorized observer keeps their record but loses their registration on this
-  //     gatekeeper only. Their next gadget open re-registers them if admission still requires it.
+  //     gatekeeper only, and their choice for it is marked denied (#denyBackgroundReads): the
+  //     observation records nothing for them to check, so background reads stay withheld until an
+  //     admission re-verifies the choice. Their next gadget open re-registers them if admission
+  //     still requires it.
   //   - If that profileId is no longer authorized, we allow the observation for them and delete
   //     their observer record (best-effort removeObserver on all gatekeepers). They are no longer
   //     set up to observe; if they regain access they reconfigure from scratch (Step 3).
@@ -7306,7 +7413,7 @@ class OverseerImpl implements AgentHooks {
     let reachingGadgets: WorkpieceId[] | undefined;
 
     let unauthorized: ObserverRecord[] = [];
-    let unreached: string[] = [];
+    let unreached: ObserverRecord[] = [];
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
       if (!observer) continue;  // not an active observer -> ignore
@@ -7324,20 +7431,22 @@ class OverseerImpl implements AgentHooks {
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
       }
-      unreached.push(observerId);
+      unreached.push(observer);
     }
 
     // Nobody named can reach the observation. Tear down those who have lost access entirely, since
     // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
-    // only. A fresh open racing one of these removals is ordered behind it by
-    // #withObserverGatekeeperLock, so its registration is never silently undone.
+    // only, denying their choice for it. A fresh open racing one of these removals is ordered
+    // behind it by #withObserverGatekeeperLock, so its registration is never silently undone.
     let allGatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     let removals = unauthorized.map(observer => {
       this.storage.observers.delete(observer.profileId);
       return this.#removeObserverFromGatekeepers(observer.observerId, allGatekeeperIds);
     });
-    for (let observerId of unreached) {
-      removals.push(this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]));
+    for (let observer of unreached) {
+      let choice = observer.accountChoices[gatekeeperId];
+      if (choice && !choice.denied) this.#denyBackgroundReads(observer, gatekeeperId);
+      removals.push(this.#removeObserverFromGatekeepers(observer.observerId, [gatekeeperId]));
     }
     await Promise.all(removals);
   }
@@ -7598,8 +7707,8 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
-  // The last-active time last marked in the owner's listing, and the latest seen locally.
-  #lastActiveListed?: Date;
+  // The latest last-active time seen locally (the one last marked in the owner's listing is
+  // stored: see `lastActiveListed`).
   #lastActiveTimeKnownToUs?: Date;
   // Do we currently have a timeout scheduled after which we plan to mark it?
   #lastActiveBumpScheduled: boolean = false;
@@ -7619,9 +7728,8 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Only bump once a minute to reduce network traffic.
-    let timeToNextBump: number = this.#lastActiveListed
-        ? this.#lastActiveListed.getTime() + 60000 - now.getTime()
-        : 0;
+    let listed = this.storage.lastActiveListed.get();
+    let timeToNextBump: number = listed ? listed.getTime() + 60000 - now.getTime() : 0;
 
     if (timeToNextBump <= 0) {
       this.#bumpLastActiveImpl();
@@ -7630,7 +7738,8 @@ class OverseerImpl implements AgentHooks {
       this.#lastActiveBumpScheduled = true;
       scheduler.wait(timeToNextBump).then(() => {
         this.#lastActiveBumpScheduled = false;
-        if (!this.#lastActiveListed || this.#lastActiveListed < this.#lastActiveTimeKnownToUs!) {
+        let listed = this.storage.lastActiveListed.get();
+        if (!listed || listed < this.#lastActiveTimeKnownToUs!) {
           this.#bumpLastActiveImpl();
         }
       });
@@ -7641,7 +7750,7 @@ class OverseerImpl implements AgentHooks {
     // A deleted gadget has no owner to tell.
     if (!this.ownerId) return;
     let lastActive = this.#lastActiveTimeKnownToUs!;
-    this.#lastActiveListed = lastActive;
+    this.storage.lastActiveListed.put(lastActive);
     this.markListingDirty("activity");
 
     // The directory's activity is precise only to DIRECTORY_ACTIVITY_INTERVAL_MS, so it hears
@@ -7703,18 +7812,19 @@ class OverseerImpl implements AgentHooks {
     return entries;
   }
 
-  // --- Workspace summaries -------------------------------------------------------------
+  // --- Workspace attention and hooks ---------------------------------------------------
   //
-  // What waits on someone here and the hooks bound here (see WorkspaceSummary), mirrored into the
-  // User DO of the owner and of every "build" collaborator admitted to background reads, as part
-  // of the workspace listing, so that their sidebar, Library and Automations page need open no
-  // workspace (see AuthenticatedApi.subscribeToWorkspaceSummaries()). Recipients drop it
-  // themselves when their listing goes or narrows to "use".
+  // The actions waiting here, by gadget, and the hooks bound here (see WorkspaceSummary), mirrored
+  // into the User DO of the owner and of every "build" collaborator, as part of the workspace
+  // listing, so that their sidebar, Library and Automations page need open no workspace (see
+  // AuthenticatedApi.subscribeToWorkspaceSummaries()). Neither carries agent-written text, so they
+  // go out on the role alone, with no check of background reads. Recipients drop both themselves
+  // when their listing goes or narrows to "use". Which chats work or wait is on their heads.
 
-  // Changes that can alter the summary: actions, hooks, a turn starting or ending, a request's
-  // decision, and removals of what hooks and asks name.
-  #initializeSummaryTracking(): void {
-    let dirty = () => this.markListingDirty("summary");
+  // An action becoming pending or no longer pending changes the attention; a hook bound, changed
+  // or unbound is sent alone.
+  #initializeAttentionTracking(): void {
+    let dirty = () => this.markListingDirty("attention");
     this.storage.actions.subscribe({
       add: record => { if (record.state === "pending") dirty(); },
       update: (old, record) => {
@@ -7722,116 +7832,47 @@ class OverseerImpl implements AgentHooks {
       },
       remove: record => { if (record.state === "pending") dirty(); },
     });
-    this.storage.boundHooks.subscribe({add: dirty, update: dirty, remove: dirty});
-    this.storage.chatMeta.subscribe({
-      add: dirty,
-      update: (old, meta) => {
-        if (!old.activeAgent !== !meta.activeAgent || old.spawnerId !== meta.spawnerId ||
-            old.spawnerName !== meta.spawnerName || old.spawnedByGadgetId !== meta.spawnedByGadgetId ||
-            old.title !== meta.title) dirty();
-      },
-      remove: dirty,
-    });
-    let changesDecision = (message: AiChatMessage) => {
-      if (isDecisionBoundary(message) || (message.author.type === "agent" && (
-          ((message.type === "connectionRequest" || message.type === "webFetchRequest") && message.state === "pending") ||
-          (message.type === "message" && !message.toolCalls?.length)))) dirty();
+    let hookDirty = ({id}: {id: number}) => {
+      if (!this.ownerId) return;
+      let dirtyHooks = this.storage.listingDirtyHooks.get();
+      if (!dirtyHooks.includes(id)) this.storage.listingDirtyHooks.put([...dirtyHooks, id]);
+      this.#requestUserUpdates();
     };
-    this.storage.chats.subscribe({
-      add: changesDecision,
-      update: (old, message) => {
-        if ((old.type === "connectionRequest" || old.type === "webFetchRequest") &&
-            (message.type === "connectionRequest" || message.type === "webFetchRequest") &&
-            (old.state === "pending") !== (message.state === "pending")) dirty();
-      },
-      remove: changesDecision,
-    });
-    this.storage.gatekeepers.subscribe({
-      add: () => {},
-      update: (old, record) => {
-        if (old.resourceTitle !== record.resourceTitle || old.resourceUrl !== record.resourceUrl) dirty();
-      },
-      remove: dirty,
-    });
-    this.storage.gadgets.subscribe({add: () => {}, update: () => {}, remove: dirty});
+    this.storage.boundHooks.subscribe({add: hookDirty, update: (_old, record) => hookDirty(record), remove: hookDirty});
   }
 
-  workspaceSummary(): WorkspaceSummary {
-    let workingChatIds = Array.from(this.storage.activeAgents.list(), ({chatId}) => chatId)
-        .filter(chatId => this.storage.chatMeta.get(chatId)?.activeAgent);
-    return {workspaceId: this.ctx.id.toString(), ...this.#waiting(), workingChatIds, hooks: boundHookInfos(this)};
-  }
-
-  // A chat waits while its agent is stopped on a decision (as AiChatMetadata.awaitingDecision
-  // says) or while an action it made is pending. A pending action outside any chat is its
-  // gadget's; one a run made is also the gadget that started the run's.
-  #waiting(): Pick<WorkspaceSummary, "waiting" | "waitingChats"> {
-    let waitingOn = new Map<number, Pick<WorkspaceWaitingChat, "waiting" | "ask">>();
+  // The actions waiting here, by gadget (WorkspaceSummary.waiting): one outside any chat counts
+  // for its caller's gadget, and one a run made for the gadget that started the run.
+  #attention(): WorkspaceWaiting {
     let gadgetActions = new Map<WorkpieceId, number>();
     for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
-      let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
-      if (chatId !== undefined && !waitingOn.get(chatId)?.ask) {
-        waitingOn.set(chatId, {waiting: "approval",
-          ask: record.type === "action" ? {type: "action", title: record.description.title.slice(0, 240)} : undefined});
-      }
       if (record.type !== "action") continue;
+      let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
       let gadgetId = chatId === undefined
           ? callerGadgetId(record.caller) : this.storage.chatMeta.get(chatId)?.spawnedByGadgetId;
       if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.type === "gadget") {
         gadgetActions.set(gadgetId, (gadgetActions.get(gadgetId) ?? 0) + 1);
       }
     }
-    // A chat stopped on a decision has a pending request or a pending action (see
-    // #decisionWait()), so only chats with a pending request and no pending action need their log
-    // read. Listed whole first: #decisionWait() lists a chat's log, which would end this listing.
-    // Only a request of the turn's current segment is what it waits on: stopping a paused turn
-    // leaves its request pending, ahead of any a later turn asks.
-    let pendingRequests = Map.groupBy(this.storage.chats.pendingRequestsByChat.list(), ({chatId}) => chatId);
-    for (let [chatId, requests] of pendingRequests) {
-      if (waitingOn.has(chatId) || this.storage.chatMeta.get(chatId)?.activeAgent) continue;
-      let wait = this.#decisionWait(chatId);
-      let request = wait?.pending
-          ? requests.find(msg => "requestId" in msg && wait.requestIds.includes(msg.requestId)) : undefined;
-      if (request?.type === "connectionRequest") {
-        waitingOn.set(chatId, {waiting: "action", ask: {type: "connection",
-          vendorName: request.vendorName.slice(0, 240), reason: request.reason.slice(0, 240)}});
-      } else if (request?.type === "webFetchRequest") {
-        waitingOn.set(chatId, {waiting: "action", ask: {type: "webFetch", url: request.url.slice(0, 240)}});
-      }
-    }
-    let runs = 0, chats = 0;
-    let waitingChats: WorkspaceWaitingChat[] = [];
-    for (let [chatId, {waiting, ask}] of waitingOn) {
-      let meta = this.storage.chatMeta.get(chatId);
-      if (!meta) continue;
-      if (isAgentRun(meta)) runs++;
-      else chats++;
-      waitingChats.push({chatId, title: meta.title, lastActive: meta.lastActive, waiting, ask,
-        spawnerId: meta.spawnerId, spawnerName: meta.spawnerName});
-    }
-    return {
-      waiting: {runs, chats, gadgets: [...gadgetActions].map(([gadgetId, actions]) => ({gadgetId, actions}))},
-      waitingChats: waitingChats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
-          .slice(0, MAX_SUMMARY_WAITING_CHATS),
-    };
+    return {gadgets: [...gadgetActions].map(([gadgetId, actions]) => ({gadgetId, actions}))};
   }
 
   // --- Workspace listings --------------------------------------------------------------
   //
   // What each person this workspace is listed for mirrors of it in their User DO (see
   // WorkspaceListing and UserDurableObject.syncWorkspaceListing()):
-  // - the owner: every output, the summary, each blueprint's unpublished changes, the title and
-  //   the last-active time and cost;
+  // - the owner: every output, the attention and hooks, each blueprint's unpublished changes, the
+  //   title and the last-active time and cost;
   // - a collaborator with a session open here (see joinOutputsFanout()), and one once on opening
   //   it (see resyncListingTo()): the outputs their access holds;
-  // - a "build" collaborator admitted to background reads (see mayReadChatState()): the summary;
+  // - a "build" collaborator: the attention and hooks;
   // - every collaborator: the title they list it under (see
   //   UserDurableObject.recordSharedWorkspaceOpen() for where a listing starts).
-  // Durable, through pendingUserUpdates: a change marks the parts it may have changed in its own
-  // transaction (markListingDirty()), and deliverUserUpdates() turns them into what each recipient
-  // is owed, then sends each part as it stands when sent, retrying from the alarm until the
+  // Durable, through pendingUserUpdates: a change marks the parts or hooks it may have changed in
+  // its own transaction (markListingDirty()), and deliverUserUpdates() turns them into what each
+  // recipient is owed, then sends each as it stands when sent, retrying from the alarm until the
   // recipient has taken it. A part whose value a recipient has acknowledged is not sent to them
-  // again (see #listingAcks).
+  // again (see #listingAcks); a hook is sent once per change.
 
   // What each recipient last acknowledged of each part, as canonical JSON, by User DO id. Set once
   // syncWorkspaceListing() resolves; forgotten for the parts a send that failed carried (it may
@@ -7850,15 +7891,16 @@ class OverseerImpl implements AgentHooks {
     this.#requestUserUpdates();
   }
 
-  // Queue every part of the listing for one user whose copy may be missing or stale, forgetting
-  // what they acknowledged: the owner once (see seedOwnerListing()), and a collaborator
-  // (`profileId`) once their listing is recorded on opening. A collaborator is sent the outputs
-  // their access holds when sent, whether or not a session of theirs is still open; after that,
-  // outputs reach them only while one is.
+  // Queue every part of the listing and every hook for one user whose copy may be missing or
+  // stale, forgetting what they acknowledged: the owner once (see seedOwnerListing()), and a
+  // collaborator (`profileId`) once their listing is recorded on opening. A collaborator is sent
+  // the outputs their access holds when sent, whether or not a session of theirs is still open;
+  // after that, outputs reach them only while one is.
   resyncListingTo(userId: string, profileId?: string): void {
     if (!this.ownerId || this.storage.deleting.get()) return;
     this.#listingAcks.delete(userId);
-    this.#queueUserUpdate(userId, profileId, {parts: LISTING_PARTS});
+    this.#queueUserUpdate(userId, profileId, {parts: LISTING_PARTS,
+      hookIds: Array.from(this.storage.boundHooks.list(), ({id}) => id)});
     this.#requestUserUpdates();
   }
 
@@ -7873,36 +7915,40 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Turn the parts marked since the last pass into what each recipient is owed, in one
-  // transaction: the owner every part, each collaborator the title, each "build" one the summary,
-  // and each with a session open here the outputs.
+  // Turn the parts and hooks marked since the last pass into what each recipient is owed, in one
+  // transaction: the owner every part and hook, each collaborator the title, each "build" one the
+  // attention and hooks, and each with a session open here the outputs.
   #queueDirtyListingParts(collaborators: readonly CollaboratorInfo[]): void {
     let dirty = this.storage.listingDirty.get();
+    let hookIds = this.storage.listingDirtyHooks.get();
     let ownerId = this.ownerId;
-    if (!dirty.length || !ownerId) return;
+    if ((!dirty.length && !hookIds.length) || !ownerId) return;
     this.ctx.storage.transactionSync(() => {
-      this.#queueUserUpdate(ownerId, undefined, {parts: dirty});
+      this.#queueUserUpdate(ownerId, undefined, {parts: dirty, hookIds});
       for (let {profile, access} of collaborators) {
         let userId = this.users.idFromName(profile.id).toString();
-        let parts = dirty.filter(part => part === "title" ||
-            (part === "summary" && access.role === "build") ||
+        let build = access.role === "build";
+        let parts = dirty.filter(part => part === "title" || (part === "attention" && build) ||
             (part === "outputs" && this.#connectedIndexes.has(userId)));
-        if (parts.length) this.#queueUserUpdate(userId, profile.id, {parts});
+        if (parts.length || (build && hookIds.length)) {
+          this.#queueUserUpdate(userId, profile.id, {parts, hookIds: build ? hookIds : []});
+        }
       }
       this.storage.listingDirty.put([]);
+      this.storage.listingDirtyHooks.put([]);
     });
   }
 
-  // The given parts of the listing as they stand, every output among them. Activity this instance
-  // has not seen, and an empty list of blueprints, are left out, so never sent.
+  // The given parts of the listing as they stand, every output among them. Activity never marked
+  // (see `lastActiveListed`), and an empty list of blueprints, are left out, so never sent.
   #readListing(parts: ReadonlySet<ListingPart>): Omit<WorkspaceListing, "listingRev"> {
     let listing: Omit<WorkspaceListing, "listingRev"> = {};
     if (parts.has("outputs")) listing.outputs = this.outputsSnapshot();
-    if (parts.has("summary")) listing.summary = this.workspaceSummary();
+    if (parts.has("attention")) listing.attention = this.#attention();
     if (parts.has("title")) {
       listing.title = {title: this.storage.title.get(), titleRev: this.storage.titleRev.get()};
     }
-    let lastActive = this.#lastActiveListed;
+    let lastActive = this.storage.lastActiveListed.get();
     if (parts.has("activity") && lastActive) {
       listing.activity = {lastActive, totalCost: this.storage.totalCost.get()};
     }
@@ -10650,8 +10696,7 @@ class OverseerImpl implements AgentHooks {
           canonicalJson((record.published ?? record.metadata).bindings);
     } catch (error) {
       this.logger.warn("failed to collect blueprint bindings", {
-        event: "blueprint.bindings.collect.failed", gadgetId: this.ctx.id.toString(),
-        blueprintId: record.id, error,
+        event: "blueprint.bindings.collect.failed", gadgetId: this.ctx.id.toString(), error,
       });
       return false;
     }
@@ -11206,6 +11251,7 @@ class OverseerImpl implements AgentHooks {
   // The log is the wait record. A nudge is the consumption boundary for a previous decision,
   // just as a prompt/callback or built-in /compact is the boundary for a new turn. Check connections
   // AND actions together: accepting one kind must not bypass an unanswered request of the other kind.
+  // `request` is the latest of the requests still pending.
   #decisionWait(chatId: number) {
     let actionIds: number[] = [];
     let requestIds: string[] = [];
@@ -11215,6 +11261,7 @@ class OverseerImpl implements AgentHooks {
     let denied = false;
     let steered = false;
     let agent: AiChatAuthorInfo | undefined;
+    let request: Extract<StoredChatMessage, {type: "connectionRequest" | "webFetchRequest"}> | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (isDecisionBoundary(msg)) break;
       // Null means a committed final response, not an interrupted segment to run again.
@@ -11229,6 +11276,7 @@ class OverseerImpl implements AgentHooks {
         requestIds.push(msg.requestId);
         connections ||= msg.type === "connectionRequest";
         pending ||= msg.state === "pending";
+        if (msg.state === "pending") request ??= msg;
         denied ||= msg.state === "denied";
       }
       if (msg.type === "action") {
@@ -11243,7 +11291,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
     return agent && (actionIds.length || requestIds.length)
-        ? {agent, actionIds, requestIds, connections, titles: titles.toReversed(), pending, denied}
+        ? {agent, actionIds, requestIds, connections, titles: titles.toReversed(), pending, denied, request}
         : undefined;
   }
 
@@ -11261,13 +11309,16 @@ class OverseerImpl implements AgentHooks {
   // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
   // Every decision a turn waits on comes through here with its id, and that keeps
   // `awaitingDecision` current: it is derived as metadata is sent, so when such a decision leaves
-  // the agent stopped, this re-sends the metadata (a resume writes it anyway). The callers that
-  // pass no decision are only checking whether a turn can go on, which changes no metadata.
+  // the agent stopped, this re-sends the metadata (a resume writes it anyway), and the chat's head,
+  // which says what it waits on. The callers that pass no decision are only checking whether a turn
+  // can go on, which changes neither.
   resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
     let staysStopped = () => {
-      if (decisionId !== undefined) this.#rebroadcastChatMeta([chatId]);
+      if (decisionId === undefined) return;
+      this.#rebroadcastChatMeta([chatId]);
+      this.#headStateChanged(chatId);
     };
     let record = this.storage.activeAgents.get(chatId);
     if (!record) {
@@ -12013,8 +12064,9 @@ class OverseerImpl implements AgentHooks {
 
   // Best-effort `removeObserver(observerId)` across the given gatekeeper ids. Never throws; logs
   // and continues on error. An orphaned observer entry only ever causes superfluous future checks,
-  // never a data leak: a registration is what admits an open, and every open re-runs addObserver,
-  // so a stale one grants nothing on its own.
+  // never a data leak: every open re-runs addObserver, and background reads go by the observer
+  // record's account choices, which every caller deletes, or for this connection marks denied
+  // (#enforceExcludeObservers), before removing, so a stale registration grants nothing on its own.
   async #removeObserverFromGatekeepers(observerId: string, gatekeeperIds: number[]): Promise<void> {
     await Promise.all(gatekeeperIds.map(async id => {
       try {
@@ -12032,8 +12084,8 @@ class OverseerImpl implements AgentHooks {
   // For each affected collaborator who is now fully unauthorized (newAccess === null) and has an
   // observer record: best-effort removeObserver on all gatekeeper facets, then delete the record.
   // All calls are best-effort -- an orphaned observer entry only causes superfluous future checks,
-  // never a data leak: a registration is what admits an open, and every open re-runs addObserver,
-  // so a stale one grants nothing on its own. See observers-implementation-plan.md §5 Step 6.
+  // never a data leak: the record goes first (see #removeObserverFromGatekeepers). See
+  // observers-implementation-plan.md §5 Step 6.
   async tearDownLostObservers(affected: AffectedCollaborator[]): Promise<void> {
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     for (let entry of affected) {
@@ -12059,6 +12111,14 @@ class OverseerImpl implements AgentHooks {
       this.#queueUserUpdate(userIds[i], profile.id, {role: newAccess?.role ?? null, parts: ["outputs"]})));
     this.#userUpdatesRetryAt = 0;
     await Promise.allSettled(userIds.map(userId => this.userUpdateAttempt(userId)));
+  }
+
+  // Queue `role` (null: removal) for a collaborator whose access changed while their listing was
+  // being recorded on opening, and request its delivery.
+  queueCollaboratorRole(userId: string, profileId: string, role: CollaboratorRole | null): void {
+    if (this.storage.deleting.get()) return;
+    this.#queueUserUpdate(userId, profileId, {role, parts: role === null ? [] : ["outputs"]});
+    this.#requestUserUpdates();
   }
 
   // The authorization gate every non-owner entry point (open(), and resumed agent turns in
@@ -12178,7 +12238,7 @@ class OverseerImpl implements AgentHooks {
       record = {profileId, observerId: crypto.randomUUID(), accountChoices: {}};
       this.storage.observers.put(record);
     }
-    let {observerId, accountChoices: initialChoices} = record;
+    let {observerId} = record;
     let accountChoices: {[gatekeeperId: number]: number} = Object.fromEntries(
         Object.entries(record.accountChoices).map(([id, choice]) => [id, choice.accountId]));
 
@@ -12287,6 +12347,9 @@ class OverseerImpl implements AgentHooks {
         //    since gatekeepers don't tell one from an outage; the next admission clears the mark.
         let failures = new Map<number, ObserverBindingFailure>();
         let denials = new Set<number>();
+        // The choices as this pass verifies them: a denial below ends background reads only of a
+        // choice no other admission published since (see ObserverAccountChoice.admissionId).
+        let verifying = this.storage.observers.get(profileId)?.accountChoices ?? {};
 
         await Promise.all(inScope.map(async gk => {
           // Removed while this open awaited: step 6 re-runs the pass without it.
@@ -12357,7 +12420,7 @@ class OverseerImpl implements AgentHooks {
           // A definitive denial of a choice admitted to background reads (one with a watermark)
           // also ends them (see #denyBackgroundReads): later observations of what it was refused
           // record nothing new to check. Only while no other admission has published the choice
-          // since this one read it (ObserverAccountChoice.admissionId), so a concurrent
+          // since this pass began verifying (ObserverAccountChoice.admissionId), so a concurrent
           // admission's newer verification stands; a background check's progress, which verified
           // only what was recorded since, does not.
           for (let id of denials) {
@@ -12366,7 +12429,7 @@ class OverseerImpl implements AgentHooks {
             if (current?.observerId === observerId && choice && !choice.denied &&
                 choice.verifiedThroughActionId !== undefined &&
                 choice.accountId === failures.get(id)!.accountId &&
-                choice.admissionId === initialChoices[id]?.admissionId) {
+                choice.admissionId === verifying[id]?.admissionId) {
               this.#denyBackgroundReads(current, id);
             }
           }
@@ -12886,6 +12949,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // (or is refreshed on) their home page.
       let gadgetId = this.impl.ctx.id.toString();
       void (async () => {
+        let lateRole: CollaboratorRole | null | undefined;
         try {
           const ownerProfile = await owner.whoami();
           // Access may have been revoked or changed (or the workspace deleted) during the await.
@@ -12908,7 +12972,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             .map(meta => ({
             chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
             head: this.impl.chatHead(meta.id),
-            headUpdatedAt: meta.lastActive,
+            headUpdatedAt: this.impl.chatHeadUpdatedAt(meta),
             hasParticipated: this.impl.chatParticipationDefault(meta.id),
             readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
           }));
@@ -12933,8 +12997,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           // listed yet, they ignored its deletion notice, so its head would come back.
           let seed = current.role !== "build" ? null :
               notificationBaselines?.filter(({chatId}) => this.impl.storage.chatMeta.get(chatId)) ?? null;
+          let recorded = current.role;
           await clientUser.recordSharedWorkspaceOpen(gadgetId, this.impl.storage.title.get(), ownerProfile,
-              current.role, seed, this.impl.storage.titleRev.get(), this.impl.storage.listingRev.get());
+              recorded, seed, this.impl.storage.titleRev.get(), this.impl.storage.listingRev.get());
+          // A role change or removal landing during the record was queued before the listing
+          // existed, and their User DO ignored it; queue it again now that the listing does.
+          let role = sharing.getEffectiveAccess(profileId)?.role ?? null;
+          if (role !== recorded) lateRole = role;
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
@@ -12946,6 +13015,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         // session has ended by then; changes from here on reach them as they happen, their
         // outputs while a session of theirs lasts (joinOutputsFanout).
         this.impl.resyncListingTo(userId, profileId);
+        if (lateRole !== undefined) this.impl.queueCollaboratorRole(userId, profileId, lateRole);
       })();
     }
 

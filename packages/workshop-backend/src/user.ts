@@ -84,8 +84,9 @@ export type ChatMessageProgress = {
   /** The chat's current title and latest-message preview, for the inbox. */
   head: ChatTimelineHead;
   /**
-   * The chat's `lastActive` time in the workspace. Decides which of two updates with the same latest
-   * message (e.g. from before and after a rename) is newer.
+   * When the chat's head last changed in the workspace (OverseerImpl.chatHeadUpdatedAt()): its
+   * `lastActive` time, or a later change of its working or waiting state. Decides which of
+   * two updates with the same latest message (e.g. from before and after a rename) is newer.
    */
   headUpdatedAt: Date;
   /**
@@ -813,7 +814,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
         old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
-        old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
+        old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime() &&
+        old.head?.working === cursor.head?.working &&
+        JSON.stringify(old.head?.waiting) === JSON.stringify(cursor.head?.waiting)) return false;
     this.storage.chatReadCursors.put(cursor);
     return true;
   }
@@ -891,7 +894,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       latestSequence: cursor.head?.latestSequence ?? -1,
       latestMessagePreview: cursor.head?.latestMessagePreview,
       latestActivityAt: cursor.head?.latestActivityAt,
-      latestAuthor: cursor.head?.latestAuthor};
+      latestAuthor: cursor.head?.latestAuthor,
+      ...(cursor.head?.working ? {working: true as const} : {}),
+      ...(cursor.head?.waiting ? {waiting: cursor.head.waiting} : {})};
   }
 
   #chatNotificationsEnabled(cursor: ChatReadCursor): boolean {
@@ -1412,11 +1417,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * `notificationBaselines` are the chat starting points a "build" collaborator's first admission
    * seeds, or null where the workspace withheld them (see OverseerImpl.mayReadChatState): the
    * listing is then recorded without them, still owed to a later open, which seeds them without
-   * resetting the read horizons or notification receipts of chats tracked meanwhile.
+   * resetting the read horizons or notification receipts of chats tracked meanwhile. A listing
+   * whose chat state was forgotten on a denial (WorkspaceListing.forgetChats) is owed them so too.
    *
    * `listingRev` is the workspace's listing revision as of the access check that admitted them,
-   * which raises the floor of the revisions syncWorkspaceListing() takes outputs and summary from:
-   * one read before it may have been read under access since revoked or narrowed.
+   * which raises the floor of the revisions syncWorkspaceListing() takes parts from: one read
+   * before it may have been read under access since revoked or narrowed.
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
@@ -1870,9 +1876,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    *
    * - `outputs` replace those recorded for the workspace; one the user no longer tracks (deleted,
    *   or a shared one they dismissed) has its entries dropped instead.
-   * - `summary` is ignored for a workspace the user doesn't list, or only uses: the `gadgets`
-   *   subscription drops the summary when either becomes true, so nothing here can outlive it.
-   *   Null drops the one held.
+   * - `attention` and `hooks` are ignored for a workspace the user doesn't list, or only uses: the
+   *   `gadgets` subscription drops them when either becomes true, so nothing here can outlive it.
+   *   Each hook replaces the one held, or drops it when null.
+   * - `forgetChats` forgets the chat state held of a shared workspace (read state, heads and
+   *   queued notifications), its collaborator found denied background reads, and has the next
+   *   open that admits them seed it again (see recordSharedWorkspaceOpen()).
    * - `blueprintChanges` are taken for blueprints recorded as published from this workspace; a
    *   push racing a first publication finds none. They also bring the gadget a blueprint is
    *   published from to records stored before updateBlueprint() was sent it.
@@ -1887,12 +1896,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let taken = this.storage.listingRevs.get(workspaceId)?.rev;
     let newer = taken === undefined || listing.listingRev > taken;
     if (listing.outputs && newer) this.#putWorkspaceOutputs(workspaceId, listing.outputs);
-    if (listing.summary === null && newer) {
-      this.#dropWorkspaceSummary(workspaceId);
-    } else if (listing.summary && newer && this.#hasWorkspace(workspaceId)) {
-      this.storage.workspaceSummaries.put(listing.summary);
-      this.#workspaceSummaryChanged(workspaceId, listing.summary);
+    if (newer && (listing.attention || listing.hooks) && this.#hasWorkspace(workspaceId)) {
+      this.ctx.storage.transactionSync(() => {
+        if (listing.attention) this.storage.workspaceAttention.put({workspaceId, waiting: listing.attention});
+        for (let {id, hook} of listing.hooks ?? []) {
+          if (hook) this.storage.workspaceHooks.put({workspaceId, hook});
+          else this.storage.workspaceHooks.delete(`${workspaceId}:${id}`);
+        }
+      });
+      let summary = this.#workspaceSummary(workspaceId);
+      this.#summarySubscribers.send(listener => listener.updated(workspaceId, summary));
     }
+    if (newer && listing.forgetChats) this.#forgetUnreadWorkspace(workspaceId);
     for (let {blueprintId, changes, gadgetId} of newer ? listing.blueprintChanges ?? [] : []) {
       let record = this.storage.blueprints.get(blueprintId);
       if (!record || record.gadgetId !== workspaceId) continue;
@@ -1915,6 +1930,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (listing.activity && newer && !record.owner) {
       let {lastActive, totalCost} = listing.activity;
       updated = {...updated, lastActive, ...(totalCost ? {totalCost} : {})};
+    }
+    if (listing.forgetChats && newer && record.owner && record.role === "build" && !record.chatSeedPending) {
+      updated = {...updated, chatSeedPending: true};
     }
     if (updated !== record) this.storage.gadgets.put(updated);
   }
@@ -2037,15 +2055,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #dropWorkspaceSummary(workspaceId: string): void {
-    if (this.storage.workspaceSummaries.delete(workspaceId)) this.#workspaceSummaryChanged(workspaceId, null);
+    let dropped = this.storage.workspaceAttention.delete(workspaceId);
+    if (this.storage.workspaceHooks.byWorkspace.delete(workspaceId) || dropped) {
+      this.#summarySubscribers.send(listener => listener.updated(workspaceId, null));
+    }
   }
 
-  #workspaceSummaryChanged(workspaceId: string, summary: WorkspaceSummary | null): void {
-    this.#summarySubscribers.send(listener => listener.updated(workspaceId, summary));
+  // A workspace's summary, assembled from what its Overseer sent of it (see syncWorkspaceListing()).
+  #workspaceSummary(workspaceId: string): WorkspaceSummary {
+    return {workspaceId, waiting: this.storage.workspaceAttention.get(workspaceId)?.waiting ?? {gadgets: []},
+      hooks: Array.from(this.storage.workspaceHooks.byWorkspace.get(workspaceId), ({hook}) => hook)};
   }
 
+  // Every workspace it holds some of, unless no longer listed for building.
   #readWorkspaceSummaries(): WorkspaceSummary[] {
-    return [...this.storage.workspaceSummaries.list()].filter(summary => this.#hasWorkspace(summary.workspaceId));
+    let workspaceIds = new Set([...Array.from(this.storage.workspaceAttention.list(), ({workspaceId}) => workspaceId),
+      ...this.storage.workspaceHooks.byWorkspace.listKeys()]);
+    return [...workspaceIds].filter(id => this.#hasWorkspace(id)).map(id => this.#workspaceSummary(id));
   }
 
   async subscribeToWorkspaceSummaries(subscriber: RpcStub<WorkspaceSummarySubscriber>): Promise<RpcStub<{}>> {

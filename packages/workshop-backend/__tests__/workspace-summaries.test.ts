@@ -1,19 +1,21 @@
-// A workspace's summary (what waits on whom, and its hooks) is pushed by its Overseer into the
-// User DO of the owner and of each admitted "build" collaborator, which serves it through
-// subscribeToWorkspaceSummaries() without opening the workspace. Runs against real Overseer and
-// User DOs.
+// A workspace's summary (the actions waiting, by gadget, and its hooks) is pushed by its Overseer
+// into the User DO of the owner and of each "build" collaborator, as change messages, and served
+// through subscribeToWorkspaceSummaries() without opening the workspace. Which chats are working
+// or waiting on someone travels on their heads, through unread fanout, which only an admitted
+// collaborator is sent. Runs against real Overseer and User DOs.
 
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
 import type {
-  AiChatAuthorInfo, Overseer, UnreadStateSubscriber, UserUnreadState, WorkspaceSummary, WorkspaceSummarySubscriber,
+  AiChatAuthorInfo, Overseer, UnreadStateSubscriber, UnreadThread, UserUnreadState, WorkspaceSummary,
+  WorkspaceSummarySubscriber,
 } from "@gadgets/workshop-shared/api";
 import { UserDurableObject } from "../src/user.js";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
-import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
+import type { GatekeeperCaller, StoredChatMessage } from "../src/storage-schema/overseer-storage.js";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations.js";
 import type { WorkspaceListing } from "../src/workspace-listing.js";
 import { putAction } from "./fixtures.js";
@@ -28,6 +30,13 @@ declare module "cloudflare:workers" {
 type Impl = OverseerDurableObject["impl"];
 const withImpl = <T>(stub: DurableObjectStub<OverseerDurableObject>, fn: (impl: Impl) => Promise<T> | T) =>
   runInDurableObject(env.TEST_OVERSEER.get(stub.id), instance => fn(instance.impl));
+// A member of a proxied User DO namespace, its methods bound to it as natives require.
+const namespaceMember = (target: object, key: string | symbol) => {
+  const value = Reflect.get(target, key);
+  return typeof value === "function" ? value.bind(target) : value;
+};
+
+const AGENT: AiChatAuthorInfo = {type: "agent", id: "model", name: "Model"};
 
 type Fixture = {
   user: DurableObjectStub<UserDurableObject>;
@@ -37,7 +46,7 @@ type Fixture = {
 };
 
 // An owner with one workspace holding a plain chat (1), a run gadget 11 started (2), and gadgets
-// 10 and 11.
+// 10 and 11. Both chats predate enrollment, so every builder is sent them.
 const setup = async (): Promise<Fixture> => {
   const id = crypto.randomUUID();
   const user = env.TEST_USER.getByName(id);
@@ -70,8 +79,8 @@ const ask = (impl: Impl, id: number, caller: GatekeeperCaller,
   impl.storage.actions.put({...impl.storage.actions.get(id)!, caller});
 };
 
-const storedSummary = (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
-  runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).workspaceSummaries.get(workspaceId));
+const storedAttention = (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
+  runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).workspaceAttention.get(workspaceId)?.waiting);
 
 // A "build" collaborator, whose listing is recorded unless `recorded` is false.
 const addReader = async (fixture: Fixture, recorded = true) => {
@@ -82,6 +91,25 @@ const addReader = async (fixture: Fixture, recorded = true) => {
     addedBy: [{type: "user", sharer: fixture.owner.id, role: "build", created: new Date()}]}));
   if (recorded) await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", fixture.owner, "build", []);
   return {reader, profile};
+};
+
+// Records what the workspace sends `userId` of its listing, still delivering it.
+const captureListings = (impl: Impl, userId: string) => {
+  const sent: WorkspaceListing[] = [];
+  const users = impl.users;
+  impl.users = new Proxy(users, {get(target, key) {
+    if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+      if (member === "syncWorkspaceListing" && id.toString() === userId) {
+        return async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
+          sent.push(args[1]);
+          return await (user as DurableObjectStub<UserDurableObject>).syncWorkspaceListing(...args);
+        };
+      }
+      return Reflect.get(user, member);
+    }});
+    return namespaceMember(target, key);
+  }});
+  return sent;
 };
 
 class SummaryUpdates extends RpcTarget implements WorkspaceSummarySubscriber {
@@ -99,106 +127,270 @@ class UnreadUpdates extends RpcTarget implements UnreadStateSubscriber {
   async chatUpdated() {}
 }
 
-it("counts each pending action once, for the chat or run waiting and the gadget that asked", async () => {
-  const fixture = await setup();
-  const waiting = await withImpl(fixture.workspace, async impl => {
-    ask(impl, 0, {from: "gadget", gadgetId: 10});
-    ask(impl, 1, {from: "hook", gadgetId: 10});
-    ask(impl, 2, {from: "agent", chatId: 2});
-    ask(impl, 3, {from: "agent", chatId: 1});
-    // Decided, or asked by what is no gadget (any more): no gadget's.
-    ask(impl, 4, {from: "gadget", gadgetId: 10}, "approved");
-    ask(impl, 5, {from: "gadget", gadgetId: 99});
-    // A gadget's code in a chat waits as that chat.
-    ask(impl, 6, {from: "gadget", gadgetId: 10, chatId: 1});
-    return impl.workspaceSummary().waiting;
-  });
-  expect(waiting).toEqual({runs: 1, chats: 1, gadgets: [{gadgetId: 10, actions: 2}, {gadgetId: 11, actions: 1}]});
-});
-
-it("lists each waiting chat with what it asks, and the chats whose agents work", async () => {
-  const fixture = await setup();
-  const summary = await withImpl(fixture.workspace, impl => {
-    ask(impl, 0, {from: "agent", chatId: 2});
-    impl.storage.chatMeta.put({id: 3, title: "Connect", started: new Date(3), lastActive: new Date(3)});
-    impl.addChatMessages(3, {type: "agent", id: "model", name: "Model"}, [
-      {type: "connectionRequest", requestId: "3:c", vendorId: "github", vendorName: "GitHub",
-        reason: "To read issues", state: "pending"},
-    ]);
-    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!,
-      activeAgent: {type: "agent", id: "model", name: "Model"}});
-    impl.storage.activeAgents.put({chatId: 1, initiatorUserId: fixture.user.id.toString(), modelId: "model",
-      initiator: fixture.owner, callbackInitiated: false});
-    return impl.workspaceSummary();
-  });
-  expect(summary.waitingChats).toEqual([
-    {chatId: 3, title: "Connect", lastActive: expect.any(Date), waiting: "action",
-      ask: {type: "connection", vendorName: "GitHub", reason: "To read issues"}},
-    {chatId: 2, title: "Run", lastActive: new Date(2), waiting: "approval",
-      ask: {type: "action", title: "Action 0"}, spawnerId: 5, spawnerName: "Agent"},
-  ]);
-  expect(summary.workingChatIds).toEqual([1]);
-});
-
-it("clears a request-only wait when the user stops the paused turn", async () => {
-  const {workspace, workspaceId, user} = await setup();
-  await withImpl(workspace, impl => {
-    impl.addChatMessages(1, {type: "agent", id: "model", name: "Model"}, [
-      {type: "webFetchRequest", requestId: "1:fetch", url: "https://example.test/", state: "pending"},
-    ]);
-  });
-  await vi.waitFor(async () => expect(await storedSummary(user, workspaceId))
-    .toMatchObject({waiting: {chats: 1, runs: 0, gadgets: []}}));
-
-  await withImpl(workspace, impl => impl.cancelAgent(1));
-  await vi.waitFor(async () => expect(await storedSummary(user, workspaceId))
-    .toMatchObject({waiting: {chats: 0, runs: 0, gadgets: []}}));
-});
-
-it("shows what a later turn asks, not a request a stopped turn left pending", async () => {
-  const {workspace, owner} = await setup();
-  const agent: AiChatAuthorInfo = {type: "agent", id: "model", name: "Model"};
-  const summary = await withImpl(workspace, impl => {
-    impl.addChatMessages(1, agent, [
-      {type: "webFetchRequest", requestId: "1:a", url: "https://a.example.test/", state: "pending"},
-    ]);
-    impl.cancelAgent(1);
-    impl.addChatMessages(1, owner, [{type: "message", message: "Try the other one"}]);
-    impl.addChatMessages(1, agent, [
-      {type: "webFetchRequest", requestId: "1:b", url: "https://b.example.test/", state: "pending"},
-    ]);
-    return impl.workspaceSummary();
-  });
-  expect(summary.waitingChats).toMatchObject([
-    {chatId: 1, waiting: "action", ask: {type: "webFetch", url: "https://b.example.test/"}},
-  ]);
-});
-
-it("pushes changes to the owner and admitted builders, and drops a summary when access narrows", async () => {
-  const fixture = await setup();
-  const {reader} = await addReader(fixture);
-  const updates = new SummaryUpdates();
+// The workspace's chats on `user`'s recent feed, by id.
+const recentChats = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) => {
+  const updates = new UnreadUpdates();
   using callback = new RpcStub(updates);
-  using _subscription = await reader.subscribeToWorkspaceSummaries(callback);
+  using _subscription = await user.subscribeToUnreadState("recent", callback);
+  await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
+  return (updates.snapshots[0]!.chats as UnreadThread[]).filter(chat => chat.workspaceId === workspaceId)
+    .toSorted((a, b) => a.chatId - b.chatId);
+};
+const recentChatIds = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
+  (await recentChats(user, workspaceId)).map(chat => chat.chatId);
+const recentHead = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string, chatId: number) =>
+  (await recentChats(user, workspaceId)).find(chat => chat.chatId === chatId);
 
-  await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "gadget", gadgetId: 10}));
-  const expected = {workspaceId: fixture.workspaceId,
-    waiting: {runs: 0, chats: 0, gadgets: [{gadgetId: 10, actions: 1}]}, waitingChats: [],
-    workingChatIds: [], hooks: []};
-  await vi.waitFor(async () => expect(await storedSummary(fixture.user, fixture.workspaceId)).toEqual(expected));
-  await vi.waitFor(async () => expect(await storedSummary(reader, fixture.workspaceId)).toEqual(expected));
-  await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, expected]));
+describe("attention", () => {
+  it("counts each pending action once, for the gadget that asked or started the run", async () => {
+    const {workspace, workspaceId, user} = await setup();
+    await withImpl(workspace, impl => {
+      ask(impl, 0, {from: "gadget", gadgetId: 10});
+      ask(impl, 1, {from: "hook", gadgetId: 10});
+      ask(impl, 2, {from: "agent", chatId: 2});
+      // A chat no gadget started, decided, or asked by what is no gadget (any more): no gadget's.
+      ask(impl, 3, {from: "agent", chatId: 1});
+      ask(impl, 4, {from: "gadget", gadgetId: 10}, "approved");
+      ask(impl, 5, {from: "gadget", gadgetId: 99});
+      ask(impl, 6, {from: "gadget", gadgetId: 10, chatId: 1});
+    });
+    await vi.waitFor(async () => expect(await storedAttention(user, workspaceId))
+      .toEqual({gadgets: [{gadgetId: 10, actions: 2}, {gadgetId: 11, actions: 1}]}));
+  });
 
-  // Narrowed to using a gadget: theirs goes, and a later push is refused.
-  await reader.updateSharedWorkspaceRole(fixture.workspaceId, "use");
-  await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, null]));
-  await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, summary: expected});
-  expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+  it("pushes changes to the owner and builders, and drops a summary when access narrows", async () => {
+    const fixture = await setup();
+    const {reader} = await addReader(fixture);
+    const updates = new SummaryUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await reader.subscribeToWorkspaceSummaries(callback);
+
+    await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "gadget", gadgetId: 10}));
+    const expected = {workspaceId: fixture.workspaceId, waiting: {gadgets: [{gadgetId: 10, actions: 1}]}, hooks: []};
+    await vi.waitFor(async () => expect(await storedAttention(fixture.user, fixture.workspaceId)).toEqual(expected.waiting));
+    await vi.waitFor(async () => expect(await storedAttention(reader, fixture.workspaceId)).toEqual(expected.waiting));
+    await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, expected]));
+
+    // Narrowed to using a gadget: theirs goes, and a later push is refused.
+    await reader.updateSharedWorkspaceRole(fixture.workspaceId, "use");
+    await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, null]));
+    await reader.syncWorkspaceListing(fixture.workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, attention: expected.waiting});
+    expect(await storedAttention(reader, fixture.workspaceId)).toBeUndefined();
+  });
+
+  it("ignores attention read before one already taken", async () => {
+    const {user, workspaceId} = await setup();
+    const newer = Number.MAX_SAFE_INTEGER;
+    await user.syncWorkspaceListing(workspaceId, {listingRev: newer, attention: {gadgets: [{gadgetId: 10, actions: 2}]}});
+    await user.syncWorkspaceListing(workspaceId, {listingRev: newer - 1, attention: {gadgets: [{gadgetId: 10, actions: 1}]}});
+    expect(await storedAttention(user, workspaceId)).toEqual({gadgets: [{gadgetId: 10, actions: 2}]});
+  });
+
+  it("gives a new subscriber the summaries kept", async () => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "gadget", gadgetId: 11}));
+    const expected = {workspaceId: fixture.workspaceId, waiting: {gadgets: [{gadgetId: 11, actions: 1}]}, hooks: []};
+    await vi.waitFor(async () => expect(await storedAttention(fixture.user, fixture.workspaceId)).toEqual(expected.waiting));
+
+    const updates = new SummaryUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await fixture.user.subscribeToWorkspaceSummaries(callback);
+    await vi.waitFor(() => expect(updates.snapshots).toEqual([[expected]]));
+  });
 });
 
-// Background reads (the summary, unread previews) reach a "build" collaborator only once each
-// chosen account is verified against what was recorded since their admission, checked right
-// before the publish, once per profile however many publishes wait on it.
+describe("hooks", () => {
+  it("sends each hook bound, changed or unbound alone", async () => {
+    const fixture = await setup();
+    const updates = new SummaryUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await fixture.user.subscribeToWorkspaceSummaries(callback);
+    const ownerId = fixture.user.id.toString();
+    const hook = (enabled: boolean) => ({id: 0, actionId: 0, gatekeeperId: 10, gadgetId: 10,
+      controller: {} as never, callback: {} as never, description: {title: "On push", description: "Runs on push"}, enabled});
+    const sent = await withImpl(fixture.workspace, async impl => {
+      const sent = captureListings(impl, ownerId);
+      impl.storage.boundHooks.put(hook(true));
+      impl.storage.boundHooks.put({...hook(true), id: 1});
+      await impl.userUpdateAttempt(ownerId);
+      return sent;
+    });
+    expect(sent.filter(listing => listing.hooks).map(listing => listing.hooks!.map(({id}) => id))).toEqual([[0, 1]]);
+
+    const edited = await withImpl(fixture.workspace, async impl => {
+      const sent = captureListings(impl, ownerId);
+      impl.storage.boundHooks.put(hook(false));
+      await impl.userUpdateAttempt(ownerId);
+      impl.storage.boundHooks.delete(1);
+      await impl.userUpdateAttempt(ownerId);
+      return sent;
+    });
+    expect(edited.filter(listing => listing.hooks).map(listing => listing.hooks)).toEqual([
+      [{id: 0, hook: expect.objectContaining({id: 0, enabled: false})}],
+      [{id: 1, hook: null}],
+    ]);
+    expect(edited.every(listing => listing.attention === undefined)).toBe(true);
+    await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, {workspaceId: fixture.workspaceId,
+      waiting: {gadgets: []}, hooks: [expect.objectContaining({id: 0, enabled: false})]}]));
+  });
+
+  it("sends every hook to a builder once their listing is resynced", async () => {
+    const fixture = await setup();
+    const {reader, profile} = await addReader(fixture);
+    const readerId = reader.id.toString();
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.boundHooks.put({id: 3, actionId: 0, gatekeeperId: 10, gadgetId: 10,
+        controller: {} as never, callback: {} as never, description: {title: "On push", description: "Runs on push"}, enabled: true});
+      await impl.deliverUserUpdates();
+      impl.resyncListingTo(readerId, profile.id);
+      await impl.userUpdateAttempt(readerId);
+    });
+    const updates = new SummaryUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await reader.subscribeToWorkspaceSummaries(callback);
+    await vi.waitFor(() => expect(updates.snapshots).toEqual([[{workspaceId: fixture.workspaceId,
+      waiting: {gadgets: []}, hooks: [expect.objectContaining({id: 3})]}]]));
+  });
+});
+
+describe("a chat's head", () => {
+  // Gives `user` a cursor for chat 1 by a message there, so head-only updates reach it.
+  const track = async (fixture: Fixture, user = fixture.user) => {
+    await withImpl(fixture.workspace, impl => impl.addChatMessages(1, fixture.owner, [{type: "message", message: "Hi"}]));
+    await vi.waitFor(async () => expect(await recentChatIds(user, fixture.workspaceId)).toContain(1));
+  };
+
+  it("sends no hooks and no attention for a turn starting and ending", async () => {
+    const fixture = await setup();
+    await track(fixture);
+    const ownerId = fixture.user.id.toString();
+    const sent = await withImpl(fixture.workspace, async impl => {
+      const sent = captureListings(impl, ownerId);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, activeAgent: AGENT});
+      await Promise.all([impl.deliverUserUpdates(), impl.deliverDirtyChats()]);
+      impl.cancelAgent(1);
+      await Promise.all([impl.deliverUserUpdates(), impl.deliverDirtyChats()]);
+      return sent;
+    });
+    expect(sent.filter(listing => listing.hooks !== undefined || listing.attention !== undefined)).toEqual([]);
+  });
+
+  it("says the agent is working from a turn's start until it is stopped", async () => {
+    const fixture = await setup();
+    await track(fixture);
+    await withImpl(fixture.workspace, impl =>
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, activeAgent: AGENT}));
+    await vi.waitFor(async () => expect((await recentHead(fixture.user, fixture.workspaceId, 1))?.working).toBe(true));
+
+    await withImpl(fixture.workspace, impl => impl.cancelAgent(1));
+    await vi.waitFor(async () => expect(await recentHead(fixture.user, fixture.workspaceId, 1)).not.toHaveProperty("working"));
+  });
+
+  it("says the agent is working through a callback's turn that writes no text", async () => {
+    const fixture = await setup();
+    await track(fixture);
+    const ownerId = fixture.user.id.toString();
+    await withImpl(fixture.workspace, async impl => {
+      const users = impl.users;
+      impl.users = new Proxy(users, {get(target, key) {
+        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
+          if (member === "getChatContext") {
+            return async () => ({profile: fixture.owner,
+              aiModel: {profile: AGENT, config: {provider: "cloudflare", model: "@cf/test/model", apiToken: ""}}});
+          }
+          return Reflect.get(user, member);
+        }});
+        return namespaceMember(target, key);
+      }});
+      // The turn the call starts never runs, so all the chat gains is the callback, which no head shows.
+      vi.spyOn(impl, "startAgent").mockImplementation(() => {});
+      await impl.deliverAgentCallback(1, "ping", [], ownerId, "model");
+      await vi.waitFor(() => expect(impl.storage.chatMeta.get(1)?.activeAgent).toEqual(AGENT));
+    });
+    await vi.waitFor(async () => expect((await recentHead(fixture.user, fixture.workspaceId, 1))?.working).toBe(true));
+    expect((await recentHead(fixture.user, fixture.workspaceId, 1))?.latestMessagePreview).toBe("Hi");
+
+    await withImpl(fixture.workspace, impl => impl.cancelAgent(1));
+    await vi.waitFor(async () => expect(await recentHead(fixture.user, fixture.workspaceId, 1)).not.toHaveProperty("working"));
+  });
+
+  it("says what a paused chat asks the user asked, enrolled or not, until it is answered", async () => {
+    const fixture = await setup();
+    const {reader} = await addReader(fixture);
+    const readerId = reader.id.toString();
+    // A new chat, which nobody is enrolled in: only the person asked hears of it.
+    await withImpl(fixture.workspace, impl => {
+      impl.storage.nextChatSequences.put({chatId: 3, nextSequence: 0, notificationParticipants: []});
+      impl.storage.chatMeta.put({id: 3, title: "Connect", started: new Date(3), lastActive: new Date(3), activeAgent: AGENT});
+      impl.addChatMessages(3, AGENT, [{type: "connectionRequest", requestId: "3:c", vendorId: "github",
+        vendorName: "GitHub", reason: "To read issues", state: "pending"}]);
+      // The turn ends waiting on the request, asking the reader.
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(3)!, activeAgent: undefined});
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 3,
+        sequence: impl.nextChatSequencePeek(3) - 1, userId: readerId, kind: "permissionRequested"});
+    });
+    await vi.waitFor(async () => expect((await recentHead(reader, fixture.workspaceId, 3))?.waiting)
+      .toEqual({kind: "action", ask: {type: "connection", vendorName: "GitHub", reason: "To read issues"}}));
+    expect(await recentChatIds(fixture.user, fixture.workspaceId)).not.toContain(3);
+
+    // Answered: a head-only update, which reaches them all the same.
+    await withImpl(fixture.workspace, impl => {
+      const request = [...impl.storage.chats.list()].find(msg => msg.chatId === 3 && msg.type === "connectionRequest")!;
+      impl.storage.chats.put({...request, state: "approved"} as StoredChatMessage);
+    });
+    await vi.waitFor(async () => expect(await recentHead(reader, fixture.workspaceId, 3)).not.toHaveProperty("waiting"));
+  });
+
+  it("sends what a chat waiting at the version-8 upgrade asks, once the workspace restarts", async () => {
+    const fixture = await setup();
+    const {reader} = await addReader(fixture);
+    const readerId = reader.id.toString();
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.nextChatSequences.put({chatId: 3, nextSequence: 0, notificationParticipants: []});
+      impl.storage.chatMeta.put({id: 3, title: "Connect", started: new Date(3), lastActive: new Date(3)});
+      impl.addChatMessages(3, AGENT, [{type: "connectionRequest", requestId: "3:c", vendorId: "github",
+        vendorName: "GitHub", reason: "To read issues", state: "pending"}]);
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 3,
+        sequence: impl.nextChatSequencePeek(3) - 1, userId: readerId, kind: "permissionRequested"});
+      // Version 7 delivered the notification, so the reader has the chat, but no waiting state.
+      await impl.deliverDirtyChats();
+      // As version 7 left it: nothing recorded what the chat waits on.
+      impl.ownerId = undefined;
+      const {waiting: _waiting, headStateAt: _at, askedUsers: _asked, ...counter} = impl.storage.nextChatSequences.get(3)!;
+      impl.storage.nextChatSequences.put(counter);
+      impl.storage.dirtyChats.delete(3);
+      impl.storage.version.put(7);
+    });
+    await vi.waitFor(async () => expect(await recentHead(reader, fixture.workspaceId, 3)).toBeDefined());
+    expect(await recentHead(reader, fixture.workspaceId, 3)).not.toHaveProperty("waiting");
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.nextChatSequences.get(3)?.askedUsers).toEqual([readerId]);
+      await vi.waitFor(() => expect(impl.storage.nextChatSequences.get(3)?.waiting).toBeDefined());
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(async () => expect((await recentHead(reader, fixture.workspaceId, 3))?.waiting)
+      .toEqual({kind: "action", ask: {type: "connection", vendorName: "GitHub", reason: "To read issues"}}));
+  });
+
+  it("says a chat waits for approval of its own action, by its title", async () => {
+    const fixture = await setup();
+    await track(fixture);
+    await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "agent", chatId: 1}));
+    await vi.waitFor(async () => expect((await recentHead(fixture.user, fixture.workspaceId, 1))?.waiting)
+      .toEqual({kind: "approval", ask: {type: "action", title: "Action 0"}}));
+
+    await withImpl(fixture.workspace, impl =>
+      impl.storage.actions.put({...impl.storage.actions.get(0)!, state: "approved"}));
+    await vi.waitFor(async () => expect(await recentHead(fixture.user, fixture.workspaceId, 1)).not.toHaveProperty("waiting"));
+  });
+});
+
+// Background reads (chat heads, previews) reach a "build" collaborator only once each chosen
+// account is verified against what was recorded since their admission, checked right before the
+// publish, once per profile however many publishes wait on it. Attention and hooks are not
+// background reads: they go out on the role alone.
 describe("background reads of an offline builder", () => {
   // The reader, admitted to a workspace with connection 7 (their account 1) and then offline, and
   // listed unless `recorded` is false. The connection denies `denied`, or fails while `fail`;
@@ -226,12 +418,17 @@ describe("background reads of an offline builder", () => {
       impl.users = new Proxy(users, {get(target, key) {
         if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
           if (member === "getVerifier") return async () => ({});
-          if (member === "messageArrived") return async () => { state.previews.push(id.toString()); };
+          if (member === "messageArrived") {
+            return async (...args: Parameters<UserDurableObject["messageArrived"]>) => {
+              state.previews.push(id.toString());
+              return await (user as DurableObjectStub<UserDurableObject>).messageArrived(...args);
+            };
+          }
           return Reflect.get(user, member);
         }});
         if (key === "idFromString") return (id: string) => target.idFromString(id);
         if (key === "idFromName") return (name: string) => target.idFromName(name);
-        return Reflect.get(target, key);
+        return namespaceMember(target, key);
       }});
       impl.storage.observers.put({profileId: profile.id, observerId: "obs-r",
         accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
@@ -241,142 +438,94 @@ describe("background reads of an offline builder", () => {
     return {fixture, reader, profile, state, watermark};
   };
 
-  // A read through connection 7 the reader is not online for, and a change to the summary.
+  // A read through connection 7 the reader is not online for, and a pending action of gadget 10.
   const readAndAsk = async (impl: Impl, subresource: string) => {
     await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: [subresource]}, {from: "user"});
     ask(impl, impl.storage.nextActionId.get(), {from: "gadget", gadgetId: 10});
   };
-  // Both background publishes, the listing pass and an unread fanout of chat 1, at once.
-  const publishBoth = (impl: Impl) => {
-    impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
+  // The listing pass and an unread fanout of both chats, at once.
+  const publish = (impl: Impl) => {
+    for (let chatId of [1, 2]) impl.addChatMessages(chatId, AGENT, [{type: "message", message: "Done."}]);
     return Promise.allSettled([impl.deliverUserUpdates(), impl.deliverDirtyChats()]);
   };
-  const summaryActions = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
-    (await storedSummary(user, workspaceId))?.waiting.gadgets[0]?.actions;
+  const attentionActions = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
+    (await storedAttention(user, workspaceId))?.gadgets[0]?.actions;
+  const chatSeedPending = (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
+    runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).gadgets.get(workspaceId)?.chatSeedPending);
 
-  it("checks once for both publishes, then delivers or, once denied, withholds both without calling again", async () => {
+  it("checks once for every publish, then delivers or, once denied, withholds previews without calling again", async () => {
     const {fixture, reader, profile, state, watermark} = await admitReader();
     const readerId = reader.id.toString();
 
-    // Both publishes wait on one check of what is new, then deliver.
+    // Both chats' fanouts wait on one check of what is new, then deliver.
     const parked = Promise.withResolvers<void>();
     state.park = parked.promise;
     await withImpl(fixture.workspace, async impl => {
       using admission = vi.spyOn(impl, "mayReadChatState");
       await readAndAsk(impl, "doc:1");
-      const both = publishBoth(impl);
-      await vi.waitFor(() => expect(admission.mock.calls.filter(call => call[1] === profile.id).length).toBeGreaterThanOrEqual(2));
+      const both = publish(impl);
+      await vi.waitFor(() => expect(admission.mock.calls.some(call => call[1] === profile.id)).toBe(true));
       parked.resolve();
       await both;
       expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.verifiedThroughActionId).toBe(impl.storage.nextActionId.get() - 1);
     });
     expect(state.checks).toEqual([["doc:1"]]);
     expect(state.previews).toContain(readerId);
-    await vi.waitFor(async () => expect(await summaryActions(reader, fixture.workspaceId)).toBe(1));
+    await vi.waitFor(async () => expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]));
+    await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(1));
 
-    // Denied what is new: neither, and the summary they hold is cleared.
+    // Denied what is new: no previews, and their account forgets the chats it holds of the
+    // workspace, owing them to the next open that admits them. Attention still reaches them.
     state.denied.add("doc:2");
     state.previews = [];
     const checkedThrough = await watermark();
     await withImpl(fixture.workspace, async impl => {
       await readAndAsk(impl, "doc:2");
-      await publishBoth(impl);
+      await publish(impl);
       expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
+      await impl.userUpdateAttempt(readerId);
     });
     expect(state.checks).toEqual([["doc:1"], ["doc:2"]]);
-    expect(state.previews).toEqual([fixture.user.id.toString()]);
+    expect(state.previews.every(id => id === fixture.user.id.toString())).toBe(true);
     expect(await watermark()).toBe(checkedThrough);
-    await vi.waitFor(async () => expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined());
+    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+    expect(await chatSeedPending(reader, fixture.workspaceId)).toBe(true);
+    await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(2));
 
-    // Later publishes call nothing, and still withhold both.
+    // Later publishes call nothing, and still withhold previews.
     state.previews = [];
     await withImpl(fixture.workspace, async impl => {
       ask(impl, impl.storage.nextActionId.get(), {from: "gadget", gadgetId: 10});
-      await publishBoth(impl);
+      await publish(impl);
     });
-    await vi.waitFor(async () => expect(await summaryActions(fixture.user, fixture.workspaceId)).toBe(3));
+    await vi.waitFor(async () => expect(await attentionActions(fixture.user, fixture.workspaceId)).toBe(3));
+    await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(3));
     expect(state.checks).toHaveLength(2);
-    expect(state.previews).toEqual([fixture.user.id.toString()]);
-    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+    expect(state.previews.every(id => id === fixture.user.id.toString())).toBe(true);
+    expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
   });
 
-  it("retries the summary alone, and both publishes, when the check fails, without counting it as a denial", async () => {
+  it("retries previews when the check fails, without counting it as a denial, and sends attention regardless", async () => {
     const {fixture, reader, profile, state, watermark} = await admitReader();
     const readerId = reader.id.toString();
     const admittedAt = await watermark();
     state.fail = true;
     await withImpl(fixture.workspace, async impl => {
-      // Owed outputs as well, which the failed check must not hold back.
-      impl.storage.pendingUserUpdates.put({userId: readerId, profileId: profile.id, seq: 1, parts: ["outputs"]});
       await readAndAsk(impl, "doc:1");
-      await publishBoth(impl);
-      expect(impl.storage.pendingUserUpdates.get(readerId)?.parts).toEqual(["summary"]);
+      await publish(impl);
       expect(impl.storage.dirtyChats.get(1)?.failedRecipients?.map(({userId}) => userId)).toEqual([readerId]);
     });
     expect(await watermark()).toBe(admittedAt);
     expect(state.previews).not.toContain(readerId);
-    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
+    await vi.waitFor(async () => expect(await attentionActions(reader, fixture.workspaceId)).toBe(1));
+    expect(await chatSeedPending(reader, fixture.workspaceId)).toBeUndefined();
 
     state.fail = false;
     await withImpl(fixture.workspace, async impl => {
-      await impl.userUpdateAttempt(readerId);
       await impl.deliverDirtyChats();
       expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.verifiedThroughActionId).toBe(impl.storage.nextActionId.get() - 1);
     });
     expect(state.previews).toContain(readerId);
-    expect(await summaryActions(reader, fixture.workspaceId)).toBe(1);
-  });
-
-  it("clears the summary a builder holds when unread fanout alone finds them denied", async () => {
-    const {fixture, reader, profile, state} = await admitReader();
-    await withImpl(fixture.workspace, async impl => {
-      await readAndAsk(impl, "doc:1");
-      await publishBoth(impl);
-    });
-    await vi.waitFor(async () => expect(await summaryActions(reader, fixture.workspaceId)).toBe(1));
-
-    // A read that leaves the summary as it is, then fanout alone.
-    state.denied.add("doc:2");
-    await withImpl(fixture.workspace, async impl => {
-      await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
-      impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
-      await impl.deliverDirtyChats();
-      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
-      await impl.userUpdateAttempt(reader.id.toString());
-    });
-    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
-  });
-
-  it("sends nothing else of a listing to a builder who loses access while their summary is checked", async () => {
-    const {fixture, reader, profile, state} = await admitReader();
-    const readerId = reader.id.toString();
-    const parked = Promise.withResolvers<void>();
-    state.park = parked.promise;
-    const sent: WorkspaceListing[] = [];
-    await withImpl(fixture.workspace, async impl => {
-      const users = impl.users;
-      impl.users = new Proxy(users, {get(target, key) {
-        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
-          if (member === "syncWorkspaceListing" && id.toString() === readerId) {
-            return async (_workspaceId: string, listing: WorkspaceListing) => { sent.push(listing); };
-          }
-          return Reflect.get(user, member);
-        }});
-        return Reflect.get(target, key);
-      }});
-      await readAndAsk(impl, "doc:1");
-      impl.storage.pendingUserUpdates.put({userId: readerId, profileId: profile.id, seq: 1,
-        parts: ["summary", "outputs", "title"]});
-      const pass = impl.deliverUserUpdates();
-      await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
-      using _removed = vi.spyOn(await impl.getSharingManager(), "getEffectiveAccess").mockReturnValue(undefined);
-      parked.resolve();
-      await pass;
-    });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).not.toHaveProperty("outputs");
-    expect(sent[0]).not.toHaveProperty("title");
-    expect(sent[0]?.summary).toBeNull();
   });
 
   it("keeps a denial recorded while a background check of the same account and watermark awaits", async () => {
@@ -386,7 +535,7 @@ describe("background reads of an offline builder", () => {
     state.park = parked.promise;
     await withImpl(fixture.workspace, async impl => {
       await readAndAsk(impl, "doc:1");
-      const both = publishBoth(impl);
+      const both = publish(impl);
       await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
       // A refused reopen denies the choice meanwhile (see ensureObserver), keeping its account and
       // watermark; the check it raced then allows what it was asked about.
@@ -398,7 +547,6 @@ describe("background reads of an offline builder", () => {
         .toEqual({accountId: 1, verifiedThroughActionId: admittedAt, denied: true});
     });
     expect(state.previews).not.toContain(reader.id.toString());
-    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
   });
 
   it("sends no chat state a check admitted after the workspace's deletion began", async () => {
@@ -406,68 +554,15 @@ describe("background reads of an offline builder", () => {
     const readerId = reader.id.toString();
     const parked = Promise.withResolvers<void>();
     state.park = parked.promise;
-    const summaries: unknown[] = [];
     await withImpl(fixture.workspace, async impl => {
-      const users = impl.users;
-      impl.users = new Proxy(users, {get(target, key) {
-        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
-          if (member === "syncWorkspaceListing" && id.toString() === readerId) {
-            return async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
-              if (args[1].summary !== undefined) summaries.push(args[1].summary);
-              return await (user as DurableObjectStub<UserDurableObject>).syncWorkspaceListing(...args);
-            };
-          }
-          return Reflect.get(user, member);
-        }});
-        return Reflect.get(target, key);
-      }});
       await readAndAsk(impl, "doc:1");
-      const both = publishBoth(impl);
+      const both = publish(impl);
       await vi.waitFor(() => expect(state.checks).toEqual([["doc:1"]]));
       impl.beginDeletion(new Set([readerId, fixture.user.id.toString()]));
       parked.resolve();
       await both;
     });
-    expect(summaries).toEqual([]);
     expect(state.previews).not.toContain(readerId);
-  });
-
-  it("clears a summary that lands after the denial queued its clear, though it was acknowledged", async () => {
-    const {fixture, reader, profile, state} = await admitReader();
-    const readerId = reader.id.toString();
-    const sending = Promise.withResolvers<void>(), landing = Promise.withResolvers<void>();
-    await withImpl(fixture.workspace, async impl => {
-      const users = impl.users;
-      let held = false;
-      impl.users = new Proxy(users, {get(target, key) {
-        if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {get(user, member) {
-          if (member === "syncWorkspaceListing" && id.toString() === readerId && !held) {
-            held = true;
-            return async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
-              sending.resolve();
-              await landing.promise;
-              await (user as DurableObjectStub<UserDurableObject>).syncWorkspaceListing(...args);
-            };
-          }
-          return Reflect.get(user, member);
-        }});
-        return Reflect.get(target, key);
-      }});
-      // Their summary, admitted, is on its way when unread fanout finds them denied, which queues
-      // a clear and forgets what they acknowledged; then it lands, and is acknowledged.
-      await readAndAsk(impl, "doc:1");
-      const pass = impl.deliverUserUpdates();
-      await sending.promise;
-      state.denied.add("doc:2");
-      await impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
-      impl.storage.dirtyChats.put({chatId: 1, firstMessageSequence: 0, firstVisibleSequence: 1});
-      await impl.deliverDirtyChats();
-      expect(impl.storage.observers.get(profile.id)?.accountChoices[7]?.denied).toBe(true);
-      landing.resolve();
-      await pass;
-      await impl.userUpdateAttempt(readerId);
-    });
-    expect(await storedSummary(reader, fixture.workspaceId)).toBeUndefined();
   });
 
   // A shared open hands the reader's User DO the chats' starting points, which carry their heads,
@@ -504,7 +599,7 @@ describe("background reads of an offline builder", () => {
             }
             return Reflect.get(user, member);
           }});
-          return Reflect.get(target, key);
+          return namespaceMember(target, key);
         }});
         try {
           using closed = new NativeRpcStub<() => void>(() => {});
@@ -518,14 +613,6 @@ describe("background reads of an offline builder", () => {
           impl.users = users;
         }
       });
-    const recentChatIds = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) => {
-      const updates = new UnreadUpdates();
-      using callback = new RpcStub(updates);
-      using _subscription = await user.subscribeToUnreadState("recent", callback);
-      await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
-      return updates.snapshots[0]!.chats.filter(chat => chat.workspaceId === workspaceId)
-        .map(chat => chat.chatId).toSorted();
-    };
     const readDoc2 = (impl: Impl) =>
       impl.authorizeObservation(7, {title: "Read", description: "A read", subresources: ["doc:2"]}, {from: "user"});
 
@@ -606,30 +693,23 @@ describe("background reads of an offline builder", () => {
       await openAcross(fixture, reader, profile, state);
       expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
     });
+
+    it("seeds again at the next open admitted to them the chats a denial made them forget", async () => {
+      const {fixture, reader, profile, state} = await admitReader();
+      await withImpl(fixture.workspace, impl => publish(impl));
+      await vi.waitFor(async () => expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]));
+
+      state.denied.add("doc:2");
+      await withImpl(fixture.workspace, async impl => {
+        await readDoc2(impl);
+        await publish(impl);
+        await impl.userUpdateAttempt(reader.id.toString());
+      });
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([]);
+
+      state.denied.delete("doc:2");
+      await openAcross(fixture, reader, profile, state);
+      expect(await recentChatIds(reader, fixture.workspaceId)).toEqual([1, 2]);
+    });
   });
-});
-
-it("ignores a summary read before one already taken", async () => {
-  const {user, workspaceId} = await setup();
-  const summary = (actions: number): WorkspaceSummary => ({workspaceId,
-    waiting: {runs: 0, chats: 0, gadgets: [{gadgetId: 10, actions}]}, waitingChats: [], workingChatIds: [], hooks: []});
-  const newer = Number.MAX_SAFE_INTEGER;
-  await user.syncWorkspaceListing(workspaceId, {listingRev: newer, summary: summary(2)});
-  await user.syncWorkspaceListing(workspaceId, {listingRev: newer - 1, summary: summary(1)});
-  expect(await storedSummary(user, workspaceId)).toEqual(summary(2));
-});
-
-it("gives a new subscriber the summaries kept", async () => {
-  const fixture = await setup();
-  await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "agent", chatId: 1}));
-  const expected = {workspaceId: fixture.workspaceId, waiting: {runs: 0, chats: 1, gadgets: []},
-    waitingChats: [{chatId: 1, title: "Chat", lastActive: new Date(1), waiting: "approval",
-      ask: {type: "action", title: "Action 0"}}],
-    workingChatIds: [], hooks: []};
-  await vi.waitFor(async () => expect(await storedSummary(fixture.user, fixture.workspaceId)).toEqual(expected));
-
-  const updates = new SummaryUpdates();
-  using callback = new RpcStub(updates);
-  using _subscription = await fixture.user.subscribeToWorkspaceSummaries(callback);
-  await vi.waitFor(() => expect(updates.snapshots).toEqual([[expected]]));
 });

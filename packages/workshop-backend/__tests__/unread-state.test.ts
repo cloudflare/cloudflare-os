@@ -74,7 +74,7 @@ const notificationBaselines = (fixture: Fixture, user = fixture.user) => withImp
     return participants === undefined || participants.includes(userProfiles.get(user.id.toString())!.id);
   }).map(meta => ({chatId: meta.id,
     head: impl.chatHead(meta.id),
-    headUpdatedAt: meta.lastActive,
+    headUpdatedAt: impl.chatHeadUpdatedAt(meta),
     hasParticipated: impl.chatParticipationDefault(meta.id),
     notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1,
     readThroughVisibleSequence: impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0})));
