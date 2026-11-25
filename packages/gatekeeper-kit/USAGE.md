@@ -710,8 +710,12 @@ type Queued = { id: number; action: Change };
 // The reducer never writes the tab it is given, so the fold's draft is the provider's tab itself.
 #replay = createSimulationStore<string, Tab, Tab, Queued, string>({
   initial: tab => tab,
-  reduce: (tab, { action }) => {
+  // An edit is positional, so once one edit of the tab is refused, those after it are too.
+  reduce: (tab, { action }, { refusals }) => {
     if (tab === undefined) return { kind: "refused", refusal: "The tab is not in the document." };
+    if (refusals.length > 0) {
+      return { kind: "refused", refusal: "An earlier edit of the tab was refused." };
+    }
     const edited = applyEdit(tab, action.edit); // pure: a changed Tab, or why not
     return edited.ok
       ? { kind: "applied", value: edited.tab }
@@ -740,21 +744,17 @@ read(tabId: string): Promise<string> {
   for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
   return entity;
 }
-
-// The action set's `reject` and `apply`, which its queue runs one at a time.
-reject(id: number): void {
-  this.ctx.storage.transactionSync(() => {
-    this.#journal.remove(id);
-  });
-}
-
-async apply(id: number, edit: Edit): Promise<void> {
-  await this.#api.update(edit);
-  this.ctx.storage.transactionSync(() => {
-    this.#journal.remove(id);
-  });
-}
 ```
+
+What a mark asks of `apply` and `reject`, and what one queued record asks of those before it, is
+the gatekeeper's, and the recipe leaves both out. Its `apply` reads the record on the queue the
+reads mark it on and refuses a marked one before the provider is reached, since the provider may
+take a positional edit whose text no longer matches; it refuses with a plain error, which leaves
+the record pending, because the action set runs no `reject` for a terminal failure and the
+gatekeeper's own store would keep it. Where a record was built on the records before it, as an
+offset is counted past an earlier insert, the gatekeeper decides when it may apply: the Google
+Docs gatekeeper applies a document's edits in the order they were queued, pins each write to the
+revision it was built on, and marks a write so that a retry after a lost reply is not sent again.
 
 `targets`, the second argument of `createSimulationView`, names every entity a record changes.
 Where a pending create will make the entity, resolve the id through `ProvisionalIds` there

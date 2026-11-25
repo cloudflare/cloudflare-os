@@ -11,6 +11,7 @@ import {
   type EntityStep,
   type SimulationStoreOptions,
 } from "../src/simulation-store";
+import { SerialTaskQueue } from "../src/serial-queue";
 import { fakeKv } from "./fake-kv";
 
 // The fixture is a gatekeeper whose entities are pages of lines. Its reducer refuses what it
@@ -1206,5 +1207,110 @@ describe("simulatedList", () => {
     expect(list.inject.items).toEqual([]);
     expect(list.inject.revalidate(task("~1", 5))).toBeNull();
     expect(reduced).toBe(0);
+  });
+});
+
+// The document recipe of USAGE.md's "Replaying pending actions", run as it is written there: a
+// resource that reads a document one tab at a time and marks what a fold refused, on the queue
+// apply and reject run on. An edit is positional: it replaces the text it expects at an offset.
+describe("the usage recipe's document reads", () => {
+  type Edit = { tabId: string; at: number; expected: string; text: string };
+  type Tab = { id: string; text: string };
+  type Change = { tabId: string; edit: Edit; invalidatedReason?: string };
+  type Queued = { id: number; action: Change };
+
+  const applyEdit = (tab: Tab, edit: Edit): { ok: true; tab: Tab } | { ok: false; reason: string } =>
+    tab.text.slice(edit.at, edit.at + edit.expected.length) === edit.expected
+      ? { ok: true, tab: { ...tab, text: write(tab.text, edit) } }
+      : { ok: false, reason: `The tab no longer reads "${edit.expected}" there.` };
+  const write = (text: string, edit: Edit): string =>
+    text.slice(0, edit.at) + edit.text + text.slice(edit.at + edit.expected.length);
+
+  class Document {
+    readonly provider = { tabs: [{ id: "t1", text: "hello world" }] as Tab[] };
+    readonly #records = new Map<number, Queued>();
+    readonly #journal = {
+      listPending: (): Queued[] => [...this.#records.values()],
+      markInvalid: (id: number, reason: string): void => {
+        const record = this.#records.get(id);
+        if (record) record.action.invalidatedReason = reason;
+      },
+    };
+    readonly #queue = new SerialTaskQueue();
+    readonly #actions = { runExclusive: <T>(hook: () => Promise<T>) => this.#queue.run(hook) };
+    readonly #api = { get: async () => ({ tabs: this.provider.tabs.map(tab => ({ ...tab })) }) };
+    #replay = createSimulationStore<string, Tab, Tab, Queued, string>({
+      initial: tab => tab,
+      reduce: (tab, { action }, { refusals }) => {
+        if (tab === undefined) return { kind: "refused", refusal: "The tab is not in the document." };
+        if (refusals.length > 0) {
+          return { kind: "refused", refusal: "An earlier edit of the tab was refused." };
+        }
+        const edited = applyEdit(tab, action.edit);
+        return edited.ok
+          ? { kind: "applied", value: edited.tab }
+          : { kind: "refused", refusal: edited.reason };
+      },
+    });
+
+    stage(id: number, edit: Edit): void {
+      this.#records.set(id, { id, action: { tabId: edit.tabId, edit } });
+    }
+
+    marked(id: number): string | undefined {
+      return this.#records.get(id)?.action.invalidatedReason;
+    }
+
+    read(tabId: string): Promise<string | undefined> {
+      return this.#actions.runExclusive(async () => {
+        const doc = await this.#api.get();
+        const tab = doc.tabs.find(tab => tab.id === tabId);
+        return this.#fold(tabId, tab)?.text;
+      });
+    }
+
+    #fold(tabId: string, tab: Tab | undefined): Tab | undefined {
+      const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
+      const { entity, refused } = this.#replay.fold(
+        tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
+      for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
+      return entity;
+    }
+  }
+
+  it("shows the edits pending over the provider's tab", async () => {
+    const doc = new Document();
+    doc.stage(1, { tabId: "t1", at: 0, expected: "", text: "New " });
+    doc.stage(2, { tabId: "t1", at: 4, expected: "hello", text: "hi" });
+
+    expect(await doc.read("t1")).toBe("New hi world");
+    expect([doc.marked(1), doc.marked(2)]).toEqual([undefined, undefined]);
+  });
+
+  it("marks an edit a read refuses, and leaves it out of the reads after", async () => {
+    const doc = new Document();
+    doc.stage(1, { tabId: "t1", at: 0, expected: "hello", text: "howdy" });
+    // The text the edit expects changed at the provider; its offset is still in the tab.
+    doc.provider.tabs = [{ id: "t1", text: "jello world" }];
+
+    expect(await doc.read("t1")).toBe("jello world");
+    expect(doc.marked(1)).toBe('The tab no longer reads "hello" there.');
+    // Its text back, the edit stays marked: a mark outlives the read.
+    doc.provider.tabs = [{ id: "t1", text: "hello world" }];
+    expect(await doc.read("t1")).toBe("hello world");
+  });
+
+  it("refuses, in the fold that refuses an edit, the edits of the tab after it", async () => {
+    const doc = new Document();
+    doc.provider.tabs = [{ id: "t1", text: "abbc" }];
+    doc.stage(1, { tabId: "t1", at: 0, expected: "a", text: "aa" });
+    // The first `b` of what the first edit leaves.
+    doc.stage(2, { tabId: "t1", at: 2, expected: "b", text: "X" });
+    expect(await doc.read("t1")).toBe("aaXbc");
+    // Its expected text now stands at its offset as the second `b`.
+    doc.provider.tabs = [{ id: "t1", text: "xbbc" }];
+
+    expect(await doc.read("t1")).toBe("xbbc");
+    expect(doc.marked(2)).toBe("An earlier edit of the tab was refused.");
   });
 });
