@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baseFormats, baseSizes, CELL_FORMAT_FIELDS, colorStyle, FORMAT_READ_FIELDS, isSheetColor, mergeFormat,
+  baseFormats, baseSizes, CELL_FORMAT_FIELDS, colorStyle, FORMAT_AREAS_READ_FIELDS, FORMAT_READ_FIELDS, isSheetColor, mergeFormat,
   projectFormat, sheetColor, THEME_COLORS, type BaseFormats, type BaseSizes, type RestCellFormat,
   type RestColorStyle,
 } from "../src/sheets-format";
@@ -266,6 +266,8 @@ describe("Google Sheets format read mask", () => {
       }
     }
     expect(FORMAT_READ_FIELDS).toContain("rowData(values(userEnteredFormat(");
+    // A read by grid range asks for the same less the merges, which its replay has read.
+    expect(FORMAT_AREAS_READ_FIELDS).toBe(FORMAT_READ_FIELDS.replace(",merges,", ","));
     expect(CELL_FORMAT_FIELDS.startsWith("userEnteredFormat(")).toBe(true);
   });
 });

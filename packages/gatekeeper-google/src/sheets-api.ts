@@ -6,7 +6,7 @@ import type {
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { GoogleApiError, readGoogleJson } from "./google-response";
 import {
-  baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_READ_FIELDS,
+  baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_AREAS_READ_FIELDS, FORMAT_READ_FIELDS,
   type BaseFormats, type BaseSizes, type RestFormatSheet, type RestGridRange,
 } from "./sheets-format";
 import {
@@ -586,7 +586,7 @@ export class GoogleSheetsApi {
   ): Promise<{ formats: BaseFormats; sizes: BaseSizes }> {
     if (areas.length === 0) return { formats: () => null, sizes: () => null };
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
-    url.searchParams.set("fields", FORMAT_READ_FIELDS);
+    url.searchParams.set("fields", FORMAT_AREAS_READ_FIELDS);
     // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
     url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(

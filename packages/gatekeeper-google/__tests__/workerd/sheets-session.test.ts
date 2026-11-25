@@ -11,7 +11,7 @@ import {
   GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl, NO_CHANGES,
 } from "../../src/sheets";
 import { officeFileError } from "../../src/office-conversion";
-import { FORMAT_READ_FIELDS } from "../../src/sheets-format";
+import { FORMAT_AREAS_READ_FIELDS, FORMAT_READ_FIELDS } from "../../src/sheets-format";
 import { parseRange } from "../../src/sheets-model";
 import type { PlannedChange, QueuedChange } from "../../src/sheets-simulation";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
@@ -146,6 +146,10 @@ beforeEach(() => {
         });
       }
       formatFilterReads.push(body.dataFilters.map(({ gridRange }) => gridRange));
+      // The replay read the merges already: a format read by grid range asks for none.
+      if (url.searchParams.get("fields") !== FORMAT_AREAS_READ_FIELDS) {
+        throw new Error(`a format read by grid range asks for ${url.searchParams.get("fields")}`);
+      }
       // One sheet per range, in an order of Google's own.
       return Response.json({
         sheets: body.dataFilters.toReversed().map(({ gridRange }) => {
@@ -598,9 +602,9 @@ describe("Google Sheets format reads", () => {
       { sheetId: 7, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 2 },
       { sheetId: 7, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 },
     ]]);
-    // The merges of the sheet the queued changes act on, then its formats.
+    // The merges of the sheet the queued changes act on, then its formats, without the merges again.
     expect(providerFetches.filter(url => url.pathname.endsWith(":getByDataFilter"))
-      .map(url => url.searchParams.get("fields"))).toEqual(["sheets(properties(sheetId),merges)", FORMAT_READ_FIELDS]);
+      .map(url => url.searchParams.get("fields"))).toEqual(["sheets(properties(sheetId),merges)", FORMAT_AREAS_READ_FIELDS]);
     expect(mergeReads).toEqual([[7]]);
     expect(providerFetches.some(url => url.searchParams.has("ranges"))).toBe(false);
     for (let mask of fieldMasks()) for (let field of VALUE_FIELDS) expect(mask).not.toContain(field);

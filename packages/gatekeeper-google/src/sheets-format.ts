@@ -105,14 +105,25 @@ export const CELL_FORMAT_FIELDS =
   `wrapStrategy,borders(top(${BORDER_FIELDS}),bottom(${BORDER_FIELDS}),left(${BORDER_FIELDS}),` +
   `right(${BORDER_FIELDS})))`;
 
+// What a format read asks of each sheet: its ID, title and size, to name and clip the range read.
+const FORMAT_SHEET_FIELDS =
+  "properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount))";
+// And of each range read: its position, line sizes and cells' formats.
+const FORMAT_DATA_FIELDS =
+  "data(startRow,startColumn,rowMetadata(pixelSize),columnMetadata(pixelSize)," +
+  `rowData(values(${CELL_FORMAT_FIELDS})))`;
+
 /**
  * The field mask of a format read: each sheet's ID, title and size, to name and clip the range
  * read, its merges, and each range's position, line sizes and cells' formats.
  */
-export const FORMAT_READ_FIELDS =
-  "sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)),merges," +
-  "data(startRow,startColumn,rowMetadata(pixelSize),columnMetadata(pixelSize)," +
-  `rowData(values(${CELL_FORMAT_FIELDS}))))`;
+export const FORMAT_READ_FIELDS = `sheets(${FORMAT_SHEET_FIELDS},merges,${FORMAT_DATA_FIELDS})`;
+
+/**
+ * The field mask of a format read by grid range, for a read with changes queued: that of a format
+ * read without the merges, which the replay has read already and takes from its grid.
+ */
+export const FORMAT_AREAS_READ_FIELDS = `sheets(${FORMAT_SHEET_FIELDS},${FORMAT_DATA_FIELDS})`;
 
 /** The size in pixels of a row Google Sheets has not resized. */
 export const DEFAULT_ROW_HEIGHT = 21;
