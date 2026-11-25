@@ -929,9 +929,9 @@ describe("attachment worktree ingress", () => {
     expect(imageParts(compacted)).toHaveLength(10);
   }));
 
-  // Compaction summarizes the prompt as earlier requests sent it. Only if it fails does the turn
-  // name the older attachments by path, and then without the thinking the rewrite invalidates.
-  it("names older attachments by path, without the thinking after them, when compaction fails", () => inKernel(crypto.randomUUID(), async impl => {
+  // Compaction summarizes the prompt as earlier requests sent it. If it fails, the turn fails:
+  // showing the older attachments any other way would invalidate the thinking after them.
+  it("fails the turn, rewriting nothing, when compaction for the inline limits fails", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
     const batch = (from: number, length = 5) =>
@@ -956,26 +956,20 @@ describe("attachment worktree ingress", () => {
     // The thinking is replayed while nothing rewrites the messages before it.
     expect(thinking(requests[1])).toHaveLength(1);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", {attachments: batch(20, 1)});
-    // An empty summary fails the compaction, so the turn runs without it.
-    await turn(fauxAssistantMessage(fauxText("")),
-      fauxAssistantMessage([fauxThinking("Thought over the placeholders."), fauxText("Done.")]));
-    const request = requests.at(-1)!;
-    expect(imageParts(request)).toHaveLength(16);
-    expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png; 24 bytes, not shown to you");
-    expect(thinking(request)).toEqual([]);
-    expect(JSON.stringify(request)).toContain("Seen.");
+    // An empty summary fails the compaction, and with it the turn, before any request to answer.
+    const sent = requests.length;
+    await expect(turn(fauxAssistantMessage(fauxText("")))).rejects.toThrow(
+        "This chat's images and PDFs are past what one request can carry, and compacting it " +
+        "failed: Compaction produced an empty summary. Retry to try again.");
+    expect(requests.length - sent).toBe(1);
+    expect(impl.loadChatHistory(chatId).checkpoint).toBeUndefined();
 
-    // That reply's thinking, signed over the placeholders, is not stored, so a later compaction of
-    // the original prompt keeps nothing it would invalidate.
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Again");
+    // Retry compacts the prompt as first sent, keeping the thinking after the cut.
     await turn(fauxAssistantMessage(fauxText("Summary of the first five.")), fauxAssistantMessage(fauxText("Again.")));
     const compacted = requests.at(-1)!;
     expect(JSON.stringify(compacted)).toContain("Summary of the first five.");
-    expect(JSON.stringify(compacted)).toContain("Done.");
     expect(JSON.stringify(compacted)).not.toContain("not shown to you");
     expect(imageParts(compacted)).toHaveLength(16);
-    // Only thinking signed over the prompt as first sent remains: the first reply's, kept after
-    // the cut.
     expect(thinking(compacted).map(block => block.type === "thinking" && block.thinking))
       .toEqual(["Considering the first five."]);
   }));
@@ -1018,6 +1012,36 @@ describe("attachment worktree ingress", () => {
     expect(JSON.stringify(compacted)).toContain("Summary of the looks.");
     expect(imageParts(compacted).length).toBeLessThanOrEqual(20);
     expect(JSON.stringify(compacted)).not.toContain("not shown to you");
+  }));
+
+  // Within one turn, too: the cut falls between the turn's own steps, prompt included, rather
+  // than leaving the turn's images to be shown some other way.
+  it("compacts into the running turn, keeping its thinking, once its image reads pass the limit", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const ref = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const chatId = await impl.newChat(user, {profile: USER}, "Match this mockup", {attachments:
+      [{oid: ref.oid, mimeType: "image/png", name: "ref.png"}]});
+    const looks = Array.from({length: 20}, (_, i) => fauxAssistantMessage(
+        [fauxThinking(`Look ${i}`), fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "ref.png"})],
+        {stopReason: "toolUse"}));
+    faux.setResponses([...looks, fauxAssistantMessage(fauxText("Summary of the looks.")),
+      fauxAssistantMessage(fauxText("Matched."))]);
+    await runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+      requests.push(structuredClone(context.messages));
+      return faux.stream(model, context, options);
+    }}, chatId, AUTHOR, new AbortController().signal, USER,
+    {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    expect(Math.max(...requests.map(request => imageParts(request).length))).toBe(20);
+    const last = requests.at(-1)!;
+    expect(JSON.stringify(last)).toContain("Summary of the looks.");
+    expect(JSON.stringify(last)).not.toContain("not shown to you");
+    // The steps kept after the cut keep their thinking.
+    const thinking = last.flatMap(message =>
+      message.role === "assistant" ? message.content.filter(block => block.type === "thinking") : []);
+    expect(thinking.length).toBeGreaterThan(0);
+    expect(thinking.at(-1)).toMatchObject({thinking: "Look 19"});
   }));
 
   // One step's image reads fit one message's budget, as a message's attachments do, so the

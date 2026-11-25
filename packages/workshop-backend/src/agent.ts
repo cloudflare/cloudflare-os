@@ -1674,6 +1674,15 @@ function makeReplayAssistantMessage(
   };
 }
 
+// The failure of a turn whose chat is past the limits on inline images and PDFs and could not be
+// compacted to fit them, which `cause`, a failed compaction, may say why.
+function inlineLimitsError(cause?: unknown): AgentTurnError {
+  let reason = cause === undefined ? "no compaction could make room for them"
+      : `compacting it failed: ${(cause instanceof Error ? cause.message : String(cause)).replace(/\.$/, "")}`;
+  return new AgentTurnError("This chat's images and PDFs are past what one request can carry, " +
+      `and ${reason}. Retry to try again.`, cause instanceof AgentTurnError ? cause.statusCode : undefined);
+}
+
 // Builds the synthetic observeUserChanges call and result that tell the model about something
 // outside its own tool calls (the user's edits, a revert, a catalog change), keyed by the chat
 // message that records it. The result is plain text, not JSON: a JSON-escaped diff full of quotes
@@ -2434,14 +2443,15 @@ async function runAgentPass(
   //
   // Every request resends them all, so once the chat's inline ones pass MAX_INLINE_ATTACHMENTS or
   // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts first, from the prompt earlier requests
-  // sent, keeping the messages from `attachmentsFitFrom` on, whose attachments fit. Only if it
-  // can't are the older ones named by path instead (`pastLimitParts`). Past
-  // MAX_INLINE_REPLAY_BYTES, older ones are named by path unread (`unreadParts`), so the prompt
-  // is no longer the one earlier requests sent.
+  // sent, keeping the messages from `attachmentsFitFrom` on, whose attachments fit; if it can't,
+  // the turn fails. Nothing else makes room, since showing earlier messages differently would
+  // invalidate the thinking after them, and the model's thinking is what it remembers its turn
+  // by. Past MAX_INLINE_REPLAY_BYTES, older ones are named by path unread (`unreadParts`), which
+  // only the summary of a compaction then sees.
   //
-  // Images readFile showed (AiToolCall's `imageBytes`) count in their step's message alike, and
-  // are replaced by the same markers, so an agent that looks at image after image compacts too.
-  // The pass's own reads count toward the limits as they arrive (see `finishTurn`).
+  // Images readFile showed (AiToolCall's `imageBytes`) count in their step's message alike, so
+  // an agent that looks at image after image compacts too. The pass's own reads count toward the
+  // limits as they arrive (see `finishTurn`).
   const isInlineCandidate = (mimeType: string) => handle.model.input.includes("image") &&
       (isAllowedChatAttachmentImageMimeType(mimeType) ||
        (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api)));
@@ -2495,15 +2505,8 @@ async function runAgentPass(
     for (let id of messageIds) inlineAttachmentIds.add(id);
     if (!answered) unansweredAttachmentIds.push(...messageIds);
   }
-  // The label part of each inline attachment before `attachmentsFitFrom`, with the marker that
-  // replaces it and the part after it if the turn has to run without compacting.
-  const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
-  // The markers of the attachments past MAX_INLINE_REPLAY_BYTES.
+  // The markers of the attachments and image reads past MAX_INLINE_REPLAY_BYTES.
   const unreadParts = new Set<TextContent | ImageContent>();
-  // What an image read shows in place of the image when it is past the limits.
-  const imageReadNotShown = (filename: string): TextContent => ({type: "text", text:
-      `${filename}: image not shown to you: past the limits on the images and PDFs one request ` +
-      "can carry. Read the file again to see it."});
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2601,16 +2604,8 @@ async function runAgentPass(
                     `\n\n[Attached ${isPdf ? "PDF file" : "image"}${filename}${workspaceLocation}; ` +
                     `${attachment.size} bytes, not shown to you: ${reason}.]`});
                 const PAST_LIMITS = "past the limits on the images and PDFs one request can carry";
-                // A label and inline part, which the marker replaces if the turn runs uncompacted
-                // past the limits.
-                let inline = (label: string, data: string): (TextContent | ImageContent)[] => {
-                  let pair: [TextContent, ImageContent] = [{type: "text", text: label},
-                    {type: "image", data, mimeType: attachment.mimeType}];
-                  if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
-                    pastLimitParts.set(pair[0], notShown(PAST_LIMITS));
-                  }
-                  return pair;
-                };
+                let inline = (label: string, data: string): (TextContent | ImageContent)[] =>
+                  [{type: "text", text: label}, {type: "image", data, mimeType: attachment.mimeType}];
                 // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
                 // short enough, since text decodes to at least a character per four bytes.
                 if (unreadAttachmentIds.has(attachment.id)) {
@@ -2715,15 +2710,6 @@ async function runAgentPass(
                 // Note that if we get here, we know the tool succeeded originally, so for many
                 // branches below we can just return success unconditionally.
                 case "readFile": {
-                  // An image shown before `attachmentsFitFrom` is replaced by a marker if the
-                  // pass runs uncompacted past the limits, as an attachment is.
-                  let limitImageRead = (content: (TextContent | ImageContent)[]) => {
-                    if (content[1]?.type === "image" && attachmentsFitFrom !== undefined &&
-                        msg.sequence < attachmentsFitFrom) {
-                      pastLimitParts.set(content[0], imageReadNotShown(toolCall.input.filename));
-                    }
-                    return content;
-                  };
                   if (sawRevertedContent(msgIndex)) {
                     // It would be a total waste of tokens to actually include this file
                     // content in the chat history since it contains changes that were later
@@ -2748,8 +2734,10 @@ async function runAgentPass(
                       isError: true,
                     };
                   } else if (unreadImageReads.has(toolCall.toolCallId)) {
-                    // Past MAX_INLINE_REPLAY_BYTES: the marker alone, without reading the image.
-                    let marker = imageReadNotShown(toolCall.input.filename);
+                    // Past MAX_INLINE_REPLAY_BYTES: a marker, without reading the image.
+                    let marker: TextContent = {type: "text", text: `${toolCall.input.filename}: ` +
+                        "image not shown to you: past the limits on the images and PDFs one " +
+                        "request can carry. Read the file again to see it."};
                     unreadParts.add(marker);
                     toolOutput = {content: [marker]};
                   } else if (toolCall.observedOid !== undefined ||
@@ -2771,9 +2759,9 @@ async function runAgentPass(
                     if (oid === undefined) {
                       throw new Error("File missing from its observed commit.");
                     }
-                    toolOutput = {content: limitImageRead(readFileResult(
+                    toolOutput = {content: readFileResult(
                         {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
-                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content)};
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
@@ -2814,8 +2802,8 @@ async function runAgentPass(
                       source = {kind: "text", text: value};
                     }
 
-                    toolOutput = {content: limitImageRead(readFileResult(source, toolCall.input,
-                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content)};
+                    toolOutput = {content: readFileResult(source, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS).content};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
@@ -4489,9 +4477,6 @@ async function runAgentPass(
   let turnFailure: AssistantMessage | undefined;
   // Whether a step of this pass got a response, so a failure is not this pass's first request.
   let stepFinished = false;
-  // Whether this pass's prompt names older attachments by path where earlier requests showed
-  // them (see `pastLimitParts`).
-  let promptRewritten = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4673,11 +4658,8 @@ async function runAgentPass(
           }
 
           // The model-facing snapshot rides along for the overseer to persist beside the display
-          // record. Thinking signed over a rewritten prompt is left out: later turns replay, and
-          // may compact, the prompt earlier requests sent, against which it would be invalid.
-          msg.modelData = makeStoredAssistantMessage(promptRewritten
-              ? {...message, content: message.content.filter(block => block.type !== "thinking")}
-              : message);
+          // record.
+          msg.modelData = makeStoredAssistantMessage(message);
           msgs.push(msg);
         }
 
@@ -4766,6 +4748,21 @@ async function runAgentPass(
     }
     let compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,
         checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom, native);
+    if (compactedTo === undefined && native) {
+      // Native compaction cuts only where the role changes, which the cut the inline limits need
+      // can lack: before the user's next message, say, after a turn stopped at a tool step. The
+      // transcript summary can cut anywhere, but invalidates the thinking after its cut, so it
+      // stands in only when there is none.
+      let cut = findCompactionBoundary(projection, inputBudget, contextTokens,
+          checkpoint?.compactedTo, protectedFrom, attachmentsFitFrom);
+      let kept = projection.filter(({sequence}) =>
+          cut !== undefined && sequence !== undefined && sequence >= cut);
+      if (cut !== undefined && !kept.some(({message}) => message.role === "assistant" &&
+          message.content.some(block => block.type === "thinking"))) {
+        native = false;
+        compactedTo = cut;
+      }
+    }
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
@@ -4819,10 +4816,12 @@ async function runAgentPass(
         };
         return {type: "compacted", checkpoint: compacted};
       } catch (error) {
-        // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
-        // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
+        // Compaction for the token budget triggers below the limit, so the turn's own prompt
+        // still fits and a failed summary must not fail the turn. Cancellation, an explicit
+        // `/compact`, and the inline limits, which nothing else can make room for, do surface.
         abortSignal.throwIfAborted();
         if (compactionTurn) throw error;
+        if (attachmentsFitFrom !== undefined) throw inlineLimitsError(error);
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
         });
@@ -4838,36 +4837,8 @@ async function runAgentPass(
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
   if (compactionTurn) return {type: "finished"};
 
-  // Past the limits on inline attachments with no compaction: name the older ones by path, and
-  // drop the thinking after the first of them, which that rewrite invalidates, as it does after
-  // attachments left unread. The rewrite lasts only this pass, whose replies are stored without
-  // their thinking.
-  let rewrittenFrom = modelMessages.findIndex(message =>
-      (message.role === "user" || message.role === "toolResult") &&
-      Array.isArray(message.content) &&
-      message.content.some(part => pastLimitParts.has(part) || unreadParts.has(part)));
-  if (rewrittenFrom >= 0) {
-    promptRewritten = true;
-    modelMessages = modelMessages.flatMap((message, index): Message[] => {
-      if (index < rewrittenFrom) return [message];
-      if (message.role === "assistant") {
-        let content = message.content.filter(block => block.type !== "thinking");
-        return content.length ? [{...message, content}] : [];
-      }
-      // A user message's attachments, or a tool result's image read.
-      if ((message.role !== "user" && message.role !== "toolResult") ||
-          !Array.isArray(message.content)) {
-        return [message];
-      }
-      let content: (TextContent | ImageContent)[] = [];
-      for (let i = 0; i < message.content.length; ++i) {
-        let marker = pastLimitParts.get(message.content[i]);
-        content.push(marker ?? message.content[i]);
-        if (marker) ++i;
-      }
-      return [{...message, content}];
-    });
-  }
+  // Past the inline limits with no cut to make room: fail rather than send what providers refuse.
+  if (attachmentsFitFrom !== undefined) throw inlineLimitsError();
 
   if (modelMessages.length === 0 ||
       modelMessages[modelMessages.length - 1].role === "assistant") {
