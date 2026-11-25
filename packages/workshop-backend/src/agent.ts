@@ -2477,7 +2477,7 @@ async function runAgentPass(
   }
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
-    if (!answered && startsAgentTurn(msg)) prompt ??= msg.sequence;
+    if (!answered && (startsAgentTurn(msg) || (msg.type === "message" && msg.steered))) prompt ??= msg.sequence;
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
     if (msg === activePrompt && promptAttachmentIds.size > 0) {
