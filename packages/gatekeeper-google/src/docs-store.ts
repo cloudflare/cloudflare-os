@@ -439,6 +439,20 @@ export type StoredRun = {
    * row, so they read alike with nothing read. Opaque: compared, never taken apart.
    */
   readonly entry: string;
+  /**
+   * Names the run's content: two runs of one document with the same `content` hold the same
+   * elements, wherever each stands. Opaque, as `entry` is.
+   */
+  readonly content: string;
+  /**
+   * Its elements, decoded when asked: one row. Their indexes are counted from `first`, the
+   * index the run starts at, and their footnote numbers from `footnotes`, how many footnote
+   * references the runs before it hold (`decodeRun`): the run knows neither, and who passed
+   * the runs before it does. It reads by the run's name alone, so, unlike the rest, it may
+   * be asked for as long as the version's handle is valid. Counts a run decoded.
+   * @throws As `tab` does where the run cannot be read back.
+   */
+  elements(first: number, footnotes?: number): StructuralElement[];
 };
 
 /**
@@ -1252,10 +1266,13 @@ function summaryOf(run: ListedRun): RunSummary | undefined {
 }
 
 // The run a walk or a reader hands: `run` at `place`, with `markdown` its read of the run's
-// stored Markdown. `entry` is made where it is asked, so a walk that never asks makes none.
-function storedRun(run: KeyedRun, place: number, markdown: () => string): StoredRun {
+// stored Markdown and `elements` its decode. `entry` is made where it is asked, so a walk that
+// never asks makes none.
+function storedRun(
+  run: KeyedRun, place: number, markdown: () => string, elements: StoredRun["elements"],
+): StoredRun {
   return {
-    place, size: run.size, summary: run.summary, markdown,
+    place, size: run.size, summary: run.summary, markdown, content: run.run, elements,
     get entry() {
       return `${run.run} ${run.context} ${run.carry}`;
     },
@@ -2261,10 +2278,8 @@ export class DocStore {
     let first = version.bodyEndIndex - total.size, footnotes = 0;
     let next = this.#pages(version, 0, "none");
     for (let listed = next(); listed !== undefined; listed = next()) {
-      let decoded = this.#decoded(version, listed.run, { first, footnotes });
-      if (!decoded || (decoded.elements.length === 0 && total.runs > 1)) {
-        return this.#unreadable(version.doc);
-      }
+      let decoded =
+        this.#whole(version, this.#decoded(version, listed.run, { first, footnotes }), () => total.runs);
       for (let element of decoded.elements) following.take(element);
       first += listed.size;
       footnotes += decoded.footnotes;
@@ -2295,6 +2310,24 @@ export class DocStore {
     return decoded;
   }
 
+  // What `#decoded` made of a run of `version`, held to what a stored run is: the copy is
+  // dropped where its row is missing, or where it holds no element and is not the only one of
+  // the `runs` the version lists (an empty body is one run of none).
+  #whole<Run extends { elements: StructuralElement[] }>(
+    version: DocVersion, decoded: Run | undefined, runs: () => number,
+  ): Run {
+    return decoded && (decoded.elements.length > 0 || runs() === 1)
+      ? decoded : this.#unreadable(version.doc);
+  }
+
+  // `StoredRun.elements` of the run of `version` stored as `run`. The runs are counted only
+  // for a run of none.
+  #elements(version: DocVersion, run: string): StoredRun["elements"] {
+    return (first, footnotes = 0) => this.#whole(
+      version, this.#decoded(version, run, { first, footnotes }),
+      () => this.#rows<{ runs: number }>(RUNS_TOTAL, version.id)[0].runs).elements;
+  }
+
   /**
    * The tab of `version`, decoded from its stored runs, in order, and its context, for one
    * synchronous stretch: one run's JSON is in hand at a time, the decoded tab whole. It is
@@ -2318,10 +2351,8 @@ export class DocStore {
     let first = firstIndex(version, runs);
     let footnotes = 0;
     for (let { run, size } of runs) {
-      let decoded = this.#decoded(version, run, { first, footnotes });
-      if (decoded === undefined || (decoded.elements.length === 0 && runs.length > 1)) {
-        return this.#unreadable(version.doc);
-      }
+      let decoded =
+        this.#whole(version, this.#decoded(version, run, { first, footnotes }), () => runs.length);
       for (let element of decoded.elements) content.push(element);
       first += size;
       footnotes += decoded.footnotes;
@@ -2368,15 +2399,33 @@ export class DocStore {
     // The next run's elements, with `at` moved past it. What it decoded is its own, gone when
     // it returns: between two runs the generator holds the page, the place and two numbers.
     let step = (listed: ListedRun): readonly StructuralElement[] => {
-      let decoded = this.#decoded(version, listed.run, at);
-      if (!decoded || (decoded.elements.length === 0 && total.runs > 1)) {
-        return this.#unreadable(version.doc);
-      }
+      let decoded = this.#whole(version, this.#decoded(version, listed.run, at), () => total.runs);
       at.first += listed.size;
       at.footnotes += decoded.footnotes;
       return decoded.elements;
     };
     for (let listed = next(); listed !== undefined; listed = next()) yield step(listed);
+  }
+
+  /**
+   * The definitions of the lists `ids` as `version`'s tab holds them, by id: a list the tab
+   * does not define is absent. For a read that names the lists it asks about. THE LISTS ASKED
+   * FOR ALONE REACH THE ISOLATE (`LISTS_OF`): no run is read and none decoded, and for no id
+   * nothing is read at all. Storage bills the version's row, its context's row twice (once to
+   * find that it is one, `STYLES_OF`) and a row for each list the context defines.
+   * @throws As `tab` does where the version or its context cannot be read back.
+   */
+  lists(version: DocVersion, ids: readonly string[]): GoogleDocsTab["lists"] {
+    if (ids.length === 0) return {};
+    let context = this.#rows<VersionRow>(VERSION, version.doc, version.id)[0]?.context;
+    if (context === undefined || this.#stylesOf(version.doc, context) === null) {
+      return this.#unreadable(version.doc);
+    }
+    let defined = this.#rows<{ id: string; definition: SqlStorageValue }>(
+      LISTS_OF, context, JSON.stringify(ids), version.doc);
+    // Own properties, whatever the ids.
+    return Object.fromEntries(defined.map(({ id, definition }) =>
+      [id, listDefined(definition) ?? this.#unreadable(version.doc)])) as GoogleDocsTab["lists"];
   }
 
   // The named styles of the context `doc` stores as `context` (`STYLES_OF`), as a rendering reads
@@ -2773,7 +2822,7 @@ export class DocStore {
           if (markdown === undefined) stale = true;
           else markdownInHand(markdown);
           return markdown ?? "";
-        }));
+        }, this.#elements(version, run.run)));
         return !stale && (more || "done");
       }, from, to, true);
     }, true);
@@ -2818,7 +2867,7 @@ export class DocStore {
         if (markdown === undefined) return this.#unreadable(version.doc);
         markdownInHand(markdown);
         return markdown;
-      });
+      }, this.#elements(version, listed.run));
     };
   }
 

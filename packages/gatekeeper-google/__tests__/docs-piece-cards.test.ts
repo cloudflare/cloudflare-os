@@ -360,6 +360,7 @@ function countedReaders<T>(run: () => T): T {
       counts.handed++;
       return {
         place: handed.place, size: handed.size, summary: handed.summary,
+        content: handed.content, elements: handed.elements,
         get entry() {
           return handed.entry;
         },
