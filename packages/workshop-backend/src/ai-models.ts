@@ -763,7 +763,7 @@ function fixAnthropicToolThinking(model: Model<Api>, payload: unknown): object |
   const completed = assistants.findLastIndex(content => !content.some(part => part.type === "tool_use"));
   const first = assistants[completed + 1]?.[0]?.type;
   if (first !== undefined && first !== "thinking" && first !== "redacted_thinking") {
-    return {...payload, thinking: {type: "disabled"}};
+    return {...payload, thinking: model.thinkingLevelMap?.off === null ? undefined : {type: "disabled"}};
   }
   return undefined;
 }

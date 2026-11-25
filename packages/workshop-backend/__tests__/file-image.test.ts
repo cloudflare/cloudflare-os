@@ -561,7 +561,7 @@ describe("images read from a worktree", () => {
 
 describe("file images in provider requests", () => {
   it.each([["manual", false, false, false], ["manual", true, false, false], ["manual", true, true, false],
-    ["manual", false, false, true], ["default", false, false, false]] as const)(
+    ["manual", false, false, true], ["default", false, false, false], ["required", true, false, false]] as const)(
     "preserves Claude thinking across a tool turn: mode=%s rewritten=%s steered=%s switched=%s", (mode, rewritten, steered, switched) => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     if (rewritten) {
@@ -572,9 +572,10 @@ describe("file images in provider requests", () => {
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Take another look"}]);
     const config = {provider: "anthropic" as const, apiToken: "fixture",
       model: mode === "manual" ? "claude-haiku-4-5" : "claude-mythos-preview",
-      reasoning: mode === "manual" ? "high" as const : undefined};
+      reasoning: mode !== "default" ? "high" as const : undefined,
+      ...(mode === "required" ? {capabilities: {reasoningLevels: ["high" as const]}} : {})};
     const handle = getModel({} as Cloudflare.Env, config, USER,
-      mode === "manual" ? {userGateway: {accountId: "fixture", apiKey: "fixture"}} : {});
+      mode !== "default" ? {userGateway: {accountId: "fixture", apiKey: "fixture"}} : {});
     const actualStream = handle.stream;
     const payloads: string[] = [];
     handle.stream = (model, context, options) => actualStream(model, {
@@ -608,7 +609,7 @@ describe("file images in provider requests", () => {
           {type: "message_stop"},
         ];
         // The next tool call belongs to the same assistant turn and needs no new thinking block.
-        const reply = payloads.length === 3 || (mode === "manual" && payloads.length === 1) ? events : events
+        const reply = payloads.length === 3 || (mode !== "default" && payloads.length === 1) ? events : events
           .filter(event => !("index" in event) || event.index !== 0)
           .map(event => "index" in event ? {...event, index: event.index - 1} : event);
         return new Response(reply.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
@@ -617,14 +618,14 @@ describe("file images in provider requests", () => {
     });
     await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
     expect(payloads).toHaveLength(3);
-    expect(JSON.parse(payloads[0]).thinking?.type).toBe(mode === "manual" ? "enabled" : undefined);
+    expect(JSON.parse(payloads[0]).thinking?.type).toBe(mode !== "default" ? "enabled" : undefined);
     for (const payload of payloads.slice(1)) {
       expect(JSON.parse(payload).thinking?.type).toBe(mode === "manual" ? (rewritten || switched ? "disabled" : "enabled") : undefined);
       expect(payload).toContain(PNG.toBase64());
     }
     impl.addChatMessages(chatId, USER, [{type: "message", message: "New turn"}]);
     await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow();
-    expect(JSON.parse(payloads[3]).thinking?.type).toBe(mode === "manual" ? "enabled" : undefined);
+    expect(JSON.parse(payloads[3]).thinking?.type).toBe(mode !== "default" ? "enabled" : undefined);
   }));
 
   it.each([
