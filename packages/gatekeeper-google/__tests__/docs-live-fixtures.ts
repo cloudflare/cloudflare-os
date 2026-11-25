@@ -160,12 +160,12 @@ function dropCellDefaults(style: TableCellStyle): void {
   }
 }
 
-/** Join the adjacent text runs of one style into one run, in place. */
 /** What tells two adjacent text runs apart: their style and the suggestions they carry. */
 function runLook({ content: _content, ...look }: TextRun): Omit<TextRun, "content"> {
   return look;
 }
 
+/** Join the adjacent text runs of one style into one run, in place. */
 function joinRuns(paragraph: Paragraph): void {
   let joined: ParagraphElement[] = [];
   for (let element of paragraph.elements) {
