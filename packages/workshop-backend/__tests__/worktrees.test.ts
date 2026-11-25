@@ -863,6 +863,31 @@ describe("client delivery of worktree content", () => {
         .toEqual({ [id]: [["secret.txt", { set: "worktree content\n" }]] });
   }));
 
+  // A page is one RPC reply, which fails past 32 MiB: ten 2 MiB images would take it most of the
+  // way there, in base64.
+  it("getChatHistory inlines images up to a page's budget, newest first",
+      () => withClient(async (impl, client) => {
+    let user = env.TEST_USER.getByName(crypto.randomUUID());
+    let png = (i: number) => {
+      let bytes = new Uint8Array(2 * 1024 * 1024);
+      bytes.set([0x89, 0x50, 0x4E, 0x47, i]);
+      return { oid: impl.gitCache.writeBlob(bytes).oid, mimeType: "image/png", name: `${i}.png` };
+    };
+    let chatId = await impl.newChat(user, USER_META, "First five",
+        { attachments: [0, 1, 2, 3, 4].map(png) });
+    await impl.sendChatMessage(user, USER_META, chatId, "Five more",
+        { attachments: [5, 6, 7, 8, 9].map(png) });
+
+    let page = await client.getChatHistory(chatId);
+    let inlined = page.messages.flatMap(msg => msg.type === "message" ? msg.attachments ?? [] : [])
+        .filter(attachment => attachment.content !== undefined).map(attachment => attachment.name);
+    expect(inlined).toEqual(["5.png", "6.png", "7.png", "8.png"]);
+    // A message on its own still carries all of its images.
+    let last = page.messages.findLast(msg => msg.type === "message")!;
+    let alone = await client.getChatMessage(chatId, last.sequence);
+    expect(alone?.type === "message" && alone.attachments?.every(a => a.content)).toBe(true);
+  }));
+
   it("a worktree is a proposed change once edited or committed, not merely created; not after accept",
       () => withImpl(async impl => {
     addChat(impl, 1);

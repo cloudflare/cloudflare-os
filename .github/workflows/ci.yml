@@ -64,6 +64,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: pnpm build
 
+      # The release as the deploy service gets it: every Worker bundled, the Access-mode frontend
+      # and the manifest. Nothing else here bundles every Worker, and this build fails on one whose
+      # source V8 would store two bytes per character. It reads what `pnpm build` generates.
+      - name: Build release
+        run: node scripts/release/build-release.ts --out "$RUNNER_TEMP/release"
+
   # The three slowest test tasks each get a runner, and every other package shares one. Each leg runs
   # the root `test` script's command (package.json) with its own filters; keep the two in step.
   test:

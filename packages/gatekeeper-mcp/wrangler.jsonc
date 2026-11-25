@@ -18,6 +18,8 @@
   "vars": {
     "MCP_ALLOW_INSECURE": "false"
   },
+  "minify": true,
+  "upload_source_maps": true,
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"

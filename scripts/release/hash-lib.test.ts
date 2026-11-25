@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  cfAssetHash, collectAssets, collectModules, sha256Hex, stableStringify,
+  cfAssetHash, collectAssets, collectModules, firstTwoByteCharacter, sha256Hex, stableStringify,
 } from "./hash-lib.ts";
 
 const TESTDATA = join(dirname(fileURLToPath(import.meta.url)), "testdata");
@@ -76,6 +76,24 @@ test("collectModules requires exactly one ESM module", () => {
     assert.throws(() => collectModules(out), /exactly one ESM module/);
   } finally {
     rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("firstTwoByteCharacter finds none in a source that stays at or below U+00FF", () => {
+  assert.equal(firstTwoByteCharacter(Buffer.from("const a = /[\u00b7\u00ff]/;\n")), undefined);
+});
+
+test("firstTwoByteCharacter names the first character above U+00FF and the text around it", () => {
+  for (const [source, codePoint, nearby] of [
+    ["const bullets = /^[\u00b7\u2022\u25aa]$/;\n", 0x2022, "const bullets"],
+    ["export default {};\n/*! Copyright (c) Ji\u0159\u00ed Nov\u00e1k */\n", 0x159, "Copyright"],
+    // One character outside the Basic Multilingual Plane, not the first half of its pair.
+    ["let a = 1; // \u{1F600}\n", 0x1f600, "let a = 1"],
+    ["\ufeffexport default {};\n", 0xfeff, "export default"],
+  ] as const) {
+    const found = firstTwoByteCharacter(Buffer.from(source));
+    assert.equal(found?.codePoint, codePoint);
+    assert.ok(found?.excerpt.includes(nearby));
   }
 });
 

@@ -2,11 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { RpcStub } from "capnweb";
 import type { ChatAttachmentHandle, Overseer } from "@gadgets/workshop-shared/api";
 import { reportIssue } from "../../../../errorReporting";
-import { formatAttachmentSize } from "../../attachmentFormatting";
-import {
-  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
-  prepareChatAttachment,
-} from "./prepareChatAttachment";
+import { prepareChatAttachment } from "./prepareChatAttachment";
 
 export const MAX_COMPOSER_ATTACHMENTS = 5;
 
@@ -35,6 +31,9 @@ export const useComposerAttachments = ({
 }: ComposerAttachmentsOptions) => {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  // Each running upload, aborted when its card is removed or the composer goes: the workspace
+  // would otherwise store the rest of the file for nothing, and nothing frees it.
+  const uploadsRef = useRef(new Map<string, AbortController>());
   const mountedRef = useRef(true);
   const getOverseerRef = useRef(getOverseer);
   const onErrorRef = useRef(onError);
@@ -53,6 +52,8 @@ export const useComposerAttachments = ({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      for (const upload of uploadsRef.current.values()) upload.abort();
+      uploadsRef.current.clear();
       const abandoned = attachmentsRef.current;
       attachmentsRef.current = [];
       for (const attachment of abandoned) {
@@ -71,7 +72,12 @@ export const useComposerAttachments = ({
       const overseer = await getOverseerRef.current();
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) return;
       // Streamed, so no upload needs the whole file in memory at either end.
-      const oid = await overseer.uploadBlob({ stream: blob.stream(), byteLength: blob.size });
+      const upload = new AbortController();
+      uploadsRef.current.set(id, upload);
+      const stream = blob.stream()
+        .pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: upload.signal });
+      const oid = await overseer.uploadBlob({ stream, byteLength: blob.size })
+        .finally(() => uploadsRef.current.delete(id));
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) {
         return;
       }
@@ -121,16 +127,6 @@ export const useComposerAttachments = ({
         onErrorRef.current(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} attachments`);
         continue;
       }
-      const totalBytes = attachmentsRef.current.reduce(
-        (sum, attachment) => sum + attachment.blob.size,
-        0,
-      );
-      if (totalBytes + blob.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-        onErrorRef.current(
-          `Attached files must total ${formatAttachmentSize(MAX_CHAT_ATTACHMENT_TOTAL_BYTES)} or less`,
-        );
-        continue;
-      }
 
       const id = crypto.randomUUID();
       const previewUrl = mimeType.startsWith("image/") ? URL.createObjectURL(blob) : undefined;
@@ -148,6 +144,8 @@ export const useComposerAttachments = ({
   };
 
   const removeAttachment = (id: string) => {
+    uploadsRef.current.get(id)?.abort();
+    uploadsRef.current.delete(id);
     const attachment = attachmentsRef.current.find((item) => item.id === id);
     if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     updateAttachments((current) => current.filter((item) => item.id !== id));

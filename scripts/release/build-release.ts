@@ -29,7 +29,7 @@ import { killProcessTree, killProcessTreeEscalating } from "../kill-process-tree
 import { mapConcurrent } from "../map-concurrent.ts";
 import { vpRunEnv } from "../vp/concurrency.ts";
 import {
-  collectAssets, collectModules, stableStringify, type CollectedAssets,
+  collectAssets, collectModules, firstTwoByteCharacter, stableStringify, type CollectedAssets,
 } from "./hash-lib.ts";
 import {
   generateManifest, readDeployablePackages, readDeployInputs,
@@ -362,6 +362,25 @@ async function main() {
 
   // 1. Every bundle, overlapping.
   const { bundles, assets } = await buildAll(packages, args.concurrency);
+
+  // V8 would store a bundle that holds a character above U+00FF two bytes per character.
+  // Wrangler escapes those in strings, and minifying drops ordinary comments, but a regular
+  // expression literal and a legal comment (`/*!`, `@license`) reach the bundle as written.
+  // Checked here, not as each bundle is collected, so one run names every Worker. Text modules
+  // are left out: some hold such characters today.
+  const twoByte = packages.flatMap((pkg, i) => bundles[i].modules.flatMap((mod) => {
+    const found = mod.type === "esm" ? firstTwoByteCharacter(mod.bytes) : undefined;
+    if (!found) return [];
+    const codePoint = found.codePoint.toString(16).toUpperCase().padStart(4, "0");
+    return [`${pkg.name} (${mod.name}): U+${codePoint} in ${JSON.stringify(found.excerpt)}`];
+  }));
+  if (twoByte.length > 0) {
+    throw new Error(
+        "a Worker bundle holds a character above U+00FF, so V8 would store all of its source " +
+        "two bytes per character. In a regular expression of ours, write the character as a " +
+        "\\u escape. In a dependency, patch the regular expression or licence comment that " +
+        `holds it.\n${twoByte.map((line) => `      ${line}`).join("\n")}`);
+  }
 
   // 2. Everything below is ordered by package, so the release bytes do not depend on which build
   //    finished first.

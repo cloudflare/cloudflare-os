@@ -297,10 +297,13 @@ export function buildSummaryPrompt(
  * Choose the first sequence to retain, or undefined if the boundary cannot advance. `contextTokens`
  * must be positive: the caller supplies an estimate when provider usage is unavailable.
  * `protectedFromSequence` is the first sequence holding state the checkpoint cannot own.
+ * `retainFrom` is the earliest sequence the retained tail may start at, when one is required: the
+ * first after the attachments a prompt has too many of (see the replay in agent.ts).
  */
 export function findCompactionBoundary(
     projection: CompactionProjectionMessage[], inputBudget: number, contextTokens: number,
-    compactedTo = 0, protectedFromSequence?: number): number | undefined {
+    compactedTo = 0, protectedFromSequence?: number, retainFrom?: number, atRoleChange = false)
+    : number | undefined {
   // Walk backward until the retained messages fill the target budget, then move the cut to a record
   // boundary. Provider tokenizers differ, so character weights divide the measured token count among
   // messages; the weights affect only where the cut lands.
@@ -316,6 +319,11 @@ export function findCompactionBoundary(
 
   while (keepFrom >= 0 && !projection[keepFrom].canCut) --keepFrom;
   let sequence = projection[keepFrom]?.sequence;
+  // A required start moves the cut to the first record at or after it, unless the budget cuts later.
+  if (retainFrom !== undefined && !(sequence !== undefined && sequence >= retainFrom)) {
+    sequence = projection.find(entry => entry.canCut && entry.sequence !== undefined &&
+        entry.sequence >= retainFrom)?.sequence;
+  }
   // The walk runs off the front when one record fills the budget alone, and when the prompt is
   // already under the target -- which is every explicit `/compact` on a short chat. Falling back to
   // the newest cut summarizes all but the last record, so the command always does what it says.
@@ -326,8 +334,31 @@ export function findCompactionBoundary(
 
   let boundary = protectedFromSequence === undefined
       ? sequence : Math.min(sequence, protectedFromSequence);
+  if (atRoleChange) {
+    // Anthropic's native compaction merges the first kept message into the last summarized one
+    // when their roles match (a tool result is a user message to it), which voids the thinking it
+    // keeps: move the cut on to where the role changes, which summarizes more, as attachments
+    // need, but not past what must stay; else back to where it last changed, keeping what they
+    // require.
+    let start = projection.findIndex(entry => entry.sequence !== undefined && entry.sequence >= boundary);
+    let changesRole = (i: number) => i > 0 && projection[i].canCut === true &&
+        apiRole(projection[i - 1].message) !== apiRole(projection[i].message);
+    let index = start;
+    while (index >= 0 && index < projection.length && !changesRole(index)) ++index;
+    let moved = index >= 0 ? projection[index]?.sequence : undefined;
+    if (moved === undefined ||
+        (protectedFromSequence !== undefined && moved > protectedFromSequence)) {
+      index = start - 1;
+      while (index > 0 && !changesRole(index)) --index;
+      moved = changesRole(index) ? projection[index].sequence : undefined;
+      if (moved === undefined || (retainFrom !== undefined && moved < retainFrom)) return;
+    }
+    boundary = moved;
+  }
   return boundary > compactedTo ? boundary : undefined;
 }
+
+const apiRole = (message: Message) => message.role === "assistant" ? "assistant" : "user";
 
 /**
  * Fold state before `compactedTo` into a new checkpoint. `initialBindings` is the chat's seed
