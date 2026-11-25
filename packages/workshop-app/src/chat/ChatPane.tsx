@@ -59,7 +59,6 @@ import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 import { AgentRunsButton } from '@/blocks/AgentRunsButton'
 import { ENDED, placeRunMarks, runsStartedBy, type ChatRun } from './chatRuns'
 import { RunMarkView } from './RunMarkView'
-import { markRunsSeen, seenRunsOf } from './seenRuns'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -214,18 +213,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const workspaceAgents = useWorkspaceAgents(workspaceId).state
   const runs = useMemo(() => (workspaceAgents.status === 'ready' ? runsStartedBy(workspaceAgents.agents, chatId) : NO_RUNS), [workspaceAgents, chatId])
   const runMarks = useMemo(() => placeRunMarks(items ?? [], runs), [items, runs])
-  // Those that ended that the viewer has seen end, which the composer no longer holds.
-  const [seenRuns, setSeenRuns] = useState(() => seenRunsOf(workspaceId, chatId))
-  const seeRuns = useHandler((ids: number[]) => setSeenRuns(markRunsSeen(workspaceId, chatId, ids)))
-  const openRun = useHandler((runId: number) => {
-    const run = runs.find(({ chatId: id }) => id === runId)
-    if (run && ENDED.has(run.status)) seeRuns([runId])
-    onOpenChat?.(runId)
-  })
+  const openRun = useHandler((runId: number) => onOpenChat?.(runId))
+  // Those under way are beside the composer; each leaves it as it ends, which the conversation marks.
   const heldRuns = useMemo(() => runs
-    .filter(({ chatId: id, status }) => !ENDED.has(status) || !seenRuns.has(id))
-    .map(({ chatId: id, title: runTitle, status }) => ({ key: String(id), title: runTitle, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) })), [runs, seenRuns, chatHref])
-  const seeHeldRuns = useHandler(() => seeRuns(heldRuns.filter(({ status }) => ENDED.has(status)).map(({ key }) => Number(key))))
+    .filter(({ status }) => !ENDED.has(status))
+    .map(({ chatId: id, title: runTitle, status }) => ({ key: String(id), title: runTitle, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) })), [runs, chatHref])
   const openHeldRun = useHandler((key: string) => openRun(Number(key)))
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
@@ -554,8 +546,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onAdd={addLogs}
       onDiscard={discardLogs}
     />
-    {/* The agents it started that are still to be seen to are beside it, level with its foot. */}
-    <div className="flex items-end gap-2">
+    {/* The agents it started that are under way are beside it, level with its foot. */}
+    <div className="flex items-end">
       <div className="min-w-0 flex-1">
         <Composer
           ref={composer}
@@ -571,11 +563,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
         />
       </div>
-      <AgentRunsButton runs={heldRuns} onOpen={openHeldRun} onSeen={seeHeldRuns} />
+      <AgentRunsButton runs={heldRuns} onOpen={openHeldRun} />
     </div>
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun, seeHeldRuns])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier

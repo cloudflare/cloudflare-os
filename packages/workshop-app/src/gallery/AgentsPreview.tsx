@@ -48,10 +48,31 @@ const held = (statuses: readonly AgentRunStatus[]): HeldRun[] =>
 const RUNS_BUTTON_STATES = [
   { name: 'One at work', runs: held(['running']) },
   { name: 'Three at work', runs: held(['running', 'running', 'running']) },
-  { name: 'Two of five done, one waiting', runs: held(['waiting', 'done', 'running', 'changes', 'running']) },
-  { name: 'One failed, none at work', runs: held(['done', 'failed', 'done']) },
-  { name: 'All done', runs: held(['done', 'done', 'changes']) },
+  { name: 'Five at work, three going round', runs: held(['running', 'running', 'running', 'running', 'running']) },
+  { name: 'One waiting on you', runs: held(['waiting', 'running', 'running']) },
+  { name: 'Only waiting, held still', runs: held(['waiting', 'waiting']) },
 ]
+
+// The button over a chat's agents as they start and end, a step at a time.
+const LiveRunsButton = ({ say }: { say: (words: string) => void }) => {
+  const [runs, setRuns] = useState<HeldRun[]>(() => held(['running', 'running', 'running']))
+  const next = LAUNCH.find(({ key }) => !runs.some((run) => run.key === key))
+  return (
+    <div className="flex items-end gap-3">
+      <div className="flex h-11 w-80 items-center rounded-full bg-kumo-elevated px-4 text-kumo-subtle ring-1 ring-kumo-line">Ask anything…</div>
+      <AgentRunsButton runs={runs} onOpen={(key) => say(`opened run ${key}`)} />
+      <div className="ms-4 flex flex-wrap gap-2">
+        <Button disabled={!next} onClick={() => next && setRuns([...runs, { ...next, status: 'running', statusWords: STATUS_WORDS.running }])}>Start one</Button>
+        <Button disabled={runs.length === 0} onClick={() => setRuns(runs.slice(1))}>End the first</Button>
+        <Button disabled={runs.length === 0} onClick={() => setRuns(runs.slice(0, -1))}>End the last</Button>
+        <Button disabled={!runs.some(({ status }) => status === 'running')} onClick={() => {
+          const index = runs.findIndex(({ status }) => status === 'running')
+          setRuns(runs.map((run, at) => (at === index ? { ...run, status: 'waiting', statusWords: STATUS_WORDS.waiting } : run)))
+        }}>One waits on you</Button>
+      </div>
+    </div>
+  )
+}
 
 export const AgentsPreview = () => {
   const { report, say } = useReport()
@@ -157,14 +178,17 @@ export const AgentsPreview = () => {
           <AgentRunsStarted runs={LAUNCH.map(({ key, title }) => ({ key, title, onOpen: () => say(`opened “${title}”`) }))} />
         </div>
       </Section>
-      <Section title="AgentRunsButton (beside the composer: the agents a chat started still to be seen to, going round while any works, the ring filling as they finish, a dot while one waits on you; it opens to a pill for each)">
-        <div className="flex w-full flex-wrap items-end gap-6 pt-72">
-          {RUNS_BUTTON_STATES.map(({ name, runs }) => (
-            <div key={name} className="flex flex-col items-center gap-2">
-              <AgentRunsButton runs={runs} onOpen={(key) => say(`opened run ${key}`)} onSeen={() => say(`saw what had finished (${name})`)} />
-              <span className="text-sm text-kumo-subtle">{name}</span>
-            </div>
-          ))}
+      <Section title="AgentRunsButton (beside the composer: the agents a chat started that are under way, going round in depth while a light sweeps the button, a dot while one waits on you; a run that ends leaves the ring, and the button goes after the last; it opens to a pill for each)">
+        <div className="flex w-full flex-col gap-8 pt-72">
+          <div className="flex flex-wrap items-end gap-6">
+            {RUNS_BUTTON_STATES.map(({ name, runs }) => (
+              <div key={name} className="flex flex-col items-center gap-2">
+                <AgentRunsButton runs={runs} onOpen={(key) => say(`opened run ${key}`)} />
+                <span className="text-sm text-kumo-subtle">{name}</span>
+              </div>
+            ))}
+          </div>
+          <LiveRunsButton say={say} />
         </div>
       </Section>
       <Section title="What waits on the user, over a workspace’s tabs (Banner’s warning, and its danger) and counted on its Agents tab">

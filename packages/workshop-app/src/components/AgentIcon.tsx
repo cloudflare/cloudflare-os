@@ -9,11 +9,14 @@ const SPARKLE = 'M15.51 9.88C15.33 9.58 14.98 9.43 14.64 9.49C14.3 9.55 14.03 9.
 /**
  * An agent, as an icon among icons: the Workshop's cloud in the icons' own line, with its sparkle
  * solid in it, where `AgentMark`'s solid cloud would sit heavy beside them, as in a menu. Drawn as
- * `hugeIcon`'s are: 1em unless sized, in the text's colour, in its line or a `bold` one.
+ * `hugeIcon`'s are: 1em unless sized, in the text's colour, in its line or a `bold` one; `fill`
+ * is the cloud solid with its sparkle cut out of it, as `AgentMark` draws it, but still.
  */
 export const AgentIcon: Icon = ({ size = '1em', weight = 'regular', ...props }) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width={size} height={size} fill="none" color="currentColor" aria-hidden="true" {...props}>
     <path d={CLOUD} stroke="currentColor" strokeWidth={weight === 'bold' ? 2.25 : 1.5} strokeLinejoin="round" />
-    <path d={SPARKLE} fill="currentColor" />
+    {weight === 'fill'
+      ? <path d={CLOUD + SPARKLE} fill="currentColor" fillRule="evenodd" />
+      : <path d={SPARKLE} fill="currentColor" />}
   </svg>
 )

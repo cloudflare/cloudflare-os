@@ -338,13 +338,16 @@ turn, as one group for the turn ("Started 5 agents", `AgentRunsStarted`): a pill
 (`AgentRunPill`), which opens the run, with no spinner, as it stays in the history. Each run's end
 is a pill of its own where it ended, saying how ("Finished", "Failed"), never above its start
 (`chat/chatRuns.ts`, plain and tested); those of the last turn are after the live output. How the
-call was made stays in the trace. How they stand meanwhile is beside the composer
-(`AgentRunsButton`): up to three of their clouds going round a ring in depth while any works (one
-alone stays still in the middle), held at `off`, the ring around the button filling as they end,
-and a dot while one waits on the user; it opens to a pill for each, with how it stands, stacked
-over it at its end. An ended run stays in it until it has been seen, by putting the list away or
-opening the run (`chat/seenRuns.ts`, for the visit). A run's header starts with the way back to the
-chat that started it (`ChatHeader`'s `back`, from `ChatSnapshot.startedBy`), given where the page
+call was made stays in the trace. Neither pills nor the button draw the mascot, which moves and
+is played with: they have the still cloud (`AgentIcon`, `fill` in the button). What is under way
+is beside the composer (`AgentRunsButton`): up to three of their clouds going round a ring in
+depth, the far side smaller, fainter and blurred, while a light sweeps the button for as long as
+any works (one alone stays still in the middle; held still at `off`, with no sweep), and a dot
+while one waits on the user. A run that ends leaves the ring as it goes round, fading and blurring
+out as the others space out again (`--presence` and `--offset`, eased by motion; the ring's turn
+is CSS on the ring, which each cloud inherits), and the button goes after the last, the composer
+taking its room. It opens to a pill for each, with how it stands, stacked over it at its end. A
+run's header starts with the way back to the chat that started it (`ChatHeader`'s `back`, from `ChatSnapshot.startedBy`), given where the page
 can open another chat (`ChatPane`'s `onOpenChat`). The `agent-runs` scenario plays five, which end
 in each way.
 

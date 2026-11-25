@@ -1,6 +1,6 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton, type LinkButtonProps } from '@gadgets/ui'
-import { AgentMark } from './AgentMark'
+import { AgentIcon } from '@/components/AgentIcon'
 import { RUN_STATUS_WORDS_COLOUR, RunStatusMark, type AgentRunStatus } from './RunStatusMark'
 
 export type AgentRunPillProps = Omit<LinkButtonProps, 'onClick' | 'children'> & {
@@ -17,9 +17,9 @@ export type AgentRunPillProps = Omit<LinkButtonProps, 'onClick' | 'children'> & 
 }
 
 /**
- * One agent's run as a pill: the agent's cloud, what it was started to do, and how it stands where
- * that is said. It opens the run's conversation. Whatever it is given beyond that goes to its
- * button, so that a menu can draw its items as these.
+ * One agent's run as a pill: the agent's cloud as an icon (still, as the mascot is not), what it
+ * was started to do, and how it stands where that is said. It opens the run's conversation.
+ * Whatever it is given beyond that goes to its button, so that a menu can draw its items as these.
  */
 export const AgentRunPill = ({ title, status, statusWords, onOpen, onClick, className, ...props }: AgentRunPillProps) => (
   <LinkButton
@@ -34,7 +34,7 @@ export const AgentRunPill = ({ title, status, statusWords, onOpen, onClick, clas
       className,
     )}
   >
-    <AgentMark size="small" state={status === 'running' ? 'working' : status === 'failed' ? 'failed' : 'idle'} />
+    <AgentIcon className="size-4.5 shrink-0 text-kumo-default" />
     <span className="min-w-0 truncate">{title}</span>
     {statusWords && (
       <span className={cn('shrink-0', status ? RUN_STATUS_WORDS_COLOUR[status] : 'text-kumo-subtle')}>{statusWords}</span>
