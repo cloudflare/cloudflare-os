@@ -111,7 +111,8 @@ export interface GoogleDocReadSession {
    * `{--` and `--}`, as `Plan {++new ++}for {--next --}week`; in a table `<ins>` and `<del>`
    * mark them. A suggested change of style, or of a paragraph's style or bullet, is not shown.
    * The marks are not text of the Doc, and an edit made through this connection cannot change
-   * suggested text: it is accepted or rejected in Google Docs.
+   * suggested text: it is accepted or rejected in Google Docs. Nor can it change the text of a
+   * table, row or cell that a suggestion inserts or deletes, even where that text is not marked.
    *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.

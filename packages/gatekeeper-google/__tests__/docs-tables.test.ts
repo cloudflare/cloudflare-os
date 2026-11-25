@@ -1652,13 +1652,56 @@ describe("a table that holds suggestions", () => {
       ]) {
         expect(targetRefusal(tab(), change)).toBe(suggestedRefusal(change.type));
       }
-      let { rendering } = appliedCellText(tab(), "<p>a</p>", "<p>changed</p>");
-      expect(rendering.sourceMap.tables[0].suggested).toBeGreaterThan(0);
+      // A table that is itself suggested has no cell to edit: the test below says so.
+      if (name !== "a table that is itself suggested") {
+        let { rendering } = appliedCellText(tab(), "<p>a</p>", "<p>changed</p>");
+        expect(rendering.sourceMap.tables[0].suggested).toBeGreaterThan(0);
+      }
       appliedChange(tab(), dropTable(content, 0));
       expect(kinds(tableChangeRequests(docTabToMarkdown(tab()), dropTable(content, 0))))
         .toEqual(["deleteContentRange"]);
     });
   }
+});
+
+describe("text in a table, row or cell that a suggestion inserts or deletes", () => {
+  // Google marks such a suggestion on the table, row or cell, and not on the text in it.
+  const inside = (oldMarkdown: string, newMarkdown: string) => (tab: GoogleDocsTab) => {
+    let before = docTabToMarkdown(tab);
+    let { matchStart } = replacementIn(before.markdown, oldMarkdown, newMarkdown);
+    return thrownMessage(() => tableTextRequests(before, matchStart, oldMarkdown, newMarkdown));
+  };
+  const IN_SUGGESTION =
+    "replaceText: this cell is in a table, a row or a cell that a suggestion inserts or " +
+    "deletes, so its text cannot be changed until the suggestion is accepted or rejected in " +
+    "Google Docs.";
+  const rows = [["a\n", "b\n"], ["c\n", "d\n"], ["e\n", "f\n"]];
+
+  it("is refused, and the text of the other rows and cells is edited", () => {
+    for (let suggested of ["insertion", "deletion"] as const) {
+      let row = buildTab(
+        [para("Before"), { table: rows, suggestedRows: { 1: suggested } }, para("After")]);
+      expect(inside("<p>c</p>", "<p>changed</p>")(row)).toBe(IN_SUGGESTION);
+      expect(inside("<p>d</p>", "<p>changed</p>")(row)).toBe(IN_SUGGESTION);
+      // As a stored replacement of the cell's text, as replaceText() queues one.
+      expect(thrownMessage(() => docEditRequests(docTabToMarkdown(row),
+        { type: "replaceText", oldMarkdown: "c", newMarkdown: "changed", inTable: true })))
+        .toBe(IN_SUGGESTION);
+      expect(appliedCellText(row, "<p>e</p>", "<p>changed</p>").rendering.markdown)
+        .toContain("<p>changed</p>");
+
+      let cell = buildTab([para("Before"), {
+        table: [["a\n", "b\n"], ["c\n", { paragraphs: [para("d")], suggested }]],
+      }, para("After")]);
+      expect(inside("<p>d</p>", "<p>changed</p>")(cell)).toBe(IN_SUGGESTION);
+      expect(appliedCellText(cell, "<p>c</p>", "<p>changed</p>").rendering.markdown)
+        .toContain("<p>changed</p>");
+    }
+    let table = buildTab([para("Before"), { table: rows }, para("After")]);
+    let element = tableElement(table).table;
+    if (element) element.suggestedDeletionIds = ["suggest.table"];
+    expect(inside("<p>a</p>", "<p>changed</p>")(table)).toBe(IN_SUGGESTION);
+  });
 });
 
 describe("an edit of text that holds suggestions", () => {

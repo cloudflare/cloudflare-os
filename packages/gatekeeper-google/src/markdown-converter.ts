@@ -177,6 +177,12 @@ export type TableCellMapping = MarkdownRange & {
   lines: number;
   /** Whether one of those lines is an empty paragraph (`<p></p>`). */
   emptyParagraph: boolean;
+  /**
+   * Set when the table, the cell's row or the cell is itself a suggested insertion or deletion,
+   * which Google marks on them and not on the text. None of the cell's text is editable: an edit
+   * made outside suggesting mode would change what the suggestion inserts or deletes.
+   */
+  inSuggestion?: true;
   /** The cell's editable texts, in order; none for a cell that holds a table. */
   texts: TableTextMapping[];
   /** What suggestions the cell's paragraphs hold, those that hold any; absent for none. */
@@ -1575,6 +1581,13 @@ function suggestionsOf(value: {
     Object.keys(value.suggestedDropdownPropertiesChanges ?? {}).length;
 }
 
+/** Whether a table, a row or a cell is itself a suggested insertion or deletion. */
+function insertsOrDeletes(
+  value: { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] },
+): boolean {
+  return !!value.suggestedInsertionIds?.length || !!value.suggestedDeletionIds?.length;
+}
+
 /**
  * What suggestions `paragraph`, which stands at `[docStart, docEnd)`, holds
  * (`ParagraphSuggestions`), or `undefined` where it holds none.
@@ -1663,10 +1676,14 @@ function tableToHtml(
     for (let [column, cell] of (row.tableCells ?? []).entries()) {
       // Google puts text sent to a cell that a merged cell covers into the merged cell, whose
       // own text has ordinary indexes: a covered cell lists no text.
-      let editable = mdStart !== undefined && look.cells[rowIndex][column] !== null;
+      // Nor does a cell of a table, row or cell a suggestion inserts or deletes.
+      let inSuggestion =
+        insertsOrDeletes(table) || insertsOrDeletes(row) || insertsOrDeletes(cell);
+      let editable =
+        mdStart !== undefined && look.cells[rowIndex][column] !== null && !inSuggestion;
       let rendered = tableCellToHtml(
         cell, lists, tally, subtitleItalic, editable, tags.cells[rowIndex][column]);
-      if (mdStart !== undefined) cells.push(cellMapping(cell, rendered, next, lists));
+      if (mdStart !== undefined) cells.push(cellMapping(cell, rendered, next, lists, inSuggestion));
       add(rendered.html);
     }
     add("  </tr>");
@@ -1689,6 +1706,7 @@ function cellMapping(
   rendered: RenderedCell,
   mdStart: number,
   lists: GoogleDocsTab["lists"],
+  inSuggestion: boolean,
 ): TableCellMapping {
   let elements = cell.content ?? [];
   let first = elements[0]?.paragraph;
@@ -1712,6 +1730,7 @@ function cellMapping(
     ...(copy && copy !== "unseen" ? { copies: copy } : {}),
     unshown: unshownElements(elements),
     ...cellSuggestions(elements),
+    ...(inSuggestion ? { inSuggestion: true as const } : {}),
   };
 }
 

@@ -2315,6 +2315,12 @@ function tableTextRefusal(
   if (cell.nested) {
     return new Error("replaceText: a cell that holds another table cannot be edited.");
   }
+  if (cell.inSuggestion) {
+    return new Error(
+      "replaceText: this cell is in a table, a row or a cell that a suggestion inserts or " +
+      "deletes, so its text cannot be changed until the suggestion is accepted or rejected in " +
+      "Google Docs.");
+  }
   if (CLOSES_BLOCK.test(want) && OPENS_BLOCK.test(got) ||
       OPENS_BLOCK.test(want) && CLOSES_BLOCK.test(got)) {
     return new Error(
