@@ -229,20 +229,29 @@ describe("images read from a worktree", () => {
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
-  it.each([false, true])("reserves active reference slots before accepting image reads (approval: %s)", approval => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["direct", "approval", "callback"])("reserves only the current turn's reference slots: %s", trigger => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
       "Compare these references", {attachments: Array.from({length: 5}, (_, index) =>
         ({oid: blob.oid, mimeType: "image/png", name: `${index}.png`}))});
-    if (approval) impl.addChatMessages(chatId, USER, [{type: "agentNudge", text: "The user approved the pending action; continue."}]);
+    if (trigger === "approval") impl.addChatMessages(chatId, USER, [{type: "agentNudge", text: "The user approved the pending action; continue."}]);
+    if (trigger === "callback") {
+      recordReads(impl, chatId, blob.oid, 1); // The preceding turn stopped after an image step.
+      impl.addChatMessages(chatId, AUTHOR, ["first-callback-note", "second-callback-note"].map(argsSummary =>
+        ({type: "agentCallback", methodName: "inspect", argsSummary, bindingName: "INSPECT_ARGS"})));
+    }
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage(Array.from({length: 16}, () => read()), {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
     ]);
     const last = requests.at(-1)!;
-    expect(results(last).filter(result => !result.isError)).toHaveLength(15);
-    expect(results(last).filter(result => result.isError)).toHaveLength(1);
-    expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(20);
+    const currentReads = results(last).slice(-16);
+    expect(currentReads.filter(result => !result.isError)).toHaveLength(trigger === "callback" ? 16 : 15);
+    expect(currentReads.filter(result => result.isError)).toHaveLength(trigger === "callback" ? 0 : 1);
+    expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(trigger === "callback" ? 17 : 20); // The previous read still fits in replay.
+    if (trigger === "callback") for (const note of ["first-callback-note", "second-callback-note"]) {
+      expect(last.some(msg => msg.role === "user" && typeof msg.content === "string" && msg.content.includes(note))).toBe(true);
+    }
   }));
 
   it("keeps the original prompt and reference uploads through an approval handoff", () => inKernel(crypto.randomUUID(), async impl => {

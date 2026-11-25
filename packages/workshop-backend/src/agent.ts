@@ -2457,8 +2457,11 @@ async function runAgentPass(
   // Recover the active prompt from durable history after an image step, including after restart.
   const unfinishedTurn = chatMessages.slice(chatMessages.findLastIndex(msg =>
     msg.type === "message" && msg.author.type === "agent" && !msg.toolCalls?.length) + 1);
-  const activePrompt = unfinishedTurn.findLast(isTurnPrompt) ?? unfinishedTurn.find(msg =>
-    startsAgentTurn(msg) || (msg.type === "message" && msg.steered));
+  const userPrompt = unfinishedTurn.findLast(isTurnPrompt);
+  // Callbacks start fresh turns; approval and Retry notes continue the original request.
+  const activePrompt = unfinishedTurn.find(msg => msg.type === "agentCallback" &&
+    (!userPrompt || msg.sequence > userPrompt.sequence)) ?? userPrompt ?? unfinishedTurn.find(msg =>
+      startsAgentTurn(msg) || (msg.type === "message" && msg.steered));
   let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
     msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))
     ? activePrompt?.sequence : undefined;
