@@ -728,18 +728,23 @@ type Queued = { id: number; action: Change };
 // bound action set): a record that applied, or was staged and applied, while the document was
 // fetched would leave the fold a copy that holds it beside a journal that still lists it, or
 // one that lacks it beside a record built on it, and a mark outlives the read.
+// The pending records are read before the fetch: submission runs on its own lane, which the fence
+// does not hold, so a record submitted while the document is fetched may be one the provider's
+// answer does not reflect yet, and it is left to the next read rather than folded and marked.
 read(tabId: string): Promise<string> {
   return this.#actions.runExclusive(async () => {
+    const pending = this.#journal.listPending();
     const doc = await this.#api.get();
     const tab = doc.tabs.find(tab => tab.id === tabId);
-    return render(this.#fold(tabId, tab)); // once the observation is authorized, as for any read
+    // Once the observation is authorized, as for any read.
+    return render(this.#fold(tabId, tab, pending));
   });
 }
 
 // Folds the records of one tab over the provider's copy of it, or over nothing where the document
 // has no such tab, then marks what the fold refused, with no `await` in between.
-#fold(tabId: string, tab: Tab | undefined): Tab | undefined {
-  const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
+#fold(tabId: string, tab: Tab | undefined, pending: readonly Queued[]): Tab | undefined {
+  const view = createSimulationView(pending, action => [action.tabId]);
   const { entity, refused } = this.#replay.fold(
     tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
   for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);

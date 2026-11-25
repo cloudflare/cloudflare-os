@@ -1238,7 +1238,16 @@ describe("the usage recipe's document reads", () => {
     };
     readonly #queue = new SerialTaskQueue();
     readonly #actions = { runExclusive: <T>(hook: () => Promise<T>) => this.#queue.run(hook) };
-    readonly #api = { get: async () => ({ tabs: this.provider.tabs.map(tab => ({ ...tab })) }) };
+    /** Run while the document is being fetched, after its tabs are read: a submission meanwhile. */
+    duringFetch: (() => void) | undefined;
+    readonly #api = {
+      get: async () => {
+        let tabs = this.provider.tabs.map(tab => ({ ...tab }));
+        this.duringFetch?.();
+        this.duringFetch = undefined;
+        return { tabs };
+      },
+    };
     #replay = createSimulationStore<string, Tab, Tab, Queued, string>({
       initial: tab => tab,
       reduce: (tab, { action }, { refusals }) => {
@@ -1263,14 +1272,15 @@ describe("the usage recipe's document reads", () => {
 
     read(tabId: string): Promise<string | undefined> {
       return this.#actions.runExclusive(async () => {
+        const pending = this.#journal.listPending();
         const doc = await this.#api.get();
         const tab = doc.tabs.find(tab => tab.id === tabId);
-        return this.#fold(tabId, tab)?.text;
+        return this.#fold(tabId, tab, pending)?.text;
       });
     }
 
-    #fold(tabId: string, tab: Tab | undefined): Tab | undefined {
-      const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
+    #fold(tabId: string, tab: Tab | undefined, pending: readonly Queued[]): Tab | undefined {
+      const view = createSimulationView(pending, action => [action.tabId]);
       const { entity, refused } = this.#replay.fold(
         tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
       for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
@@ -1298,6 +1308,20 @@ describe("the usage recipe's document reads", () => {
     // Its text back, the edit stays marked: a mark outlives the read.
     doc.provider.tabs = [{ id: "t1", text: "hello world" }];
     expect(await doc.read("t1")).toBe("hello world");
+  });
+
+  it("leaves an edit submitted while the document is fetched to the next read", async () => {
+    const doc = new Document();
+    // The provider changes the text, and an edit of the new text is submitted, while the read
+    // has the document before the change in hand.
+    doc.duringFetch = () => {
+      doc.provider.tabs = [{ id: "t1", text: "jello world" }];
+      doc.stage(1, { tabId: "t1", at: 0, expected: "jello", text: "hello" });
+    };
+    expect(await doc.read("t1")).toBe("hello world");
+    expect(doc.marked(1)).toBeUndefined();
+    expect(await doc.read("t1")).toBe("hello world");
+    expect(doc.marked(1)).toBeUndefined();
   });
 
   it("refuses, in the fold that refuses an edit, the edits of the tab after it", async () => {
