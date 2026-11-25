@@ -37,7 +37,8 @@ export const OutputCard = ({ title, kind, draft, format, href, onOpen }: OutputC
     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
       <span className="truncate font-medium text-kumo-default">{title}</span>
       <span className="flex min-w-0 items-center gap-2 text-sm text-kumo-subtle">
-        {draft && <Badge variant="neutral">Draft</Badge>}
+        {/* Without the ring Kumo gives a badge in a link that is pointed at: the card says that already. */}
+        {draft && <Badge variant="neutral" className="[a:hover_&]:ring-0">Draft</Badge>}
         <span className="truncate">{caption({ kind, draft, format })}</span>
       </span>
     </span>
