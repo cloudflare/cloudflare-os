@@ -68,11 +68,10 @@ describe("baseValues", () => {
     wide: { pieces: 80, rows: 40, height: 30, columns: 120, width: 3, askRows: 60, askColumns: 150 },
   };
   it.each(Object.entries(shapes))("answers every lookup as a scan of every piece would, in any order: %s", (_name, shape) => {
-    let seed = 20261120;
-    let next = (below: number) => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed % below;
-    };
+    let random = seeded(20261120);
+    let next = (below: number) => Math.floor(random() * below);
+    // The sheets a lookup found a value on: both, or the index could drop one unseen.
+    let found = new Set<number>();
     for (let round = 0; round < 30; round++) {
       let pieces: SheetArea[] = Array.from({ length: 1 + next(shape.pieces) }, () => {
         let startRow = next(shape.rows), startColumn = next(shape.columns);
@@ -98,7 +97,9 @@ describe("baseValues", () => {
       };
       for (let ask = 0; ask < 400; ask++) {
         let sheetId = next(2) * 3, row = next(shape.askRows), column = next(shape.askColumns);
-        expect(lookup(sheetId, row, column), `round ${round}`).toBe(scanned(sheetId, row, column));
+        let expected = scanned(sheetId, row, column);
+        expect(lookup(sheetId, row, column), `round ${round}`).toBe(expected);
+        if (expected !== null) found.add(sheetId);
       }
       // A row walked as the guard walks it, column by column.
       let row = next(shape.askRows);
@@ -106,6 +107,7 @@ describe("baseValues", () => {
         expect(lookup(0, row, column), `round ${round}, row ${row}`).toBe(scanned(0, row, column));
       }
     }
+    expect([...found].toSorted((a, b) => a - b)).toEqual([0, 3]);
   });
 });
 describe("Sheets queued changes in reads", () => {

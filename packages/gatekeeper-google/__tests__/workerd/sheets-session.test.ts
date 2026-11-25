@@ -13,6 +13,7 @@ import {
 import { officeFileError } from "../../src/office-conversion";
 import { FORMAT_AREAS_READ_FIELDS, FORMAT_LINES_READ_FIELDS, FORMAT_READ_FIELDS } from "../../src/sheets-format";
 import { parseRange } from "../../src/sheets-model";
+import { seeded } from "../doc-fixture";
 import type { PlannedChange, QueuedChange } from "../../src/sheets-simulation";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import {
@@ -542,11 +543,11 @@ describe("Google Sheets entered values", () => {
   it("places every cell as a scan of every range would, ranges across tiles and overlapping", async () => {
     // A small deterministic generator: ranges and blocks of one sheet or another, crossing the
     // tiles the read indexes ranges by, overlapping, with blank and trimmed cells.
-    let seed = 20261120;
-    let next = (below: number) => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed % below;
-    };
+    let random = seeded(20261120);
+    let next = (below: number) => Math.floor(random() * below);
+    // How many ranges read a value on each sheet: about as many on both, or the read could drop
+    // one unseen.
+    let found = new Map<number, number>([[0, 0], [7, 0]]);
     for (let round = 0; round < 40; round++) {
       let areas = Array.from({ length: 1 + next(30) }, () => {
         let startRow = next(120), startColumn = next(90);
@@ -587,7 +588,14 @@ describe("Google Sheets entered values", () => {
         }
       }
       expect(await api.readEntered("sheet-1", areas), `round ${round}`).toEqual(expected);
+      areas.forEach(({ sheetId }, k) => {
+        if (expected[k].some(row => row.some(value => value !== null))) {
+          found.set(sheetId, found.get(sheetId)! + 1);
+        }
+      });
     }
+    let [first, seventh] = [found.get(0)!, found.get(7)!];
+    expect(Math.min(first, seventh)).toBeGreaterThan((first + seventh) / 3);
   });
 
   it("refuses an unsupported value in a block no range holds", async () => {
