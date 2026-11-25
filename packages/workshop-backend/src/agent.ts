@@ -2452,7 +2452,20 @@ async function runAgentPass(
   const unreadAttachmentIds = new Set<string>();
   const inlineFileImages = new Set<AiToolCall>();
   const unreadFileImages = new Set<AiToolCall>();
-  const fileImageReads = new Map<ImageContent, {sequence: number; id: string}>();
+  const fileImageReads = new Map<ImageContent, {sequence: number; id: string; oid: string; byteLength: number}>();
+  // Decode only the tail actually sent, or an eligible native-compaction prefix. Admission and
+  // transcript summaries need metadata, not pixels; placeholders never reach a provider.
+  const loadFileImages = async (messages: readonly Message[]) => {
+    for (const msg of messages) if (Array.isArray(msg.content)) {
+      for (const part of msg.content) if (part.type === "image" && part.data === "") {
+        const read = fileImageReads.get(part);
+        if (!read) continue;
+        const image = readFileImage(await hooks.openBlob(read.oid));
+        if (!image) throw new Error("Stored image blob is not an image.");
+        Object.assign(part, image);
+      }
+    }
+  };
   let attachmentsFitFrom: number | undefined;
   // Recover the active prompt from durable history after an image step, including after restart.
   const unfinishedTurn = chatMessages.slice(chatMessages.findLastIndex(msg =>
@@ -2480,7 +2493,7 @@ async function runAgentPass(
   }
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
-    if (!answered && msg === activePrompt) prompt ??= msg.sequence;
+    if (!answered && (msg === activePrompt || (msg.type === "message" && msg.steered))) prompt ??= msg.sequence;
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
     if (msg === activePrompt && promptAttachmentIds.size > 0) {
@@ -2762,8 +2775,8 @@ async function runAgentPass(
                       isError: true,
                     };
                   } else if (toolCall.image) {
-                    const image = inlineFileImages.has(toolCall)
-                      ? readFileImage(await hooks.openBlob(toolCall.image.oid)) : undefined;
+                    const image: ImageContent | undefined = inlineFileImages.has(toolCall)
+                      ? {type: "image", mimeType: "image/png", data: ""} : undefined;
                     toolOutput = image ? {text: "Image file.", image} : {
                       text: "Image pixels are not shown in this request. Re-read with a vision model if needed; crop or resize if the provider refused the original.",
                     };
@@ -3009,7 +3022,8 @@ async function runAgentPass(
 
             const content: (TextContent | ImageContent)[] = [{type: "text", text: toolOutput.text},
               ...toolOutput.image ? [toolOutput.image] : []];
-            if (toolOutput.image) fileImageReads.set(toolOutput.image, {sequence: msg.sequence, id: toolCall.toolCallId});
+            if (toolOutput.image && toolCall.toolName === "readFile" && toolCall.image) fileImageReads.set(toolOutput.image,
+              {sequence: msg.sequence, id: toolCall.toolCallId, ...toolCall.image});
             if (unreadFileImages.has(toolCall) || (toolCall.toolName === "readFile" && toolCall.image?.rejected)) unreadParts.add(content[0]);
             if (toolOutput.image && attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
               pastLimitParts.set(content[0], {type: "text", text:
@@ -4822,10 +4836,11 @@ async function runAgentPass(
         // If its media exceeds the same request limits, summarize the transcript instead.
         const images = prefix.flatMap(msg => Array.isArray(msg.content)
           ? msg.content.filter(part => part.type === "image") : []);
-        const imageBytes = images.reduce((sum, {data}) => sum + data.length * 3 / 4 -
-          (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0), 0);
+        const imageBytes = images.reduce((sum, image) => sum + (fileImageReads.get(image)?.byteLength ??
+          (image.data.length * 3 / 4 - (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0))), 0);
         native &&= images.length <= MAX_INLINE_ATTACHMENTS && imageBytes <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES;
         if (native) {
+          await loadFileImages(prefix);
           // The summarized messages are the prompt up to the boundary; the rest stays verbatim.
           let {summary, block} = await requestAnthropicCompaction(
               handle, stream,
@@ -4946,6 +4961,7 @@ async function runAgentPass(
   // recognise a `/compact` turn, and such a pass has returned above.
   chatMessages.length = 0;
 
+  await loadFileImages(modelMessages);
   let context: AgentContext = {
     messages: [leadingSystemMessage, ...modelMessages],
     tools: toolList,

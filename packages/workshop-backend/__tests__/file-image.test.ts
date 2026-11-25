@@ -189,9 +189,16 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
-  it.each([true, false])("keeps an unanswered prompt on Retry before any image read (steered: %s)", steered => inKernel(crypto.randomUUID(), async impl => {
-    const {chatId} = await setup(impl);
-    await turn(impl, chatId, []);
+  it.each(["late-steer", "prompt", "steer-after-tool"])("keeps an unanswered instruction on Retry before any image read: %s", trigger => inKernel(crypto.randomUUID(), async impl => {
+    const text = new TextEncoder().encode("Before edit");
+    const {chatId} = await setup(impl, PNG, [["note.txt", text]]);
+    const steered = trigger !== "prompt";
+    if (trigger === "steer-after-tool") {
+      impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "", toolCalls: [{
+        toolName: "readFile", toolCallId: crypto.randomUUID(),
+        input: {workpiece: "IMAGES", filename: "note.txt"}, observedOid: impl.gitCache.writeBlob(text).oid,
+      }]}]);
+    } else await turn(impl, chatId, []);
     const creation = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : [])
       .find(call => call.toolName === "createWorktree");
     if (creation?.toolName !== "createWorktree" || creation.output?.worktreeId === undefined) throw new Error("Expected worktree");
@@ -205,7 +212,7 @@ describe("images read from a worktree", () => {
       fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done")),
     ]);
     expect(requests.at(-1)).toContainEqual({role: "user", content: "Still-unanswered instruction", timestamp: expect.any(Number)});
-    expect(results(requests.at(-1)!)).toEqual([]);
+    expect(results(requests.at(-1)!).flatMap(result => result.content.filter(part => part.type === "image"))).toEqual([]);
   }));
 
   it.each(["chat", "callback", "steer"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
@@ -296,6 +303,19 @@ describe("images read from a worktree", () => {
     expect(results(last)[1].content.some(part => part.type === "image")).toBe(true);
   }));
 
+  it("encodes only the retained image tail of a long unfinished turn", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    for (let step = 0; step < 6; ++step) recordReads(impl, chatId, blob.oid, 20);
+    const encode = vi.spyOn(Uint8Array.prototype, "toBase64");
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const encodings = encode.mock.instances.filter(bytes => bytes.length === PNG.length).length;
+    encode.mockRestore();
+    expect(results(requests.at(-1)!).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(20);
+    expect(encodings).toBe(20);
+  }));
+
   it("lets explicit compaction summarize a stopped image turn", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     recordReads(impl, chatId, blob.oid, 1);
@@ -307,9 +327,9 @@ describe("images read from a worktree", () => {
     expect(impl.loadChatHistory(chatId).checkpoint?.compactedTo).toBeGreaterThan(firstRead);
   }));
 
-  it("summarizes over-limit image history as text instead of sending it to native compaction", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([false, true])("loads pixels only for an eligible native-compaction prefix (over limit: %s)", overLimit => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
-    recordReads(impl, chatId, blob.oid, 20);
+    recordReads(impl, chatId, blob.oid, overLimit ? 20 : 1);
     impl.addChatMessages(chatId, USER, [{type: "message", message: "More images"}]);
     recordReads(impl, chatId, blob.oid, 5);
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Finish"}]);
@@ -321,18 +341,28 @@ describe("images read from a worktree", () => {
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     faux.setResponses([fauxAssistantMessage(fauxText("Summarized the image observations."))]);
     const requests: Message[][] = [];
-    await runAgent(impl, {model: getModel({} as Cloudflare.Env,
+    const encode = vi.spyOn(Uint8Array.prototype, "toBase64");
+    const run = runAgent(impl, {model: getModel({} as Cloudflare.Env,
       {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"}, USER).model,
       stream: (_model, context, options) => {
         requests.push(structuredClone(context.messages));
         return faux.stream(faux.getModel(), context, options);
       }}, chatId, AUTHOR, new AbortController().signal, USER,
       {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"});
+    if (overLimit) await run;
+    else await expect(run).rejects.toThrow("Compaction produced no summary"); // Faux returns no native block.
+    const encodings = encode.mock.instances.filter(bytes => bytes.length === PNG.length).length;
+    encode.mockRestore();
     expect(requests).toHaveLength(1);
-    expect(requests[0].flatMap(msg => Array.isArray(msg.content)
-      ? msg.content.filter(part => part.type === "image") : [])).toEqual([]);
-    expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({summary: "Summarized the image observations."});
-    expect(impl.loadChatHistory(chatId).checkpoint?.anthropicCompactionBlock).toBeUndefined();
+    const images = requests[0].flatMap(msg => Array.isArray(msg.content)
+      ? msg.content.filter(part => part.type === "image") : []);
+    expect(images).toHaveLength(overLimit ? 0 : 6);
+    expect(encodings).toBe(overLimit ? 0 : 6);
+    for (const image of images) expect(image.data).toBe(PNG.toBase64());
+    if (overLimit) {
+      expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({summary: "Summarized the image observations."});
+      expect(impl.loadChatHistory(chatId).checkpoint?.anthropicCompactionBlock).toBeUndefined();
+    }
   }));
 
   it("does not refuse file images that admission omitted from the failing request", () => inKernel(crypto.randomUUID(), async impl => {
