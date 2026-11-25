@@ -365,9 +365,10 @@ export class GoogleSlidesApi {
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
    * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
-   * `LABEL_FIELDS` names, cut as it comes. Every request starts at once; a page's 2 MiB and the
-   * slides one read or change may name bound them. The read fails with the first failure to
-   * arrive; the requests still running then finish unawaited, their answers dropped.
+   * `LABEL_FIELDS` names, cut as it comes. Every request starts at once, each bounded by a page's
+   * 2 MiB; the slides one read or change may name bound what it names, not how many pages it
+   * fetches, since queued batches add the other slides they touch. The read fails with the first
+   * failure to arrive; the requests still running then finish unawaited, their answers dropped.
    */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],

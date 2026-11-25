@@ -1723,8 +1723,9 @@ read every slide a queued batch changes, since they hold no tables or grouped sh
 awaiting approval therefore cost reads more requests against Google's per-user quota. Queueing a
 move, a skip, a deletion, or a new slide placed after another reads, of each slide it names, only
 its shapes' text and whether it is skipped, a couple of KiB, and reads the slide whole when a queued
-change edits it. A read asks for every slide it needs at once, whole or only that much of it, as
-the 2 MiB cap on a slide and the 20 slides a read and the 100 a change may name bound it.
+change edits it. A read asks for every slide it needs at once, whole or only that much of it, each
+capped at 2 MiB. The 20 slides a read and the 100 a change may name bound what one call names, not
+the pages fetched: the other slides of the queued batches that touch them are fetched too.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
 reads with locale `en` and English layout names. Google translates those names: a presentation a
