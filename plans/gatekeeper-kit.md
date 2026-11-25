@@ -2189,7 +2189,9 @@ export type ActionFileStorage = { readonly kv: KvScannable;
 export class ActionFileStore {
   constructor(storage: ActionFileStorage, options: ActionFileStoreOptions);
   capture(bytes: Uint8Array): Promise<ActionFileReference>;
+  captureStream(content: ReadableStream<Uint8Array>): Promise<ActionFileReference>;
   read(file: ActionFileReference): Promise<Uint8Array>;
+  readStream(file: ActionFileReference): Promise<ReadableStream<Uint8Array>>;
   delete(file: ActionFileReference | undefined): void;
   pruneUnreferenced(referencedHandles: ReadonlySet<string>, createdBefore: number): void;
 }
@@ -2198,7 +2200,11 @@ export class ActionFileStore {
 `ActionFileStore` keeps queued-action bytes out of action records as bounded, SHA-256-checked
 one-MiB chunks. Capture writes the manifest, chunks, allocation, and aggregate accounting in one
 synchronous transaction; deletion removes the same record family and releases its allocation in
-one transaction (`action-files.ts:4-35,53-221`). It is consumed today
+one transaction (`action-files.ts`). `captureStream()` takes a file too large to hold, storing each
+chunk with its allocation and counter in a transaction of its own and the manifest last, and
+`readStream()` gives a file back a chunk at a time, holding the final chunk until the whole file's
+digest matches; both use workerd's `crypto.DigestStream`. A file is limited to 10,000 chunks, the
+most four-digit chunk keys keep in index order. It is consumed today
 by google's `GmailForwardSnapshotStore` for exact inline-forward source snapshots
 (`gmail-state.ts:5-34`; `gmail.ts:255-273,730-744`) and by `ConfluenceStore` for pending attachment
 uploads, including orphan pruning and release after resolution
@@ -3925,5 +3931,5 @@ recorded here because the pass found it. Each entry names why it waits and what 
   frontier }` that both can call.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
-Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
-general retry executor (the policies differ, not the loops).
+Zylo returns `expires_on`) and a general retry executor (the policies differ, not the loops).
+Streaming `ActionFileStore` capture, rejected while nothing needed it, is now in the leaf (§4.17).
