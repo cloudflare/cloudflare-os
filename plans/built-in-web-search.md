@@ -92,7 +92,9 @@ Each names the alternative we reject and why.
    are three constants in `workshop-shared`, which the gatekeeper declares its setting with.
    The backend already names one gatekeeper, Cloudflare's, for billing (`CLOUDFLARE_VENDOR_ID`
    in `user.ts`). A user cannot set `AiModelConfig.webSearch` on a model of their own:
-   `RedactedAiModelConfig` omits it and `user.ts` drops it, as both do for `reasoning`.
+   `RedactedAiModelConfig` omits it and `user.ts` drops it, as both do for `reasoning`. A record
+   stored before that can hold the field, so `user.ts` also drops it when it resolves a stored
+   model for a chat or a quick task.
 
    Both model Tests send the tool while the setting says so: the Test of a model in the list,
    and the Test before a model is added. They read the saved setting at once. A chat reads it
@@ -156,6 +158,9 @@ Each names the alternative we reject and why.
    A page GPT opens from OpenAI's cache (`open_page`, `find_in_page`) is recorded the same way,
    with its URL, and is not billed. So is a call that ends `failed` or `incomplete`, with its
    status.
+   Only a response to a request that declared the tool is read for searches. The wrapper reads
+   that from the request as it was sent. A user's own endpoint can send search events for a
+   request with no tool, and those are not recorded, charged or kept.
    The fee comes from the same response: `addChatMessages()` adds $0.01 for each search the
    provider billed. That is Anthropic's `usage.server_tool_use.web_search_requests`, and OpenAI's
    `tool_usage.web_search.num_requests`, or its completed `search` calls where a response holds
