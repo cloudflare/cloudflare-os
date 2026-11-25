@@ -357,7 +357,8 @@ export type SimulatedList<Row> = {
  *   id: row => row.id,
  *   compare: newestFirst,
  *   keeps: row => matchesFilter(row, filter),
- *   // The journal as it is now: a create rejected while a page is fetched drops its stand-in.
+ *   // The journal as it is now: a create rejected or applied before its stand-in is admitted to
+ *   // a page drops it.
  *   created: () => journal.listPending().flatMap(({ action }) =>
  *     action.kind === "createIncident" && !ids.isResolved(action.ref) ? [action.ref] : []),
  * });

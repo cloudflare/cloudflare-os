@@ -694,6 +694,11 @@ What a gatekeeper wants kept between reads (a copy of the provider's state, a fo
 keeps itself. A listing whose rows are the entities takes its cursor's hooks from the same module:
 see [A listing over a simulation store](#a-listing-over-a-simulation-store).
 
+What a read or a listing shows of pending records is a best-effort preview. A durable mark on a
+record needs three things: the pending records read before the fetch; the read, the fetch, the fold
+and the marks run together inside `runExclusive`; and proof from the provider of which writes it
+already holds (a write marker), or no marking at all while an earlier write's outcome is unknown.
+
 The store runs no callback but `initial`, on the base it is given, and the reducer. A reducer that
 cannot replay a record on the entity returns `refused` with its reason and the fold goes on; the
 result lists what that call refused, and
@@ -1344,6 +1349,10 @@ after it.
 
 #### A listing over a simulation store
 
+A listing marks nothing, and its rows are the preview described under
+[Replaying pending actions](#replaying-pending-actions); the races below are examples of how far
+that preview can be from the provider and the journal.
+
 Where the rows of a listing are entities pending actions create, change or delete, `simulatedList`
 (`./simulation-store`) makes the three values from a simulation store: `overlay` folds a provider
 row's pending records into it and serves none for a row a record deleted; `inject` carries the
@@ -1370,8 +1379,8 @@ const list = simulatedList({
   id: row => row.id,
   compare: newestFirst,
   keeps: row => matchesFilter(row, filter),
-  // The journal as it is now, not as at the last refresh: a create rejected or applied while a
-  // page is fetched drops its stand-in.
+  // The journal as it is now, not as at the last refresh: a create rejected or applied before
+  // its stand-in is admitted to a page drops it.
   created: () => journal.listPending().flatMap(({ action }) =>
     action.kind === "createIncident" && !ids.isResolved(action.ref) ? [action.ref] : []),
 });
@@ -1397,7 +1406,9 @@ is served and the stand-ins are folded at each `refresh()`, which `revalidate` t
 dropping one whose create `created` no longer lists, so a create bound before its stand-in is served
 leaves the provider's row to be served, where a later fetch of the walk returns it; one bound after
 (between two fetches of one `next()` included) leaves the stand-in, and the cursor's `identity` keeps
-the provider's row out of the walk. A walk that resumes where it stopped can miss that row: a
+the provider's row out of the walk. A create rejected after its stand-in is admitted to a page,
+during a later fetch of the same `next()` included, leaves the stand-in on that page: nothing
+checks it again. A walk that resumes where it stopped can miss that row: a
 create that lands ahead of that point, an offset or the sort key a provider's cursor resumes
 after, is in neither the pages served nor those to come, so the walk serves neither the stand-in,
 now dropped, nor the row. A listing that must serve every row starts the walk again when an apply
