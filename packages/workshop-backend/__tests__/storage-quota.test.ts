@@ -33,7 +33,7 @@ describe("workspace storage quotas", () => {
 
   it("ends a turn at the turn quota with a storage_full error, leaving the chat idle", () => inKernel(async impl => {
     const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()),
-      {profile: USER}, "Hello");
+      {profile: USER}, "Hello", "auto");
     vi.spyOn(impl, "sampleStorageBytes").mockReturnValue(WORKSPACE_TURN_QUOTA_BYTES);
     impl.startAgent(chatId,
       {profile: MODEL, config: {provider: "anthropic", model: "claude", apiToken: "unused"}},

@@ -873,7 +873,7 @@ describe("client delivery of worktree content", () => {
       bytes.set([0x89, 0x50, 0x4E, 0x47, i]);
       return { oid: impl.gitCache.writeBlob(bytes).oid, mimeType: "image/png", name: `${i}.png` };
     };
-    let chatId = await impl.newChat(user, USER_META, "First five",
+    let chatId = await impl.newChat(user, USER_META, "First five", "auto",
         { attachments: [0, 1, 2, 3, 4].map(png) });
     await impl.sendChatMessage(user, USER_META, chatId, "Five more",
         { attachments: [5, 6, 7, 8, 9].map(png) });

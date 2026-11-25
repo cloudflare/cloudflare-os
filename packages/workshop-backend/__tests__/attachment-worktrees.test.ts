@@ -410,7 +410,7 @@ describe("attachment worktree ingress", () => {
     const {chatId, worktreeId} = await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const ref = impl.gitCache.writeBlob(new TextEncoder().encode(text));
-      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", {attachments: [
+      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", "auto", {attachments: [
         {oid: ref.oid, mimeType: "text/csv", name: "edited.csv"},
         {oid: ref.oid, mimeType: "text/csv", name: "untouched.csv"}]});
       const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
@@ -872,7 +872,7 @@ describe("attachment worktree ingress", () => {
     const share = Math.floor(MAX_INLINE_MESSAGE_BYTES / 2.5);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     // The third of these passes the message's byte limit; the last passes the per-file one.
-    const chatId = await impl.newChat(user, {profile: USER}, "Photos", {attachments: [
+    const chatId = await impl.newChat(user, {profile: USER}, "Photos", "auto", {attachments: [
       await upload("a.png", share, 1), await upload("b.png", share, 2),
       await upload("c.png", share, 3), await upload("huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1, 4)]});
     const attachmentName = (id: string) => [...impl.storage.chats.list()].flatMap(message =>
@@ -911,7 +911,7 @@ describe("attachment worktree ingress", () => {
     const blob = impl.gitCache.writeBlob(pngOfSize(size, 100));
     const batch = (from: number) =>
       Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
-    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", "auto", {attachments: batch(0)});
     for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch(5 * i)});
     const names = new Map([...impl.storage.chats.list()].flatMap(message =>
       message.type === "message" ? message.attachments ?? [] : []).map(attachment => [attachment.id, attachment.name]));
@@ -936,7 +936,7 @@ describe("attachment worktree ingress", () => {
     const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
     const batch = (from: number, length = 5) =>
       Array.from({length}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
-    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", "auto", {attachments: batch(0)});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
     const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
@@ -989,7 +989,7 @@ describe("attachment worktree ingress", () => {
   ] as const)("names the attachments of a refused first request by path from then on (%s)", (api, errorMessage) => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const pdf = impl.gitCache.writeBlob(new TextEncoder().encode("%PDF-1.7 601 pages"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Read this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this", "auto", {attachments:
       [{oid: pdf.oid, mimeType: "application/pdf", name: "long.pdf"}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
@@ -1139,7 +1139,7 @@ describe("data files for views", () => {
   const answer = (text: string, ...calls: ReturnType<typeof fauxToolCall>[]) =>
     fauxAssistantMessage([fauxText(text), ...calls], calls.length ? {stopReason: "toolUse"} : undefined);
   const newChat = (impl: Impl) =>
-    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data");
+    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data", "auto");
   const createOutputs = fauxToolCall("createWorktree", {title: "Outputs", bindingName: "OUTPUTS"});
   const source = (path: string) => `worktree://OUTPUTS/${path}`;
   const text = (impl: Impl, oid: string | null | undefined) =>

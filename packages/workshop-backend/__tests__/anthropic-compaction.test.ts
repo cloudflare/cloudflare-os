@@ -336,7 +336,7 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const batch = (length: number) =>
       Array.from({ length }, (_, i) => ({ oid: blob.oid, mimeType: "image/png", name: `${i}.png` }));
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", {attachments: batch(5)});
+    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", "auto", {attachments: batch(5)});
     for (let i = 0; i < 3; ++i) {
       await impl.sendChatMessage(user, { profile: OWNER }, chatId, "Five more", {attachments: batch(5)});
     }
