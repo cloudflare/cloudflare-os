@@ -155,7 +155,7 @@ describe("attention", () => {
       ask(impl, 6, {from: "gadget", gadgetId: 10, chatId: 1});
     });
     await vi.waitFor(async () => expect(await storedAttention(user, workspaceId))
-      .toEqual({gadgets: [{gadgetId: 10, actions: 2}, {gadgetId: 11, actions: 1}]}));
+      .toEqual([{gadgetId: 10, actions: 2}, {gadgetId: 11, actions: 1}]));
   });
 
   it("pushes changes to the owner and builders, and drops a summary when access narrows", async () => {
@@ -166,7 +166,7 @@ describe("attention", () => {
     using _subscription = await reader.subscribeToWorkspaceSummaries(callback);
 
     await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "gadget", gadgetId: 10}));
-    const expected = {workspaceId: fixture.workspaceId, waiting: {gadgets: [{gadgetId: 10, actions: 1}]}, hooks: []};
+    const expected = {workspaceId: fixture.workspaceId, waiting: [{gadgetId: 10, actions: 1}], hooks: []};
     await vi.waitFor(async () => expect(await storedAttention(fixture.user, fixture.workspaceId)).toEqual(expected.waiting));
     await vi.waitFor(async () => expect(await storedAttention(reader, fixture.workspaceId)).toEqual(expected.waiting));
     await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, expected]));
@@ -181,15 +181,15 @@ describe("attention", () => {
   it("ignores attention read before one already taken", async () => {
     const {user, workspaceId} = await setup();
     const newer = Number.MAX_SAFE_INTEGER;
-    await user.syncWorkspaceListing(workspaceId, {listingRev: newer, attention: {gadgets: [{gadgetId: 10, actions: 2}]}});
-    await user.syncWorkspaceListing(workspaceId, {listingRev: newer - 1, attention: {gadgets: [{gadgetId: 10, actions: 1}]}});
-    expect(await storedAttention(user, workspaceId)).toEqual({gadgets: [{gadgetId: 10, actions: 2}]});
+    await user.syncWorkspaceListing(workspaceId, {listingRev: newer, attention: [{gadgetId: 10, actions: 2}]});
+    await user.syncWorkspaceListing(workspaceId, {listingRev: newer - 1, attention: [{gadgetId: 10, actions: 1}]});
+    expect(await storedAttention(user, workspaceId)).toEqual([{gadgetId: 10, actions: 2}]);
   });
 
   it("gives a new subscriber the summaries kept", async () => {
     const fixture = await setup();
     await withImpl(fixture.workspace, impl => ask(impl, 0, {from: "gadget", gadgetId: 11}));
-    const expected = {workspaceId: fixture.workspaceId, waiting: {gadgets: [{gadgetId: 11, actions: 1}]}, hooks: []};
+    const expected = {workspaceId: fixture.workspaceId, waiting: [{gadgetId: 11, actions: 1}], hooks: []};
     await vi.waitFor(async () => expect(await storedAttention(fixture.user, fixture.workspaceId)).toEqual(expected.waiting));
 
     const updates = new SummaryUpdates();
@@ -231,7 +231,7 @@ describe("hooks", () => {
     ]);
     expect(edited.every(listing => listing.attention === undefined)).toBe(true);
     await vi.waitFor(() => expect(updates.updates.at(-1)).toEqual([fixture.workspaceId, {workspaceId: fixture.workspaceId,
-      waiting: {gadgets: []}, hooks: [expect.objectContaining({id: 0, enabled: false})]}]));
+      waiting: [], hooks: [expect.objectContaining({id: 0, enabled: false})]}]));
   });
 
   it("sends every hook to a builder once their listing is resynced", async () => {
@@ -249,7 +249,7 @@ describe("hooks", () => {
     using callback = new RpcStub(updates);
     using _subscription = await reader.subscribeToWorkspaceSummaries(callback);
     await vi.waitFor(() => expect(updates.snapshots).toEqual([[{workspaceId: fixture.workspaceId,
-      waiting: {gadgets: []}, hooks: [expect.objectContaining({id: 3})]}]]));
+      waiting: [], hooks: [expect.objectContaining({id: 3})]}]]));
   });
 });
 
@@ -449,7 +449,7 @@ describe("background reads of an offline builder", () => {
     return Promise.allSettled([impl.deliverUserUpdates(), impl.deliverDirtyChats()]);
   };
   const attentionActions = async (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
-    (await storedAttention(user, workspaceId))?.gadgets[0]?.actions;
+    (await storedAttention(user, workspaceId))?.[0]?.actions;
   const chatSeedPending = (user: DurableObjectStub<UserDurableObject>, workspaceId: string) =>
     runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).gadgets.get(workspaceId)?.chatSeedPending);
 

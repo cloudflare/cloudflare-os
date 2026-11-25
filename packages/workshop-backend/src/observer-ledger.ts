@@ -9,7 +9,7 @@
 // - Every check fails closed, and no permission is cached between operations, but for one:
 //   background reads (chat heads and unread previews) rely on each account choice's
 //   ObserverAccountChoice.verifiedThroughActionId, so only requirements recorded since are
-//   checked before one is published (requirementsSince(), OverseerImpl.#ensureBackgroundAdmission).
+//   checked before one is published (requirementsSince(), OverseerImpl.mayReadChatState).
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
 //   audience before the audit record is written (authorizeObservation), and an admission's
 //   scope before its account choices are (OverseerImpl.ensureObserver, via observerScope()).
@@ -50,7 +50,7 @@ const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
  * Most observers sent to `verifyObserverAccess()` in one call, bounding the verifier fan-out each
  * call asks of the gatekeeper.
  */
-const CHECK_OBSERVER_BATCH_SIZE = 100;
+const CHECK_OBSERVER_BATCH_SIZE = 10;
 
 /** How many action records requirementsSince() lists at a time. */
 const BACKGROUND_PAGE_SIZE = 500;
@@ -145,8 +145,10 @@ export interface ObserverLedgerHost {
   liveCollaborators(): string[];
 }
 
-// The verifier for `accountId` in `user`'s own User DO. Throws if the account is gone, with the
-// reason the user sees, or belongs to another vendor (getVerifier's own error).
+/**
+ * The verifier for `accountId` in `user`'s own User DO. Throws if the account is gone, with the
+ * reason the user sees, or belongs to another vendor (getVerifier's own error).
+ */
 async function requireVerifier(user: DurableObjectStub<UserDurableObject>,
                                accountId: number, vendorId: string) {
   let verifier = await user.getVerifier(accountId, vendorId);
@@ -428,14 +430,18 @@ export class ObserverLedger {
     let readThrough = verifiedThrough;
     for (let pages = 0; readThrough < target; pages++) {
       if (pages >= MAX_BACKGROUND_PAGES) return {subresources: [...subresources], through: readThrough};
-      // Listed up front: each probe of the index would end this listing.
-      let page = Array.from(this.#storage.actions.list(
+      // Keys listed up front, as each probe of the index would end the listing; records read one
+      // at a time, as one can hold up to 500,000 characters of IDs.
+      let page = Array.from(this.#storage.actions.listKeys(
           {start: readThrough + 1, end: target + 1, limit: BACKGROUND_PAGE_SIZE}));
-      for (let record of page) {
+      for (let key of page) {
         // Stopped short before this record, which the next call reads first.
         if (subresources.size >= MAX_SUBRESOURCES) {
           return {subresources: [...subresources], through: readThrough};
         }
+        // listKeys() gives the stored form, which get() takes for a numeric key (see Collection).
+        let record = this.#storage.actions.get(key as never);
+        if (!record) continue;
         readThrough = record.id;
         if (record.type !== "observation" || record.gatekeeperId !== gatekeeperId) continue;
         let context = observerContextOf(record.caller);

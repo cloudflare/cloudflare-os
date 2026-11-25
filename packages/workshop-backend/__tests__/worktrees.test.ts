@@ -926,6 +926,25 @@ describe("client delivery of worktree content", () => {
     expect((await client.getChatHistory(999, undefined, 2)).messages).toEqual([]);
   }));
 
+  it("bounded history stops a page once its code changes pass the inline budget, keeping one",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    // Seven changes of 1.5M characters each (3 MB as serialized): three pass the 8 MB budget.
+    let text = "x".repeat(1.5 * 1024 * 1024);
+    for (let sequence = 0; sequence < 7; sequence++) {
+      impl.storage.chats.put({chatId: 1, sequence, type: "changes", author: USER,
+        timestamp: new Date(sequence), change: {1: [["big.txt", {set: text}]]}} as never);
+    }
+    let latest = await client.getChatHistory(1, undefined, 200);
+    expect(latest.messages.map(m => m.sequence)).toEqual([4, 5, 6]);
+    expect(latest.nextBeforeSequence).toBe(4);
+    let middle = await client.getChatHistory(1, latest.nextBeforeSequence, 200);
+    expect(middle.messages.map(m => m.sequence)).toEqual([1, 2, 3]);
+    let rest = await client.getChatHistory(1, middle.nextBeforeSequence, 200);
+    expect(rest.messages.map(m => m.sequence)).toEqual([0]);
+    expect(rest.nextBeforeSequence).toBeUndefined();
+  }));
+
   it("bounded history never inlines image bytes, which stay fetchable on demand",
       () => withClient(async (impl, client) => {
     addChat(impl, 1);

@@ -264,7 +264,7 @@ describe("what a use session lists", () => {
     expect(listing.outputs?.map(entry => entry.workpieceId)).toEqual([101]);
     // A "use" collaborator lists the workspace under its title, but is told nothing of what waits
     // there or its hooks.
-    expect(listing.title?.title).toBe(impl.storage.title.get());
+    expect(listing.title).toBe(impl.storage.title.get());
     expect(listing.attention).toBeUndefined();
     expect(listing.hooks).toBeUndefined();
     dispose(client);
@@ -370,7 +370,7 @@ describe("recording a shared open", () => {
 
     // Removed, then the workspace renamed, before whoami() resolves.
     access = undefined;
-    Object.assign(storage, { title: { get: () => "Renamed" }, titleRev: { get: () => 1 } });
+    Object.assign(storage, { title: { get: () => "Renamed" } });
     release.resolve();
     await scheduler.wait(10);
 

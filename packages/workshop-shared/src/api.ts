@@ -428,17 +428,6 @@ export interface UnreadStateSubscriber extends RpcTarget {
     summary: UnreadSummaryUpdate): Promise<void>;
 }
 
-/** The actions waiting on the user in one workspace, by gadget (see `WorkspaceSummary`). */
-export type WorkspaceWaiting = {
-  /**
-   * The gadgets with actions waiting for approval, and how many each: those its code or its hooks
-   * asked for outside any chat, and those of the runs it started. Each action counts for at most
-   * one gadget; gadgets with none are left out. A chat waiting on someone says so on its head
-   * instead (see `ChatTimelineHead.waiting`).
-   */
-  gadgets: {gadgetId: WorkpieceId; actions: number}[];
-};
-
 /**
  * What a chat waiting on the user asks of them (see `ChatTimelineHead.waiting`): to approve an
  * action of its own (`action`, by its title), to connect a service (`connection`), or to approve
@@ -460,8 +449,13 @@ export type WorkspaceSummary = {
   /** The workspace summarized. */
   workspaceId: string;
 
-  /** The actions waiting on the user there, by gadget. */
-  waiting: WorkspaceWaiting;
+  /**
+   * The gadgets with actions waiting on the user there for approval, and how many each: those its
+   * code or its hooks asked for outside any chat, and those of the runs it started. Each action
+   * counts for at most one gadget; gadgets with none are left out. A chat waiting on someone says
+   * so on its head instead (see `ChatTimelineHead.waiting`).
+   */
+  waiting: {gadgetId: WorkpieceId; actions: number}[];
 
   /** Every hook bound there, as `Overseer.listHooks()` lists them. */
   hooks: BoundHookInfo[];
@@ -5420,7 +5414,6 @@ export interface Overseer extends RpcTarget {
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns without waiting for the agent's
    * turn; `waitForAgent()` waits for it to end.
-
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
                   options?: ChatMessageOptions): Promise<void>;

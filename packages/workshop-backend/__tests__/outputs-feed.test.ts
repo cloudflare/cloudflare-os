@@ -79,7 +79,7 @@ it("pushes an output added or renamed in a workspace to a subscribed user", asyn
   await user.setWorkspaceNotificationMute(workspaceId, {indefinite: true});
 
   // The workspace renamed in the user's list: its outputs carry the new title.
-  await user.syncWorkspaceListing(workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, title: {title: "Renamed", titleRev: 1}});
+  await user.syncWorkspaceListing(workspaceId, {listingRev: Number.MAX_SAFE_INTEGER, title: "Renamed"});
   await vi.waitFor(() => expect(updates.updates.at(-1)).toMatchObject([workspaceId, [{workspaceTitle: "Renamed"}]]));
   expect(updates.updates.slice(before)).toEqual([[workspaceId, [expect.objectContaining({workspaceTitle: "Renamed"})]]]);
 });

@@ -112,26 +112,24 @@ it("ignores activity from a listing older than one already taken", async () => {
 it("keeps the owner's newer title when an older listing's arrives late", async () => {
   const {owner, workspaceId} = await setup();
   const rev = Number.MAX_SAFE_INTEGER;
-  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev, title: {title: "Timeline", titleRev: 2}});
-  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev - 1, title: {title: "Roadmap", titleRev: 1}});
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev, title: "Timeline"});
+  await owner.syncWorkspaceListing(workspaceId, {listingRev: rev - 1, title: "Roadmap"});
   expect(await owner.listWorkspaces()).toMatchObject([{id: workspaceId, title: "Timeline"}]);
 });
 
 it("keeps a newer mirrored title when a shared-open write arrives late", async () => {
   const {owner, reader, workspace, workspaceId} = await setup();
   using readerFeed = await subscribed(reader);
-  const olderRevision = await withImpl(workspace, impl => impl.storage.titleRev.get());
+  const olderRevision = await withImpl(workspace, impl => impl.storage.listingRev.get());
   await withImpl(workspace, impl => impl.storage.title.put("Roadmap"));
   await vi.waitFor(() => expect(readerFeed.updates.updates.at(-1))
     .toMatchObject([workspaceId, {title: "Roadmap"}]));
 
   await reader.recordSharedWorkspaceOpen(workspaceId, "Plans", await owner.whoami(), "build", [], olderRevision);
   // A delayed push of the older title is taken as already there.
-  await reader.syncWorkspaceListing(workspaceId, {listingRev: 1, title: {title: "Plans", titleRev: olderRevision}});
+  await reader.syncWorkspaceListing(workspaceId, {listingRev: 1, title: "Plans"});
   const [listing] = await reader.listWorkspaces();
   expect(listing).toMatchObject({id: workspaceId, title: "Roadmap"});
-  expect(listing).not.toHaveProperty("sharedTitleRev");
-  expect(readerFeed.updates.updates.at(-1)?.[1]).not.toHaveProperty("sharedTitleRev");
 });
 
 it("returns from a rename once the owner's list has the new title", async () => {
@@ -150,7 +148,7 @@ it("returns from a rename once the owner's list has the new title", async () => 
       get: (id: DurableObjectId) => id.toString() !== ownerId ? users.get(id) : new Proxy(users.get(id), {
         get: (target, key) => key !== "syncWorkspaceListing" ? Reflect.get(target, key)
           : async (...args: Parameters<UserDurableObject["syncWorkspaceListing"]>) => {
-            if (args[1].title?.title === "Roadmap") {
+            if (args[1].title === "Roadmap") {
               offered.resolve();
               await taken.promise;
             }
@@ -227,36 +225,4 @@ it("says a workspace left the list when it is dismissed or deleted", async () =>
 
   await owner.workspaceRemoved(workspaceId);
   await vi.waitFor(() => expect(ownerFeed.updates.updates).toEqual([[workspaceId, null]]));
-});
-
-it("never restores a workspace removed while a slow snapshot is still being taken", async () => {
-  const {owner, workspaceId} = await setup();
-  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-  // Applies each delivery to its own list, as a client does, taking its time over the snapshot.
-  class SlowClient extends RpcTarget implements WorkspacesSubscriber {
-    list: string[] = [];
-    snapshotTaken = false;
-    updateCount = 0;
-    async snapshot(workspaces: WorkspaceMetadataWithTimestamps[]) {
-      entered.resolve();
-      await gate.promise;
-      this.list = workspaces.map(workspace => workspace.id);
-      this.snapshotTaken = true;
-    }
-    async updated(id: string, workspace: WorkspaceMetadataWithTimestamps | null) {
-      this.list = this.list.filter(listed => listed !== id).concat(workspace ? [id] : []);
-      this.updateCount++;
-    }
-  }
-  const client = new SlowClient();
-  // Subscribed in the object with a Cap'n Web stub, which starts each call as it is made.
-  await runInDurableObject(owner, async (instance: UserDurableObject) => {
-    using callback = new RpcStub(client);
-    using _subscription = await instance.subscribeToWorkspaces(callback);
-    await entered.promise;
-    await instance.workspaceRemoved(workspaceId);
-    gate.resolve();
-    await vi.waitFor(() => expect([client.snapshotTaken, client.updateCount]).toEqual([true, 1]));
-  });
-  expect(client.list).toEqual([]);
 });

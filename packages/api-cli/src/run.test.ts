@@ -518,13 +518,13 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
   // A workspace holds the user's gadgets, a gadget is one workpiece of it: listing them is the
   // workspace's workpiece list, found by default beside the workspaces it is read on, and deleting
   // one is removing that workpiece, not deleting the whole workspace. Listing what else names its
-  // gadgets (hooks, blueprints, agent spawners, a chat's artifacts) may rank beside it.
+  // gadgets (hooks, blueprints, agent spawners) may rank beside it.
   const workpieces = /^cf-os api open-workspace <id> subscribe-to-workpieces$/;
   const cases: [string, RegExp, number][] = [
     ["list my gadgets", /^cf-os api list-workspaces$/, 1],
-    ["list my gadgets", workpieces, 7],
-    ["list gadgets", workpieces, 7],
-    ["list the gadgets in a workspace", workpieces, 7],
+    ["list my gadgets", workpieces, 6],
+    ["list gadgets", workpieces, 6],
+    ["list the gadgets in a workspace", workpieces, 5],
     ["gadget id", workpieces, 2],
     ["delete gadget", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],
     ["remove a gadget from a workspace", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],

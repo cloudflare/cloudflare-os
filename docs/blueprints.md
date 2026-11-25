@@ -146,13 +146,13 @@ A blueprint stored before releases were commits has no `commitId` in its metadat
 
 ## Storage Architecture
 
-Blueprint data is stored in three places, with one-way propagation: Gadget DO -> User DO -> Workers KV.
+Blueprint data is stored in three places, with one-way propagation from the Gadget DO: Workers KV first, then the User DO. When a publish fails partway, KV can be ahead of the User DO, never behind it; the record stays `dirty` until a later publish repairs the mirror.
 
 1. **Gadget DO** (`blueprints` collection) -- the authoritative source. Stores `BlueprintGadgetRecord` including full metadata, the gadget commit that was last exported, the list of `releases` (each one's version, release commit and the gadget commit it was taken from), and a `dirty` flag for tracking propagation failures. The release commits and their trees live in the workspace's git object store.
 
 2. **User DO** (`blueprints` collection) -- a denormalized copy for efficient listing. Stores `BlueprintUserRecord` with metadata and a reference to the source gadget. This allows a user to audit and manage their blueprints even if the source gadget has been deleted. The workspace also pushes each record's `unpublishedChanges` there, with the rest of its listing (`syncWorkspaceListing`), as its gadget's head or bindings change and as it is released, and on the owner's every open. The User DO serves the whole records to their owner (`listOwnBlueprints()` and the live `subscribeToOwnBlueprints()` feed), not to gadgets following the blueprint.
 
-3. **Workers KV** (`BLUEPRINTS` namespace) -- the public-facing lookup store. Stores `BlueprintKvRecord` keyed by blueprint hex ID. Both `PublicApi.getBlueprint()` and `applyBlueprint()` read the published record here, not from the publisher's User DO, whose copy is written first.
+3. **Workers KV** (`BLUEPRINTS` namespace) -- the public-facing lookup store. Stores `BlueprintKvRecord` keyed by blueprint hex ID. Both `PublicApi.getBlueprint()` and `applyBlueprint()` read the published record here, not from the publisher's User DO, whose copy is written after it. The Gadget DO records what KV now serves (`published`) right after this write, so unpublished-change flags follow the public release even if the User DO write then fails.
 
 Blueprint **code content** is stored separately in an **R2 bucket** (`BLUEPRINT_CONTENT`), in one of two forms (`blueprintContentKey`):
 

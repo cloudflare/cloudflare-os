@@ -77,7 +77,6 @@ function fakeUsers(ws: Workspace) {
       messageArrived: async () => {},
       getWorkspace: async () => null,
       getGadget: async () => null,
-      syncWorkspaceOutputs: async () => {},
     };
   };
   return {

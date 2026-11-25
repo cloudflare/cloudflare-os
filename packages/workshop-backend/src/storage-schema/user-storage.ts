@@ -127,8 +127,6 @@ type LibraryBlueprintRecord = {
 export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
-  /** The source workspace's title revision, present on versioned shared listings. */
-  sharedTitleRev?: number;
   /**
    * Present on a shared listing recorded as "build" without the chat starting points
    * (ChatAdmissionBaseline) its workspace withheld, or paused for chat access

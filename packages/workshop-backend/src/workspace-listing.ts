@@ -4,7 +4,7 @@
 // current value; an absent part leaves the recipient's copy as it is.
 
 import type {
-  BlueprintUnpublishedChanges, BoundHookInfo, ChatAccessRequirement, WorkpieceId, WorkspaceWaiting,
+  BlueprintUnpublishedChanges, BoundHookInfo, ChatAccessRequirement, WorkpieceId, WorkspaceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { WorkspaceOutputEntry } from "./storage-schema/user-storage.js";
 
@@ -26,11 +26,11 @@ export type WorkspaceListing = {
   /** The outputs the recipient may see: the owner all, a collaborator those their access holds. */
   outputs?: WorkspaceOutputEntry[];
   /** The actions waiting there, by gadget (WorkspaceSummary.waiting): for the owner and "build" collaborators. */
-  attention?: WorkspaceWaiting;
+  attention?: WorkspaceSummary["waiting"];
   /** Each blueprint published from here: for the owner. */
   blueprintChanges?: ListedBlueprintChanges[];
-  /** The title: for the owner, and for each collaborator's shared listing with its revision. */
-  title?: {title: string; titleRev: number};
+  /** The title: for the owner, and for each collaborator's shared listing. */
+  title?: string;
   /** When the workspace was last active and what it has cost: for the owner. */
   activity?: {lastActive: Date; totalCost: number};
   /**

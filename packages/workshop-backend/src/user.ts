@@ -1,10 +1,7 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadState, ChatTimelineHead, OutputsSubscriber, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceSummary, WorkspaceSummarySubscriber, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
-import { RECENT_THREADS_LIMIT, type WorkspacesSubscriber } from "@gadgets/workshop-shared/api";
+import type { ChatReadState, ChatTimelineHead, OutputsSubscriber, OwnBlueprintsSubscriber, UnreadStateScope, UnreadStateSubscriber, UserPreferences, UserPreferencesSubscriber, UserPreferencesUpdate, UserUnreadState, UnreadThread, UserUnreadSummary, WorkpieceId, WorkspaceSummary, WorkspaceSummarySubscriber, WorkspaceUnreadSummary, WorkspacesSubscriber } from "@gadgets/workshop-shared/api";
 import type { WorkspaceListing } from "./workspace-listing.js";
-import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
-import { MAX_PREFERENCES_SIZE, type UserPreferences, type UserPreferencesUpdate, type UserPreferencesSubscriber } from "@gadgets/workshop-shared/api";
-import { blueprintScreenshotUrl, type OwnBlueprintsSubscriber, type WorkpieceId } from "@gadgets/workshop-shared/api";
+import { ADMIN_ACCESS_ERROR_CODES, MAX_PREFERENCES_SIZE, RECENT_THREADS_LIMIT, blueprintScreenshotUrl, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -268,8 +265,8 @@ function isFullyCreated(g: GadgetRecord): g is GadgetRecord & {lastActive: Date}
 
 function workspaceListing(record: GadgetRecord): WorkspaceMetadataWithTimestamps | null {
   if (!isFullyCreated(record)) return null;
-  if (!("sharedTitleRev" in record) && !("chatSeedPending" in record)) return record;
-  let {sharedTitleRev: _rev, chatSeedPending: _seed, ...listing} = record;
+  if (!("chatSeedPending" in record)) return record;
+  let {chatSeedPending: _seed, ...listing} = record;
   return listing;
 }
 
@@ -342,24 +339,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
-  #notificationSubscribers = new UserSubscriptions<NotificationSubscriber>(this.ctx, "notifications");
+  #notificationSubscribers = new UserSubscriptions<NotificationSubscriber>(this.ctx);
   // The current minute of notification-service calls: when it began, and the calls made in it.
   #notificationCallWindowStart = -Infinity;
   #notificationCallsInWindow = 0;
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
-  #unreadSubscribers = new UserSubscriptions<UnreadStateSubscriber, UnreadStateScope>(this.ctx, "unread");
-  #summarySubscribers = new UserSubscriptions<WorkspaceSummarySubscriber>(this.ctx, "summaries");
-  #outputSubscribers = new UserSubscriptions<OutputsSubscriber>(this.ctx, "outputs");
+  #unreadSubscribers = new UserSubscriptions<UnreadStateSubscriber, UnreadStateScope>(this.ctx);
+  #summarySubscribers = new UserSubscriptions<WorkspaceSummarySubscriber>(this.ctx);
+  #outputSubscribers = new UserSubscriptions<OutputsSubscriber>(this.ctx);
   // A live push (even an empty one) supersedes an index read that is still in flight.
   #pendingOutputBackfills = new Set<string>();
   // The subscriptions' catch-up, run once however many subscribe while it runs.
   #outputsBackfill?: Promise<void>;
   // The page of the outputs catch-up being read, shared by every caller that asks meanwhile.
   #outputsBackfillPage?: Promise<boolean>;
-  #ownBlueprintSubscribers = new UserSubscriptions<OwnBlueprintsSubscriber>(this.ctx, "ownBlueprints");
-  #preferenceSubscribers = new UserSubscriptions<UserPreferencesSubscriber>(this.ctx, "preferences");
-  #workspacesSubscribers = new UserSubscriptions<WorkspacesSubscriber>(this.ctx, "workspaces");
+  #ownBlueprintSubscribers = new UserSubscriptions<OwnBlueprintsSubscriber>(this.ctx);
+  #preferenceSubscribers = new UserSubscriptions<UserPreferencesSubscriber>(this.ctx);
+  #workspacesSubscribers = new UserSubscriptions<WorkspacesSubscriber>(this.ctx);
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -1423,11 +1420,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    *
    * `listingRev` is the workspace's listing revision as of the access check that admitted them,
    * which raises the floor of the revisions syncWorkspaceListing() takes parts from: one read
-   * before it may have been read under access since revoked or narrowed.
+   * before it may have been read under access since revoked or narrowed. It orders `title` too:
+   * a write that arrives after a listing newer than it leaves the title that listing brought.
    */
   async recordSharedWorkspaceOpen(
       workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
-      notificationBaselines: ChatAdmissionBaseline[] | null, titleRev?: number, listingRev?: number
+      notificationBaselines: ChatAdmissionBaseline[] | null, listingRev?: number
   ): Promise<void> {
     let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
@@ -1435,14 +1433,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let firstAdmission = !record || record.role !== "build" || record.chatSeedPending === true;
     let seedPending = role === "build" && firstAdmission && !notificationBaselines;
+    let taken = this.storage.listingRevs.get(workspaceId)?.rev;
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
       record.lastActive = now;
-      if (record.sharedTitleRev === undefined || (titleRev !== undefined && titleRev >= record.sharedTitleRev)) {
-        record.title = title;
-        record.sharedTitleRev = titleRev;
-      }
+      if (listingRev === undefined || taken === undefined || listingRev >= taken) record.title = title;
       record.owner = ownerProfile;
       record.role = role;
       if (seedPending) record.chatSeedPending = true;
@@ -1453,7 +1449,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.storage.gadgets.put({
         id: workspaceId,
         title,
-        sharedTitleRev: titleRev,
         owner: ownerProfile,
         role,
         created: now,
@@ -1462,8 +1457,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       });
     }
     if (listingRev !== undefined) {
-      let taken = this.storage.listingRevs.get(workspaceId)?.rev ?? listingRev;
-      this.storage.listingRevs.put({workspaceId, rev: Math.max(taken, listingRev)});
+      this.storage.listingRevs.put({workspaceId, rev: Math.max(taken ?? listingRev, listingRev)});
     }
     if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
     else {
@@ -1872,10 +1866,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * part is safe to take again, and one this account ignores is sent again when it next changes.
    *
    * Every part is taken only from a `listingRev` newer than any taken from this workspace before,
-   * or than the floor recordSharedWorkspaceOpen() started a shared listing at, but the title of a
-   * shared listing (see below). A listing no newer was read no later than what this account holds,
-   * so it may hold what has gone since, or what a narrowing took away: a push that timed out can
-   * arrive after the next.
+   * or than the floor recordSharedWorkspaceOpen() started a shared listing at. A listing no newer
+   * was read no later than what this account holds, so it may hold what has gone since, or what
+   * a narrowing took away: a push that timed out can arrive after the next.
    *
    * - `outputs` replace those recorded for the workspace; one the user no longer tracks (deleted,
    *   or a shared one they dismissed) has its entries dropped instead.
@@ -1889,10 +1882,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * - `blueprintChanges` are taken for blueprints recorded as published from this workspace; a
    *   push racing a first publication finds none. They also bring the gadget a blueprint is
    *   published from to records stored before updateBlueprint() was sent it.
-   * - `title` renames the workspace the user owns, and is mirrored into a shared listing. There a
-   *   delayed push cannot undo a newer rename either: one no newer than the listing's is taken as
-   *   already there, ordered by `titleRev` (a rename's) rather than `listingRev` (a send's), which a
-   *   shared open's write of the title also carries. Presentation only, like the cached role.
+   * - `title` renames the workspace the user owns, and is mirrored into a shared listing.
+   *   Presentation only there, like the cached role.
    * - `activity` updates the last-active time and cost of a workspace the user owns.
    */
   syncWorkspaceListing(workspaceId: string, listing: WorkspaceListing): void {
@@ -1922,13 +1913,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record) return;
     if (newer) this.storage.listingRevs.put({workspaceId, rev: listing.listingRev});
     let updated = record;
-    if (listing.title) {
-      let {title, titleRev} = listing.title;
-      if (!record.owner) {
-        if (newer && record.title !== title) updated = {...updated, title};
-      } else if (record.sharedTitleRev === undefined || titleRev > record.sharedTitleRev) {
-        updated = {...updated, title, sharedTitleRev: titleRev};
-      }
+    if (listing.title !== undefined && newer && record.title !== listing.title) {
+      updated = {...updated, title: listing.title};
     }
     if (listing.activity && newer && !record.owner) {
       let {lastActive, totalCost} = listing.activity;
@@ -2069,7 +2055,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // A workspace's summary, assembled from what its Overseer sent of it (see syncWorkspaceListing()).
   #workspaceSummary(workspaceId: string): WorkspaceSummary {
-    return {workspaceId, waiting: this.storage.workspaceAttention.get(workspaceId)?.waiting ?? {gadgets: []},
+    return {workspaceId, waiting: this.storage.workspaceAttention.get(workspaceId)?.waiting ?? [],
       hooks: Array.from(this.storage.workspaceHooks.byWorkspace.get(workspaceId), ({hook}) => hook)};
   }
 

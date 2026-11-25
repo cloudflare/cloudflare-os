@@ -1090,7 +1090,7 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   a background read reaches them (below). For each observer in the audience, the Workshop looks up
   their verifier for their chosen account (`getVerifier()` refuses a disconnected or wrong-vendor
   account even when there is nothing to check) and asks `verifyObserverAccess()`: one call at a
-  time, each for at most 100 observers and 10,000 IDs, and any denial among them refuses the
+  time, each for at most 10 observers and 10,000 IDs, and any denial among them refuses the
   read. A denial, missing method, failed call, or malformed answer fails closed for every
   observer in the call, with no permission cached between operations.
 - **Background reads.** One rule decides every handoff of chat state from the workspace to a

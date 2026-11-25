@@ -1218,7 +1218,7 @@ export type ObserverAccountChoice = {
   accountId: number;
   /**
    * The highest action id whose observer requirements were checked against `accountId`, so
-   * background reads (the workspace summary, unread previews; see OverseerImpl.mayReadChatState)
+   * background reads (chat heads and unread previews; see OverseerImpl.mayReadChatState)
    * check only what was recorded since. Missing means nothing has been checked yet: the next
    * background check starts from the first action. A workspace admission stamps it with the
    * latest action; the background check advances it page by page; another admission keeps it
@@ -1355,11 +1355,12 @@ export type BlueprintGadgetRecord = {
   codeVersion?: number;
 
   /**
-   * What the last successful propagation published: the `commitId` and `metadata.bindings` the
-   * record had then. Unpublished-change flags compare the gadget against these, so they stay
-   * true to what is public while a later propagation has failed and left the record `dirty`.
-   * Absent on a record not successfully propagated since this was recorded; `commitId` and
-   * `metadata.bindings` stand in.
+   * What the public lookup (Workers KV) serves: the `commitId` and `metadata.bindings` the record
+   * had when its last propagation wrote KV, recorded right after that write. Unpublished-change
+   * flags compare the gadget against these, so they stay true to what is public while a later
+   * propagation has failed and left the record `dirty`. Absent on a record not propagated since
+   * this was recorded, until its next code or bindings update sets it from `commitId` and
+   * `metadata.bindings` first; until then those stand in.
    */
   published?: {
     commitId?: string;
@@ -1519,10 +1520,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // The listing revision: bumped once by every delivery pass (OverseerImpl.deliverUserUpdates()),
       // in the synchronous step that reads what the pass sends, and stamped on every listing it
-      // sends. Time-based, like titleRev. A User DO takes no part but a shared listing's title
-      // (ordered by titleRev) from a revision no newer than one it has taken, so a push that arrives
-      // late (one timed out but still in flight) cannot undo a newer one, and from none read before
-      // a collaborator's admission.
+      // sends. Time-based, like titleRev. A User DO takes no part from a revision no newer than one
+      // it has taken, so a push that arrives late (one timed out but still in flight) cannot undo a
+      // newer one, and from none read before a collaborator's admission.
       listingRev: 0,
 
       // Whether the owner has been queued every part of the listing (see OverseerImpl.open()):
@@ -1668,9 +1668,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // The first three indexes are backfilled by the version-3 migration; byObserverRequirement
-        // needs none: no gatekeeper reported subresources before the Workshop enforced them, so no
-        // earlier observation is a requirement.
+        // The first three indexes are backfilled by the version-3 migration;
+        // byObserverRequirement needs none: no gatekeeper reported subresources before the
+        // Workshop enforced them, so no earlier observation is a requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
