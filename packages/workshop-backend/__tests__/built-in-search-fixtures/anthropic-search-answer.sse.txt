@@ -1,0 +1,288 @@
+event: message_start
+data: {"p": "74532", "type":"message_start","message":{"model":"claude-haiku-5-5","id":"msg_011ChNEYwE5vayGNrxJFHM9x","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":4,"cache_creation_input_tokens":3024,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":3024,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null}     }
+
+event: content_block_start
+data: {"p": "7a7", "type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}             }
+
+event: ping
+data: {"p": "110db0fca9ea", "type": "ping"}
+
+event: content_block_delta
+data: {"p": "0feeeb274b91024", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I'm looking up the lat"}      }
+
+event: content_block_delta
+data: {"p": "6", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"est stable release of Wr"}        }
+
+event: content_block_delta
+data: {"p": "0f70b78a75", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"angler CLI, with"}            }
+
+event: content_block_delta
+data: {"p": "2d82f8b19a3f", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" today's date in mind as November"}          }
+
+event: content_block_delta
+data: {"p": "c358b", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" 24, 2026. I"} }
+
+event: content_block_delta
+data: {"p": "4111be6fdb405373", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" also"}           }
+
+event: content_block_delta
+data: {"p": "3f", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need to ke"}   }
+
+event: content_block_delta
+data: {"p": "0b056ddfc", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ep my citations"}           }
+
+event: content_block_delta
+data: {"p": "9c9b5b38510d9070", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" acc"}      }
+
+event: content_block_delta
+data: {"p": "8bd3ea8706e9", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"urate,"}              }
+
+event: content_block_delta
+data: {"p": "a84eea660c", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" ph"}      }
+
+event: content_block_delta
+data: {"p": "6d6b660b0", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"rasing each cited claim"}               }
+
+event: content_block_delta
+data: {"p": "f473", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" in"}      }
+
+event: content_block_delta
+data: {"p": "8", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" my own words r"}               }
+
+event: content_block_delta
+data: {"p": "1e6e96c6ad9abb7", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ather than ech"}    }
+
+event: content_block_delta
+data: {"p": "408", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"oing the source."} }
+
+event: content_block_delta
+data: {"p": "c88f148975e00", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}       }
+
+event: content_block_delta
+data: {"p": "862427cf", "type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQSuwcKEAgUGAI4AUIIdGhpbmtpbmcSDF2g9JHEVGHSzsDfeBoMQ2aeQthiBeZUqO1PIjD4bRBOu7RM0uAa487GWaARObv4nBEqNCC1Bk5NPZl+FPuBYikS06+DrUa2iQuVRCEq2AZ3w2kdfYGqKmD3Tw6iXE8UIsEPEEJKHhr6G/lpitDaSu6BiKJ76uK5nG5Q4d9nNSVpMANfKfmns1e3295OWHOju1Lu0eitkGgLAAcyCeCWGIpvPsI0lsVSFScqTSC/sEaewD+ZMYZEN3PMe4ccL/BNvruUSWObvq48/Ps1rKFzqpneBOVbgcbAUrMcirLgeiJXzECSzJ/oTWar5DR8mTSNDNlKz07PGO5kd5YvRYILtyD3J7WqZOfS2Puk5Fj6WR8HVp82klYWzXSHl+DczrW0Z/LQoFcYj4jOOEuCqTgQk3BvqLCSnAnXrthJBowb/gmp1jy+NhTypM/oPUhAHJ3fvJnfhMxrafXS2spzRFyf8BYi8bX3oRTXFnmUJr38MDQD7DLmSeW6NDWi1n/EQ/UuUSw00/Xt0b8x9CanGULlI9c4dc82WxpyyRHNIRBinW8/ih3qDFRq+Yby7TF3rfX4CRr3n3nsedgW1m4I6X82ytTaEEr5kTw0c62PzUIOanBVuglPwYIARAjZMLo8mwAJ+umfK3m3a+8CGfouhxMg9iAuDFs4SvUENMnYQlX04bA+WibGOu32M5UQH6rGn7GDUpUG+NRbRIbTHdb44BlWextnxIpez+FdBClhfoRuy8TifedNgT1fKG8pkTBLM3vjfQJxX12OGK4xWOWxCF8MpjXOJzvhP6hPolETkNSe6zqoenpAzSb6VjngVj80Ec6dwGzSyXMNr5FEA57f2BY97ASLr3I5Hd+g2+qITQu8YIrfWilhBZx89mxlvtxoErkNvYibodv3RDl1AnVD7s6LJwupbpDoxsr+/DSGbSh0tt/RPOzLrYzVWT5m1d5qH5YMw7E8KlooAlFDliFLqYz7gcGP4OsulKNT7k3kTWUpqGnB6bH3akC4zTbSbj9f8blVZl+2awG6wVHiJbSSccekTVzzwqR6+SBiLZ2CORU5lfMfzpYWyaF/f/L+P4T4UdoNH8VPvRsJlASqAPiEjy2szTEHqkQXh50cx/hwhAxK8PzIx7HpWFU5yFbXKFfIhIaA23EvJYy2yLwrkiWuaWq7hbdFmXTKJ2VaBHM4TlcfsLm4+f6QfiL8j07p3bmpRRFy8uaL5GCOTdIFR6hzveYwIVLK/bYwa5cuGAE="}         }
+
+event: content_block_stop
+data: {"p": "523b824e67fa", "type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"p": "7940861bd320e", "type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01LKiM9ZRsCaEcMogGReRkq1","name":"web_search","input":{}}}
+
+event: content_block_delta
+data: {"p": "a64709ca03326", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}     }
+
+event: content_block_delta
+data: {"p": "dcdf82eb7", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query"}}
+
+event: content_block_delta
+data: {"p": "e31aa28bce695", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": \"Wra"}       }
+
+event: content_block_delta
+data: {"p": "000", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ngler C"}          }
+
+event: content_block_delta
+data: {"p": "0c5bc75094c", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"LI late"}           }
+
+event: content_block_delta
+data: {"p": "3", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"st stab"}         }
+
+event: content_block_delta
+data: {"p": "0c16a", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"le rele"}        }
+
+event: content_block_delta
+data: {"p": "35", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ase\"}"}         }
+
+event: content_block_stop
+data: {"p": "67ab6e962167b76", "type":"content_block_stop","index":1         }
+
+event: content_block_start
+data: {"p": "96922a82", "type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01LKiM9ZRsCaEcMogGReRkq1","content":[{"type":"web_search_result","title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://github.com/cloudflare/workers-sdk/releases","encrypted_content":"EpQHCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDHvw4YEBp1Gtge+72hoMHhwdclSzFePO9bAIIjDM/DQYbiy6ketnZKfBux2fDS6b1sFIN0tElC5QGKGvtvgNwXDQdOkk26ujfsDdcwsqlwZYisvyVO7I8AfW3CCCR65BMw6RQwDnwvnGlSgZogwAKas2kd+EFnFMcjvIn6KkKjofMjgFamwlTlvg91UNlPa8GtRi4Hlvy/d53WZYMcCdLDJe/8mZnuO1HX7K1Xv2FPXsHKKmwWQmkcoQ/2e839Lweh1diXy4Zr4DKSa+ZmrG7cOz4JaNAFCwHgrC7OYl4DnX44/4X4JnU99yJVMyCDtZQHncbwUy2Q0+8eOaCOcBIhP8DwJkbNz2prnMr/TGmNFxH0a0RqIUQ6GXFF7rTMRBUGZMv4+CDQMdwvwhMrgiGU2BJelM5oyxR95PRuIzjWfwGRmWz7PkQJCM3zILvYu7y4G3vZ1j/2GXFGfV1FCsUAcRyXK1ylXyiyJ6cJ++y++EviWSGR6yn7HGhUe20mYh4MtIlpTG60ro/Sylpx4hNCO9cBPGH8i53s74vulpWJLpCSceBwP48P85yWrUSSokvztxDwBHUwJW8W8qEPSPRqGivtPzkgV1NhxBLCR5vfvIXdh3LPjEnLKqNNt6kHRPU5kFWtG+VHAbF79AaR/XEl1QpkYUQg8Do6+wfW7WZhq4LaOl2FKlnVWvZkguAplMdk36KJ92FuXQ5fHuNJ8av/xUPOQID2ml3SO0ITocRfDp82ZlEUhtC4Otx30PaK619SGtNLIfwPvxCJrcojGYL5iSqq0LvcmXJmfUJ9OzPMekQKf63sM3PkT+wEhQR4yRdTRcMt+/rqNHEzbli2bEioS32edlZkiKC66H67PA4ha0nZgq420VrIzLclgnhWIngUtdAvBL5jsXqyCUfWRAIGBwZbEvLUbu3G1tHPqREBKKnM4M2E8uMvO7YttNzI6DCSdaeZPIhbgo1SpxHYactz3OiMOUCb7pBQTm9EDewkNIbwjE2S2sJTKmb8s8QCUzM9FDTh8cQSNptVdB2LLekLn+7Q49OCNFTGZ1lV88KC6Ukn3un2n2qHv2VHF6UawQ0t5/nvYHnCxZFT8DlPElShye+wSpmlQOAy0PdNlUX54lLi16g/w91plMwJuQExn6vmmcZ87bwBgD","page_age":"10 days ago"},{"type":"web_search_result","title":"wrangler - npm","url":"https://www.npmjs.com/package/wrangler","encrypted_content":"EuEHCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDAuQ60MY1Ht3peOBVxoMl5vwCjyYPuDGyWvYIjDNJ5gYz3TwExpnxYwHZt+BMnnJBPKKWm96/kJ4bdnnRRoJsZzZVIlIZRG6QRIZzSUq5AY9QsSQMqitzMWr9PkyIE5RfQtL6MsS/YNPtlVPPZWd2k5W62PbvzwrIfUD6c2Gzdg7a7zlQHG6kCIMRUfyEcnpvw4Z1TIgEoT3m6c0TBKjgaOx9Wvm2KN+vS4ScsNnqHwG6wlsWStEe8gr2GHn9QbpJnqmrOXQTpxPa51yyd+wOjQNubJpGICl3l1CsrNp0auET16Z2KMPuUQc34jIjNU4InTs0hgV4IWmIMioGaj+mqscrHRnT+7mE5COBkaHkJZtyOIRMg/A5/iWm1Dz8j9gYlYs2Nf04aVZYd3IkvBF6JqR4UmQaJJSf8xc7CKKrlSqKilXku5mm+74L+DeVXpIS9m16XHTwKw4McxCffBGUM5ey/F6q+T/VK4jp3jUsEO0/qNFk9Impz4mkdVJzBOQAPIwUVFqtSta0b7DjLHw4i6busjSb69O3xGOkHoT+BHGeOovyc//ITaV5a3LdeOBvh9wW+6dDWEYNZmis5FIxYS82ayM4Ya1T+S2zne3aIIilBv6SRCCeGIgla0hbteOI9oTqBsWb5X/RW2+jThtCAvResRNMrjPIjA8nvKnqjCnhZfMxedd38ffR6bGX8RhAWc5TneadpBE6q4SGMtSv0NVOHV+p0ru+rR1LdNi6SPnGkQsdCvn53nc+tiI4PvxojlHOpudh+dby1VxgIDxay/1RKhcg93nfXFHShC2doLCN0Ce895CGzP/i1A3zmQDV1r5T47kYfyT+gNObbQM5jahOaLUxEsnvyazcZrm+ILcdyhxXLUCqtu4OzlfAiUdZ4G2JR2lF+4NTUwbIlA0sQqp4BuJrQQLyY31YuZEhzaT1eIUG2MTTvDB8vU2qQ51MaCr9nhp54pn1VEkzQGaaS1PsymFB0sNrVRJtnxbwzvIhMywIoz1IjvEPZtLy5QHroWpXOUJ7jSE3XxWHdiHv7HmJ+w0k4jzMscm5dsYMXuenAgOTXlA4UBG34rlf46Uj/CLGs6GZ7EMdSzjj7JZnOG1I5LxYNs2As7Yl/zofU1mTx8mUe+xlNOvETg4CVzgLojDgJNCyrPgd1QCc9+r3e7tuZXvXfIBntT45rX/JXYUQ9FhZeID7QpiEr7m5hXwNEdyvrWYLt8FR/UTnM0yjEhubKDE/mwoaY5OXvdXk0wwQHDEGAM=","page_age":"3 days ago"},{"type":"web_search_result","title":"wrangler - npm","url":"https://www.npmjs.com/package/wrangler?activeTab=versions","encrypted_content":"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","page_age":"39 days ago"},{"type":"web_search_result","title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://developers.cloudflare.com/workers/platform/changelog/wrangler/","encrypted_content":"Et0DCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDOGfLh7Oxu1ffetfAhoMFymZjObBFkQKVhhmIjDZiN3ywoSh3A6QPxvt0g7rr5t8IJBM+yMg+fsU2sn/ppB11lCTD5goQg5SNuhv2Wgq4AKmzCqTKAc0WoSGZXrBoVfguXJ2YbFY1GkIuHCAaUd1IaBY/pi4vTPb4oHhd0in50j+Wb9ROJKH9eMKCoRwkEws2WBE27OGo7nSuXS7VfLiCcKyx+tWTlL5HpaibJBKZLhfK2ym6nN+T+FF6zvSV0SscoEoGMfg4XOg94hPBcuQXMe1x6ow1bW4na6C9gRi0BR6QRTMLw/CF0iIxP7m2s/rE7J1EzbfRekbFr25zJL9aGQYy0tyWxsIP1E73Jx6BdfvfBfz0aQ2lrqY9K6SeK2r5rBTgwqblaUf3cHhRsiBJlSZsep03YoBHnyDds7KLr2rYO5bOWEx/P0//ycaLdNK7F6zG8MYgQ6R5iqag+zhMTjVL4vrbPjWRuTjqbkeMxY3mLsJ/Dkf877yMVad5zV6+pP0UDD0DFRtmIzvtiQ51ir8zKtuOSiTw2lzubht89ZgtXUWz4j9kBhnGo/qOkxwGAM=","page_age":"319 days ago"},{"type":"web_search_result","title":"wrangler - npm","url":"https://www.npmjs.com/package/wrangler?activeTab=dependents","encrypted_content":"EvAGCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDHjoA2bnuo3Z9FlSNxoM5L53U4wtkCDQFS2UIjDJGY5W4NRY2l5K88nM9XNAyz9kwK6TA4tvMODsgN7+eLBijiCp74yw5fPYu+us7Ioq8wUcVdNTCRwi4ORdYswNiAu+9+pKK9f59h2+45uxo+kZ56j2l69db87K3WV9UpQn9M2mYdvwAhnp4UBt9UwoFjCfE09BUdcVf4Ba/Wv3b0HFNjC0Jp3sjhzomIHMMCFFqMFbqR2kx0AA26z5jDcjlSjEvBuIW0SXV2lbv2GglxsSO8Pq/byUD6h7KWZ/BkR32C6rEz2hlb3Oizogk2y6j7tQVAYvq5fFqTfM2YYfmUHyBu0OLBit9BYUqFd13hZp+7gYEM1L1sCp++ZXkLlERPlquUEsJgICSDXkTay0oxL6BT4/6OBvFiNtdy/1WS1SycB3SWodMTEwv7ZUmYXdsyZocPlD8AUJ1wXVNuzTmH8hexMe789m47EcJARR1gdRl63x4FReWEO6To65OvJWMdKdOfFBeYU4OK5zFHIfwM/HEQM7NQF5a26vdsyXgmnVI1D7AfxFs85m1CoNdH3LQdyS6BSVjUQhzAyJ5HjUUGvAql9+jA8jdDrZcpLpskfJlEnB2kwW29bBpcXceG09qtuTZXVpApG9hIDDo6EC7glc/4QmHY5Pi3YU29U/+nHCibaX0aWPKQ9Vg4VFbuy0wEQGeSXwP1hdqLL1WcOi3pbrdf1WS3AE0YLoLDXfkWdQQVTCqrTZbo8IDIzdQEVv/M+mmPmDM7SUuUW0zEzwTUwiTwireDtGt26BAO6UrL2avEoQgsheQsWKhzXO5iW8RWphJ6HkaAU9biHdUWdRshSM0TGIty7GHXAjmnn4F7lVdIyE3QM9Kdg+MhlIGS/rPYJJZWuMFKTTG/ABNHs9fq5wvBDXQiZDn38VpkHiB9tLoNXvbBcgmz62PIYTNRc4696iJplgxKpqKuYo/vqVGlMz+s2f97MoBPx3GFWA5RGTsipXnPi/tpSXZ78WD2MwNOnU4A6u+HX7qJRUSqyxwtNTenOWyw6yRJXnAeYcfuCtx8ynawQxEA2B/EyFd3wLWa7LvnQQtxrnbgRNTkNQBDFsawEczRgD","page_age":"145 days ago"},{"type":"web_search_result","title":"Workers - Use the latest JavaScript features with Wrangler CLI v4 - Changelog - Cloudflare Community","url":"https://community.cloudflare.com/t/workers-use-the-latest-javascript-features-with-wrangler-cli-v4/897244","encrypted_content":"EtsJCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDPciHVoK8J4Z/ClaRxoM+8a7jcnM/Fj5rXxlIjBytbjD8haQ5/6C7Z2yuA/m4FKzwCDwVOSkj+/xlmDOPU+Hr63qbglKqHa25u02qhUq3ggM5nE+0vGrQqKNogrS1BmpZOpd1zvC0sltN8V4L1uNZnk/Aw+Fx4rpP0N6VDi7t5WZBHtc9KXkyJmun1VBMpkKneMu+vMwOI54ba0qrqXOCR1QUQxOKhvc1v4QtO8wfM3bHKKTCy1wFlYCVxGh9tdgC/zuS2xPAdZi7uQ33BZUshV9zrniy8N2CaGERk0BhCFBpijwaOLveTslQC2rwhXLgo8DXwRogdOKLXosYFVNGAi/2gDFNf8e2j/zz5L5r5l9O5ONXRJh6zzJhpuHaU3eNk7fyEQ/r8XUbT3GSCBbkV3xS65CsetHsC6fjRG3c74gNu6WRvxIN6ape8DpzELCLimQis1c6+zxkVK0W3dimAVT7gwU8l0xgFKelhnYQ+Wqm1ia2DWgtkx5YNoJbYmfFWsaoFeGAqzs2leuICgNKinyNqV8TJbIlB9Y6hFKKgskWJeREJWosXiHZdA51M5qg0Z6T2MAYsvj+nvRKRvTqlYmmrog5Jnox03iB0XY7zmkc3jISkyF53ghrS9mjpT1bCms5bNLdZBMUvSnjRM/RbF41OOqliOAl5SnVWlvg4WcSZA8GQb4qu3o0NU4duAzwsGH4xGMYXUEl4MxZk4EfAf6ZSM8bvo9udtSazrd54Mrx2r/3lvWNGRvoRkx2B4ZanJuYu0cpZnK//c/gHXO5hz8mk/m5IlWABcN1xmFP9uFK1mbe5NXW2DlpGRDwYeEH/IgKxhGnygVDAuoB9UjXtIoj1oojstf7kYF9czDSidIDbwSQObJ1n0GBgesD22X/mS8V/gaJ9gKR/kau//z+3CAvnsxDC7nKze2oepC+B5M7ELJ7ToasQ0+5sVXTE8MARktboQzI5Eg8TSvbNyJhrl+GMBx293DVS8wSdEfoK2ExM0ubEkGy+SgRVTb/eNOKLzwGt4jNtn0P5HxL6LOqjDxU+MYNjav7TPyu4deouHNF/kwCdRawJ4e9458slk1U+IA1MzRJmMgyMvg7AvYtJxtU2MOj7rZGxnGMAoGBdwkUpvcA0S5ENGKM4Z360EhbHKMAcD63r6mFvBRNTFiYG6E5OvrYGxlifN97k42Hhgl24Pj6sBKM9wrI/ayfZWLMgssTE+zqQnKzf6hOvEwDtkAwg724KFoPSVZ2ok3SXSrfH49VP8nbbCigpK/h4V2jcYjXBtSyxMnUmMs3AI8iXZiYLVys9JIL3yVcUBTlqf0DCyGejzpkXOA+P8wjRydtDNpuXNc6LgYyeEVdAbjch3LIycmOfXn1ri2SX2ohjhrJCwspahM0LpF61bY7v+gBXmf+pnvdAzlOx301dVJ2Y6QmvYvBOfakRR95Lu/D66PNpjZqVmGCDBOFCMmy98ChgW6CueDM5YgdfKHtAaY7jbeHdWOK0+GOIl8bbIUEEA+43O4qFrhuMdszKZdGwqhWnA65xH95krsmGidn70/0Es9JNIh2/eLL4vG2OkIQMaXQ+y1cGVelkETPc2XKBgD","page_age":"273 days ago"},{"type":"web_search_result","title":"Releases · rancher/wrangler · GitHub","url":"https://github.com/rancher/wrangler/releases","encrypted_content":"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","page_age":"197 days ago"},{"type":"web_search_result","title":"Deploying Modern JavaScript Frameworks to Cloudflare Workers in 2026: A Complete Developer Guide","url":"https://lalatenduswain.medium.com/deploying-modern-javascript-frameworks-to-cloudflare-workers-in-2026-a-complete-developer-guide-25d33e5b6d4c","encrypted_content":"EuIJCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDM9+pEQBq8Gx6ZqslBoMUXr/cKpul62J9MDNIjCClryE3NBSPv8943E8SyBPWY59ccyRfadBjAyKXnagEFfE3XJDor/4RO3FGaGKfXIq5QhDKD50mwv9J2aPfdY5+8Q/66sLRziIARO6I8JLfAfDI6UP1g/YdHvOAGdpZw0PeE8VeJY5WFzKU/7R/fDQyfAD5r6MH1ftxNHWYtMRav70I37q0wSp2gdpaQfMaG97tnxr0TEBkDz7HcTEkpQNt6WMSyUCFrgRgqUPXgHKt13SzRdSQTqXT9i0557/XBVQbJZJUQ6O9qASmYAGTOYxkQHenswzecxp+kHOTqdPXHY0HHg37ItXxnwhWX4ViqovGyelIQ0Dt0WH4cLJdfzF+6mfgq/GHIl9r1JKP14357Lja2XY9oH+A2u/Tll2OpTWvK/drqMPhLi/RDjzBiJCXR1nZleqVpOedCTKp8I5jD94IncxHcXBB0sn2f/OYsSfzw1ImnmarLRsynrVdVtchaNzXneTtsHg9e8O+GwMfBk27YVaClP25A/jghcyR2qia6IvR7KoW7EMe92dEgr/c7Ncb03/+Jhi0TQUKlJkTHF/IhPtwxmuuvYWT2MwE+zfYQq7Srq0JrfjJzUvWxZOUiIZVWVoPTmbhOS+XcgoREfqkfG2BHxlt8rA78mr+Fzitg1Hctc5kuCX/oHx1um3jNoJVcup9PQ+FAr+swQCe3L4bfmZf92SVSMRoR45GrGMo470o3vzeMVAbAVXlLPxCBwrUZHgcYFna2dDoD51yLVrQ9AWVUtJzAsiqKEcJY8jaTXWGaPUFgXlP7T8VV4c5pBzW9gBTWthForT8GN7dhcHGZ1ir1wvZBo/IiDN3reZvLziVBa4KcMn8h/I1x20T/hZmAEePrlzDmv6B9B230+a9VYPQyulDV5RxJLGpenKKPF+EgUK6sJ2YrF4RrIlI2jNVvBs6ppiPneNDNhTmDzuw5eCKKnsTCWpZu1nF8c3dMwEr/C5uUB3PAWnlh1st5ZB/agSsb6SjQ88zFnyA34wdXr1pRUdX+kfk2mJbVtYQE4h9EAPId/coWdEjSSEpT4svOJuaiocFo6mDmd2DV644p83d9TYhBmuHdH5qXxqIIDW/+3yGP1w2LhmJpU/CygkjoxE1uRCLqoJC1hwgxVeQvijZq1Euc0d3YawC7mcRdKfdXGLnmM3jOExFANELikSYX7gre2OovTqXi0uy5I130v99bQYYz3JkoQLTn460qERZgNq7VXBvJv7ue+f4zRczegQmgVtn4C9Dd92HSVHrJUAIKEryAO0gBujjrviRLK7kwtmYVvXET0iI7n2HTvH4JUehEfeilv46fsssv/qBXM2B35rxQhlLgaMMJpxyGgBIuUHeHPs8LuNt4xOU2x/DMNugvwT95fcf91ZQXD9ro+mLtIQxkty7B1I2kp555SyfwBCebWw+W9U+gXm3cDAgV5BWxwe4f/rN2RdvmcLtCk1kVvVuOHASaRRRHApAYbDJ2u5Kjl90UMGq9vRg8xIouM7q4AK+FCrkNA14LC0Fgfe1cTfDdjFso7AFrrNoP6l5SHqvI6gNvD7HIOj8W1V4XKCzTMYAw==","page_age":"219 days ago"},{"type":"web_search_result","title":"wrangler 1.3.1 - Docs.rs","url":"https://docs.rs/crate/wrangler/1.3.1","encrypted_content":"EqsDCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDL3AhNMxbDyTgtVAIRoMLgX8vBzIn96/ORg9IjBGTbAvnzdjrx7gMJEeFHkzY4bGCTzQMc2ZYA9/h+ImITtNZohPoWIbscFbYHg6N6QqrgIkdTQa/ls0TFMD8g407pw9dnIDKi+j6bNhM+n+1QDvHmYX83EvWo/uoGRu4TgYf6m27o97/ZMF04asUlChmYmvPbS8k2Gt1KbvQTi/5uBdf5UGBDctK1k2QOZZOF0XuqwDDgyy4BjV4eSIMVPtJ/dZ2AZU5me663y9gha/K8moYXVMeKzT+xS8rnvh3CA1PJGPTnC0yyHLxv23uFX5sC5ESlNRYnsTZmVwUQfSl/QMjHc2SQQ+TyAvGFFg+KFcqu6bYShtnEOAqBpfK4Q8W/Lgbp2CbrxcmQ3qmHDbH07bSQeXWU++ZKxK6ConyRr4s+jo3EpSJ+viK2LtxPhQ8QnD+nqT1MJyW2Za865Kojg2QzqR8FUQzmlCnZKEyc1lLtij7vF9qzsUqP2Gx2Y31RgD","page_age":null},{"type":"web_search_result","title":"Homebrew Formulae: cloudflare-wrangler","url":"https://formulae.brew.sh/formula/cloudflare-wrangler","encrypted_content":"Eu4CCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDIvuhqWc4jMx8Dq5HBoMmLlKwSL+wVcSV8gcIjAhpZ6HqqJiSCvf+wf83VnV1rmHMefysHpbPQ1LXTuYbhjyryK1ryvNoVcGRA24ziQq8QGYVrHQpdATAOoXOhX+FtTYST9q5eZRwovEjy7iiePSV0Ud7vyuea3e24RSbDOuGjg8ApiuYU1LFe/BwLe3lvJ0RZU1RDBa5w3RNaHTrQ+Ghn30q3OLA4VmCj1H7Efa1kt8M06ksv7ZXS6Ct2aM/pUOHqUen+R88X1r6sPRtNMYBYm7s8hSb0qHGLP6ISQcb/manHQRsAiT3Pgev+cXMOjTy35Kh1DtsaIlpytVmQ5429vuyIsbkjk5YznQPr0syr/ip1I+jM/3/AO9TZKtjlMCGE7RQjir5DOE9GTDHKlnIDIw5wNJ2IrPBkjL3XvcRtZZGAM=","page_age":null}],"caller":{"type":"direct"}}       }
+
+event: content_block_stop
+data: {"p": "f61b4cfd", "type":"content_block_stop","index":2     }
+
+event: content_block_start
+data: {"p": "fee", "type":"content_block_start","index":3,"content_block":{"type":"thinking","thinking":"","signature":""}     }
+
+event: content_block_delta
+data: {"p": "1", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"I've"}               }
+
+event: content_block_delta
+data: {"p": "53d1878d9a744b", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" found"}   }
+
+event: content_block_delta
+data: {"p": "ed165e", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" that"}}
+
+event: content_block_delta
+data: {"p": "fb49a", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" the npm list"}              }
+
+event: content_block_delta
+data: {"p": "e9f512fdbd2", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ing shows version"}       }
+
+event: content_block_delta
+data: {"p": "ff6d234d0ae3", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" 4.167.0 as"}      }
+
+event: content_block_delta
+data: {"p": "5c890a", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" the"}     }
+
+event: content_block_delta
+data: {"p": "52db806e287", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" new"}           }
+
+event: content_block_delta
+data: {"p": "0802fa6c236", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"est release, published"} }
+
+event: content_block_delta
+data: {"p": "94dab838d7", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" about "} }
+
+event: content_block_delta
+data: {"p": "87", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"16 minutes ago."}}
+
+event: content_block_delta
+data: {"p": "60f0a74d5", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" The other h"}         }
+
+event: content_block_delta
+data: {"p": "b568ac56d33e24", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"its are older buil"}     }
+
+event: content_block_delta
+data: {"p": "efac946d8f5f17", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ds, so I'll"}               }
+
+event: content_block_delta
+data: {"p": "c2043583642", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" c"}}
+
+event: content_block_delta
+data: {"p": "c5671568111", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ite the"}    }
+
+event: content_block_delta
+data: {"p": "a0f", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" npm result as"}             }
+
+event: content_block_delta
+data: {"p": "c6", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" my"}      }
+
+event: content_block_delta
+data: {"p": "83526d3939296", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" source for"}               }
+
+event: content_block_delta
+data: {"p": "1a3babc", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" the latest version."}           }
+
+event: content_block_delta
+data: {"p": "39b329a4c3db88", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"\n\n"}           }
+
+event: content_block_delta
+data: {"p": "4696995", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"I'm sett"}               }
+
+event: content_block_delta
+data: {"p": "7", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ling on the np"}             }
+
+event: content_block_delta
+data: {"p": "c4c5e3d90ac4e", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"m regist"}           }
+
+event: content_block_delta
+data: {"p": "91a4f30", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ry as the source for the new"}  }
+
+event: content_block_delta
+data: {"p": "5f", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"est version, which"}      }
+
+event: content_block_delta
+data: {"p": "5b85963719d0c1f2", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" l"}    }
+
+event: content_block_delta
+data: {"p": "c8b5", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ists 4.167.0 "}}
+
+event: content_block_delta
+data: {"p": "27f3d80d931c", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"as the"}              }
+
+event: content_block_delta
+data: {"p": "708d", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" lat"}    }
+
+event: content_block_delta
+data: {"p": "ba25882287", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"est release of"}           }
+
+event: content_block_delta
+data: {"p": "1a5c8ba612b", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" Wrangler, though"}             }
+
+event: content_block_delta
+data: {"p": "02493e93ff8", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" some mirrors still show ear"}            }
+
+event: content_block_delta
+data: {"p": "c44c3a", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"lier builds."}   }
+
+event: content_block_delta
+data: {"p": "2709e83ad", "type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"\n\n"} }
+
+event: content_block_delta
+data: {"p": "8ed3d873ad155b43", "type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"CAQSxgsKEAgUGAI4AUIIdGhpbmtpbmcSDGJRh/MtQ7vDLztkLBoMI15aFlPG6XFzrbF3IjAUa2jlZjwFVvuBC+9o7wbS9KUJUNvAXpBV2E9f42gVAEhSe+hsVOUiAB9XA01eb4Mq4wrvwwaIn4VpnNjZzDspFTBIfEjt4AjFVLghWhCUySRzJ19TbpWg6uJme9a9RVnzbQUcJ5u46mGmDxd/y2MoY749t3vcGkKybNebwvrq6dPWMgfrmKGKSDU7kYFtZRyvZK0lL3vei9LncF9NBo3RaWxCDRDbZMwJ5yemhHk0pow5em/FqjfhpIgClXySezTLG/VT0B65me+IliaxXxxJHf+Pjwg+ZoR9fNhMgnmYNgbb6JT3sqSKCZjInfNnXjG2uASiddx7jp1B7fsIkFYe8jSBgdiJ70UzhiLyeTLKhE3RWEwxFPGeNC4QHan6jXbS0Ay/aBaTnEBso+L9yOM89DYbnNO5DQNxaGymu1qu0bJ03VC9p7ZbyaCzSm2tOQjnNjTmVD9e6qhHDEtIV0+QZ6tzSgj+BQ5PqggsqqhnU1RrDGsptPPNWVm/2p7SOd2NWwlZ6nCnz9tHQxWJVL3/F9vDP8G5cC1dhuU/xN3x/qOwKjSR5pGmE1dFMqs+mjFnLW3myDvSLNcqRgbNgTFqPScxkv4CrJpSkcq275Ujv6zTqphJXIMET31AHjLyZbLR6aygHbv3T9ppMJ37yo+7Ro272qU2v/9wdv5sB5WnMEckO9Ubo6dJ9DQ0U5wvWKF+HcGPJVR1bmatgrI8eKuMr7zMLzgEP2RiL/hWRw+bn3V+nO0kfQEUgj2YvtrfOKXBK/NWsNRZfCLcjDCZYY6sz/zNrnrKqEpAB1Mm/s3zdSV9X72PHKbrrEmGCPYv7WcXl2j2qSh2AESSvp1gBOFknAImDlpO/tCeH0p5/x4Yuyi9zNhQHPARA9cnovKA86olgTsUHlZMo00ZO7pHz6s1cls1KHD5XcA+AA8m4LYliRtD40DUwtGNGY9IeuRbB2Wjba0b/CXAan5hiaSPdRV6b8ABHNPNGFaZmN2NcLorpslGSmjGyBfXxb7xnhgdJtCbina6Ipg2ZnnDOc6SbcsIwptHOB30EDpxKTqQHS/yR8VINM0mZlPYQxS/s+np5OT1DHjRonJjxO7bVt9R/9ODsDCf8OQ5z7oWDBGJjW5v5bclItcqTcaBDyrILtHB7wC6wgK3PVr67tmT7Zp8m07VFSE6nMyxjcqqPdlo+Zl7LM3ZEqxvfEjh3CJUUIKpqWLiLFlUtzB+dtWRS1PqZshTtOxU64mZ1ji8GCrfuReERU65ghqd3Z/2W6GNQX1eML+VWG6jUo/hdr56pmoOlUNSoVyxkdqYmJDGZIRZIli+Rlto/5H8ilHJB2hXDil9lbnoIdmrFhgHRXfUyGnoypp0A5Lwij7ey/Q0klRqpfC34+7wcKcuYHCCUx3vo45yj7AgVntfSy3zX1e+VvkVh/y3+D1VYTf7lnMreZso8ty75wnMVQ9m/0tZpm9pb9okXXNRoBP34h9wKiGrPl36qInSLop148fQjkfWmi66Iql3tek8utUT/fTVUX+HbllHpbq6k76TeeFjlEPWcQ8Sh+BwOwvAu7dNiW6ro+Oz1TOjAb2iPmfhJUdXXiEkEJsL65tUCsvWLy1gPq5MP+ZZVevr2z4iNJ1AObJI7cDBA7ZAqz8tuWipRRNKa8t8tvpUPoTlErKKMZwWVrDgH/qgkCwOfYILaxOPNzJvdI9XFO6lQGlH879yICotVnssMA/PHm2XXI8genZaE+mfMGO5Ckm9mp+Gf/YKJGEgCQ7DQsHouvlhmX5A8yAF+rsvnTnlxmxkzriyEqZkd4pXRiEUs7ChFgFg6nr5336eM5hbENC9QX0LeBLBUU9rZUkTf00C03nDcYxKtydMxhVcK0EvZ7cqgtCQqGql/5GCuy7syYeK2OpUcOB0fxgB"} }
+
+event: content_block_stop
+data: {"p": "70ccd7604ccf", "type":"content_block_stop","index":3   }
+
+event: content_block_start
+data: {"p": "2b1fae50c82909", "type":"content_block_start","index":4,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"p": "157101ed766a1472", "type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"The"}      }
+
+event: content_block_delta
+data: {"p": "0e486935c18ffb", "type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" latest stable release of W"}            }
+
+event: content_block_delta
+data: {"p": "c0e466", "type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"rangler is version"} }
+
+event: content_block_delta
+data: {"p": "e", "type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" 4.167.0, which"}           }
+
+event: content_block_delta
+data: {"p": "fab8f", "type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" "}        }
+
+event: content_block_stop
+data: {"p": "7b97675a2f", "type":"content_block_stop","index":4           }
+
+event: content_block_start
+data: {"p": "172133de39", "type":"content_block_start","index":5,"content_block":{"citations":[],"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"p": "1e3", "type":"content_block_delta","index":5,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"**Latest version: 4.167.0**, last published: 16 minutes ago. ","url":"https://www.npmjs.com/package/wrangler","title":"wrangler - npm","encrypted_index":"Eo8BCioIFhgCIiQ5ODY2MTIzNC03NmUwLTRlMGQtYTgyMS1iZThmOGMzNDc0ZDYSDEcoMzmLhw6jzvsB1RoMcHqPoQpafI+PTP++IjC7RmyXOvRtwI9liddX+AqIEtbQlkabh65IQR0UXQUCuH1xyUQK/qE8tt+BBrIlm3YqE9FFunoyXkwzzpc66z7ZBMBz9JwYBA=="}}           }
+
+event: content_block_delta
+data: {"p": "ca7e16206fbc80", "type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"the npm registry"}   }
+
+event: content_block_delta
+data: {"p": "ef4f322444a", "type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" lists as the newest build"}}
+
+event: content_block_delta
+data: {"p": "92", "type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":", published"}     }
+
+event: content_block_delta
+data: {"p": "33f51127e30c", "type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" most"} }
+
+event: content_block_delta
+data: {"p": "b47bd03a20fbed59", "type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" recently"}   }
+
+event: content_block_stop
+data: {"p": "8b43a1", "type":"content_block_stop","index":5  }
+
+event: content_block_start
+data: {"p": "dc18", "type":"content_block_start","index":6,"content_block":{"type":"text","text":""}   }
+
+event: content_block_delta
+data: {"p": "756b", "type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":", though some other"}    }
+
+event: content_block_delta
+data: {"p": "22d4d4994dbb", "type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":" sources still show older"} }
+
+event: content_block_delta
+data: {"p": "955565d82aac14", "type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":" buil"}     }
+
+event: content_block_delta
+data: {"p": "b8543c72f8", "type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"ds like 4.162.0"}           }
+
+event: content_block_delta
+data: {"p": "97c816f1ca00d2fa", "type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"."}       }
+
+event: content_block_stop
+data: {"p": "51743d47e23de6", "type":"content_block_stop","index":6        }
+
+event: message_delta
+data: {"p": "046b4d8e2", "type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":6,"cache_creation_input_tokens":12663,"cache_read_input_tokens":3024,"output_tokens":543,"output_tokens_details":{"thinking_tokens":404},"server_tool_use":{"web_search_requests":1,"web_fetch_requests":0}}              }
+
+event: message_stop
+data: {"p": "94c6f5a", "type":"message_stop"   }
+

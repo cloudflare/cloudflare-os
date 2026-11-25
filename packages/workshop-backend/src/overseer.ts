@@ -15,6 +15,7 @@ import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeC
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId, MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
+import { WEB_SEARCH_VENDOR_ID } from "@gadgets/workshop-shared/web-search-gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -51,6 +52,7 @@ import {
   UserGatewayRouting,
 } from "./ai-models";
 import { AgentTurnError, completeText } from "./ai-invoke";
+import { WEB_SEARCH_FEE, type SearchedResponse } from "./built-in-search";
 import {
   AiGatewayLogRetryableError,
   getAiGatewayConfig,
@@ -68,7 +70,7 @@ import { GadgetExportsImpl } from "./exports-session";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
-import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
+import { deploymentOutputForBlueprint, FormatOffer, gatekeeperSettings, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
   withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
@@ -78,6 +80,7 @@ import {
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
 import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
+import { getAuthVendorBinding } from "./auth/auth-vendors";
 import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import {
@@ -3740,7 +3743,7 @@ class OverseerImpl implements AgentHooks {
         reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
-      aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
+      aiGatewayLogRoute?: AiGatewayLogRoute, searched?: SearchedResponse): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;  // chat deleted mid-turn
 
@@ -3913,7 +3916,8 @@ class OverseerImpl implements AgentHooks {
           this.storage.activeAgents.put(execution);
         }
 
-        this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
+        this.addChatMessages(
+            chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute, searched);
         let written = this.materializeChatChanges(chatId, undefined, {
           author,
           allowDuringTurn: true,
@@ -6981,10 +6985,11 @@ class OverseerImpl implements AgentHooks {
     return false;
   }
 
-  // Record an observation made by the workspace itself on `caller`'s behalf (a fetch), not by a
-  // gatekeeper. The `gatekeeperId` is set to the BUILTIN_TOOL_GATEKEEPER_ID sentinel so that
-  // downstream code (which expects a gatekeeper to dereference for approve/reject) never touches
-  // it — observations bypass the approve/reject paths anyway.
+  // Record an observation made on `caller`'s behalf by something other than a gatekeeper: a
+  // fetch by the workspace itself, or what an agent's model provider did inside a model request
+  // (see recordProviderObservation). The `gatekeeperId` is set to the BUILTIN_TOOL_GATEKEEPER_ID
+  // sentinel so that downstream code (which expects a gatekeeper to dereference for
+  // approve/reject) never touches it — observations bypass the approve/reject paths anyway.
   #recordBuiltinObservation(
       caller: GatekeeperCaller,
       resourceTitle: string,
@@ -7007,6 +7012,34 @@ class OverseerImpl implements AgentHooks {
 
     this.storage.actions.put(record);
     this.#associateAction(caller, actionId);
+  }
+
+  recordProviderObservation(
+      chatId: number, resourceTitle: string, resourceUrl: string | undefined,
+      description: ObservationDescription): void {
+    this.#recordBuiltinObservation(
+        {from: "agent", chatId}, resourceTitle, resourceUrl, description);
+  }
+
+  // A workspace's record of Web Search is not enough: a spawned chat holds only the bindings
+  // its spawner gave it and those it gained in its log. The binding in env is checked so that
+  // uninstalling the Web Search Worker stops search in the model as it stops the gatekeeper's
+  // searches.
+  chatMaySearchInModel(bindings: Iterable<ChatBindingEntry>): boolean {
+    if (this.storage.containsRestrictedData.get() ||
+        getAuthVendorBinding(this.env, WEB_SEARCH_VENDOR_ID) === null) {
+      return false;
+    }
+    for (let entry of bindings) {
+      if (entry.type !== "workpiece") continue;
+      let record = this.storage.gatekeepers.get(entry.id);
+      if (record?.creationSpec?.type === "ambient" &&
+          gatekeeperVendorId(record) === WEB_SEARCH_VENDOR_ID &&
+          this.gatekeeperUsable(record.id)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async submitAction(gatekeeperId: number, action: number | "create",
@@ -10195,7 +10228,7 @@ class OverseerImpl implements AgentHooks {
   addChatMessages(chatId: number, author: AiChatAuthorInfo,
         msgs: AiChatMessageBodyWithModelData[],
         usage?: Usage, aiGatewayLogId?: string,
-        aiGatewayLogRoute?: AiGatewayLogRoute): void {
+        aiGatewayLogRoute?: AiGatewayLogRoute, searched?: SearchedResponse): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
       // Chat thread deleted?
@@ -10285,7 +10318,10 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (usage !== undefined) {
-      meta.totalTokens = usage.totalTokens;
+      // A response that searched says what it cost, not how large the chat is, so the chat is
+      // unmeasured until a response that did not (see BuiltInSearchStream).
+      if (searched) delete meta.totalTokens;
+      else meta.totalTokens = usage.totalTokens;
       meta.promptTokens =
           (meta.promptTokens ?? 0) + usage.input + usage.cacheRead + usage.cacheWrite;
       meta.cacheReadTokens = (meta.cacheReadTokens ?? 0) + usage.cacheRead;
@@ -10296,6 +10332,7 @@ class OverseerImpl implements AgentHooks {
     this.storage.chatMeta.put(meta);
 
     this.#addRequestCost(chatId, usage, aiGatewayLogId, aiGatewayLogRoute, true);
+    if (searched?.billed) this.#addChatCost(chatId, searched.billed * WEB_SEARCH_FEE, true);
   }
 
   // Adds a model request's cost to the chat's and workspace's totals: the cost AI Gateway logged
@@ -15820,6 +15857,14 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   async getGitCache(): Promise<GitCache> {
     return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
+  }
+
+  // Only this queue's own vendor's settings: the vendor comes from the gatekeeper's record,
+  // never from the caller.
+  async getAdminSettings(): Promise<Record<string, string>> {
+    let vendorId = gatekeeperVendorId(this.impl.storage.gatekeepers.get(this.gatekeeperId));
+    return vendorId === undefined
+        ? {} : gatekeeperSettings(await readAdminConfig(this.impl.env), vendorId);
   }
 
   submitAction(action: number, description: ActionDescription): Promise<void> {

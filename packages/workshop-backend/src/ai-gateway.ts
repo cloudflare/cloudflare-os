@@ -3,7 +3,8 @@ import {
   AutoRouterPool, GatewayModel, GatewayModelMode, ModelKind, ReasoningLevel,
   SUGGESTED_MODELS, modelKind,
 } from "@gadgets/workshop-shared/api";
-import { readAdminConfig } from "./admin-config.js";
+import { WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING, WEB_SEARCH_VENDOR_ID } from "@gadgets/workshop-shared/web-search-gatekeeper";
+import { gatekeeperSetting, readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
@@ -60,13 +61,15 @@ export function gatewayModelConfig(model: AdminModel): AiModelConfig {
 
 /**
  * The config a gateway model runs with at the reasoning level `reasoning`, or with no level set
- * when that is null, with the compaction budget `budget` when one is given, and for the Auto
- * Router model with the pool `pool` to pick from. A stored model's config (see
- * GatewayModels.runConfig) and that of a model an admin tests before adding it are both built
- * here, so that the test asks what the added model would be asked.
+ * when that is null, with the compaction budget `budget` when one is given, for the Auto
+ * Router model with the pool `pool` to pick from, and with the provider's web search tool when
+ * `webSearch` is set. A stored model's config (see GatewayModels.runConfig) and that of a model
+ * an admin tests before adding it are both built here, so that the test asks what the added
+ * model would be asked.
  */
 export function gatewayRunConfig(model: AdminModel, reasoning: ReasoningLevel | null,
-                                 budget?: number, pool?: AutoRouterPool): AiModelConfig {
+                                 budget?: number, pool?: AutoRouterPool,
+                                 webSearch = false): AiModelConfig {
   return {
     ...gatewayModelConfig(model),
     ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
@@ -74,6 +77,7 @@ export function gatewayRunConfig(model: AdminModel, reasoning: ReasoningLevel | 
     ...(reasoning !== null ? { reasoning } : {}),
     ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
     ...(pool !== undefined ? { autoRouterPool: pool } : {}),
+    ...(webSearch ? { webSearch } : {}),
   };
 }
 
@@ -206,11 +210,16 @@ export class GatewayModels {
   readonly #defaultReasoning: ReasoningLevel | null;
   /** Every provider, enabled or not, in listing order. */
   readonly #providerOrder: AiModelProvider[];
+  /**
+   * Whether the deployment's admin chose the model's provider as the Search provider of the Web
+   * Search gatekeeper (see WEB_SEARCH_IN_MODEL). No stored choice means no.
+   */
+  readonly #searchInModel: boolean;
 
   constructor(readonly gateway: AiGatewayConfig,
               config: Pick<AdminConfig, "modelModes" | "addedProviders" | "providerOrder" |
                   "addedModels" | "modelOrder" | "userModelsEnabled" | "modelSettings" |
-                  "defaultReasoning">) {
+                  "defaultReasoning" | "gatekeeperSettings">) {
     this.providers = new Set([
       ...gateway.providers,
       ...config.addedProviders.filter(provider => GATEWAY_PROVIDERS.has(provider)),
@@ -218,6 +227,8 @@ export class GatewayModels {
     this.#added = config.addedModels;
     this.userModels = config.userModelsEnabled;
     this.#defaultReasoning = config.defaultReasoning;
+    this.#searchInModel = gatekeeperSetting(
+        config, WEB_SEARCH_VENDOR_ID, WEB_SEARCH_PROVIDER_SETTING) === WEB_SEARCH_IN_MODEL;
     this.#providerOrder = [...new Set([
       ...config.providerOrder, ...Object.keys(SUGGESTED_MODELS) as AiModelProvider[],
     ])];
@@ -314,7 +325,23 @@ export class GatewayModels {
     return gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
         model.settings?.compactionInputBudget,
         model.provider === "cloudflare-auto-router"
-            ? this.autoRouterPool(model.settings?.allowedModels) : undefined);
+            ? this.autoRouterPool(model.settings?.allowedModels) : undefined,
+        this.#searchesInModel(model.provider));
+  }
+
+  /**
+   * The config `model`, which is not in the list, would run with at the reasoning level
+   * `reasoning` once an admin added it.
+   */
+  newModelRunConfig(model: AdminModel, reasoning: ReasoningLevel | null): AiModelConfig {
+    return gatewayRunConfig(
+        model, reasoning, undefined, undefined, this.#searchesInModel(model.provider));
+  }
+
+  // Whether a model of `provider` carries its provider's own web search tool: Anthropic and
+  // OpenAI run one.
+  #searchesInModel(provider: AiModelProvider): boolean {
+    return this.#searchInModel && (provider === "anthropic" || provider === "openai");
   }
 
   /**

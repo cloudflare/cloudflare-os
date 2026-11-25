@@ -7,6 +7,9 @@ import {
   type AdminAuditStats, type AdminSettingRecord, type AuthenticatedApi,
 } from "@gadgets/workshop-shared/api";
 import {
+  WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING,
+} from "@gadgets/workshop-shared/web-search-gatekeeper";
+import {
   ADMIN_USERNAME, startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR, TEST_VENDOR_ID,
   type Harness,
 } from "../src/harness.js";
@@ -137,6 +140,24 @@ it("records every setting change, before it takes effect", async () => {
   }
   last = await expectRecord(last, "setGatekeeperMode",
       [{ setting: "ambientGatekeeperModes", key: TEST_VENDOR_ID, before: "disabled" }]);
+
+  // The fixture gatekeeper declares one setting. A choice that is not one of its options is
+  // never recorded.
+  const chosen = JSON.stringify({ [WEB_SEARCH_PROVIDER_SETTING]: WEB_SEARCH_IN_MODEL });
+  await expect(admin.setGatekeeperSetting(TEST_VENDOR_ID, WEB_SEARCH_PROVIDER_SETTING, "bing"))
+      .rejects.toThrow();
+  expect(await newestSetting()).toEqual(last);
+  try {
+    await admin.setGatekeeperSetting(
+        TEST_VENDOR_ID, WEB_SEARCH_PROVIDER_SETTING, WEB_SEARCH_IN_MODEL);
+    last = await expectRecord(last, "setGatekeeperSetting",
+        [{ setting: "gatekeeperSettings", key: TEST_VENDOR_ID, after: chosen }]);
+  } finally {
+    // Choosing the default stores nothing, which leaves the vendor no entry.
+    await admin.setGatekeeperSetting(TEST_VENDOR_ID, WEB_SEARCH_PROVIDER_SETTING, "ceramic");
+  }
+  last = await expectRecord(last, "setGatekeeperSetting",
+      [{ setting: "gatekeeperSettings", key: TEST_VENDOR_ID, before: chosen }]);
 
   const png = tinyPng();
   const logo = JSON.stringify({ bytes: 33, sha256: createHash("sha256").update(png).digest("hex") });

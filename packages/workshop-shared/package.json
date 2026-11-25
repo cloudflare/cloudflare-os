@@ -23,6 +23,10 @@
       "types": "./src/cloudflare-gatekeeper.ts",
       "import": "./src/cloudflare-gatekeeper.ts"
     },
+    "./web-search-gatekeeper": {
+      "types": "./src/web-search-gatekeeper.ts",
+      "import": "./src/web-search-gatekeeper.ts"
+    },
     "./limits": {
       "types": "./src/limits.ts",
       "import": "./src/limits.ts"

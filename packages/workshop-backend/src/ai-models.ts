@@ -89,6 +89,13 @@ export type ModelStreamOptions = SimpleStreamOptions & {
    * quick, and none of them benefit from cross-step reasoning. Default: true.
    */
   thinking?: boolean;
+
+  /**
+   * When true, the request declares the provider's own web search tool, which the provider runs
+   * inside the request, if the handle's model has it on (see AiModelConfig.webSearch). Default:
+   * false.
+   */
+  webSearch?: boolean;
 };
 
 /**
@@ -534,6 +541,9 @@ type HandleArgs = {
   // (see reasoningOptions). No level gives the model its built-in request (see builtInReasoning).
   reasoning?: ReasoningLevel;
   formatId?: string;
+  // Whether a request that asks may declare the provider's web search tool (see
+  // ModelStreamOptions.webSearch): AiModelConfig.webSearch, on the deployment's own gateway.
+  webSearch?: boolean;
 };
 
 function makeHandle(args: HandleArgs): ModelHandle {
@@ -553,7 +563,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const handle: ModelHandle = {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
-    stream: (model, context, { thinking = true, ...options } = {}) => {
+    stream: (model, context, { thinking = true, webSearch = false, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata, or leave the
       // previous request to be resent in its place.
       handle.lastResponse = undefined;
@@ -621,10 +631,13 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
         // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
         // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
-        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey). A request
+        // that asks for the provider's web search tool declares it first (see withWebSearchTool).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
-          const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          const searching = args.webSearch && webSearch
+              ? withWebSearchTool(args.model, replaced ?? payload) ?? replaced : replaced;
+          const bridged = bridgePdfAttachments(args.model.api, searching ?? payload) ?? searching;
           const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
           if (options.cacheRetention === "none") return signed;
           const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
@@ -676,6 +689,45 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   return rest;
 }
 
+// The cap each provider is sent. Anthropic documents `max_uses` as counting across the requests
+// of a user's turn, which is not measured with the requests pi sends; OpenAI's `max_tool_calls`
+// counts within one response. Each search's results are billed as input again in every later
+// step of its response: five in a row billed 203,297 input tokens (run p3 in
+// plans/built-in-web-search.md).
+const WEB_SEARCH_LIMIT = 5;
+
+// `payload` with the provider's own web search tool, which the provider runs inside the request
+// (see built-in-search.ts), after the tools pi declared.
+// - anthropic-messages: this version of the tool only. Later ones run code at Anthropic, which is
+//   not eligible for zero data retention.
+// - openai-responses: limited to OpenAI's index, so a live page is read only under the
+//   workspace's fetch policy (see docs/unified-fetch.md). `web_search_preview` ignores that field.
+// - Other APIs: undefined.
+function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const tools: unknown[] = "tools" in payload && Array.isArray(payload.tools) ? payload.tools : [];
+  switch (model.api) {
+    case "anthropic-messages":
+      return {
+        ...payload,
+        tools: [...tools,
+            { type: "web_search_20250305", name: "web_search", max_uses: WEB_SEARCH_LIMIT }],
+      };
+    case "openai-responses":
+      return {
+        ...payload,
+        tools: [...tools, { type: "web_search", external_web_access: false }],
+        max_tool_calls: WEB_SEARCH_LIMIT,
+      };
+    default:
+      return undefined;
+  }
+}
+
+const declaresWebSearch = (payload: object): boolean =>
+    "tools" in payload && Array.isArray(payload.tools) && payload.tools.some((tool: unknown) =>
+        typeof tool === "object" && tool !== null && "type" in tool && tool.type === "web_search");
+
 // The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
 // resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
 // can't keep the cache (see cappedForResend), or the provider cached none of the request, as for a
@@ -722,7 +774,9 @@ function cachedRequest(
 //   streaming, which pi always uses, so 1 it is. An enabled thinking budget must stay below
 //   max_tokens, so such requests can't be resent; adaptive thinking takes any cap.
 // - openai-responses, GPT-5.6 and later: at least 30 minutes after the last write or reuse. 16
-//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too.
+//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too. A request
+//   that declares web search would start a search within that cap (4 of 4 resends), which
+//   `tool_choice: "none"` prevents (0 of 3) while the cache is still read.
 // - Other APIs: undefined.
 function cappedForResend(model: Model<Api>, payload: unknown)
     : { payload: object; responseCap: number; cacheLifetime: number } | undefined {
@@ -734,7 +788,11 @@ function cappedForResend(model: Model<Api>, payload: unknown)
       };
     case "openai-responses":
       return hasGpt56PromptCaching(model) ? {
-        payload: { ...payload, max_output_tokens: 16 }, responseCap: 16,
+        payload: {
+          ...payload, max_output_tokens: 16,
+          ...(declaresWebSearch(payload) ? { tool_choice: "none" } : {}),
+        },
+        responseCap: 16,
         cacheLifetime: 30 * 60_000,
       } : undefined;
     default:
@@ -962,6 +1020,11 @@ function getModelViaGateway(
     sessionAffinity: options.sessionAffinity,
     reasoning: config.reasoning,
     formatId: gatewayCatalogModel(config)?.id,
+    // Only the deployment's gateway carries the tool: a turn billed to a user's own gateway (see
+    // getModelViaUserGateway) never does. This gateway runs on credits too where it holds no key
+    // for the provider, and whether the tool is accepted there is not measured: the model's Test
+    // sends it, so that a refusal shows before a chat meets it.
+    webSearch: config.webSearch,
     aiGatewayLogRoute: logRoute(gateway),
   });
 }

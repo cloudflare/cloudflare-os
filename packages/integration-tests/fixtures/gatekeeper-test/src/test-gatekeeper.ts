@@ -31,6 +31,9 @@ import type {
   HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING,
+} from "@gadgets/workshop-shared/web-search-gatekeeper";
 
 import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-shared/worktree-replica";
 
@@ -554,6 +557,16 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       // Accounts are minted on request with no auth flow, which is what keeps these tests about the
       // overseer rather than about somebody's OAuth dance.
       autoProvisionsAccount: true,
+      // The Web Search gatekeeper's setting, as far as the Workshop reads it: a suite that binds
+      // this fixture as GATEKEEPER_WEBSEARCH has it stand in for that gatekeeper.
+      adminSettings: [{
+        id: WEB_SEARCH_PROVIDER_SETTING, label: "Search provider", help: "Where test searches run.",
+        options: [
+          { value: "ceramic", label: "Ceramic" },
+          { value: WEB_SEARCH_IN_MODEL, label: "The model's provider" },
+        ],
+        defaultValue: "ceramic",
+      }],
     };
   }
 
@@ -762,6 +775,8 @@ export interface TestSession {
    * code's own traffic between calls.
    */
   fetchInstalled(url: string): Promise<FetchResult>;
+  /** What the deployment's admin stored for this vendor's settings, as the session's queue has it. */
+  readAdminSettings(): Promise<Record<string, string>>;
 }
 
 /** What a fetch through a `getFetcher()` Fetcher returned. */
@@ -873,6 +888,10 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async keepSelfStub(key: string): Promise<void> {
     await this.state.keepSelfStub(key, await this.ctx.restore<RpcStub<ConnectionProbe>>({}));
+  }
+
+  readAdminSettings(): Promise<Record<string, string>> {
+    return this.approvalQueue.getAdminSettings();
   }
 
   async fetchUrl(url: string): Promise<FetchResult> {

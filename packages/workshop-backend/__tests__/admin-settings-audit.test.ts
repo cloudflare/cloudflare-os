@@ -5,6 +5,7 @@ import {
   MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_VALUE_LENGTH, SUGGESTED_MODELS,
   type AdminAuditRecord, type AdminSettingRecord, type GatewayModel,
 } from "@gadgets/workshop-shared/api";
+import type { GatekeeperAdminSetting } from "@gadgets/workshop-shared/gatekeeper";
 import type { AdminSettingActor } from "../src/admin-access.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { AdminSettings } from "../src/admin-settings.js";
@@ -391,6 +392,170 @@ describe("AdminSettings records each admin's change before making it", () => {
     expect(records().map(record => record.changes)).toStrictEqual([
       [{ setting: "featured", key: "bp-1", before: "false", after: "true" }],
     ]);
+  });
+});
+
+describe("AdminSettings gatekeeper settings", () => {
+  const PROVIDER: GatekeeperAdminSetting = {
+    id: "provider", label: "Provider", help: "Where it runs.",
+    options: [{ value: "a", label: "A" }, { value: "b", label: "B" }], defaultValue: "a",
+  };
+  const FALLBACK: GatekeeperAdminSetting = {
+    id: "fallback", label: "Fallback", help: "What runs the rest.",
+    options: [{ value: "none", label: "None" }, { value: "a", label: "A" }], defaultValue: "none",
+    shownWhen: { settingId: "provider", value: "b" },
+  };
+  // A bound vendor, as far as AdminSettings asks one.
+  const vendor = (describe: () => Promise<object> =
+      async () => ({ displayName: "Test", adminSettings: [PROVIDER, FALLBACK] })) =>
+      ({ describe, getSupportedResources: async () => [] });
+  const SET: AdminSettingActor = { ...ACTOR, method: "setGatekeeperSetting" };
+  const set = (admin: AdminSettings, settingId: string, value: string, vendorId = "test") =>
+      admin.setGatekeeperSetting(vendorId, settingId, value, SET);
+  const stored = async (settings: ReturnType<typeof adminSettings>) =>
+      (await settings.config()).gatekeeperSettings;
+  const shown = (settings: ReturnType<typeof adminSettings>) => settings.inDo(async admin =>
+      (await admin.getSettings("admin")).resourceVendors
+          .find(({ vendorId }) => vendorId === "test")?.settings);
+
+  it("stores an admin's choice, records it before the KV write, and shows it to admins",
+      async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor() });
+    expect(await shown(settings)).toStrictEqual(
+        [{ ...PROVIDER, value: "a" }, { ...FALLBACK, value: "none" }]);
+
+    await settings.inDo(admin => set(admin, "provider", "b", "Test"));
+
+    expect(await stored(settings)).toStrictEqual({ test: { provider: "b" } });
+    expect(settings.events).toEqual(["audit", "kv:.adminConfig"]);
+    expect(settings.records()).toMatchObject([{
+      method: "setGatekeeperSetting",
+      changes: [{ setting: "gatekeeperSettings", key: "test", after: '{"provider":"b"}' }],
+    }]);
+    expect(JSON.parse(settings.kv.blueprints.get(".adminConfig")!).gatekeeperSettings)
+        .toStrictEqual({ test: { provider: "b" } });
+    expect(await shown(settings)).toStrictEqual(
+        [{ ...PROVIDER, value: "b" }, { ...FALLBACK, value: "none" }]);
+  });
+
+  it("shows no settings for a vendor that declares an empty list of them", async () => {
+    const settings = adminSettings({
+      GATEKEEPER_TEST: vendor(async () => (
+          { displayName: "Test", autoProvisionsAccount: true, adminSettings: [] })),
+      // Nothing to toggle and nothing to set, so it is not listed.
+      GATEKEEPER_PLAIN: vendor(async () => ({ displayName: "Plain", adminSettings: [] })),
+    });
+    const vendors = await settings.inDo(async admin =>
+        (await admin.getSettings("admin")).resourceVendors);
+    expect(vendors.map(({ vendorId }) => vendorId)).toEqual(["test"]);
+    expect(vendors[0]?.settings).toBeUndefined();
+  });
+
+  it("stores nothing for a default, and leaves no entry for a vendor with nothing stored",
+      async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor() });
+    await settings.inDo(admin => set(admin, "provider", "a"));
+    expect(await stored(settings)).toStrictEqual({});
+    expect(settings.appended).toEqual([]);
+
+    await settings.inDo(admin => set(admin, "provider", "b"));
+    await settings.inDo(admin => set(admin, "fallback", "a"));
+    await settings.inDo(admin => set(admin, "provider", "a"));
+    expect(await stored(settings)).toStrictEqual({ test: { fallback: "a" } });
+    await settings.inDo(admin => set(admin, "fallback", "none"));
+    expect(await stored(settings)).toStrictEqual({});
+  });
+
+  it("refuses a vendor that is not bound, a setting it does not declare and a value that is " +
+      "not an option, storing and recording nothing", async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor() });
+    await settings.seed({ gatekeeperSettings: { test: { provider: "b" } } });
+    const refused: [string, string, string][] = [
+      ["other", "provider", "b"],
+      ["test", "volume", "a"],
+      ["test", "toString", "a"],
+      ["test", "provider", "c"],
+      ["test", "provider", ""],
+      ["test", "provider", "B"],
+      // An option of another setting.
+      ["test", "provider", "none"],
+    ];
+    for (const [vendorId, settingId, value] of refused) {
+      await expect(settings.inDo(admin => set(admin, settingId, value, vendorId)),
+          `${vendorId} ${settingId} ${value}`).rejects.toThrow();
+    }
+    expect(await stored(settings)).toStrictEqual({ test: { provider: "b" } });
+    expect(settings.appended).toEqual([]);
+    expect(settings.put).not.toHaveBeenCalled();
+  });
+
+  it("refuses a choice when the vendor cannot be asked for its settings", async () => {
+    const settings = adminSettings(
+        { GATEKEEPER_TEST: vendor(async () => { throw new Error("vendor down"); }) });
+    await expect(settings.inDo(admin => set(admin, "provider", "b"))).rejects.toThrow("vendor down");
+    expect(await stored(settings)).toStrictEqual({});
+    expect(settings.appended).toEqual([]);
+    expect(settings.put).not.toHaveBeenCalled();
+  });
+
+  it("stores a setting that is not shown, and changes no other setting with it", async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor() });
+    // The fallback shows only under provider "b", and the provider is at its default.
+    await settings.inDo(admin => set(admin, "fallback", "a"));
+    expect(await stored(settings)).toStrictEqual({ test: { fallback: "a" } });
+
+    await settings.inDo(admin => set(admin, "provider", "b"));
+    await settings.inDo(admin => set(admin, "provider", "a"));
+    expect(await stored(settings)).toStrictEqual({ test: { fallback: "a" } });
+    expect(await shown(settings)).toStrictEqual(
+        [{ ...PROVIDER, value: "a" }, { ...FALLBACK, value: "a" }]);
+  });
+
+  it("keeps and shows a stored value the vendor no longer declares, until an admin chooses",
+      async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor() });
+    const old = { provider: "gone", retired: "x" };
+    await settings.seed({ gatekeeperSettings: { test: old } });
+
+    expect(await shown(settings)).toStrictEqual(
+        [{ ...PROVIDER, value: "gone" }, { ...FALLBACK, value: "none" }]);
+    // Another setting's change leaves it, and so does a refused one.
+    await settings.inDo(admin => set(admin, "fallback", "a"));
+    await expect(settings.inDo(admin => set(admin, "provider", "gone"))).rejects.toThrow();
+    expect(await stored(settings)).toStrictEqual({ test: { ...old, fallback: "a" } });
+
+    await settings.inDo(admin => set(admin, "provider", "a"));
+    expect(await stored(settings)).toStrictEqual({ test: { retired: "x", fallback: "a" } });
+  });
+
+  it("keeps both of two choices made at once", async () => {
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor(), GATEKEEPER_OTHER: vendor() });
+    await settings.inDo(admin => Promise.all([
+      set(admin, "provider", "b"), set(admin, "fallback", "a"), set(admin, "provider", "b", "other"),
+    ]));
+    expect(await stored(settings)).toStrictEqual(
+        { test: { provider: "b", fallback: "a" }, other: { provider: "b" } });
+    expect(settings.appended).toHaveLength(3);
+  });
+
+  it("lets other settings change while a vendor is slow to describe itself", async () => {
+    const asked = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    const settings = adminSettings({ GATEKEEPER_TEST: vendor(async () => {
+      asked.resolve();
+      await answer.promise;
+      return { displayName: "Test", adminSettings: [PROVIDER] };
+    }) });
+    await settings.inDo(async admin => {
+      const choice = set(admin, "provider", "b");
+      await asked.promise;
+      await admin.updateAdminConfig({ siteName: "Acme" }, ACTOR);
+      expect(admin.getAdminConfig()).toMatchObject({ siteName: "Acme", gatekeeperSettings: {} });
+      answer.resolve();
+      await choice;
+    });
+    expect(await settings.config())
+        .toMatchObject({ siteName: "Acme", gatekeeperSettings: { test: { provider: "b" } } });
   });
 });
 

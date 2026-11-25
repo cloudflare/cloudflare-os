@@ -3,6 +3,9 @@ import {
   AUTO_ROUTER_MODEL_ID, SUGGESTED_MODELS, type AiModelProvider, type GatewayModel,
   type GatewayModelCapabilities,
 } from "@gadgets/workshop-shared/api";
+import {
+  WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING, WEB_SEARCH_VENDOR_ID,
+} from "@gadgets/workshop-shared/web-search-gatekeeper";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import {
@@ -161,10 +164,11 @@ describe("GatewayModels", () => {
     CF_AI_GATEWAY_PROVIDERS: providers,
   });
   type Config = Pick<AdminConfig, "modelModes" | "addedProviders" | "providerOrder" |
-      "addedModels" | "modelOrder" | "userModelsEnabled" | "modelSettings" | "defaultReasoning">;
+      "addedModels" | "modelOrder" | "userModelsEnabled" | "modelSettings" | "defaultReasoning" |
+      "gatekeeperSettings">;
   const NO_CONFIG: Config = {
     modelModes: {}, addedProviders: [], providerOrder: [], addedModels: [], modelOrder: {},
-    userModelsEnabled: true, modelSettings: {}, defaultReasoning: null,
+    userModelsEnabled: true, modelSettings: {}, defaultReasoning: null, gatekeeperSettings: {},
   };
   const gatewayModels = (config: Partial<Config> = {}, providers?: string) =>
       new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), { ...NO_CONFIG, ...config });
@@ -542,6 +546,47 @@ describe("GatewayModels", () => {
       // The second is a suggested model of a provider this gateway does not enable.
       for (let id of ["claude-fable-9", "gemini-3.6-flash", "constructor"]) {
         expect(models.runConfig(id), id).toBeUndefined();
+      }
+    });
+
+    it("gives Anthropic and OpenAI models web search exactly while the admin's Search provider " +
+        "is the model's provider", () => {
+      const chosen = (settings: AdminConfig["gatekeeperSettings"]) =>
+          gatewayModels({ gatekeeperSettings: settings }, "anthropic,openai,google");
+      const models = chosen({ [WEB_SEARCH_VENDOR_ID]: {
+        [WEB_SEARCH_PROVIDER_SETTING]: WEB_SEARCH_IN_MODEL, fallback: "exa",
+      } });
+      expect(models.runConfig("claude-opus-5-5")).toStrictEqual({ ...OPUS, webSearch: true });
+      expect(models.resolve("claude-opus-5-5")?.config.webSearch).toBe(true);
+      expect(models.runConfig("gpt-6-luna")?.webSearch).toBe(true);
+      const gemini = models.runConfig("gemini-3.6-flash");
+      expect(gemini?.provider).toBe("google");
+      expect(gemini).not.toHaveProperty("webSearch");
+
+      // A model an admin describes, before it is added, is held to the same choice.
+      const added = { ...ADDED[0]!, mode: "enabled", defaultMode: "enabled", added: true } as const;
+      expect(models.newModelRunConfig(added, "high"))
+          .toStrictEqual({ ...gatewayRunConfig(added, "high"), webSearch: true });
+      expect(models.newModelRunConfig({ ...added, provider: "google" }, null))
+          .not.toHaveProperty("webSearch");
+
+      // Nothing stored, any other value, the choice of another vendor or of another setting: no.
+      const others: AdminConfig["gatekeeperSettings"][] = [
+        {},
+        { [WEB_SEARCH_VENDOR_ID]: {} },
+        { [WEB_SEARCH_VENDOR_ID]: { [WEB_SEARCH_PROVIDER_SETTING]: "ceramic" } },
+        { [WEB_SEARCH_VENDOR_ID]: { [WEB_SEARCH_PROVIDER_SETTING]: "MODEL" } },
+        { [WEB_SEARCH_VENDOR_ID]: { [WEB_SEARCH_PROVIDER_SETTING]: "" } },
+        { [WEB_SEARCH_VENDOR_ID]: { fallback: WEB_SEARCH_IN_MODEL } },
+        { context: { [WEB_SEARCH_PROVIDER_SETTING]: WEB_SEARCH_IN_MODEL } },
+      ];
+      for (const settings of others) {
+        const without = chosen(settings);
+        for (const id of ["claude-opus-5-5", "gpt-6-luna"]) {
+          expect(without.runConfig(id), JSON.stringify(settings)).not.toHaveProperty("webSearch");
+        }
+        expect(without.newModelRunConfig(added, "high"), JSON.stringify(settings))
+            .toStrictEqual(gatewayRunConfig(added, "high"));
       }
     });
 

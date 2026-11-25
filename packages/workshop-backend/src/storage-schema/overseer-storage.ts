@@ -914,6 +914,14 @@ export type StoredToolCall = Omit<ToolCall, "arguments">;
  */
 export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
   content: (TextContent | ThinkingContent | StoredToolCall)[];
+
+  /**
+   * Set for a response in which Anthropic ran a web search: the response's content blocks as
+   * Anthropic sent them, as JSON. pi's `content` leaves the search out, and a later request to
+   * the same model must send the response back whole (see built-in-search.ts). Each client tool
+   * call's input is null here, as a StoredToolCall has none.
+   */
+  providerContent?: string;
 };
 
 // One agent step's model-facing snapshot (see StoredAssistantMessage), keyed by the
@@ -1426,7 +1434,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
       // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
       // approval (autoApprovalRule never fires); the approver checks the action text for restricted
-      // data. The key on disk predates the flag's rename.
+      // data. An agent's request does not declare its provider's web search tool (see
+      // AgentHooks.chatMaySearchInModel). The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in

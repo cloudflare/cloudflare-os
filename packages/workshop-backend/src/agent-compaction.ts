@@ -220,12 +220,22 @@ export type CompactionProjectionMessage = {
   canCut?: boolean;
 };
 
+const utf8 = new TextEncoder();
+
 function projectionMessageWeight(message: Message): number {
   // Use serialized length to divide the measured prompt size between messages. Replace attachment
   // data (base64 image payloads ride ImageContent.data) with a short marker because the model's
   // attachment cost depends on the content it processes, not the byte count.
-  return JSON.stringify(message, (key, value) =>
-    key === "data" && typeof value === "string" && value.length > 64 ? "[binary]" : value).length;
+  let weight = JSON.stringify(message, (key, value) =>
+    key === "data" && typeof value === "string" && value.length > 64 ? "[binary]"
+    : key === "providerContent" ? undefined : value).length;
+  // What Anthropic sent for a web search (see StoredAssistantMessage.providerContent) is sent
+  // back whole, and came to a token for every 2 bytes in 5 measured responses (2% under to 25%
+  // over), where other messages are taken at 4 characters.
+  if ("providerContent" in message && typeof message.providerContent === "string") {
+    weight += 2 * utf8.encode(message.providerContent).length;
+  }
+  return weight;
 }
 
 /** Estimate tokens for messages not included in provider usage, or when usage data is unavailable. */

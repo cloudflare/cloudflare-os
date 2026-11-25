@@ -3,7 +3,11 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
   SUGGESTED_MODELS, type GatewayModel, type GatewayModelCapabilities,
+  type GatewayModelSettings,
 } from "@gadgets/workshop-shared/api";
+import {
+  WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING, WEB_SEARCH_VENDOR_ID,
+} from "@gadgets/workshop-shared/web-search-gatekeeper";
 import type { AdminSettingActor } from "../src/admin-access.js";
 import { parseAdminConfig } from "../src/admin-config.js";
 import type { AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
@@ -519,6 +523,13 @@ describe("AdminSettings gateway model settings", () => {
     expect(put).toHaveBeenCalledTimes(1);
     expect(put.mock.calls[0]![0]).toBe(".adminConfig");
     expect(JSON.parse(mirror.current!).modelSettings).toStrictEqual(stored);
+  });
+
+  it("stores no web search setting for a model", async () => {
+    const { inDo, settings } = adminSettings({ ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic" });
+    const sent = { reasoning: "low", webSearch: true } as GatewayModelSettings;
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, sent, ACTOR));
+    expect(await settings()).toStrictEqual({ [OPUS]: { reasoning: "low" } });
   });
 
   it("stores the models Auto Router may pick, trimmed and once each, for its model alone",
@@ -1646,6 +1657,66 @@ describe("AdminSettings.testGatewayModel", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+});
+
+describe("AdminSettings model tests under the admin's Search provider", () => {
+  const OPUS = "claude-opus-5-5";
+  const GLM = "@cf/zai-org/glm-5.2";
+  const NEW_CLAUDE: GatewayModel = {
+    provider: "anthropic", id: "claude-new", name: "Claude New", contextWindow: 200000,
+    capabilities: { reasoningLevels: ["off", "high"] },
+  };
+  // The Web Search gatekeeper, as far as the setter asks it.
+  const WEB_SEARCH = { describe: async () => ({ adminSettings: [{
+    id: WEB_SEARCH_PROVIDER_SETTING, label: "Search provider", help: "",
+    options: [
+      { value: "ceramic", label: "Ceramic" },
+      { value: WEB_SEARCH_IN_MODEL, label: "The model's provider" },
+    ],
+    defaultValue: "ceramic",
+  }] }) };
+  // An AdminSettings whose models all answer, with `provider` chosen as the Search provider.
+  // `searchTools` runs tests and counts the provider's search tool in each request they sent.
+  async function choosing(provider: string) {
+    const settings = tested(answered, {
+      CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare", GATEKEEPER_WEBSEARCH: WEB_SEARCH,
+    });
+    await settings.inDo(admin => admin.setGatekeeperSetting(
+        WEB_SEARCH_VENDOR_ID, WEB_SEARCH_PROVIDER_SETTING, provider, ACTOR));
+    const searchTools = async (run: () => Promise<unknown>) => {
+      settings.requests.length = 0;
+      await run();
+      return settings.requests.map(({ body }) =>
+          ((body.tools ?? []) as { type?: string }[])
+              .filter(tool => tool.type?.startsWith("web_search")).length);
+    };
+    return { ...settings, searchTools };
+  }
+
+  it("sends the provider's search tool with both model tests under the model's provider",
+      async () => {
+    const { searchTools, testModel, testNewModel, test } = await choosing(WEB_SEARCH_IN_MODEL);
+
+    expect(await searchTools(() => testModel(OPUS))).toEqual([1]);
+    expect(await searchTools(() => testModel("gpt-6-luna"))).toEqual([1]);
+    // One request with no level set and one at each level, each as the added model would run.
+    expect(await searchTools(() => testNewModel(NEW_CLAUDE))).toEqual([1, 1, 1]);
+    expect(await searchTools(() => testNewModel(
+        { ...NEW_CLAUDE, provider: "openai", id: "gpt-new" }))).toEqual([1, 1, 1]);
+
+    // A model whose provider runs no search tool, and a test of a provider's connection.
+    expect(await searchTools(() => testModel(GLM))).toEqual([0]);
+    expect(await searchTools(() => test("anthropic"))).toEqual([0]);
+    expect(await searchTools(() => test("openai"))).toEqual([0]);
+  });
+
+  it("sends no search tool with a model test under another Search provider", async () => {
+    const { searchTools, testModel, testNewModel } = await choosing("ceramic");
+
+    expect(await searchTools(() => testModel(OPUS))).toEqual([0]);
+    expect(await searchTools(() => testModel("gpt-6-luna"))).toEqual([0]);
+    expect(await searchTools(() => testNewModel(NEW_CLAUDE))).toEqual([0, 0, 0]);
   });
 });
 

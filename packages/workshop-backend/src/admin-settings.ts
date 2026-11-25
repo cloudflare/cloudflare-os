@@ -6,10 +6,10 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, isResourceDisabled, unresolvedResourceRestrictions } from './admin-config.js';
+import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, gatekeeperSetting, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, isResourceDisabled, unresolvedResourceRestrictions, withGatekeeperSetting } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
-import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { AgentTurnError, completeText } from './ai-invoke.js';
 import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
@@ -1025,12 +1025,14 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   async testNewGatewayModel(model: GatewayModel, adminUserId: string)
       : Promise<GatewayModelLevelTest[]> {
     let gateway = this.#requireGateway();
-    let added = addedModel(this.#addableModel(model, this.#config()));
+    let config = this.#config();
+    let added = addedModel(this.#addableModel(model, config));
+    let models = new GatewayModels(gateway, config);
     let levels = gatewayReasoningLevels(
         added.provider, added.id, added.behavesLike, added.capabilities);
     return Promise.all([null, ...levels].map(async reasoning => ({
       ...await this.#runTest(
-          gateway, gatewayRunConfig(added, reasoning), adminUserId, MODEL_TEST),
+          gateway, models.newModelRunConfig(added, reasoning), adminUserId, MODEL_TEST),
       reasoning,
     })));
   }
@@ -1051,6 +1053,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       await completeText(handle, {
         prompt: "Reply with OK.", maxTokens: Math.min(test.maxTokens, handle.model.maxTokens),
         thinking: test.thinking, signal,
+        // A provider whose account has web search off refuses the tool, so a model that would
+        // carry it in a turn carries it here (see AiModelConfig.webSearch).
+        webSearch: true,
         // Agent turns let the provider cache their prompts, so a model that rejects the cache
         // fields fails here rather than in the first turn.
         cache: true,
@@ -1218,6 +1223,27 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  /**
+   * Store an admin's choice for one of a gatekeeper's own settings
+   * (VendorDescription.adminSettings). Throws, and stores nothing, for a vendor that is not
+   * bound, a setting the vendor does not declare, or a value that is not one of the setting's
+   * options. The default is what applies with nothing stored, so choosing it stores nothing.
+   * The vendor is described before the mutation, so that a slow vendor holds no other change.
+   */
+  async setGatekeeperSetting(
+      vendorId: string, settingId: string, value: string, actor: AdminSettingActor): Promise<void> {
+    vendorId = vendorId.toLowerCase();
+    let setting = (await this.vendors.get(vendorId)?.describe())?.adminSettings
+        ?.find(declared => declared.id === settingId);
+    if (!setting) throw new Error(`"${vendorId}" has no setting "${settingId}".`);
+    if (!setting.options.some(option => option.value === value)) {
+      throw new Error(`That is not an option of the "${setting.label}" setting.`);
+    }
+    let stored = value === setting.defaultValue ? undefined : value;
+    await this.#mutateAdminConfig(actor,
+        config => withGatekeeperSetting(config, vendorId, settingId, stored));
+  }
+
   // Admin view of every bound gatekeeper's resource types, annotated with their enabled state.
   // Unlike the user-facing listGatekeeperVendors, this does NOT hide disabled resources (so admins
   // can re-enable them). `adminUserId` is forwarded to getSupportedResources() so RBAC-gated
@@ -1233,6 +1259,13 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
             vendor.describe(),
             vendor.getSupportedResources({ userId: adminUserId }),
           ]);
+          // A stored choice shows as stored, also when the vendor no longer offers it.
+          let settings = description.adminSettings?.length
+              ? description.adminSettings.map(setting => ({
+                  ...setting,
+                  value: gatekeeperSetting(config, id, setting.id) ?? setting.defaultValue,
+                }))
+              : undefined;
           if (description.autoProvisionsAccount) {
             // Auto-provisioning ("ambient") gatekeeper: a three-state mode, no resources to toggle.
             let mode = ambientGatekeeperMode(config, id);
@@ -1240,12 +1273,14 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
               vendorId: id,
               displayName: description.displayName,
               logo: description.logo,
+              settings,
               autoProvisions: true,
               ambientMode: mode,
             };
           }
-          if (supportedResources.length === 0 && !config.disabledResources[id]?.length) {
-            // Nothing to toggle for this gatekeeper.
+          if (supportedResources.length === 0 && !config.disabledResources[id]?.length &&
+              !settings) {
+            // Nothing to toggle or set for this gatekeeper.
             return null;
           }
           let unresolved = unresolvedResourceRestrictions(config, id, supportedResources);
@@ -1253,6 +1288,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
             vendorId: id,
             displayName: description.displayName,
             logo: description.logo,
+            settings,
             autoProvisions: false,
             enabled: !disabledGatekeeperSet.has(id),
             resources: [...supportedResources.map(r => ({
@@ -1392,6 +1428,11 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       throw new Error(`Invalid gatekeeper mode: ${mode}`);
     }
     return this.admin.setGatekeeperMode(vendorId, mode, this.#actor("setGatekeeperMode"));
+  }
+
+  setGatekeeperSetting(vendorId: string, settingId: string, value: string): Promise<void> {
+    return this.admin.setGatekeeperSetting(
+        vendorId, settingId, value, this.#actor("setGatekeeperSetting"));
   }
 
   async setAnnouncement(text: string): Promise<void> {

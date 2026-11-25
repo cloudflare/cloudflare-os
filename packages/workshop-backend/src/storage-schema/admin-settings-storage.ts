@@ -66,6 +66,12 @@ export type AdminConfig = {
    */
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
   /**
+   * What an admin chose for a gatekeeper's own settings (VendorDescription.adminSettings), by
+   * vendor id, then setting id. Absent ⇒ the setting's default, which is never stored. A choice
+   * is kept as stored even when its vendor no longer declares it.
+   */
+  gatekeeperSettings: Record<string, Record<string, string>>;
+  /**
    * The hosts `webFetch` may reach without asking in a workspace that has observed restricted data
    * (see OverseerImpl.authorizeFetch), as lowercase ASCII host names. A host
    * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
@@ -204,6 +210,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledResourceTypeIds: {},
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
+  gatekeeperSettings: {},
   restrictedWebFetchHosts: [],
   restrictedWebFetchApprovals: false,
   formats: [],
