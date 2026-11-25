@@ -37,7 +37,9 @@ Each names the alternative we reject and why.
      fetches no live page for the agent, so a live page is read only under the workspace's fetch
      policy (`docs/unified-fetch.md`). The model
      can still open a page from OpenAI's cache (an `open_page` call, in 1 of 3 captures of the
-     built code on 2026-11-24), and that is recorded too.
+     built code on 2026-11-24), and that is recorded too. A request whose `reasoning.effort` is
+     `minimal` does not carry the tool: OpenAI refuses the two together (g1). Such a chat
+     searches as one with no tool does.
    Rejected: a Workshop tool that asks the provider in a second request (the first design).
 
 2. **One setting says where searches run.** Admin → Gatekeepers → Web Search → **Search
@@ -199,7 +201,9 @@ Each names the alternative we reject and why.
      nothing else follow, which a steer, an approval or Stop can break. So the wrapper drops it.
      Nothing is billed for it, and the model asks again if it still wants it (a3 without it, then
      the tool results: 200, searched again; p4 without it, then a user message: 200). Every kept
-     message is then whole, and a paused turn ends there.
+     message is then whole, and a paused turn ends there. Nothing the stream holds of such a
+     search fails the response. A response that finished one search and hit its output cap in
+     the query of the next is kept, with the finished search.
    - **Without its thinking, where a reply loses its thinking.** A pass that rewrites an earlier
      prompt, to name attachments past the inline limits by path, drops the thinking of the
      replies after it. The kept content loses its thinking with them and keeps its search:
@@ -212,9 +216,10 @@ Each names the alternative we reject and why.
    left. Such a response counts as unmeasured, and the estimate that already covers unmeasured
    chats takes over until the next response that ran no search. For that estimate, kept content
    weighs its bytes divided by 2 (5 samples: 2% under to 25% over). The `usage` pi reports is not
-   changed, because it is what the provider bills. A size that another model measured does not
-   count what this model is sent back for its searches, so a pass after a switch back to the
-   model that searched counts as unmeasured too.
+   changed, because it is what the provider bills. Kept content goes back to the model that
+   produced it and to no other. So a size that another model measured is too small for the model
+   that is sent the content, and too large for a model that is not. A pass after a model switch
+   counts as unmeasured while a stored reply of the chat holds kept content.
    Cost: a response that searched and also called a tool reloads the pass, as an unmeasured one
    does today. On Claude that is at most five times in a user turn. A turn that ends on a
    response that searched is not cache-warmed, as an unmeasured one is not.
@@ -362,7 +367,9 @@ description of `gatekeeper-websearch`.
 - **Not measured:** Opus, Sonnet and GPT-6.2; reasoning models that open pages; a gateway billed
   to credits, which is also every user who pays through their own Cloudflare account; what
   OpenAI leaves out of a search above its 128,000-token search window (a request of about
-  154,500 tokens searched and answered, w1); a pass reload's cost. The canary runs were the first
+  154,500 tokens searched and answered, w1); a pass reload's cost; a reasoning level that pi
+  sends to OpenAI as an input item in place of `reasoning.effort`, which the check for
+  `minimal` does not read (no suggested model lists Minimal). The canary runs were the first
   design's one-search requests, not searches inside a turn.
 
 ## Decisions a reviewer may overrule
@@ -471,6 +478,11 @@ Kept content against the tokens it added (summed input minus the prompts before 
 - **A reply that searched, sent back after an earlier prompt was rewritten** (2 runs). The next
   request returned 200 with the reply as sent, as sent without its thinking, and in pi's form
   without its thinking.
+- **g1, OpenAI at the effort `minimal`** (the admin's Test of `gpt-5` before it is added, through
+  the gateway, with the tool). "No level set", Low, Medium and High answered. Minimal returned
+  400: "The following tools cannot be used with reasoning.effort 'minimal': web_search." With
+  the tool left off at that effort, all five answered. `gpt-6-luna` answered with the tool at
+  Off and at Low.
 
 ### Cost, from the logged costs and token counts
 

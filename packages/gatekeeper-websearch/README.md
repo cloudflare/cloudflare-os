@@ -101,6 +101,8 @@ request. The Workshop does that, and this gatekeeper takes no part in such a sea
 - A provider account that has web search off refuses every request that carries the tool, so
   each such chat fails on every message. A model's Test in the Models tab sends the tool, for that
   model alone. So test your Anthropic and OpenAI models right after you choose it.
+- A request to an OpenAI model at the reasoning effort `minimal` carries no tool, because OpenAI
+  refuses the two together (`gpt-5`, 2026-11-25). Such a chat searches through `WEB_SEARCH`.
 
 Every other search still comes to this gatekeeper, through `WEB_SEARCH`:
 
