@@ -797,47 +797,30 @@ export type BaseValues = BaseCells<SpreadsheetCellValue>;
 export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
 ): BaseCells<T> {
-  // The pieces by the bands of `ROW_BAND` rows of their sheet they reach, in piece order, so the
-  // pieces of a row are looked for among those near it and not among every piece of the sheet.
-  let bandsOn = new Map<number, Map<number, number[]>>();
+  // The pieces by the cells of `ROW_BAND` rows and `COLUMN_BAND` columns of their sheet they
+  // reach, in piece order, made once: a lookup looks among the pieces near its cell, not every
+  // piece of its sheet, whatever order it is asked in. A guarded area that queued insertions or
+  // deletions cut up has hundreds, across its rows or its columns, and a guard walks many areas
+  // over the same rows.
+  let near = new Map<string, number[]>();
   pieces.forEach(({ sheetId, rect }, i) => {
-    let bands = bandsOn.get(sheetId);
-    if (!bands) bandsOn.set(sheetId, bands = new Map());
     for (let band = bandOf(rect.startRow); band <= bandOf(rect.endRow - 1); band++) {
-      let on = bands.get(band);
-      if (on) on.push(i);
-      else bands.set(band, [i]);
+      for (let columns = columnBandOf(rect.startColumn); columns <= columnBandOf(rect.endColumn - 1); columns++) {
+        let key = `${sheetId}:${band}:${columns}`;
+        let on = near.get(key);
+        if (on) on.push(i);
+        else near.set(key, [i]);
+      }
     }
   });
-  // The pieces that hold the row last asked for, by the bands of `COLUMN_BAND` columns they
-  // reach, in piece order. Every caller walks an area a row at a time (`rewriteWork`,
-  // `enteredContent` and the simulated read all loop rows, then columns), so a run of lookups
-  // shares one index, and a lookup costs the pieces that hold its row near its column, not every
-  // piece of its sheet: a guarded area that queued insertions or deletions cut up has hundreds,
-  // across its rows or its columns. A caller that asked in another order would get the same
-  // answers at the cost of indexing the pieces near the row a lookup.
-  let heldSheet: number | undefined;
-  let heldRow = 0;
-  let holding = new Map<number, number[]>();
   return (sheetId, row, column) => {
-    if (sheetId !== heldSheet || row !== heldRow) {
-      holding = new Map();
-      for (let i of bandsOn.get(sheetId)?.get(bandOf(row)) ?? []) {
-        let { rect } = pieces[i];
-        if (values[i]?.[row - rect.startRow] === undefined) continue;
-        for (let band = columnBandOf(rect.startColumn); band <= columnBandOf(rect.endColumn - 1); band++) {
-          let on = holding.get(band);
-          if (on) on.push(i);
-          else holding.set(band, [i]);
-        }
+    let candidates = near.get(`${sheetId}:${bandOf(row)}:${columnBandOf(column)}`) ?? [];
+    for (let at = candidates.length - 1; at >= 0; at--) {
+      let { rect } = pieces[candidates[at]];
+      if (row < rect.startRow || row >= rect.endRow || column < rect.startColumn || column >= rect.endColumn) {
+        continue;
       }
-      heldSheet = sheetId;
-      heldRow = row;
-    }
-    let near = holding.get(columnBandOf(column)) ?? [];
-    for (let at = near.length - 1; at >= 0; at--) {
-      let { rect } = pieces[near[at]];
-      let value = values[near[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
+      let value = values[candidates[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
       if (value !== undefined && value !== null) return value;
     }
     return null;

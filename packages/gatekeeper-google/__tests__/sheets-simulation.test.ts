@@ -1063,13 +1063,10 @@ describe("baseValues", () => {
 
     expect(content).toEqual(enteredContent(g, [area], keyedValues(pieces, values)));
     expect(content[0][479 + 25][99 + 25]).toBe("479:99");
-    // Each walk asks for the 480 rows Google holds, 100 cells a row. A row's first cell looks at
-    // each piece that reaches the row's band of 256 rows once, to index the 26 that hold the row
-    // by band of 16 columns: 354 a row on average here, against all 676 of the sheet without the
-    // bands. A cell then looks through its band's list from its end until its own piece: the
-    // columns come in runs of 3, then 24 runs of 4, then 1, so a band holds 5 or 6 pieces and a
-    // row's cells look at 319 (1,375 with no column bands). Two walks.
-    expect(reads).toBe(645_696);
+    // Each walk asks for the 480 rows Google holds, 100 cells a row. A cell looks through the
+    // pieces that reach its band of 256 rows and 16 columns, indexed once, from the last, and
+    // reads the values of none but its own: one read a cell, 48,000 a walk. Two walks.
+    expect(reads).toBe(96_000);
     // Looking through every piece for every cell would be 48,000 * 676, twice: 64,896,000.
     expect(reads).toBeLessThan(3_000_000);
   });
