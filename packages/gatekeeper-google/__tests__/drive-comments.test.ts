@@ -1,4 +1,6 @@
-import { ActionJournal, defineActions, type JournalEntry } from "@gadgets/gatekeeper-kit/actions";
+import {
+  ActionApplyError, ActionJournal, defineActions, type JournalEntry,
+} from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +8,7 @@ import { AccessTokenCache } from "../src/auth-retry";
 import type {
   DocsRange, DocsSuggestionRecord, GoogleDocsApi, GoogleDocsDocument, StructuralElement,
 } from "../src/docs-api";
+import { DOC_ROW_BYTES } from "../src/docs-store";
 import { GoogleApiError } from "../src/google-response";
 import {
   DriveApi, DriveApiRequestError, type DriveCommentRecord, type DriveReplyRecord,
@@ -204,7 +207,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
   let doc = { current: docOf(DOC_TEXT), suggestions: [] as DocsSuggestionRecord[] };
   let docs = {
     getDocumentWithSuggestions: vi.fn<GoogleDocsApi["getDocumentWithSuggestions"]>(
-      async () => ({ document: doc.current, suggestions: doc.suggestions })),
+      async () => ({ document: structuredClone(doc.current), suggestions: doc.suggestions })),
     getRevisionId: vi.fn<GoogleDocsApi["getRevisionId"]>(async () => doc.current.revisionId),
     insertComment: vi.fn<GoogleDocsApi["insertComment"]>(async () => "doco.anchored"),
     suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => ({ id: "suggest.s1", threadSaved: true })),
@@ -1356,6 +1359,39 @@ describe("Drive comment listings", () => {
   });
 });
 
+/** A tab body of one paragraph for each of `paragraphs`, its parts in order from index 1. */
+function paragraphsOf(paragraphs: (string | { person: string })[][]): { content: StructuralElement[] } {
+  let at = 1;
+  return { content: [
+    { startIndex: 0, endIndex: 1, sectionBreak: {} },
+    ...paragraphs.map((parts): StructuralElement => {
+      let startIndex = at;
+      let elements = parts.map(part => {
+        let from = at;
+        at += typeof part === "string" ? part.length : 1;
+        return typeof part === "string"
+          ? { startIndex: from, endIndex: at, textRun: { content: part, textStyle: {} } }
+          : { startIndex: from, endIndex: at, person: { personProperties: { name: part.person } } };
+      });
+      return { startIndex, endIndex: at,
+        paragraph: { elements, paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } };
+    }),
+  ] };
+}
+
+/** The harness's Doc with tab `t.0` holding `body`. */
+function docWith(body: { content: StructuralElement[] }): GoogleDocsDocument {
+  let document = docOf(DOC_TEXT);
+  document.tabs[0].body = body;
+  return document;
+}
+
+/** A tab body of 400 paragraphs of 400 characters, then a paragraph of the parts `last`. */
+const manyParagraphs = (last: (string | { person: string })[]) => paragraphsOf([
+  ...Array.from({ length: 400 }, (_, row) => [`${`Row ${row} of the plan. `.padEnd(399, "-")}\n`]),
+  last,
+]);
+
 describe("comments that quote a Doc, and suggested edits, through the Docs API", () => {
   const QUOTE_GONE = "The quoted text is no longer in the Doc exactly once, so this can't be " +
     "attached to it. Queue it again with text the Doc has now.";
@@ -1741,6 +1777,94 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
       createdTime: new Date(TARGET.queuedAt), pending: true,
     });
     expect(pendingSuggestion(3, edit())).not.toHaveProperty("note");
+  });
+
+  it("an approval finds the quote in a Doc of many body elements", async () => {
+    let { doc, docs, submit, apply } = harness();
+    doc.current = docWith(manyParagraphs(["The launch is in May. Costs are final.\n"]));
+    // 400 paragraphs of 400 indexes stand before the last, whose text starts at 160,001.
+    let costs = { startIndex: 160_023, endIndex: 160_038, tabId: "t.0" };
+    let may = { startIndex: 160_018, endIndex: 160_021, tabId: "t.0" };
+
+    expect(await apply(await submit("createComment", ANCHORED))).toBeNull();
+    expect(docs.insertComment).toHaveBeenCalledWith("doc-1", "Are they?", costs, "rev-1");
+    expect(await apply(await submit("suggestEdit", edit()))).toBeNull();
+    expect(docs.suggest).toHaveBeenCalledWith("doc-1", [
+      { deleteContentRange: { range: may } },
+      { insertText: { location: { index: 160_018, tabId: "t.0" }, text: "June" } },
+    ], "rev-1");
+    // Text each of the 400 paragraphs holds is found in every one of them.
+    let repeated = await submit("createComment", { ...ANCHORED, anchor: { tabId: "t.0", text: "of the plan" } });
+    expect(await apply(repeated)).toBe(QUOTE_GONE);
+    expect(docs.getDocumentWithSuggestions).toHaveBeenCalledTimes(3);
+  });
+
+  it("an approval of a suggestion refuses part of a chip in a later body element", async () => {
+    let { doc, docs, actions, journal, submit, apply } = harness();
+    doc.current = docWith(manyParagraphs(["Ask ", { person: "Alice" }, " by May.\n"]));
+
+    let part = await submit("suggestEdit", edit({ oldText: "lice by" }));
+    let refused = await actions.apply(part).then(() => undefined, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(ActionApplyError);
+    expect((refused as Error).message).toBe(QUOTE_GONE);
+    expect(((refused as Error).cause as Error).message).toMatch(/^That text takes in part of a smart chip/);
+    expect(journal.get(part)?.state).toBe("failed");
+    expect(docs.suggest).not.toHaveBeenCalled();
+
+    // A comment's anchor takes the chip whole: "Ask " is 160,001..160,005 and the chip one index.
+    let anchored = await submit("createComment", { ...ANCHORED, anchor: { tabId: "t.0", text: "lice by" } });
+    expect(await apply(anchored)).toBeNull();
+    expect(docs.insertComment).toHaveBeenCalledWith("doc-1", "Are they?",
+      { startIndex: 160_005, endIndex: 160_009, tabId: "t.0" }, "rev-1");
+  });
+
+  it("an approval sends on the revision of the answer it searched", async () => {
+    for (let kind of ["createComment", "suggestEdit"] as const) {
+      let { doc, docs, submit, apply } = harness();
+      let id = kind === "createComment" ? await submit(kind, ANCHORED) : await submit(kind, edit());
+      // The Doc moved between the queueing and the approval.
+      doc.current = docOf(`New. ${DOC_TEXT}`, "rev-7");
+      expect(await apply(id), kind).toBeNull();
+      if (kind === "createComment") {
+        expect(docs.insertComment).toHaveBeenCalledWith(
+          "doc-1", "Are they?", { ...COSTS, startIndex: 28, endIndex: 43 }, "rev-7");
+      } else {
+        expect(docs.suggest).toHaveBeenCalledWith("doc-1", [
+          { deleteContentRange: { range: { ...MAY, startIndex: 23, endIndex: 26 } } },
+          { insertText: { location: { index: 23, tabId: "t.0" }, text: "June" } },
+        ], "rev-7");
+      }
+      // One read of the Doc, and no other request for its revision.
+      expect(docs.getDocumentWithSuggestions, kind).toHaveBeenCalledTimes(1);
+      expect(docs.getRevisionId, kind).not.toHaveBeenCalled();
+    }
+  });
+
+  it("an approval places a quote in a paragraph that a stored copy would refuse", async () => {
+    for (let kind of ["createComment", "suggestEdit"] as const) {
+      let { doc, docs, submit, apply } = harness();
+      let sendOf = kind === "createComment" ? docs.insertComment : docs.suggest;
+      let id = kind === "createComment" ? await submit(kind, ANCHORED) : await submit(kind, edit());
+      // A paragraph with no style, here the one that holds the quoted text: the copy's pruning
+      // refuses it, and the approval's search reads the answer as Google sent it.
+      doc.current = docOf(DOC_TEXT);
+      delete (doc.current.tabs[0].body.content[1].paragraph as { paragraphStyle?: unknown }).paragraphStyle;
+
+      expect(await apply(id), kind).toBeNull();
+      expect(sendOf, kind).toHaveBeenCalledTimes(1);
+      expect(sendOf.mock.calls[0].at(-1), kind).toBe("rev-1");
+    }
+  });
+
+  it("an approval on a Doc with an element past a stored row places the quote", async () => {
+    let { doc, docs, submit, apply } = harness();
+    let large = "x".repeat(DOC_ROW_BYTES);
+    doc.current = docWith(paragraphsOf([[`${large}\n`], ["The launch is in May. Costs are final.\n"]]));
+
+    expect(await apply(await submit("createComment", ANCHORED))).toBeNull();
+    let from = 1 + large.length + 1;
+    expect(docs.insertComment).toHaveBeenCalledWith("doc-1", "Are they?",
+      { startIndex: from + 22, endIndex: from + 37, tabId: "t.0" }, "rev-1");
   });
 });
 

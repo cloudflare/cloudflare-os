@@ -2189,7 +2189,9 @@ export type ActionFileStorage = { readonly kv: KvScannable;
 export class ActionFileStore {
   constructor(storage: ActionFileStorage, options: ActionFileStoreOptions);
   capture(bytes: Uint8Array): Promise<ActionFileReference>;
+  captureStream(content: ReadableStream<Uint8Array>): Promise<ActionFileReference>;
   read(file: ActionFileReference): Promise<Uint8Array>;
+  readStream(file: ActionFileReference): Promise<ReadableStream<Uint8Array>>;
   delete(file: ActionFileReference | undefined): void;
   pruneUnreferenced(referencedHandles: ReadonlySet<string>, createdBefore: number): void;
 }
@@ -2198,7 +2200,11 @@ export class ActionFileStore {
 `ActionFileStore` keeps queued-action bytes out of action records as bounded, SHA-256-checked
 one-MiB chunks. Capture writes the manifest, chunks, allocation, and aggregate accounting in one
 synchronous transaction; deletion removes the same record family and releases its allocation in
-one transaction (`action-files.ts:4-35,53-221`). It is consumed today
+one transaction (`action-files.ts`). `captureStream()` takes a file too large to hold, storing each
+chunk with its allocation and counter in a transaction of its own and the manifest last, and
+`readStream()` gives a file back a chunk at a time, holding the final chunk until the whole file's
+digest matches; both use workerd's `crypto.DigestStream`. A file is limited to 10,000 chunks, the
+most four-digit chunk keys keep in index order. It is consumed today
 by google's `GmailForwardSnapshotStore` for exact inline-forward source snapshots
 (`gmail-state.ts:5-34`; `gmail.ts:255-273,730-744`) and by `ConfluenceStore` for pending attachment
 uploads, including orphan pruning and release after resolution
@@ -2770,8 +2776,8 @@ whose entities are small do.
 **No stored base.** The leaf keeps none of a provider's state in Durable Object storage, and the
 kit ships no store for a value larger than one stored value. A gatekeeper that keeps a copy of a
 provider's state keeps the copy's lifecycle with it (the fetch, the revision pin, noting a write,
-the recheck, the drop): by the package's rule a leaf is for behaviour several gatekeepers share.
-The fold needs neither.
+the recheck, the drop): one does today, for a Google Doc, and by the package's rule a leaf is for
+behaviour several gatekeepers share. The fold needs neither.
 
 The list hooks:
 
@@ -2823,7 +2829,7 @@ Who uses what:
 
 | | Entities | List hooks | Status |
 |---|---|---|---|
-| Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | planned |
+| Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | in the tree |
 | Sheets | one: the grid | none | planned |
 | Slides | one: the deck | none | planned |
 | PagerDuty | incidents | the incident listing | planned |
@@ -3925,5 +3931,5 @@ recorded here because the pass found it. Each entry names why it waits and what 
   frontier }` that both can call.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
-Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
-general retry executor (the policies differ, not the loops).
+Zylo returns `expires_on`) and a general retry executor (the policies differ, not the loops).
+Streaming `ActionFileStore` capture, rejected while nothing needed it, is now in the leaf (§4.17).

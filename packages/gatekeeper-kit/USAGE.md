@@ -668,14 +668,26 @@ Store action file bytes with `ActionFileStore`. Put only the bounded `ActionFile
 action payload. Journal records must stay small, and approval text must describe the same bytes that
 will be applied.
 
+`capture()` and `read()` each hold about twice the file's size at once, so a file too large for
+that goes through `captureStream()` and back out through `readStream()`, whatever `maxFileBytes`
+allows; both need workerd's `crypto.DigestStream`. They store and give 1 MiB chunks, but a capture
+also holds each piece its stream gives, as large as the stream makes it, and a copy of the rest of
+one that spills into the next chunk, so the source's pieces bound its memory, not the store. A
+streamed capture counts each chunk against `maxTotalBytes` as it is stored and writes the manifest
+last. One that fails deletes what it stored; one cut off before it could, by an evicted isolate, a
+source that stalls, or a cleanup that itself failed, is refused by reads and left for the sweep
+below. `readStream()` gives the final chunk only once the whole file's digest has matched, so a
+resumable upload fed from it never completes with corrupted bytes.
+
 Release those bytes yourself — the kit never collects them, and every capture counts against
 `maxTotalBytes` until it is deleted. Call `delete(reference)` when the action's record goes away:
 on resolution normally, but only when `journal.retire(id)` removes an expired retained record under
 `retainApplied: true`, since that record is what a revert reads back. Sweep orphans with
 `pruneUnreferenced(referenced, createdBefore)`
 before a new capture, passing every handle your pending **and retained** records name, plus a cutoff
-old enough to spare a capture whose submission is still in flight. An orphan outlives a rejected
-action, a terminal failure, and a capture whose `submit` never landed; without a sweep they
+old enough to spare a capture whose submission is still in flight; a streamed capture's allocation
+is dated when it began, so the cutoff must also spare one still being streamed. An orphan outlives a
+rejected action, a terminal failure, and a capture whose `submit` never landed; without a sweep they
 accumulate until the cap refuses every new file-backed action.
 
 A declaration using `delivery: "continue-with-simulation"` must project pending actions onto later

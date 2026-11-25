@@ -32,7 +32,7 @@ import { runAgent, type AgentHooks } from "../src/agent.js";
 import { completeText } from "../src/ai-invoke.js";
 import { getModel, type ModelHandle } from "../src/ai-models.js";
 import {
-  WEB_SEARCH_FEE, withBuiltInSearch, withoutThinking, type BuiltInSearchRecord,
+  WEB_SEARCH_FEE, withBuiltInSearch, type BuiltInSearchRecord,
 } from "../src/built-in-search.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type {
@@ -539,23 +539,6 @@ describe("Anthropic's web search tool", () => {
         .result();
     expect(JSON.stringify(off.bodies[0]?.tools)).not.toContain("web_search");
     expect(JSON.stringify(assistantContents(off.bodies[0]))).toBe(JSON.stringify([ANSWER_CONTENT]));
-  });
-
-  // A pass that rewrote an earlier prompt drops the thinking of the replies after it.
-  it("sends a reply back without its thinking, and with its search, once that is dropped",
-      async () => {
-    const { handle, bodies, respond, search, message } = await answered(ANSWER);
-    expect(blockTypes(ANSWER_CONTENT)).toContain("thinking");
-    respond(CLAUDE_DONE);
-    await search.stream(handle.model, {
-      messages: [system, QUESTION, withoutThinking(message), user("Thanks.")],
-    }).result();
-
-    const [sent] = assistantContents(bodies[1]);
-    expect(JSON.stringify(sent)).toBe(JSON.stringify(
-        ANSWER_CONTENT.filter(block => block.type !== "thinking")));
-    expect(blockTypes(sent)).toContain("web_search_tool_result");
-    expectSendable(bodies[1]);
   });
 
   // The captured answer up to the thinking after its search, then a second search that the

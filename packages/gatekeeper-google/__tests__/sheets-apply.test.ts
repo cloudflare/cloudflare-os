@@ -35,8 +35,9 @@ class FakeSheets {
   onSend?: () => void;
   #held: BatchRequest[][] = [];
 
-  api: Pick<GoogleSheetsApi, "getMetadata" | "readEntered" | "getDeveloperMetadata" | "batchUpdate"> = {
-    getMetadata: async spreadsheetId => {
+  api: Pick<GoogleSheetsApi, "getMetadataWithMerges" | "readEntered" | "getDeveloperMetadata" | "batchUpdate"> = {
+    // The sheet holds no merges.
+    getMetadataWithMerges: async spreadsheetId => {
       this.calls++;
       return { id: spreadsheetId, title: "Budget", sheets: SHEETS, protectedRanges: [] };
     },

@@ -27,7 +27,7 @@
 import {
   buildDescription, codeSpan, type ActionDescriptionBuilder,
 } from "@gadgets/gatekeeper-kit/action-description";
-import type { Api, AssistantMessage, Context, Model, TextContent } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, TextContent } from "@earendil-works/pi-ai";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { z } from "zod";
 import type { ModelHandle, ModelStreamOptions } from "./ai-models.js";
@@ -230,19 +230,6 @@ export function keptForModel(stored: StoredAssistantMessage, model: Model<Api>)
   }
   const { providerContent: _, ...written } = stored;
   return written;
-}
-
-/**
- * `message` without its thinking, in what Anthropic sent for a search too. A prompt that was
- * rewritten since makes a reply's thinking invalid (see runAgentPass). Its search results stay
- * valid: Anthropic takes the content back without its thinking.
- */
-export function withoutThinking(message: AssistantMessage): AssistantMessage {
-  const bare = { ...message, content: message.content.filter(block => block.type !== "thinking") };
-  if (!("providerContent" in message) || typeof message.providerContent !== "string") return bare;
-  const kept = Blocks.parse(JSON.parse(message.providerContent)).filter(block =>
-      block.type !== "thinking" && block.type !== "redacted_thinking");
-  return Object.assign(bare, { providerContent: JSON.stringify(kept) });
 }
 
 // `context` with a marker leading each message that holds kept content, and the rewrite of the

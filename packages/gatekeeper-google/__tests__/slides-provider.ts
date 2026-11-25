@@ -25,6 +25,35 @@ export function serveFakes(fakes: readonly ProviderFake[]): void {
   }));
 }
 
+/**
+ * What the fakes served since a meter was started. `mostOpen` is requests the fake had open at
+ * once: it has no limit on connections, where a deployed Worker holds six and queues the rest.
+ */
+export type FetchMeter = { fetches: number; responseBytes: number; open: number; mostOpen: number };
+
+/**
+ * Meters the `fetch` now stubbed (call it after `install()`): every request counts as open from
+ * its call until its answer is ready, and is held for one turn of the event loop first, so
+ * requests started together are open together. `responseBytes` are the bodies' bytes.
+ */
+export function meterFetches(): FetchMeter {
+  let meter: FetchMeter = { fetches: 0, responseBytes: 0, open: 0, mostOpen: 0 };
+  let served = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    meter.fetches++;
+    meter.mostOpen = Math.max(meter.mostOpen, ++meter.open);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      let response = await served(input, init);
+      meter.responseBytes += (await response.clone().arrayBuffer()).byteLength;
+      return response;
+    } finally {
+      meter.open--;
+    }
+  });
+  return meter;
+}
+
 /** One provider index of a shape's text: a character, or an AutoText. */
 type Unit = string | { auto: string };
 

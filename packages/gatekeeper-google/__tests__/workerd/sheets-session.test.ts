@@ -11,7 +11,7 @@ import {
   GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl, NO_CHANGES,
 } from "../../src/sheets";
 import { officeFileError } from "../../src/office-conversion";
-import { FORMAT_READ_FIELDS } from "../../src/sheets-format";
+import { FORMAT_AREAS_READ_FIELDS, FORMAT_LINES_READ_FIELDS, FORMAT_READ_FIELDS } from "../../src/sheets-format";
 import { parseRange } from "../../src/sheets-model";
 import type { PlannedChange, QueuedChange } from "../../src/sheets-simulation";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
@@ -86,6 +86,12 @@ function named({ sheetId, startRowIndex, endRowIndex, startColumnIndex, endColum
 
 /** The grid ranges of each `spreadsheets:getByDataFilter` format read, in order. */
 let formatFilterReads: Required<FixtureGridRange>[][];
+/** The field mask of each of those reads, in order. */
+let formatFilterMasks: string[];
+/** Whether Google refuses those reads, as for a grant that may only read. */
+let formatFilterForbidden: boolean;
+/** The sheet IDs each read of merges named, in order. */
+let mergeReads: number[][];
 
 /**
  * The formats Google holds in `cells` of sheet `sheetId`: each cell's font size names its sheet,
@@ -102,6 +108,9 @@ beforeEach(() => {
   dataFilterReads = [];
   enteredReads = [];
   formatFilterReads = [];
+  formatFilterMasks = [];
+  formatFilterForbidden = false;
+  mergeReads = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
     let url = new URL(request.url);
@@ -124,7 +133,12 @@ beforeEach(() => {
     }
     if (url.pathname.endsWith(":getByDataFilter")) {
       let body = await request.json() as { dataFilters: { gridRange: Required<FixtureGridRange> }[] };
-      // Entered values for the guard and structural reads, or formats: the field mask says which.
+      // Entered values for the guard and structural reads, merges, or formats: the field mask says
+      // which. No sheet has a merge.
+      if (url.searchParams.get("fields") === "sheets(properties(sheetId),merges)") {
+        mergeReads.push(body.dataFilters.map(({ gridRange }) => gridRange.sheetId));
+        return Response.json({ sheets: body.dataFilters.map(({ gridRange: { sheetId } }) => ({ properties: { sheetId } })) });
+      }
       if (url.searchParams.get("fields")?.includes("userEnteredValue")) {
         let { dataFilters } = body;
         enteredReads.push(dataFilters.map(({ gridRange }) => gridRange));
@@ -142,6 +156,16 @@ beforeEach(() => {
         });
       }
       formatFilterReads.push(body.dataFilters.map(({ gridRange }) => gridRange));
+      // The replay read the merges already: a format read by grid range asks for none, and for
+      // no cell's format where it reads line sizes alone.
+      let fields = url.searchParams.get("fields");
+      formatFilterMasks.push(fields ?? "");
+      if (formatFilterForbidden) {
+        return Response.json({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 });
+      }
+      if (fields !== FORMAT_AREAS_READ_FIELDS && fields !== FORMAT_LINES_READ_FIELDS) {
+        throw new Error(`a format read by grid range asks for ${url.searchParams.get("fields")}`);
+      }
       // One sheet per range, in an order of Google's own.
       return Response.json({
         sheets: body.dataFilters.toReversed().map(({ gridRange }) => {
@@ -247,7 +271,8 @@ describe("Google Sheets spreadsheet session", () => {
     expect(requested()).toEqual([
       ["/v4/spreadsheets/sheet-1",
         "spreadsheetId,properties(title,locale,timeZone)," +
-        "sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))"],
+        "sheets(properties(sheetId,title,index,hidden," +
+        "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)))"],
       ["/v4/spreadsheets/sheet-1/values:batchGet", null],
     ]);
     expect(providerFetches[1].searchParams.get("valueRenderOption")).toBe("FORMULA");
@@ -268,14 +293,19 @@ describe("Google Sheets spreadsheet session", () => {
     expect(await session.readRange("'Q3 Plan'!A1:B1"))
       .toEqual({ range: "'Q3 Plan'!A1:B1", values: [["saved", 1]] });
 
-    // Each read fetches the metadata, to replay the queued change over, and the values.
+    // Each read fetches the metadata, to replay the queued change over, the merges of the sheet it
+    // writes, and the values.
     let metadata = ["/v4/spreadsheets/sheet-1",
       "spreadsheetId,properties(title,locale,timeZone)," +
       "sheets(properties(sheetId,title,index,hidden," +
       "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount))," +
       "protectedRanges(range,unprotectedRanges,requestingUserCanEdit,warningOnly))"];
+    let merges = ["/v4/spreadsheets/sheet-1:getByDataFilter", "sheets(properties(sheetId),merges)"];
     let values = ["/v4/spreadsheets/sheet-1/values:batchGet", null];
-    expect(requested().toSorted()).toEqual([metadata, metadata, metadata, values, values, values]);
+    expect(requested().toSorted()).toEqual([metadata, metadata, metadata, values, values, values, merges, merges, merges]);
+    expect(providerFetches.filter(url => !url.pathname.endsWith("/values:batchGet"))
+      .every(url => url.searchParams.get("prettyPrint") === "false")).toBe(true);
+    expect(mergeReads).toEqual([[0], [0], [0]]);
   });
 
   it("reports a queued change that no longer applies on every read, and shows no protected range", async () => {
@@ -493,6 +523,8 @@ describe("Google Sheets format reads", () => {
     expect(await session.readFormats("sales!a19:b21")).toEqual({
       range: "Sales!A19:B20",
       formats: [[{ fontSize: 1800 }, { fontSize: 1801 }], [{ fontSize: 1900 }, { fontSize: 1901 }], [null, null]],
+      rowHeights: [21, 21, null],
+      columnWidths: [100, 100],
     });
     expect(requested()).toEqual([["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS]]);
     expect(providerFetches[0].searchParams.getAll("ranges")).toEqual(["sales!a19:b21"]);
@@ -523,11 +555,16 @@ describe("Google Sheets format reads", () => {
     expect(await session.readFormats("'Q3 Plan'!B2:C2")).toEqual({
       range: "'Q3 Plan'!B2:C2",
       formats: [[{ fontSize: 70_101 }, { fontSize: 70_102 }]],
+      rowHeights: [21],
+      columnWidths: [100, 100],
       queuedChangeConflict: "Queued change 2 no longer applies, so it and the changes queued after " +
         "it are not shown: change 1 (writeCells): the spreadsheet has no sheet with ID 9.",
     });
-    // The metadata, to replay the queued changes over, and the formats.
-    expect(requested().map(([, fields]) => fields === FORMAT_READ_FIELDS).toSorted()).toEqual([false, true]);
+    // The metadata, to replay the queued changes over, the merges of the sheets the queued changes
+    // write (9 is gone), and the formats, which answer the merges of the range read: no queued
+    // change touches the sheet read, so its merges are not read whole.
+    expect(requested().map(([, fields]) => fields === FORMAT_READ_FIELDS).toSorted()).toEqual([false, false, true]);
+    expect(mergeReads).toEqual([[0, 9]]);
     expect(formatFilterReads).toEqual([]);
   });
 
@@ -546,6 +583,8 @@ describe("Google Sheets format reads", () => {
         [{ fontSize: 0, ...set }, { fontSize: 1, ...set }, { fontSize: 2 }],
         [{ fontSize: 100 }, { fontSize: 101 }, { fontSize: 102 }],
       ],
+      rowHeights: [21, 21],
+      columnWidths: [100, 100, 100],
     });
     expect(formatFilterReads).toEqual([]);
     expect(await session.readRange("Sales!A1:B1")).toEqual({
@@ -554,6 +593,27 @@ describe("Google Sheets format reads", () => {
     expect(await session.readRange("Sales!A1:B1", { valueMode: "raw" })).toEqual({
       range: "Sales!A1:B1", values: [["saved", 1]],
     });
+  });
+
+  it("reads line sizes alone for a range every cell of which a queued change inserts", async () => {
+    let { session } = newSession([queuedBatch(1, [{ op: "insertColumns", sheetId: 7, start: 1, count: 1 }])]);
+    using _session = session;
+
+    let read = await session.readFormats("'Q3 Plan'!B1:B3");
+    expect(read.pendingCells).toEqual(["B1", "B2", "B3"]);
+    expect(read.rowHeights).toEqual([21, 21, 21]);
+    expect(formatFilterMasks).toEqual([FORMAT_LINES_READ_FIELDS]);
+  });
+
+  it("shows a range a queued change inserts as pending, with no sizes, where the grant may only read", async () => {
+    formatFilterForbidden = true;
+    let { session } = newSession([queuedBatch(1, [{ op: "insertColumns", sheetId: 7, start: 1, count: 1 }])]);
+    using _session = session;
+
+    let read = await session.readFormats("'Q3 Plan'!B1:B3");
+    expect(read.pendingCells).toEqual(["B1", "B2", "B3"]);
+    expect(read.rowHeights).toEqual([null, null, null]);
+    expect(formatFilterMasks).toEqual([FORMAT_LINES_READ_FIELDS]);
   });
 
   it("reads formats by grid range with rows and sheets queued, leaving inserted rows pending", async () => {
@@ -570,6 +630,9 @@ describe("Google Sheets format reads", () => {
         [null, null],
         [{ fontSize: 70_100 }, { fontSize: 70_101 }],
       ],
+      // Google sizes the inserted row from the row beside it.
+      rowHeights: [21, null, 21],
+      columnWidths: [100, 100],
       pendingCells: ["A2", "B2"],
     });
     // The rows around the inserted one, of the sheet Google holds, which no A1 range names.
@@ -577,8 +640,10 @@ describe("Google Sheets format reads", () => {
       { sheetId: 7, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 2 },
       { sheetId: 7, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 },
     ]]);
-    let byDataFilterRead = providerFetches.find(url => url.pathname.endsWith(":getByDataFilter"))!;
-    expect(byDataFilterRead.searchParams.get("fields")).toBe(FORMAT_READ_FIELDS);
+    // The merges of the sheet the queued changes act on, then its formats, without the merges again.
+    expect(providerFetches.filter(url => url.pathname.endsWith(":getByDataFilter"))
+      .map(url => url.searchParams.get("fields"))).toEqual(["sheets(properties(sheetId),merges)", FORMAT_AREAS_READ_FIELDS]);
+    expect(mergeReads).toEqual([[7]]);
     expect(providerFetches.some(url => url.searchParams.has("ranges"))).toBe(false);
     for (let mask of fieldMasks()) for (let field of VALUE_FIELDS) expect(mask).not.toContain(field);
     expect(queue.observations.map(o => o.title)).toEqual(["Read Google Sheets formatting of Plan!A1:B3"]);

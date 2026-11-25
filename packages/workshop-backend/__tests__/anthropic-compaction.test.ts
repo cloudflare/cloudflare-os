@@ -365,4 +365,37 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const lastSummarized = roles(bodies[1]).findLast(role => role !== "system");
     expect(roles(bodies[2])[1]).not.toBe(lastSummarized);
   }));
+
+  // Native compaction cuts only where the role changes. A turn stopped at a step of image reads
+  // leaves the cut the limits need just before the user's next message, after a tool result, the
+  // user's role too; with no thinking after it to lose, the transcript summary cuts there instead.
+  it("summarizes the transcript where native compaction has no cut and no thinking would follow",
+      () => runInDurableObject(env.TEST_OVERSEER.getByName(`anthropic-compaction-${++doCounter}`),
+      async (instance: OverseerDurableObject) => {
+    const impl = instance.impl;
+    const png = new Uint8Array(24);
+    png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    const view = new DataView(png.buffer);
+    view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+    view.setUint32(16, 100); view.setUint32(20, 100);
+    const blob = impl.gitCache.writeBlob(png);
+    const dot = { oid: blob.oid, mimeType: "image/png", name: "dot.png" };
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const chatId = await impl.newChat(user, { profile: OWNER }, "Look at this", { attachments: [dot] });
+    impl.addChatMessages(chatId, AGENT, [{ type: "message", message: "", toolCalls:
+      Array.from({ length: 20 }, (_, i) => ({ toolCallId: `look-${i}`, toolName: "readFile" as const,
+        input: { workpiece: "ATTACHMENTS", filename: "dot.png" }, observedOid: blob.oid, imageBytes: 24 })),
+    }]);
+    await impl.sendChatMessage(user, { profile: OWNER }, chatId, "And this", { attachments: [dot] });
+    const { handle, bodies, respond } = claude();
+    const images = (body: Record<string, unknown> | undefined) =>
+        JSON.stringify(body?.messages).match(/"type":"image"/g)?.length ?? 0;
+    respond(...REPLY_EVENTS);
+    respond(...REPLY_EVENTS);
+    await runAgent(impl, handle, chatId, AGENT, new AbortController().signal,
+        OWNER, { provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "" });
+    expect(bodies[0]?.compaction).toBeUndefined();
+    expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({ summary: "Done." });
+    expect(images(bodies[1])).toBe(1);
+  }));
 });

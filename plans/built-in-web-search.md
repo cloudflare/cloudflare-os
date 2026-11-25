@@ -209,10 +209,6 @@ Each names the alternative we reject and why.
      message is then whole, and a paused turn ends there. Nothing the stream holds of such a
      search fails the response. A response that finished one search and hit its output cap in
      the query of the next is kept, with the finished search.
-   - **Without its thinking, where a reply loses its thinking.** A pass that rewrites an earlier
-     prompt, to name attachments past the inline limits by path, drops the thinking of the
-     replies after it. The kept content loses its thinking with them and keeps its search:
-     Anthropic took that back in 2 of 2 runs.
    Rejected: a patch or fork of pi (nine or more releases in the seven weeks since 1.0.0).
    Rejected: finding the message by its content (two answers can share their text).
 
@@ -480,9 +476,9 @@ Kept content against the tokens it added (summed input minus the prompts before 
   and both as sent with the tool not declared.
 - **w1, OpenAI above 128,000 tokens.** A request of about 154,500 tokens that declared the tool
   completed, ran one search and answered from it.
-- **A reply that searched, sent back after an earlier prompt was rewritten** (2 runs). The next
-  request returned 200 with the reply as sent, as sent without its thinking, and in pi's form
-  without its thinking.
+- **A reply that searched, sent back without its thinking** (2 runs). The next request returned
+  200 with the reply as sent, as sent without its thinking, and in pi's form without its
+  thinking. No code drops a reply's thinking today: the pass that did left main on 2026-11-25.
 - **g1, OpenAI at the effort `minimal`** (the admin's Test of `gpt-5` before it is added, through
   the gateway, with the tool). "No level set", Low, Medium and High answered. Minimal returned
   400: "The following tools cannot be used with reasoning.effort 'minimal': web_search." With

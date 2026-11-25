@@ -647,7 +647,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
           const searching = args.webSearch && webSearch
               ? withWebSearchTool(args.model, replaced ?? payload) ?? replaced : replaced;
           const bridged = bridgePdfAttachments(args.model.api, searching ?? payload) ?? searching;
-          const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
+          const grouped = groupGeminiFunctionResponses(args.model, bridged ?? payload) ?? bridged;
+          const signed = signGeminiFunctionCalls(args.model, grouped ?? payload) ?? grouped;
           const caching = options.cacheRetention !== "none";
           const split = caching
               ? splitSystemPrompt(args.model, transcript, signed ?? payload) : undefined;
@@ -819,6 +820,40 @@ function cappedForResend(model: Model<Api>, payload: unknown)
 const hasEnabledThinking = (payload: object): boolean =>
     "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
     "type" in payload.thinking && payload.thinking.type === "enabled";
+
+// pi puts Gemini 2.5's tool-result images in user turns of their own, after each function response,
+// so the responses to parallel calls end up split by them, which Google rejects. This moves the
+// responses of consecutive user turns into the first, ahead of the images, without moving any
+// across a model turn or changing their order.
+function groupGeminiFunctionResponses(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "google-generative-ai" || typeof payload !== "object" || payload === null ||
+      !("contents" in payload) || !Array.isArray(payload.contents)) {
+    return undefined;
+  }
+  const isResponse = (part: unknown): boolean =>
+      typeof part === "object" && part !== null && "functionResponse" in part;
+  let responseTurn: { parts: unknown[] } | undefined;
+  let grouped = false;
+  const contents = payload.contents.flatMap((content: unknown) => {
+    if (typeof content !== "object" || content === null || !("role" in content) ||
+        content.role !== "user" || !("parts" in content) || !Array.isArray(content.parts)) {
+      responseTurn = undefined;
+      return [content];
+    }
+    const responses = content.parts.filter(isResponse);
+    if (responses.length === 0) return [content];
+    const rest = content.parts.filter(part => !isResponse(part));
+    const remainder = rest.length ? [{ ...content, parts: rest }] : [];
+    if (responseTurn) {
+      responseTurn.parts.push(...responses);
+      grouped = true;
+      return remainder;
+    }
+    responseTurn = { ...content, parts: [...responses] };
+    return [responseTurn, ...remainder];
+  });
+  return grouped ? { ...payload, contents } : undefined;
+}
 
 // Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
 // The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do

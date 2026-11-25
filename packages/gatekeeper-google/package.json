@@ -8,7 +8,9 @@
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
     "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts",
-    "record:blank-presentation": "node scripts/record-blank-presentation.ts"
+    "record:blank-presentation": "node scripts/record-blank-presentation.ts",
+    "record:docs-fixtures": "node scripts/record-docs-fixtures.ts",
+    "check:docs-fields-mask": "node scripts/check-docs-fields-mask.ts"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*",
