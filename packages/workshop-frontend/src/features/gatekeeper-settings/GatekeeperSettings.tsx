@@ -1,0 +1,51 @@
+import { Select } from '@cloudflare/kumo'
+import type { AdminResourceVendor } from '@gadgets/workshop-shared/api'
+
+type Setting = NonNullable<AdminResourceVendor['settings']>[number]
+
+/** A gatekeeper's own settings, each a select that a deployment admin chooses from. */
+export const GatekeeperSettings = ({ vendorName, settings, disabled, onChoose }: {
+  /** The gatekeeper's name, which goes in each select's accessible name. */
+  vendorName: string
+  /** Every setting the gatekeeper declares, with the value in effect. */
+  settings: Setting[]
+  disabled: boolean
+  /** Called with the option an admin picked for the setting `settingId`. */
+  onChoose: (settingId: string, value: string) => void
+}) => {
+  const shown = settings.filter(({ shownWhen }) => !shownWhen ||
+    settings.find((setting) => setting.id === shownWhen.settingId)?.value === shownWhen.value)
+  if (shown.length === 0) return null
+
+  return (
+    <div className="grid gap-4 px-3 pt-3">
+      {shown.map((setting) => (
+        <Select<string>
+          key={setting.id}
+          label={setting.label}
+          aria-label={`${setting.label} for ${vendorName}`}
+          description={setting.help}
+          className="w-full sm:max-w-xs"
+          disabled={disabled}
+          value={setting.value}
+          onValueChange={(value, { reason }) => {
+            // Only a pick is the admin's. The select also reports changes of its own: to the
+            // value it started with, when the stored value is not one of its options, and to an
+            // option whose first letter is typed while it is closed.
+            if (reason !== 'item-press' || !value || value === setting.value) return
+            onChoose(setting.id, value)
+          }}
+          // A stored value that the gatekeeper no longer offers shows as it is stored. The
+          // gatekeeper refuses to work with it until an admin chooses again.
+          renderValue={(value) =>
+            setting.options.find((option) => option.value === value)?.label ??
+              `${value} (no longer offered)`}
+        >
+          {setting.options.map((option) => (
+            <Select.Option key={option.value} value={option.value}>{option.label}</Select.Option>
+          ))}
+        </Select>
+      ))}
+    </div>
+  )
+}
