@@ -71,8 +71,11 @@ export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024;
 /** Most files one sent message may attach. Chat documents no limit; this keeps approvals readable. */
 export const MAX_CHAT_ATTACHMENTS = 10;
 const MAX_CHAT_ATTACHMENT_FILENAME_LENGTH = 255;
-/** A media type's `type/subtype`, as RFC 9110 tokens: nothing that could break out of a part header. */
-const MEDIA_TYPE_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/**
+ * A media type's `type/subtype`, as RFC 9110 tokens of at most RFC 6838's 127 characters each:
+ * nothing that could break out of a part header or outgrow the queued send that stores it.
+ */
+const MEDIA_TYPE_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,127}\/[A-Za-z0-9!#$%&'*+.^_`|~-]{1,127}$/;
 /** C0 and C1 controls and bidirectional formatting, which could disguise a filename's extension. */
 // oxlint-disable-next-line no-control-regex -- the point is to find control characters
 const UNSAFE_FILENAME_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
@@ -93,7 +96,8 @@ export function normalizeChatAttachments(inputs: readonly ChatAttachmentInput[])
         "characters, with no path separators or control characters.");
     }
     if (!MEDIA_TYPE_RE.test(mimeType)) {
-      throw new Error(`${label}'s mimeType must be a media type such as image/png, with no parameters.`);
+      throw new Error(`${label}'s mimeType must be a media type such as image/png, with no parameters, ` +
+        "and at most 127 characters on each side of the slash.");
     }
     if (content.byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
       throw new Error(`${label} is larger than the ${MAX_CHAT_ATTACHMENT_BYTES}-byte limit.`);
@@ -1192,7 +1196,8 @@ export class ChatApi {
 
   /**
    * Upload one file to a conversation, returning the reference a message created there attaches
-   * it by. An upload nothing attaches stays invisible, so a retry after a lost response is safe.
+   * it by. Google is expected not to show an upload no message attaches (not yet confirmed against
+   * a live conversation), so a retry after a lost response is treated as safe.
    */
   async uploadAttachment(
     spaceName: string,

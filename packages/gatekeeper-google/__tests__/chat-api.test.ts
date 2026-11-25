@@ -672,6 +672,7 @@ describe("Chat attachments", () => {
     ({ filename, mimeType, content });
 
   it("accepts ordinary files, lowercasing their media type", () => {
+    expect(normalizeChatAttachments([file("a.bin", `${"a".repeat(127)}/${"b".repeat(127)}`)])).toHaveLength(1);
     expect(normalizeChatAttachments([file("Release impact.png", "Image/PNG"), file("report.pdf", "application/pdf")]))
       .toMatchObject([{ filename: "Release impact.png", mimeType: "image/png" }, { mimeType: "application/pdf" }]);
     expect(normalizeChatAttachments([file("x.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES))]))
@@ -689,6 +690,7 @@ describe("Chat attachments", () => {
     ["media type parameters", file("a.txt", "text/plain; charset=utf-8"), /mimeType/],
     ["a header injection", file("a.png", "image/png\r\nX-Evil: 1"), /mimeType/],
     ["a bare type", file("a.png", "image"), /mimeType/],
+    ["an overlong media type", file("a.png", `image/${"x".repeat(128)}`), /127 characters/],
     ["a file over the limit", file("a.png", "image/png", new ArrayBuffer(MAX_CHAT_ATTACHMENT_BYTES + 1)), /larger than/],
   ])("refuses %s", (_case, input, message) => {
     expect(() => normalizeChatAttachments([input])).toThrow(message);

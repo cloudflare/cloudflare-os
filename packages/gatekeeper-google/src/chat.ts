@@ -219,8 +219,14 @@ class ChatStore {
 
   submit(action: ChatAction): number {
     const id = this.#kv.get<number>("chat:nextActionId") ?? 1;
+    try {
+      this.#kv.put(`chat:action:${id}`, action);
+    } catch (error) {
+      // Nothing names the files now, so they would hold the connection's quota until a sweep.
+      for (const file of attachmentFiles(action)) this.#files.delete(file);
+      throw error;
+    }
     this.#kv.put("chat:nextActionId", id + 1);
-    this.#kv.put(`chat:action:${id}`, action);
     return id;
   }
 
@@ -1030,6 +1036,32 @@ function deletedTarget(store: ChatStore, actionId: number, cause: unknown): Erro
   store.clearAttempt(actionId);
   return new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
     "Reject it.", { cause });
+}
+
+/** Why a send to exactly some people posted nothing: someone else is in the conversation now. */
+const audienceChanged = (retried: boolean) =>
+  "This Google Chat conversation no longer holds exactly the people this message is for, " +
+  `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
+  "Deny this message to clear it.";
+
+/** Google allows one write a second in each conversation, uploads included. */
+const SPACE_WRITE_INTERVAL_MS = 1000;
+
+/**
+ * Space one send's writes to a conversation a second apart, so that its uploads and its message
+ * don't use up each other's quota and their retries. Others writing there can still collide.
+ */
+function spacedWrites(): <T>(write: () => Promise<T>) => Promise<T> {
+  let finished: number | undefined;
+  return async write => {
+    const wait = finished === undefined ? 0 : finished + SPACE_WRITE_INTERVAL_MS - Date.now();
+    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+    try {
+      return await write();
+    } finally {
+      finished = Date.now();
+    }
+  };
 }
 
 /** What an earlier attempt at this send posted, when Google shows it under the name the send gives it. */
@@ -1854,11 +1886,7 @@ export class GoogleChatGatekeeperImpl
       if (posted) return { spaceName, posted };
     }
     // A retry may follow a post that landed, so it leaves the attempt mark as it is.
-    if (!await hasExactly(api, spaceName, recipients)) {
-      throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
-        `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
-        "Deny this message to clear it.");
-    }
+    if (!await hasExactly(api, spaceName, recipients)) throw new Error(audienceChanged(retried));
     return { spaceName };
   }
 
@@ -1899,23 +1927,30 @@ export class GoogleChatGatekeeperImpl
           };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
-          // Uploads land in the conversation the message is posted to, and stay invisible until it
-          // is. One a lost response leaves behind is never attached, so they can simply be retried.
+          // Uploads go to the conversation the message is posted to. Google is expected not to show
+          // one until a message attaches it, though no live conversation has confirmed that yet, so
+          // one a lost response leaves behind is simply uploaded again.
+          const spaced = spacedWrites();
           const attachments: ChatAttachmentDataRef[] = [];
           for (const { filename, mimeType, file } of action.attachments ?? []) {
             const content = await store.readAttachment(file);
-            attachments.push(await api.uploadAttachment(spaceName, { filename, mimeType, content }));
+            attachments.push(await spaced(() => api.uploadAttachment(spaceName, { filename, mimeType, content })));
+          }
+          // Someone may have joined while the files uploaded, and the message must reach only the
+          // people it was approved for.
+          if (recipients && attachments.length > 0 && !await hasExactly(api, spaceName, recipients)) {
+            throw new Error(audienceChanged(retried));
           }
           // The request id makes Chat itself idempotent, so a retry after a lost response returns
           // the message the first attempt created rather than posting a second one.
-          const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
+          const { id } = await store.attemptWrite(actionId, () => spaced(() => api.createMessage(spaceName, {
             text: action.text,
             ...(threadName !== undefined ? { threadName } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
           }, {
             requestId: action.requestId,
             messageId: clientMessageId(action),
-          }));
+          })));
           // A replayed create echoes the request, not the message Chat stored.
           return readTarget(id);
         };

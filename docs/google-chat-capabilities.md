@@ -198,9 +198,12 @@ may be empty. The gatekeeper keeps exact copies in its own Durable Object storag
 for a connection's queued sends at once) and names each file in the approval by name, media type,
 size and SHA-256, which leaves the description incomplete, since the approver cannot read the
 bytes. Applying the send uploads each file into the conversation it posts to, the one a
-`sendDirectMessage` creates included, and creates the message with them attached; an upload no
-message attaches stays invisible, so uploads are simply retried. Applying or rejecting the send
-frees the copies. Until then the pending message lists its files with `readable: false`, under temporary
+`sendDirectMessage` creates included, and creates the message with them attached. Google is
+expected not to show an upload until a message attaches it, so uploads are simply retried; that
+has not yet been confirmed against a live conversation. Google allows one write a second in a
+conversation, uploads included, so a send spaces its uploads and its message a second apart. A
+send to exactly some people checks again, once its files are uploaded, that nobody else has
+joined. Applying or rejecting the send frees the copies. Until then the pending message lists its files with `readable: false`, under temporary
 IDs; once it is committed, `getMetadata()` lists them with Google's IDs, which `getAttachment()`
 takes. Google refuses some file types, such as
 executables, at upload, and then nothing is posted.

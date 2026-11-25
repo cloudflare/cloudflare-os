@@ -127,6 +127,10 @@ function chatBackend() {
     uploads: [] as Array<{space: string; filename: string; contentType: string; bytes: number[]}>,
     /** Refuse uploads with this status until cleared, as Google does a blocked file type. */
     uploadFailure: 0,
+    /** Someone who joins the conversation while the next file uploads. */
+    joinOnUpload: undefined as ChatMembershipRaw | undefined,
+    /** When each upload and message create arrived, to see how a send spaces its writes. */
+    writeTimes: [] as number[],
     /** Profiles in the organization's directory, matched by email or name prefix. */
     directory: [] as Array<{id: string; name: string; email: string}>,
     /** External shared contacts, which only a directory search for domain contacts returns. */
@@ -181,6 +185,11 @@ function chatBackend() {
         new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
     const uploadTo = /^\/upload\/v1\/(spaces\/[^/]+)\/attachments:upload$/.exec(url.pathname)?.[1];
     if (uploadTo && method === "POST" && url.searchParams.get("uploadType") === "multipart") {
+      state.writeTimes.push(Date.now());
+      if (state.joinOnUpload) {
+        state.members.push(state.joinOnUpload);
+        state.joinOnUpload = undefined;
+      }
       if (state.uploadFailure) return json({error: {status: "INVALID_ARGUMENT"}}, state.uploadFailure);
       const boundary = /boundary=(.+)$/.exec(new Headers(init.headers).get("Content-Type")!)![1];
       // One character per byte, so the media part's bytes survive the split. (TextDecoder's
@@ -271,6 +280,7 @@ function chatBackend() {
         return json({messages: messages.slice(start, end),
           ...(end < messages.length ? {nextPageToken: String(end)} : {})});
       }
+      state.writeTimes.push(Date.now());
       const body = JSON.parse(init.body as string) as typeof state.creates[number]["body"];
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
@@ -1928,6 +1938,34 @@ describe("Starting Google Chat conversations", () => {
       {attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}]});
   });
 
+  it("doesn't upload a new conversation's files again when a retry finds the message posted", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email], "Impact", {
+      attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
+    })).message;
+    // The message is posted, but its response is lost.
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    backend.state.createFailure = 0;
+    await chat.applyAction(1);
+    expect(backend.state.setups).toHaveLength(1);
+    expect(backend.state.uploads).toHaveLength(1);
+    expect(backend.state.creates).toHaveLength(1);
+  });
+
+  it("posts nothing to a group chat someone joined while its files uploaded", async () => {
+    const {backend, chat} = accountChat({groupChat: true});
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "Impact", {
+      attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
+    })).message;
+    backend.state.joinOnUpload = joined("400");
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.uploads).toHaveLength(1);
+    expect(backend.state.creates).toEqual([]);
+  });
+
   it("refuses to start a conversation with anyone outside the directory, or with yourself", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
@@ -2235,6 +2273,10 @@ describe("Google Chat attachments", () => {
     });
     await chat.applyAction(2);
     expect(backend.state.uploads.map(upload => upload.filename)).toEqual(["before.png", "after.png"]);
+    // Google allows one write a second in a conversation, so the uploads and the reply are spaced.
+    const [, ...writes] = backend.state.writeTimes;
+    expect(writes).toHaveLength(3);
+    for (const [index, at] of writes.slice(1).entries()) expect(at - writes[index]).toBeGreaterThanOrEqual(1000);
     expect(backend.state.creates[1].body).toEqual({
       thread: {name: `${SPACE_NAME}/threads/T1`},
       attachment: [
