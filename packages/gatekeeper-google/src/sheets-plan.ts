@@ -669,7 +669,10 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let merges = (sheet.merges ?? []).filter(merge => !contains(rect, merge));
       if (change.op === "unmergeCells") {
         work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withMerges(candidate, merges) : candidate);
-        return [{ unmergeCells: { range } }];
+        // One request a merge it recorded, not one for the range: Google unmerges every merge a
+        // range takes in, so a merge made in it after this was checked would go too, and a merge
+        // that grew past the range is refused whole.
+        return change.merges.map(merge => ({ unmergeCells: { range: gridRange(change.sheetId, merge) } }));
       }
       room(entriesAdded(work, change));
       for (let cleared of mergeCleared(rect, change.merge)) {

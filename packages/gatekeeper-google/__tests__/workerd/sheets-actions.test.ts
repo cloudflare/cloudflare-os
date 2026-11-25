@@ -2796,6 +2796,20 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
     expect(provider.sheets[0].merges).toEqual([]);
   });
 
+  it("unmerges only the merges it was queued over, leaving one made in its range since", async () => {
+    let provider = budget([{ ...sheetMeta(0, "Sales"), merges: [rectOf(0, 0, 1, 2)] }, sheetMeta(7, "Q3 Plan", { index: 1 })]);
+    let sheets = gatekeeper(run);
+    let { actionId } = await sheets.queued([{ op: "unmergeCells", range: "Sales!A1:D1" }]);
+    // A collaborator merges C1:D1 once the approval has checked the range, before the batch lands.
+    provider.beforeNextBatch = () => { provider.sheets[0].merges = [...provider.sheets[0].merges ?? [], rectOf(0, 2, 1, 2)]; };
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.batches.at(-1)?.filter(request => request.unmergeCells)).toEqual([
+      { unmergeCells: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 2 } } },
+    ]);
+    expect(provider.sheets[0].merges).toEqual([rectOf(0, 2, 1, 2)]);
+  });
+
   it("plans and applies a write without reading the merges of sheets no change acts on", async () => {
     let provider = archived();
     let sheets = gatekeeper(run);

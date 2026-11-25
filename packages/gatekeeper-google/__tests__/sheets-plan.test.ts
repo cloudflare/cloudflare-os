@@ -528,9 +528,11 @@ describe("Sheets merge requests", () => {
       { op: "unmergeCells", range: "Sales!A12" },
     ], laidOut));
     expect(unmerged.grid.sheets[0].merges).toBeUndefined();
+    // One request a merge the range holds, as recorded: C4:E6 and B2:B3, and none for A12, which
+    // holds none.
     expect(unmerged.requests.slice(1)).toEqual([
-      { unmergeCells: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 9, startColumnIndex: 0, endColumnIndex: 6 } } },
-      { unmergeCells: { range: { sheetId: 0, startRowIndex: 11, endRowIndex: 12, startColumnIndex: 0, endColumnIndex: 1 } } },
+      { unmergeCells: { range: { sheetId: 0, startRowIndex: 3, endRowIndex: 6, startColumnIndex: 2, endColumnIndex: 5 } } },
+      { unmergeCells: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 2 } } },
     ]);
   });
 
