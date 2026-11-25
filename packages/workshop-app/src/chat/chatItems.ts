@@ -235,6 +235,11 @@ export type FeedContext = {
    * artefacts, until the messages they are in load.
    */
   waitingBefore?: readonly ActionLogEntry[]
+  /**
+   * The chat is a run of an agent, whose calls (`agentCallback`) are what it is asked to do, as a
+   * message would be, and so are rows. In any other chat they are steps of the turn they start.
+   */
+  isRun?: boolean
 }
 
 /**
@@ -797,11 +802,26 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
 
       case 'agentCallback': {
-        // A call delivered to the agent prompts it, as a message would.
-        closeTurn(id)
-        workBegan = message.timestamp.getTime()
+        // A call delivered to the agent prompts it, as a message would: those delivered at once
+        // start one turn. In a run it is what the run is asked to do, and is said as a row. In any
+        // other chat it comes from what the chat's agent handed its `self` to, such as the agents
+        // it started, whose pills say as much: it is the first step of the turn it starts.
+        if (messages[index - 1]?.type !== 'agentCallback') {
+          closeTurn(id)
+          workBegan = message.timestamp.getTime()
+        }
         const { methodName, bindingName, argsSummary } = message
-        notice(message, 'callback', `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`, argsSummary || undefined)
+        if (context.isRun) {
+          notice(message, 'callback', `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`, argsSummary || undefined)
+          break
+        }
+        work.push(emitStep<CallEntry>(`callback:${id}`, [message], () => ({
+          type: 'call',
+          icon: 'terminal',
+          label: `Received ${methodName}()`,
+          sections: argsSummary ? [{ label: 'Arguments', text: argsSummary }] : [],
+          at: message.timestamp,
+        })))
         break
       }
 

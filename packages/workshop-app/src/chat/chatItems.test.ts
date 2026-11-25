@@ -558,10 +558,23 @@ describe('toChatFeed', () => {
       expect(only(result, 'assistant')[0].trace.map((step) => (step.type === 'call' ? step.label : step.type))).toEqual(['Used the gadget', 'Read a.ts', 'Used the gadget'])
     })
 
-    it('shows a call delivered to the agent', () => {
-      const result = feed(agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS'))
+    it('shows a call delivered to a run, which is what it is asked to do', () => {
+      const result = toChatFeed(history([agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS')]), { ...viewer, isRun: true })
       expect(only(result, 'notice')).toMatchObject([
         { notice: 'callback', text: 'onTicket() with env.TICKETS', detail: '{ key: "PLAT-1" }' },
+      ])
+    })
+
+    it('makes the calls delivered to any other chat the first steps of the turn they start', () => {
+      const result = toChatFeed(history([
+        agentCallback('reportFindings', '"Lisbon"', 'reportFindings_ARGS_1'),
+        agentCallback('reportFindings', '"Porto"', 'reportFindings_ARGS_2'),
+        agent({ text: 'Both are in.' }),
+      ]), viewer)
+      expect(only(result, 'notice')).toEqual([])
+      expect(only(result, 'assistant')[0].trace).toMatchObject([
+        { type: 'call', label: 'Received reportFindings()', sections: [{ label: 'Arguments', text: '"Lisbon"' }] },
+        { type: 'call', label: 'Received reportFindings()', sections: [{ label: 'Arguments', text: '"Porto"' }] },
       ])
     })
   })

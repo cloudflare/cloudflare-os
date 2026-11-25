@@ -909,6 +909,7 @@ export class ChatSession {
       compactedTo: this.#compactedTo,
       outputFormats: this.#outputFormats,
       waitingBefore,
+      isRun: this.#agent !== undefined,
     }
     this.#feed = toChatFeed(loaded, context, this.#feed)
     this.#work = undefined
