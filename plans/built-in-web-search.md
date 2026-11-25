@@ -332,6 +332,10 @@ description of `gatekeeper-websearch`.
 - **GPT pays for the tool on every request**: about 4,470 input tokens, cached after the first.
 - **On GPT, results end with the response.** After a client tool call the model searched again
   (o1). Not solved here.
+- **A response that AI Gateway serves from its cache is charged the search fee again.** Where
+  the gateway caches responses, a request sent twice, as a retried turn is, gets the first
+  response back, with its count of searches. The provider billed them once, and the chat's
+  cost adds $0.01 for each again. The response's cache status does not reach the fee today.
 - **An agent can have both search paths** when a fallback is set: the built-in tool and the
   `WEB_SEARCH` binding. Nothing tells it which to use.
 - **With no fallback, every chat is still told about `WEB_SEARCH`**, and each call fails. The
