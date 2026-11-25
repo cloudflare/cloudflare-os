@@ -1019,13 +1019,13 @@ describe("the transport that calls Google", () => {
 
   it("sends the token in the Authorization header alone, and names the call and the status of a failure", async () => {
     let seen: { url: string; method?: string; authorization: string | null; body: string }[] = [];
-    let answer: { status: number; body: unknown } = { status: 200, body: { id: "copy-1" } };
+    let answer: { status: number; body: unknown; text?: string } = { status: 200, body: { id: "copy-1" } };
     vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
       seen.push({
         url: input, method: init.method,
         authorization: new Headers(init.headers).get("Authorization"), body: String(init.body),
       });
-      return new Response(JSON.stringify(answer.body), { status: answer.status });
+      return new Response(answer.text ?? JSON.stringify(answer.body), { status: answer.status });
     });
     let transport = googleTransport(TOKEN);
     let files = "https://www.googleapis.com/drive/v3/files";
@@ -1081,6 +1081,10 @@ describe("the transport that calls Google", () => {
       .toBe("copying the template document failed [http=403]");
     expect((await rejection(transport.discard("copy-1"))).message)
       .toBe("moving the document to the trash failed [http=403]");
+    // An answer that is not JSON is named, never quoted.
+    answer = { status: 200, body: undefined, text: "<html>what Google answered" };
+    expect((await rejection(transport.copy("template", "Recording: one"))).message)
+      .toBe("copying the template document answered something that is not JSON [http=200]");
     for (let { url, body } of seen) expect(url + body).not.toContain(TOKEN);
   });
 });

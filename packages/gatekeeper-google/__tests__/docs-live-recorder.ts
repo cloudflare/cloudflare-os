@@ -1335,7 +1335,13 @@ export function googleTransport(token: string): DocsTransport {
       body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error(`${call} failed [http=${response.status}]`);
-    return response.json();
+    // `response.json()` would quote the body in its error.
+    let text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`${call} answered something that is not JSON [http=${response.status}]`);
+    }
   };
   return {
     create: title => docs.createDocument(title),
