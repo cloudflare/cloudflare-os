@@ -589,7 +589,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
       // Manual-thinking Claude needs the thinking that accompanied an unfinished tool turn.
       // Replay can omit it after rewriting image inputs; finish that turn without thinking.
       if (args.model.api === "anthropic-messages" && anthropicCompat?.forceAdaptiveThinking !== true) {
-        const turn = transcript.messages.findLast(message => message.role === "user" || message.role === "assistant");
+        const start = transcript.messages.findLastIndex(message => message.role === "user");
+        const turn = transcript.messages.slice(start + 1).find(message => message.role === "assistant");
         if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) thinking = false;
       }
       const merged: SimpleStreamOptions = {

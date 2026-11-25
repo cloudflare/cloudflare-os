@@ -560,9 +560,9 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
-  it("finishes a rewritten manual-thinking Claude tool turn without requiring stripped thinking", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each([false, true])("preserves manual Claude thinking unless the tool turn was rewritten: %s", rewritten => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
-    await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+    if (rewritten) await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
       fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"})])).rejects.toThrow("Invalid image");
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Take another look"}]);
     const config = {provider: "anthropic" as const, model: "claude-haiku-4-5", apiToken: "fixture", reasoning: "high" as const};
@@ -572,7 +572,7 @@ describe("file images in provider requests", () => {
     handle.stream = (model, context, options) => actualStream(model, context, {...options, maxRetries: 0,
       fetch: async (input, init) => {
         payloads.push(await new Request(input, init).text());
-        if (payloads.length > 1) return new Response("fixture done", {status: 418});
+        if (payloads.length > 2) return new Response("fixture done", {status: 418});
         const events = [
           {type: "message_start", message: {id: "message", type: "message", role: "assistant", model: config.model,
             content: [], usage: {input_tokens: 100, output_tokens: 1}}},
@@ -580,24 +580,30 @@ describe("file images in provider requests", () => {
           {type: "content_block_delta", index: 0, delta: {type: "thinking_delta", thinking: "Read another image"}},
           {type: "content_block_delta", index: 0, delta: {type: "signature_delta", signature: "fixture-signature"}},
           {type: "content_block_stop", index: 0},
-          {type: "content_block_start", index: 1, content_block: {type: "tool_use", id: "new-read", name: "readFile", input: {}}},
+          {type: "content_block_start", index: 1, content_block: {type: "tool_use", id: `new-read-${payloads.length}`, name: "readFile", input: {}}},
           {type: "content_block_delta", index: 1, delta: {type: "input_json_delta", partial_json: JSON.stringify(read().arguments)}},
           {type: "content_block_stop", index: 1},
           {type: "message_delta", delta: {stop_reason: "tool_use"}, usage: {output_tokens: 10}},
           {type: "message_stop"},
         ];
-        return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+        // The next tool call belongs to the same assistant turn and needs no new thinking block.
+        const reply = payloads.length === 1 ? events : events
+          .filter(event => !("index" in event) || event.index !== 0)
+          .map(event => "index" in event ? {...event, index: event.index - 1} : event);
+        return new Response(reply.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
           {headers: {"content-type": "text/event-stream"}});
       },
     });
     await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow();
-    expect(payloads).toHaveLength(2);
+    expect(payloads).toHaveLength(3);
     expect(JSON.parse(payloads[0]).thinking.type).toBe("enabled");
-    expect(JSON.parse(payloads[1]).thinking.type).toBe("disabled");
-    expect(payloads[1]).toContain(PNG.toBase64());
+    for (const payload of payloads.slice(1)) {
+      expect(JSON.parse(payload).thinking.type).toBe(rewritten ? "disabled" : "enabled");
+      expect(payload).toContain(PNG.toBase64());
+    }
     impl.addChatMessages(chatId, USER, [{type: "message", message: "New turn"}]);
     await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow();
-    expect(JSON.parse(payloads[2]).thinking.type).toBe("enabled");
+    expect(JSON.parse(payloads[3]).thinking.type).toBe("enabled");
   }));
 
   it.each([
