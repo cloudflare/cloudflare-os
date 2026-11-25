@@ -1604,8 +1604,9 @@ a Drive connection that stores no copy of the Doc, the fetched document is store
 twice, as at any first read through Drive (see
 [Editing Docs, Sheets and Slides](#editing-docs-sheets-and-slides)). A reply or
 resolve costs the metadata read, the threads read and a `get` of the title. Applying a comment or
-suggestion costs the metadata read, a `get` of every tab with suggestions inline (the one read of a
-Doc that asks for every field, and indented) and the `batchUpdate`, and
+suggestion costs the metadata read, a `get` of every tab with suggestions inline (with the fields
+the copy keeps and the suggestion threads, unindented, and again without the field mask where
+Google refuses it) and the `batchUpdate`, and
 a suggestion's note one more `batchUpdate`; applying a reply or resolve costs the metadata read, the
 threads read and the `batchUpdate`. A retry after a send Google did not confirm first reads the
 threads, or the suggestions, once.
@@ -1623,8 +1624,8 @@ asked for without indentation and with only the fields the gatekeeper keeps (see
 it would be: a document that is mostly tables reaches it at about twice the size it otherwise
 would. The read made again without the field mask is under the same limit, so while Google refuses
 the mask a document that fits only with it is not read. Applying a comment or a suggestion reads
-the document with every field, indented, so on a document near the limit a read can succeed where
-applying a comment fails for the size of the answer. A table cell
+the document with the same fields and its suggestion threads, so on a document near the limit a
+read can succeed where applying a comment fails for the size of those threads. A table cell
 takes far more of that answer than of the Markdown. For that reason the table methods add to the
 tables of one tab only up to 5,000 cells (see the limits of
 [Google Docs edits](#google-docs-edits)), so that a table grown through the table methods does not by
