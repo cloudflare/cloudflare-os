@@ -133,8 +133,13 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
       return node && !hidden.has(id) ? structuredClone(node) : undefined;
     })),
     getFile: vi.fn<DriveApi["getFile"]>(async (fileId): Promise<DriveFile> => {
-      if (!nodes[fileId] || hidden.has(fileId)) throw new DriveApiRequestError(404, "notFound");
-      return { id: fileId, name: names[fileId] };
+      let node = nodes[fileId];
+      if (!node || hidden.has(fileId)) throw new DriveApiRequestError(404, "notFound");
+      return {
+        id: fileId, name: names[fileId],
+        ...(node.parents ? { parents: [...node.parents] } : {}),
+        ...(node.trashed === undefined ? {} : { trashed: node.trashed }),
+      };
     }),
     getComment: vi.fn<DriveApi["getComment"]>(unexpected),
     listComments: vi.fn<DriveApi["listComments"]>(unexpected),
@@ -327,6 +332,46 @@ describe("Drive rename proofs and checks at apply", () => {
     both.names.F = "Budget 2027";
     both.nodes.F = { ...file("F", "A"), canRename: false };
     expect(await both.apply(id)).toBe(ALREADY_RENAMED);
+  });
+
+  // The name is read after the scope proof, and that read says where the file is too: what it
+  // finds moved, put in the trash or gone since the proof is not renamed.
+  it("takes the file as the name's read finds it, not as the proof before it did", async () => {
+    let cases: [string, DriveBindingScope, DriveRenameActions["renameFile"], string,
+      (run: ReturnType<typeof harness>) => void][] = [
+      ["moved out of the folder", AT_R, renameFFromA(), OUT_OF_SCOPE,
+        run => { run.nodes.F = file("F", "R"); }],
+      ["the positioned folder moved", AT_R, renameA(), OUT_OF_SCOPE,
+        run => { run.nodes.A = folder("A", "elsewhere"); }],
+      ["put in the trash", ACCOUNT, renameF(), FILE_IN_TRASH,
+        run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
+      ["put in the trash, on a folder binding", AT_R, renameFFromA(), FILE_IN_TRASH,
+        run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
+      ["gone", ACCOUNT, renameF(), OUT_OF_SCOPE, run => run.hide("F")],
+    ];
+    for (let [what, scope, payload, refusal, change] of cases) {
+      let run = harness(scope);
+      let id = await run.submit(payload);
+      // Drive changes the file between the batched proof and the read of its name.
+      run.api.getScopeNodes.mockImplementationOnce(async ids => {
+        let proved = ids.map(proving => run.nodes[proving] && structuredClone(run.nodes[proving]));
+        change(run);
+        return proved;
+      });
+      expect(await run.apply(id), what).toBe(refusal);
+      expect(run.api.renameFile, what).not.toHaveBeenCalled();
+    }
+
+    // A file moved within an account binding's reach is still in scope.
+    let account = harness();
+    let id = await account.submit(renameF());
+    account.api.getScopeNodes.mockImplementationOnce(async ids => {
+      let proved = ids.map(proving => account.nodes[proving] && structuredClone(account.nodes[proving]));
+      account.nodes.F = file("F", "R");
+      return proved;
+    });
+    expect(await account.apply(id)).toBeNull();
+    expect(account.names.F).toBe("Budget 2027");
   });
 
   it("asks the access level and the grant again when a rename is approved", async () => {

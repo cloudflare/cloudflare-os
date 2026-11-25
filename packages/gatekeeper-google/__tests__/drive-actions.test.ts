@@ -189,7 +189,9 @@ function harness() {
       names[fileId] = name;
       return { id: fileId, name };
     }),
-    getFile: vi.fn<DriveApi["getFile"]>(async fileId => ({ id: fileId, name: names[fileId] })),
+    getFile: vi.fn<DriveApi["getFile"]>(async fileId => ({
+      id: fileId, name: names[fileId], parents: nodes[fileId].parents, trashed: false,
+    })),
   };
   let attempts = new Map<number, WriteAttempt>();
   let host: DriveWritesHost & DriveEditorsHost = {

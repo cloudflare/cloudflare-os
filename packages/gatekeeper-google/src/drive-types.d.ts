@@ -248,13 +248,14 @@ export interface DriveRenames {
    * including who has access. Something in the trash, the top level of My Drive and a shared
    * drive's top level cannot be renamed, nor anything the connected account cannot rename.
    *
-   * The rename is made once it is approved: by the user, or at once by a rule the user turned on
-   * that approves renames on this connection without asking. Until then every read shows the
-   * current name, and a second rename of the same file fails; read the name again to learn
-   * whether it was made. If the file is renamed some other way first, the approved rename is not
-   * made. Fails, saying what to ask the user for, when the Google account
-   * does not allow changes to Drive files, and on a read-only binding, whose `getScope()` reports
-   * `access: "read"`.
+   * A call that returns has queued the rename, not made it. It is made once it is approved, by
+   * the user or by a rule the user turned on for this connection's renames, which may still wait
+   * behind an earlier change on the connection that the user has not decided. Until then every
+   * read shows the current name, and a second rename of the same file fails. `getEntry()`, or
+   * `getScope()` for the positioned folder, shows the name the file has. If the file is renamed
+   * some other way first, the approved rename is not made. Fails, saying what to ask the user
+   * for, when the Google account does not allow changes to Drive files, and on a read-only
+   * binding, whose `getScope()` reports `access: "read"`.
    */
   rename(fileId: string, name: string): Promise<void>;
 }

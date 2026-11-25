@@ -14,7 +14,7 @@ import {
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { MAX_FILE_NAME_LENGTH, oneLineFileName } from "./creation";
-import { isInsufficientScope, type DriveScopeNode } from "./drive-api";
+import { isFileInvisible, isInsufficientScope, type DriveScopeNode } from "./drive-api";
 import {
   driveRefusal, proveTarget, requireWritable, sendOnce, waitWhileRefused,
   type DriveWriteTargetPayload, type DriveWritesHost, type QueuedWrite, type RefusalRow,
@@ -121,8 +121,23 @@ async function proveRename(
   host: DriveWritesHost, payload: DriveRenameActions["renameFile"],
 ): Promise<{ file: DriveScopeNode; name: string } | undefined> {
   let file = await proveTarget(host, payload);
-  // A scope node carries no name: it is read for the file alone, once the file is proved.
-  return file && { file, name: (await host.api.getFile(file.id)).name };
+  if (!file) return undefined;
+  // A scope node carries no name, so the file is read again for it once it is proved. That read
+  // says where the file is now too: one gone, moved out of a folder binding's folder or put in
+  // the trash since the proof is taken as the read finds it.
+  let read = await host.api.getFile(file.id).catch((error: unknown) => {
+    if (isInsufficientScope(error) || !isFileInvisible(error)) throw error;
+    return undefined;
+  });
+  if (!read || read.id !== file.id) return undefined;
+  if (host.scope().kind === "folder" && !sameParents(read.parents, file.parents)) return undefined;
+  let trashed = file.trashed !== false || read.trashed !== false;
+  return { file: { ...file, trashed }, name: read.name };
+}
+
+/** Whether two reads give a file the same parents, in any order. */
+function sameParents(a: readonly string[] = [], b: readonly string[] = []): boolean {
+  return a.length === b.length && a.every(parent => b.includes(parent));
 }
 
 /**
