@@ -88,7 +88,8 @@ const FOLDED: Readonly<Record<string, string>> = {
 };
 
 function fold(text: string): string {
-  return text.replace(/[‘’‛′“”‟″   ]/g, char => FOLDED[char]!);
+  // Escapes: a raw character above U+00FF here makes V8 store the whole bundle two bytes per character.
+  return text.replace(/[\u2018\u2019\u201B\u2032\u201C\u201D\u201F\u2033\u00A0\u202F\u2007]/g, char => FOLDED[char]!);
 }
 
 /** Run content that is text, and what it reads as. */

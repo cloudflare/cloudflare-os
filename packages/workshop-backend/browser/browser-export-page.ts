@@ -3,6 +3,12 @@
 // typed for the browser environment. Functions that need to interact directly
 // with client.js run in the main world. Everything else runs in an isolated
 // realm.
+//
+// Puppeteer sends each function to the browser as its own text, and the
+// Worker's bundler (keep_names) wraps every function or class that has a name
+// in a helper that only the bundle has. So inside a function here, declare no
+// function or class, and assign none to a variable, property or default: pass
+// arrows inline. scripts/build-browser-runtime.ts fails the build otherwise.
 
 declare global {
   // Globals set in the main world:
@@ -48,19 +54,21 @@ export function waitForDomSettled(quietMs: number): Promise<void> {
     let timer: ReturnType<typeof setTimeout>;
     const observer = new MutationObserver(() => {
       clearTimeout(timer);
-      timer = setTimeout(finish, quietMs);
+      timer = setTimeout(() => {
+        observer.disconnect();
+        resolve();
+      }, quietMs);
     });
-    function finish() {
-      observer.disconnect();
-      resolve();
-    }
     observer.observe(document.documentElement, {
       subtree: true,
       childList: true,
       attributes: true,
       characterData: true,
     });
-    timer = setTimeout(finish, quietMs);
+    timer = setTimeout(() => {
+      observer.disconnect();
+      resolve();
+    }, quietMs);
   });
 }
 

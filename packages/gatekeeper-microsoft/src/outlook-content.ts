@@ -482,8 +482,11 @@ function hasText(element: Element): boolean {
   return false;
 }
 
-/** Bullets Word writes as text before a list paragraph's content, which read better as a bullet. */
-const WORD_BULLETS = /^[·•o§▪■–-]$/;
+/**
+ * Bullets Word writes as text before a list paragraph's content, which read better as a bullet.
+ * Escapes: a raw character above U+00FF here makes V8 store the whole bundle two bytes per character.
+ */
+const WORD_BULLETS = /^[·\u2022o§\u25AA\u25A0\u2013-]$/;
 
 /** How an element is written: its replacement tags, what its contents inherit, and whether they are written at all. */
 type Written = { open: string; close: string; inherited: Inherited; leaf?: true };

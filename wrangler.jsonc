@@ -9,5 +9,7 @@
       "binding": "WORKSHOP_BACKEND",
       "service": "workshop-backend"
     }
-  ]
+  ],
+  "minify": true,
+  "upload_source_maps": true
 }
