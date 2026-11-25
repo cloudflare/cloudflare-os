@@ -135,11 +135,11 @@ async function proveRename(
  *
  * `sentBefore` says an earlier send of this rename is on record. A file found with the new name
  * is then not refused as renamed by someone else: that send may have landed after the look that
- * found the old name, and sending the same name again changes nothing.
+ * found the old name. It resolves `"made"` for that file, which is not sent again.
  */
 async function requireStillRenamable(
   host: DriveWritesHost, payload: DriveRenameActions["renameFile"], sentBefore: boolean,
-): Promise<void> {
+): Promise<"made" | undefined> {
   await requireWritable(host);
   let proved = await proveRename(host, payload);
   if (!proved) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
@@ -147,12 +147,13 @@ async function requireStillRenamable(
   // Google renames a file that is in the trash, where it stays.
   if (file.trashed !== false) throw new ActionApplyError(FILE_IN_TRASH);
   if (name === payload.toName) {
-    if (sentBefore) return;
+    if (sentBefore) return "made";
     throw new ActionApplyError(ALREADY_RENAMED);
   }
   // Someone else's name is not overwritten with one chosen before theirs.
   if (name !== payload.fromName) throw new ActionApplyError(RENAMED_SINCE);
   if (file.canRename !== true) throw new ActionApplyError(CANNOT_RENAME);
+  return undefined;
 }
 
 /**
@@ -190,16 +191,19 @@ function rename(
   host: DriveWritesHost, id: number, payload: DriveRenameActions["renameFile"],
 ): Promise<void> {
   let { fileId, toName } = payload;
+  let made: "made" | undefined;
   return sendOnce<void>(host, id, {
     log: logger.with({ actionId: id, actionKind: "renameFile", fileId }),
     events: "drive.renames",
     look: () => findRenamed(host, payload),
     check: async () => {
       // A look that found the old name leaves the earlier send's marker until this send's.
-      await requireStillRenamable(host, payload, host.attempts.get(id) !== undefined);
+      made = await requireStillRenamable(host, payload, host.attempts.get(id) !== undefined);
       return {};
     },
     send: async () => {
+      // An earlier send made it after the look. Settled unsent: a send could fail, and say so.
+      if (made === "made") return;
       let { name } = await host.api.renameFile(fileId, toName);
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
       if (name !== toName) {

@@ -409,7 +409,7 @@ describe("Drive rename sends and their markers", () => {
   });
 
   // A send cut off by a timeout can still land after the next approval's look found the old name.
-  // The check then finds the new name: that send's own, so it is not failed as someone else's.
+  // The check then finds the new name: that send's own, so it is applied, with nothing sent again.
   it("applies a rename an earlier send made between the look and the check", async () => {
     let { api, journal, attempts, names, submit, apply } = harness();
     api.renameFile.mockRejectedValueOnce(unconfirmed());
@@ -425,8 +425,8 @@ describe("Drive rename sends and their markers", () => {
     expect(journal.get(id)).toBeUndefined();
     expect(attempts.has(id)).toBe(true);
     expect(names.F).toBe("Budget 2027");
-    // Sent again with the same name, which changes nothing.
-    expect(api.renameFile.mock.calls).toEqual([["F", "Budget 2027"], ["F", "Budget 2027"]]);
+    // Settled with nothing sent again: a second send could only fail, and then say so wrongly.
+    expect(api.renameFile).toHaveBeenCalledTimes(1);
 
     // With no send of its own on record, the new name is someone else's.
     let other = harness();
