@@ -1,5 +1,6 @@
 import { Text } from "@cloudflare/kumo";
 import { useLayoutEffect, useRef, useState } from "react";
+import { isImeComposing } from "../keyboardEvent";
 import { humanizeSkillName, sanitizeSkillTitle, skillNameFromTitle } from "./skillName";
 
 type RenameInputProps = {
@@ -42,7 +43,7 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
         onBlur={commit}
         onKeyDown={(event) => {
           event.stopPropagation();
-          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+          if (isImeComposing(event)) return;
           if (event.key === "Enter") {
             event.preventDefault();
             commit();

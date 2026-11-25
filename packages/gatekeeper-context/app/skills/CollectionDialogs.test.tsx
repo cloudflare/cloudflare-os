@@ -120,6 +120,29 @@ describe("collection dialogs", () => {
     expect(document.body.textContent).toContain("you do not enter a source repository URL here");
   });
 
+  it("does not create a collection on an Enter that commits an IME composition", async () => {
+    const createContextCollection = vi.fn<ContextApi["createContextCollection"]>();
+    mocks.api = { createContextCollection } as unknown as ContextApi;
+    render(
+      <CreateCollectionDialog
+        viewerInfo={{ isAdmin: false, supportsGitCollections: false }}
+        onCreated={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const input = document.querySelector<HTMLInputElement>('input[placeholder^="A short name"]')!;
+    act(() => setInputValue(input, "디자인"));
+
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(createContextCollection).not.toHaveBeenCalled();
+  });
+
   it("updates a Git branch and exposes token management", async () => {
     const updateContextCollection = vi.fn<ContextApi["updateContextCollection"]>(async () => {});
     mocks.api = {

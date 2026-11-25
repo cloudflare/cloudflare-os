@@ -19,6 +19,7 @@ import type {
 } from "../../src/context-types";
 import { CollectionIconPicker, DEFAULT_COLLECTION_ICON } from "../components/CollectionIconPicker";
 import { useContextApi } from "../bridge";
+import { isImeComposing } from "../keyboardEvent";
 import { GitTokenCredentials } from "./GitTokenCredentials";
 import { useMutationDialog } from "./useMutationDialog";
 
@@ -156,7 +157,7 @@ export const CreateCollectionDialog = ({
                     aria-label="Name"
                     value={title}
                     onChange={(event) => setTitle(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === "Enter" && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) void create(); }}
+                    onKeyDown={(event) => { if (event.key === "Enter" && !isImeComposing(event)) void create(); }}
                     maxLength={100}
                     placeholder="A short name, e.g., Brand guidelines"
                     autoFocus
