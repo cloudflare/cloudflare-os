@@ -65,6 +65,10 @@ export const MAX_SCAN_FOLLOWED = 64;
 // How many characters of a text find the places it may start at in a run.
 const SCAN_HEAD = 16;
 
+// How many characters a `markdownScan` may compare, at most, for each one it reads and each of
+// its text's, before it answers `"crowded"`.
+const SCAN_WORK = 32;
+
 /**
  * A scan for `text` that holds `text` and about three runs' Markdown: the run in hand, a
  * copy of it with the tail of the run before in front (the string that is searched), and at
@@ -75,7 +79,9 @@ const SCAN_HEAD = 16;
  * is searched as if a line break stood before it, and a place that starts there is -1.
  * At most `MAX_SCAN_FOLLOWED` places are followed across a run's end at once: a text that
  * overlaps itself more than that (hundreds of equal rows replaced) makes `done` answer
- * `"crowded"`, and the caller scans again with `windowScan`.
+ * `"crowded"`, and the caller scans again with `windowScan`. So does a scan whose comparisons
+ * could pass `SCAN_WORK` characters for each one read and each of `text` (repetitive Markdown
+ * where many places start as `text` does and few go on as it does), which keeps its work linear.
  * @param text Not empty.
  */
 export function markdownScan(text: string, lineBreakBefore = false):
@@ -88,6 +94,8 @@ export function markdownScan(text: string, lineBreakBefore = false):
   let followed: number[] = [];
   let found: number | undefined;
   let ended: "many" | "crowded" | undefined;
+  // The characters the comparisons could have compared, each counted as long as it may run.
+  let work = 0;
   // A place the text stands at whole: the second ends the scan.
   let placed = (start: number): void => {
     if (found === undefined) found = start;
@@ -114,6 +122,11 @@ export function markdownScan(text: string, lineBreakBefore = false):
     let window = tail + run;
     for (let at = window.indexOf(head); at >= 0; at = window.indexOf(head, at + 1)) {
       let held = Math.min(text.length, window.length - at);
+      work += held;
+      if (work > SCAN_WORK * (read + window.length + text.length)) {
+        ended = "crowded";
+        return false;
+      }
       if (!window.startsWith(held === text.length ? text : text.slice(0, held), at)) continue;
       let start = read - tail.length + at;
       if (held === text.length) {

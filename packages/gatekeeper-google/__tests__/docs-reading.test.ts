@@ -308,6 +308,18 @@ describe("the two readings answer the same", () => {
     expect(stored.find(`\n${rendering.markdown}`, true)).toBe(-1);
   });
 
+  it("a text that starts at many places of repetitive Markdown and is at none is answered by windows", () => {
+    // Every other character starts as the text does, and each goes on as it does until the end.
+    let markdown = "ab".repeat(16_000);
+    let runs = cutAt(markdown, [8_000, 16_000, 24_000]);
+    let text = `${"ab".repeat(8_000)}x`;
+    expect(scanned(markdownScan(text), runs)).toBe("crowded");
+    expect(scanned(windowScan(text), runs)).toBe("none");
+    let { stored, whole } = read(proseTab("tab-1", 1, () => markdown), runsOf(1));
+    expect(whole.find(text)).toBe("none");
+    expect(stored.find(text)).toBe("none");
+  });
+
   it("no run is decoded for a question", () => {
     let { stored, rendering } = read(LISTED(), runsOf(1));
     let before = { ...docStoreCost };
