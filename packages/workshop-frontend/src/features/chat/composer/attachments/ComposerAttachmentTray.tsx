@@ -29,7 +29,7 @@ export const ComposerAttachmentTray = ({
   const open = attachments.length > 0;
   const [viewedId, setViewedId] = useState<string | null>(null);
   // The files are still on this device, so they are read from there, uploaded or not.
-  const { content, forgetFailures } = useAttachmentContents(async (id) => {
+  const contents = useAttachmentContents(async (id) => {
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment was removed.");
     return new Uint8Array(await attachment.blob.arrayBuffer());
@@ -66,9 +66,11 @@ export const ComposerAttachmentTray = ({
                 <ComposerAttachmentCard
                   attachment={attachment}
                   disabled={disabled}
-                  loadContent={() => content(attachment.id)}
+                  loadContent={async (signal, limit) => limit === undefined
+                    ? contents.readOnce(attachment.id, signal)
+                    : new Uint8Array(await attachment.blob.slice(0, limit).arrayBuffer())}
                   onOpen={() => {
-                    forgetFailures();
+                    contents.forgetFailures();
                     setViewedId(attachment.id);
                   }}
                   onRemove={() => onRemove(attachment.id)}
@@ -89,8 +91,7 @@ export const ComposerAttachmentTray = ({
             }))}
             openId={viewedId}
             onOpenChange={setViewedId}
-            loadContent={content}
-            onRetry={forgetFailures}
+            contents={contents}
           />
         </Suspense>
       )}

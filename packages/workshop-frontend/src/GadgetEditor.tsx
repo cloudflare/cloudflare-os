@@ -81,6 +81,8 @@ import { reportVisibleChat } from './features/notifications/visibleChat'
 import { WorkspaceNotificationsMenu } from './features/notifications/WorkspaceNotificationsMenu'
 import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
+import { WorkspaceStorageBanner } from './features/workspace-storage/WorkspaceStorageBanner'
+import { WorkspaceStorageIndicator } from './features/workspace-storage/WorkspaceStorageIndicator'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
@@ -2029,6 +2031,9 @@ export default function GadgetEditor() {
 
         </div>
         <div className="ml-1 flex shrink-0 items-center gap-2">
+          {metadata.storageBytes !== undefined && (
+            <WorkspaceStorageIndicator storageBytes={metadata.storageBytes} />
+          )}
           <span className="md:hidden">{showReconnecting && <ReconnectingChip />}</span>
           {/* Desktop reaches Export from the gadget pane's tab bar, which is hidden on phones. */}
           <span className="md:hidden">
@@ -2198,6 +2203,10 @@ export default function GadgetEditor() {
           </DropdownMenu.Content>
         </DropdownMenu>
       </div>
+
+      {metadata.storageBytes !== undefined && (
+        <WorkspaceStorageBanner storageBytes={metadata.storageBytes} />
+      )}
 
       {/* ═══ BODY ═════════════════════════════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
