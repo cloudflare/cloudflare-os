@@ -109,7 +109,9 @@ function dressed(tab: GoogleDocsTab): GoogleDocsTab {
     if (key === "richLink") held.richLinkId = "kix.richLink";
     if (key === "richLinkProperties") held.mimeType = "application/vnd.google-apps.document";
     if (key === "dateElement") {
-      Object.assign(held, { dateId: "kix.date", suggestedDateElementPropertiesChanges: {} });
+      // Google sends a date's suggested property changes as `{}` where there are none.
+      held.dateId = "kix.date";
+      held.suggestedDateElementPropertiesChanges ??= {};
     }
     if (key === "dateElementProperties") {
       Object.assign(held, {
@@ -456,18 +458,21 @@ function everyFieldTab(): GoogleDocsTab {
       person: {
         textStyle: look, personProperties: { name: "Person 1", email: "person1@example.com" },
         suggestedDeletionIds: ["suggest.person"],
+        suggestedPersonPropertiesChanges: { "suggest.person.name": {} },
       },
     },
     {
       richLink: {
         textStyle: look, richLinkProperties: { title: "Link 1", uri: "https://example.com/1" },
         suggestedInsertionIds: ["suggest.link"], suggestedTextStyleChanges: { "suggest.link.style": {} },
+        suggestedRichLinkPropertiesChanges: { "suggest.link.title": {} },
       },
     },
     {
       dateElement: {
         textStyle: look, dateElementProperties: { displayText: "Jan 5, 2026" },
         suggestedDeletionIds: ["suggest.date"],
+        suggestedDateElementPropertiesChanges: { "suggest.date.format": {} },
       },
     },
     {
@@ -476,6 +481,7 @@ function everyFieldTab(): GoogleDocsTab {
         dropdownProperties: {
           dropdownDefinitionId: "kix.definition", selectedOptionId: "kix.option", displayValue: "Open",
         },
+        suggestedDropdownPropertiesChanges: { "suggest.dropdown.option": {} },
       },
     },
     { textRun: { content: "\n", textStyle: {} } },
@@ -904,7 +910,7 @@ it("keeps which style changes a row's and a cell's suggestions make, by ID alone
 it("keeps exactly these fields under this format version", () => {
   let tabs = [RICHEST, ...RECORDED.map(({ tab }) => tab)].map(tab => pruneTab(dressed(tab)));
   expect({ version: DOC_COPY_FORMAT_VERSION, fields: keptFields(tabs) }).toStrictEqual({
-    version: 11,
+    version: 12,
     fields: {
       autoText: "textStyle type",
       backgroundColor: "color",

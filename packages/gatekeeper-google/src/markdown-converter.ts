@@ -1550,7 +1550,7 @@ const SUGGESTED_ELEMENTS = [
   "inlineObjectElement", "person", "richLink", "dateElement", "dropdown",
 ] as const satisfies readonly Exclude<keyof ParagraphElement, "startIndex" | "endIndex" | "textRun">[];
 
-/** How many suggested insertions, deletions and style changes `value` is marked with. */
+/** How many suggested insertions, deletions, style changes and chip property changes `value` is marked with. */
 function suggestionsOf(value: {
   suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
   suggestedTableRowStyleChanges?: Record<string, object>;
@@ -1558,13 +1558,21 @@ function suggestionsOf(value: {
   suggestedTextStyleChanges?: Record<string, object>;
   suggestedParagraphStyleChanges?: Record<string, object>;
   suggestedBulletChanges?: Record<string, object>;
+  suggestedPersonPropertiesChanges?: Record<string, object>;
+  suggestedRichLinkPropertiesChanges?: Record<string, object>;
+  suggestedDateElementPropertiesChanges?: Record<string, object>;
+  suggestedDropdownPropertiesChanges?: Record<string, object>;
 }): number {
   return (value.suggestedInsertionIds?.length ?? 0) + (value.suggestedDeletionIds?.length ?? 0) +
     Object.keys(value.suggestedTableRowStyleChanges ?? {}).length +
     Object.keys(value.suggestedTableCellStyleChanges ?? {}).length +
     Object.keys(value.suggestedTextStyleChanges ?? {}).length +
     Object.keys(value.suggestedParagraphStyleChanges ?? {}).length +
-    Object.keys(value.suggestedBulletChanges ?? {}).length;
+    Object.keys(value.suggestedBulletChanges ?? {}).length +
+    Object.keys(value.suggestedPersonPropertiesChanges ?? {}).length +
+    Object.keys(value.suggestedRichLinkPropertiesChanges ?? {}).length +
+    Object.keys(value.suggestedDateElementPropertiesChanges ?? {}).length +
+    Object.keys(value.suggestedDropdownPropertiesChanges ?? {}).length;
 }
 
 /**

@@ -250,14 +250,17 @@ export type ParagraphElement = {
   person?: {
     textStyle?: TextStyle;
     personProperties?: { name?: string; email?: string };
+    suggestedPersonPropertiesChanges?: Record<string, object>;
   } & ElementSuggestions;
   richLink?: {
     textStyle?: TextStyle;
     richLinkProperties?: { title?: string; uri?: string };
+    suggestedRichLinkPropertiesChanges?: Record<string, object>;
   } & ElementSuggestions;
   dateElement?: {
     textStyle?: TextStyle;
     dateElementProperties?: { displayText?: string };
+    suggestedDateElementPropertiesChanges?: Record<string, object>;
   } & ElementSuggestions;
   /** A dropdown chip, which takes one index. */
   dropdown?: {
@@ -268,6 +271,7 @@ export type ParagraphElement = {
       selectedOptionId?: string;
       displayValue?: string;
     };
+    suggestedDropdownPropertiesChanges?: Record<string, object>;
   } & ElementSuggestions;
 }
 

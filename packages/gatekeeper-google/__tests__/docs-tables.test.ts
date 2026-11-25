@@ -1920,7 +1920,19 @@ describe("a deletion whose cells have come to hold what its card did not say", (
       "cells, or to their text, since this change was queued.");
   });
 
-  it.each(["person", "dropdown", "richLink", "horizontalRule"] as const)("counts a suggestion on a %s in a cell", kind => {
+  // A suggested change of a chip's style or properties, and a rule's suggested deletion, read as
+  // nothing.
+  const deletion = { suggestedDeletionIds: ["suggest.chip"] };
+  it.each([
+    ["person", "person", deletion],
+    ["dropdown", "dropdown", deletion],
+    ["richLink", "richLink", { suggestedTextStyleChanges: { "suggest.chip": { textStyle: { italic: true } } } }],
+    ["horizontalRule", "horizontalRule", deletion],
+    ["date's properties", "dateElement",
+      { suggestedDateElementPropertiesChanges: { "suggest.chip": { dateElementProperties: {} } } }],
+    ["dropdown's properties", "dropdown",
+      { suggestedDropdownPropertiesChanges: { "suggest.chip": { dropdownProperties: {} } } }],
+  ] as const)("counts a suggestion on a %s in a cell", (_label, kind, suggestion) => {
     let chipped = (suggested: boolean) => {
       let tab = buildTab([para("Before"), grid(["a", "b"], ["c", "d"]), para("After")]);
       let { paragraph } = cellParagraph(tab, 1, 0);
@@ -1929,15 +1941,11 @@ describe("a deletion whose cells have come to hold what its card did not say", (
         person: { person: { personProperties: { name: "Ana", email: "ana@example.com" } } },
         dropdown: { dropdown: { dropdownProperties: { displayValue: "Open" } } },
         richLink: { richLink: { richLinkProperties: { title: "Plan", uri: "https://example.com/plan" } } },
+        dateElement: { dateElement: { dateElementProperties: { displayText: "Nov 25, 2026" } } },
         horizontalRule: { horizontalRule: {} },
       }[kind];
       let element: ParagraphElement = { startIndex, endIndex, ...chip };
-      // A suggested change of a chip's style, and a rule's suggested deletion, read as nothing.
-      if (suggested) {
-        Object.assign(element[kind]!, kind === "richLink"
-          ? { suggestedTextStyleChanges: { "suggest.chip": { textStyle: { italic: true } } } }
-          : { suggestedDeletionIds: ["suggest.chip"] });
-      }
+      if (suggested) Object.assign(element[kind]!, suggestion);
       paragraph.elements[0] = element;
       return tab;
     };

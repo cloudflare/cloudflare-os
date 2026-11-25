@@ -22,7 +22,7 @@ import type { CutRun, RunSizes } from "./docs-runs";
  * would go on lacking a field the rendering or the model reads. What code derives of a stored
  * tab is versioned apart, by the digest of that code (`DOC_DERIVED`).
  */
-export const DOC_COPY_FORMAT_VERSION = 11;
+export const DOC_COPY_FORMAT_VERSION = 12;
 
 // ---------------------------------------------------------------------------
 // Named ranges and write markers
@@ -231,14 +231,18 @@ const PARAGRAPH_ELEMENT = {
   footnoteReference: whole({ footnoteId: value, footnoteNumber: value, textStyle, ...ELEMENT_SUGGESTIONS }),
   equation: whole(ELEMENT_SUGGESTIONS),
   inlineObjectElement: whole({ inlineObjectId: value, textStyle, ...ELEMENT_SUGGESTIONS }),
+  // A chip keeps, by ID, the changes to its properties suggested as well.
   person: whole({
     textStyle, personProperties: part({ name: value, email: value }), ...ELEMENT_SUGGESTIONS,
+    suggestedPersonPropertiesChanges: { kind: "map", fields: {}, absent: "skip" },
   }),
   richLink: whole({
     textStyle, richLinkProperties: part({ title: value, uri: value }), ...ELEMENT_SUGGESTIONS,
+    suggestedRichLinkPropertiesChanges: { kind: "map", fields: {}, absent: "skip" },
   }),
   dateElement: whole({
     textStyle, dateElementProperties: part({ displayText: value }), ...ELEMENT_SUGGESTIONS,
+    suggestedDateElementPropertiesChanges: { kind: "map", fields: {}, absent: "skip" },
   }),
   dropdown: whole({
     dropdownId: value,
@@ -247,6 +251,7 @@ const PARAGRAPH_ELEMENT = {
     dropdownProperties: part({
       dropdownDefinitionId: value, selectedOptionId: value, displayValue: value,
     }),
+    suggestedDropdownPropertiesChanges: { kind: "map", fields: {}, absent: "skip" },
   }),
 } satisfies FieldsOf<ParagraphElement>;
 
@@ -402,9 +407,9 @@ function prunedPart(source: Part, fields: Fields): Part {
         break;
       }
       case "map":
-        // A map Google leaves out where it is empty, as a cell's suggested style changes, is left
-        // out of the copy too; the lists of a tab are always sent.
-        if (held == null && keep.absent === "skip") break;
+        // A map Google leaves out or sends empty, as a cell's or a date's suggested changes, is
+        // left out of the copy; the lists of a tab are always sent.
+        if (keep.absent === "skip" && (held == null || Object.keys(held).length === 0)) break;
         // `Object.fromEntries` defines each id as a key of its own, whatever the id is.
         out[field] = Object.fromEntries(
           Object.entries(held as Record<string, Part>)
