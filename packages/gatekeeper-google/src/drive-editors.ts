@@ -582,12 +582,18 @@ export class DriveFileEditors {
   /**
    * Records that a comment write of the binding's reached file `fileId`, or may have. In a
    * Google Doc one anchored to text, and a suggestion, is a batch of the document, which moves
-   * its revision: the snapshot held of a document then builds no write. Does nothing for a file
-   * no session opened as a document.
+   * its revision: the snapshot held of a document then builds no write. A suggestion also
+   * changes what the text reads as, so the stored copy is marked stale and reads fetch again.
+   * Does nothing for a file no session opened as a document.
    */
-  commented(fileId: string): void {
+  commented(fileId: string, suggestion = false): void {
     let entry = this.#docCaches.get(fileId);
-    if (entry) entry.moves++;
+    if (!entry) return;
+    entry.moves++;
+    if (suggestion) {
+      entry.cache.writes++;
+      this.docCopies(fileId).wrote();
+    }
   }
 
   /** The host an approved edit to document `fileId` is written with. */

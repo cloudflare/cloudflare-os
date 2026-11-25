@@ -5698,6 +5698,22 @@ describe("Google Doc comments", () => {
     expect(docs.text()).toBe(TEXT);
   });
 
+  // A suggestion changes what the text reads as, so the copy read before it is not served after
+  // it; a comment changes no text, and the copy is.
+  it.each([["a suggestion", true], ["a comment", false]] as const)(
+    "reads the document again after the connection posts %s only if it is a suggestion", async (_kind, again) => {
+      let docs = model();
+      let facet = `fresh-after-${again ? "suggestion" : "comment"}`;
+      expect(await call(facet, "getContent")).toMatchObject({ value: expect.any(String) });
+      let own = again
+        ? await call(facet, "suggestEdit", "May", "June")
+        : await call(facet, "comment", "Sure?", { quote: "May" });
+      expect(await hooks().applyAction(facet, own.actionId!)).toBeNull();
+      let before = docs.documentFetches;
+      expect(await call(facet, "getContent")).toMatchObject({ value: expect.any(String) });
+      expect(docs.documentFetches - before).toBe(again ? 1 : 0);
+    });
+
   it("refuses an answer to a comment attached to no text, naming the Drive connection last", async () => {
     let docs = model();
     let drive = docs.addThread("Whole-file remark");
@@ -8548,6 +8564,20 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(drive.requests.slice(asked)).toEqual(unread);
         expect(titles(queued)).toContain(CONTENT_READ);
         expect(docs.documentFetches).toBe(2);
+      });
+
+      // A suggestion changes what the text reads as, so the copy read before it is not served
+      // after it; a comment changes no text, and the copy is.
+      it.each(QUOTING)("reads the Doc again after the connection posts %s only if it is a " +
+          "suggestion", async (name, method, args) => {
+        let { docs } = library();
+        let files = connection(`drive-fresh-after-${name.length}`, FOLDER);
+        expect(await files.read()).toBe("Draft\n");
+        let queued = await queue(files, method, args);
+        expect(await rawHooks().applyDrive(files.facet, FOLDER, queued.actionId!)).toBeNull();
+        let before = docs.documentFetches;
+        expect(await files.read()).toBe("Draft\n");
+        expect(docs.documentFetches - before).toBe(method === "suggestEdit" ? 1 : 0);
       });
 
       it.each(QUOTING)("fetches once for a first %s, and keeps the copy once its read is " +

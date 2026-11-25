@@ -443,15 +443,19 @@ export class GoogleDocGatekeeperImpl
    */
   #applyComment(actionId: number): Promise<void> {
     return this.#reads.resolve(async () => {
-      if (this.#commentJournal.get(actionId)?.state === "claimed") {
-        this.#commentJournal.restorePending(actionId);
-      }
+      let record = this.#commentJournal.get(actionId);
+      if (record?.state === "claimed") this.#commentJournal.restorePending(actionId);
       try {
         await this.#comments.apply(actionId);
       } finally {
         // A comment anchored to text and a suggestion are batches of the document, and a send
-        // that failed may have landed: the copy held builds no edit after any of them.
+        // that failed may have landed: the copy held builds no edit after any of them. A
+        // suggestion also changes what the text reads as, so reads fetch the document again.
         this.#moves++;
+        if (record?.action.kind === "suggestEdit") {
+          this.#copy.noteWrite();
+          this.#simulationCache.writes++;
+        }
       }
       this.#commentAttempts.delete(actionId);
     });

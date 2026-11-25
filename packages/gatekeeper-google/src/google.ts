@@ -2611,7 +2611,9 @@ export class GoogleDriveGatekeeperImpl
         } finally {
           // Also for a send that failed, which may have landed: the snapshot held of a Doc
           // commented on builds no edit after it.
-          if (comment) this.#editors.commented(comment.action.payload.fileId);
+          if (comment) {
+            this.#editors.commented(comment.action.payload.fileId, comment.action.kind === "suggestEdit");
+          }
         }
         this.#attempts.delete(actionId);
         return;
