@@ -1,13 +1,15 @@
 import { env } from "cloudflare:test";
 import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, ActionField, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { EDIT_OUT_OF_ORDER, SHEETS_STATE_PREFIX } from "../../src/drive-editors";
+import { editorCost } from "../../src/editor-cost";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { DriveFiles, DOC_MIME, FOLDER_MIME, SHEET_MIME } from "../drive-files";
 import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 import { GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl } from "../../src/sheets";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry } from "../../src/sheets-actions";
+import { MAX_QUEUED_ENTRIES } from "../../src/sheets-plan";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { RestCellFormat } from "../../src/sheets-format";
 import { rewriteFormula, type RewriteStep } from "../../src/sheets-formula";
@@ -17,7 +19,7 @@ import type {
 } from "../../src/sheets-read-types";
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
-import { meterFetches, serveFakes, type ProviderFake } from "../slides-provider";
+import { meterFetches, printedAsGoogle, serveFakes, type ProviderFake } from "../slides-provider";
 import {
   gridRangeOf, protectedRange, rect as rectOf, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
 } from "../sheets-fixture";
@@ -162,6 +164,8 @@ class SheetsProvider {
   commits = 0;
   /** Every request, in order. */
   requests: URL[] = [];
+  /** The reads answered indented, as `METHOD path`: those that did not ask for compact JSON. */
+  indented: string[] = [];
   canEdit = true;
   /**
    * Whether the token may only read: Google refuses `spreadsheets:getByDataFilter`, which needs a
@@ -201,9 +205,22 @@ class SheetsProvider {
     return this;
   }
 
-  /** Google's answer to `request`, or `undefined` for a request about another file. */
+  /**
+   * Google's answer to `request`, a Sheets answer printed as Google prints it, or `undefined` for a
+   * request about another file.
+   */
   async handle(request: Request): Promise<Response | undefined> {
     let url = new URL(request.url);
+    let answer = await this.#answer(request, url);
+    if (!answer || url.hostname !== "sheets.googleapis.com") return answer;
+    let printed = await printedAsGoogle(url, answer);
+    if (printed !== answer && !url.pathname.endsWith(":batchUpdate")) {
+      this.indented.push(`${request.method} ${url.pathname}`);
+    }
+    return printed;
+  }
+
+  async #answer(request: Request, url: URL): Promise<Response | undefined> {
     let base = `/v4/spreadsheets/${this.spreadsheetId}`;
     let drive = url.hostname === "www.googleapis.com" &&
       url.pathname === `/drive/v3/files/${this.spreadsheetId}`;
@@ -3295,5 +3312,289 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS]);
     await spreadsheetFile.describe();
     expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS, ...DRIVE_SHEETS_KINDS]);
+  });
+});
+
+describe("Google Sheets format read size", () => {
+  /** The zeros of the longest pattern whose format, on 10,000 cells, is read whole. */
+  const ZEROS = 84;
+
+  it("refuses a format read by the length of its result's JSON, and reads fewer cells", async () => {
+    current = new SheetsProvider([sheetMeta(0, "Data", { rowCount: 100, columnCount: 100 })]).install();
+    let sheets = gatekeeper();
+    let border = { style: "SOLID", color: "#0000ff" } as const;
+    // A queued format is repeated in the result for each of the 10,000 cells it covers, so one
+    // character more in its pattern is 10,000 units more. The pattern's quotes are escaped in the
+    // JSON and its euro sign is not.
+    let pattern = (zeros: number) => `"€"${"0".repeat(zeros)}`;
+    await sheets.queued([{
+      op: "formatCells", range: "Data!A1:CV100",
+      format: {
+        bold: true, italic: true, underline: true, strikethrough: true, fontSize: 400,
+        textColor: "#ff0000", fillColor: "#00ff00", numberFormat: { type: "NUMBER", pattern: pattern(ZEROS) },
+        horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrap: "OVERFLOW",
+        borders: {
+          top: border, bottom: border, left: border, right: border,
+          innerHorizontal: border, innerVertical: border,
+        },
+      },
+    }]);
+
+    // The longest result the limit of 5 MiB of UTF-16 units lets through, to within one character
+    // of the pattern.
+    let length = JSON.stringify(await sheets.formats("Data!A1:CV100")).length;
+    expect(length).toBeLessThanOrEqual(5 * 1024 * 1024);
+    expect(length).toBeGreaterThan(5 * 1024 * 1024 - 10_000);
+
+    await sheets.queued([{
+      op: "formatCells", range: "Data!A1:CV100",
+      format: { numberFormat: { type: "NUMBER", pattern: pattern(ZEROS + 1) } },
+    }]);
+    await expect(sheets.formats("Data!A1:CV100")).rejects.toThrow(
+      "The formatting of this range is too large to read at once. Request fewer cells.");
+    expect((await sheets.formats("Data!A1:CV10")).formats).toHaveLength(10);
+    // The read of 10,000 formatted cells takes 2 s on a laptop and up to 12 s on a slow runner.
+  }, 30_000);
+});
+
+describe("Google Sheets replay cost", () => {
+  /** The batches queued in the first phase, each followed by a read. */
+  const N = 5;
+  const ROWS = 500;
+  const COLUMNS = 100;
+  /** The cells a read may hold at once, which the sheet's values fill. */
+  const READ = `Data!A1:CV${ROWS}`;
+  /**
+   * The fake's answers, in bytes: the spreadsheet's sheets and the values of `READ`, both asked
+   * compact as the client asks, and whether the account may edit, which is Drive's.
+   */
+  const SHEETS = 328;
+  const CAN_EDIT = 33;
+  const VALUES = 801_078;
+  /** The merges, asked for the sheet a change or a replay acts on, of a sheet that holds none. */
+  const MERGES = 30;
+
+  /** What a phase is measured in, in the order the table prints them. */
+  const MEASURES = [
+    "overlayCopies", "overlayEntries", "keysIndexed", "fetches", "responseBytes", "mostOpen", "indented",
+  ] as const;
+  type Measure = typeof MEASURES[number];
+  type Row = { phase: string; pending: number } & Record<Measure, number>;
+
+  const measured: Row[] = [];
+
+  afterAll(() => {
+    if (measured.length === 0) return;
+    let header = ["phase", ...MEASURES, "pending"];
+    let lines = measured.map(row =>
+      [row.phase, ...MEASURES.map(column => String(row[column])), String(row.pending)]);
+    let widths = header.map((title, column) =>
+      Math.max(title.length, ...lines.map(line => line[column].length)));
+    let print = (line: string[]) =>
+      line.map((cell, column) => column < 1 ? cell.padEnd(widths[column])
+        : cell.padStart(widths[column])).join("  ");
+    console.log([
+      "Google Sheets replay cost",
+      `A sheet of ${ROWS * COLUMNS} cells of short text, with ${MAX_QUEUED_ENTRIES} cell values and ` +
+      `formats queued by five batches (build). ${N} batches are then queued, each followed by a ` +
+      "read of the 50,000 cells; then one more read of them, a read of 10,000 cells' formats, a " +
+      "queued deletion of a row, a queued insertion of one and a read of the cells they moved, " +
+      "the oldest batch approved, the newest rejected, and a read whose newest batch stopped at " +
+      "its second change. mostOpen is of the fake, which has no limit on connections; pending " +
+      "is the batches awaiting a decision after the phase.",
+      print(header), ...lines.map(print),
+    ].join("\n"));
+  });
+
+  it("counts what a queue over a large sheet copies and fetches", async () => {
+    let values = Array.from({ length: ROWS }, (_row, r) => Array.from({ length: COLUMNS }, (_cell, c) =>
+      `r${String(r + 1).padStart(3, "0")} c${String(c + 1).padStart(3, "0")} abc`));
+    let provider = current = new SheetsProvider([
+      sheetMeta(0, "Data", { rowCount: 2 * ROWS, columnCount: COLUMNS }),
+      sheetMeta(7, "Notes", { index: 1, rowCount: 10, columnCount: 4 }),
+    ]);
+    values.forEach((row, r) => row.forEach((value, c) => provider.cells.set(key(0, r, c), value)));
+    provider.install();
+    let meter = meterFetches();
+    let sheets = gatekeeper();
+
+    // The fixture is the size it claims: a live sheet of 500 x 100 cells of short text is
+    // 1,134,661 bytes as one value range, printed as Google prints it.
+    let printed = `${JSON.stringify({ range: READ, majorDimension: "ROWS", values }, null, 2)}\n`.length;
+    expect(printed).toBeGreaterThan(1_080_000);
+    expect(printed).toBeLessThan(1_190_000);
+
+    let totals = (): Record<Measure, number> => ({
+      ...editorCost, fetches: meter.fetches, responseBytes: meter.responseBytes, mostOpen: 0,
+      indented: provider.indented.length,
+    });
+    let pending = async () => (await hooks().storedKeys(sheets.facet, "sheets"))
+      .filter(name => /^sheets:action:\d+$/.test(name)).length;
+    /** Runs one phase and records what it added to each measure. */
+    let phase = async (name: string, body: () => Promise<unknown>) => {
+      meter.mostOpen = 0;
+      let before = totals();
+      await body();
+      let after = totals();
+      measured.push({
+        phase: name,
+        ...Object.fromEntries(MEASURES.map(column => [column, after[column] - before[column]])) as Record<Measure, number>,
+        mostOpen: meter.mostOpen,
+        pending: await pending(),
+      });
+    };
+    let read = async () => {
+      let outcome = await sheets.call("readRange", READ);
+      expect(outcome.error).toBeUndefined();
+      return outcome.value as SpreadsheetRange;
+    };
+    let ids: number[] = [];
+    let queue = async (changes: SheetChange[]) => {
+      ids.push((await sheets.queued(changes)).actionId!);
+    };
+    /** Rows `from` to `from + 199` of the first sheet, as two changes of 10,000 cells each. */
+    let halves = (from: number) => [`Data!A${from}:CV${from + 99}`, `Data!A${from + 100}:CV${from + 199}`];
+
+    await phase("build", async () => {
+      for (let from of [401, 601, 801]) {
+        await queue(halves(from).map(range => ({ op: "formatCells", range, format: { bold: true } })));
+      }
+      for (let from of [1, 201]) await queue(halves(from).map(range => ({ op: "clearRange", range })));
+    });
+    // The queue holds the most it may: one more value or format is refused.
+    expect((await sheets.update([{ op: "formatCells", range: "Data!A1", format: { bold: true } }])).error)
+      .toContain(`to ${(MAX_QUEUED_ENTRIES + 1).toLocaleString("en-US")}, and at most`);
+
+    await phase("queue N, a read after each", async () => {
+      for (let i = 0; i < N; i++) {
+        await queue([{ op: "writeCells", range: `Data!A${201 + i}`, values: [[`written ${i}`]] }]);
+        await read();
+      }
+    });
+    await phase("read", read);
+    await phase("formats read", () => sheets.formats("Data!A401:CV500"));
+    await phase("queue a deleted row", () => queue([{ op: "deleteRows", sheet: "Data", at: 2 * ROWS }]));
+    await phase("queue an inserted row", () => queue([{ op: "insertRows", sheet: "Data", at: 1 }]));
+    await phase("moved read", read);
+    await phase("approve", async () => expect(await sheets.apply(ids[0])).toBeNull());
+    await phase("reject", async () => expect(await sheets.reject(ids.at(-1)!)).toBeNull());
+
+    // A batch of two changes, whose second a collaborator's frozen row leaves nothing to delete
+    // for: the batch stops after its first change wrote.
+    await queue([
+      { op: "writeCells", range: "Data!A210", values: [["written last"]] },
+      { op: "deleteRows", sheet: "Notes", at: 2, count: 9 },
+    ]);
+    provider.sheets[1] = { ...provider.sheets[1], frozenRowCount: 1 };
+    await phase("read, newest no longer applies", async () => {
+      expect((await read()).queuedChangeConflict).toBe(
+        `Queued change ${ids.at(-1)} no longer applies, so it and the changes queued after it are ` +
+        "not shown: change 2 (deleteRows): it would leave only the 1 frozen row of \"Notes\".");
+    });
+
+    let none = Object.fromEntries(MEASURES.map(column => [column, 0])) as Record<Measure, number>;
+    // A fold copies the overlay once, however many batches are pending: the fetched grid's, which
+    // holds no entry, and every batch then changes that one copy in place. Queueing copies the
+    // folded grid twice more, in `resolveChanges` and in `guardCells`, with the entries queued by
+    // then: 0, 20, 40, 60 and 80 thousand for the five batches of `build`, and 100,000 for every
+    // batch after them. Every read asks for compact JSON, so `indented` is 0 in every phase: the
+    // fake indents an answer that was not asked compact, and a read that forgot to ask would count
+    // here. The 50,000 values are 16 bytes a cell, where they are 27 indented.
+    //
+    // An answer of cells as entered is 40 bytes around its blocks, one for each area. Wherever the
+    // sheets are read to queue, replay or apply, the merges of the sheets the changes act on are
+    // read too (`MERGES`), of those whose changes consult them: after the sheets to queue, which
+    // finds sheets by title, and beside them to read or apply, which know the sheets' IDs from the
+    // queued changes. A change that only formats consults none.
+    expect(measured).toEqual([
+      {
+        ...none, phase: "build", pending: 5,
+        // Three copies a batch: the fold's, of no entry, and the two after it, of 0, 20, 40, 60
+        // and 80 thousand entries each.
+        overlayCopies: 15, overlayEntries: 400_000,
+        // The sheets and whether the account may edit, asked together for each batch, no merges
+        // (no change of the queue consults them), and then the two guards' cells as entered, at 53
+        // bytes a cell: a block of 10,000 cells is 531,313 bytes, and 15 more where it names its
+        // first row, which a block from row 1 does not. One of the first guard's two blocks names
+        // it and both of the second's, with a comma between the two.
+        fetches: 12, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 1_062_682 + 1_062_697,
+        mostOpen: 2,
+      },
+      {
+        ...none, phase: "queue N, a read after each", pending: 5 + N,
+        // Three copies to queue a batch and one to read: 15 and 5. The two copies after each
+        // queueing fold hold the 100,000 entries.
+        overlayCopies: 20, overlayEntries: 1_000_000,
+        // To queue: the sheets and whether the account may edit, together, then the guarded cell
+        // as entered, a block of 94 bytes. To read: the sheets, the merges and the 50,000 values,
+        // together.
+        fetches: 35, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 10 * MERGES + 5 * 134 + 5 * VALUES,
+        mostOpen: 3,
+      },
+      {
+        ...none, phase: "read", pending: 5 + N,
+        overlayCopies: 1,
+        // The sheets, the merges and the 50,000 values, together.
+        fetches: 3, responseBytes: SHEETS + MERGES + VALUES, mostOpen: 3,
+      },
+      {
+        ...none, phase: "formats read", pending: 5 + N,
+        overlayCopies: 1,
+        // The sheets and the merges of the sheets the queued changes consult, together, beside the
+        // formats Google holds for the cells, which answer the merges of the range read.
+        fetches: 3, responseBytes: SHEETS + MERGES + 35_008, mostOpen: 3,
+      },
+      {
+        ...none, phase: "queue a deleted row", pending: 6 + N,
+        // The fold's copy and the two to queue, of the 100,000 entries each.
+        overlayCopies: 3, overlayEntries: 200_000,
+        // A deletion indexes the queued keys of the copy it is applied to: once in
+        // `resolveChanges` and once in `guardCells`, 100,000 each: an index is one batch's on
+        // one copy, and goes with it. The row it deletes is empty.
+        keysIndexed: 200_000,
+        // The sheets and whether the account may edit, together, then the deleted row as entered:
+        // a block of 16 bytes, which names its first row and holds no cell.
+        fetches: 4, responseBytes: SHEETS + CAN_EDIT + MERGES + 56, mostOpen: 2,
+      },
+      {
+        ...none, phase: "queue an inserted row", pending: 7 + N,
+        // The fold's copy and the two to queue, of the 99,900 entries the deletion leaves each.
+        // The fold's deletion indexes the queued keys once, as it does in every fold from here on:
+        // the index goes with its batch, so each fold builds it again. An insertion builds no
+        // index and guards no cell.
+        overlayCopies: 3, overlayEntries: 199_800, keysIndexed: 100_000,
+        // The sheets and whether the account may edit, together.
+        fetches: 3, responseBytes: SHEETS + CAN_EDIT + MERGES, mostOpen: 2,
+      },
+      {
+        ...none, phase: "moved read", pending: 7 + N,
+        overlayCopies: 1, keysIndexed: 100_000,
+        // The sheets and the merges, together, then the 49,900 cells of the 499 rows below the
+        // inserted one as entered, at 53 bytes a cell, and as shown, at 16, together.
+        fetches: 4, responseBytes: SHEETS + MERGES + 2_651_240 + 799_562, mostOpen: 2,
+      },
+      {
+        ...none, phase: "approve", pending: 6 + N,
+        // The batch is planned again over the sheets as they are, with nothing queued. It formats,
+        // so its digest is of no cell and its plan reads no merges. The sheets, then the write,
+        // whose answer is 20 bytes.
+        overlayCopies: 1,
+        fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1,
+      },
+      // A rejection reads nothing.
+      { ...none, phase: "reject", pending: 5 + N },
+      {
+        ...none, phase: "read, newest no longer applies", pending: 6 + N,
+        // Eleven pending, the stopped one included. Its first change wrote to the fold's grid, so
+        // the grid is put back: a second copy of the fetched grid, of no entry, and the ten batches
+        // before the stopped one applied to it again. The deleted row among them indexes the
+        // 80,000 queued keys in each of the two replays, where a fold that stops nowhere indexes
+        // them once.
+        overlayCopies: 2, keysIndexed: 2 * 80_000,
+        // As `moved read`, of all 500 rows, the sheets with the collaborator's frozen row (19
+        // bytes), and the merges of both sheets the queued changes act on (59).
+        fetches: 4, responseBytes: SHEETS + 19 + 59 + 2_656_553 + 801_164, mostOpen: 2,
+      },
+    ]);
   });
 });

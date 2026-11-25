@@ -2,15 +2,17 @@
  * `updateSpreadsheet()` changes: where each lands, their replay over a grid, the requests that make
  * them, and the digest of what they overwrite.
  *
- * Queueing, replay and apply all run `planSheet`, so the cells a read previews and the batch an
- * approval writes come from the same code. Values are sent typed, so Google parses nothing by
- * locale: text stays text, and only input starting with `=` is a formula. Formatting is sent with
- * a field mask naming each field a change gives, so a field reset clears only that field and a
- * field left out is kept. Changes apply in order,
+ * Queueing, replay and apply all run `planInPlace`, which `planSheet` runs on a copy of the grid,
+ * so the cells a read previews and the batch an approval writes come from the same code. Values
+ * are sent typed, so Google parses nothing by locale: text stays text, and only input starting
+ * with `=` is a formula. Formatting is sent with a field mask naming each field a change gives, so
+ * a field reset clears only that field and a field left out is kept. Changes apply in order,
  * as Google applies a batch's requests, so a change addresses the spreadsheet as the changes
  * before it leave it.
  */
 
+import { createHash } from "node:crypto";
+import { editorCost } from "./editor-cost";
 import type { SheetArea, SheetProtection } from "./sheets-api";
 import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
@@ -94,15 +96,20 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
 }
 
 /**
- * A grid being changed in place, which no one else holds, with the keys of its entries and formats
- * by sheet once a change needs one sheet's, so it visits only those.
+ * A grid being changed in place, which its maker alone holds: its own array of sheets, maps and
+ * log, sharing with the grid it was made from only the sheets, entries and steps themselves, which
+ * no change writes to. `keys` indexes its entries and formats by sheet while one batch is applied,
+ * so a change that needs one sheet's visits only those, and is gone once the batch is.
  */
-type Working = {
+export type Working = {
   sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; sizes: Map<string, number>;
   log: StructuralStep[]; keys?: Map<number, Set<string>>;
 };
 
-function working(grid: Grid): Working {
+/** A grid of the caller's own holding what `grid` holds, to change in place. `grid` is left as it is. */
+export function working(grid: Grid): Working {
+  editorCost.overlayCopies++;
+  editorCost.overlayEntries += grid.cells.size + grid.formats.size + grid.sizes.size;
   return {
     sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats),
     sizes: new Map(grid.sizes), log: [...grid.log],
@@ -126,6 +133,7 @@ function keySet(keys: Map<number, Set<string>>, sheetId: number): Set<string> {
 // changes that only write cells never build it.
 function keysOn(work: Working, sheetId: number): Set<string> {
   if (!work.keys) {
+    editorCost.keysIndexed += work.cells.size + work.formats.size;
     work.keys = new Map();
     for (let map of byCell(work)) {
       for (let key of map.keys()) keySet(work.keys, Number(key.slice(0, key.indexOf(":")))).add(key);
@@ -593,7 +601,8 @@ function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetF
 
 /**
  * Applies `change` to `work`, recording `by` in the cells it enters, and returns its requests.
- * Throws what `conflict` makes for a change that does not apply.
+ * Throws what `conflict` makes for a change that does not apply, before it writes anything: a
+ * replay in place rests on a change that throws leaving `work` as it was.
  */
 function applyOne(work: Working, change: PlannedChange, by: number, conflict: (reason: string) => Error): unknown[] {
   let find = (id: number) => work.sheets.find(sheet => sheet.id === id);
@@ -1102,6 +1111,22 @@ function resolveLines(
 }
 
 /**
+ * Applies `changes` to `work` in place, in order, the cells they enter recording `by`, and returns
+ * the Sheets requests that make them. Throws `ChangeConflict` for a change that no longer applies,
+ * as `planSheet` does. The change that throws has written nothing, since each decides before it
+ * writes, but the changes of the batch before it have: after a throw `work` may hold a part of
+ * the batch, and its caller drops it or puts it back.
+ */
+export function planInPlace(work: Working, changes: readonly PlannedChange[], by: number): unknown[] {
+  try {
+    return changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  } finally {
+    // The index is one batch's: the grid is left holding what a grid holds and nothing more.
+    delete work.keys;
+  }
+}
+
+/**
  * Applies `changes` to `grid` in order, the cells they enter recording `by`, the ID of the queued
  * change they make. Returns the grid as they leave it, and the Sheets requests that make them;
  * `grid` itself when there are none. Throws `ChangeConflict` for a change that no longer applies:
@@ -1113,7 +1138,7 @@ export function planSheet(
 ): { grid: Grid; requests: unknown[] } {
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
-  let requests = changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  let requests = planInPlace(work, changes, by);
   return {
     grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, sizes: work.sizes, log: work.log },
     requests,
@@ -1428,6 +1453,9 @@ function digested(value: EnteredValue): unknown {
   return "formula" in value ? ["f", compactFormula(value.formula)] : ["e", value.error];
 }
 
+/** About how many characters of a guard's text `guardDigest` hands the hash at once. */
+const DIGEST_PIECE = 8_192;
+
 /**
  * A hex SHA-256 of what a batch overwrites or removes: the size and title of each sheet in
  * `guard.sheetIds`, the cells of each of `guard.cells` as entered (`entered[i]`, those of
@@ -1444,17 +1472,34 @@ export async function guardDigest(
     let sheet = sheets.find(candidate => candidate.id === id);
     return sheet ? [id, sheet.title, sheet.rowCount, sheet.columnCount] : [id, null];
   });
-  let cells = guard.cells.map(({ rect }, i) => {
-    let values: unknown[] = [];
-    for (let row = rect.startRow; row < rect.endRow; row++) {
+  // What is digested is the UTF-8 of `JSON.stringify([described, cells, ...order])`, where `cells`
+  // holds one flat array of digested values for each area and `order` is absent or one array of
+  // IDs. A queued batch stores this digest and its approval compares a fresh one with it, so those
+  // bytes are fixed. They are fed to the hash in pieces of about `DIGEST_PIECE` characters, so
+  // that a guard of 50,000 cells holds a piece of its text and never the text of them all, and a
+  // guard of many short rows makes a few calls to the hash and not one a row.
+  let hash = createHash("sha256");
+  let piece = "";
+  let add = (text: string) => {
+    piece += text;
+    if (piece.length >= DIGEST_PIECE) {
+      hash.update(piece, "utf8");
+      piece = "";
+    }
+  };
+  add(`[${JSON.stringify(described)},[`);
+  guard.cells.forEach(({ rect }, i) => {
+    add(i > 0 ? ",[" : "[");
+    // A rectangle of no column has no value, in however many rows.
+    for (let row = rect.startRow; row < rect.endRow && rect.startColumn < rect.endColumn; row++) {
       for (let column = rect.startColumn; column < rect.endColumn; column++) {
-        values.push(digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null));
+        let value = digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null);
+        add((row > rect.startRow || column > rect.startColumn ? "," : "") + JSON.stringify(value));
       }
     }
-    return values;
+    add("]");
   });
-  let order = guard.order ? [sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id)] : [];
-  let bytes = new TextEncoder().encode(JSON.stringify([described, cells, ...order]));
-  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+  let order = guard.order ? `,${JSON.stringify(sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id))}` : "";
+  hash.update(`${piece}]${order}]`, "utf8");
+  return hash.digest("hex");
 }

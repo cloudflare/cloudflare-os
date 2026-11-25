@@ -2,14 +2,16 @@ import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
-  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+  LABEL_FIELDS, LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
+import { slideLabel } from "./slides-model";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
-// A slide is read on its own; a text-heavy live slide is about 50 KiB with all its styles.
+// A slide is read on its own; a live slide of a title, a body and a table is about 30 KiB of
+// compact JSON with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -291,11 +293,15 @@ export class GoogleSlidesApi {
     return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
   }
 
+  // Every read asks for compact JSON. Google indents an answer otherwise, and the indentation,
+  // about two thirds of a slide page's bytes, is fetched, held as text and counted against the
+  // read's cap.
   async #get<T>(
     path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
+    url.searchParams.set("prettyPrint", "false");
     return this.#send<T>(url, {}, operation, maxBytes);
   }
 
@@ -340,10 +346,10 @@ export class GoogleSlidesApi {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }
 
-  /** Fetch one slide's content, whatever the size of the rest of the presentation. */
-  async getSlide(presentationId: string, slideId: string): Promise<RestSlide> {
+  /** Fetch one slide's content, whatever the size of the rest of the presentation: `fields` of it. */
+  async getSlide(presentationId: string, slideId: string, fields: string = SLIDE_FIELDS): Promise<RestSlide> {
     let slide = await this.#get<RestSlide>(
-      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
+      pagePath(presentationId, slideId), { fields }, "get slide", MAX_SLIDE_BYTES);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
   }
@@ -356,13 +362,23 @@ export class GoogleSlidesApi {
     return layout;
   }
 
-  /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
+  /**
+   * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
+   * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
+   * `LABEL_FIELDS` names, cut as it comes. Every request starts at once, each bounded by a page's
+   * 2 MiB; the slides one read or change may name bound what it names, not how many pages it
+   * fetches, since queued batches add the other slides they touch. The read fails with the first
+   * failure to arrive; the requests still running then finish unawaited, their answers dropped.
+   */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
+    labelOnly: ReadonlySet<string> = new Set(),
   ): Promise<Map<string, RestSlide>> {
-    let slides = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.getSlide(presentationId, id)));
-    return new Map(slides.map(slide => [slide.objectId!, slide]));
+    let wanted = [...ids].filter(id => order.includes(id));
+    let slides = await Promise.all(wanted.map(id => labelOnly.has(id)
+      ? this.getSlide(presentationId, id, LABEL_FIELDS).then(slideLabel)
+      : this.getSlide(presentationId, id, SLIDE_FIELDS)));
+    return new Map(wanted.map((id, index) => [id, slides[index]]));
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */

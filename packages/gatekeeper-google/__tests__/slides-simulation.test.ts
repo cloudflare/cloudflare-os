@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { RestText } from "../src/slides-api";
+import type { RestSlide, RestText } from "../src/slides-api";
 import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import { batchKind } from "../src/slides-actions";
 import type { DesignChange } from "../src/slides-design";
 import {
-  applyChange, batchSlides, slidesToFetch, type CreatedPlaceholder, type Deck, type SlidesAction,
+  applyChange, batchSlides, createReplay, slidesToFetch, slidesToRead, type CreatedPlaceholder,
+  type Deck, type SlidesAction,
 } from "../src/slides-simulation";
 import type { ShapeElement } from "../src/slides-read-types";
 import { editSlide } from "../src/slides-target";
@@ -101,6 +102,24 @@ describe("Slides text edits", () => {
     });
   });
 });
+
+/**
+ * A slide through JSON with its number set wherever it shows one: what a slide that moves must
+ * read as, but for a key that holds `undefined`, which JSON drops.
+ */
+function throughJson(page: RestSlide, number: number): RestSlide {
+  return JSON.parse(JSON.stringify(page), (key, value) =>
+    key === "autoText" && value.type === "SLIDE_NUMBER" ? { ...value, content: `${number}` } : value);
+}
+
+function move(slideIds: string[], after: string | null): SlidesAction {
+  return { kind: "moveSlides", payload: { slideIds, after, slides: [] } };
+}
+
+/** Where the second element of `page`, a line, starts. */
+function startOf(page: RestSlide) {
+  return page.pageElements![1].line!.lineProperties!.startConnection!;
+}
 
 describe("Slides change replay", () => {
   const THEME = themePagesOf(presentation([]));
@@ -247,6 +266,94 @@ describe("Slides change replay", () => {
     // A slide the read did not fetch need only exist.
     expect(applyChange({ order: ["s1"], slides: new Map(), masters: new Map(), themePages: THEME }, skip(["s1"], true)).slides.size).toBe(0);
     expect(() => applyChange(deck, skip(["gone"], true))).toThrow('slide "gone" no longer exists');
+  });
+
+  it("numbers a slide as a pass through JSON would", () => {
+    let number = { slideNumber: "0" };
+    let cell = (columnIndex: number, ...runs: (string | typeof number)[]) =>
+      ({ location: { rowIndex: 0, columnIndex }, text: text(runs) });
+    let pages = [
+      slide("first", []),
+      // The shape that shows a number is a placeholder of the number's own type, as in a real deck.
+      slide("shape", [
+        shape("a", text(["Page ", number]), { placeholder: "SLIDE_NUMBER" }), shape("b", text(["Plain"])),
+      ]),
+      slide("cell", [{ objectId: "t", table: { rows: 1, columns: 2, tableRows: [{ tableCells: [cell(0, "A"), cell(1, number)] }] } }]),
+      slide("group", [{ objectId: "g", elementGroup: { children: [shape("c", text(["x"])), shape("d", text([number, " of 9"]))] } }]),
+      slide("twice", [shape("e", text([number], ["and ", number])), shape("f", text([number]))], { notes: text([number]) }),
+      slide("nowhere", [shape("h", text(["Plain"]))]),
+    ];
+    let deck: Deck = {
+      order: pages.map(page => page.objectId!), slides: new Map(pages.map(page => [page.objectId!, page])),
+      masters: new Map(), themePages: THEME,
+    };
+
+    let moved = applyChange(deck, move(["first"], "nowhere"));
+
+    expect(moved.order).toEqual(["shape", "cell", "group", "twice", "nowhere", "first"]);
+    for (let [position, id] of moved.order.entries()) {
+      expect(moved.slides.get(id)).toStrictEqual(throughJson(deck.slides.get(id)!, position + 1));
+    }
+    expect(JSON.stringify(moved.slides.get("twice")).match(/"content":"4"/g)).toHaveLength(4);
+    // Only the number's text is numbered, not the placeholder that holds it.
+    expect(moved.slides.get("shape")!.pageElements![0].shape!.placeholder).toStrictEqual({ type: "SLIDE_NUMBER" });
+  });
+
+  it("keeps a key that holds undefined, which reads the same either way", () => {
+    let connector = { objectId: "arrow", line: { lineProperties: {
+      startConnection: { connectedObjectId: "a", connectionSiteIndex: 1 },
+    } } };
+    let deck: Deck = {
+      order: ["s1"], masters: new Map(), themePages: THEME,
+      slides: new Map([["s1", slide("s1", [shape("a"), shape("n", text([{ slideNumber: "1" }])), connector])]]),
+    };
+
+    // The shape the line starts from has no ID in the copy, as one added since the copy was queued.
+    let copied = applyChange(deck, copyOf("s1", "c1", { n: "cn", arrow: "carrow" }));
+    let renumbered = applyChange(copied, move(["c1"], null)).slides.get("c1")!;
+
+    let reference = throughJson(copied.slides.get("c1")!, 1);
+    expect(renumbered).toEqual(reference);
+    expect(startOf(renumbered)).toHaveProperty("connectedObjectId", undefined);
+    expect(startOf(reference)).not.toHaveProperty("connectedObjectId");
+    expect(slideOf(renumbered, 0, new Map())).toStrictEqual(slideOf(reference, 0, new Map()));
+    // So what a read counts against its size limit is the same.
+    expect(JSON.stringify(renumbered)).toBe(JSON.stringify(reference));
+  });
+
+  it("returns the slide itself when it shows no number, and shares what it does not change", () => {
+    let plain = slide("s1", [shape("a", text(["Plain"]))]);
+    let numbered = slide("s2", [shape("b", text(["Page ", { slideNumber: "2" }])), shape("c", text(["Plain"]))]);
+    let deck: Deck = {
+      order: ["s1", "s2"], slides: new Map([["s1", plain], ["s2", numbered]]), masters: new Map(),
+      themePages: THEME,
+    };
+
+    let moved = applyChange(deck, move(["s2"], null));
+
+    expect(moved.slides.get("s1")).toBe(plain);
+    let shown = moved.slides.get("s2")!;
+    expect(shown).not.toBe(numbered);
+    expect(shown.pageElements![0]).not.toBe(numbered.pageElements![0]);
+    expect(shown.pageElements![1]).toBe(numbered.pageElements![1]);
+    expect(shown.slideProperties).toBe(numbered.slideProperties);
+    expect(shown.pageElements![0].shape!.text!.textElements![1])
+      .toBe(numbered.pageElements![0].shape!.text!.textElements![1]);
+    // The slide the deck was given still shows the number it had.
+    expect(numbered).toEqual(slide("s2", [shape("b", text(["Page ", { slideNumber: "2" }])), shape("c", text(["Plain"]))]));
+  });
+
+  it("refuses a skip that names a missing slide before it skips any", () => {
+    let first = slide("s1", []);
+    let deck: Deck = { order: ["s1"], slides: new Map([["s1", first]]), masters: new Map(), themePages: THEME };
+    let skip: SlidesAction =
+      { kind: "skipSlides", payload: { slideIds: ["s1", "gone", "missing"], skipped: true, slides: [] } };
+
+    expect(() => applyChange(deck, skip)).toThrow('slide "gone" no longer exists');
+    let { entity, stopped } = createReplay().fold("deck-1", deck, [{ id: 1, action: skip }]);
+    expect(stopped?.reason).toBe('slide "gone" no longer exists');
+    expect(entity?.slides.get("s1")).toBe(first);
+    expect(first.slideProperties).not.toHaveProperty("isSkipped");
   });
 
   describe("a created slide", () => {
@@ -413,5 +520,82 @@ describe("Slides batch kinds", () => {
       expect(slidesToFetch(["s1"], [{ id: 1, action }]), kind).toEqual(new Set(["s1", "s2"]));
     }
     expect(batchSlides({ kind: "deleteSlide", payload: { slideId: "s1", slide: { number: 1 } } })).toEqual([]);
+  });
+});
+
+describe("slidesToRead", () => {
+  const queued = (...actions: SlidesAction[]) => actions.map((action, i) => ({ id: i + 1, action }));
+  const copyOf = (slideId: string, newSlideId: string): SlidesAction =>
+    ({ kind: "duplicateSlide", payload: { slideId, newSlideId, objectIds: {}, slide: { number: 1 } } });
+  const batch = (...slideIds: string[]): SlidesAction => ({
+    kind: "editText",
+    payload: { changes: slideIds.map(slideId => ({ op: "editText", slideId, replace: "x" })), slides: {} },
+  });
+  const moved = (...slideIds: string[]): SlidesAction =>
+    ({ kind: "moveSlides", payload: { slideIds, after: null, slides: [] } });
+
+  it("reads by label a slide no queued change edits", () => {
+    expect(slidesToRead([], ["s1", "s2"], [])).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s1", "s2"]),
+    });
+    // A queued change that only names a slide, or edits another, leaves it read by label.
+    expect(slidesToRead([], ["s1", "s2"], queued(moved("s1"), batch("s3"), copyOf("s2", "c2")))).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s1", "s2"]),
+    });
+    // A slide read whole for itself is not read by label for being named too.
+    expect(slidesToRead(["s1"], ["s1", "s2"], [])).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s2"]),
+    });
+  });
+
+  it("reads whole a slide a queued batch edits, with the batch's other slides", () => {
+    expect(slidesToRead([], ["s1", "s4"], queued(batch("s1", "s2"), batch("s3")))).toEqual({
+      needed: new Set(["s1", "s4", "s2"]), labelOnly: new Set(["s4"]),
+    });
+  });
+
+  it("reads whole the slide an edited queued copy was made from", () => {
+    // The copy is edited after it is made, and its source is the copy of another slide.
+    let changes = queued(copyOf("s1", "c1"), copyOf("c1", "c2"), batch("c2"));
+
+    expect(slidesToRead([], ["c2", "s3"], changes)).toEqual({
+      needed: new Set(["c2", "s3", "c1", "s1"]), labelOnly: new Set(["s3"]),
+    });
+    // So is the source of a copy that is read whole.
+    expect(slidesToRead(["c1"], ["s3"], queued(copyOf("s1", "c1")))).toEqual({
+      needed: new Set(["c1", "s3", "s1"]), labelOnly: new Set(["s3"]),
+    });
+  });
+
+  it("reads by label the source of a queued copy that is only named", () => {
+    expect(slidesToRead([], ["c1"], queued(copyOf("s1", "c1"), moved("c1")))).toEqual({
+      needed: new Set(["c1", "s1"]), labelOnly: new Set(["c1", "s1"]),
+    });
+    // An edit to the source alone reads the source whole, and the copy takes what it holds.
+    expect(slidesToRead([], ["c1"], queued(copyOf("s1", "c1"), batch("s1")))).toEqual({
+      needed: new Set(["c1", "s1"]), labelOnly: new Set(["c1"]),
+    });
+  });
+
+  it("needs the slides, in the order, that slidesToFetch gives for them all", () => {
+    let action: SlidesAction = {
+      kind: "updateSlides",
+      payload: {
+        changes: [
+          { op: "setBackground", slideId: "s2", background: "#000000" },
+          { op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#000000" } },
+        ],
+        slides: {},
+      },
+    };
+    let changes = queued(copyOf("s5", "c5"), action, batch("s6", "c5"), moved("s7"));
+    for (let [pages, labelled] of [
+      [["s2"], ["s7", "c5"]], [[], ["s9", "s6", "s1"]], [["master-1"], ["s7"]], [["c5", "s1"], []],
+    ]) {
+      let { needed, labelOnly } = slidesToRead(pages, labelled, changes);
+      expect([...needed]).toEqual([...slidesToFetch([...pages, ...labelled], changes)]);
+      // Nothing is read by label that is read whole for `pages`.
+      expect([...labelOnly].filter(id => slidesToFetch(pages, changes).has(id))).toEqual([]);
+    }
   });
 });

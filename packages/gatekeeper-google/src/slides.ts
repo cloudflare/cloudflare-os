@@ -12,6 +12,7 @@ import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
@@ -29,9 +30,9 @@ import type {
 import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
-  replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
-  type SlidesActions, type ThemeLabel,
+  batchSlides, conflictReason, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
+  newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange, type SlideLabel,
+  type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
@@ -227,14 +228,6 @@ export class GoogleSlidesGatekeeperImpl
   }
 }
 
-/** A read with queued changes applied, and the first that no longer applies. */
-function replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
-  let result = replayChanges(base, changes);
-  return result.kind === "complete"
-    ? { deck: result.value }
-    : { deck: result.partial, conflict: conflictReason(result.unsupported, result.reason) };
-}
-
 function asError(error: unknown): never {
   if (error instanceof ChangeConflict) {
     throw new Error(`${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`);
@@ -265,6 +258,10 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SlidesChangeQueue;
+  // Replays the queued changes over the deck of each read, as one entity under the presentation's
+  // ID. It keeps nothing between reads: each folds every queued change again, on a deck of the
+  // fold's own, and leaves the deck it fetched as it was.
+  #replay = createReplay();
 
   constructor(
     api: PresentationReader,
@@ -285,23 +282,32 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /** A read with queued changes applied, and the first that no longer applies. */
+  #replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
+    let { entity, stopped } = this.#replay.fold(this.#presentationId, base, changes);
+    // The fold of a fetched deck always holds one: no queued change deletes the deck.
+    let deck = entity!;
+    return stopped ? { deck, conflict: conflictReason(stopped.record, stopped.reason) } : { deck };
+  }
+
   /**
-   * The slide order, every master and layout, and the content of the slides among `pages`, with
-   * queued changes applied. A slide that no longer exists, or never did, is absent from
-   * `deck.order`.
+   * The slide order, every master and layout, the content of the slides among `pages`, and of
+   * those among `labelled` what labels them (see `slidesToRead`), with queued changes applied. A
+   * slide that no longer exists, or never did, is absent from `deck.order`.
    */
-  async #simulated(pages: readonly string[]) {
+  async #simulated(pages: readonly string[], labelled: readonly string[] = []) {
     return this.#changes.snapshot(async changes => {
       let outline = await this.#api.getOutline(this.#presentationId);
       let order = slideIds(outline);
+      let { needed, labelOnly } = slidesToRead(pages, labelled, changes);
       return {
         title: outline.title ?? "Untitled presentation",
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...replayed({
+        ...this.#replayed({
           order,
-          slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(pages, changes), order),
+          slides: await this.#api.getSlides(this.#presentationId, needed, order, labelOnly),
           ...mastersOf(outline),
           themePages: themePagesOf(outline),
         }, changes),
@@ -311,11 +317,15 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   /**
    * Reads `ids`, and the masters and layouts `themePages` names, to prepare a change, refusing one
-   * that is absent, that a conflict blocks, or that the account may not make.
+   * that is absent, that a conflict blocks, or that the account may not make. A change that only
+   * names `ids` is `labelled`: it reads their labels, not their pages.
    */
-  async #prepare(ids: readonly string[], purpose: string, themePages: readonly string[] = []) {
+  async #prepare(
+    ids: readonly string[], purpose: string,
+    { themePages = [], labelled = false }: { themePages?: readonly string[]; labelled?: boolean } = {},
+  ) {
     return preparable(ids, await this.#read(
-      () => this.#simulated([...ids, ...themePages]),
+      () => labelled ? this.#simulated(themePages, ids) : this.#simulated([...ids, ...themePages]),
       ({ title }) => ids.length === 0 && themePages.length > 0 ? {
         title: "Read Google Slides masters and layouts to change them",
         description: `Read the masters and layouts of "${title}" to ${purpose}.`,
@@ -339,7 +349,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
-        let { deck, conflict } = replayed(
+        let { deck, conflict } = this.#replayed(
           { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
         return {
           // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
@@ -371,7 +381,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...slideOf(deck.slides.get(id)!, deck.order.indexOf(id), layouts),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         }));
-        if (JSON.stringify(slides).length > MAX_SLIDES_READ_LENGTH) {
+        if (jsonLength(slides) > MAX_SLIDES_READ_LENGTH) {
           throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
         }
         return { title, missing, slides };
@@ -422,7 +432,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       return pageType === "SLIDE" ? [] : [id];
     }))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them", themePages);
+      let { deck } = await this.#prepare(ids, "queue changes to them", { themePages });
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
       // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
       let unborn = prepared.find((change): change is Extract<DesignChange, { op: "editText" }> =>
@@ -484,7 +494,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async deleteSlide(slideId: string): Promise<void> {
     await this.#changes.queue("deleteSlide", async () => {
-      let { deck } = await this.#prepare([slideId], "queue deleting one");
+      let { deck } = await this.#prepare([slideId], "queue deleting one", { labelled: true });
       return { payload: { slideId, slide: labelOf(deck, slideId) }, result: undefined };
     });
   }
@@ -496,7 +506,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("moveSlides", async () => {
       let ids = after === null ? slideIds : [...slideIds, after];
-      let { deck } = await this.#prepare(ids, "queue moving them");
+      let { deck } = await this.#prepare(ids, "queue moving them", { labelled: true });
       let moved: string[];
       try {
         moved = movedOrder(deck.order, slideIds, after);
@@ -526,7 +536,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       // read to copy its placeholders into the change.
       let { page, ...simulated } = await this.#read(
         async () => {
-          let read = await this.#simulated(ids);
+          let read = await this.#simulated([], ids);
           return {
             ...read,
             page: read.layouts.has(layoutId)
@@ -573,7 +583,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     }
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("skipSlides", async () => {
-      let { deck } = await this.#prepare(slideIds, skipped ? "queue skipping them" : "queue unskipping them");
+      let { deck } = await this.#prepare(
+        slideIds, skipped ? "queue skipping them" : "queue unskipping them", { labelled: true });
       if (slideIds.every(id => (deck.slides.get(id)?.slideProperties?.isSkipped === true) === skipped)) {
         throw new Error(skipped ? "Those slides are already skipped." : "None of those slides is skipped.");
       }
