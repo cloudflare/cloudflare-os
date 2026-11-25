@@ -13,6 +13,7 @@ export default defineConfig({
         HOOK_HOST: { className: "HookHost", useSQLite: true },
         CONFORMANCE_ACCOUNT: { className: "ConformanceAccount", useSQLite: true },
         CONFORMANCE_RESOURCE: { className: "ConformanceResource", useSQLite: true },
+        STORAGE_HOST: { className: "StorageHost", useSQLite: true },
       },
     },
   })],
