@@ -2472,8 +2472,10 @@ async function runAgentPass(
     msg.type === "message" && msg.author.type === "agent" && !msg.toolCalls?.length) + 1);
   const userPrompt = unfinishedTurn.findLast(isTurnPrompt);
   // Callbacks start fresh turns; approval and Retry notes continue the original request.
-  const activePrompt = unfinishedTurn.find(msg => msg.type === "agentCallback" &&
-    (!userPrompt || msg.sequence > userPrompt.sequence)) ?? userPrompt ?? unfinishedTurn.find(msg =>
+  const callback = unfinishedTurn.findLast((msg, index) =>
+    msg.type === "agentCallback" && unfinishedTurn[index - 1]?.type !== "agentCallback");
+  const activePrompt = callback && (!userPrompt || callback.sequence > userPrompt.sequence)
+    ? callback : userPrompt ?? unfinishedTurn.find(msg =>
       startsAgentTurn(msg) || (msg.type === "message" && msg.steered));
   let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
     msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))

@@ -261,6 +261,25 @@ describe("images read from a worktree", () => {
     }
   }));
 
+  it("compacts a stopped callback turn while keeping the next callback batch", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "old-callback", bindingName: "OLD_ARGS"}]);
+    recordReads(impl, chatId, blob.oid, 20);
+    const oldReadSequence = impl.loadChatHistory(chatId).chatMessages.at(-1)!.sequence;
+    impl.addChatMessages(chatId, AUTHOR, ["first-new-callback", "second-new-callback"].map(argsSummary =>
+      ({type: "agentCallback", methodName: "inspect", argsSummary, bindingName: "NEW_ARGS"})));
+    const {requests} = await scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Summary")), fauxAssistantMessage(fauxText("Done")),
+    ]);
+    expect(impl.loadChatHistory(chatId).checkpoint?.compactedTo).toBeGreaterThan(oldReadSequence);
+    const last = requests.at(-1)!;
+    expect(results(last).flatMap(result => result.content.filter(part => part.type === "image"))).toHaveLength(1);
+    for (const note of ["first-new-callback", "second-new-callback"]) {
+      expect(last.some(msg => msg.role === "user" && typeof msg.content === "string" && msg.content.includes(note))).toBe(true);
+    }
+  }));
+
   it("keeps the original prompt and reference uploads through an approval handoff", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
