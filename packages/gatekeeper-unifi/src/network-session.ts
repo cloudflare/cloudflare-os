@@ -87,7 +87,8 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
   }
 
   getDevice(deviceId: string): UnifiNetworkDevice {
-    return new NetworkDeviceSession(this.#ctx.fork(), this.#siteId, requireId(deviceId, "device"), true);
+    const id = requireId(deviceId, "device");
+    return new NetworkDeviceSession(this.#ctx.fork(), this.#siteId, id, true);
   }
 
   async listClients(): Promise<UnifiClient[]> {
@@ -127,7 +128,8 @@ export class NetworkSiteSession extends RpcTarget implements UnifiNetworkSite {
   }
 
   getWifiNetwork(wifiNetworkId: string): UnifiWifiNetwork {
-    return new WifiNetworkSession(this.#ctx.fork(), this.#siteId, requireId(wifiNetworkId, "WiFi network"));
+    const id = requireId(wifiNetworkId, "WiFi network");
+    return new WifiNetworkSession(this.#ctx.fork(), this.#siteId, id);
   }
 
   getHotspot(): UnifiHotspot {

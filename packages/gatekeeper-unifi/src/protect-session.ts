@@ -51,7 +51,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   }
 
   getCamera(cameraId: string): UnifiCamera {
-    return new CameraSession(this.#ctx.fork(), requireId(cameraId, "camera"));
+    const id = requireId(cameraId, "camera");
+    return new CameraSession(this.#ctx.fork(), id);
   }
 
   async listSensors(): Promise<UnifiSensorInfo[]> {
@@ -62,7 +63,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   }
 
   getSensor(sensorId: string): UnifiSensor {
-    return new SensorSession(this.#ctx.fork(), requireId(sensorId, "sensor"));
+    const id = requireId(sensorId, "sensor");
+    return new SensorSession(this.#ctx.fork(), id);
   }
 
   async listLights(): Promise<UnifiLightInfo[]> {
@@ -74,7 +76,8 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   }
 
   getLight(lightId: string): UnifiLight {
-    return new LightSession(this.#ctx.fork(), requireId(lightId, "floodlight"));
+    const id = requireId(lightId, "floodlight");
+    return new LightSession(this.#ctx.fork(), id);
   }
 }
 

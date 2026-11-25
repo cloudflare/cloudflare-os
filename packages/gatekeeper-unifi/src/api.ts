@@ -537,8 +537,9 @@ function passphrase(settings: Record<string, unknown>): unknown {
 
 /**
  * Checks that Protect's answer to a change, the item as it is now, shows the change: a bare
- * success, from a proxy say, doesn't, and nor does a setting shown otherwise. One the answer leaves
- * out is no contradiction, and a doorbell message's `resetAt` is Protect's to settle.
+ * success, from a proxy say, doesn't, and nor does a setting shown otherwise, such as a doorbell
+ * message's expiry when one was sent. One the answer leaves out is no contradiction, and one the
+ * change didn't send, such as the expiry Protect picks by default, isn't compared.
  */
 function showsPatch(receipt: unknown, patch: object, what: string): void {
   if (contradictsPatch(receipt, patch)) {
@@ -549,7 +550,7 @@ function showsPatch(receipt: unknown, patch: object, what: string): void {
 /** Whether `shown` isn't an object, or shows a field of `sent`, at any depth, as something else. */
 function contradictsPatch(shown: unknown, sent: object): boolean {
   return typeof shown !== "object" || shown === null || Object.entries(sent).some(([key, value]) => {
-    if (key === "resetAt" || !(key in shown)) return false;
+    if (!(key in shown)) return false;
     const field = (shown as Record<string, unknown>)[key];
     return typeof value === "object" && value !== null ? contradictsPatch(field, value) : field !== value;
   });

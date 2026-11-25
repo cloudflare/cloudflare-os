@@ -176,8 +176,13 @@ describe("an item's details", () => {
     const [doorbell, ptz] = structuredClone(console.protect!.cameras);
     const light = structuredClone(console.protect!.lights[0]!);
     await api.patchCamera(HOME.doorbellId, { name: "Porch" });
-    // Protect settles a doorbell message's reset time itself.
-    await api.patchCamera(HOME.doorbellId, cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until: Date.now() + 60_000 }));
+    // A doorbell message's expiry is compared when one was sent, and left to Protect otherwise.
+    const until = Date.now() + 60_000;
+    const doNotDisturb = cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until });
+    await api.patchCamera(HOME.doorbellId, doNotDisturb);
+    await api.patchCamera(HOME.doorbellId, cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until: null }));
+    const forever = { ...doorbell, lcdMessage: { type: "DO_NOT_DISTURB", resetAt: null } };
+    await expect(receipt(forever).patchCamera(HOME.doorbellId, doNotDisturb)).rejects.toMatchObject({ kind: "protocol" });
     await api.patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
     // A bare success, an answer with the old settings, or another camera's, doesn't show the change.
     for (const json of [undefined, {}, doorbell, ptz]) {

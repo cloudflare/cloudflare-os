@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
 import { HOME, homeConsole, SNAPSHOT_BYTES } from "../fake-unifi.js";
+import { NetworkSiteSession } from "../../src/network-session.js";
+import { ProtectSession } from "../../src/protect-session.js";
+import { SessionContext, type SessionShared } from "../../src/session-context.js";
 import type { Step } from "../worker.js";
 
 afterEach(() => {
@@ -160,6 +163,20 @@ describe("a camera", () => {
     replacement.protect!.nvr.mac = "001122334455";
     unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
     expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+  });
+
+  it("refuses a malformed child ID before taking a stub for it, which nothing would then dispose", () => {
+    let dups = 0;
+    const queue = { dup: () => { dups++; return queue; } } as unknown as ConstructorParameters<typeof SessionContext>[1];
+    const ctx = () => new SessionContext({} as SessionShared, queue);
+    const protect = new ProtectSession(ctx());
+    expect(() => protect.getCamera("../nvrs")).toThrow(/isn't a valid camera ID/);
+    expect(() => protect.getSensor("../nvrs")).toThrow(/isn't a valid sensor ID/);
+    expect(() => protect.getLight("../nvrs")).toThrow(/isn't a valid floodlight ID/);
+    const site = new NetworkSiteSession(ctx(), HOME.siteId);
+    expect(() => site.getDevice("../x")).toThrow(/isn't a valid device ID/);
+    expect(() => site.getWifiNetwork("../x")).toThrow(/isn't a valid WiFi network ID/);
+    expect(dups).toBe(0);
   });
 
   it("checks the console before every read it sends, not trusting one it just checked", async () => {
