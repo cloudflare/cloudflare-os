@@ -736,6 +736,16 @@ describe("Sheets apply guard", () => {
     ]);
   });
 
+  it("hashes a guard longer than one piece as its whole text", async () => {
+    // Three cells of about 6,000 characters of JSON each: the text is handed to the hash in
+    // several pieces, the boundaries between cells.
+    let long = "😀\n".repeat(1_500);
+    let guard = { sheetIds: [0], cells: [{ sheetId: 0, rect: rect(0, 0, 3, 1) }] };
+    let content: EnteredValue[][][] = [[[long], [long], [long]]];
+    expect(JSON.stringify(content).length).toBeGreaterThan(2 * 8_192);
+    expect(await guardDigest(SHEETS, guard, content)).toBe(await wholeTextDigest(SHEETS, guard, content));
+  });
+
   it("gives the digest a batch queued earlier holds", async () => {
     // Each digest is the one a queued batch stores for its guard: approval compares a fresh one
     // with it, so one byte of difference in what is hashed would refuse every batch already queued.
