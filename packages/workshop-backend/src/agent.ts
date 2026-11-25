@@ -4803,7 +4803,7 @@ async function runAgentPass(
     let native = supportsAnthropicCompaction(handle.model) && unreadParts.size === 0;
     // The prompt stays: summarized, the agent would see only a summary of what it is answering.
     let protectedFrom = findProtectedFromSequence(chatMessages);
-    if (prompt !== undefined && !(protectedFrom !== undefined && protectedFrom <= prompt)) {
+    if (!compactionTurn && prompt !== undefined && !(protectedFrom !== undefined && protectedFrom <= prompt)) {
       protectedFrom = prompt;
     }
     let compactedTo = findCompactionBoundary(projection, inputBudget, contextTokens,

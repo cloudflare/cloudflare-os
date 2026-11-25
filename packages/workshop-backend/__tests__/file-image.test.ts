@@ -287,6 +287,17 @@ describe("images read from a worktree", () => {
     expect(results(last)[1].content.some(part => part.type === "image")).toBe(true);
   }));
 
+  it("lets explicit compaction summarize a stopped image turn", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    recordReads(impl, chatId, blob.oid, 1);
+    const firstRead = impl.loadChatHistory(chatId).chatMessages.at(-1)!.sequence;
+    recordReads(impl, chatId, blob.oid, 1);
+    impl.addChatMessages(chatId, USER, [{type: "slashCommand",
+      request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+    await scriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Summarized the image observations."))]);
+    expect(impl.loadChatHistory(chatId).checkpoint?.compactedTo).toBeGreaterThan(firstRead);
+  }));
+
   it("summarizes over-limit image history as text instead of sending it to native compaction", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId, blob} = await setup(impl);
     recordReads(impl, chatId, blob.oid, 20);
