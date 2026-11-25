@@ -22,7 +22,11 @@ const dataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) =
   reader.readAsDataURL(blob);
 });
 
-const acquire = (bytes: Uint8Array | Blob, mimeType: string): { url: Promise<string>; release: () => void } => {
+/**
+ * useObjectUrl's URL outside a component: shared the same way, and given back with `release`.
+ */
+export const acquireObjectUrl = (bytes: Uint8Array | Blob, mimeType: string)
+  : { url: Promise<string>; release: () => void } => {
   const type = mimeType || "application/octet-stream";
   let byType = shared.get(bytes);
   if (!byType) shared.set(bytes, byType = new Map());
@@ -64,7 +68,7 @@ export const useObjectUrl = (bytes: Uint8Array | Blob | undefined, mimeType: str
       return;
     }
     let current = true;
-    const held = acquire(bytes, mimeType);
+    const held = acquireObjectUrl(bytes, mimeType);
     held.url.then((next) => { if (current) setUrl(next); }, () => { if (current) setUrl(null); });
     return () => {
       current = false;

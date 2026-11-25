@@ -8,6 +8,9 @@ type Branch =
   | { kind: 'step'; step: ObserverBindingPathStep; children: Branches }
   | { kind: 'resource'; requirement: ObserverBindingNeed }
 
+// Resources first, then workpieces, then hooks, then historical requirements.
+const ORDER = { resource: 0, gadget: 1, agentSpawner: 1, hook: 2, historicalRequirement: 3 }
+
 // One branch per workpiece, so a spawner or gadget on the way to several connections shows once.
 // A connection with no route (a workspace grant's) or an empty one (bound directly) sits at the top.
 const buildTree = (requirements: ObserverBindingNeed[]): Branches => {
@@ -80,7 +83,7 @@ export const ProtectedResourceList = ({
         : 'ms-1 border-s border-kumo-line ps-2 sm:ps-3'}
     >
       {Array.from(branches).toSorted(([, a], [, b]) =>
-        Number(a.kind === 'step') - Number(b.kind === 'step'),
+        ORDER[a.kind === 'step' ? a.step.type : a.kind] - ORDER[b.kind === 'step' ? b.step.type : b.kind],
       ).map(([key, branch]) => {
         if (branch.kind === 'step') {
           const { title, detail } = describeStep(branch.step, owner ?? 'this gadget')

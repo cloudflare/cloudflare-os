@@ -1,10 +1,50 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
-// A conservative per-file size that model APIs generally accept; providers' own limits vary by
-// API and model, and some may be lower. Mirrored by the frontend's MAX_CHAT_ATTACHMENT_BYTES
+// The largest file a chat message may attach. Uploads stream into the Git store, so this bounds
+// storage, not model input: replay shows the model only what fits the limits below, and names
+// the rest by workspace path. Mirrored by the frontend's MAX_CHAT_ATTACHMENT_BYTES
 // (prepareChatAttachment.ts).
-const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const MAX_CHAT_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+/**
+ * The largest image or PDF replay sends a model inline. Anthropic's is the lowest per-image
+ * limit, 10 MB of base64 (7.5 MB decoded):
+ * https://platform.claude.com/docs/en/build-with-claude/vision#request-limits
+ */
+export const MAX_INLINE_ATTACHMENT_BYTES = 7 * 1024 * 1024;
+
+/**
+ * The most image and PDF bytes one model request carries inline, across the whole replayed
+ * chat, since every turn resends them all; a chat whose messages together pass it compacts first
+ * (see the replay in agent.ts). Base64-encoded, about 28 MB, within the 100 MB Gemini allows
+ * inline (https://blog.google/innovation-and-ai/technology/developers-tools/gemini-api-new-file-limits/).
+ * A request holds about four times its inline bytes at its peak, beside the Durable Object's
+ * 128 MB of memory.
+ */
+export const MAX_INLINE_ATTACHMENTS_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The most image and PDF bytes one message carries inline: half a request's, since the turn that
+ * takes a chat past MAX_INLINE_ATTACHMENTS_TOTAL_BYTES holds an earlier request's and the new
+ * message's together while it compacts.
+ */
+export const MAX_INLINE_MESSAGE_BYTES = MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2;
+
+/**
+ * The most image and PDF bytes one replay reads: a request's, and the new message's that takes
+ * the chat past them. More build up only from messages no turn has shown a vision model, such as
+ * ones sent with none chosen; replay names the older ones by path without reading them.
+ */
+export const MAX_INLINE_REPLAY_BYTES = MAX_INLINE_ATTACHMENTS_TOTAL_BYTES + MAX_INLINE_MESSAGE_BYTES;
+
+/**
+ * The most images and PDFs one model request carries inline; a chat that passes it compacts
+ * first. Past 20, Anthropic refuses images over a lower pixel limit than
+ * canInlineChatAttachmentImage() allows, and Bedrock and Vertex count PDFs toward that too; well
+ * past it, providers refuse the request outright.
+ */
+export const MAX_INLINE_ATTACHMENTS = 20;
 
 const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
@@ -23,6 +63,10 @@ const CONTENT_SIGNATURES = new Map<string, readonly (number | null)[]>([
   [PDF_MIME_TYPE, [0x25, 0x50, 0x44, 0x46, 0x2D]],
 ]);
 
+/** How many leading bytes of an upload validateChatAttachmentUpload() examines. */
+export const CHAT_ATTACHMENT_SIGNATURE_BYTES =
+    Math.max(...[...CONTENT_SIGNATURES.values()].map(signature => signature.length));
+
 function sanitizeChatAttachmentMimeType(mimeType: string | undefined): string {
   if (!mimeType || /[\r\n]/.test(mimeType)) return "application/octet-stream";
   return mimeType.split(";", 1)[0].trim().toLowerCase() || "application/octet-stream";
@@ -37,22 +81,25 @@ function sanitizeChatAttachmentName(name: string | undefined): string | undefine
 /** Bound uploaded bytes independently of a model's supported input formats. */
 export function assertChatAttachmentSize(byteLength: number): void {
   if (byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
-    throw new Error("Chat attachment is too large.");
+    throw new Error(`Chat attachments must be ${MAX_CHAT_ATTACHMENT_BYTES / (1024 * 1024)} MB or smaller.`);
   }
 }
 
-/** Normalize and validate an upload's metadata and bytes before attaching it to a message. */
+/**
+ * Normalize an upload's metadata before attaching it to a message, and check that its leading
+ * bytes (at least its first CHAT_ATTACHMENT_SIGNATURE_BYTES) match its MIME type. Its size is
+ * the caller's to check, with assertChatAttachmentSize().
+ */
 export function validateChatAttachmentUpload<T extends {
-  mimeType: string; content: Uint8Array; name?: string;
+  mimeType: string; leadingBytes: Uint8Array; name?: string;
 }>(attachment: T): T {
   attachment.name = sanitizeChatAttachmentName(attachment.name);
   attachment.mimeType = sanitizeChatAttachmentMimeType(attachment.mimeType);
-  assertChatAttachmentSize(attachment.content.byteLength);
 
   let signature = CONTENT_SIGNATURES.get(attachment.mimeType);
   if (signature) {
     for (let [index, expected] of signature.entries()) {
-      if (expected !== null && attachment.content[index] !== expected) {
+      if (expected !== null && attachment.leadingBytes[index] !== expected) {
         throw new Error("Chat attachment content does not match its MIME type.");
       }
     }
@@ -77,13 +124,12 @@ export function isAllowedChatAttachmentImageMimeType(mimeType: string | undefine
 }
 
 /** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */
-export function canInlineChatAttachmentImage(
-    mimeType: string, bytes: Uint8Array, maxEdge = 8000): boolean {
+export function canInlineChatAttachmentImage(mimeType: string, bytes: Uint8Array): boolean {
   const dimensions = imageDimensions(sanitizeChatAttachmentMimeType(mimeType), bytes);
-  // Anthropic permits 8000 pixels normally, but only 2000 in many-image requests. This is a
+  // Anthropic permits 8000 pixels in requests of up to MAX_INLINE_ATTACHMENTS images. This is a
   // model-input guard, not an upload restriction: originals remain in the worktree/downloads.
   // https://platform.claude.com/docs/en/build-with-claude/vision#request-limits
-  return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= maxEdge);
+  return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= 8000);
 }
 
 // Read dimensions from supported format headers only; never decode/decompress pixel data.

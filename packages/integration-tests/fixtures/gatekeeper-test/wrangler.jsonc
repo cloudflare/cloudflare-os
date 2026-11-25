@@ -8,6 +8,8 @@
     "experimental",
     "allow_irrevocable_stub_storage"
   ],
+  "minify": true,
+  "upload_source_maps": true,
   "migrations": [
     {
       "tag": "v0",

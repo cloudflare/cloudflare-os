@@ -247,6 +247,72 @@ describe("compaction boundary", () => {
     expect(findCompactionBoundary(projection(messages), 100_000, 40_000)).toBe(1);
   });
 
+  // Too many inline attachments require the tail to start after them. The cut keeps as much as
+  // that allows, unless the token budget cuts later.
+  it("starts the tail at a required sequence, or later if the budget demands it", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "follow-up"),
+      message(3, agent, "second response"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 2)).toBe(2);
+    // The budget alone cuts at 1, later than a required 0.
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 0)).toBe(1);
+  });
+
+  // Anthropic merges a kept message into the summarized one before it when their roles match.
+  it("moves a native compaction's cut on to where the role changes, short of what must stay", () => {
+    let messages = [
+      message(0, user, "first photos"),
+      message(1, user, "more photos"),
+      message(2, agent, "seen them"),
+      message(3, user, "and now?"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1, true)).toBe(2);
+    // With message 1 protected, no cut both changes role and keeps it.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, 1, 1, true)).toBeUndefined();
+  });
+
+  // A tool result is a user message to the API, so the prompt, after one, doesn't change role; the
+  // turn protects it (2), so the cut doesn't move on past it to the exchange recording its uploads.
+  it("never moves a native compaction's cut past what must stay", () => {
+    let text = (role: "user", body: string) => ({role, content: body, timestamp: 0});
+    let toolResult = {role: "toolResult" as const, toolCallId: "call", toolName: "observeUserChanges",
+      content: [{type: "text" as const, text: "ok"}], isError: false, timestamp: 0};
+    let entries = [
+      {message: text("user", "first request"), sequence: 0, canCut: true},
+      {message: assistantMessage([{type: "text", text: "working"}]), sequence: 1, canCut: true},
+      {message: toolResult, sequence: 1},
+      {message: text("user", "x".repeat(20_000)), sequence: 2, canCut: true},
+      {message: assistantMessage([{type: "text", text: "uploads"}]), sequence: 3, canCut: true},
+      {message: toolResult, sequence: 3},
+    ];
+
+    expect(findCompactionBoundary(entries, 100_000, 40_000)).toBe(2);
+    expect(findCompactionBoundary(entries, 100_000, 40_000, 0, 2, undefined, true)).toBe(1);
+  });
+
+  // A `/compact` of a chat ending in messages queued after the agent's reply: nothing after the
+  // newest record changes role, so the cut goes back to the last place that does.
+  it("moves a native compaction's cut back when none after it changes role", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "queued"),
+      message(3, user, "queued too"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000)).toBe(3);
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, undefined, true)).toBe(2);
+    // Not back past what the attachments require be kept.
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 3, true)).toBeUndefined();
+  });
+
   // The checkpoint records provisional creations, so unlike a pending connection request they need
   // no protection and the boundary may pass them.
   it("protects a pending connection request but not a provisional creation", () => {

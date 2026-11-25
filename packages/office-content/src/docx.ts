@@ -139,7 +139,8 @@ function paragraphBlock(markdown: string, properties: XmlElement | undefined, st
     const indent = "    ".repeat(marker.depth);
     const continuation = `\n${indent}${" ".repeat(marker.text.length + 1)}`;
     // A task item is written in Word as a list paragraph opening with a ballot box.
-    const item = escapeLineStarts(markdown).replace(/^([☐☒☑])[ \t\u00A0]+/, (_match, box: string) => box === "☐" ? "[ ] " : "[x] ");
+    // Escapes: a raw character above U+00FF here makes V8 store the whole bundle two bytes per character.
+    const item = escapeLineStarts(markdown).replace(/^([\u2610\u2612\u2611])[ \t\u00A0]+/, (_match, box: string) => box === "☐" ? "[ ] " : "[x] ");
     return { kind: "list-item", markdown: `${indent}${marker.text} ${item.split("\n").join(continuation)}` };
   }
   context.listDepth = -1;

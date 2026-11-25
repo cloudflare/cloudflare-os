@@ -12,14 +12,17 @@ export const ChatAttachmentGrid = ({
   loadContent,
 }: {
   attachments: readonly ChatAttachmentRef[];
-  /** Fetches the bytes of an attachment the message does not carry inline. */
-  loadContent: (attachment: ChatAttachmentRef) => Promise<Uint8Array>;
+  /**
+   * Fetches the bytes of an attachment the message does not carry inline, or with `limit` only
+   * its first ones. `signal` aborts when the grid goes.
+   */
+  loadContent: (attachment: ChatAttachmentRef, signal: AbortSignal, limit?: number) => Promise<Uint8Array>;
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
-  const { content, forgetFailures } = useAttachmentContents(async (id) => {
+  const contents = useAttachmentContents(async (id, signal) => {
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment is no longer part of this message.");
-    return attachment.content ?? loadContent(attachment);
+    return attachment.content ?? loadContent(attachment, signal);
   }, attachments.map((attachment) => attachment.id));
 
   return (
@@ -33,9 +36,13 @@ export const ChatAttachmentGrid = ({
             <ChatAttachmentCard
               attachment={attachment}
               prominent={attachments.length === 1}
-              loadContent={() => content(attachment.id)}
+              loadContent={(signal, limit) => limit === undefined
+                ? contents.readOnce(attachment.id, signal)
+                : attachment.content
+                  ? Promise.resolve(attachment.content.subarray(0, limit))
+                  : loadContent(attachment, signal, limit)}
               onOpen={() => {
-                forgetFailures();
+                contents.forgetFailures();
                 setOpenId(attachment.id);
               }}
             />
@@ -48,8 +55,7 @@ export const ChatAttachmentGrid = ({
             attachments={attachments}
             openId={openId}
             onOpenChange={setOpenId}
-            loadContent={content}
-            onRetry={forgetFailures}
+            contents={contents}
           />
         </Suspense>
       )}

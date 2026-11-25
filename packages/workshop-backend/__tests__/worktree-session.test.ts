@@ -635,6 +635,35 @@ describe("grep", () => {
     });
   }));
 
+  // A broad search of a large file returns only what fits, rather than holding every match.
+  it("caps grep() at a result's worth of matches, and fails a structuredGrep() past it",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    await loadFixtureRepo(impl);
+    let { session } = await createWorktreeSession(impl, 1, COMMIT_1);
+    let rows = Array.from({ length: 120_000 }, (_, i) => `match row ${i}`).join("\n");
+    await session.writeBytes("rows.txt", new TextEncoder().encode(rows));
+    let output = await session.grep(/match/, "rows.txt");
+    expect(output.length).toBeLessThan(1.1 * 1024 * 1024);
+    let shown = output.split("\n").filter(line => /^\d+:match/.test(line)).length;
+    expect(output).toContain(`(${120_000 - shown} more matches not shown; narrow the pattern or path)`);
+    await expect(session.structuredGrep(/match/, "rows.txt")).rejects.toThrow(
+        "structuredGrep() matched 120000 lines, more than fit in one result");
+    expect((await session.structuredGrep(/row 7$/, "rows.txt")).matches).toEqual(
+        [{ file: "rows.txt", line: 8, text: "match row 7" }]);
+  }));
+
+  // More than a call can take as arguments, all within the result's budget.
+  it("returns grep() matches of a file with very many short lines", () => withImpl(async impl => {
+    addChat(impl, 1);
+    await loadFixtureRepo(impl);
+    let { session } = await createWorktreeSession(impl, 1, COMMIT_1);
+    await session.writeBytes("ones.csv", new TextEncoder().encode("1\n".repeat(200_000)));
+    let output = await session.grep(/^1$/, "ones.csv");
+    expect(output).toMatch(/^1:1\n2:1\n/);
+    expect(output).toMatch(/more matches not shown/);
+  }));
+
   it("fills a directory's missing blobs in one batched pull", async () => {
     // Outside the DO: a WorkspaceGitCache with a mock pull source, so the pull count is
     // observable. The commit and trees are local (trees are eager); every blob is missing.
