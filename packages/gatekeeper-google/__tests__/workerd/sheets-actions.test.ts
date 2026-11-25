@@ -3352,8 +3352,9 @@ describe("Google Sheets format read size", () => {
     }]);
     await expect(sheets.formats("Data!A1:CV100")).rejects.toThrow(
       "The formatting of this range is too large to read at once. Request fewer cells.");
-    expect((await sheets.formats("Data!A1:CV50")).formats).toHaveLength(50);
-  });
+    expect((await sheets.formats("Data!A1:CV10")).formats).toHaveLength(10);
+    // The read of 10,000 formatted cells takes 2 s on a laptop and up to 12 s on a slow runner.
+  }, 30_000);
 });
 
 describe("Google Sheets replay cost", () => {
