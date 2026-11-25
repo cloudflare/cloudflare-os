@@ -655,7 +655,6 @@ describe("a message listing over a TokenCursor", () => {
     });
 
 
-    let first = true;
     return new TokenCursor<Message>({
       pageSize,
       remotePageSize,
@@ -668,8 +667,8 @@ describe("a message listing over a TokenCursor", () => {
       overlay: list.overlay,
       inject: { ...list.inject, authorize: true, identity: row => row.id },
       fetchPage: async (token, perPage) => {
-        const moved = first ? movedIn.flatMap(id => host.read(id) ?? []) : [];
-        first = false;
+        // By the token, not a flag: a first page whose fetch failed is fetched again with it.
+        const moved = token === undefined ? movedIn.flatMap(id => host.read(id) ?? []) : [];
         const page = await host.page(listedFolder, token, perPage);
         // A message read by id is not listed again where the provider's page has it.
         const kept = page.items.filter(row => !movedIn.includes(row.id));
@@ -731,6 +730,22 @@ describe("a message listing over a TokenCursor", () => {
       ...host.read("A02"), folderId: INBOX, folder: "Inbox", pending: "move",
     });
     expect((await drain(cursor)).flat().map(({ id }) => id)).toEqual(inFolder(host, INBOX).slice(4));
+  });
+
+  it("serves a message moved in on a first page fetched again after its fetch failed", async () => {
+    const host = mailbox();
+    host.move(INBOX, "A02");
+    const page = host.page;
+    let failed = false;
+    host.page = async (...args) => {
+      if (failed) return page(...args);
+      failed = true;
+      throw new Error("unavailable");
+    };
+
+    const cursor = await listMessages(host, INBOX);
+    await expect(cursor.next()).rejects.toThrow("unavailable");
+    expect(idsOf(await cursor.next())).toEqual(["A02", "M01", "M02", "M03", "M04"]);
   });
 
   it("reads a message moved away and back as unmoved, and serves it once", async () => {

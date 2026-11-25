@@ -1470,7 +1470,8 @@ What stays the gatekeeper's, because two listings rarely agree on it:
 
   A listing that lists them first on purpose may instead return them ahead of its first provider
   page under `TokenCursor`, as the provider has them, since the cursor folds every row `fetchPage`
-  returns, and makes that lead part of `compare`: the cursor merges the stand-ins against those
+  returns. It knows that page by its initial token, not by a flag it clears, since a first fetch
+  that fails is made again with that token, and it makes that lead part of `compare`: the cursor merges the stand-ins against those
   rows before it sees the provider's own, by `compare`. Under `OffsetCursor` it may not, since
   each row returned there skips a provider row.
 - **`authorize` and `identity`.** `authorize: true` for every page a session is served, one of
