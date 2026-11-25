@@ -604,7 +604,9 @@ function makeHandle(args: HandleArgs): ModelHandle {
       // Replay can omit it after rewriting image inputs; finish that turn without thinking.
       if (args.model.api === "anthropic-messages" && reasoning.thinkingEnabled === true &&
           anthropicCompat?.forceAdaptiveThinking !== true) {
-        const start = transcript.messages.findLastIndex(message => message.role === "user");
+        // Tool results and trailing steers merge into one user message on Anthropic's wire.
+        const start = transcript.messages.findLastIndex(message => message.role === "assistant" &&
+            !message.content.some(part => part.type === "toolCall"));
         const turn = transcript.messages.slice(start + 1).find(message => message.role === "assistant");
         if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) {
           reasoning = {...reasoning, thinkingEnabled: false};

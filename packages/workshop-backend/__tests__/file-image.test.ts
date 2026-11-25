@@ -560,11 +560,14 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
-  it.each([["manual", false], ["manual", true], ["default", false]] as const)(
-    "preserves Claude thinking unless a manual-thinking tool turn was rewritten: %s %s", (mode, rewritten) => inKernel(crypto.randomUUID(), async impl => {
+  it.each([["manual", false, false], ["manual", true, false], ["manual", true, true], ["default", false, false]] as const)(
+    "preserves Claude thinking across a tool turn: mode=%s rewritten=%s steered=%s", (mode, rewritten, steered) => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
-    if (rewritten) await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
-      fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"})])).rejects.toThrow("Invalid image");
+    if (rewritten) {
+      await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+        fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Invalid image"})])).rejects.toThrow("Invalid image");
+      await turn(impl, chatId, []);
+    }
     impl.addChatMessages(chatId, USER, [{type: "message", message: "Take another look"}]);
     const config = {provider: "anthropic" as const, apiToken: "fixture",
       model: mode === "manual" ? "claude-haiku-4-5" : "claude-mythos-preview",
@@ -573,32 +576,41 @@ describe("file images in provider requests", () => {
       mode === "manual" ? {userGateway: {accountId: "fixture", apiKey: "fixture"}} : {});
     const actualStream = handle.stream;
     const payloads: string[] = [];
-    handle.stream = (model, context, options) => actualStream(model, context, {...options, maxRetries: 0,
+    handle.stream = (model, context, options) => actualStream(model, {
+      ...context, messages: steered && payloads.length > 0 && payloads.length < 3
+        ? [...context.messages, {role: "user", content: "Steered instruction", timestamp: Date.now()}] : context.messages,
+    }, {...options, maxRetries: 0,
       fetch: async (input, init) => {
         payloads.push(await new Request(input, init).text());
-        if (payloads.length > 2) return new Response("fixture done", {status: 418});
+        if (payloads.length > 3) return new Response("fixture done", {status: 418});
         const events = [
           {type: "message_start", message: {id: "message", type: "message", role: "assistant", model: config.model,
             content: [], usage: {input_tokens: 100, output_tokens: 1}}},
-          {type: "content_block_start", index: 0, content_block: {type: "thinking", thinking: "", signature: ""}},
-          {type: "content_block_delta", index: 0, delta: {type: "thinking_delta", thinking: "Read another image"}},
-          {type: "content_block_delta", index: 0, delta: {type: "signature_delta", signature: "fixture-signature"}},
-          {type: "content_block_stop", index: 0},
-          {type: "content_block_start", index: 1, content_block: {type: "tool_use", id: `new-read-${payloads.length}`, name: "readFile", input: {}}},
-          {type: "content_block_delta", index: 1, delta: {type: "input_json_delta", partial_json: JSON.stringify(read().arguments)}},
-          {type: "content_block_stop", index: 1},
-          {type: "message_delta", delta: {stop_reason: "tool_use"}, usage: {output_tokens: 10}},
+          ...(payloads.length === 3 ? [
+            {type: "content_block_start", index: 0, content_block: {type: "text", text: ""}},
+            {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "Done"}},
+            {type: "content_block_stop", index: 0},
+          ] : [
+            {type: "content_block_start", index: 0, content_block: {type: "thinking", thinking: "", signature: ""}},
+            {type: "content_block_delta", index: 0, delta: {type: "thinking_delta", thinking: "Read another image"}},
+            {type: "content_block_delta", index: 0, delta: {type: "signature_delta", signature: "fixture-signature"}},
+            {type: "content_block_stop", index: 0},
+            {type: "content_block_start", index: 1, content_block: {type: "tool_use", id: `new-read-${payloads.length}`, name: "readFile", input: {}}},
+            {type: "content_block_delta", index: 1, delta: {type: "input_json_delta", partial_json: JSON.stringify(read().arguments)}},
+            {type: "content_block_stop", index: 1},
+          ]),
+          {type: "message_delta", delta: {stop_reason: payloads.length === 3 ? "end_turn" : "tool_use"}, usage: {output_tokens: 10}},
           {type: "message_stop"},
         ];
         // The next tool call belongs to the same assistant turn and needs no new thinking block.
-        const reply = mode === "manual" && payloads.length === 1 ? events : events
+        const reply = payloads.length === 3 || (mode === "manual" && payloads.length === 1) ? events : events
           .filter(event => !("index" in event) || event.index !== 0)
           .map(event => "index" in event ? {...event, index: event.index - 1} : event);
         return new Response(reply.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
           {headers: {"content-type": "text/event-stream"}});
       },
     });
-    await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow();
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
     expect(payloads).toHaveLength(3);
     expect(JSON.parse(payloads[0]).thinking?.type).toBe(mode === "manual" ? "enabled" : undefined);
     for (const payload of payloads.slice(1)) {
