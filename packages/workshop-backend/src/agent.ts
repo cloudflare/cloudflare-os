@@ -5056,12 +5056,12 @@ async function runAgentPass(
       if (!reads) refusedFileImages.set(sequence, reads = new Set());
       reads.add(id);
     }
-    const refuseAttachments = (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
-    // A first-request input failure can involve history accepted by a different model, or arrive
-    // inside an HTTP 200 stream. Preserve pixels on credential/configuration and server failures.
+    const refuseAttachments = !stepFinished && (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
+    // A later input failure can involve history accepted by a different model or a larger tool
+    // result. Preserve pixels on credential/configuration and server failures.
     const imageInputError = (statusCode === undefined || statusCode === 200 || statusCode === 400) && /(?:\b|_)images?(?:\b|_)/i.test(message);
     const refuseFileImages = (statusCode === 413 || imageInputError) && refusedFileImages.size > 0;
-    if (!stepFinished && (refuseAttachments || refuseFileImages)) {
+    if (refuseAttachments || refuseFileImages) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
       if (refuseFileImages) hooks.rejectChatFileImages(chatId, refusedFileImages);
       const retryHint = refuseAttachments

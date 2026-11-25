@@ -458,6 +458,29 @@ describe("images read from a worktree", () => {
     expect(results(requests[0])[0].content).toContainEqual({type: "image", data: PNG.toBase64(), mimeType: "image/png"});
   }));
 
+  it("omits refused file images after a successful text step while keeping accepted uploads", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    await turn(impl, chatId, [[read()]]);
+    await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId,
+      "Continue with this reference", {attachments: [{oid: blob.oid, mimeType: "image/png", name: "reference.png"}]});
+    const step = fauxAssistantMessage([fauxToolCall("writeFile", {
+      workpiece: "IMAGES", filename: "note.txt", content: "Saved",
+    })], {stopReason: "toolUse"});
+    // Keep this text-only step and the failing request in the same pass, without a reload.
+    step.usage.totalTokens = 100;
+    await expect(scriptedTurn(impl, chatId, [step,
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: "413 Request too large"}),
+    ])).rejects.toThrow("Retrying keeps these image inputs as workspace files instead.");
+    const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : []);
+    expect(calls.filter(call => call.toolName === "writeFile")).toHaveLength(1);
+    expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.rejected", true);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Retry"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
+    expect(requests[0].flatMap(msg => msg.role === "user" && Array.isArray(msg.content)
+      ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
+  }));
+
   it("recovers from historical image rejection after a model switch and drops dependent thinking", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     await scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
