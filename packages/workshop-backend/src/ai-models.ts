@@ -586,6 +586,12 @@ function makeHandle(args: HandleArgs): ModelHandle {
       }
       const transcript = normalizeContext(
           {...context, messages: context.messages.map(wellFormedToolCalls)});
+      // Manual-thinking Claude needs the thinking that accompanied an unfinished tool turn.
+      // Replay can omit it after rewriting image inputs; finish that turn without thinking.
+      if (args.model.api === "anthropic-messages" && anthropicCompat?.forceAdaptiveThinking !== true) {
+        const turn = transcript.messages.findLast(message => message.role === "user" || message.role === "assistant");
+        if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) thinking = false;
+      }
       const merged: SimpleStreamOptions = {
         // API defaults first, so an explicit per-call option can override them. A handle with a
         // reasoning level sends that level's options in their place. `thinking: false` replaces
