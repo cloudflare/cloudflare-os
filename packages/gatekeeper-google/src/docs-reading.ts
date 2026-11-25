@@ -45,7 +45,7 @@ export function unwrapped<T>(run: () => T): T {
 // The scan
 // ---------------------------------------------------------------------------
 
-/** A scan for one text in Markdown handed a run at a time (`markdownScan`, `windowScan`). */
+/** A scan for one text in Markdown handed a run at a time (`markdownScan`, `prefixScan`). */
 export type MarkdownScan = {
   /**
    * Takes the next run's Markdown. `false` once the answer cannot change (a second place
@@ -79,7 +79,7 @@ const SCAN_WORK = 32;
  * is searched as if a line break stood before it, and a place that starts there is -1.
  * At most `MAX_SCAN_FOLLOWED` places are followed across a run's end at once: a text that
  * overlaps itself more than that (hundreds of equal rows replaced) makes `done` answer
- * `"crowded"`, and the caller scans again with `windowScan`. So does a scan whose comparisons
+ * `"crowded"`, and the caller scans again with `prefixScan`. So does a scan whose comparisons
  * could pass `SCAN_WORK` characters for each one read and each of `text` (repetitive Markdown
  * where many places start as `text` does and few go on as it does), which keeps its work linear.
  * @param text Not empty.
@@ -150,32 +150,43 @@ export function markdownScan(text: string, lineBreakBefore = false):
 }
 
 /**
- * The same answer by joined windows, for a text `markdownScan` cannot follow: each window is
- * the last `text.length - 1` characters read and the run, searched with `indexOf`. HOLDS
- * `text` and two windows (the tail is a slice of the window before, which it keeps alive):
- * about three times the text and two runs, counted as that (`markdownHeld`).
+ * The same answer for a text `markdownScan` cannot follow, by Knuth-Morris-Pratt: the length of
+ * `text` the characters read last match is carried from run to run, so every character is
+ * compared a bounded number of times however long `text` is and however small the runs are, and
+ * places that overlap are each found. HOLDS `text`, its table of prefixes (an `Int32Array` of
+ * one entry a character, counted as two characters an entry) and the run in hand: about three
+ * times the text and one run, counted as that (`markdownHeld`).
  */
-export function windowScan(text: string, lineBreakBefore = false): MarkdownScan {
+export function prefixScan(text: string, lineBreakBefore = false): MarkdownScan {
+  // `prefix[i]`: the length of the longest proper prefix of `text`'s first `i + 1` characters
+  // that ends them too.
+  let prefix = new Int32Array(text.length);
+  for (let i = 1, length = 0; i < text.length; i++) {
+    while (length > 0 && text.charCodeAt(i) !== text.charCodeAt(length)) length = prefix[length - 1];
+    if (text.charCodeAt(i) === text.charCodeAt(length)) length++;
+    prefix[i] = length;
+  }
   let read = 0;
-  let tail = "";
-  // The length of the window the tail was cut from.
-  let before = 0;
+  // How many characters of `text` the characters read last match.
+  let matched = 0;
   let found: number | undefined;
   let many = false;
   let take = (run: string): boolean => {
     if (many) return false;
-    let window = tail + run;
-    markdownHeld(text.length + before + window.length);
-    for (let at = window.indexOf(text); at >= 0; at = window.indexOf(text, at + 1)) {
+    markdownHeld(3 * text.length + run.length);
+    for (let i = 0; i < run.length; i++) {
+      let code = run.charCodeAt(i);
+      while (matched > 0 && code !== text.charCodeAt(matched)) matched = prefix[matched - 1];
+      if (code === text.charCodeAt(matched)) matched++;
+      if (matched < text.length) continue;
       if (found !== undefined) {
         many = true;
         return false;
       }
-      found = read - tail.length + at;
+      found = read + i + 1 - text.length;
+      matched = prefix[matched - 1];
     }
     read += run.length;
-    before = window.length;
-    tail = text.length > 1 ? window.slice(1 - text.length) : "";
     return true;
   };
   if (lineBreakBefore) {
@@ -240,7 +251,8 @@ function sameOwn(left: OwnRange, right: OwnRange): boolean {
  * WHAT A MEMBER HOLDS while it reads: a pass, one page of the version's list and its answer
  * (two numbers, a boolean, at most two table numbers); `find`, the text, the run in hand
  * and at most the run before it, and for a text that overlaps itself past
- * `MAX_SCAN_FOLLOWED` the text and two windows (`windowScan`); `lineBefore`, one run's
+ * `MAX_SCAN_FOLLOWED` or crowds the scan, the text, its table of prefixes and the run
+ * (`prefixScan`); `lineBefore`, one run's
  * Markdown at a time, a statement a run back to the line it answers (behind hundreds of
  * tables, hundreds of statements of two rows).
  * @throws From every member: `DocReadingFault` around what the store throws, but a
@@ -330,7 +342,7 @@ export function storedTabReading(store: DocStore, version: DocVersion): StoredTa
         let at = stored(() => {
           let followed = scanned(() => markdownScan(text, lineBreakBefore));
           return followed === "crowded"
-            ? scanned(() => windowScan(text, lineBreakBefore)) : followed;
+            ? scanned(() => prefixScan(text, lineBreakBefore)) : followed;
         });
         found = { text, before: lineBreakBefore, at };
       }

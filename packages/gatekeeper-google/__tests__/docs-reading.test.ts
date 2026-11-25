@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import {
-  DocReadingFault, markdownScan, storedTabReading, unwrapped, windowScan,
+  DocReadingFault, markdownScan, storedTabReading, unwrapped, prefixScan,
 } from "../src/docs-reading";
 import { renderTab } from "../src/docs-replay";
 import { DOC_COPY_UNREADABLE } from "../src/docs-replica";
@@ -50,7 +50,7 @@ const SIZINGS: readonly (readonly [string, RunSizes])[] = [
 type Found = number | "none" | "many";
 type Scan = { take(run: string): boolean; done(): Found | "crowded" };
 const SCANS: readonly (readonly [string, (text: string, lineBreakBefore?: boolean) => Scan])[] =
-  [["markdownScan", markdownScan], ["windowScan", windowScan]];
+  [["markdownScan", markdownScan], ["prefixScan", prefixScan]];
 
 /** What a search of `joined` answers, the string whole: the scans' reference. */
 function searched(joined: string, text: string, lineBreakBefore = false): Found {
@@ -298,7 +298,7 @@ describe("the two readings answer the same", () => {
     expect(equal.length).toBeGreaterThan(20 * longest);
     docStoreCost.peakMarkdownCharsInHand = 0;
     expect(stored.find(equal)).toBe("many");
-    // The windows hold the text and two windows, each under the text and a run.
+    // The scan holds the text, its table of prefixes and a run.
     expect(docStoreCost.peakMarkdownCharsInHand).toBeGreaterThan(2 * equal.length);
     expect(docStoreCost.peakMarkdownCharsInHand).toBeLessThan(3 * equal.length + 2 * longest);
     let rest = rendering.markdown.slice(1);
@@ -308,13 +308,13 @@ describe("the two readings answer the same", () => {
     expect(stored.find(`\n${rendering.markdown}`, true)).toBe(-1);
   });
 
-  it("a text that starts at many places of repetitive Markdown and is at none is answered by windows", () => {
+  it("a text that starts at many places of repetitive Markdown and is at none is answered by its prefixes", () => {
     // Every other character starts as the text does, and each goes on as it does until the end.
     let markdown = "ab".repeat(16_000);
     let runs = cutAt(markdown, [8_000, 16_000, 24_000]);
     let text = `${"ab".repeat(8_000)}x`;
     expect(scanned(markdownScan(text), runs)).toBe("crowded");
-    expect(scanned(windowScan(text), runs)).toBe("none");
+    expect(scanned(prefixScan(text), runs)).toBe("none");
     let { stored, whole } = read(proseTab("tab-1", 1, () => markdown), runsOf(1));
     expect(whole.find(text)).toBe("none");
     expect(stored.find(text)).toBe("none");
