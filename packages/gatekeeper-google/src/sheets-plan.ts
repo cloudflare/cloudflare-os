@@ -711,7 +711,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let { newSheetId, title, index } = change;
       unused(newSheetId, title, index);
       let copied = keysOn(work, source.id);
-      room(heldBy(work, copied));
+      // What queuing it counted: the copied cells' entries and formats and the lines' sizes.
+      room(entriesAdded(work, change));
       work.sheets = placed(work.sheets, {
         id: newSheetId, title, index, rowCount: source.rowCount, columnCount: source.columnCount,
         rows: source.rows, columns: source.columns,

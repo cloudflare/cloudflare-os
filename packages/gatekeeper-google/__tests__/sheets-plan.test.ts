@@ -963,6 +963,24 @@ describe("Sheets copies of queued cells", () => {
     if (result.kind === "incomplete") expect(result.partial.cells.size).toBe(20_000);
   });
 
+  it("stops a replay at a copy whose line sizes a rejected batch let through, as queuing it counts them", () => {
+    let tall = [sheet(0, "Sales", { rowCount: 60_000, columnCount: 1 })];
+    let resize = queued(1, [{ op: "resizeRows", sheetId: 0, start: 0, count: 60_000, size: 30 }]);
+    let deletion = queued(2, [{ op: "deleteRows", sheetId: 0, start: 0, count: 59_999 }]);
+    // With the rows deleted, the copy takes one size and fits.
+    let copied = queued(3, copies(replayed(grid(tall), [resize, deletion]), 1));
+    expect(replayed(grid(tall), [resize, deletion, copied]).sizes.size).toBe(2);
+
+    // Without the deletion, it would copy 60,000 sizes over the 60,000 queued.
+    let result = replayChanges(grid(tall), [resize, copied]);
+    expect(result).toMatchObject({
+      kind: "incomplete",
+      unsupported: copied,
+      reason: "change 1 (duplicateSheet): it would bring the cell values and formats queued changes set to 120,000, more than " +
+        "the 100,000 that may be queued",
+    });
+  });
+
   it("refuses a change to rows, columns or sheets once 50 are queued, counting the batch's own", () => {
     let inserts = (count: number) => Array.from({ length: count }, (): SheetChange => ({ op: "insertRows", sheet: "Sales", at: 1 }));
     let simulated = replayed(grid(SHEETS), [queued(1, resolveChanges(grid(SHEETS), prepareChanges(inserts(30)), minter()))]);
