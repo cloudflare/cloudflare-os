@@ -201,11 +201,12 @@ bytes. Applying the send uploads each file into the conversation it posts to, th
 `sendDirectMessage` creates included, and creates the message with them attached. Google is
 expected not to show an upload until a message attaches it, so uploads are simply retried; that
 has not yet been confirmed against a live conversation. Google allows one write a second in a
-conversation, uploads included, so a connection's uploads and messages to one conversation go one
-at a time, a second apart, across sends as well as within one. A `sendDirectMessage` to a group
+conversation, uploads included. A send with files makes several writes in a row, so each of its
+uploads, and its post, waits until a second after the connection's previous write there, whatever
+that was. Other writes run at once, as before. A `sendDirectMessage` to a group
 chat, or into a conversation it creates, posts only while exactly the people named are there. It
-checks before uploading any files, again just before posting, after the uploads and its wait for
-its turn, and again before Google's retries resend the post. Google has no create that holds only
+checks before each upload and again just before posting, after its wait for its turn, and again
+before Google's retries resend an upload or the post. Google has no create that holds only
 while the members are unchanged, so someone added in the moment between a check and the post
 still receives the message. A send into an existing direct message isn't checked, so a Chat app
 added to that direct message receives it. Applying or rejecting the send frees the copies. Until then the pending message lists its files with `readable: false`, under temporary

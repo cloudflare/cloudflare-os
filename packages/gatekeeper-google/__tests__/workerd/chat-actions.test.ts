@@ -371,6 +371,7 @@ function chatBackend() {
         return json(message);
       }
       if (method === "PATCH") {
+        state.writeTimes.push(Date.now());
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
         Object.assign(state.messages[index], storedText(state.storeText(text)));
@@ -1949,6 +1950,19 @@ describe("Starting Google Chat conversations", () => {
       {attachment: [{attachmentDataRef: {resourceName: "media-1", attachmentUploadToken: "upload-1"}}]});
   });
 
+  it("uploads no more files to a group chat someone joined after the first upload", async () => {
+    const {backend, chat} = accountChat({groupChat: true});
+    using account = await chat.account();
+    const file = (filename: string) => ({filename, mimeType: "image/png", content: new Uint8Array([1, 2]).buffer});
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "Impact", {
+      attachments: [file("before.png"), file("after.png")],
+    })).message;
+    backend.state.joinAfterWrite = {member: joined("400"), ms: 0};
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.uploads.map(upload => upload.filename)).toEqual(["before.png"]);
+    expect(backend.state.creates).toEqual([]);
+  });
+
   it("uploads nothing for a group chat someone joined before the send was applied", async () => {
     const {backend, chat} = accountChat({groupChat: true});
     using account = await chat.account();
@@ -1972,15 +1986,18 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.creates).toEqual([]);
   });
 
-  it("posts nothing to a group chat someone joined while the message waited its turn", async () => {
+  it("sends nothing to a group chat someone joined while a file send waited its turn", async () => {
     const {backend, chat} = accountChat({groupChat: true});
     using account = await chat.account();
     using _first = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 41")).message;
-    using _second = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 42")).message;
-    // Someone joins while the second message waits out the second after the first.
+    using _second = (await account.sendDirectMessage([BOB.email, CAROL.email], "Release 42", {
+      attachments: [{filename: "impact.png", mimeType: "image/png", content: new Uint8Array([1, 2]).buffer}],
+    })).message;
+    // Someone joins while the second send waits out the second after the first.
     backend.state.joinAfterWrite = {member: joined("400"), ms: 300};
     await chat.applyAction(1);
     await expect(chat.applyAction(2)).rejects.toThrow(/no longer holds exactly the people/);
+    expect(backend.state.uploads).toEqual([]);
     expect(backend.state.creates.map(create => create.body.text)).toEqual(["Release 41"]);
   });
 
@@ -2296,6 +2313,25 @@ describe("Google Chat attachments", () => {
     const writes = backend.state.writeTimes;
     expect(writes).toHaveLength(4);
     for (const [index, at] of writes.slice(1).entries()) expect(at - writes[index]).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("spaces an edit and the file send applied after it", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using first = (await space.post("Release 41")).message;
+    await chat.applyAction(1);
+    // Late enough that a file send timed from the post alone would upload within a second of the edit.
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await first.edit("Release 41, rolled back");
+    using _second = (await space.post("Release 42", {attachments: [png()]})).message;
+    await chat.applyAction(2);
+    await chat.applyAction(3);
+    // The edit runs at once after the post, but the upload and the second post each wait a second.
+    const [, edited, uploaded, posted] = backend.state.writeTimes;
+    expect(backend.state.writeTimes).toHaveLength(4);
+    expect(uploaded - edited).toBeGreaterThanOrEqual(1000);
+    expect(posted - uploaded).toBeGreaterThanOrEqual(1000);
   });
 
   it("doesn't upload a retried send's files again once its message was posted", async () => {

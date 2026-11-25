@@ -726,23 +726,25 @@ const isChatMessageGone = (error: unknown): boolean =>
   error instanceof DeletedChatMessageError || (error instanceof ChatApiError && error.status === 404);
 
 /** Undo a send, counting a message already removed in Google Chat as success. */
-async function deleteMessageIfPresent(api: ChatApi, messageName: string): Promise<void> {
+async function deleteMessageIfPresent(api: ChatApi, pacer: SpaceWritePacer, messageName: string): Promise<void> {
   try {
     await api.getMessage(messageName);
-    await api.deleteMessage(messageName);
+    await pacer.note(spaceOf(messageName), () => api.deleteMessage(messageName));
   } catch (error) {
     if (!isChatMessageGone(error)) throw error;
   }
 }
 
 /** Undo one applied change. A target deleted in Google Chat throws, leaving nothing to undo. */
-async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise<RevertResult> {
+async function undo(
+  api: ChatApi, pacer: SpaceWritePacer, self: ChatUser, info: ChatRevertInfo,
+): Promise<RevertResult> {
   switch (info.type) {
     case "none":
       return;
     case "sentMessage":
       try {
-        await deleteMessageIfPresent(api, info.messageName);
+        await deleteMessageIfPresent(api, pacer, info.messageName);
       } catch (error) {
         // Chat refuses a non-force delete of a message with threaded replies, and force would
         // cascade into deleting other people's replies. Leave the revert record so a retry
@@ -759,7 +761,9 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       return;
     case "updatedMessage": {
       const { formattedText } = await api.getMessage(info.messageName);
-      if (formattedText === info.text) await api.updateMessageText(info.messageName, info.previousText);
+      if (formattedText === info.text) {
+        await pacer.note(spaceOf(info.messageName), () => api.updateMessageText(info.messageName, info.previousText));
+      }
       else if (formattedText !== info.previousText) {
         return {
           message: "This message was edited again after this change, so it can't be undone " +
@@ -769,7 +773,7 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       return;
     }
     case "addedReaction":
-      return api.deleteReaction(info.reactionName);
+      return pacer.note(spaceOf(info.reactionName), () => api.deleteReaction(info.reactionName));
     case "removedReaction":
       if (!await api.findOwnReaction(info.messageName, info.emoji, self.id)) {
         await api.createReaction(info.messageName, info.emoji);
@@ -1044,32 +1048,52 @@ const audienceChanged = (retried: boolean) =>
   `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
   "Deny this message to clear it.";
 
-/** Google allows one write a second in each conversation, uploads included. */
+/**
+ * Google allows one write a second in each conversation: uploads, message creates, edits and
+ * deletes, and reaction deletes.
+ */
 const SPACE_WRITE_INTERVAL_MS = 1000;
 
+/** The conversation a committed message, or a reaction to one, is in. */
+const spaceOf = (name: string) =>
+  `spaces/${chatMessageParts(name.replace(/\/reactions\/[^/]+$/, "")).spaceId}`;
+
 /**
- * Runs this connection's writes to each conversation one at a time, each a second after the one
- * before it finished, across sends as well as within one: an approval queue applying several sends
- * back to back would otherwise spend their retries on each other's quota. Others writing to the
- * conversation can still collide with them.
+ * Spaces this connection's writes to each conversation. A send with files makes several writes in
+ * a row, so each of its writes waits its turn: one at a time, a second after this connection's
+ * previous write there finished, whatever that was, across actions as well as within one. Every
+ * other write runs at once, as a single write did before, and is only noted, so that a send with
+ * files applied after it still waits. Others writing to the conversation can still collide.
  */
 class SpaceWritePacer {
   #spaces = new Map<string, { tail: Promise<unknown>; finished: number }>();
 
-  run<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+  #space(spaceName: string) {
     const space = this.#spaces.get(spaceName) ?? { tail: Promise.resolve(), finished: 0 };
     this.#spaces.set(spaceName, space);
+    return space;
+  }
+
+  /** Run a write once the conversation's previous write is a second old. */
+  run<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+    const space = this.#space(spaceName);
     const result = space.tail.then(async () => {
       const wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now();
       if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
-      try {
-        return await write();
-      } finally {
-        space.finished = Date.now();
-      }
+      return this.note(spaceName, write);
     });
     space.tail = result.catch(() => {});
     return result;
+  }
+
+  /** Run a write at once, noting when it finished. */
+  async note<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } finally {
+      const space = this.#space(spaceName);
+      space.finished = Math.max(space.finished, Date.now());
+    }
   }
 }
 
@@ -1945,18 +1969,21 @@ export class GoogleChatGatekeeperImpl
               throw new Error(audienceChanged(retried || resending));
             }
           };
-          // Checked before uploading, too, so no file goes to a conversation it couldn't be posted in.
-          if (action.attachments?.length) await requireAudience();
           // Uploads go to the conversation the message is posted to. Google is expected not to show
           // one until a message attaches it, though no live conversation has confirmed that yet, so
-          // one a lost response leaves behind is simply uploaded again.
+          // one a lost response leaves behind is simply uploaded again. Each is checked like the
+          // post, so no file goes to a conversation it couldn't be posted in.
           const attachments: ChatAttachmentDataRef[] = [];
           for (const { filename, mimeType, file } of action.attachments ?? []) {
             const content = await store.readAttachment(file);
-            attachments.push(await this.#spaceWrites.run(spaceName,
-              () => api.uploadAttachment(spaceName, { filename, mimeType, content })));
+            attachments.push(await this.#spaceWrites.run(spaceName, async () => {
+              await requireAudience();
+              return api.uploadAttachment(spaceName, { filename, mimeType, content },
+                recipients ? { beforeResend: () => requireAudience() } : {});
+            }));
           }
-          const { id } = await this.#spaceWrites.run(spaceName, async () => {
+          // A send with files waits its turn for its post as for its uploads; any other send only notes it.
+          const { id } = await this.#spaceWrites[attachments.length > 0 ? "run" : "note"](spaceName, async () => {
             // Checked as late as it can be: after any uploads and this write's wait for its turn, and
             // again before each resend, which can follow a pause of seconds.
             await requireAudience();
@@ -1987,7 +2014,7 @@ export class GoogleChatGatekeeperImpl
             event: "chat.send.taken_back", actionId, messageId: created.id, error,
           });
           try {
-            await deleteMessageIfPresent(api, created.id);
+            await deleteMessageIfPresent(api, this.#spaceWrites, created.id);
           } catch (deleteError) {
             logger.error("failed to take back a Google Chat message posted outside its request", {
               event: "chat.send.take_back.failed", actionId, messageId: created.id, error: deleteError,
@@ -2018,7 +2045,8 @@ export class GoogleChatGatekeeperImpl
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
+          text = await this.#spaceWrites.note(spaceOf(target.committed),
+            () => store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text)));
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {
@@ -2040,7 +2068,9 @@ export class GoogleChatGatekeeperImpl
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         const removed = { type: "removedReaction", messageName: action.messageName, emoji: action.emoji } as const;
         if (!existing) return retried ? removed : { type: "none" };
-        await store.attemptWrite(actionId, () => api.deleteReaction(existing.id));
+        // Deleting a reaction counts against the conversation's write quota; adding one doesn't.
+        await this.#spaceWrites.note(spaceOf(action.messageName),
+          () => store.attemptWrite(actionId, () => api.deleteReaction(existing.id)));
         return removed;
       }
       default:
@@ -2075,7 +2105,7 @@ export class GoogleChatGatekeeperImpl
     }
     return this.#exclusively(actionId, async () => {
       try {
-        const result = await undo(this.#api(), await this.#getSelf(), info);
+        const result = await undo(this.#api(), this.#spaceWrites, await this.#getSelf(), info);
         if (result) return result;
       } catch (error) {
         if (!isChatMessageGone(error)) throw error;

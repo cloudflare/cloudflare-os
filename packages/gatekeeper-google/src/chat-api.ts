@@ -1205,6 +1205,7 @@ export class ChatApi {
   async uploadAttachment(
     spaceName: string,
     file: { filename: string; mimeType: string; content: Uint8Array },
+    options: { beforeResend?: () => Promise<void> } = {},
   ): Promise<ChatAttachmentDataRef> {
     const spaceId = chatSpaceId(spaceName);
     if (!MEDIA_TYPE_RE.test(file.mimeType)) throw new Error("Invalid attachment media type.");
@@ -1228,6 +1229,7 @@ export class ChatApi {
       body,
       idempotent: true,
       base: CHAT_UPLOAD_BASE,
+      ...(options.beforeResend ? { beforeResend: options.beforeResend } : {}),
     });
     const { resourceName, attachmentUploadToken } = uploaded.attachmentDataRef ?? {};
     const ref: ChatAttachmentDataRef = {
