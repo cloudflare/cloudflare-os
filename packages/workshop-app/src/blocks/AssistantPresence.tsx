@@ -4,6 +4,7 @@ import { useHandler } from '@/hooks/useHandler'
 import { useSettledValue } from '@/hooks/useSettledValue'
 import { useFlight } from '@/hooks/useFlight'
 import { useReducedMotion } from '@gadgets/ui'
+import { ArrowDown01Icon } from '@/components/icons'
 import { Mascot } from '@/components/mascot/Mascot'
 import { ShimmerSwitchText } from '@/components/ShimmerSwitchText'
 import '@/components/Disclosure.css'
@@ -21,11 +22,20 @@ export type AssistantPresenceProps = {
    */
   writing?: boolean
   /**
-   * What is behind the status, shown when it is clicked, in place of the status's words: the mascot is
-   * the last row of it (`WorkLog` finds its place through `PresenceSlotContext`). Without it the status
+   * What is behind the status, shown when it is clicked, in place of the status's words and under a heading
+   * that puts it away: the mascot is the last row of it (`WorkLog` finds its place through `PresenceSlotContext`). Without it the status
    * is only text.
    */
-  details?: { open: boolean; onToggle: () => void; content: ReactNode }
+  details?: {
+    open: boolean
+    onToggle: () => void
+    content: ReactNode
+    /**
+     * What it showed went into the reply that has just arrived, open above it: the steps go at once as they
+     * close rather than fading, as they are there already, and only their room closes.
+     */
+    handedOver?: boolean
+  }
 }
 
 // What the status says is settled on, not followed: a status that changes faster than it can be read
@@ -33,8 +43,6 @@ export type AssistantPresenceProps = {
 // while it keeps changing (`hooks/settler.ts`). What it says first, and first after it was away, is
 // shown at once.
 const SETTLE = { wait: 600, maxWait: 1800 }
-// How long the mascot waits at a step for the next to be there before going on, and the longest it waits.
-const SLOT_SETTLE = { wait: 140, maxWait: 420 }
 const sameStatus = (a: { status: string; writing: boolean }, b: { status: string; writing: boolean }) => a.status === b.status && a.writing === b.writing
 
 /**
@@ -42,9 +50,9 @@ const sameStatus = (a: { status: string; writing: boolean }, b: { status: string
  * its way, with what it is doing beside it (shimmering while it works), and shrinks
  * away once it is done. Its status is in 14px beside a 32px mascot; the steps are in 13px. How the reply comes about can be looked into only here, while it happens.
  *
- * Opened, the steps take the place of that line, which they say and more, and the mascot is the last
- * row of them: the mark of the step under way, or a row of its own when none is. It is carried down
- * to each new step as it comes (`useFlight`), and back up when the steps are put away.
+ * Opened, the steps take the place of that line, which they say and more, under a Thinking details heading
+ * that closes them again, and the mascot is carried down to the last row of them, its own, after them all
+ * (`useFlight`), which the steps come in above, and back up when they are put away.
  *
  * Its room is always kept, so the mascot coming and going moves nothing, and the conversation
  * ends in that much space while it is away.
@@ -62,32 +70,19 @@ export const AssistantPresence = ({ working, status, writing, details }: Assista
   const [home, setHome] = useState<HTMLElement | null>(null)
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   const reduced = useReducedMotion()
-  // Where it goes is what the slot has settled on: steps that come faster than it can follow are not
-  // each gone to, it carries on to the latest in one motion. The step it was at is gone by then, and
-  // it is where it was last seen (see `useFlight`).
-  const settledSlot = useSettledValue(slot ?? undefined, SLOT_SETTLE)
-  const place = expanded ? settledSlot ?? slot ?? home : home
+  // Its row in the steps is after them all, and stays: it goes down with them as they come, rather than
+  // being carried from one to the next, which it would always be behind.
+  const place = expanded ? slot ?? home : home
   const [arrivedAt, setArrivedAt] = useState<HTMLElement | null>(null)
-  // Out to the steps and home again is quicker than between one step and the next, so that it is where it is
-  // going as they have opened or closed (`.presence-panel` takes as long); until it is there.
-  const [wasExpanded, setWasExpanded] = useState(expanded)
-  const [brisk, setBrisk] = useState(false)
-  if (expanded !== wasExpanded) {
-    setWasExpanded(expanded)
-    setBrisk(true)
-  }
-  const arrive = useHandler((arrived: boolean) => {
-    setArrivedAt(arrived ? place : null)
-    // Not where it is, in the line it is leaving, before the steps it is going to have been drawn.
-    if (arrived && (!expanded || slot)) setBrisk(false)
-  })
-  useFlight(stage, flier, place, !reduced, arrive, brisk)
+  const arrive = useHandler((arrived: boolean) => setArrivedAt(arrived ? place : null))
+  // Out to the steps and home again on the quicker spring, so that it is where it is going as they have
+  // opened or closed (`.presence-panel` takes as long).
+  useFlight(stage, flier, place, !reduced, arrive, true)
   const claim = useCallback((element: HTMLElement) => {
     setSlot(element)
     return () => setSlot((current) => (current === element ? null : current))
   }, [])
-  const where = useCallback(() => flier.current?.getBoundingClientRect(), [])
-  const presence = useMemo<PresenceSlot>(() => ({ claim, arrivedAt, where }), [claim, arrivedAt, where])
+  const presence = useMemo<PresenceSlot>(() => ({ claim, arrivedAt }), [claim, arrivedAt])
 
   // The same function for as long as it is there, so that the mascot, which is memoized, is not drawn
   // again for every render of the chat.
@@ -101,12 +96,13 @@ export const AssistantPresence = ({ working, status, writing, details }: Assista
     </span>
   )
 
-  // The words are gone while the steps are open, and the mascot is what puts them away: focus that was
-  // on the words, which opened them, goes to it.
-  const focusMascot = useRef(false)
+  // The words are gone while the steps are open, and the heading over the steps is what puts them away:
+  // focus that was on the words, which opened them, goes to it.
+  const heading = useRef<HTMLButtonElement>(null)
+  const focusHeading = useRef(false)
   useLayoutEffect(() => {
-    if (expanded && focusMascot.current) flier.current?.querySelector('button')?.focus()
-    focusMascot.current = false
+    if (expanded && focusHeading.current) heading.current?.focus()
+    focusHeading.current = false
   }, [expanded])
 
   const line = (
@@ -137,7 +133,7 @@ export const AssistantPresence = ({ working, status, writing, details }: Assista
               <div className="min-h-0 overflow-hidden">
                 <Collapsible.Trigger
                   onClick={() => {
-                    focusMascot.current = true
+                    focusHeading.current = true
                   }}
                   className="flex min-h-8 max-w-full cursor-pointer items-center gap-2.5 rounded-full ps-1 pe-2 text-left text-base/5 text-kumo-subtle focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none focus-visible:ring-inset"
                 >
@@ -145,7 +141,15 @@ export const AssistantPresence = ({ working, status, writing, details }: Assista
                 </Collapsible.Trigger>
               </div>
             </div>
-            <Collapsible.Panel className="disclosure-panel presence-panel">
+            <Collapsible.Panel data-handed-over={(!expanded && details.handedOver) || undefined} className="disclosure-panel presence-panel">
+              {/* Says what is open, and closes it. Its words start where the steps' icons do. */}
+              <Collapsible.Trigger
+                ref={heading}
+                className="group ms-1.5 flex min-h-8 w-fit cursor-pointer items-center gap-1.5 rounded-full px-1.5 text-[13px]/5 font-medium text-kumo-subtle hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
+              >
+                Thinking details
+                <ArrowDown01Icon aria-hidden="true" weight="bold" className="size-3 shrink-0 transition-transform duration-300 group-data-panel-open:rotate-180 motion-reduce:transition-none" />
+              </Collapsible.Trigger>
               <PresenceSlotContext value={presence}>{details.content}</PresenceSlotContext>
             </Collapsible.Panel>
           </Collapsible.Root>

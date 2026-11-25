@@ -63,6 +63,11 @@ export type ChatItemViewProps = {
   /** The row carries on from the message before it, or is carried on by the one after (`continuesRun`). */
   joinsAbove?: boolean
   joinsBelow?: boolean
+  /**
+   * A reply that arrived while the steps behind it were showing: how it came about is open above it, as they
+   * were, until it is put away, and is there already as it arrives.
+   */
+  tracedWhileShown?: boolean
 }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
@@ -75,8 +80,8 @@ const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
  * while a reply streams in, so the conversation above it is not rendered again for every piece of
  * text that arrives.
  */
-export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow }: ChatItemViewProps) {
-  // A reply's row also remembers which steps behind it are open, for when its details are shown.
+export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted, joinsAbove, joinsBelow, tracedWhileShown }: ChatItemViewProps) {
+  // A reply's row also remembers which steps behind it were opened or put away, for when its details are shown.
   const thinkingKey = `${item.key}:thinking`
   const open = useOpenKeys(disclosure, item.kind === 'assistant' ? [item.key, thinkingKey, ...item.trace.map(({ key }) => key)] : [item.key])
   const isOpen = open.has(item.key)
@@ -134,7 +139,13 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
             }),
           }}
           thinking={item.trace.length > 0
-            ? { open: open.has(thinkingKey) !== alwaysShowThinking, onToggle: () => disclosure.toggle(thinkingKey), content: thinkingOf({ steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle }) }
+            ? {
+                open: open.has(thinkingKey) !== (alwaysShowThinking || !!tracedWhileShown),
+                onToggle: () => disclosure.toggle(thinkingKey),
+                // Its steps open where they were watched as it came, and one line each where it is looked back on.
+                content: thinkingOf({ steps: item.trace, toggledSteps: open, onToggleStep: disclosure.toggle, startOpen: tracedWhileShown }),
+                shownAlready: tracedWhileShown,
+              }
             : undefined}
         />
       )

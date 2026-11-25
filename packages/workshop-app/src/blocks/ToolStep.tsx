@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge, Loader } from '@cloudflare/kumo'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -13,7 +13,6 @@ import { SmoothHeight } from '@/components/SmoothHeight'
 import { ActionFields, type ActionField } from './ActionFields'
 import type { AnswerPart } from './AssistantMessage'
 import { InlineViewDraft } from './InlineView'
-import { LeavingSlot, MascotSlot, usePresenceSlot } from './presenceSlot'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import './ToolStep.css'
 
@@ -70,12 +69,8 @@ export type ToolStepProps = {
   entry: ToolStepEntry
   open: boolean
   onToggle: () => void
-  /** The step came after the log was first shown: it comes in, rather than being there. */
+  /** The step came after the log was first shown: its row opens to its height as it comes in, rather than being there. */
   fresh?: boolean
-  /** Its row opens to its height as it comes in, which `fresh` alone does not say (it is made room for already). */
-  enter?: boolean
-  /** The mascot is at this step, in place of its spinner. */
-  mascot?: boolean
 }
 
 /** What a step did. */
@@ -165,28 +160,22 @@ const StepSpinner = () => {
 
 /**
  * How a step stands, as a mark in a column a little wider than the mascot: the icon of what it did, once it
- * is done, and Kumo's spinner while it is happening. Where the mascot is at the step,
- * there is room for it instead, and once it is done that room is kept bare while the mascot is still over
- * it: the icon grows out as the mascot has moved on (`LeavingSlot`).
+ * is done, which grows out where the spinner was, and Kumo's spinner while it is happening.
  */
-const StepMark = ({ entry, mascot, fresh, lingering, onCleared, grows }: { entry: ToolStepEntry; mascot?: boolean; fresh?: boolean; lingering?: boolean; onCleared: () => void; grows?: boolean }) => {
+const StepMark = ({ entry, grows }: { entry: ToolStepEntry; grows?: boolean }) => {
   const { icon: StepIcon } = summaryOf(entry)
   return (
     <span className="grid size-7 shrink-0 place-items-center">
-      {mascot
-        ? <MascotSlot holdUntilArrived={fresh} />
-        : lingering
-          ? <LeavingSlot onClear={onCleared} />
-          : isUnderWay(entry)
-            ? <StepSpinner />
-            : <StepIcon aria-hidden="true" className={cn('size-4', grows && 'mark-grows')} />}
+      {isUnderWay(entry)
+        ? <StepSpinner />
+        : <StepIcon aria-hidden="true" className={cn('size-4', grows && 'mark-grows')} />}
     </span>
   )
 }
 
 /** A step as one quiet line, which opens to show what it did when there is more to show. */
-export const ToolStep = ({ entry, open, onToggle, fresh, enter = fresh, mascot }: ToolStepProps) => (
-  <Row entry={entry} label={summaryOf(entry).label} open={open} onToggle={onToggle} detail={hasDetail(entry)} fresh={fresh} enter={enter} mascot={mascot} />
+export const ToolStep = ({ entry, open, onToggle, fresh }: ToolStepProps) => (
+  <Row entry={entry} label={summaryOf(entry).label} open={open} onToggle={onToggle} detail={hasDetail(entry)} fresh={fresh} />
 )
 
 /**
@@ -194,32 +183,37 @@ export const ToolStep = ({ entry, open, onToggle, fresh, enter = fresh, mascot }
  * in it is made again as it goes on: the words change in place, and the mark and the caret come in where
  * they are due. While it is under way its words are in the full colour, and when it is done they fade to
  * the quiet colour of what is done as the icon grows out. A row that opens has what it did inside, in the
- * words' column, set off by a line down the middle of the marks' column; it has no fill, pointed at or open.
+ * words' column, with nothing beside it in the marks' column; it has no fill, pointed at or open.
  */
-const Row = ({ entry, label, open, onToggle, detail, fresh, enter, mascot }: { entry: ToolStepEntry; label: string; open: boolean; onToggle: () => void; detail: boolean; fresh?: boolean; enter?: boolean; mascot?: boolean }) => {
+const Row = ({ entry, label, open, onToggle, detail, fresh }: { entry: ToolStepEntry; label: string; open: boolean; onToggle: () => void; detail: boolean; fresh?: boolean }) => {
   const underWay = isUnderWay(entry)
-  const presence = usePresenceSlot()
   const [wasUnderWay, setWasUnderWay] = useState(false)
   if (underWay && !wasUnderWay) setWasUnderWay(true)
-  // The mascot was at the step and has not yet moved on from it: its mark waits for that.
-  const [hadMascot, setHadMascot] = useState(false)
-  if (mascot && !hadMascot) setHadMascot(true)
-  const [cleared, setCleared] = useState(false)
-  const clear = useCallback(() => setCleared(true), [])
-  const lingering = !!presence && hadMascot && !mascot && !cleared
-  const live = underWay || lingering
-  // It was under way, or had the mascot, and is not now: its mark grows out and its words go quiet.
-  const quiets = (wasUnderWay || hadMascot) && !live
+  // It was under way, and is not now: its mark grows out and its words go quiet.
+  const quiets = wasUnderWay && !underWay
+  // A step that comes in opens to what it did once its row is there, as it opens when clicked, rather than
+  // being as tall as all of it at once: after its row has opened (`row-enter`), or with no motion, a frame after
+  // it is drawn.
+  const reduced = useReducedMotion()
+  const [arrived, setArrived] = useState(!fresh)
+  useEffect(() => {
+    if (arrived || !reduced) return
+    const frame = requestAnimationFrame(() => setArrived(true))
+    return () => cancelAnimationFrame(frame)
+  }, [arrived, reduced])
   return (
     <Disclosure
-      open={open && detail}
+      open={open && detail && arrived}
       onToggle={onToggle}
+      onAnimationEnd={(event) => {
+        if (event.animationName === 'row-enter') setArrived(true)
+      }}
       disabled={!detail}
       hideCaret
       summary={(
         <>
-          <StepMark entry={entry} mascot={mascot} fresh={fresh} lingering={lingering} onCleared={clear} grows={quiets} />
-          <span className={cn('min-w-0 truncate transition-opacity duration-500 group-has-data-waiting:opacity-0 group-has-data-waiting:transition-none motion-reduce:transition-none', live && 'text-kumo-default', quiets && 'row-quiets')}>
+          <StepMark entry={entry} grows={quiets} />
+          <span className={cn('min-w-0 truncate', underWay && 'text-kumo-default', quiets && 'row-quiets')}>
             <ShimmerSwitchText active={false} truncate>{label}</ShimmerSwitchText>
           </span>
           {entry.type === 'call' && entry.error && <Badge variant="error">Error</Badge>}
@@ -227,20 +221,18 @@ const Row = ({ entry, label, open, onToggle, detail, fresh, enter, mascot }: { e
           <ArrowDown01Icon
             aria-hidden="true"
             weight="bold"
-            className={cn('size-3 shrink-0 transition-[opacity,transform] duration-300 group-data-panel-open:rotate-180 motion-reduce:transition-none', detail ? 'opacity-100 group-has-data-waiting:opacity-0 group-has-data-waiting:transition-none' : '-translate-x-1 opacity-0')}
+            className={cn('size-3 shrink-0 transition-[opacity,transform] duration-300 group-data-panel-open:rotate-180 motion-reduce:transition-none', detail ? 'opacity-100' : '-translate-x-1 opacity-0')}
           />
         </>
       )}
       // Pointed at, a row that opens has its icon, words and caret all in the full colour at once: they take the row's, which
       // is why none is set on them but a step under way (see `row-quiets`).
       triggerClassName={cn('min-h-10 w-fit rounded-xl px-1.5 py-0 pe-4 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none', detail ? 'hover:text-kumo-default' : 'cursor-default hover:text-kumo-subtle')}
-      className={cn('rounded-xl text-[13px]/5', enter && 'row-enter')}
+      className={cn('rounded-xl text-[13px]/5', fresh && 'row-enter')}
     >
       {/* What it says may be streaming in: its room eases to it. */}
       <SmoothHeight>
-        <div className="relative flex flex-col gap-3 pt-0.5 pe-4 pb-3 ps-10.5">
-          {/* What an open step did is set off by a line of 1px down the middle of the marks' column, under its icon, as long as it is. */}
-          <span aria-hidden="true" className="absolute start-5 top-0 bottom-3 w-px bg-kumo-contrast/12" />
+        <div className="flex flex-col gap-3 pt-0.5 pe-4 pb-3 ps-10.5">
           <Detail entry={entry} />
         </div>
       </SmoothHeight>

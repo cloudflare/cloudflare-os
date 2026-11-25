@@ -77,6 +77,13 @@ const liveView: Scenario = {
   ],
 }
 
+/** Has the first of `steps` wait `delay` milliseconds. */
+const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
+  if (!first) return []
+  const { on: _on, ...effect } = first
+  return [{ ...effect, delay } as ScriptStep, ...rest]
+}
+
 const read = (filename: string) => call('readFile', { workpiece: 'DASHBOARD', filename })
 const reads = [read('src/worker.ts'), read('src/chart.tsx'), read('package.json')]
 const edit = call('editFile', {
@@ -100,19 +107,39 @@ const failedEdit = call(
 )
 const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: 'src' }, { output: 'src/worker.ts:18:    maxResults: 50,\n' })
 
+// Long enough, streamed slowly, to open the steps while the first of them is still being thought.
+const toolRunPlan =
+  'The user wants the tickets chart to show twelve weeks instead of four. The window is probably a constant ' +
+  'somewhere in the chart component, but the worker that fetches the tickets may also cap how far back it ' +
+  'looks, or how many it returns per page, and twelve weeks could be several times as many tickets as four. ' +
+  'If the worker pages through results, raising the window alone might silently drop the oldest weeks. So: ' +
+  'read the worker and the chart first, check package.json for the Jira client version in case its search ' +
+  'API changed, then change the window and, if needed, the cap, and run a query to confirm the count looks right.'
+const toolRunOpening = agent({ text: 'I’ll read the chart code first.', reasoning: toolRunPlan })
+
+const toolRunThought =
+  'The search found `maxResults: 50` in the worker, not `limit`, which is why the edit failed. Fifty per page ' +
+  'is fine as long as the worker pages: it does, it follows `nextPageToken` until there is none, so 148 tickets ' +
+  'come back in three pages. Raising it would only make each request heavier for no gain, and the count from ' +
+  'the query matches what the chart will show. Nothing else depends on the four-week window: the trend ' +
+  'helper works on whatever points it is given. Say what changed, and why the worker was left alone.'
 const toolRunReply = agent({
   text:
     'The chart now covers **12 weeks** (148 tickets). One edit to `src/worker.ts` failed because the ' +
     'limit is named `maxResults` there; I left it alone since 50 per page is enough.',
+  reasoning: toolRunThought,
 })
 
 const toolRun: Scenario = {
   id: 'tool-run',
   title: 'Jira dashboard',
-  description: 'Reads, edits, code with output and a failing tool. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
+  description: 'A wait before anything happens, a long first thought, reads, edits, code with output, a failing tool and a long thought before the reply. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
   history: history([user('Show twelve weeks of tickets on the chart instead of four.')]),
   script: turn(
-    say(agent({ text: 'I’ll read the chart code first.' })),
+    // Nothing for a while, as when the model is slow to answer: the steps, opened, say they wait for the agent.
+    after(3000, streamReasoning(toolRunPlan, 160)),
+    streamText(toolRunOpening.message),
+    { message: toolRunOpening, delay: 300 },
     reads.flatMap((toolCall) => streamTool(toolCall)),
     { message: agent({ toolCalls: reads }), delay: 300 },
     streamReasoning('The window is a constant in chart.tsx. The worker also caps results, so check that as well.'),
@@ -131,6 +158,7 @@ const toolRun: Scenario = {
     { message: agent({ toolCalls: [failedEdit] }), delay: 300 },
     streamTool(search),
     { message: agent({ toolCalls: [search] }), delay: 300 },
+    streamReasoning(toolRunThought, 140),
     // Written slowly, a few words at a time, for long enough that the status saying so can be seen.
     streamText(toolRunReply.message, 240),
     { message: toolRunReply, delay: 300 },
@@ -582,13 +610,6 @@ const untrustedContent: Scenario = {
     }),
   ]),
   script: when('onSend', turn(say(agent({ text: 'Noted.' })))),
-}
-
-/** Has the first of `steps` wait `delay` milliseconds. */
-const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
-  if (!first) return []
-  const { on: _on, ...effect } = first
-  return [{ ...effect, delay } as ScriptStep, ...rest]
 }
 
 const hiring = 'I’ll add a hiring section after the highlights: two backend engineers in Q4, and a platform lead early next year. It is in the document now.'

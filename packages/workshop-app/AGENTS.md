@@ -215,36 +215,40 @@ What is behind the status is the steps taken since the last message (`WorkLog`),
 13px with no outline and no fill, run the width of the column, 40px tall and padded 6px. A row is one element
 from its first moment to its last, so nothing in it is made again as it goes on. Its mark is in a 28px column
 (the middle of it 20px in): Kumo's spinner while it is under way, the icon of what it did once it is done
-(Hugeicons, from `components/HugeIcon.tsx`), which grows out (`mark-grows`, a little overshoot) only once the
-mascot has moved on from the row (`LeavingSlot` watches how far it is, 24px being clear), until when its
-place is bare. The words are in the full colour while it is under way and go to the quiet one when it is
+(Hugeicons, from `components/HugeIcon.tsx`), which grows out where the spinner was (`mark-grows`, a little
+overshoot). The words are in the full colour while it is under way and go to the quiet one when it is
 done, as an animation (`row-quiets`) rather than a transition, so that what a row takes when it is pointed at
 is at once: its icon, words and caret go to the full colour, the same for all of them. A failed step has an
 "Error" badge. When the words change the old fade out and the new in (`ShimmerSwitchText`), even after the
 step is done, as the server words it afresh then. A new row (not one there when the log was shown) opens to
-its height as it fades in (`row-enter`, which clears `min-height` too, and which a row that takes the place of
-the bare row between steps does not do, or the height would dip), and its words wait for the mascot to be
-there (`MascotSlot`'s `holdUntilArrived`). A row that opens gains its caret by fading it in, and what it did
-shows in the words' column with a line of 1px down the middle of the marks' column; what streams in has its
+its height as it fades in (`row-enter`, which clears `min-height` too), its words there at once. A row that opens gains its caret by fading it in, and what it did
+shows in the words' column, with nothing in the marks' column beside it; what streams in has its
 room ease to it (`SmoothHeight`). The reply as it is drafted (the "Writing…" step) is not drawn as the message
-will be: quiet grey 13px text behind a rule at its side, with no bubble. Nothing opens by itself; opening the
-step under way means to follow it (`WorkLog`'s `follow`, held by `ChatPane` until the agent is done):
-whichever step is under way is open, and the next opens in its place, until that one is closed by hand.
+will be: quiet grey 13px text behind a rule at its side, with no bubble. What is watched as it happens is
+open: here every step with something to show is open until it is put away by hand, and so is the trace of a
+reply that arrived into them (below), which keeps what was put away, so that whoever follows the work, to steer
+it, reads all of it. A trace opened later, by the brain button or as Always show thinking has it, is looked
+back on, and its steps start as one line each, opened by hand (`WorkLog`'s `startOpen`; a step's key in the
+`DisclosureStore` is toggled from how it starts, `toggledSteps`). A new row opens to
+what it did only once it is there, as it does when clicked: after `row-enter` (a frame after it is drawn, with
+no motion), so that it never comes in as tall as all of it at once.
 
-The mascot is the last row of the steps while they are open: the mark of the step under way, or a row of its
-own when none is (`WorkLog` finds the place through `PresenceSlotContext`). It is one element, carried to each
-place by `useFlight` on a critically damped spring, eased into so that a long way is not a kick, that carries
-on from its speed when sent elsewhere. What the spring settles is how far the mascot is from the row, so that
-what moves the row while it is there, such as a step above it opening, moves it too, in the same frame. Where
-it goes is what the slot has settled on (`SLOT_SETTLE`): steps that come faster are not each gone to, and the
-step it left is where it was last seen. The mascot is 32px, shrinks to 80% among the steps (the `scale`
-property), and is carried with `translate`, not `transform`, so that the scale is not multiplied into how far
-it is moved. Out to the steps and home again it is on a quicker spring (`brisk`, until it is there), as the
-steps open and close in 420ms (`.presence-panel`, the status line's room shutting and opening as they do), so
+The mascot is the last row of the steps while they are open, a row of its own after them all (`WorkLog` finds
+the place through `PresenceSlotContext`). Until there is a step it says "Waiting for the agent…", its words
+waiting for the mascot to be there as the steps open (`MascotSlot`'s `holdUntilArrived`), so that what opens is
+never the mascot alone; once there are steps, which say what it is doing, it is alone on its row. It is not carried from one step to the next, which it would always be
+behind: the steps come in above its row, and it goes down with them, in the same frame. Over the steps is a
+Thinking details heading with a chevron, starting where their icons do, which puts them away, so that it is
+plain what is open. The mascot is one element, carried out to its row and home again by `useFlight` on a
+critically damped spring, eased into so that a long way is not a kick. What the spring settles is how far the
+mascot is from the row, so that what moves the row while it is there, such as a step above it opening, moves it
+too, in the same frame. The mascot is 32px, shrinks to 80% among the steps (the `scale` property), and is
+carried with `translate`, not `transform`, so that the scale is not multiplied into how far it is moved. It is
+on the quicker of `useFlight`'s springs (`brisk`), as the steps open and close in 420ms (`.presence-panel`, the status line's room shutting and opening as they do), so
 it is where it is going as they have. The words beside it, on the line it is on while the steps are closed, are
 gone the moment they open and, as they close, wait for the mascot to be there before they fade in
 (`.presence-label`, told by `useFlight`'s `onArrive`); they are 10px from it. The steps are put away by the
-mascot (there is no button), and focus that was on the words goes to it.
+heading or the mascot, and focus that was on the words goes to the heading.
 
 A reply becomes a message only once it is written. Its steps then go with it (`AssistantItem.trace`), out of the
 conversation but there for whoever asks. How it came about is shown above the message, as the history that led
@@ -254,7 +258,18 @@ thinking, below). What there is to know about the message (`messageInfo`: the mo
 mode how long it took) is a bubble of its own under it, shown by a click on the message, as in other messaging
 apps, and in more as Show details (a link, a button, a view or a selection in the message is not a click for
 that, and a click anywhere else puts it away). The two are independent, each with its own open state
-(`DisclosureStore` keys `item.key` and `item.key:thinking`), and neither opens by itself when a reply arrives.
+(`DisclosureStore` keys `item.key` and `item.key:thinking`), and neither opens by itself when a reply arrives,
+but for the one case below.
+
+A reply that arrives while its steps are showing arrives into them: its trace is open, for that reply alone
+(`ChatPane`'s `handedTraces`, given to the row as `tracedWhileShown`), and is there already rather than
+arriving (`trace.shownAlready`). The steps it took are gone from the indicator at once, which keeps only the
+room of what is left (its heading and the draft) and closes that, invisible (`details.handedOver`,
+`.presence-panel[data-handed-over]`); the reply's row opens from the steps' height rather than from nothing
+(`MessageList` reads `[data-shown-already]`), so that the conversation is as tall as it was in the frame it
+comes in, and grows only by the message; and the steps glide up into their place as it does, by the heading
+and paddings that are no longer above them (`message-trace-settles`). The mascot sets off from where it was
+seen, not carried down with its stage by the row that came in above it (`useFlight`).
 The panel is `text-sm/5` lines with `size-4` icons, only the time for the viewer's own messages; every chevron,
 here and on anything else that opens, is `size-3` and bold. It arrives whole, the way a message does, and
 putting it away takes two steps (`useDetailsStage`): it folds to its first line the way a step closes, and the
@@ -992,11 +1007,12 @@ main has none. The gallery draws every part over a fake capability (`gallery/adm
 ### Always show thinking
 
 Preferences' Always show thinking, under Chat (`prefs/liveWork.ts`, kept on this device and read by
-`useLiveWorkOpen`; defined once in `usePreferenceSettings`, so ⌘K flips it too), is the same thing a click on
-the assistant's mascot while it works turns on and off, so there is one place it is kept and neither can
-disagree with the other. On, the steps are shown while the assistant works, and how a reply came about is
+`useLiveWorkOpen`; defined once in `usePreferenceSettings`, so ⌘K flips it too), is where a chat's steps start
+out while the assistant works. Opening or closing them in a chat (the status, the mascot or the heading) is
+that chat's alone for as long as it is open (`ChatPane`), and never changes the setting, which would open how
+every reply came about with it; the setting changed since wins. On, the steps are shown while the assistant works, and how a reply came about is
 open above each reply, without the brain button: a reply's trace is open when it is on and has not been
-put away, or off and has been opened (`ChatItemView`, as a step that is alone starts open in `WorkLog`).
+put away, or off and has been opened (`ChatItemView`).
 Developer mode turns it on once, when it is switched on (`writeDevMode`).
 
 ### Developer mode
@@ -1021,8 +1037,8 @@ a Cost order, and a message's details say how long a reply took (`AssistantItem.
 the message before it), its more menu copies the message's ID and raw JSON, and the chat's, the
 workspace's and the gadget's settings pages list their IDs (`DeveloperIds`), each copied by pressing it. Per-message tokens and cost are not on the
 wire (the server keeps the step's usage only in the chat's totals), so they are not shown. Turning it
-on also opens what the agent is doing while it works (`prefs/liveWork.ts`): that is kept for every
-chat and is the viewer's to put away by a click, as it is for anyone.
+on also turns on Always show thinking (`prefs/liveWork.ts`), which a chat's own click puts away for that
+chat alone, as it is for anyone.
 
 ## Skills
 

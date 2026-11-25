@@ -175,20 +175,21 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const list = useRef<MessageListHandle>(null)
   const [sentFirst] = useState(() => firstMessageOf(workspaceId, chatId))
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
-  // Shown or put away for every chat at once, and kept: developer mode turns it on (`writeDevMode`).
-  const [liveWorkOpen, setLiveWorkOpen] = useLiveWorkOpen()
-  const openWork = useOpenKeys(disclosure, work.map(({ key }) => key))
+  // Open to start with where thinking is always shown (`prefs/liveWork`), and opened or put away by hand for
+  // this chat alone: that is not the setting, which would open how every reply came about with it. The
+  // setting changed since then wins again.
+  const [alwaysShowThinking] = useLiveWorkOpen()
+  const [liveWorkToggled, setLiveWorkToggled] = useState<{ open: boolean; setting: boolean }>()
+  const liveWorkOpen = liveWorkToggled?.setting === alwaysShowThinking ? liveWorkToggled.open : alwaysShowThinking
+  // Watched as they happen, the steps start open, and a step's key is toggled to put it away (`WorkLog`'s
+  // `startOpen`), which the reply they go to keeps where it arrives into them.
+  const toggledWork = useOpenKeys(disclosure, work.map(({ key }) => key))
   // The work handed over to a reply as it arrives (`work` is empty again): what showed it folds at
-  // once, with the steps as they were rather than for a moment saying there is nothing to show, until
-  // there are steps again.
+  // once (see `closingWork`), until there are steps again.
   const lastWork = useRef(work)
   if (work.length > 0) lastWork.current = work
   const [handedOver, setHandedOver] = useState({ over: false, length: work.length })
   const working = chat.status === 'ready' && chat.activity !== undefined
-  // Whether the step under way is kept open as the agent goes on (`WorkLog`'s `follow`): for as long as
-  // it is at work, and not into the next time.
-  const [followWork, setFollowWork] = useState(false)
-  if (!working && followWork) setFollowWork(false)
   if (work.length !== handedOver.length || (!working && handedOver.over)) {
     setHandedOver({ over: working && work.length === 0 && handedOver.length > 0, length: work.length })
   }
@@ -196,6 +197,27 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const keepOpen = useOpenKeys(disclosure, keepKeys)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+  // The replies that arrived while the steps behind them were showing: each comes with how it came about open
+  // above it, where the steps were, so that it arrives into them as a message does into the conversation.
+  // Only those: the next reply is as the setting has it.
+  const showingWork = working && liveWorkOpen && !handedOver.over
+  const [handedTraces, setHandedTraces] = useState<{ items: ChatItem[] | undefined; showing: boolean; keys: ReadonlySet<string> }>({ items, showing: showingWork, keys: new Set() })
+  if (handedTraces.items !== items || handedTraces.showing !== showingWork) {
+    const after = handedTraces.items?.at(-1)?.id ?? Infinity
+    const arrived = handedTraces.showing
+      ? (items ?? []).filter((item) => item.kind === 'assistant' && item.trace.length > 0 && item.id > after).map(({ key }) => key)
+      : []
+    setHandedTraces({ items, showing: showingWork, keys: arrived.length > 0 ? new Set([...handedTraces.keys, ...arrived]) : handedTraces.keys })
+  }
+  const latest = items?.at(-1)
+  // The reply the steps went into is the last thing said, and nothing has been done since.
+  const handingOver = !!latest && handedTraces.keys.has(latest.key) && work.length === 0
+  // What the steps show as they close, once the work is handed over to a reply (`work` is empty again): the
+  // steps as they were, rather than for a moment saying there is nothing to show, but for those now above
+  // the reply, which are there already. A new turn's are its own, from nothing.
+  const closingWork = work.length === 0 && (handedOver.over || !working)
+    ? handingOver ? lastWork.current.filter(({ type }) => type === 'writing') : lastWork.current
+    : work
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
   // The agents the chat's gadgets start, for the header, read again as each turn ends.
@@ -388,12 +410,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             // The list wraps every row, so messages in a run are told about each other.
             joinsAbove={!before.has(index) && continuesRun(items[index - 1], item)}
             joinsBelow={index + 1 < items.length && !before.has(index + 1) && continuesRun(item, items[index + 1])}
+            tracedWhileShown={handedTraces.keys.has(item.key)}
           />
         ),
       }]
     }) ?? []
     return [...rows, ...after.map(markRow)]
-  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted])
+  }, [items, runMarks, openRun, opensRuns, chatHref, disclosure, handlers, restricted, handedTraces.keys])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
   const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -642,9 +665,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             writing={chat.activity === WRITING}
             details={{
               open: liveWorkOpen && !handedOver.over,
-              onToggle: () => setLiveWorkOpen(!liveWorkOpen),
+              onToggle: () => setLiveWorkToggled({ open: !liveWorkOpen, setting: alwaysShowThinking }),
+              handedOver: handingOver,
               content: (
-                <WorkLog steps={handedOver.over ? lastWork.current : work} openSteps={openWork} onToggleStep={disclosure.toggle} follow={{ on: followWork, onChange: setFollowWork }} />
+                <WorkLog steps={closingWork} toggledSteps={toggledWork} onToggleStep={disclosure.toggle} startOpen />
               ),
             }}
           />

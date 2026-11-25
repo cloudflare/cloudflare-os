@@ -19,9 +19,11 @@ export type MessageInfo = {
 /** How a reply came about: the steps it took and what it thought, for `thinkingOf`. */
 export type MessageTrace = {
   steps: ToolStepEntry[]
-  /** The keys of the steps whose detail is showing. */
-  openSteps: ReadonlySet<string>
+  /** The keys of the steps opened or put away by hand (`WorkLog`). */
+  toggledSteps: ReadonlySet<string>
   onToggleStep: (key: string) => void
+  /** Its steps start open, as where they were watched as they happened (`WorkLog`). */
+  startOpen?: boolean
 }
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -65,9 +67,9 @@ export const messageInfo = ({ sender, sentAt, reply, workedFor }: MessageInfo): 
  * the thinking indicator has them while it works, as the history that led up to it. Nothing for a reply
  * that took no steps.
  */
-export const thinkingOf = ({ steps, openSteps, onToggleStep }: MessageTrace): ReactNode =>
+export const thinkingOf = ({ steps, toggledSteps, onToggleStep, startOpen }: MessageTrace): ReactNode =>
   steps.length > 0 && (
     <section aria-label="What led to this message">
-      <WorkLog steps={steps} openSteps={openSteps} onToggleStep={onToggleStep} />
+      <WorkLog steps={steps} toggledSteps={toggledSteps} onToggleStep={onToggleStep} startOpen={startOpen} />
     </section>
   )

@@ -95,7 +95,7 @@ export const MessageBlocksPreview = () => {
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
             details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, reply: true }) }}
-            thinking={{ ...of('thinking'), content: thinkingOf({ steps: TRACE, openSteps: open, onToggleStep: toggle }) }}
+            thinking={{ ...of('thinking'), content: thinkingOf({ steps: TRACE, toggledSteps: open, onToggleStep: toggle }) }}
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}

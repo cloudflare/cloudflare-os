@@ -1,69 +1,46 @@
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { MascotSlot, usePresenceSlot } from './presenceSlot'
-import { isUnderWay, ToolStep, type ToolStepEntry } from './ToolStep'
+import { ToolStep, type ToolStepEntry } from './ToolStep'
 
 export type WorkLogProps = {
   /** The steps so far, oldest first. The last may be what is happening right now. */
   steps: ToolStepEntry[]
-  /** The keys of the steps whose detail is showing. */
-  openSteps: ReadonlySet<string>
+  /** The keys of the steps opened or put away by hand: the others are as `startOpen` has them. */
+  toggledSteps: ReadonlySet<string>
   onToggleStep: (key: string) => void
   /**
-   * Opening the step that is under way means to keep whichever is under way open, as the agent goes
-   * on, and closing it means to stop. Without it, that step is like any other.
+   * Every step that has something to show starts open: for what is being watched as it happens, and what
+   * was, rather than what is looked back on, whose steps start as one line each.
    */
-  follow?: { on: boolean; onChange: (on: boolean) => void }
+  startOpen?: boolean
 }
 
 /**
  * How a reply is coming about, or came about: the steps taken since the message before, each
- * opening to what it did. Nothing opens by itself: a step is closed until someone opens it, but for
- * the one under way while it is being followed. Inside the assistant's presence the mascot is the last
- * row: at the step that is under way, or on a row of its own when none is. Above a message it is the
- * history that led up to it, with the same rows.
+ * opening to what it did. Inside the assistant's presence the mascot is the last row, after them all, saying
+ * it waits for the agent until there are steps, and alone after; the steps come in above it, and it goes
+ * down with them. Above a message it is the history that led up to it, with the same rows.
  */
-export const WorkLog = ({ steps, openSteps, onToggleStep, follow }: WorkLogProps) => {
-  const last = steps.at(-1)
-  const now = last && isUnderWay(last) ? last.key : undefined
+export const WorkLog = ({ steps, toggledSteps, onToggleStep, startOpen = false }: WorkLogProps) => {
   // The steps there were when it was first shown: the ones after come in, as they are made, and these are simply there.
   const first = useRef(new Set(steps.map((step) => step.key)))
-  // A step is open when someone opened it, except the step under way while it is being followed: it is open for as
-  // long as it is under way, and the next one is open in its place, rather than the ones it was open for staying so.
-  const isOpen = (key: string) => openSteps.has(key) || (!!follow?.on && key === now)
-  // Inside the assistant's presence the mascot is the last row: at the step that is under way, or on
-  // a row of its own when none is.
-  const presence = usePresenceSlot()
-  const withMascot = !!presence
-  // The bare row the mascot has between steps is made room for as it comes (see below), and what takes its place
-  // is not made room for again: the room is already there, and the row of the step that came would
-  // open from nothing as that one went, which the conversation's scroll would follow down and up.
-  const trailing = withMascot && now === undefined
-  const hadTrailing = useRef(false)
-  useEffect(() => {
-    hadTrailing.current = trailing
-  })
-  // Decided once for each step, as it is first drawn: it is when it is drawn that it comes in.
-  const enters = useRef(new Map<string, boolean>())
-  const enter = (key: string) => {
-    if (!enters.current.has(key)) enters.current.set(key, !first.current.has(key) && !hadTrailing.current)
-    return enters.current.get(key)
-  }
-  const toggle = (key: string) => {
-    if (!follow || key !== now) return onToggleStep(key)
-    const open = isOpen(key)
-    follow.onChange(!open)
-    // Opened by hand before it was under way, it has to be put away too, or it would stay open.
-    if (open && openSteps.has(key)) onToggleStep(key)
-  }
+  const withMascot = !!usePresenceSlot()
 
   return (
     <div className="flex flex-col">
       {steps.map((step) => (
-        <ToolStep key={step.key} entry={step} open={isOpen(step.key)} onToggle={() => toggle(step.key)} fresh={!first.current.has(step.key)} enter={enter(step.key)} mascot={withMascot && step.key === now} />
+        <ToolStep key={step.key} entry={step} open={toggledSteps.has(step.key) !== startOpen} onToggle={() => onToggleStep(step.key)} fresh={!first.current.has(step.key)} />
       ))}
-      {trailing && (
-        <div className="row-enter flex min-h-10 items-center px-1.5">
-          <MascotSlot />
+      {/* The mascot alone once there are steps, which say what it is doing. Before there are, it says it waits, or
+          the steps would be nothing but it; its words waiting for it to be there as the steps open. */}
+      {withMascot && (
+        <div className="group flex min-h-10 items-center gap-2 px-1.5 text-[13px]/5">
+          <MascotSlot holdUntilArrived />
+          {steps.length === 0 && (
+            <span className="min-w-0 truncate text-kumo-default transition-opacity duration-500 group-has-data-waiting:opacity-0 group-has-data-waiting:transition-none motion-reduce:transition-none">
+              Waiting for the agent…
+            </span>
+          )}
         </div>
       )}
       {steps.length === 0 && !withMascot && <p className="min-h-10 ps-10.5 text-[13px]/10 text-kumo-inactive">Nothing to show yet.</p>}

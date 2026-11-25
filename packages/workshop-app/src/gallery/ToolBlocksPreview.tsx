@@ -57,28 +57,31 @@ const steps: ToolStepEntry[] = [
 /** The steps of a turn's work as they are looked into while it runs, and the literal values a step can carry. */
 export const ToolBlocksPreview = () => {
   const { open, toggle } = useOpen(['edit'])
+  // Its own, as the same steps are open there until they are put away.
+  const watched = useOpen()
 
   return (
     <>
-      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written; then thinking; then drafting the reply; then drafting one with a view written and one being drawn, named and not run; then nothing yet; the steps open when they are clicked, and what is drafted is open here to show it)">
+      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written; then thinking; then drafting the reply; then drafting one with a view written and one being drawn, named and not run; then nothing yet; looked back on, the steps open when they are clicked, and what is drafted is open here to show it; watched as they happen, they start open)">
         <Column>
-          <WorkLog steps={steps} openSteps={open} onToggleStep={toggle} />
+          <WorkLog steps={steps} toggledSteps={open} onToggleStep={toggle} />
           <WorkLog
             steps={[steps[0], { type: 'thinking', key: 'thinking', text: 'The trend needs the twelve-week window too. Check where it is read.' }]}
-            openSteps={open}
+            toggledSteps={open}
             onToggleStep={toggle}
           />
           <WorkLog
             steps={[steps[0], steps[2], { type: 'writing', key: 'writing', text: 'The chart now covers **twelve weeks**. Two things to check before you' }]}
-            openSteps={open}
+            toggledSteps={open}
             onToggleStep={toggle}
           />
           <WorkLog
             steps={[{ type: 'writing', key: 'writing', text: DRAFT, parts: answerParts(DRAFT, { streaming: true }) }]}
-            openSteps={new Set(['writing'])}
+            toggledSteps={new Set(['writing'])}
             onToggleStep={toggle}
           />
-          <WorkLog steps={[]} openSteps={open} onToggleStep={toggle} />
+          <WorkLog steps={[]} toggledSteps={open} onToggleStep={toggle} />
+          <WorkLog steps={steps} toggledSteps={watched.open} onToggleStep={watched.toggle} startOpen />
         </Column>
       </Section>
       <Section title="ActionFields (inline, empty, text, truncated JSON, list, empty list, files, omitted)">

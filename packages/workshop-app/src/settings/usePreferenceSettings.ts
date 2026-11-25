@@ -63,13 +63,13 @@ export const usePreferenceSettings = () => {
       changed()
     },
   }
-  // The same thing a click on the assistant while it works turns on and off, so it is kept in the one place
-  // (`prefs/liveWork`), which is heard of by whoever reads it.
+  // Where a chat's thinking starts out open (`prefs/liveWork`). Opening or closing it in a chat is that chat's
+  // alone, and changes nothing here.
   const alwaysShowThinking: ToggleSetting = {
     kind: 'toggle',
     section: 'preferences',
     title: 'Always show thinking',
-    description: 'Show what the assistant is doing while it works, and how each reply came about, without having to open it. Clicking the assistant while it works turns this on or off too. Saved in this browser.',
+    description: 'Show what the assistant is doing while it works, and how each reply came about, without having to open it. Saved in this browser.',
     keywords: ['thinking', 'reasoning', 'steps', 'work', 'tools', 'history', 'trace', 'expand'],
     icon: Brain03Icon,
     checked: liveWorkOpen,

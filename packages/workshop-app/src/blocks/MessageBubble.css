@@ -21,6 +21,21 @@
   from { margin-top: 0; }
 }
 
+/* A reply whose steps were showing as it arrived, with them open above it (`trace.shownAlready`): they are
+   there already, where the thinking indicator had them under its heading and above its own line, and
+   glide up into their place as the reply comes in under them, on the reply's clock. 2.625rem is the
+   heading (2rem), the indicator's top padding (0.5rem) and the list's gap, which the row takes back as it
+   starts to open (0.5rem), less the trace's own top padding (0.375rem). */
+[data-arriving] [data-role][data-traced-already] {
+  animation:
+    message-bubble-draws-up 300ms ease-out backwards,
+    message-trace-settles var(--arrival-duration) var(--arrival-easing) backwards;
+}
+
+@keyframes message-trace-settles {
+  from { translate: 0 2.625rem; }
+}
+
 /* A message that was gone to (the message list marks its row) stands out for a moment: its
    bubble takes a stronger fill, holds it for a second and a half, and fades back. The fill is
    laid over the bubble's own in the colour of its text, so a light bubble darkens and a dark one

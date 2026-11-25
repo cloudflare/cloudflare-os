@@ -7,13 +7,13 @@
    which opens the row on the same clock so that what is below moves down with it; keep the two in
    step). A row that is only being shown again, such as history scrolled back to, is not marked
    and does not animate. */
-:where(.arrives, .message-details) {
+:where(.arrives, .message-details, [data-traced-already]) {
   --arrival-duration: 420ms;
   --arrival-easing: linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1);
 }
 
 /* Calmer, it arrives and stops, without the overshoot. Keep in step with `ARRIVAL` in MessageList. */
-:root[data-motion='calm'] :where(.arrives, .message-details) {
+:root[data-motion='calm'] :where(.arrives, .message-details, [data-traced-already]) {
   --arrival-easing: linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 0.99 60%, 1);
 }
 

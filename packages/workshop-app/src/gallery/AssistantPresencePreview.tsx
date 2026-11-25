@@ -19,6 +19,8 @@ const STEPS: ToolStepEntry[] = [
   { type: 'call', key: 'again', icon: 'file', label: 'Reading src/worker.ts…', running: true, sections: [] },
 ]
 
+// How long a played run waits for the agent before its first step.
+const WAIT_FOR = 2500
 const THOUGHT = 'The window is a constant in chart.tsx. The worker also caps results, so check that as well, then show twelve weeks.'.split(' ')
 const THINK_FROM = 3000
 const THINK_FOR = THOUGHT.length * 90
@@ -75,7 +77,6 @@ export const AssistantPresencePreview = () => {
     }
   }, [rapid])
   const { open, toggle, of } = useOpen()
-  const [follow, setFollow] = useState(false)
 
   return (
     <>
@@ -84,7 +85,8 @@ export const AssistantPresencePreview = () => {
           <div className="flex flex-wrap items-center gap-4">
             <Switch label="Working" checked={working} onCheckedChange={setWorking} />
             <Switch label="Details" checked={details} onCheckedChange={setDetails} />
-            <Button onClick={() => setPlayed(0)}>{played === undefined ? 'Play a run' : 'Playing…'}</Button>
+            {/* From a little before its first step, for what the steps say while there are none. */}
+            <Button onClick={() => setPlayed(-WAIT_FOR)}>{played === undefined ? 'Play a run' : 'Playing…'}</Button>
             <Button disabled={rapid} onClick={() => setRapid(true)}>{rapid ? 'Changing every 180ms…' : 'Change it quickly for 7s'}</Button>
             <Tabs size="sm" value={status} onValueChange={setStatus} tabs={STATUSES.map((value) => ({ value, label: value }))} />
           </div>
@@ -97,7 +99,7 @@ export const AssistantPresencePreview = () => {
               details={details
                 ? {
                     ...of('work'),
-                    content: <WorkLog steps={played === undefined ? STEPS : runAt(played)} openSteps={open} onToggleStep={toggle} follow={{ on: follow, onChange: setFollow }} />,
+                    content: <WorkLog steps={played === undefined ? STEPS : runAt(played)} toggledSteps={open} onToggleStep={toggle} startOpen />,
                   }
                 : undefined}
             />

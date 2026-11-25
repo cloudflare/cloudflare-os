@@ -52,10 +52,13 @@ const markArriving = (row: Element) => {
   // animates in (a message draws up to the one it joins), and the row has to open to the height it
   // will end at, or it would jump to it when the animation was over.
   const { height } = row.getBoundingClientRect()
+  // What in it was on screen already, elsewhere (a reply's steps, which were showing as it came), is not
+  // made room for again: the row opens from there.
+  const already = row.querySelector('[data-shown-already]')?.getBoundingClientRect().height ?? 0
   row.setAttribute('data-arriving', '')
   if (!isMotionOff()) {
     // A row of no height would still be given the list's `gap-2`, so it starts by taking that back.
-    row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], arrival())
+    row.animate([{ height: `${already}px`, marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], arrival())
   }
   const arrivals = row.getAnimations({ subtree: true }).map(({ finished }) => finished)
   void Promise.allSettled(arrivals).then(() => row.removeAttribute('data-arriving'))

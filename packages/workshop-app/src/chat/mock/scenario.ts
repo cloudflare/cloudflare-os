@@ -390,8 +390,8 @@ const chunks = (text: string, words = 3): string[] => {
 export const streamText = (text: string, delay = CHUNK_DELAY): ScriptStep[] =>
   chunks(text).map((delta) => ({ stream: { type: 'textDelta', delta }, delay }))
 
-export const streamReasoning = (text: string): ScriptStep[] =>
-  chunks(text).map((delta) => ({ stream: { type: 'reasoningDelta', delta }, delay: CHUNK_DELAY }))
+export const streamReasoning = (text: string, delay = CHUNK_DELAY): ScriptStep[] =>
+  chunks(text).map((delta) => ({ stream: { type: 'reasoningDelta', delta }, delay }))
 
 const stream = (event: AiChatStreamEvent, delay = CHUNK_DELAY): ScriptStep => ({ stream: event, delay })
 

@@ -16,6 +16,16 @@ const TOP_SPEED = 1500
 
 type Point = { x: number; y: number }
 
+// Where an element is laid out in the document, which scrolling does not change.
+const laidOutAt = (element: HTMLElement): Point => {
+  const point = { x: 0, y: 0 }
+  for (let at: Element | null = element; at instanceof HTMLElement; at = at.offsetParent) {
+    point.x += at.offsetLeft
+    point.y += at.offsetTop
+  }
+  return point
+}
+
 /**
  * Keeps `flier`, which sits at the top left of `stage`, centred on `target`, wherever that is as the
  * page lays itself out, and carries it to a new `target` when that changes rather than putting it
@@ -23,12 +33,15 @@ type Point = { x: number; y: number }
  * damped spring: it is where the target is, plus that. So what moves the target while it is where it
  * is going, such as a row opening above it, moves it too, in step, and only a change of target is
  * a journey. Told to go elsewhere part of the way, it carries on from the speed it has, instead of
- * stopping and setting off again. A target that has left the page is where it was last seen. Without
+ * stopping and setting off again. It sets off from where it was last seen, even where the stage has moved
+ * since, as when something came in above it. A target that has left the page is where it was last seen. Without
  * `animate` it is put there at once. `onArrive` is told when it is there (within a few pixels of it)
  * and when it is not, which is while it is on its way to a new place. `brisk` is a quicker spring.
  */
 export const useFlight = (stage: RefObject<HTMLElement | null>, flier: RefObject<HTMLElement | null>, target: HTMLElement | null, animate: boolean, onArrive?: (arrived: boolean) => void, brisk = false) => {
   const at = useRef<Point>(undefined)
+  // Where the stage was when it was last drawn, which `at` is from.
+  const stageAt = useRef<Point>(undefined)
   const lastAim = useRef<Point>(undefined)
   // How far it is from the target, how fast that is changing, and what the spring is being pulled towards.
   const apart = useRef<Point>({ x: 0, y: 0 })
@@ -50,6 +63,7 @@ export const useFlight = (stage: RefObject<HTMLElement | null>, flier: RefObject
     const draw = (goal: Point) => {
       const point = { x: goal.x + apart.current.x, y: goal.y + apart.current.y }
       at.current = point
+      stageAt.current = laidOutAt(parent)
       // The `translate` property rather than `transform`: a scale of its own on `flier` (the property of that
       // name) is then about its middle, where this puts it, and not multiplied into how far it is moved.
       moving.style.translate = `${point.x}px ${point.y}px`
@@ -65,9 +79,25 @@ export const useFlight = (stage: RefObject<HTMLElement | null>, flier: RefObject
 
     // Told to go to a new target: where it is now is that far from it, and the spring settles that.
     const first = aim()
+    // Where the stage was laid out when it was last seen there, for setting off from there if it has moved since.
+    const was = stageAt.current
+    let gone = false
     if (animate && at.current) {
       apart.current = { x: at.current.x - first.x, y: at.current.y - first.y }
       pulled.current = { ...apart.current }
+      // Where the stage is now is only known once everything else of this commit is laid out, such as a row above
+      // it opening from less than its height, which its own effect starts: after them all, before it is drawn.
+      if (was) {
+        queueMicrotask(() => {
+          if (gone) return
+          const now = laidOutAt(parent)
+          const by = { x: was.x - now.x, y: was.y - now.y }
+          apart.current = { x: apart.current.x + by.x, y: apart.current.y + by.y }
+          pulled.current = { x: pulled.current.x + by.x, y: pulled.current.y + by.y }
+          draw(aim())
+          wake()
+        })
+      }
     } else {
       apart.current = { x: 0, y: 0 }
       speed.current = { x: 0, y: 0 }
@@ -121,6 +151,7 @@ export const useFlight = (stage: RefObject<HTMLElement | null>, flier: RefObject
     const watch = new ResizeObserver(() => draw(aim()))
     watch.observe(parent)
     return () => {
+      gone = true
       cancelAnimationFrame(frame)
       watch.disconnect()
     }

@@ -49,8 +49,12 @@ export type MessageBubbleProps = {
    * to the bubble that has them, and `trace` to the one it is shown above, which may be another.
    */
   thinking?: { open: boolean; onToggle: () => void }
-  /** How the message came about, above it as wide as the conversation while `open` (see `messageInfo`'s `thinkingOf`). */
-  trace?: { open: boolean; content: ReactNode }
+  /**
+   * How the message came about, above it as wide as the conversation while `open` (see `messageInfo`'s `thinkingOf`).
+   * `shownAlready` where it was on screen as the message arrived, as the thinking indicator's steps: it is
+   * there, rather than arriving, and only the message arrives under it.
+   */
+  trace?: { open: boolean; content: ReactNode; shownAlready?: boolean }
 }
 
 export type MessageDetails = {
@@ -68,7 +72,7 @@ export type MessageDetails = {
  * and keeps the reader's place as it does: what it grows above is pushed down, and the view goes with it,
  * so that the message stays where it was looked at (see `MessageScrollContext`).
  */
-const MessageTrace = ({ ref, id, stage, children }: { ref: RefObject<HTMLDivElement | null>; id: string; stage: string; children: ReactNode }) => {
+const MessageTrace = ({ ref, id, stage, shownAlready, children }: { ref: RefObject<HTMLDivElement | null>; id: string; stage: string; shownAlready?: boolean; children: ReactNode }) => {
   const scroll = useContext(MessageScrollContext)
   useLayoutEffect(() => {
     const element = ref.current!
@@ -87,7 +91,9 @@ const MessageTrace = ({ ref, id, stage, children }: { ref: RefObject<HTMLDivElem
       {/* The padding is inside what is clipped: on the clipped box itself it would be there when the rest is shut,
           and go when the trace is taken away. */}
       <div>
-        <div className="pt-1.5 pb-1">{children}</div>
+        {/* The message list opens the row it arrives in from the steps' height, as they are there already
+            (`MessageList`). */}
+        <div className="pt-1.5 pb-1"><div data-shown-already={shownAlready || undefined}>{children}</div></div>
       </div>
     </div>
   )
@@ -223,10 +229,11 @@ export const MessageBubble = ({ role, children, media, view, joins, onReply, cop
   return (
     <div
       data-role={role}
+      data-traced-already={(traced && thought.shownAlready) || undefined}
       className={cn('flex items-start [container-type:inline-size]', traced && 'flex-col', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
     >
       {traced && (
-        <MessageTrace ref={trace} id={traceId} stage={traceStage}>{thought.content}</MessageTrace>
+        <MessageTrace ref={trace} id={traceId} stage={traceStage} shownAlready={thought.shownAlready}>{thought.content}</MessageTrace>
       )}
       <div
         className={cn(
