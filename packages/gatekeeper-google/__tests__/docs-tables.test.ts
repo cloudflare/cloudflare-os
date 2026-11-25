@@ -8,7 +8,7 @@ import type {
 import { applyDocEdit, docEditRequests, renderTab } from "../src/docs-replay";
 import {
   addedTableCells, besideTableRefusal, changesTables, checkTabTableCells, checkTableTarget,
-  chipCopies, closesTableGate, commonPrefix, commonSuffix, hiddenContent, MAX_TAB_TABLE_CELLS,
+  chipCopies, closesTableGate, commonPrefix, commonSuffix, headerAfterInsertion, hiddenContent, MAX_TAB_TABLE_CELLS,
   MAX_TABLE_TEXT_REQUESTS, namesTable, parseCellInline, replacementPath, resolveTable,
   tableChangeRequests, tableGateRefusal, tableIdentity,
   tableShape, tableSize, tableTextRequests, textReplacementRequests,
@@ -606,18 +606,40 @@ describe("pinned header rows", () => {
     }
   });
 
-  it("refuses a row insertion whose row has been pinned or unpinned since it was queued", () => {
-    let unpinned = buildTab([para("Before"), grid(["H1", "H2"], ["a", "b"]), para("After")]);
-    let pinned = pinnedTab(["H1", "H2"], ["a", "b"]);
-    let refused =
-      "insertTableRows: the row the new rows take after has been pinned as a header row, or " +
-      "unpinned, since this change was queued, which getContent() does not show.";
-    for (let [queuedOn, appliedOn, pins] of [[unpinned, pinned, false], [pinned, unpinned, true]] as const) {
-      let change = { ...addRows(docTabToMarkdown(queuedOn), 0, 0, [["x", "y"]]), pins };
-      // Its table reads the same: the pin is all that moved.
-      expect(thrownMessage(() => tableChangeRequests(docTabToMarkdown(appliedOn), change))).toBe(refused);
-      expect(() => tableChangeRequests(docTabToMarkdown(queuedOn), change)).not.toThrow();
+  it("counts the new rows a header pinned again takes in, and the rows it lets go, as the rows fall", () => {
+    for (let pinned = 1; pinned <= 3; pinned++) {
+      for (let at = 0; at <= 4; at++) {
+        for (let count = 1; count <= 4; count++) {
+          // Four rows, `count` new ones at `at`, and the first `pinned` of them the header.
+          let rows = ["o0", "o1", "o2", "o3"].toSpliced(at, 0, ...Array.from({ length: count }, () => "new"));
+          let header = rows.slice(0, pinned);
+          let wasHeader = ["o0", "o1", "o2", "o3"].slice(0, pinned);
+          let expected = at < pinned
+            ? { added: header.filter(row => row === "new").length,
+              dropped: wasHeader.filter(row => !header.includes(row)).length }
+            : { added: 0, dropped: 0 };
+          expect(headerAfterInsertion(pinned, at, count), `${pinned} ${at} ${count}`).toEqual(expected);
+        }
+      }
     }
+  });
+
+  it("refuses a row insertion whose table's header around its rows has changed since it was queued", () => {
+    let header = (rows: number) => buildTab([
+      para("Before"), { ...grid(["H1", "H2"], ["a", "b"], ["c", "d"]), ...(rows > 0 ? { headerRows: rows } : {}) },
+      para("After")]);
+    let refused =
+      "insertTableRows: the table's pinned header rows around the new rows have changed since " +
+      "this change was queued, which getContent() does not show.";
+    for (let [queued, applied] of [[0, 1], [1, 0], [1, 2]] as const) {
+      let change = { ...addRows(docTabToMarkdown(header(queued)), 0, 0, [["x", "y"]]), pinned: queued };
+      // Its table reads the same: the pin is all that moved.
+      expect(thrownMessage(() => tableChangeRequests(docTabToMarkdown(header(applied)), change))).toBe(refused);
+      expect(() => tableChangeRequests(docTabToMarkdown(header(queued)), change)).not.toThrow();
+    }
+    // Below the header, a header of another size changes nothing of the new rows.
+    let below = { ...addRows(docTabToMarkdown(header(1)), 0, 2, [["x", "y"]]), pinned: 0 };
+    expect(() => tableChangeRequests(docTabToMarkdown(header(2)), below)).not.toThrow();
   });
 
   it("refuses to build a merge of a header row with a row below the header", () => {

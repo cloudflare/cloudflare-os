@@ -15,7 +15,7 @@ import { DocRunRenderError, markdownHeld } from "./docs-store";
 import type { DocStore, DocVersion, StoredRun } from "./docs-store";
 import {
   checkLookTarget, checkTabTableCells, checkTableTarget, chipCopies, hiddenContent, insertedTableNumber,
-  pinsHeader,
+  headerAfterInsertion, pinnedAround,
   lineAbove, MAX_TABLE_COLUMNS, replacementPath, tableIdentity, tableShape, tableSize, tabOf,
 } from "./docs-tables";
 import type { HiddenContent, LookChange, TableChange } from "./docs-tables";
@@ -481,9 +481,26 @@ function insertionChange(tab: TabReading, call: InsertionCall): ExistingTableCha
     ? {
       type: "insertTableRows", at, cells: storedCells(given, count, columns), expected,
       copies: chipCopies(target, at < rows ? at : rows - 1),
-      pins: pinsHeader(target, at < rows ? at : rows - 1),
+      pinned: pinnedAround(target, at < rows ? at : rows - 1),
     }
     : { type: "insertTableColumns", at, cells: storedCells(given, rows, count), expected };
+}
+
+/**
+ * What a row insertion's card says of the header of `pinned` rows it goes among, pinned again
+ * after the rows are added: which new rows it pins and how many rows it no longer does. Nothing
+ * where the rows go below the header.
+ */
+function headerNote(pinned: number, at: number, count: number): string {
+  let { added, dropped } = headerAfterInsertion(pinned, at, count);
+  if (added === 0) return "";
+  let pins = added === count
+    ? count === 1 ? "the new row is pinned and repeats" : "the new rows are pinned and repeat"
+    : added === 1 ? "the first new row is pinned and repeats"
+    : `the first ${added} new rows are pinned and repeat`;
+  let drops = dropped === 1 ? ", and 1 row that was in it no longer does"
+    : `, and ${dropped} rows that were in it no longer do`;
+  return ` The header stays ${plural(pinned, "row")}: ${pins} at the top of each page${drops}.`;
 }
 
 /** The change that deletes rows or columns of the table a call names. */
@@ -774,11 +791,7 @@ function existingTableCard(
             `${copies.length === 1 ? "column" : "columns"} ${copies.join(", ")} of the row ` +
             `beside ${them}: a dropdown with its first choice, and an empty placeholder for ` +
             "any other chip.") +
-        (pinsHeader(target, reference)
-          ? (cells.length === 1
-            ? " It is pinned as a header row, as the row beside it is, and repeats at the top of each page."
-            : " They are pinned as header rows, as the row beside them is, and repeat at the top of each page.")
-          : ""));
+        headerNote(pinnedAround(target, reference), at, cells.length));
       if (!empty) description.json("New rows", cells);
       // Below the first row, the first row's field already shows the row above.
       let rowAbove = at >= 2 ? rowsHtml(at - 1, at - 1) : undefined;

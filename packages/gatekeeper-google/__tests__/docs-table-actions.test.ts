@@ -257,7 +257,7 @@ describe("the stored change", () => {
     let from = read(STATUS());
     let expected = tableAt(from.tab, 0);
     expect(prepare(from, addRows({ table: 0, cells: [["a", "b"]] })).change)
-      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected, copies: "--", pins: false });
+      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected, copies: "--", pinned: 0 });
     expect(prepare(from, addColumns({ table: 0, at: 1 })).change)
       .toStrictEqual({ type: "insertTableColumns", at: 1, cells: [[""], [""], [""]], expected });
     expect(prepare(from, dropRows({ table: 0, at: 2 })).change)
@@ -958,13 +958,23 @@ describe("cards", () => {
       `Insert 1 row in a table of tab "Main" (tab-1), before its row 1. They are empty.${was(1)}`);
   });
 
-  it("says new rows beside a pinned header row are pinned with it", () => {
-    let pinned = read(buildTab([para("Before"), { ...grid(["H1", "H2"], ["a", "b"]), headerRows: 1 }, para("After")]));
-    expect(card(addRows({ table: 0, at: 0, cells: [["x", "y"]] }), pinned).description).toBe(
-      "Insert 1 row in a table of tab \"Main\" (tab-1), before its row 1. It is pinned as a header " +
-      `row, as the row beside it is, and repeats at the top of each page.${was(1)}`);
-    expect(card(addRows({ table: 0, at: 1 }), pinned).description).toBe(
-      `Insert 1 row in a table of tab "Main" (tab-1), before its row 2. They are empty.${was(1)}`);
+  it("says which new rows a pinned header takes in, and which rows it lets go", () => {
+    let pinned = (rows: number) => read(buildTab([
+      para("Before"), { ...grid(["H1", "H2"], ["a", "b"], ["c", "d"]), headerRows: rows }, para("After")]));
+    let lines = (at: number, count: number, header = 1) => card(
+      addRows({ table: 0, at, ...(count > 1 ? { count } : {}), cells: [["x", "y"]] }), pinned(header)).description;
+    expect(lines(0, 1)).toBe(
+      "Insert 1 row in a table of tab \"Main\" (tab-1), before its row 1. The header stays 1 row: " +
+      `the new row is pinned and repeats at the top of each page, and 1 row that was in it no longer does.${was(1)}`);
+    expect(lines(0, 2)).toContain(
+      "The header stays 1 row: the first new row is pinned and repeats at the top of each page, " +
+      "and 1 row that was in it no longer does.");
+    expect(lines(1, 1, 2)).toContain(
+      "The header stays 2 rows: the new row is pinned and repeats at the top of each page, and 1 " +
+      "row that was in it no longer does.");
+    // Below the header, and after a table whose every row is pinned, the header is as it was.
+    expect(lines(1, 1)).not.toContain("header");
+    expect(lines(3, 1, 3)).not.toContain("header");
   });
 
   it("describes deleted columns, with their cells row by row and without indentation", () => {

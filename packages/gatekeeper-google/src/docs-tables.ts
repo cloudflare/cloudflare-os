@@ -69,7 +69,7 @@ export type HiddenContent = {
 /** A change to a tab's tables, as stored with its pending action. */
 export type TableChange =
   | { type: "insertTable"; rows: number; columns: number; cells: string[][]; after?: string }
-  | ({ type: "insertTableRows"; at: number; cells: string[][]; copies?: string; pins?: boolean } & TableRef)
+  | ({ type: "insertTableRows"; at: number; cells: string[][]; copies?: string; pinned?: number } & TableRef)
   | ({ type: "insertTableColumns"; at: number; cells: string[][] } & TableRef)
   | ({ type: "deleteTableRows"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTableColumns"; at: number; count: number } & TableRef & HiddenContent)
@@ -162,13 +162,25 @@ export function chipCopies(target: TableMapping, reference: number): string {
 }
 
 /**
- * Whether rows added beside row `reference` of the table `target` go among its pinned header
- * rows, and so are pinned with them: Google moves the pin, so the batch pins the count again. The
- * approval card says so and the queued change records it, as for `chipCopies`: the table's HTML
- * does not show a pin.
+ * How many rows the table `target` pins as its header, where rows added beside its row
+ * `reference` go among them, or 0: the batch then pins that count again, so the first rows of the
+ * table, new ones included, are the header. The approval card says which rows that pins and
+ * unpins, and the queued change records it, as for `chipCopies`: the table's HTML does not show a
+ * pin.
  */
-export function pinsHeader(target: TableMapping, reference: number): boolean {
-  return target.pinnedRows !== undefined && reference < target.pinnedRows;
+export function pinnedAround(target: TableMapping, reference: number): number {
+  return target.pinnedRows !== undefined && reference < target.pinnedRows ? target.pinnedRows : 0;
+}
+
+/**
+ * Of `count` rows added at row `at` among a header of `pinned` rows that is pinned again after
+ * them: how many of the new rows are in the header, and how many rows that were are no longer.
+ */
+export function headerAfterInsertion(
+  pinned: number, at: number, count: number,
+): { added: number; dropped: number } {
+  if (at >= pinned) return { added: 0, dropped: 0 };
+  return { added: Math.min(at + count, pinned) - at, dropped: pinned - Math.max(at, pinned - count) };
 }
 
 /**
@@ -402,13 +414,13 @@ function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: n
         "does not show, since this change was queued.");
     }
   }
-  if (change.type === "insertTableRows" && change.pins !== undefined) {
+  if (change.type === "insertTableRows" && change.pinned !== undefined) {
     let rows = render.sourceMap.tables[table].rows.length;
     let reference = change.at < rows ? change.at : rows - 1;
-    if (pinsHeader(render.sourceMap.tables[table], reference) !== change.pins) {
+    if (pinnedAround(render.sourceMap.tables[table], reference) !== change.pinned) {
       throw new Error(
-        `${op}: the row the new rows take after has been pinned as a header row, or unpinned, ` +
-        "since this change was queued, which getContent() does not show.");
+        `${op}: the table's pinned header rows around the new rows have changed since this ` +
+        "change was queued, which getContent() does not show.");
     }
   }
   if (change.type === "insertTableRows" || change.type === "insertTableColumns" ||
