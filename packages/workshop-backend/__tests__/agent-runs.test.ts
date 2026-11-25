@@ -77,18 +77,19 @@ async function spawn(impl: any, spawnerId: number, caller: GatekeeperCaller, tit
 }
 
 describe("agent runs", () => {
-  it("record the gadget that started one, and none when a chat's agent did",
+  it("record the gadget or the chat whose agent started one",
       () => withClient(async impl => {
     seedGadget(impl, 100);
     let spawnerId = await addSpawner(impl, "Triage");
 
     let fromChat = await spawn(impl, spawnerId, { from: "agent", chatId: 7 }, "From a chat");
-    expect(fromChat).toMatchObject({ spawnerId });
+    expect(fromChat).toMatchObject({ spawnerId, spawnedByChatId: 7 });
     expect(fromChat).not.toHaveProperty("spawnedByGadgetId");
 
     // A hook firing into a gadget wakes its code as kept, whose bindings call as the gadget.
     let fromGadget = await spawn(impl, spawnerId, { from: "gadget", gadgetId: 100 }, "Woken");
     expect(fromGadget).toMatchObject({ spawnerId, spawnedByGadgetId: 100 });
+    expect(fromGadget).not.toHaveProperty("spawnedByChatId");
   }));
 
   it("are their spawner's, and each spawner is listed with every gadget bound to it",

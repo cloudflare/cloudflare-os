@@ -5808,6 +5808,12 @@ export type AiChatMetadata = {
   spawnedByGadgetId?: WorkpieceId;
 
   /**
+   * If this was started from an agent spawner by the agent of another chat, from its code, that
+   * chat. Absent when a gadget or person started it, and on chats spawned before it was recorded.
+   */
+  spawnedByChatId?: number;
+
+  /**
    * Present while the agent's turn is stopped on a decision only a user can make: an action it
    * asked to wait for, a connection request, or a restricted web fetch, still pending. Derived
    * server-side from the chat's log and delivered on metadata updates; never submitted by clients.

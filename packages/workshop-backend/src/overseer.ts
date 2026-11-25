@@ -16273,6 +16273,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
     let spawnedByGadgetId = callerGadgetId(this.caller);
+    let spawnedByChatId = this.caller.from === "agent" ? this.caller.chatId : undefined;
     let meta: AiChatMetadata = {
       id: chatId,
       title,
@@ -16282,6 +16283,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
       ...(spawnedByGadgetId !== undefined ? {spawnedByGadgetId} : {}),
+      ...(spawnedByChatId !== undefined ? {spawnedByChatId} : {}),
     };
     this.impl.storage.chatMeta.put(meta);
 
