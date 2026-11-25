@@ -1847,9 +1847,10 @@ function updateTextStyle(
     // it. A link is the exception, and with it the look a link brings: the break after
     // linked text stays as it was.
     let lineBreak = paragraph.elements.at(-1)?.textRun;
-    if (end === endIndex - 1 && lineBreak) {
+    let reaching = [...named].filter(field => field !== "link");
+    if (end === endIndex - 1 && lineBreak && reaching.length > 0) {
       if (holdsSuggestion(lineBreak)) notModelled(SUGGESTED_TEXT_STYLE);
-      restyle(lineBreak.textStyle, [...named].filter(field => field !== "link"));
+      restyle(lineBreak.textStyle, reaching);
     }
   }
 }

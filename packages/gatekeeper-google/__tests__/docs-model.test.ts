@@ -849,10 +849,11 @@ describe("what the model does not cover", () => {
       bullets(20, 21, BULLETED), deleteBullets(20, 21), deleteRange(26, 28),
       insertText(23, "split\n"),
     ]) expectNotModelled(tab(), request);
-    // Beside them, and inside the paragraph whose style a suggestion changes, they are taken.
+    // Beside them, and inside the paragraph whose style a suggestion changes, they are taken; so
+    // is a link up to the suggested line break, which Google sets on no break.
     for (let request of [
       deleteRange(1, 5), styleText(1, 6, { bold: true }, "bold"), insertText(23, "more"),
-      deleteRange(21, 23),
+      deleteRange(21, 23), styleText(27, 31, { link: LINK_A }, "link"),
     ]) expect(() => applyDocsRequests(tab(), [request])).not.toThrow();
   });
 

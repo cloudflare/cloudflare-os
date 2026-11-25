@@ -829,10 +829,12 @@ export function refuseSuggestionsTouched(
       continue;
     }
     if ("updateTextStyle" in request) {
-      let { startIndex: from, endIndex: to } = request.updateTextStyle.range;
+      let { range: { startIndex: from, endIndex: to }, fields } = request.updateTextStyle;
+      // A style that ends where a paragraph's final line break begins reaches the break too,
+      // but for a link: Google sets none on a line break.
+      let reachesBreak = fields.split(",").some(field => field !== "link");
       for (let paragraph of held) {
-        // A style that ends where a paragraph's final line break begins reaches the break too.
-        let reach = to === paragraph.end - 1 ? paragraph.end : to;
+        let reach = reachesBreak && to === paragraph.end - 1 ? paragraph.end : to;
         if (paragraph.runs.some(run => run.start < reach && from < run.end)) {
           throw suggestionRefusal(op);
         }

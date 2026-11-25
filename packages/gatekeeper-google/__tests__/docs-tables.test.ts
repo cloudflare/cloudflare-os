@@ -1803,6 +1803,25 @@ describe("an edit of text that holds suggestions", () => {
     }
   });
 
+  it("repoints a link in a cell up to a line break a suggestion restyles", () => {
+    // Google sets no link on a line break, so a link-only style leaves the suggestion as it was.
+    let cell = () => buildTab([para("Before"), { table: [[{
+      paragraphs: [
+        { runs: [{ text: "Label", style: url("https://a.example") }, { text: "\n", suggested: "style" }] },
+        { runs: ["Second\n"] },
+      ],
+    }, "c\n"]] }, para("After")]);
+    let link = (destination: string) => `<p><a href="${destination}">Label</a></p>`;
+    let requests = built(replace(link("https://a.example"), link("https://b.example"), true), cell());
+    expect(requests).toEqual([{
+      updateTextStyle: {
+        range: { startIndex: 11, endIndex: 16, tabId: "tab-1" },
+        textStyle: url("https://b.example"), fields: "link",
+      },
+    }]);
+    expect(read(applyDocsRequests(cell(), requests)).markdown).toContain(link("https://b.example"));
+  });
+
   it("refuses the deletion of a table whose text came to hold a suggestion, unless it recorded it", () => {
     let table = (cell: CellSpec) => buildTab([para("Before"), { table: [["a\n", cell]] }, para("After")]);
     let plain = () => table("b\n");
