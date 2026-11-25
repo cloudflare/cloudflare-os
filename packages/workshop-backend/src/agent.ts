@@ -2466,6 +2466,25 @@ async function runAgentPass(
       }
     }
   };
+  // Ordinary turns and native compaction may send different slices of the same saved reads.
+  const rejectFileImages = (messages: readonly Message[], error: AgentTurnError): boolean => {
+    const status = error.statusCode;
+    const imageInputError = (status === undefined || status === 200 || status === 400) && /(?:\b|_)images?(?:\b|_)/i.test(error.message);
+    if (status !== 413 && !imageInputError) return false;
+    const refused = new Map<number, Set<string>>();
+    for (const msg of messages) if (msg.role === "toolResult") {
+      for (const part of msg.content) if (part.type === "image") {
+        const read = fileImageReads.get(part);
+        if (!read) continue;
+        let ids = refused.get(read.sequence);
+        if (!ids) refused.set(read.sequence, ids = new Set());
+        ids.add(read.id);
+      }
+    }
+    if (refused.size === 0) return false;
+    hooks.rejectChatFileImages(chatId, refused);
+    return true;
+  };
   let attachmentsFitFrom: number | undefined;
   // Recover the active prompt from durable history after an image step, including after restart.
   const unfinishedTurn = chatMessages.slice(chatMessages.findLastIndex(msg =>
@@ -4834,11 +4853,11 @@ async function runAgentPass(
     }
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
+      const keptFrom = projection.findIndex(({sequence}) =>
+        sequence !== undefined && sequence >= compactedTo);
+      const prefix = modelMessages.slice(0, keptFrom);
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
-        const keptFrom = projection.findIndex(({sequence}) =>
-          sequence !== undefined && sequence >= compactedTo);
-        const prefix = modelMessages.slice(0, keptFrom);
         // Native compaction sends the original prefix, before the omission rewrite below.
         // If its media exceeds the same request limits, summarize the transcript instead.
         const images = prefix.flatMap(msg => Array.isArray(msg.content)
@@ -4897,6 +4916,12 @@ async function runAgentPass(
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
         abortSignal.throwIfAborted();
+        if (native && error instanceof AgentTurnError && rejectFileImages(prefix, error)) {
+          // Rebuild automatic turns from the durable omission marker before sending more pixels.
+          // An explicit command still surfaces its failure; Retry uses the transcript summary.
+          if (!compactionTurn) return {type: "reloadForCompaction"};
+          throw new AgentTurnError(`${error.message}\n\nRetrying keeps these image inputs as workspace files instead.`, error.statusCode);
+        }
         if (compactionTurn) throw error;
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
@@ -5046,24 +5071,10 @@ async function runAgentPass(
     // Those go by path from now on. The model answered nothing after them, so no thinking
     // depends on how they were shown. Rejected historical file reads instead invalidate dependent
     // thinking through the replay markers above.
-    // Admission can omit a file batch: only images actually sent can be refused.
-    const sentImages = new Set(modelMessages.flatMap(msg => msg.role === "toolResult"
-      ? msg.content.filter(part => part.type === "image") : []));
-    const refusedFileImages = new Map<number, Set<string>>();
-    for (const [part, {sequence, id}] of fileImageReads) {
-      if (!sentImages.has(part)) continue;
-      let reads = refusedFileImages.get(sequence);
-      if (!reads) refusedFileImages.set(sequence, reads = new Set());
-      reads.add(id);
-    }
     const refuseAttachments = !stepFinished && (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
-    // A later input failure can involve history accepted by a different model or a larger tool
-    // result. Preserve pixels on credential/configuration and server failures.
-    const imageInputError = (statusCode === undefined || statusCode === 200 || statusCode === 400) && /(?:\b|_)images?(?:\b|_)/i.test(message);
-    const refuseFileImages = (statusCode === 413 || imageInputError) && refusedFileImages.size > 0;
+    const refuseFileImages = rejectFileImages(modelMessages, error);
     if (refuseAttachments || refuseFileImages) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
-      if (refuseFileImages) hooks.rejectChatFileImages(chatId, refusedFileImages);
       const retryHint = refuseAttachments
         ? "Retrying sends this message's images and PDFs as workspace files instead." +
           (refuseFileImages ? " Saved file images are omitted too." : "")

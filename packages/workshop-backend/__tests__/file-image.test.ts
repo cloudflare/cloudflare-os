@@ -583,6 +583,52 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
+  it.each([[400, false], [413, false], [401, false], [400, true]] as const)(
+    "recovers from native-compaction image refusals: status=%s automatic=%s", (status, automatic) => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId, blob} = await setup(impl);
+    recordReads(impl, chatId, blob.oid, 1);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Finish"}]);
+    impl.addChatMessages(chatId, AUTHOR, [{type: "message", message: "Done ".repeat(20_000)}]);
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, totalTokens: automatic ? 1_000_000 : 40_000});
+    if (!automatic) impl.addChatMessages(chatId, USER, [{type: "slashCommand",
+      request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+    else impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const config = {provider: "anthropic" as const, model: "claude-sonnet-5-5", apiToken: "fixture", contextWindow: 128_000};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const actualStream = handle.stream;
+    const payloads: string[] = [];
+    handle.stream = (model, context, options) => actualStream(model, context, {...options, maxRetries: 0,
+      fetch: async (input, init) => {
+        payloads.push(await new Request(input, init).text());
+        if (payloads.length === 1) return Response.json({type: "error", error: {
+          type: status === 401 ? "authentication_error" : "invalid_request_error", message: "Could not process image",
+        }}, {status});
+        const block = JSON.parse(payloads.at(-1)!).compaction
+          ? {type: "compaction", content: "Summary", signature: "fixture"} : {type: "text", text: "Summary"};
+        return new Response([
+          {type: "message_start", message: {id: "message", type: "message", role: "assistant", model: config.model,
+            content: [], usage: {input_tokens: 100, output_tokens: 1}}},
+          {type: "content_block_start", index: 0, content_block: block},
+          {type: "content_block_stop", index: 0},
+          {type: "message_delta", delta: {stop_reason: "end_turn"}, usage: {output_tokens: 10}},
+          {type: "message_stop"},
+        ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+          {headers: {"content-type": "text/event-stream"}});
+      },
+    });
+    const run = () => runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    if (automatic) await run();
+    else {
+      await expect(run()).rejects.toThrow("Could not process image");
+      await run(); // Retry the same explicit command, without adding another prompt.
+    }
+    expect(payloads[0]).toContain(PNG.toBase64());
+    expect(JSON.parse(payloads[0]).compaction).toBeDefined();
+    expect(payloads[1].includes(PNG.toBase64())).toBe(status === 401);
+    expect(Boolean(JSON.parse(payloads[1]).compaction)).toBe(status === 401);
+    expect(impl.loadChatHistory(chatId).checkpoint).toMatchObject({summary: "Summary"});
+  }));
+
   it.each([["manual", false, false, false], ["manual", true, false, false], ["manual", true, true, false],
     ["manual", false, false, true], ["default", false, false, false], ["required", true, false, false]] as const)(
     "preserves Claude thinking across a tool turn: mode=%s rewritten=%s steered=%s switched=%s", (mode, rewritten, steered, switched) => inKernel(crypto.randomUUID(), async impl => {
