@@ -2459,7 +2459,8 @@ async function runAgentPass(
     msg.type === "message" && msg.author.type === "agent" && !msg.toolCalls?.length) + 1);
   let prompt = unfinishedTurn.some(msg => msg.type === "message" &&
     msg.toolCalls?.some(call => call.toolName === "readFile" && call.image))
-    ? unfinishedTurn.findLast(startsAgentTurn)?.sequence : undefined;
+    ? (unfinishedTurn.findLast(startsAgentTurn) ??
+      unfinishedTurn.find(msg => msg.type === "message" && msg.steered))?.sequence : undefined;
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   // Preserve the active prompt's references before spending its media budget on tool images.
   const promptAttachmentIds = new Set<string>();

@@ -189,11 +189,15 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
-  it.each(["chat", "callback"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["chat", "callback", "steer"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
-    if (trigger === "callback") {
+    if (trigger !== "chat") {
       await turn(impl, chatId, []);
-      impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "callback-argument-note", bindingName: "INSPECT_ARGS"}]);
+      if (trigger === "callback") {
+        impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "callback-argument-note", bindingName: "INSPECT_ARGS"}]);
+      } else {
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Still-active steer", steered: true}]);
+      }
     }
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage(Array.from({length: 20}, () => read()), {stopReason: "toolUse"}),
@@ -201,8 +205,8 @@ describe("images read from a worktree", () => {
       fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
     ]);
     const last = requests.at(-1)!;
-    expect(last).toContainEqual({role: "user", content: trigger === "chat" ? "Read the image"
-      : expect.stringContaining("callback-argument-note"), timestamp: expect.any(Number)});
+    expect(last).toContainEqual({role: "user", content: trigger === "callback" ? expect.stringContaining("callback-argument-note")
+      : trigger === "steer" ? "Still-active steer" : "Read the image", timestamp: expect.any(Number)});
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
