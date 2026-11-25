@@ -42,7 +42,7 @@ import type {
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
   estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
-  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat,
+  foldProposedChanges, getModelTokenLimits, isCompactionTurn, shouldCompactChat, startsAgentTurn,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import {
@@ -2473,9 +2473,9 @@ async function runAgentPass(
   }
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
+    if (!answered && startsAgentTurn(msg)) prompt ??= msg.sequence;
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
-    else if (!answered) prompt ??= msg.sequence;
     if (msg === activePrompt && promptAttachmentIds.size > 0) continue;
     // File-tool images share attachment admission, byte/count limits and compaction. Their
     // immutable references let this pass choose what fits before opening any image blobs.

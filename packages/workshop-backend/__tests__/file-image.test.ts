@@ -189,15 +189,20 @@ describe("images read from a worktree", () => {
     expect(results(last).at(-1)!.content.some(part => part.type === "image")).toBe(true);
   }));
 
-  it("keeps the active user prompt verbatim when file images exceed the media limit", () => inKernel(crypto.randomUUID(), async impl => {
+  it.each(["chat", "callback"])("keeps the active %s prompt verbatim when file images exceed the media limit", trigger => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
+    if (trigger === "callback") {
+      await turn(impl, chatId, []);
+      impl.addChatMessages(chatId, AUTHOR, [{type: "agentCallback", methodName: "inspect", argsSummary: "callback-argument-note", bindingName: "INSPECT_ARGS"}]);
+    }
     const {requests} = await scriptedTurn(impl, chatId, [
       fauxAssistantMessage(Array.from({length: 20}, () => read()), {stopReason: "toolUse"}),
       fauxAssistantMessage([read()], {stopReason: "toolUse"}),
       fauxAssistantMessage(fauxText("Done")), fauxAssistantMessage(fauxText("Done")),
     ]);
     const last = requests.at(-1)!;
-    expect(last).toContainEqual({role: "user", content: "Read the image", timestamp: expect.any(Number)});
+    expect(last).toContainEqual({role: "user", content: trigger === "chat" ? "Read the image"
+      : expect.stringContaining("callback-argument-note"), timestamp: expect.any(Number)});
     expect(last.flatMap(msg => Array.isArray(msg.content) ? msg.content.filter(part => part.type === "image") : [])).toHaveLength(1);
   }));
 
