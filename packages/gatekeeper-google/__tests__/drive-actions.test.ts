@@ -158,8 +158,8 @@ function harness() {
     createdTime: "2026-10-20T10:00:01.000Z", resolved: false, deleted: false, replies: [],
   };
   let api = {
-    getScopeNodes: vi.fn<DriveApi["getScopeNodes"]>(
-      async ids => ids.map(id => nodes[id] && structuredClone(nodes[id]))),
+    getScopeNodes: vi.fn<DriveApi["getScopeNodes"]>(async (ids, options) => ids.map(id =>
+      nodes[id] && { ...structuredClone(nodes[id]), ...(id === options?.nameOf ? { name: names[id] } : {}) })),
     getComment: vi.fn<DriveApi["getComment"]>(unexpected),
     listComments: vi.fn<DriveApi["listComments"]>(unexpected),
     listReplies: vi.fn<DriveApi["listReplies"]>(unexpected),
@@ -189,9 +189,6 @@ function harness() {
       names[fileId] = name;
       return { id: fileId, name };
     }),
-    getFile: vi.fn<DriveApi["getFile"]>(async fileId => ({
-      id: fileId, name: names[fileId], parents: nodes[fileId].parents, trashed: false,
-    })),
   };
   let attempts = new Map<number, WriteAttempt>();
   let host: DriveWritesHost & DriveEditorsHost = {

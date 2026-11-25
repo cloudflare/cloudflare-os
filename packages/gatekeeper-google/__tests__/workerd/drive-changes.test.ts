@@ -387,14 +387,18 @@ class DriveProvider {
 
   #batch(body: string): Response {
     let boundary = "changes_batch";
-    let ids = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?/g)]
-      .map(match => decodeURIComponent(match[1]));
-    let parts = ids.map((id, index) => {
+    let asked = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?fields=([^&]+)/g)]
+      .map(match => ({ id: decodeURIComponent(match[1]), fields: decodeURIComponent(match[2]) }));
+    let parts = asked.map(({ id, fields }, index) => {
       let held = this.files.get(id);
+      // As Drive does, a name only for a part whose mask asks for one.
+      let json = held && this.#fileJson(id, held);
+      let { name: _name, ...unnamed } = json ?? { name: "" };
+      let shown = json && (fields.split(",").includes("name") ? json : unnamed);
       return [
         `--${boundary}`, "Content-Type: application/http", `Content-ID: <response-item-${index}>`,
         "", held ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found", "Content-Type: application/json",
-        "", held ? JSON.stringify(this.#fileJson(id, held)) : "{}",
+        "", shown ? JSON.stringify(shown) : "{}",
       ].join("\r\n");
     });
     return new Response(`${parts.join("\r\n")}\r\n--${boundary}--\r\n`, {

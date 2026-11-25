@@ -110,6 +110,11 @@ export type DriveFile = {
  */
 export type DriveScopeNode = {
   id: string;
+  /**
+   * The file's name: present only for the one file a read names in `nameOf`, a rename's target,
+   * so that no folder on a path proved along it is read for its name.
+   */
+  name?: string;
   mimeType?: string;
   parents?: string[];
   driveId?: string;
@@ -689,7 +694,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   }
   return {
     id: fileId,
-    ...optionalFields(value, ["mimeType", "driveId"]),
+    ...optionalFields(value, ["name", "mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
@@ -1927,17 +1932,26 @@ export class DriveApi {
    * `undefined` marks a file-specific denial (403/404). API disabled, quota, an account-wide policy
    * block, malformed multipart, a bad Content-ID, and a body answering for another file all throw,
    * so none of them can be read as "not a descendant" and quietly narrow a listing. A 403 whose
-   * reason Google does not document as account-wide still counts as a denial.
+   * reason Google does not document as account-wide still counts as a denial. `nameOf` is the one
+   * file whose name is read too, in the same batch: a rename's target.
    */
-  async getScopeNodes(fileIds: readonly string[]): Promise<(DriveScopeNode | undefined)[]> {
-    return this.#batchGetFiles(fileIds, DRIVE_SCOPE_NODE_FIELDS, (part, fileId) =>
-      batchPartAllowed(part) ? parseDriveScopeNode(part.body, fileId) : undefined);
+  async getScopeNodes(
+    fileIds: readonly string[], options: { nameOf?: string } = {},
+  ): Promise<(DriveScopeNode | undefined)[]> {
+    let { nameOf } = options;
+    return this.#batchGetFiles(fileIds,
+      fileId => fileId === nameOf ? `${DRIVE_SCOPE_NODE_FIELDS},name` : DRIVE_SCOPE_NODE_FIELDS,
+      (part, fileId) =>
+        batchPartAllowed(part) ? parseDriveScopeNode(part.body, fileId) : undefined);
   }
 
-  /** Runs `files.get` batches of at most 100 IDs, mapping each placed part back to its ID. */
+  /**
+   * Runs `files.get` batches of at most 100 IDs, mapping each placed part back to its ID. `fields`
+   * is every part's mask, or the mask of each file by its ID.
+   */
   async #batchGetFiles<T>(
     fileIds: readonly string[],
-    fields: string,
+    fields: string | ((fileId: string) => string),
     mapPart: (part: BatchAccessPart, fileId: string, index: number) => T,
   ): Promise<T[]> {
     let result: T[] = [];
@@ -1950,7 +1964,7 @@ export class DriveApi {
   }
 
   async #batchGetChunk(
-    fileIds: readonly string[], fields: string,
+    fileIds: readonly string[], fields: string | ((fileId: string) => string),
   ): Promise<BatchAccessPart[]> {
     let boundary = `gadgets_drive_${crypto.randomUUID()}`;
     let parts = fileIds.map((fileId, index) => [
@@ -1958,7 +1972,8 @@ export class DriveApi {
       "Content-Type: application/http",
       `Content-ID: <item-${index}>`,
       "",
-      `GET /drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}` +
+      `GET /drive/v3/files/${encodeURIComponent(fileId)}?fields=${
+        encodeURIComponent(typeof fields === "string" ? fields : fields(fileId))}` +
         "&supportsAllDrives=true HTTP/1.1",
       "Accept: application/json",
       "",

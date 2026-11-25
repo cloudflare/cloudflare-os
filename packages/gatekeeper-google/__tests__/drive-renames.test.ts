@@ -2,7 +2,7 @@ import { ActionJournal, defineActions } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DriveApiDisabledError, DriveApiRequestError, FOLDER_MIME_TYPE, type DriveApi, type DriveFile,
+  DriveApiDisabledError, DriveApiRequestError, FOLDER_MIME_TYPE, type DriveApi,
   type DriveScopeNode,
 } from "../src/drive-api";
 import {
@@ -128,19 +128,12 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     return { id: fileId, name };
   };
   let api = {
-    getScopeNodes: vi.fn<DriveApi["getScopeNodes"]>(async ids => ids.map(id => {
+    // As Drive answers a batch: a name only for the one file the read names.
+    getScopeNodes: vi.fn<DriveApi["getScopeNodes"]>(async (ids, options) => ids.map(id => {
       let node = nodes[id];
-      return node && !hidden.has(id) ? structuredClone(node) : undefined;
+      if (!node || hidden.has(id)) return undefined;
+      return { ...structuredClone(node), ...(id === options?.nameOf ? { name: names[id] } : {}) };
     })),
-    getFile: vi.fn<DriveApi["getFile"]>(async (fileId): Promise<DriveFile> => {
-      let node = nodes[fileId];
-      if (!node || hidden.has(fileId)) throw new DriveApiRequestError(404, "notFound");
-      return {
-        id: fileId, name: names[fileId],
-        ...(node.parents ? { parents: [...node.parents] } : {}),
-        ...(node.trashed === undefined ? {} : { trashed: node.trashed }),
-      };
-    }),
     getComment: vi.fn<DriveApi["getComment"]>(unexpected),
     listComments: vi.fn<DriveApi["listComments"]>(unexpected),
     listReplies: vi.fn<DriveApi["listReplies"]>(unexpected),
@@ -334,53 +327,29 @@ describe("Drive rename proofs and checks at apply", () => {
     expect(await both.apply(id)).toBe(ALREADY_RENAMED);
   });
 
-  // The name is read before the scope proof, so the proof is the last read before the send: what
-  // moves out of the binding, goes in the trash or disappears while the name is read is not
-  // renamed.
-  it("proves the scope after reading the name, so a change during that read is caught", async () => {
-    let cases: [string, DriveBindingScope, DriveRenameActions["renameFile"], string,
-      (run: ReturnType<typeof harness>) => void][] = [
-      ["moved out of the folder", AT_R, renameFFromA(), OUT_OF_SCOPE,
-        run => { run.nodes.F = file("F", "R"); }],
-      // The child keeps its parent: the folder it is in leaves the bound root.
-      ["its folder moved off the saved path", AT_R, renameFFromA(), OUT_OF_SCOPE,
-        run => { run.nodes.A = folder("A", "elsewhere"); }],
-      ["the positioned folder moved", AT_R, renameA(), OUT_OF_SCOPE,
-        run => { run.nodes.A = folder("A", "elsewhere"); }],
-      ["put in the trash", ACCOUNT, renameF(), FILE_IN_TRASH,
-        run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
-      ["put in the trash, on a folder binding", AT_R, renameFFromA(), OUT_OF_SCOPE,
-        run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
-      ["gone", ACCOUNT, renameF(), OUT_OF_SCOPE, run => run.hide("F")],
-    ];
-    for (let [what, scope, payload, refusal, change] of cases) {
+  // A scope node carries no name, except the one a read names: a rename's target is named in the
+  // batch that proves the scope, so its name and where it is are one read's, and no folder on the
+  // path is read for its name.
+  it("reads the target's name in the batch that proves its scope, and no other name", async () => {
+    for (let [scope, payload, batch] of [
+      [ACCOUNT, renameF(), ["F"]], [FILE_F, renameF(), ["F"]],
+      [AT_R, renameFFromA(), ["R", "A", "F"]], [AT_R, renameA(), ["R", "A"]],
+    ] as const) {
+      let what = `${scope.kind} ${payload.fileId}`;
       let run = harness(scope);
       let id = await run.submit(payload);
-      let readName = run.api.getFile.getMockImplementation()!;
-      run.api.getFile.mockImplementationOnce(async fileId => {
-        let read = await readName(fileId);
-        change(run);
-        return read;
-      });
-      expect(await run.apply(id), what).toBe(refusal);
-      expect(run.api.renameFile, what).not.toHaveBeenCalled();
-      // The proof came after the name's read.
-      let [nameRead] = run.api.getFile.mock.invocationCallOrder;
-      let [proof] = run.api.getScopeNodes.mock.invocationCallOrder;
-      expect(nameRead, what).toBeLessThan(proof!);
+      expect(await run.apply(id), what).toBeNull();
+      expect(run.api.getScopeNodes.mock.calls, what)
+        .toEqual([[batch, { nameOf: payload.fileId }]]);
     }
 
-    // A file moved within an account binding's reach is still in scope.
-    let account = harness();
-    let id = await account.submit(renameF());
-    let readName = account.api.getFile.getMockImplementation()!;
-    account.api.getFile.mockImplementationOnce(async fileId => {
-      let read = await readName(fileId);
-      account.nodes.F = file("F", "R");
-      return read;
-    });
-    expect(await account.apply(id)).toBeNull();
-    expect(account.names.F).toBe("Budget 2027");
+    // A name Drive leaves out decides nothing: the rename stays pending, with nothing sent.
+    let unnamed = harness();
+    let id = await unnamed.submit(renameF());
+    unnamed.api.getScopeNodes.mockResolvedValueOnce([file("F", "A")]);
+    expect(await unnamed.apply(id)).toBe("Google Drive answered without the file's name");
+    expect(unnamed.journal.get(id)?.state).toBe("pending");
+    expect(unnamed.api.renameFile).not.toHaveBeenCalled();
   });
 
   it("asks the access level and the grant again when a rename is approved", async () => {
@@ -433,7 +402,7 @@ describe("Drive rename sends and their markers", () => {
       expect(await apply(id), `send ${send}`).toBe(UNCONFIRMED_RENAME);
       expect(api.renameFile, `send ${send}`).toHaveBeenCalledTimes(send);
       // The first approval checks; each later one looks, then checks.
-      expect(api.getFile, `send ${send}`).toHaveBeenCalledTimes(2 * send - 1);
+      expect(api.getScopeNodes, `send ${send}`).toHaveBeenCalledTimes(2 * send - 1);
       expect(journal.get(id)?.state, `send ${send}`).toBe("pending");
     }
     expect(names.F).toBe("Budget 2026");
@@ -491,7 +460,6 @@ describe("Drive rename sends and their markers", () => {
     let unreadable: [string, (api: ReturnType<typeof harness>["api"]) => void][] = [
       ["the part refused", api => { api.getScopeNodes.mockResolvedValueOnce([undefined]); }],
       ["the read refused", api => { api.getScopeNodes.mockRejectedValueOnce(missingScope()); }],
-      ["the name's read refused", api => { api.getFile.mockRejectedValueOnce(missingScope()); }],
     ];
     for (let [what, refuseRead] of unreadable) {
       let { api, journal, attempts, names, submit, apply, refuse, renameThenAnswer } = harness();

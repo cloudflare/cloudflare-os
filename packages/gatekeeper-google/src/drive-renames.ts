@@ -14,7 +14,7 @@ import {
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { MAX_FILE_NAME_LENGTH, oneLineFileName } from "./creation";
-import { isFileInvisible, isInsufficientScope, type DriveScopeNode } from "./drive-api";
+import { isInsufficientScope, type DriveScopeNode } from "./drive-api";
 import {
   driveRefusal, proveTarget, requireWritable, sendOnce, waitWhileRefused,
   type DriveWriteTargetPayload, type DriveWritesHost, type QueuedWrite, type RefusalRow,
@@ -115,25 +115,17 @@ export function hasPendingRename(fileId: string, pending: readonly QueuedWrite[]
 
 /**
  * A rename's file as the binding's scope reaches it now, with its current name, or `undefined`
- * when it is out of scope or invisible.
- *
- * A scope node carries no name, so the name is read first and the scope is proved after it, as
- * the last read before a send: a file, or a folder on a folder binding's saved path, that moves
- * out of the binding while the name is read fails the proof. Nothing of the name's read is used
- * unless the proof holds.
+ * when it is out of scope or invisible. The name is read in the batch that proves the scope, so
+ * the two are one read's.
  */
 async function proveRename(
   host: DriveWritesHost, payload: DriveRenameActions["renameFile"],
 ): Promise<{ file: DriveScopeNode; name: string } | undefined> {
-  let read = await host.api.getFile(payload.fileId).catch((error: unknown) => {
-    if (isInsufficientScope(error) || !isFileInvisible(error)) throw error;
-    return undefined;
-  });
-  let file = await proveTarget(host, payload);
-  if (!file || !read || read.id !== file.id) return undefined;
-  // Either read finding it in the trash is enough: Google renames a file there all the same.
-  let trashed = file.trashed !== false || read.trashed !== false;
-  return { file: { ...file, trashed }, name: read.name };
+  let file = await proveTarget(host, payload, { named: true });
+  if (!file) return undefined;
+  // Not Drive's error class, so the rename is left pending: Drive gives every file a name.
+  if (file.name === undefined) throw new Error("Google Drive answered without the file's name");
+  return { file, name: file.name };
 }
 
 /**

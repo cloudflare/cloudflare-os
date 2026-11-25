@@ -224,7 +224,7 @@ export type DriveWritesHost = {
   api: Pick<DriveApi,
     "getScopeNodes" | "getComment" | "listComments" | "listReplies" | "createComment" |
     "createReply" | "listPermissions" | "createPermission" | "updatePermission" |
-    "deletePermission" | "swapParent" | "renameFile" | "getFile">;
+    "deletePermission" | "swapParent" | "renameFile">;
   /** The Docs API, through which comments that quote a Doc and suggested edits are sent. */
   docs: Pick<GoogleDocsApi,
     "getDocumentWithSuggestions" | "getRevisionId" | "insertComment" | "suggest" |
@@ -269,20 +269,28 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
   ): Promise<T>;
 };
 
+/** The scope nodes of `fileIds`, with the name of `nameOf` among them when one is named. */
+function readScopeNodes(
+  host: Pick<DriveWritesHost, "api">, fileIds: readonly string[], nameOf: string | undefined,
+): Promise<(DriveScopeNode | undefined)[]> {
+  return nameOf === undefined
+    ? host.api.getScopeNodes(fileIds) : host.api.getScopeNodes(fileIds, { nameOf });
+}
+
 /**
  * A folder binding's saved path as it stands now, with the nodes of `extraIds` read in the same
- * batch. `undefined` unless the binding is a folder's, the path starts at its bound root and every
- * saved link still holds.
+ * batch, and the name of `nameOf` with them. `undefined` unless the binding is a folder's, the
+ * path starts at its bound root and every saved link still holds.
  */
 export async function provePath(
   host: Pick<DriveWritesHost, "api" | "scope">, folderIds: readonly string[] | undefined,
-  extraIds: readonly string[],
+  extraIds: readonly string[], nameOf?: string,
 ): Promise<{ path: DriveScopeNode[]; extras: (DriveScopeNode | undefined)[] } | undefined> {
   let scope = host.scope();
   if (scope.kind !== "folder" || !folderIds?.length || folderIds[0] !== scope.folderId) {
     return undefined;
   }
-  let nodes = await host.api.getScopeNodes([...folderIds, ...extraIds]);
+  let nodes = await readScopeNodes(host, [...folderIds, ...extraIds], nameOf);
   if (nodes.length !== folderIds.length + extraIds.length) return undefined;
   let extras = nodes.splice(folderIds.length);
   // Handed the nodes already read, the location check can only refuse.
@@ -294,22 +302,25 @@ export async function provePath(
  * The target as the binding's scope reaches it at apply, or `undefined` when it is out of scope
  * or invisible. A folder binding re-proves every saved link in one batch, and then that
  * the target is a live direct child of the last folder, or, with `self`, that it is that folder.
+ * With `named`, the target's name is read in that same batch, and no other file's.
  */
 export async function proveTarget(
   host: Pick<DriveWritesHost, "api" | "scope">, payload: DriveWriteTargetPayload,
+  options: { named?: true } = {},
 ): Promise<DriveScopeNode | undefined> {
   let scope = host.scope();
+  let nameOf = options.named ? payload.fileId : undefined;
   if (scope.kind !== "folder") {
     // Only a folder binding is positioned at a folder that can be its own target.
     if (payload.self) return undefined;
     if (scope.kind === "file" && payload.fileId !== scope.fileId) return undefined;
-    return (await host.api.getScopeNodes([payload.fileId]))[0];
+    return (await readScopeNodes(host, [payload.fileId], nameOf))[0];
   }
   if (payload.self) {
     if (payload.folderIds?.at(-1) !== payload.fileId) return undefined;
-    return (await provePath(host, payload.folderIds, []))?.path.at(-1);
+    return (await provePath(host, payload.folderIds, [], nameOf))?.path.at(-1);
   }
-  let proved = await provePath(host, payload.folderIds, [payload.fileId]);
+  let proved = await provePath(host, payload.folderIds, [payload.fileId], nameOf);
   let file = proved?.extras[0];
   let parent = proved?.path.at(-1);
   return file && parent && isDirectChild(file, parent) ? file : undefined;

@@ -2111,6 +2111,25 @@ describe("the capabilities a scope node carries for sharing, moves and renames",
     }
   });
 
+  // A rename's target is read for its name in the batch that proves its scope; nothing else in
+  // the batch, the folders of a path among them, is.
+  it("reads the name of the one file it is asked to name, and of no other", async () => {
+    let calls = stubFetch([batchResponse([
+      { status: 200, body: JSON.stringify({ id: "folder-1", mimeType: FOLDER_MIME_TYPE, capabilities: {} }) },
+      { status: 200, body: JSON.stringify({ id: "doc-1", name: "Budget", capabilities: { canRename: true } }) },
+    ])]);
+
+    await expect(api().getScopeNodes(["folder-1", "doc-1"], { nameOf: "doc-1" })).resolves
+      .toStrictEqual([
+        { id: "folder-1", mimeType: FOLDER_MIME_TYPE },
+        { id: "doc-1", name: "Budget", canRename: true },
+      ]);
+    expect(calls[0].body).toContain(
+      `GET /drive/v3/files/folder-1?fields=${encodeURIComponent(SCOPE_MASK)}&supportsAllDrives=true`);
+    expect(calls[0].body).toContain(
+      `GET /drive/v3/files/doc-1?fields=${encodeURIComponent(`${SCOPE_MASK},name`)}&supportsAllDrives=true`);
+  });
+
   it.each(["canShare", "canAddChildren", "canMoveItemWithinDrive", "canRename"])(
     "rejects a %s that is not a boolean instead of guessing", async capability => {
       stubFetch([batchResponse([
