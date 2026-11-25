@@ -76,6 +76,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; public
     },
     listFeaturedBlueprints: async () => [],
     listLibraryBlueprints: async () => [],
+    // Nothing to start with, so the composer offers none as it is written in.
+    listOutputFormats: async () => [],
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {

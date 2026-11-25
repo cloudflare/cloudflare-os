@@ -63,6 +63,11 @@ export type ChatSnapshot =
        */
       agent: { key: string; name: string } | undefined
       /**
+       * The chat whose agent started this one, by its id, where one did
+       * (`AiChatMetadata.spawnedByChatId`). Undefined until the metadata arrives.
+       */
+      startedBy: number | undefined
+      /**
        * The conversation as rows, without the open turn's artefacts (`pinned`): the committed
        * messages, then the messages sent to the running agent that it has not read yet. The
        * array is unchanged while only streaming text moves.
@@ -265,6 +270,7 @@ export class ChatSession {
   #title: string | undefined
   #usage = NO_USAGE
   #agent: { key: string; name: string } | undefined
+  #startedBy: number | undefined
   #requiresParticipation = false
   // Set once the workspace says the chat was deleted: nothing it does after that is shown, and it
   // is not connected to again.
@@ -1046,6 +1052,7 @@ export class ChatSession {
       title: this.#title,
       notificationsRequireParticipation: this.#requiresParticipation,
       agent: this.#agent,
+      startedBy: this.#startedBy,
       usage: this.#usage,
       items: this.#feed.items,
       activity: working ? this.#activity() : undefined,
@@ -1268,6 +1275,7 @@ export class ChatSession {
     if (!sameUsage(this.#usage, usage)) this.#usage = usage
     // A run from before runs named their spawner has no agent to go to.
     this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: chat.spawnerName || 'Agent' } : undefined
+    this.#startedBy = chat.spawnedByChatId
     this.#requiresParticipation = chat.notificationsRequireParticipation === true
     this.#agentActive = chat.activeAgent !== undefined
     this.#awaitingDecision = chat.awaitingDecision === true

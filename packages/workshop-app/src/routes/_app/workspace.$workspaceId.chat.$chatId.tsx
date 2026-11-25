@@ -48,6 +48,9 @@ function WorkspaceChat() {
       router.buildLocation({ ...itemPage(workspaceId, { kind: 'output', workpieceId: output.workpieceId }, isApp(output)), search: { chat: chatId } }).href,
     [router, workspaceId, chatId],
   )
+  // Another chat of the workspace: a run this one's agent started, or the chat that started this.
+  const openChat = useCallback((id: number) => void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: id } }), [navigate, workspaceId])
+  const chatHref = useCallback((id: number) => router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: id } }).href, [router, workspaceId])
   // The connection request being set up, kept as the dialog closes so that it does not change as
   // it goes, and left behind with its chat.
   const at = `${workspaceId}/${chatId}`
@@ -76,6 +79,8 @@ function WorkspaceChat() {
       onOpenSettings={() =>
         navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: {}, state: { fromChat: true } })
       }
+      onOpenChat={openChat}
+      chatHref={chatHref}
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}

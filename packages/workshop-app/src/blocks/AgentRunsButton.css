@@ -1,0 +1,63 @@
+/* The agents' clouds go round a ring seen from a little above: an ellipse, the near side lower,
+   larger, clearer and over the far side. Each cloud animates its own angle and is placed from it
+   by trigonometry, so the path is round rather than drawn between keyframes. */
+
+@property --agent-orbit {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes agent-orbit {
+  to {
+    --agent-orbit: 360deg;
+  }
+}
+
+.agent-orbit {
+  /* The ring's half-width and half-height. */
+  --rx: 8px;
+  --ry: 3px;
+}
+
+/* One cloud alone stays in the middle, as it is. */
+.agent-orbit[data-alone='true'] {
+  --rx: 0px;
+  --ry: 0px;
+}
+
+.agent-orbit[data-alone='true'] .agent-orbit-mark {
+  --near: 1;
+  scale: 1;
+}
+
+.agent-orbit-mark {
+  /* Spread evenly, the first at the front. */
+  --a: calc(var(--agent-orbit) + 90deg + 360deg * var(--i) / var(--n));
+  --near: calc(0.5 + 0.5 * sin(var(--a)));
+  position: absolute;
+  display: grid;
+  line-height: 0;
+  top: 50%;
+  left: 50%;
+  translate: calc(-50% + cos(var(--a)) * var(--rx)) calc(-50% + sin(var(--a)) * var(--ry));
+  scale: calc(0.6 + 0.25 * var(--near));
+  opacity: calc(0.35 + 0.65 * var(--near));
+  filter: blur(calc((1 - var(--near)) * 0.5px));
+  z-index: calc(1 + round(var(--near) * 4));
+  animation: agent-orbit 4.8s linear infinite;
+}
+
+/* Held where they are while none works, rather than gone back to the start. */
+.agent-orbit[data-working='false'] .agent-orbit-mark {
+  animation-play-state: paused;
+}
+
+/* Calm, they go round slower; with motion off they stay where they are spread. */
+:root[data-motion='calm'] .agent-orbit-mark {
+  animation-duration: 7.2s;
+}
+
+:root[data-motion='off'] .agent-orbit-mark {
+  animation: none;
+}

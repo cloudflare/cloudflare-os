@@ -1,4 +1,4 @@
-import { ArrowRight01Icon } from '@/components/icons'
+import { ArrowLeft02Icon, ArrowRight01Icon } from '@/components/icons'
 import { Button, HeaderBubble } from '@gadgets/ui'
 import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
@@ -6,6 +6,8 @@ import { AgentCrumb, type AgentCrumbProps } from './AgentCrumb'
 import { WorkspaceCrumb } from './WorkspaceCrumb'
 
 export type ChatHeaderProps = {
+  /** Back to the chat whose agent started this one, an agent's run, first of all. */
+  back?: { onBack: () => void }
   /** The workspace the chat is in, once it is known. */
   workspace?: {
     id: string
@@ -30,12 +32,18 @@ export type ChatHeaderProps = {
 }
 
 /**
- * A chat's header: the way back to its workspace, and for an agent's run to its agent, then the
- * chat's title, which opens its settings, then the agents its gadgets start. Each is a bubble of
- * its own, so it pops in as the first is set up.
+ * A chat's header: for a run another chat's agent started, the way back to that chat; the way to
+ * its workspace, and for an agent's run to its agent, then the chat's title, which opens its
+ * settings, then the agents its gadgets start. Each is a bubble of its own, so it pops in as the
+ * first is set up.
  */
-export const ChatHeader = ({ workspace, agent, title, onOpenSettings, agents }: ChatHeaderProps) => (
+export const ChatHeader = ({ back, workspace, agent, title, onOpenSettings, agents }: ChatHeaderProps) => (
   <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+    {back && (
+      <HeaderBubble name="back" className="shrink-0">
+        <Button icon={ArrowLeft02Icon} aria-label="Back to the chat that started it" title="Back to the chat that started it" onClick={back.onBack} />
+      </HeaderBubble>
+    )}
     {workspace && <WorkspaceCrumb {...workspace} />}
     {agent && <AgentCrumb {...agent} />}
     {title && (

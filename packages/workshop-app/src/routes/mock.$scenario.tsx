@@ -157,8 +157,12 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('chats')
   const openWorkspace = () => {
     setSettings(false)
+    setThread(undefined)
     setWorkspace(true)
   }
+  // Another chat of the workspace in the scenario's chat's place: a run its agent started.
+  const [thread, setThread] = useState<number>()
+  const openChat = (chatId: number) => setThread(chatId === CHAT.chatId ? undefined : chatId)
   // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
   const [expanded, setExpanded] = useState(false)
   // Filling the window, beside the chat or as the page, and taking all of the chat's room beside
@@ -259,9 +263,24 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
             setSettings(false)
           }}
         />
+      ) : thread !== undefined ? (
+        // A run the scenario's agent started, in the chat's place, which its header goes back to.
+        <ChatPane
+          key={thread}
+          workspaceId={CHAT.workspaceId}
+          chatId={thread}
+          onOpenWorkspace={openWorkspace}
+          onDeleted={() => setThread(undefined)}
+          onOpenChat={openChat}
+          onOpenAttachment={handlers.onOpenAttachment}
+          onOpenOutput={handlers.onOpenOutput}
+          onSetUpConnection={onSetUpConnection}
+          onAlwaysApprove={onAlwaysApprove}
+        />
       ) : (
         <ChatPane
           {...CHAT}
+          onOpenChat={openChat}
           onOpenWorkspace={openWorkspace}
           onDeleted={openWorkspace}
           onOpenSettings={() => {

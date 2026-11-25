@@ -13,7 +13,7 @@ const sent = (sequence: number, name: string, timestamp = new Date(sequence)): C
 const made = (sequence: number, id: number, title: string, timestamp = new Date(sequence)): ChatArtifact =>
   ({ type: 'workpiece', sequence, timestamp, workpiece: { type: 'gadget', id, title } })
 const ready = (items: ChatItem[], pinned: OutputItem[] = [], artifacts: ChatArtifact[] = []): ChatSnapshot => ({
-  status: 'ready', title: undefined, notificationsRequireParticipation: false, agent: undefined, usage: {}, items, pinned, activity: undefined, work: [], agentActive: false, waiting: [],
+  status: 'ready', title: undefined, notificationsRequireParticipation: false, agent: undefined, startedBy: undefined, usage: {}, items, pinned, activity: undefined, work: [], agentActive: false, waiting: [],
   sendError: undefined, keep: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined, artifacts: { artifacts, connections: [] },
 })
 

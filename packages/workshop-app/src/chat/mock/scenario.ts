@@ -294,6 +294,11 @@ type StepEffect =
    * after this many milliseconds. The workspace carries on meanwhile.
    */
   | { disconnect: number }
+  /**
+   * Another chat of the workspace, such as an agent's run, starts or changes: the chat by `id` is
+   * made where there is none yet, as of now, and given `metadata` and then `message`, as of now.
+   */
+  | { run: { id: number; metadata?: Partial<Omit<AiChatMetadata, 'id'>>; message?: MessageDraft } }
 
 /**
  * One thing the fake server does. It follows the previous step after `delay` milliseconds, or

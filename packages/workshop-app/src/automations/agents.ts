@@ -15,6 +15,8 @@ export type AgentRun = {
   started: Date
   lastActive: Date
   status: RunStatus
+  /** The chat whose agent started it, where one did (`AiChatMetadata.spawnedByChatId`). */
+  spawnedByChatId?: number
 }
 
 /** A gadget bound to an agent, and the name its code knows the agent by (`env.NAME`). */
@@ -118,7 +120,14 @@ export const agentsOf = (chats: readonly AiChatMetadata[], signals: RunSignals =
     const agent = agents.get(agentKeyOf(spawnerId)) ?? add({ spawnerId, name: chat.spawnerName || 'Agent', gadgets: [] })
     const status = runStatus(chat, signals)
     if (agent.runs.length === 0) agent.failed = status === 'failed'
-    agent.runs.push({ chatId: chat.id, title: chat.title || 'Untitled run', started: chat.started, lastActive: chat.lastActive, status })
+    agent.runs.push({
+      chatId: chat.id,
+      title: chat.title || 'Untitled run',
+      started: chat.started,
+      lastActive: chat.lastActive,
+      status,
+      ...(chat.spawnedByChatId !== undefined ? { spawnedByChatId: chat.spawnedByChatId } : {}),
+    })
     if (status === 'waiting') agent.waiting++
     if (status === 'running') agent.running++
   }

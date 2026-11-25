@@ -959,6 +959,7 @@ export class MockOverseer {
   #run(step: ScriptStep) {
     if ('restart' in step) this.#restart(step.restart)
     else if ('disconnect' in step) this.#disconnect(step.disconnect)
+    else if ('run' in step) this.#runOther(step.run)
     else if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
     else if ('message' in step) {
       this.#append(step.message)
@@ -1013,6 +1014,22 @@ export class MockOverseer {
       handle.broken = error
       handle.onBroken.forEach((callback) => callback(error))
     }
+  }
+
+  /**
+   * Starts or changes another chat of the workspace, as of now (a `run` step), which whoever is
+   * subscribed hears of as the server tells them: its metadata, then the message it is given.
+   */
+  #runOther({ id, metadata = {}, message }: Extract<ScriptStep, { run: unknown }>['run']) {
+    const now = new Date()
+    const other: MockChat = this.#others.get(id) ?? { chat: { id, title: '', started: now, lastActive: now }, messages: [] }
+    other.chat = { ...other.chat, ...metadata, lastActive: now }
+    this.#others.set(id, other)
+    this.#chatSubscribers.forEach((subscriber) => subscriber.metadata(other.chat))
+    if (!message) return
+    const stamped = { ...stamp(message, (other.messages.at(-1)?.sequence ?? -1) + 1), chatId: id, timestamp: now }
+    other.messages.push(stamped)
+    this.#deliver(stamped)
   }
 
   #endTurn() {

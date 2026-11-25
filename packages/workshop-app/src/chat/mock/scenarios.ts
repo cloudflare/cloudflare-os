@@ -1,4 +1,4 @@
-import type { ActionLogEntry, BlueprintOutput } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AgentSpawnerInfo, AiChatMetadata, BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { EXAMPLE_AGENT_SPAWNERS, EXAMPLE_GADGETS } from '@/automations/exampleAgents'
 import { withQuote } from '../replyQuote'
 import { PLANS_ANSWER } from './liveViews'
@@ -756,6 +756,55 @@ const agents: Scenario = {
   workspace: agentRuns(),
 }
 
+// The agents the launch chat's agent starts, as runs of the workspace's General agent.
+const GENERAL: AgentSpawnerInfo = { id: 40, config: { displayName: 'General', modelId: 'auto' }, modelName: 'Auto', bindings: [] }
+const LAUNCH_RUNS = [
+  { id: 101, title: 'Processing tasks from Jira', brief: 'Go through the PLAT board: close what shipped, and list what has no owner.' },
+  { id: 102, title: 'Reviewing gadget code', brief: 'Review the Launch board gadget’s code for anything that would break on launch day.' },
+  { id: 103, title: 'Testing user interface designs', brief: 'Click through the new onboarding screens and note what reads wrong.' },
+  { id: 104, title: 'Updating project documentation', brief: 'Bring the launch runbook up to date with what changed this sprint.' },
+  { id: 105, title: 'Conducting user feedback sessions', brief: 'Summarise this week’s feedback calls into what to fix first.' },
+]
+const spawnRuns = call(
+  'executeCode',
+  { code: `for (const [title, brief] of TASKS) {\n  await env.GENERAL.spawn(title, brief)\n}\n` },
+  { output: 'Started 5 agents.\n' },
+)
+// One of them, at some point in its run.
+const runStep = (index: number, delay: number, metadata: Partial<Omit<AiChatMetadata, 'id'>>, text?: string): ScriptStep => ({
+  run: { id: LAUNCH_RUNS[index].id, metadata, ...(text ? { message: agent({ text }) } : {}) },
+  delay,
+})
+
+const agentRunsScenario: Scenario = {
+  id: 'agent-runs',
+  title: 'Launch prep',
+  description: 'The agent starts five agents. Their start is marked under its turn, without a spinner; beside the composer their clouds go round while they work, the ring filling as they finish, a dot once one waits on you. Each end is marked where it happened. Open one from a pill or the ring’s list: its header goes back. Send a message to see the marks stay in the history.',
+  history: history([user('Get the launch ready: triage Jira, review the gadget code, test the new screens, update the runbook and sum up the feedback calls.')]),
+  script: [
+    ...turn(
+      streamReasoning('Five separate pieces of work. Each can go to an agent of its own.'),
+      streamTool(spawnRuns),
+      { message: agent({ reasoning: 'Five separate pieces of work. Each can go to an agent of its own.', toolCalls: [spawnRuns] }), delay: 300 },
+      LAUNCH_RUNS.map(({ id, title, brief }, index): ScriptStep => ({
+        run: { id, metadata: { title, spawnerId: GENERAL.id, spawnerName: 'General', spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
+        delay: index === 0 ? 300 : 120,
+      })),
+      say(agent({ text: 'I’ve handed each part to an agent of its own. They work side by side, and each one says here when it’s done.' })),
+    ),
+    runStep(1, 3500, { activeAgent: undefined }, 'Nothing would break on launch day. Two handlers swallow errors; I listed them in the review.'),
+    runStep(0, 2500, { activeAgent: undefined, awaitingDecision: true }, 'Twelve open issues have no owner. Shall I assign them to the platform on-call?'),
+    runStep(2, 2500, { activeAgent: undefined, lastTurnFailed: true }),
+    { run: { id: LAUNCH_RUNS[2].id, message: error('The model provider returned 529 (overloaded).') }, delay: 0 },
+    runStep(3, 3000, { activeAgent: undefined, proposedChangeWorkpieces: [7] }, 'The runbook now covers the new deploy step and the rollback flag.'),
+    runStep(4, 3500, { activeAgent: undefined }, 'Three things came up in most calls: slow first load, the hidden export button, and unclear pricing.'),
+    ...when('onSend', turn(say(agent({ text: 'I’ve told the Jira agent to go ahead: it’s assigning the twelve issues now.' })))),
+    runStep(0, 600, { awaitingDecision: undefined, activeAgent: AGENT }),
+    runStep(0, 3500, { activeAgent: undefined }, 'Assigned all twelve to the platform on-call.'),
+  ],
+  agents: { spawners: [GENERAL], gadgets: [], runs: [] },
+}
+
 /** Every scripted chat, in the order the picker lists them. */
 export const SCENARIOS: Scenario[] = [
   plain,
@@ -778,5 +827,6 @@ export const SCENARIOS: Scenario[] = [
   steerSlash,
   longHistory,
   agents,
+  agentRunsScenario,
   team,
 ]

@@ -53,7 +53,13 @@ import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
 import { firstMessageOf } from './firstMessage'
 import { useGadgetAgents } from '@/automations/useGadgetAgents'
+import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
+import { STATUS_WORDS } from '@/automations/agents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
+import { AgentRunsButton } from '@/blocks/AgentRunsButton'
+import { ENDED, placeRunMarks, runsStartedBy, type ChatRun } from './chatRuns'
+import { RunMarkView } from './RunMarkView'
+import { markRunsSeen, seenRunsOf } from './seenRuns'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -68,6 +74,13 @@ export type ChatPaneProps = {
   onOpenAgents?: () => void
   /** Opens the chat's settings, from its title. */
   onOpenSettings?: () => void
+  /**
+   * Opens another chat of the workspace, by its id: a run the chat's agent started, or, from such
+   * a run, the chat that started it. Left out, neither is offered.
+   */
+  onOpenChat?: (chatId: number) => void
+  /** A chat's address, by its id, so that a run can be opened in another tab. */
+  chatHref?: (chatId: number) => string
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -103,6 +116,7 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) => outputOf(i
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 const NO_IDS: number[] = []
+const NO_RUNS: ChatRun[] = []
 // What is asked about is opened to as a row is, kept as the conversation's own rows are: each
 // ask afresh, folded, once the changes asked about before are kept.
 const keepKey = ({ epoch }: KeepAsk) => `keep:${epoch ?? ''}`
@@ -127,7 +141,7 @@ const keptOutput = (items: readonly ChatItem[], changes: ProposedChanges, gadget
   outputOf(items, gadgetId)
     ?? { kind: 'output', id: 0, key: `keep-${gadgetId}`, workpieceId: gadgetId, title: title ?? 'Untitled', type: 'gadget', draft: changes.created.some((made) => made.gadgetId === gadgetId) }
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenChat, chatHref, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keeping = chat.status === 'ready' ? chat.keep?.changes : undefined
@@ -195,6 +209,24 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     if (idle) turns.current += 1
   }
   const gadgetAgents = useGadgetAgents(workspaceId, chatId, gadgetIds, turns.current)
+  // The agents the chat's agent started, as the workspace's runs say how each stands, and where
+  // the conversation marks them.
+  const workspaceAgents = useWorkspaceAgents(workspaceId).state
+  const runs = useMemo(() => (workspaceAgents.status === 'ready' ? runsStartedBy(workspaceAgents.agents, chatId) : NO_RUNS), [workspaceAgents, chatId])
+  const runMarks = useMemo(() => placeRunMarks(items ?? [], runs), [items, runs])
+  // Those that ended that the viewer has seen end, which the composer no longer holds.
+  const [seenRuns, setSeenRuns] = useState(() => seenRunsOf(workspaceId, chatId))
+  const seeRuns = useHandler((ids: number[]) => setSeenRuns(markRunsSeen(workspaceId, chatId, ids)))
+  const openRun = useHandler((runId: number) => {
+    const run = runs.find(({ chatId: id }) => id === runId)
+    if (run && ENDED.has(run.status)) seeRuns([runId])
+    onOpenChat?.(runId)
+  })
+  const heldRuns = useMemo(() => runs
+    .filter(({ chatId: id, status }) => !ENDED.has(status) || !seenRuns.has(id))
+    .map(({ chatId: id, title: runTitle, status }) => ({ key: String(id), title: runTitle, status, statusWords: STATUS_WORDS[status], href: chatHref?.(id) })), [runs, seenRuns, chatHref])
+  const seeHeldRuns = useHandler(() => seeRuns(heldRuns.filter(({ status }) => ENDED.has(status)).map(({ key }) => Number(key))))
+  const openHeldRun = useHandler((key: string) => openRun(Number(key)))
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
@@ -331,9 +363,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
-    return items?.map((item, index) => {
+    // What is said of the agents the chat started comes between rows, which then run on no more.
+    const { before } = runMarks
+    return items?.flatMap((item, index) => {
+      const marks = (before.get(index) ?? []).map((mark) => ({
+        id: mark.key,
+        sequence,
+        content: <RunMarkView mark={mark} onOpen={openRun} href={chatHref} />,
+      }))
       sequence = Math.max(sequence, item.id)
-      return {
+      return [...marks, {
         id: item.key,
         sequence,
         content: (
@@ -343,13 +382,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             handlers={handlers}
             restricted={restricted}
             // The list wraps every row, so messages in a run are told about each other.
-            joinsAbove={continuesRun(items[index - 1], item)}
-            joinsBelow={index + 1 < items.length && continuesRun(item, items[index + 1])}
+            joinsAbove={!before.has(index) && continuesRun(items[index - 1], item)}
+            joinsBelow={index + 1 < items.length && !before.has(index + 1) && continuesRun(item, items[index + 1])}
           />
         ),
-      }
+      }]
     }) ?? []
-  }, [items, disclosure, handlers, restricted])
+  }, [items, runMarks, openRun, chatHref, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
   const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
@@ -412,15 +451,20 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const hasAgentPage = onOpenAgent !== undefined
   const hasSettings = onOpenSettings !== undefined
   const workspaceTitle = workspace?.title
+  // The chat whose agent started this one, which it goes back to.
+  const startedBy = ready ? chat.startedBy : undefined
+  const backTo = startedBy !== undefined && onOpenChat ? startedBy : undefined
+  const goBack = useHandler(() => backTo !== undefined && onOpenChat?.(backTo))
   const header = useMemo(() => (workspaceTitle !== undefined || title) && (
     <ChatHeader
+      back={backTo !== undefined ? { onBack: goBack } : undefined}
       workspace={workspaceTitle !== undefined ? { id: workspaceId, title: workspaceTitle, label: workspaceLabel(workspaceTitle), look, onOpen: openWorkspace } : undefined}
       agent={agentKey !== undefined && agentName !== undefined ? { agentKey, name: agentName, onOpen: hasAgentPage ? openAgent : undefined } : undefined}
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
       agents={agentNames ? { names: agentNames.split('\n'), onOpen: openStarted } : undefined}
     />
-  ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
+  ), [backTo, goBack, agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
 
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
   const artifacts = chat.status === 'ready' ? chat.artifacts : undefined
@@ -510,22 +554,28 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onAdd={addLogs}
       onDiscard={discardLogs}
     />
-    <Composer
-      ref={composer}
-      onSend={sendMessage}
-      commands={composerCommands}
-      commandsLoading={commandsLoading}
-      onCommandsWanted={wantOffers}
-      links={draftLinks}
-      addActions={addActions}
-      format={startsWithFormat}
-      stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
-      problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
-      reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
-    />
+    {/* The agents it started that are still to be seen to are beside it, level with its foot. */}
+    <div className="flex items-end gap-2">
+      <div className="min-w-0 flex-1">
+        <Composer
+          ref={composer}
+          onSend={sendMessage}
+          commands={composerCommands}
+          commandsLoading={commandsLoading}
+          onCommandsWanted={wantOffers}
+          links={draftLinks}
+          addActions={addActions}
+          format={startsWithFormat}
+          stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
+          problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
+          reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
+        />
+      </div>
+      <AgentRunsButton runs={heldRuns} onOpen={openHeldRun} onSeen={seeHeldRuns} />
+    </div>
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, wantOffers, draftLinks, addActions, startsWithFormat, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied, heldRuns, openHeldRun, seeHeldRuns])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -556,6 +606,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             {chat.pinned.map((item) => (
               <LiveRows.Row key={item.key}>
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
+              </LiveRows.Row>
+            ))}
+            {runMarks.after.map((mark) => (
+              <LiveRows.Row key={mark.key}>
+                <RunMarkView mark={mark} onOpen={openRun} href={chatHref} />
               </LiveRows.Row>
             ))}
             {chat.keep && (

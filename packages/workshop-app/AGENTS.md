@@ -332,6 +332,22 @@ theme's tokens, as tall as it draws, its module scripts run once written in full
 reply is drafted its views are only named (`InlineViewDraft`); a block the agent never closed is
 shown as code. The `live-view` scenario plays one.
 
+The agents a chat's agent starts (runs whose `spawnedByChatId` is the chat, from the workspace's
+runs, `useWorkspaceAgents`) are what its turn produced, so they are marked at the end of that
+turn, as one group for the turn ("Started 5 agents", `AgentRunsStarted`): a pill each
+(`AgentRunPill`), which opens the run, with no spinner, as it stays in the history. Each run's end
+is a pill of its own where it ended, saying how ("Finished", "Failed"), never above its start
+(`chat/chatRuns.ts`, plain and tested); those of the last turn are after the live output. How the
+call was made stays in the trace. How they stand meanwhile is beside the composer
+(`AgentRunsButton`): up to three of their clouds going round a ring in depth while any works (one
+alone stays still in the middle), held at `off`, the ring around the button filling as they end,
+and a dot while one waits on the user; it opens to a pill for each, with how it stands, stacked
+over it at its end. An ended run stays in it until it has been seen, by putting the list away or
+opening the run (`chat/seenRuns.ts`, for the visit). A run's header starts with the way back to the
+chat that started it (`ChatHeader`'s `back`, from `ChatSnapshot.startedBy`), given where the page
+can open another chat (`ChatPane`'s `onOpenChat`). The `agent-runs` scenario plays five, which end
+in each way.
+
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the
 command; one that ran on its own, at the cut. Another model taking over is not one: each message's
@@ -1180,8 +1196,10 @@ It opens no workspace and changes as the workspace does. A workspace shared with
 once they have opened it and confirmed access; one with no summary yet shows nothing waiting. A
 workspace's line says all three at once (`waitingWords`), and its page counts each on the tab that
 lists it (Chats, Agents, Library), what waits on a decision all of it on Chats, its runs and chats
-from its own live reading. The `agents` scenario has a workspace whose gadgets start four agents, and the
-gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
+from its own live reading. The `agents` scenario has a workspace whose gadgets start four agents, the
+`agent-runs` scenario a chat whose agent starts five (see The chat feed), and the gallery has each
+block in each state (`AgentsPreview`, over `exampleAgents.ts`). A script's `run` step starts or
+changes another chat of the scripted workspace, such as a run.
 
 ## The sidebar
 
