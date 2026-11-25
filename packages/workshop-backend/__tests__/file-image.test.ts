@@ -58,6 +58,36 @@ function recordReads(impl: Impl, chatId: number, oid: string, count: number) {
 }
 
 describe("images read from a worktree", () => {
+  it("keeps a turn's gadget snapshot across an image reload and rejects stale edits", () => inKernel(crypto.randomUUID(), async impl => {
+    const commitId = await impl.gitCache.writeFilesAsCommit(new Map([
+      ["client.js", "client-v1"], ["server.js", "server-v1"],
+    ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
+    const gadget = impl.createGadget("App", "APP", undefined, undefined, commitId);
+    const {chatId} = await setup(impl);
+    const next = await impl.gitCache.writeFilesAsCommit(new Map([
+      ["client.js", "client-v2"], ["server.js", "server-v2"],
+    ]), {parents: [commitId], author: {name: "Test", email: "test@example.com"}, message: "Concurrent accept", timestamp: new Date(1)});
+    const commit = impl.commitAgentStep.bind(impl);
+    const barrier = vi.spyOn(impl, "commitAgentStep").mockImplementationOnce(async (...args) => {
+      const result = await commit(...args);
+      impl.storage.gadgets.put({...gadget, commitId: next});
+      return result;
+    });
+    try {
+      const {requests} = await turn(impl, chatId, [
+        [fauxToolCall("readFile", {workpiece: "APP", filename: "client.js"}), read()],
+        [fauxToolCall("readFile", {workpiece: "APP", filename: "server.js"})],
+        [fauxToolCall("editFile", {workpiece: "APP", filename: "server.js", textToReplace: "server-v1", replacement: "edited"})],
+      ]);
+      const reads = results(requests.at(-1)!).flatMap(result => result.content);
+      expect(reads).toContainEqual({type: "text", text: expect.stringContaining("server-v1")});
+      expect(reads).not.toContainEqual({type: "text", text: expect.stringContaining("server-v2")});
+      const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : []);
+      expect(calls.find(call => call.toolName === "editFile")?.error).toContain("changed since you read it");
+      expect(impl.getGadgetHead(gadget.id)).toBe(next);
+    } finally { barrier.mockRestore(); }
+  }));
+
   it("shows pixels immediately and replays the immutable blob after file removal and eviction", async () => {
     const name = crypto.randomUUID();
     let chatId: number;

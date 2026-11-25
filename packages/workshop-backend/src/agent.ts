@@ -237,6 +237,7 @@ type AgentPassOutcome =
 type AgentProgress = {
   executionId: string;
   barrierSequence: number;
+  observedHeads: Map<WorkpieceId, string>;
 };
 
 /**
@@ -1730,6 +1731,7 @@ export async function runAgent(
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),
     barrierSequence: 0,
+    observedHeads: new Map(),
   };
   let retries = 0;
   while (true) {
@@ -1784,7 +1786,7 @@ async function runAgentPass(
   // Per-gadget head observed by this turn's unpinned reads (and the system prompt's file
   // lists), fixed at first observation so one turn sees a consistent tree even if mainline
   // advances mid-turn.
-  let observedHeads = new Map<WorkpieceId, string>();
+  let observedHeads = progress.observedHeads;
   let observeHead = (gadgetId: WorkpieceId): string | undefined => {
     let head = observedHeads.get(gadgetId) ?? hooks.getGadgetHead(gadgetId);
     if (head !== undefined) observedHeads.set(gadgetId, head);
