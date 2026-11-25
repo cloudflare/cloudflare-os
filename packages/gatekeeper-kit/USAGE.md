@@ -670,11 +670,14 @@ will be applied.
 
 `capture()` and `read()` each hold about twice the file's size at once, so a file too large for
 that goes through `captureStream()` and back out through `readStream()`, whatever `maxFileBytes`
-allows; they take and give a `ReadableStream` a 1 MiB chunk at a time, and both need workerd's
-`crypto.DigestStream`. A streamed capture counts each chunk against `maxTotalBytes` as it is stored
-and writes the manifest last, so a failed or abandoned one is refused by reads and left for the
-sweep below. `readStream()` gives the final chunk only once the whole file's digest has matched,
-so a resumable upload fed from it never completes with corrupted bytes.
+allows; both need workerd's `crypto.DigestStream`. They store and give 1 MiB chunks, but a capture
+also holds each piece its stream gives, as large as the stream makes it, and a copy of the rest of
+one that spills into the next chunk, so the source's pieces bound its memory, not the store. A
+streamed capture counts each chunk against `maxTotalBytes` as it is stored and writes the manifest
+last. One that fails deletes what it stored; one cut off before it could, by an evicted isolate, a
+source that stalls, or a cleanup that itself failed, is refused by reads and left for the sweep
+below. `readStream()` gives the final chunk only once the whole file's digest has matched, so a
+resumable upload fed from it never completes with corrupted bytes.
 
 Release those bytes yourself — the kit never collects them, and every capture counts against
 `maxTotalBytes` until it is deleted. Call `delete(reference)` when the action's record goes away:

@@ -122,7 +122,10 @@ export class ActionFileStore {
   }
 
   /**
-   * Captures a stream's bytes as they arrive, a chunk at a time, so the file is never held whole.
+   * Captures a stream's bytes as they arrive, storing a chunk at a time. Beside the piece the stream
+   * last gave, whose size is the stream's to choose, it holds one chunk of its own and a copy of the
+   * rest of a piece that spills into the next chunk, so a producer may reuse a piece's buffer once
+   * the capture has read it.
    * Until it resolves, the chunks stored so far count toward `maxTotalBytes` under an allocation
    * dated when the capture began, which `pruneUnreferenced()` may delete, failing the capture.
    * If the stream errors, gives more than `maxFileBytes` or anything but `Uint8Array` chunks, or
@@ -147,19 +150,25 @@ export class ActionFileStore {
     };
     try {
       for (let read = await reader.read(); !read.done; read = await reader.read()) {
-        const piece: unknown = read.value;
-        if (!(piece instanceof Uint8Array)) {
+        const given: unknown = read.value;
+        if (!(given instanceof Uint8Array)) {
           throw new TypeError("A queued-action file stream must give Uint8Array chunks.");
         }
-        size += piece.byteLength;
+        size += given.byteLength;
         this.#refuseOver(size);
-        // Copied into a chunk of our own, so a producer reusing its buffer cannot skew what is kept.
+        // Copied into chunks of our own, and the rest of a piece that spills into the next chunk is
+        // copied before the capture first yields, so a producer reusing the buffer cannot skew it.
+        let piece = given;
         for (let offset = 0; offset < piece.byteLength;) {
           const taken = Math.min(ACTION_FILE_CHUNK_BYTES - filled, piece.byteLength - offset);
           chunk.set(piece.subarray(offset, offset + taken), filled);
           filled += taken;
           offset += taken;
           if (filled === ACTION_FILE_CHUNK_BYTES) {
+            if (piece === given && offset < piece.byteLength) {
+              piece = new Uint8Array(piece.subarray(offset));
+              offset = 0;
+            }
             await store(chunk);
             chunk = new Uint8Array(ACTION_FILE_CHUNK_BYTES);
             filled = 0;
@@ -241,7 +250,7 @@ export class ActionFileStore {
       pull: async controller => {
         let chunk: Uint8Array | undefined;
         if (index < manifest.chunks) {
-          const stored = this.#storage.kv.get<unknown>(this.#chunkKey(file.handle, index));
+          const stored = this.#storage.kv.get<unknown>(this.#chunkKey(manifest.handle, index));
           const expectedSize = Math.min(
             ACTION_FILE_CHUNK_BYTES, manifest.size - index * ACTION_FILE_CHUNK_BYTES);
           if (!(stored instanceof Uint8Array) || stored.byteLength !== expectedSize) {

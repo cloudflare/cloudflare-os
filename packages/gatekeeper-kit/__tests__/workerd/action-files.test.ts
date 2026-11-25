@@ -117,6 +117,33 @@ describe("ActionFileStore streams", () => {
     });
   });
 
+  it("keeps a piece's bytes as given though its producer reuses the buffer mid-capture", async () => {
+    const host = env.STORAGE_HOST.getByName(`action-files-${stores++}`);
+    await runInDurableObject(host, async (_instance, state) => {
+      const input = bytes(2 * CHUNK + 17);
+      const reused = Uint8Array.from(input);
+      let transactions = 0;
+      // The first chunk is stored while the rest of the one piece still waits to be copied.
+      const store = new ActionFileStore({
+        kv: state.storage.kv,
+        transactionSync<T>(callback: () => T): T {
+          if (transactions++ === 0) reused.fill(0xff);
+          return state.storage.transactionSync(callback);
+        },
+      }, OPTIONS);
+      const once = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(reused);
+          controller.close();
+        },
+      }, { highWaterMark: 0 });
+
+      const file = await store.captureStream(once);
+
+      expect(bytesEqual(await store.read(file), input)).toBe(true);
+    });
+  });
+
   it("refuses a stream past maxFileBytes, keeping nothing and cancelling the source", async () => {
     await withStore(async (store, storage) => {
       const cancelled: unknown[] = [];
@@ -235,6 +262,20 @@ describe("ActionFileStore streams", () => {
 
       expect(String(read.error)).toMatch(/incomplete or corrupted/);
       expect(read.given).toBe(2 * CHUNK);
+    });
+  });
+
+  it("streams the file it verified, though the caller's reference changes afterwards", async () => {
+    await withStore(async store => {
+      const input = bytes(2 * CHUNK + 17);
+      // Assignable though the API type is readonly, as any caller's own object would be.
+      const reference: { handle: string; size: number; digest: string } = { ...await store.capture(input) };
+      const other = await store.capture(bytes(2 * CHUNK + 17).fill(0xbb));
+
+      const stream = await store.readStream(reference);
+      reference.handle = other.handle;
+
+      expect(bytesEqual(await drain(stream), input)).toBe(true);
     });
   });
 
