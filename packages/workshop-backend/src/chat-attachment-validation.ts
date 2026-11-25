@@ -63,6 +63,16 @@ const CONTENT_SIGNATURES = new Map<string, readonly (number | null)[]>([
   [PDF_MIME_TYPE, [0x25, 0x50, 0x44, 0x46, 0x2D]],
 ]);
 
+/** The image type whose signature `leadingBytes` begin with, among those attachments take. */
+export function imageMimeTypeOf(leadingBytes: Uint8Array): string | undefined {
+  for (let [mimeType, signature] of IMAGE_SIGNATURES) {
+    if (signature.every((expected, index) => expected === null || leadingBytes[index] === expected)) {
+      return mimeType;
+    }
+  }
+  return undefined;
+}
+
 /** How many leading bytes of an upload validateChatAttachmentUpload() examines. */
 export const CHAT_ATTACHMENT_SIGNATURE_BYTES =
     Math.max(...[...CONTENT_SIGNATURES.values()].map(signature => signature.length));
@@ -132,9 +142,12 @@ export function canInlineChatAttachmentImage(mimeType: string, bytes: Uint8Array
   return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= 8000);
 }
 
-// Read dimensions from supported format headers only; never decode/decompress pixel data.
-// Unknown or truncated headers fall back to the workspace rather than breaking model replay.
-function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
+/**
+ * An image's `[width, height]`, read from the header of a supported format (`mimeType` must be
+ * canonical, e.g. "image/png"); undefined for an unknown, mismatched or truncated header. Never
+ * decodes pixel data. Callers fall back to treating the bytes as an opaque file.
+ */
+export function imageDimensions(mimeType: string, bytes: Uint8Array): [number, number] | undefined {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (mimeType === "image/png" && bytes.length >= 24 &&
       view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a &&
