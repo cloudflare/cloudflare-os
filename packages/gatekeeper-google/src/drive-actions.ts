@@ -1,7 +1,7 @@
 /**
  * The approval-backed writes of a Drive binding as one action set: comments, sharing changes,
- * moves and edits of native files are declared together, so one journal stores and numbers them
- * all.
+ * moves, renames and edits of native files are declared together, so one journal stores and
+ * numbers them all.
  */
 
 import { defineActions, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
@@ -12,6 +12,7 @@ import {
   type DriveEditorsHost,
 } from "./drive-editors";
 import { DRIVE_MOVE_DEFINITIONS, type DriveMoveActions } from "./drive-moves";
+import { DRIVE_RENAME_DEFINITIONS, type DriveRenameActions } from "./drive-renames";
 import { DRIVE_SHARING_DEFINITIONS, type DriveSharingActions } from "./drive-sharing";
 import type { DriveWriteQueue, DriveWritesHost } from "./drive-writes";
 import type { SheetsActions } from "./sheets-simulation";
@@ -19,7 +20,8 @@ import type { SlidesActions } from "./slides-simulation";
 
 /** Every Drive write, by the action kind it is queued as. */
 export type DriveActions = DriveCommentActions & DriveSharingActions & DriveMoveActions &
-  DriveEdits<SlidesActions> & DriveEdits<SheetsActions> & DriveEdits<DriveDocEdits>;
+  DriveRenameActions & DriveEdits<SlidesActions> & DriveEdits<SheetsActions> &
+  DriveEdits<DriveDocEdits>;
 
 /** One queued Drive write. */
 export type DriveAction = TaggedAction<DriveActions>;
@@ -31,14 +33,15 @@ export type DriveQueue = DriveWriteQueue<DriveActions>;
 export type DriveHost = DriveWritesHost & DriveEditorsHost;
 
 /**
- * The declared Drive writes: comments, sharing, moves and edits, over one journal, so one
- * numbering serves the overseer's apply and reject. A comment or an edit is not tied to the
- * account that queued it; a sharing change or a move is made as one Google account, and is fenced
- * on it. No applied record is kept: none of these can be reverted from here.
+ * The declared Drive writes: comments, sharing, moves, renames and edits, over one journal, so
+ * one numbering serves the overseer's apply and reject. A comment, a rename or an edit is not
+ * tied to the account that queued it; a sharing change or a move is made as one Google account,
+ * and is fenced on it. No applied record is kept: none of these can be reverted from here.
  */
 export const DRIVE_ACTIONS = defineActions<DriveHost, DriveActions>({
   ...DRIVE_COMMENT_DEFINITIONS, ...DRIVE_SHARING_DEFINITIONS, ...DRIVE_MOVE_DEFINITIONS,
-  ...DRIVE_SLIDES_DEFINITIONS, ...DRIVE_SHEETS_DEFINITIONS, ...DRIVE_DOCS_DEFINITIONS,
+  ...DRIVE_RENAME_DEFINITIONS, ...DRIVE_SLIDES_DEFINITIONS, ...DRIVE_SHEETS_DEFINITIONS,
+  ...DRIVE_DOCS_DEFINITIONS,
 }, {
   fence: "none",
   fenceOverrides: {

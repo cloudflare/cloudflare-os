@@ -158,7 +158,7 @@ const RANK: Record<Role, number> = {
 type FakeFile = {
   name: string; mimeType: string; modifiedTime: string; parents: string[]; driveId?: string;
   trashed: boolean; canListChildren: boolean; canComment: boolean; canShare: boolean;
-  canAddChildren: boolean; canMoveItemWithinDrive: boolean;
+  canAddChildren: boolean; canMoveItemWithinDrive: boolean; canRename: boolean;
   /** Set on a shortcut: the file or folder it points to. */
   shortcutTargetId?: string;
 };
@@ -195,7 +195,7 @@ function file(mimeType: string, parents: string[], overrides: Partial<FakeFile> 
   return {
     name: "", mimeType, modifiedTime: "2026-10-20T09:00:00Z", parents, trashed: false,
     canListChildren: folder, canComment: !folder, canShare: true, canAddChildren: folder,
-    canMoveItemWithinDrive: true, ...overrides,
+    canMoveItemWithinDrive: true, canRename: true, ...overrides,
   };
 }
 
@@ -380,7 +380,7 @@ class DriveProvider {
       capabilities: {
         canListChildren: held.canListChildren, canComment: held.canComment,
         canShare: held.canShare, canAddChildren: held.canAddChildren,
-        canMoveItemWithinDrive: held.canMoveItemWithinDrive,
+        canMoveItemWithinDrive: held.canMoveItemWithinDrive, canRename: held.canRename,
       },
     };
   }
@@ -440,6 +440,19 @@ class DriveProvider {
     if (collection === undefined) {
       if (request.method === "GET") return Response.json(this.#fileJson(fileId, held));
       if (request.method !== "PATCH") throw new Error(`Unexpected provider request: ${call}`);
+      let body = await request.json() as Record<string, unknown>;
+      if (typeof body.name === "string") {
+        let name = body.name;
+        // Drive refuses to rename the top level of My Drive, which says it can be renamed.
+        if (fileId === MY_ROOT) return driveError({ status: 403, reason: "fileNeverWritable" });
+        if (!held.canRename) {
+          return driveError({ status: 403, reason: "insufficientFilePermissions" });
+        }
+        return this.#write(call, url, token, body, () => {
+          held.name = name;
+          return Response.json({ id: fileId, name });
+        });
+      }
       let add = url.searchParams.get("addParents");
       let remove = url.searchParams.get("removeParents");
       return this.#write(call, url, token, {}, () => {
@@ -661,7 +674,17 @@ const MOVE_OF = (...subresources: string[]) =>
   ({ title: "Check Google Drive move", subresources });
 /** The moves sent for `fileId`, by the parents each asked for. */
 const movesOf = (fileId: string) => sent(`PATCH /drive/v3/files/${fileId}`)
+  .filter(({ body }) => body.name === undefined)
   .map(({ query }) => [query.addParents, query.removeParents]);
+/** The renames sent for `fileId`, by the name each asked for. */
+const renamesOf = (fileId: string) => sent(`PATCH /drive/v3/files/${fileId}`)
+  .filter(({ body }) => body.name !== undefined)
+  .map(({ body }) => body.name);
+/** What a rename's scope proof reports. */
+const RENAME_OF = (...subresources: string[]) =>
+  ({ title: "Rename a Google Drive file", subresources });
+const RENAMES = { tag: "driveRenames", label: "Drive renames" };
+const nameOf = (fileId: string) => provider.files.get(fileId)?.name;
 /** Puts `fileId` in the trash, or changes anything else of it, as a person does in Drive. */
 function change(fileId: string, changes: Partial<FakeFile>): void {
   let held = provider.files.get(fileId);
@@ -736,13 +759,13 @@ describe("access level", () => {
     let readWrite = binding();
     let readOnly = binding(ACCOUNT, null);
 
-    for (let name of ["interface DriveSharing", "move("]) {
+    for (let name of ["interface DriveSharing", "move(", "interface DriveRenames", "rename("]) {
       expect(await readWrite.types(), name).toContain(name);
       expect(await readOnly.types(), name).not.toContain(name);
     }
-    // Neither sharing nor moves is offered for auto-approval.
+    // Neither sharing nor moves is offered for auto-approval; renames are.
     expect(await readWrite.autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([{ tag: "driveComments", label: "Drive comments" }, RENAMES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
     expect(await readOnly.autoApprovable()).toEqual([]);
   });
 
@@ -1730,6 +1753,191 @@ describe("sharing", () => {
 
     expect(provider.direct("doc-1")).toContainEqual(["perm-bob", "reader"]);
     expect(await drive.attempts()).toEqual({});
+  });
+});
+
+describe("renames", () => {
+  const RENAME_PENDING =
+    "That file already has a rename waiting for approval. To give it another name instead, have " +
+    "the user reject that rename first.";
+  const NAME_RULE =
+    "A Google Drive file or folder needs a one-line name of 1 to 256 characters.";
+
+  it("renames a file on each binding once the rename is approved, auto-approvable on its own kind", async () => {
+    let bindings: [DriveBindingScope, string, string[]][] = [
+      [ACCOUNT, "doc-1", ["drive/file/doc-1"]],
+      [DOC_FILE, "doc-1", ["drive/file/doc-1"]],
+      [FOLDER, "doc-1", ["drive/folder/folder-root", "drive/file/doc-1"]],
+      // A folder binding renames the folder its session is positioned at.
+      [FOLDER, ROOT, ["drive/folder/folder-root", "drive/file/folder-root"]],
+    ];
+    for (let [scope, fileId, reported] of bindings) {
+      provider = new DriveProvider().install();
+      let what = `${scope.kind} ${fileId}`;
+      let drive = binding(scope);
+
+      let queued = await drive.queued("rename", fileId, "  Plan 2027 ");
+
+      expect(queued.value, what).toBeUndefined();
+      let noun = fileId === ROOT ? "folder" : "file";
+      expect(queued.action, what).toMatchObject({
+        title: `Rename a Google Drive ${noun}`,
+        description: `Rename Google Drive ${noun} \`${fileId}\`.`,
+        actionKind: RENAMES,
+        awaitDecision: true,
+        autoApprovable: true,
+        implementsRevert: false,
+        descriptionIsComplete: true,
+        fields: [
+          { label: "File", kind: "inline", value: fileId },
+          { label: "Current name", kind: "inline", value: fileId },
+          { label: "New name", kind: "inline", value: "Plan 2027" },
+        ],
+      });
+      expect(queued.reports, what).toEqual([RENAME_OF(...reported)]);
+      // A rename is not simulated: every read shows the old name until it is made.
+      let entry = scope.kind === "folder" && fileId === ROOT
+        ? (await drive.call("getScope")).value : (await drive.call("getEntry", fileId)).value;
+      expect(entry, what).toMatchObject({ name: fileId });
+      expect(provider.writes, what).toEqual([]);
+
+      expect(await drive.apply(queued.actionId), what).toBeNull();
+      expect(nameOf(fileId), what).toBe("Plan 2027");
+      expect(renamesOf(fileId), what).toEqual(["Plan 2027"]);
+      expect(sent(`PATCH /drive/v3/files/${fileId}`)[0].query, what)
+        .toEqual({ fields: "id,name", supportsAllDrives: "true" });
+      expect(await drive.waiting(), what).toEqual([]);
+    }
+  });
+
+  it("refuses a rename a read-only binding cannot make, asking Google nothing", async () => {
+    let bindings: [DriveBindingScope, string][] = [
+      [ACCOUNT, READ_ONLY_ACCOUNT],
+      [FOLDER, READ_ONLY(`${FOLDER_URL}?access=write`)],
+      [DOC_FILE, READ_ONLY(`${FILE_URL}?access=write`)],
+    ];
+    for (let [scope, message] of bindings) {
+      let refused = await binding(scope, null).call("rename", "doc-1", "Plan 2027");
+      expect(refused.error, scope.kind).toBe(message);
+      expect(refused.actionId, scope.kind).toBeUndefined();
+      expect(refused.observations, scope.kind).toEqual([]);
+    }
+    expect(provider.requests).toEqual([]);
+  });
+
+  it("refuses a name that is not one line of 1 to 256 characters, and the name a file has", async () => {
+    let drive = binding();
+    for (let name of ["", "   ", "a\nb", "x".repeat(257)]) {
+      let refused = await drive.call("rename", "doc-1", name);
+      expect(refused.error, JSON.stringify(name)).toBe(NAME_RULE);
+      expect(refused.observations).toEqual([]);
+    }
+    expect(provider.requests).toEqual([]);
+
+    expect((await drive.call("rename", "doc-1", " doc-1 ")).error)
+      .toBe("That file already has that name.");
+    expect(await drive.waiting()).toEqual([]);
+    expect(provider.writes).toEqual([]);
+  });
+
+  it("refuses what Drive or the binding does not let be renamed", async () => {
+    provider.files.set("binned-doc", file(DOC_MIME, [ROOT], { trashed: true }));
+    provider.files.set("locked-doc", file(DOC_MIME, [ROOT], { canRename: false }));
+    let drive = binding();
+    let refusals: [string, string][] = [
+      ["binned-doc", "That file is in the trash, so it cannot be renamed."],
+      ["locked-doc", "The connected account cannot rename Drive file locked-doc."],
+      [MY_ROOT, "The top level of My Drive cannot be renamed."],
+      ["team",
+        "A shared drive's top level is the drive itself, which is renamed in Google Drive, not here."],
+    ];
+    for (let [fileId, message] of refusals) {
+      let refused = await drive.call("rename", fileId, "Renamed");
+      expect(refused.error, fileId).toBe(message);
+      expect(refused.actionId, fileId).toBeUndefined();
+    }
+
+    let exact = binding(DOC_FILE);
+    expect((await exact.call("rename", "sheet-1", "Renamed")).error).toBe(OUTSIDE);
+    let folder = binding(FOLDER);
+    expect((await folder.call("rename", "nested-doc", "Renamed")).error).toBe(OUTSIDE);
+    expect((await folder.call("rename", "loose-doc", "Renamed")).error).toBe(OUTSIDE);
+    expect((await folder.callIn(["inner"], "rename", ROOT, "Renamed")).error).toBe(OUTSIDE);
+
+    // A folder opened through a shortcut is read-only.
+    provider.files.set("far-folder", file(FOLDER_MIME, ["elsewhere"]));
+    provider.files.set("deep-doc", file(DOC_MIME, ["far-folder"]));
+    provider.files.set("to-folder", file(SHORTCUT_MIME, [ROOT], { shortcutTargetId: "far-folder" }));
+    expect((await folder.callIn(["far-folder"], "rename", "deep-doc", "Renamed")).error)
+      .toBe(THROUGH_SHORTCUT);
+    expect((await folder.callIn(["far-folder"], "rename", "far-folder", "Renamed")).error)
+      .toBe(THROUGH_SHORTCUT);
+    expect(provider.writes).toEqual([]);
+  });
+
+  it("refuses a second rename of a file, and one behind a move on a folder binding", async () => {
+    let drive = binding(FOLDER);
+    let first = await drive.queued("rename", "doc-1", "Plan 2027");
+    let second = await drive.call("rename", "doc-1", "Plan 2028");
+    expect(second.error).toBe(RENAME_PENDING);
+    expect(second.actionId).toBeUndefined();
+    // Another file is renamed beside it, and a rename does not hold back a move.
+    await drive.queued("rename", "sheet-1", "Numbers");
+    let move = await drive.queued("move", "doc-1", "inner");
+    expect(await drive.reject(first.actionId)).toBeNull();
+
+    // The move takes the file out of where this session reaches it.
+    expect((await drive.call("rename", "doc-1", "Plan 2028")).error).toBe(MOVE_WAITING);
+    let folderMove = await drive.queued("move", "inner", "archive");
+    expect((await drive.callIn(["inner"], "rename", "nested-doc", "Renamed")).error)
+      .toBe(MOVE_WAITING);
+    expect((await drive.call("rename", "inner", "Renamed")).error).toBe(MOVE_WAITING);
+    expect(await drive.reject(move.actionId)).toBeNull();
+    expect(await drive.reject(folderMove.actionId)).toBeNull();
+    await drive.queued("rename", "doc-1", "Plan 2028");
+
+    // An account binding proves no path, so a move there holds back no rename.
+    let account = binding();
+    await account.queued("move", "loose-doc", "elsewhere");
+    await account.queued("rename", "loose-doc", "Loose");
+  });
+
+  it("renames nothing a person renamed after it was queued, and finds what an unconfirmed send made", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
+    change("doc-1", { name: "Someone else's" });
+    expect(await drive.apply(actionId))
+      .toBe("That file was renamed after this was queued, so it was not renamed again.");
+    expect(renamesOf("doc-1")).toEqual([]);
+
+    let lost = await drive.queued("rename", "sheet-1", "Numbers");
+    provider.nextWrite = "lost";
+    expect(await drive.apply(lost.actionId)).toBe(
+      "Google Drive did not confirm whether this was renamed, and it may have been. Approving it " +
+      "again first checks the file's name; rejecting it leaves the file named as it is.");
+    expect(await drive.apply(lost.actionId)).toBeNull();
+    expect(renamesOf("sheet-1")).toEqual(["Numbers"]);
+    expect(nameOf("sheet-1")).toBe("Numbers");
+  });
+
+  it("fails an approved rename on a read-only binding, and keeps it pending without the grant", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
+    await drive.restart();
+    let readOnly = binding(ACCOUNT, null, drive.facet);
+    expect(await readOnly.apply(actionId)).toBe(READ_ONLY_ACCOUNT);
+
+    let waiting = binding();
+    let kept = await waiting.queued("rename", "sheet-1", "Numbers");
+    await setGrants([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+    expect(await waiting.apply(kept.actionId)).toBe(GRANT_MISSING);
+    expect(await waiting.waiting()).toEqual([kept.actionId]);
+    expect(provider.writes).toEqual([]);
+
+    await setGrants(GRANTED);
+    expect(await waiting.apply(kept.actionId)).toBeNull();
+    expect(nameOf("sheet-1")).toBe("Numbers");
+    expect(renamesOf("doc-1")).toEqual([]);
   });
 });
 

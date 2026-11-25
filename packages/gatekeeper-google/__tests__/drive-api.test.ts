@@ -689,7 +689,7 @@ describe("bulk access verification", () => {
 /** The one mask a scope proof and an observer check read a file through. */
 const SCOPE_MASK = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canEdit)";
+  "canRename,canEdit)";
 
 describe("folder scope nodes", () => {
   const node = (id: string, extra: Record<string, unknown> = {}) =>
@@ -707,7 +707,8 @@ describe("folder scope nodes", () => {
       driveId: "drive-1", canListChildren: true,
     }]);
     expect(calls[0].body).toContain(`fields=${encodeURIComponent(SCOPE_MASK)}`);
-    expect(calls[0].body).not.toContain("name");
+    // An ancestry walk reads folders the caller never asked about, so it asks for no name.
+    expect(decodeURIComponent(calls[0].body ?? "")).not.toMatch(/[=,(]name\b/);
   });
 
   it("places nodes by Content-ID rather than positional order", async () => {
@@ -2071,20 +2072,22 @@ describe("the comment capability on a scope node", () => {
   });
 });
 
-describe("the capabilities a scope node carries for sharing and moves", () => {
-  it("reads the capabilities a sharing or move proof decides from", async () => {
+describe("the capabilities a scope node carries for sharing, moves and renames", () => {
+  it("reads the capabilities a sharing, move or rename proof decides from", async () => {
     let calls = stubFetch([batchResponse([
       { status: 200, body: JSON.stringify({
         id: "folder-1", mimeType: FOLDER_MIME_TYPE, parents: ["p"], driveId: "drive-1",
         trashed: false,
         capabilities: {
           canListChildren: true, canComment: true, canShare: true, canAddChildren: true,
-          canMoveItemWithinDrive: true,
+          canMoveItemWithinDrive: true, canRename: true,
         },
       }) },
       { status: 200, body: JSON.stringify({
         id: "doc-1", parents: ["folder-1"], trashed: false,
-        capabilities: { canShare: false, canAddChildren: false, canMoveItemWithinDrive: false },
+        capabilities: {
+          canShare: false, canAddChildren: false, canMoveItemWithinDrive: false, canRename: false,
+        },
       }) },
       { status: 200, body: JSON.stringify({ id: "doc-2", capabilities: {} }) },
     ])]);
@@ -2093,11 +2096,11 @@ describe("the capabilities a scope node carries for sharing and moves", () => {
       {
         id: "folder-1", mimeType: FOLDER_MIME_TYPE, driveId: "drive-1", parents: ["p"],
         trashed: false, canListChildren: true, canComment: true, canShare: true,
-        canAddChildren: true, canMoveItemWithinDrive: true,
+        canAddChildren: true, canMoveItemWithinDrive: true, canRename: true,
       },
       {
         id: "doc-1", parents: ["folder-1"], trashed: false, canShare: false,
-        canAddChildren: false, canMoveItemWithinDrive: false,
+        canAddChildren: false, canMoveItemWithinDrive: false, canRename: false,
       },
       // A part that carries no capability has none, which every caller reads as "cannot".
       { id: "doc-2" },
@@ -2108,7 +2111,7 @@ describe("the capabilities a scope node carries for sharing and moves", () => {
     }
   });
 
-  it.each(["canShare", "canAddChildren", "canMoveItemWithinDrive"])(
+  it.each(["canShare", "canAddChildren", "canMoveItemWithinDrive", "canRename"])(
     "rejects a %s that is not a boolean instead of guessing", async capability => {
       stubFetch([batchResponse([
         { status: 200, body: JSON.stringify({ id: "doc-1", capabilities: { [capability]: "yes" } }) },
@@ -2777,16 +2780,69 @@ describe("swapParent", () => {
   });
 });
 
-/** Each sharing change and the move, as one call on `drive`. */
+describe("renameFile", () => {
+  it("renames a file by patching its name alone", async () => {
+    let calls = stubFetch([jsonResponse({ id: "F", name: "Budget 2027" })]);
+
+    await expect(api().renameFile("F", "Budget 2027"))
+      .resolves.toStrictEqual({ id: "F", name: "Budget 2027" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].url.href).toBe("https://www.googleapis.com/drive/v3/files/F" +
+      "?fields=id%2Cname&supportsAllDrives=true");
+    expect(calls[0].body).toBe(JSON.stringify({ name: "Budget 2027" }));
+    expect(calls[0].headers.get("Content-Type")).toBe("application/json");
+    expectNoAuthority(calls[0]);
+  });
+
+  it("hands back whatever name Drive holds afterwards, for the caller to judge", async () => {
+    stubFetch([jsonResponse({ id: "F", name: "Budget" })]);
+    await expect(api().renameFile("F", "Budget 2027"))
+      .resolves.toStrictEqual({ id: "F", name: "Budget" });
+  });
+
+  it.each([
+    ["for another file", { id: "G", name: "Budget 2027" }],
+    ["without the file's name", { id: "F" }],
+    ["with a name that is not a string", { id: "F", name: 7 }],
+    ["that is not an object", "F"],
+  ])("refuses an answer %s", async (_case, answer) => {
+    stubFetch([jsonResponse(answer)]);
+    let error: unknown = await api().renameFile("F", "Budget 2027")
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    // The rename was made all the same, so nothing about it reads as refused.
+    expect(driveWriteFailure(error, { repeatable: true })).toBe("unknown");
+  });
+
+  it("never sends an ID that is not a file's", async () => {
+    let calls = stubFetch([]);
+    await expect(api().renameFile("x/y", "Budget")).rejects.toThrow("Not a Google Drive file ID.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("leaves open a rename refused for its answer's mask, which Drive makes first", async () => {
+    stubFetch([jsonResponse(
+      { error: { code: 400, errors: [{ reason: "invalidParameter" }] } }, 400)]);
+    let error: unknown = await api().renameFile("F", "Budget 2027")
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ status: 400, reason: "invalidParameter" });
+    expect(driveWriteFailure(error, { repeatable: true })).toBe("unknown");
+  });
+});
+
+/** Each sharing change, the move and the rename, as one call on `drive`. */
 const REPEATABLE_WRITES = [
   ["a share", (drive: DriveApi) => drive.createPermission(
     "doc-1", { type: "anyone", role: "reader" }, { notify: false })],
   ["a role change", (drive: DriveApi) => drive.updatePermission("doc-1", "anyone", "reader")],
   ["a removal", (drive: DriveApi) => drive.deletePermission("doc-1", "anyone")],
   ["a move", (drive: DriveApi) => drive.swapParent("F", { addParent: "T", removeParent: "S" })],
+  ["a rename", (drive: DriveApi) => drive.renameFile("F", "Budget 2027")],
 ] as const;
 
-describe("how a sharing change or a move is sent", () => {
+describe("how a sharing change, a move or a rename is sent", () => {
   it.each(REPEATABLE_WRITES)(
     "sends %s once, with a timeout, whatever a 5xx or the network says", async (_what, write) => {
       let timeout = vi.spyOn(AbortSignal, "timeout");

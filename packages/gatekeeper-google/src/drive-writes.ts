@@ -170,7 +170,8 @@ export type WriteAttempt = {
   at: number;
   /**
    * The IDs of what was already there and looks like what this send makes: for a reply, the
-   * account's replies on the comment. A sharing change's and a move's marker notes none.
+   * account's replies on the comment. A sharing change's, a move's and a rename's marker notes
+   * none.
    */
   existing?: string[];
   /** Earlier sends of this write proven to have made nothing, counted for one given a limit. */
@@ -223,7 +224,7 @@ export type DriveWritesHost = {
   api: Pick<DriveApi,
     "getScopeNodes" | "getComment" | "listComments" | "listReplies" | "createComment" |
     "createReply" | "listPermissions" | "createPermission" | "updatePermission" |
-    "deletePermission" | "swapParent">;
+    "deletePermission" | "swapParent" | "renameFile" | "getFile">;
   /** The Docs API, through which comments that quote a Doc and suggested edits are sent. */
   docs: Pick<GoogleDocsApi,
     "getDocumentWithSuggestions" | "getRevisionId" | "insertComment" | "suggest" |
@@ -320,6 +321,20 @@ export async function proveTarget(
  */
 export function isLiftable(refusal: string): boolean {
   return refusal === WRITES_GRANT_MISSING || refusal === DEPLOYMENT_READ_ONLY;
+}
+
+/**
+ * Leaves a write pending, under the binding's own refusal, when that is one a later approval can
+ * pass. A token without the Drive scope reads every file as one the account cannot see, so a look
+ * that proved nothing asks this before it takes the file for gone.
+ */
+export async function waitWhileRefused(
+  host: Pick<DriveWritesHost, "writeRefusal">, cause?: unknown,
+): Promise<void> {
+  let refused = await host.writeRefusal();
+  if (refused !== undefined && isLiftable(refused)) {
+    throw new Error(refused, cause === undefined ? undefined : { cause });
+  }
 }
 
 /**

@@ -55,6 +55,8 @@ function scoped(scope: DriveBindingScope, nodes: Partial<Record<string, DriveSco
       updatePermission: vi.fn<DriveApi["updatePermission"]>(unexpected),
       deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
       swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
+      renameFile: vi.fn<DriveApi["renameFile"]>(unexpected),
+      getFile: vi.fn<DriveApi["getFile"]>(unexpected),
     },
     scope: () => scope,
   };

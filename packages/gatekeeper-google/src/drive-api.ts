@@ -104,9 +104,9 @@ export type DriveFile = {
  * asked about and must never see, so it fetches only what membership is decided from, plus what
  * this account may do, which a write is checked against in the same read. Each capability is what
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
- * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canEdit` an edit
- * of a Doc, Sheet or Slides file. One a part does not carry is absent here, which reads as
- * "cannot".
+ * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canRename` a
+ * rename's file, `canEdit` an edit of a Doc, Sheet or Slides file. One a part does not carry is
+ * absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
@@ -121,6 +121,7 @@ export type DriveScopeNode = {
   canShare?: boolean;
   canAddChildren?: boolean;
   canMoveItemWithinDrive?: boolean;
+  canRename?: boolean;
   canEdit?: boolean;
   /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
   shortcutTargetId?: string;
@@ -129,7 +130,7 @@ export type DriveScopeNode = {
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canEdit)";
+  "canRename,canEdit)";
 
 /** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
 const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
@@ -679,6 +680,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   let canShare = optionalCapability(value.capabilities, "canShare");
   let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
+  let canRename = optionalCapability(value.capabilities, "canRename");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
   let shortcutTargetId: string | undefined;
   if (value.shortcutDetails !== undefined) {
@@ -696,6 +698,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
     ...(canShare === undefined ? {} : { canShare }),
     ...(canAddChildren === undefined ? {} : { canAddChildren }),
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
+    ...(canRename === undefined ? {} : { canRename }),
     ...(canEdit === undefined ? {} : { canEdit }),
     ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
@@ -1793,6 +1796,25 @@ export class DriveApi {
       throw new Error("Google Drive answered a move without the file's parents");
     }
     return { id: fileId, parents };
+  }
+
+  /**
+   * Renames a file or folder and returns its name as Drive holds it afterwards. Drive renames
+   * before it reads the response mask, and keeps an empty name's file as it was.
+   * Never replayed on a 429, a 5xx or a timeout (see {@link driveWriteFailure}).
+   */
+  async renameFile(fileId: string, name: string): Promise<{ id: string; name: string }> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({ fields: "id,name", supportsAllDrives: "true" });
+    let body = await this.#writeJson(
+      "PATCH", `/files/${encodeURIComponent(fileId)}`, params, { name });
+    if (!isRecord(body) || body.id !== fileId) {
+      throw new Error("Google Drive answered a rename for a different file");
+    }
+    if (typeof body.name !== "string") {
+      throw new Error("Google Drive answered a rename without the file's name");
+    }
+    return { id: fileId, name: body.name };
   }
 
   /**

@@ -34,6 +34,9 @@ const SHARED_DRIVE_ROOT =
 const MY_DRIVE_ROOT_SHARING =
   "The top level of My Drive itself is neither listed nor shared here. Share a file or a folder " +
   "in it instead.";
+const SHARED_DRIVE_ROOT_RENAME =
+  "A shared drive's top level is the drive itself, which is renamed in Google Drive, not here.";
+const MY_DRIVE_ROOT_RENAME = "The top level of My Drive cannot be renamed.";
 
 /** The refusal of a move on a single-file binding, which has no second folder to move into. */
 export const MOVE_SINGLE_FILE =
@@ -232,18 +235,33 @@ export type DriveWriteTarget = {
   folderIds?: string[];
   /** Folder binding: the target is the positioned folder itself. */
   self?: true;
+  /** The target is in the trash, which only an account or file binding reaches. */
+  trashed?: true;
 };
 
 /**
- * What a write target is proved for: the observation's wording, and whether the positioned folder
- * itself counts.
+ * What a write target is proved for: the observation's wording, whether the positioned folder
+ * itself counts, and, for a purpose a drive's own top level is refused for, what each is refused
+ * with.
  */
-type TargetPurpose = { title: string; noun: "comments" | "sharing"; allowSelf: boolean };
+type TargetPurpose = {
+  title: string;
+  noun: "comments" | "sharing" | "name";
+  allowSelf: boolean;
+  roots?: { myDrive: string; sharedDrive: string };
+};
 
 const COMMENT_TARGET: TargetPurpose =
   { title: "Open Google Drive comments", noun: "comments", allowSelf: false };
-const SHARING_TARGET: TargetPurpose =
-  { title: "Open Google Drive sharing", noun: "sharing", allowSelf: true };
+const SHARING_TARGET: TargetPurpose = {
+  title: "Open Google Drive sharing", noun: "sharing", allowSelf: true,
+  roots: { myDrive: MY_DRIVE_ROOT_SHARING, sharedDrive: SHARED_DRIVE_ROOT },
+};
+// Drive renames a shared drive through drives.update, and refuses to rename the My Drive root.
+const RENAME_TARGET: TargetPurpose = {
+  title: "Rename a Google Drive file", noun: "name", allowSelf: true,
+  roots: { myDrive: MY_DRIVE_ROOT_RENAME, sharedDrive: SHARED_DRIVE_ROOT_RENAME },
+};
 
 /** A file as a write's scope check found it, with the folder binding's `path` to it. */
 function writeTarget(
@@ -254,6 +272,8 @@ function writeTarget(
     name: file.name,
     ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     isFolder: file.mimeType === FOLDER_MIME_TYPE,
+    // Checked again at apply, where a file Drive does not say is live counts as trashed.
+    ...(file.trashed ? { trashed: true } : {}),
     ...path,
   };
 }
@@ -620,23 +640,24 @@ abstract class DriveCoreBase {
 
   /**
    * Authorizes the scope proof of a write target, reporting `units`: what reading the file
-   * reports. A sharing target has two refusals of its own. The connected account's own My Drive
-   * root is refused before anything is reported, relative to that account: no other account can
-   * see that folder, so its unit would be a requirement nobody passes. A shared drive's root is
-   * refused after its units are reported: that it is one is the file's own metadata.
+   * reports. A sharing or rename target has two refusals of its own. The connected account's own
+   * My Drive root is refused before anything is reported, relative to that account: no other
+   * account can see that folder, so its unit would be a requirement nobody passes. A shared
+   * drive's root is refused after its units are reported: that it is one is the file's own
+   * metadata.
    */
   protected async authorizeTarget(
     file: DriveFile, units: DriveObservation[], purpose: TargetPurpose,
   ): Promise<void> {
-    let sharing = purpose.noun === "sharing";
+    let { roots } = purpose;
     let description =
       `Check current metadata for Drive file ${file.id} to work with its ${purpose.noun}.`;
-    if (sharing && await this.isOwnMyDriveRoot(file)) {
+    if (roots && await this.isOwnMyDriveRoot(file)) {
       await this.authorizeAccountRelative(purpose.title, description);
-      throw new Error(MY_DRIVE_ROOT_SHARING);
+      throw new Error(roots.myDrive);
     }
     await this.authorizeUnits(units, purpose.title, description);
-    if (sharing && file.driveId === file.id) throw new Error(SHARED_DRIVE_ROOT);
+    if (roots && file.driveId === file.id) throw new Error(roots.sharedDrive);
   }
 
   /** Authorizes handing the caller `count` ways of access to file `fileId`, reporting `units`. */
@@ -645,6 +666,18 @@ abstract class DriveCoreBase {
   ): Promise<void> {
     return this.authorizeUnits(units, "Read Google Drive sharing",
       `Read ${count} ${count === 1 ? "way" : "ways"} of access to Drive file ${fileId}.`);
+  }
+
+  /**
+   * Refuses a file the connected account cannot rename. The answer is that account's own, so a
+   * refusal is the call's one report and names no subresource.
+   */
+  async requireRenamable(fileId: string): Promise<void> {
+    let [file] = await this.api.getScopeNodes([fileId]);
+    if (file?.canRename === true) return;
+    await this.authorizeAccountRelative("Check Google Drive file access",
+      `Check whether the connected account can rename Drive file ${fileId}.`);
+    throw new Error(`The connected account cannot rename Drive file ${fileId}.`);
   }
 
   /**
@@ -828,6 +861,11 @@ export class DriveSessionCore extends DriveCoreBase {
   /** Validate and authorize one file or folder whose sharing is about to be read or changed. */
   async sharingTarget(fileId: string): Promise<DriveWriteTarget> {
     return this.#writeTarget(fileId, SHARING_TARGET);
+  }
+
+  /** Validate and authorize one file or folder that is about to be renamed. */
+  async renameTarget(fileId: string): Promise<DriveWriteTarget> {
+    return this.#writeTarget(fileId, RENAME_TARGET);
   }
 
   /**
@@ -1145,6 +1183,14 @@ export class DriveFolderSessionCore extends DriveCoreBase {
    */
   async sharingTarget(fileId: string): Promise<DriveWriteTarget> {
     return this.#writeTarget(fileId, SHARING_TARGET);
+  }
+
+  /**
+   * Validate and authorize one direct child, or the positioned folder itself, that is about to be
+   * renamed.
+   */
+  async renameTarget(fileId: string): Promise<DriveWriteTarget> {
+    return this.#writeTarget(fileId, RENAME_TARGET);
   }
 
   /**

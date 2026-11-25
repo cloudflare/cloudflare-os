@@ -64,6 +64,9 @@ import {
   hasPendingMove, MOVE_DESTINATION_WAITING, MOVE_PENDING, MOVE_WAITING,
 } from "./drive-moves";
 import {
+  hasPendingRename, newFileName, RENAME_PENDING, RENAME_SAME_NAME, RENAME_TRASHED,
+} from "./drive-renames";
+import {
   ACCESS_WAITING_CHANGE, ACCESS_WAITING_REMOVE, CHANGE_PENDING, checkAccessName, checkShare,
   hasPendingChange, hasPendingShare, overlayPendingAccess, pendingAccess, pendingAccessRefusal,
   planShare, planUnshare, planUpdate, readPermissions, SHARE_PENDING, toAccessEntries,
@@ -3256,6 +3259,27 @@ export class GoogleDriveSessionImpl extends RpcTarget
     }, actorFence(actor));
   }
 
+  async rename(fileId: string, name: string): Promise<void> {
+    await this.#requireWritable();
+    let toName = newFileName(name);
+    let core = this.#core;
+    let target = await core.renameTarget(fileId);
+    if (target.trashed) throw new Error(RENAME_TRASHED);
+    if (target.name === toName) throw new Error(RENAME_SAME_NAME);
+    await core.requireRenamable(target.fileId);
+    await this.#refuseBehindMove(target);
+    await this.#refuseQueued(pending =>
+      hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined);
+    await this.#writes.submit(this.#approvalQueue, "renameFile", {
+      fileId: target.fileId,
+      ...(target.folderIds ? { folderIds: target.folderIds } : {}),
+      ...(target.self ? { self: true as const } : {}),
+      ...(target.isFolder ? { isFolder: true as const } : {}),
+      fromName: target.name,
+      toName,
+    });
+  }
+
   /**
    * Refuses a write this binding may not make: one in a folder opened through a shortcut, or one
    * `writeRefusal()` refuses because the deployment keeps Google Drive read-only, the binding is
@@ -3650,6 +3674,10 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
   }
 
   async move(_fileId: string, _folderId: string): Promise<void> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async rename(_fileId: string, _name: string): Promise<void> {
     throw new Error(UNCREATED_FOLDER);
   }
 

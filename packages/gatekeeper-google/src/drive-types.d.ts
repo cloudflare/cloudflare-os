@@ -239,13 +239,33 @@ export interface DriveSharing {
   unshare(fileId: string, access: string | DriveGrantee): Promise<void>;
 }
 
+/** Renames, which every Google Drive binding with read and write access offers. */
+export interface DriveRenames {
+  /**
+   * Queue renaming an in-scope file or folder: on a folder binding, a live direct child of the
+   * positioned folder or the positioned folder itself. `name` is trimmed and must then be one line
+   * of 1 to 256 characters, and differ from the current name. Renaming changes nothing else,
+   * including who has access. Something in the trash, the top level of My Drive and a shared
+   * drive's top level cannot be renamed, nor anything the connected account cannot rename.
+   *
+   * The rename is made once it is approved: by the user, or at once by a rule the user turned on
+   * that approves renames on this connection without asking. Until then every read shows the
+   * current name, and a second rename of the same file fails; read the name again to learn
+   * whether it was made. If the file is renamed some other way first, the approved rename is not
+   * made. Fails, saying what to ask the user for, when the Google account
+   * does not allow changes to Drive files, and on a read-only binding, whose `getScope()` reports
+   * `access: "read"`.
+   */
+  rename(fileId: string, name: string): Promise<void>;
+}
+
 /**
  * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
  * anywhere the connected account can reach in Google Drive, plus edits of Google Docs, Sheets and
- * Slides files, comment writes, sharing and moves.
+ * Slides files, comment writes, sharing, moves and renames.
  */
 export interface GoogleDriveSession
-    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing, DriveRenames {
   /**
    * Open an in-scope native Google Doc as an independently disposable capability that reads it
    * and queues edits to it, each for the user's approval, as one connected on its own does. Its
@@ -288,10 +308,10 @@ export interface GoogleDriveSession
 /**
  * An exact-file binding with read and write access: everything {@link GoogleDriveReadSession}
  * reads of its one Drive file, the only file its methods accept, plus edits when it is a Google
- * Docs, Sheets or Slides file, comment writes and sharing on it. It cannot move the file.
+ * Docs, Sheets or Slides file, comment writes, sharing and renaming it. It cannot move the file.
  */
 export interface GoogleDriveFileSession
-    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing, DriveRenames {
   /**
    * Open an in-scope native Google Doc as an independently disposable capability that reads it
    * and queues edits to it, each for the user's approval, as one connected on its own does. Its
@@ -316,13 +336,14 @@ export interface GoogleDriveFileSession
 /**
  * A folder binding with read and write access: navigation within the originally selected folder as
  * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Docs, Sheets and Slides
- * files among the positioned folder's direct children, comment writes on those children, sharing of them
- * and of the positioned folder itself, and moves within the originally selected folder. Writes do
- * not follow shortcuts: a shortcut's target, and anything in a folder opened through one, can be
- * read but not edited, commented on, shared, listed for who it is shared with, or moved.
+ * files among the positioned folder's direct children, comment writes on those children, sharing
+ * and renaming of them and of the positioned folder itself, and moves within the originally
+ * selected folder. Writes do not follow shortcuts: a shortcut's target, and anything in a folder
+ * opened through one, can be read but not edited, commented on, shared, listed for who it is shared
+ * with, moved or renamed.
  */
 export interface GoogleDriveFolderSession
-    extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
+    extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing, DriveRenames {
   /**
    * Open a live direct-child native Google Doc as an independently disposable capability that
    * reads it and queues edits to it, each for the user's approval, as one connected on its own
@@ -357,12 +378,12 @@ export interface GoogleDriveFolderSession
    * this one was opened from. Nothing moves above the originally selected folder, or into it from
    * outside.
    *
-   * While the move awaits approval, a comment, a sharing change or another move is refused for the
-   * same file and, when it is a folder, for anything inside it and for a move into it, since each
-   * would be approved for a place the file has left: queue those before the move, or, once it is
-   * decided, from the folder the file is then in. One queued before the move fails if the move is
-   * approved ahead of it. Once a folder has moved, a session opened at it no longer reaches it:
-   * open the folder again from where it now is.
+   * While the move awaits approval, a comment, a sharing change, a rename or another move is
+   * refused for the same file and, when it is a folder, for anything inside it and for a move into
+   * it, since each would be approved for a place the file has left: queue those before the move,
+   * or, once it is decided, from the folder the file is then in. One queued before the move fails
+   * if the move is approved ahead of it. Once a folder has moved, a session opened at it no longer
+   * reaches it: open the folder again from where it now is.
    *
    * Otherwise as {@link GoogleDriveSession.move}, except that `root` names nothing here.
    */

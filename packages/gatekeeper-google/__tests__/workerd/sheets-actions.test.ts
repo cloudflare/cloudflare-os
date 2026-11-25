@@ -1084,7 +1084,7 @@ const THROUGH_DRIVE: Run = {
   kind: ({ tag, label }) => ({ tag, label: `${label}, in any spreadsheet this connection reaches` }),
   opened: ["Check current metadata for Drive file sheet-1 and open it as a Google Sheet."],
   catalog: kinds => [
-    { tag: "driveComments", label: "Drive comments" },
+    { tag: "driveComments", label: "Drive comments" }, { tag: "driveRenames", label: "Drive renames" },
     ...kinds.map(kind => THROUGH_DRIVE.kind(kind)),
   ],
   outOfOrder: () => EDIT_OUT_OF_ORDER,
@@ -2991,6 +2991,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     { scope: typeof ACCOUNT.scope; access: "write"; deployment: "read" } | { scope: typeof ACCOUNT.scope };
   const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
   const COMMENTS = { tag: "driveComments", label: "Drive comments" };
+  const RENAMES = { tag: "driveRenames", label: "Drive renames" };
   const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
   const DEPLOYMENT_READ_ONLY =
     "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
@@ -3289,11 +3290,11 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
   it("lists the spreadsheets' kinds where the binding can edit them", async () => {
     serve(budget());
     expect(await connection(ACCOUNT).autoApprovable())
-      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, RENAMES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
 
     let spreadsheetFile = connection(fileBinding("sheet-1"));
-    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS]);
+    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS, RENAMES]);
     await spreadsheetFile.describe();
-    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS, ...DRIVE_SHEETS_KINDS]);
+    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS, RENAMES, ...DRIVE_SHEETS_KINDS]);
   });
 });

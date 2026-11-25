@@ -16,6 +16,7 @@ import { FakeKv } from "./fake-kv";
 const COMMENTS: ActionKind = { tag: "driveComments", label: "Drive comments" };
 const SHARING: ActionKind = { tag: "driveSharing", label: "Drive sharing" };
 const MOVES: ActionKind = { tag: "driveMoves", label: "Drive moves" };
+const RENAMES: ActionKind = { tag: "driveRenames", label: "Drive renames" };
 
 /** The writes of the Drive API itself, apart from the edits of native files. */
 type DriveWrite =
@@ -31,13 +32,14 @@ const DECLARED: Record<DriveWrite, { actionKind: ActionKind; autoApprovable: boo
   updatePermission: { actionKind: SHARING, autoApprovable: false },
   deletePermission: { actionKind: SHARING, autoApprovable: false },
   moveFile: { actionKind: MOVES, autoApprovable: false },
+  renameFile: { actionKind: RENAMES, autoApprovable: true },
 };
 
-/** The names the eight definitions' records are stored under. */
+/** The names the nine definitions' records are stored under. */
 const NAMES = [
   "createComment", "createReply", "resolveComment", "suggestEdit", "createPermission",
   "updatePermission",
-  "deletePermission", "moveFile",
+  "deletePermission", "moveFile", "renameFile",
 ] as const satisfies readonly DriveWrite[];
 
 /** The kinds made as one Google account, which are staged and applied under a fence. */
@@ -82,6 +84,8 @@ const REMOVAL: DriveActions["deletePermission"] = {
 };
 const MOVE: DriveActions["moveFile"] =
   { ...TARGET, fromFolderId: "A", toFolderId: "B", toName: "Archive" };
+const RENAME: DriveActions["renameFile"] =
+  { fileId: "F", fromName: "Plan.pdf", toName: "Plan 2026.pdf" };
 
 /** A person's permission given on the file itself, as Drive lists one. */
 function person(
@@ -127,16 +131,18 @@ const NO_DOCS: DriveWritesHost["docs"] = {
 /**
  * The Drive set bound over an in-memory journal, as an all-of-Drive binding's gatekeeper binds it.
  * Its Drive holds file `F` in folder `A`, beside folder `B`, shared with Bob and Carol, and
- * answers the writes a case sends: a comment, a share, a role change, a removal and a move.
+ * answers the writes a case sends: a comment, a share, a role change, a removal, a move and a
+ * rename.
  */
 function harness() {
   let nodes: Record<string, DriveScopeNode> = {
     A: folder("A"), B: folder("B"),
     F: {
       id: "F", mimeType: "application/pdf", parents: ["A"], trashed: false, canComment: true,
-      canShare: true, canMoveItemWithinDrive: true,
+      canShare: true, canMoveItemWithinDrive: true, canRename: true,
     },
   };
+  let names: Record<string, string> = { F: "Plan.pdf" };
   let permissions = [
     person(OWNER_ID, "Me", "owner"), person(BOB_ID, "Bob", "reader"),
     person(CAROL_ID, "Carol", "commenter"),
@@ -179,6 +185,11 @@ function harness() {
       nodes[fileId] = { ...nodes[fileId], parents: [addParent] };
       return { id: fileId, parents: [addParent] };
     }),
+    renameFile: vi.fn<DriveApi["renameFile"]>(async (fileId, name) => {
+      names[fileId] = name;
+      return { id: fileId, name };
+    }),
+    getFile: vi.fn<DriveApi["getFile"]>(async fileId => ({ id: fileId, name: names[fileId] })),
   };
   let attempts = new Map<number, WriteAttempt>();
   let host: DriveWritesHost & DriveEditorsHost = {
@@ -221,9 +232,11 @@ function harness() {
     /** How many requests that change something have been made of Drive. */
     sends: () => api.createComment.mock.calls.length + api.createReply.mock.calls.length +
       api.createPermission.mock.calls.length + api.updatePermission.mock.calls.length +
-      api.deletePermission.mock.calls.length + api.swapParent.mock.calls.length,
-    /** Where the file is and who it is shared with, as Drive holds them now. */
+      api.deletePermission.mock.calls.length + api.swapParent.mock.calls.length +
+      api.renameFile.mock.calls.length,
+    /** What the file is called, where it is and who it is shared with, as Drive holds them now. */
     drive: () => ({
+      name: names.F,
       parents: nodes.F.parents,
       access: permissions.map(({ emailAddress, role }) => [emailAddress, role]),
     }),
@@ -231,7 +244,7 @@ function harness() {
 }
 
 describe("Drive actions", () => {
-  it("declares the eight Drive writes under three kinds, none of which can be reverted", async () => {
+  it("declares the nine Drive writes under four kinds, none of which can be reverted", async () => {
     let { actions, journal, described, submit } = harness();
     let ids: Record<DriveWrite, number> = {
       createComment: await submit("createComment", COMMENT),
@@ -242,6 +255,7 @@ describe("Drive actions", () => {
       updatePermission: await submit("updatePermission", RAISE),
       deletePermission: await submit("deletePermission", REMOVAL),
       moveFile: await submit("moveFile", MOVE),
+      renameFile: await submit("renameFile", RENAME),
     };
     // A queued write resolves its definition by the name its record is stored under.
     expect(journal.listUndecided().map(entry => entry.action.kind)).toEqual(NAMES);
@@ -250,13 +264,15 @@ describe("Drive actions", () => {
     for (let name of NAMES) {
       let card = described.get(ids[name]);
       expect(card, name).toMatchObject({ ...DECLARED[name], implementsRevert: false });
-      // Only a move waits for its decision: every other write is shown as if made.
-      if (name === "moveFile") expect(card, name).toHaveProperty("awaitDecision", true);
+      // Only a move and a rename wait for their decision: every other write is shown as if made.
+      if (name === "moveFile" || name === "renameFile") {
+        expect(card, name).toHaveProperty("awaitDecision", true);
+      }
       else expect(card, name).not.toHaveProperty("awaitDecision");
     }
 
     // Then the kinds of the native files' edits (drive-editors.test.ts).
-    expect(actions.autoApprovableKinds()[0]).toEqual(COMMENTS);
+    expect(actions.autoApprovableKinds().slice(0, 2)).toEqual([COMMENTS, RENAMES]);
     expect(actions.autoApprovableKinds()).not.toContainEqual(SHARING);
     expect(actions.autoApprovableKinds()).not.toContainEqual(MOVES);
     expect(actions.retainsApplied).toBe(false);
@@ -274,7 +290,7 @@ describe("Drive actions", () => {
     ]);
   });
 
-  it("fences sharing and moves on the account, and comments on nothing", async () => {
+  it("fences sharing and moves on the account, and comments and renames on nothing", async () => {
     let { api, actions, journal, queue, described, submit, requests } = harness();
 
     // A write made as one Google account cannot be queued without naming it.
@@ -292,6 +308,8 @@ describe("Drive actions", () => {
       () => actions.submit(queue, "createComment", COMMENT, { fence }),
       () => actions.submit(queue, "createReply", REPLY, { fence }),
       () => actions.submit(queue, "resolveComment", RESOLVE, { fence }),
+      // A rename changes no access, so it is not tied to the account either.
+      () => actions.submit(queue, "renameFile", RENAME, { fence }),
     ]) {
       await expect(fenced()).rejects.toThrow(/authority-independent/);
     }
@@ -328,19 +346,23 @@ describe("Drive actions", () => {
     let removal = await submit("deletePermission", REMOVAL);
     let move = await submit("moveFile", MOVE);
     let comment = await submit("createComment", COMMENT);
+    let rename = await submit("renameFile", RENAME);
     let fenced = [share, raise, removal, move];
+    let unfenced = [comment, rename];
 
     for (let id of fenced) {
       await expect(actions.apply(id, { generation })).resolves.toBeUndefined();
     }
-    await expect(actions.apply(comment)).resolves.toBeUndefined();
+    for (let id of unfenced) await expect(actions.apply(id)).resolves.toBeUndefined();
     expect(api.createPermission).toHaveBeenCalledTimes(1);
     expect(api.updatePermission.mock.calls).toEqual([["F", BOB_ID, "writer"]]);
     expect(api.deletePermission.mock.calls).toEqual([["F", CAROL_ID]]);
     expect(api.swapParent.mock.calls).toEqual([["F", { addParent: "B", removeParent: "A" }]]);
     expect(api.createComment.mock.calls).toEqual([["F", COMMENT.content]]);
-    expect(sends()).toBe(5);
+    expect(api.renameFile.mock.calls).toEqual([["F", "Plan 2026.pdf"]]);
+    expect(sends()).toBe(6);
     let changed = {
+      name: "Plan 2026.pdf",
       parents: ["B"],
       access: [
         ["me@example.com", "owner"], ["bob@example.com", "writer"], ["zoe@example.com", "reader"],
@@ -349,7 +371,7 @@ describe("Drive actions", () => {
     expect(drive()).toEqual(changed);
 
     // Each record is retired as its apply returns, and no retained tier holds a copy of one.
-    for (let id of [...fenced, comment]) expect(journal.get(id)).toBeUndefined();
+    for (let id of [...fenced, ...unfenced]) expect(journal.get(id)).toBeUndefined();
     expect(journal.listUndecided()).toEqual([]);
     expect(journal.listRetained({ limit: 10 }).entries).toEqual([]);
 
@@ -358,12 +380,12 @@ describe("Drive actions", () => {
     for (let id of fenced) {
       await expect(actions.apply(id, { generation })).resolves.toBeUndefined();
     }
-    await expect(actions.apply(comment)).resolves.toBeUndefined();
+    for (let id of unfenced) await expect(actions.apply(id)).resolves.toBeUndefined();
     expect(requests()).toBe(asked);
     expect(drive()).toEqual(changed);
 
     // What was applied is not undone by rejecting it.
-    for (let id of [...fenced, comment]) {
+    for (let id of [...fenced, ...unfenced]) {
       await expect(actions.reject(id)).rejects.toThrow(`Action ${id} is no longer pending.`);
     }
     expect(requests()).toBe(asked);
