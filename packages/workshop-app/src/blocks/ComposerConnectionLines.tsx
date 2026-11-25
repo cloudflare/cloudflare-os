@@ -50,7 +50,7 @@ const ASK = 'h-6 shrink-0 px-2.5 text-sm'
 const Line = ({ connection, onRemove }: { connection: ComposerConnection; onRemove: () => void }) => {
   const { ask } = connection
   return (
-    <div className="flex h-9 items-center gap-2 rounded-[15px] bg-kumo-base ps-1 pe-1.5 text-sm ring-1 ring-kumo-line ring-inset">
+    <div className="flex h-9 items-center gap-2 rounded-[15px] bg-kumo-base ps-1.5 pe-1.5 text-sm ring-1 ring-kumo-line ring-inset">
       <ServiceLogo name={connection.service.name} src={connection.service.logoUrl} glyph={connection.service.glyph} color={connection.service.color} tiny />
       <span className="sr-only">Adding the connection:</span>
       <span className="min-w-0 shrink truncate font-medium text-kumo-default">{connection.title}</span>
