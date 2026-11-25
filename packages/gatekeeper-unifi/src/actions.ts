@@ -41,8 +41,11 @@ import type { UnifiDoorbellMessage, UnifiLightMode } from "./protect-types";
 /** What an approved action is carried out against: the bound console. */
 export type UnifiActionHost = {
   api: UnifiApi;
-  /** The same API, never answered from the cache: for what a change checks just before it's sent. */
-  fresh: UnifiApi;
+  /**
+   * Restarts a device that isn't the gateway, which UniFi is asked about once the restart's turn
+   * comes (`UnifiAccount.restartDevice`).
+   */
+  restartDevice: (siteId: string, deviceId: string) => Promise<void>;
   /** Writes a WiFi change through the account, which serializes them per network. */
   updateWifi: (siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges) => Promise<void>;
   /** Keeps the IDs of the vouchers a batch created, for `getVoucherBatch()`. */
@@ -149,30 +152,6 @@ async function carryOut(action: () => Promise<void>, options: { idempotent: bool
   }
 }
 
-/**
- * Refuses, before anything is sent, a restart under the device rule of a device UniFi now calls the
- * site's gateway, or no longer says the role of. The rule is auto-approvable only because restarting
- * anything but the gateway leaves the network up, and the device list read at submission may have
- * been cached, or changed while the restart waited for its decision.
- */
-async function stillNotGateway(api: UnifiApi, siteId: string, deviceId: string): Promise<void> {
-  let gateway: boolean | null;
-  try {
-    gateway = await api.isGateway(siteId, deviceId);
-  } catch (error) {
-    if (provablyNoEffect(error)) throw new ActionApplyError((error as UnifiError).message);
-    throw error;
-  }
-  if (gateway === true) {
-    throw new ActionApplyError("UniFi now says this device is the site's gateway, whose restart takes the network " +
-      "down, so it wasn't restarted. Submit the restart again to ask for it as a gateway restart.");
-  }
-  if (gateway === null) {
-    throw new ActionApplyError("UniFi no longer says what this device does, so it can't be told apart from the " +
-      "gateway, and it wasn't restarted. Restart it in UniFi instead.");
-  }
-}
-
 function quoted(name: string): string {
   return `“${plainInline(name, 80)}”`;
 }
@@ -276,10 +255,7 @@ export const UNIFI_ACTIONS = defineActions<UnifiActionHost, UnifiActionPayloads>
     describe: p => present(`Restart ${quoted(p.deviceName)}`,
       "Restarts this UniFi device. It is offline for a minute or two while it restarts.",
       b => b.inline("Device", p.deviceName).inline("Model", p.model).inline("Device ID", p.deviceId)),
-    apply: async (p, { api, fresh }) => {
-      await stillNotGateway(fresh, p.siteId, p.deviceId);
-      await carryOut(() => api.restartDevice(p.siteId, p.deviceId), { idempotent: false });
-    },
+    apply: (p, { restartDevice }) => carryOut(() => restartDevice(p.siteId, p.deviceId), { idempotent: false }),
   },
   restartGateway: {
     kind: KINDS.restartGateway,

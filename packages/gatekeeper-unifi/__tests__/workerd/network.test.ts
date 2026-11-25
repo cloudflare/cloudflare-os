@@ -184,6 +184,34 @@ describe("a device", () => {
     expect(console.writes()).toEqual([]);
   });
 
+  it("asks about a device restart's role once its turn comes, not before it waits for one", async () => {
+    // A read the console turns away makes its budget wait. The access point becomes the gateway
+    // during the restart's wait, but only after a check made before the wait would have passed.
+    const { console } = installFake();
+    const accountId = await connectCloud();
+    const ap = binding(accountId, RESOURCES.device(HOME.apId));
+    await ap.call("restart");
+    const { actionId } = lastSubmitted(await ap.queue());
+    const roles = console.network!.sites[0]!.devices.find(d => d.overview.id === HOME.apId)!.overview.features as string[];
+    const handle = console.handle.bind(console);
+    let limited = false;
+    let gatewayWhenRestarted: boolean | undefined;
+    console.handle = (app, method, path, query, body) => {
+      if (!limited) {
+        limited = true;
+        return new Response("{}", { status: 429, headers: { "Retry-After": "1", "Content-Type": "application/json" } });
+      }
+      if (method === "GET" && path.endsWith("/devices")) setTimeout(() => roles.push("gateway"), 50);
+      if (method === "POST") gatewayWhenRestarted = roles.includes("gateway");
+      return handle(app, method, path, query, body);
+    };
+    const target = { kind: "app" as const, app: "network" as const, consoleId: HOME.hostId };
+    expect(await account(accountId).request({ target, method: "GET", path: "/v1/info" })).toMatchObject({ ok: false });
+    await ap.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
+    expect(gatewayWhenRestarted).toBe(false);
+  });
+
   it("warns that restarting the gateway takes the network down, and never auto-approves it", async () => {
     installFake();
     const gateway = binding(await connectCloud(), RESOURCES.device(HOME.gatewayId));

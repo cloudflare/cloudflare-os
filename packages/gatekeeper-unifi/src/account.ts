@@ -447,10 +447,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   /**
    * Sends a request to UniFi with this connection's credentials. Failures come back as values,
    * since an error's class doesn't survive RPC.
-   * @param fresh Whether a GET must reach the console rather than be answered from the cache.
    */
-  async request(request: UnifiRequest, fresh = false): Promise<UnifiResponse> {
-    return this.#send(request, fresh ? null : GET_TTL_MS);
+  async request(request: UnifiRequest): Promise<UnifiResponse> {
+    return this.#send(request, GET_TTL_MS);
   }
 
   /**
@@ -491,11 +490,57 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
   }
 
   /**
+   * Restarts a device under the rule for devices other than the gateway, which is auto-approvable
+   * because their restart leaves the network up. UniFi is asked what the device does once the
+   * restart's turn comes, with the same key, and one it then calls the gateway, or doesn't
+   * classify, isn't restarted: its role can change while the restart waits for its decision or
+   * its turn.
+   * @returns The failure, or null once the restart is sent.
+   */
+  async restartDevice(consoleId: string, siteId: string, deviceId: string): Promise<UnifiFailure | null> {
+    const connection = this.#connection();
+    const api = new UnifiApi(request => this.#send(request, null, connection), consoleId);
+    const notGateway = async (): Promise<UnifiResponse | null> => {
+      let gateway: boolean | null;
+      try {
+        gateway = await api.isGateway(siteId, deviceId);
+      } catch (error) {
+        if (!(error instanceof UnifiError)) throw error;
+        // A device that's gone can't be restarted; any other failure proves nothing either way.
+        return failure(error.kind === "notFound" ? error.toFailure() : {
+          kind: "unconfirmed", message: "Couldn't check what this device does, so it wasn't restarted. Try again in a moment.",
+        });
+      }
+      if (gateway === false) return null;
+      return failure({
+        kind: "badRequest",
+        message: gateway
+          ? "UniFi now says this device is the site's gateway, whose restart takes the network down, so it wasn't " +
+            "restarted. Submit the restart again to ask for it as a gateway restart."
+          : "UniFi no longer says what this device does, so it can't be told apart from the gateway, and it wasn't " +
+            "restarted. Restart it in UniFi instead.",
+      });
+    };
+    const restart = new UnifiApi(request => this.#send(request, null, connection, { precondition: notGateway }), consoleId);
+    try {
+      await restart.restartDevice(siteId, deviceId);
+      return null;
+    } catch (error) {
+      if (error instanceof UnifiError) return error.toFailure();
+      throw error;
+    }
+  }
+
+  /**
    * Sends a request; a GET may be answered from the cache unless `ttlMs` is null.
    * @param connection The credentials to send with, if not the ones stored now.
+   * @param options.skipIdentity Whether to send without `#confirmServing`, for its own probes.
+   * @param options.precondition What else must hold once the request's turn comes, checked after
+   * `#confirmServing`: the refusal, or null to send it.
    */
   async #send(
-    request: UnifiRequest, ttlMs: number | null, connection = this.#connection(), skipIdentity = false,
+    request: UnifiRequest, ttlMs: number | null, connection = this.#connection(),
+    options: { skipIdentity?: boolean; precondition?: () => Promise<UnifiResponse | null> } = {},
   ): Promise<UnifiResponse> {
     if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
     // A send pinned to credentials a reconnect has since replaced must not reach the cache, which
@@ -511,8 +556,12 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const { target } = request;
     // Every request that reaches the console, but not an answer already cached, which was checked
     // when it was fetched.
-    const confirm = !skipIdentity && target.kind === "app" && identity.mode === "direct"
+    const serving = !options.skipIdentity && target.kind === "app" && identity.mode === "direct"
       ? () => this.#confirmServing(target.app, siteOf(request.path), connection)
+      : undefined;
+    const { precondition } = options;
+    const confirm = serving || precondition
+      ? async () => (await serving?.()) ?? (await precondition?.()) ?? null
       : undefined;
     const load = () => this.#dispatch(credentials, request, group, confirm);
     if (request.method !== "GET") {
@@ -545,7 +594,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     if (identity.mode !== "direct") return null;
     const send: UnifiSend = request => this.#send(
       request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId: identity.consoleId } } : request,
-      null, connection, true);
+      null, connection, { skipIdentity: true });
     const unconfirmed = failure({
       kind: "unconfirmed",
       message: "Couldn't confirm the console at this address is the one this connection was made to, so nothing was " +
@@ -583,8 +632,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
 
   /**
    * Sends a request once the console's budget allows it.
-   * @param confirm Checks what serves the console (`#confirmServing`), after the wait rather than
-   * before it, since what answers there can change while a request waits its turn.
+   * @param confirm Checks what serves the console (`#confirmServing`), and anything else the
+   * request needs, after the wait rather than before it, since either can change while a request
+   * waits its turn.
    */
   async #dispatch(
     credentials: UnifiCredentials, request: UnifiRequest, group: string, confirm?: () => Promise<UnifiResponse | null>,

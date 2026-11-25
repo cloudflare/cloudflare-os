@@ -142,6 +142,9 @@ describe("floodlights", () => {
     const on = { ...off, isOn: true, mode: "always" as const, activeWhen: "always" as const };
     expect(simulateLight(on, pending(lightAction({ mode: "off", activeWhen: "always" })))).toMatchObject({ isOn: false });
     expect(simulateLight(on, pending(lightAction({ mode: "motion", activeWhen: "always" })))).toMatchObject({ isOn: true });
+    // Motion only after dark does nothing in daylight, whatever moved last.
+    expect(simulateLight(on, pending(lightAction({ mode: "motion", activeWhen: "dark" })))).toMatchObject({ isOn: false });
+    expect(simulateLight({ ...on, isDark: true }, pending(lightAction({ mode: "motion", activeWhen: "dark" })))).toMatchObject({ isOn: true });
     // Forced on overrides any mode.
     expect(simulateLight({ ...on, forcedOn: true }, pending(lightAction({ mode: "off", activeWhen: "always" })))).toMatchObject({ isOn: true });
   });

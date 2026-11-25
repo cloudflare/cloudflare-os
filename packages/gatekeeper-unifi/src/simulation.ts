@@ -178,13 +178,15 @@ export function simulateCamera(camera: UnifiCameraInfo, pending: readonly Pendin
 }
 
 /**
- * Whether a light's settings alone decide that it is on -- forced on, off, or always on (when it
- * is dark, if that's when its mode applies) -- or null when motion decides.
+ * Whether a light's settings alone decide that it is on -- forced on, off, outside the time its
+ * mode applies (daylight, for one that applies only in the dark), or always on -- or null when
+ * motion decides.
  */
 function settledOn(light: UnifiLightInfo): boolean | null {
   if (light.forcedOn) return true;
   if (light.mode === "off") return false;
-  if (light.mode === "always") return light.activeWhen === "always" || light.isDark;
+  if (light.activeWhen === "dark" && !light.isDark) return false;
+  if (light.mode === "always") return true;
   return null;
 }
 

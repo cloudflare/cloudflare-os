@@ -57,11 +57,13 @@ const PRESENTATION: Record<UnifiResourceKind, { tsType: string; binding: string;
 @validateRpc()
 export class UnifiGatekeeper extends DurableObject<UnifiEnv, UnifiGatekeeperProps> implements Gatekeeper<UnifiSession> {
   readonly #api = new UnifiApi(request => this.#account().request(request), this.ctx.props.resource.consoleId);
-  readonly #freshApi = new UnifiApi(request => this.#account().request(request, true), this.ctx.props.resource.consoleId);
   readonly #journal = new ActionJournal<UnifiAction>(this.ctx.storage.kv, { namespace: "unifi" });
   readonly #actions = UNIFI_ACTIONS.bind(this.#journal, {
     api: this.#api,
-    fresh: this.#freshApi,
+    restartDevice: async (siteId, deviceId) => {
+      const failure = await this.#account().restartDevice(this.ctx.props.resource.consoleId, siteId, deviceId);
+      if (failure) throw new UnifiError(failure);
+    },
     updateWifi: async (siteId, wifiNetworkId, changes) => {
       const failure = await this.#account().updateWifi(this.ctx.props.resource.consoleId, siteId, wifiNetworkId, changes);
       if (failure) throw new UnifiError(failure);
