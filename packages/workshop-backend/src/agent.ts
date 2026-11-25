@@ -2450,7 +2450,7 @@ async function runAgentPass(
   const unreadAttachmentIds = new Set<string>();
   const inlineFileImages = new Set<AiToolCall>();
   const unreadFileImages = new Set<AiToolCall>();
-  const unansweredFileImages = new Map<number, Set<string>>();
+  const replayFileImages = new Map<number, Set<string>>();
   let attachmentsFitFrom: number | undefined;
   // The prompt this pass answers, the newest message the agent hasn't, which compaction keeps.
   let prompt: number | undefined;
@@ -2458,7 +2458,6 @@ async function runAgentPass(
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
     if (msg.type !== "message") continue;
-    const hadAnswer = answered;
     if (msg.author.type === "agent") answered = true;
     else if (!answered) prompt ??= msg.sequence;
     // File-tool images share attachment admission, byte/count limits and compaction. Their
@@ -2499,11 +2498,9 @@ async function runAgentPass(
     for (let candidate of admitted) {
       if (candidate.read) {
         inlineFileImages.add(candidate.read);
-        if (!hadAnswer) {
-          let reads = unansweredFileImages.get(msg.sequence);
-          if (!reads) unansweredFileImages.set(msg.sequence, reads = new Set());
-          reads.add(candidate.id);
-        }
+        let reads = replayFileImages.get(msg.sequence);
+        if (!reads) replayFileImages.set(msg.sequence, reads = new Set());
+        reads.add(candidate.id);
       } else {
         inlineAttachmentIds.add(candidate.id);
         if (!answered) unansweredAttachmentIds.push(candidate.id);
@@ -2740,7 +2737,7 @@ async function runAgentPass(
                     const image = inlineFileImages.has(toolCall)
                       ? readFileImage(await hooks.openBlob(toolCall.image.oid)) : undefined;
                     toolOutput = image ? {text: "Image file.", image} : {
-                      text: "Image pixels are not shown in this request. Read the file again with a vision model if needed.",
+                      text: "Image pixels are not shown in this request. Re-read with a vision model if needed; crop or resize if the provider refused the original.",
                     };
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
                       resolveToolWorkpieceId(toolCall.input.workpiece));
@@ -2984,7 +2981,7 @@ async function runAgentPass(
 
             const content: (TextContent | ImageContent)[] = [{type: "text", text: toolOutput.text},
               ...toolOutput.image ? [toolOutput.image] : []];
-            if (unreadFileImages.has(toolCall)) unreadParts.add(content[0]);
+            if (unreadFileImages.has(toolCall) || (toolCall.toolName === "readFile" && toolCall.image?.rejected)) unreadParts.add(content[0]);
             if (toolOutput.image && attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
               pastLimitParts.set(content[0], {type: "text", text:
                 "Older image pixels omitted to fit this request. Read the file again if needed."});
@@ -4996,22 +4993,25 @@ async function runAgentPass(
     // A provider that refuses the pass's first request may be refusing an attachment the model
     // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
     // Those go by path from now on. The model answered nothing after them, so no thinking
-    // depends on how they were shown.
-    // Admission can omit an unanswered file batch: only images actually sent can be refused.
+    // depends on how they were shown. Rejected historical file reads instead invalidate dependent
+    // thinking through the replay markers above.
+    // Admission can omit a file batch: only images actually sent can be refused.
     const sentImageReads = new Set(modelMessages.flatMap(msg => msg.role === "toolResult" &&
         msg.content.some(part => part.type === "image") ? [msg.toolCallId] : []));
-    for (const [sequence, reads] of unansweredFileImages) {
+    for (const [sequence, reads] of replayFileImages) {
       for (const id of reads) if (!sentImageReads.has(id)) reads.delete(id);
-      if (reads.size === 0) unansweredFileImages.delete(sequence);
+      if (reads.size === 0) replayFileImages.delete(sequence);
     }
     const refuseAttachments = (statusCode === 400 || statusCode === 413) && unansweredAttachmentIds.length > 0;
-    // A permanent failure may arrive inside HTTP 200 streaming data. Keep unread file images
-    // out of the next attempt without guessing provider error codes or retrying any effects.
-    if (!stepFinished && (refuseAttachments || unansweredFileImages.size > 0)) {
+    // A first-request input failure can involve history accepted by a different model, or arrive
+    // inside an HTTP 200 stream. Preserve pixels on credential/configuration and server failures.
+    const refuseFileImages = (statusCode === undefined || statusCode === 200 ||
+        statusCode === 400 || statusCode === 413) && replayFileImages.size > 0;
+    if (!stepFinished && (refuseAttachments || refuseFileImages)) {
       if (refuseAttachments) hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
-      hooks.rejectChatFileImages(chatId, unansweredFileImages);
-      const retryHint = unansweredFileImages.size > 0
-        ? "Retrying keeps these unread image inputs as workspace files instead."
+      if (refuseFileImages) hooks.rejectChatFileImages(chatId, replayFileImages);
+      const retryHint = refuseFileImages
+        ? "Retrying keeps these image inputs as workspace files instead."
         : "Retrying sends this message's images and PDFs as workspace files instead.";
       throw new AgentTurnError(`${message}\n\n${retryHint}`, statusCode);
     }

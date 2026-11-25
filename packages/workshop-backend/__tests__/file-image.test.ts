@@ -226,6 +226,38 @@ describe("images read from a worktree", () => {
     expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
   }));
 
+  it.each([401, 402, 403, 404])("keeps valid pixels available after a %s credential/configuration error", status => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await expect(scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([], {stopReason: "error", errorMessage: `${status} Fix credentials or configuration`}),
+    ])).rejects.toThrow(`${status}`);
+    const calls = impl.loadChatHistory(chatId).chatMessages.flatMap(msg => msg.type === "message" ? msg.toolCalls ?? [] : []);
+    expect(calls.find(call => call.toolName === "readFile")).not.toHaveProperty("image.rejected");
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Credentials repaired; retry"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(results(requests[0])[0].content).toContainEqual({type: "image", data: PNG.toBase64(), mimeType: "image/png"});
+  }));
+
+  it("recovers from historical image rejection after a model switch and drops dependent thinking", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    await scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+      fauxAssistantMessage([fauxThinking("I saw the original pixels."), fauxText("Seen")])]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Unrelated follow-up on another model"}]);
+    const config = {provider: "openai" as const, model: "gpt-6-astra", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const stream = handle.stream;
+    handle.stream = (model, context, options) => stream(model, context, {...options, maxRetries: 0,
+      fetch: async () => new Response(JSON.stringify({error: {message: "Image exceeds patch limit", type: "invalid_request_error"}}),
+        {status: 400, headers: {"content-type": "application/json"}}),
+    });
+    await expect(runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config)).rejects.toThrow("Image exceeds patch limit");
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Retry"}]);
+    const {requests} = await turn(impl, chatId, []);
+    expect(results(requests[0])[0].content.every(part => part.type === "text")).toBe(true);
+    expect(requests[0].flatMap(msg => msg.role === "assistant" ? msg.content.filter(part => part.type === "thinking") : [])).toEqual([]);
+  }));
+
   it("retains unread pixels across transient provider retries", () => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     const {requests} = await scriptedTurn(impl, chatId, [
