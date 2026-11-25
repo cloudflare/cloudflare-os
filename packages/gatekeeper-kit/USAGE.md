@@ -755,6 +755,10 @@ gatekeeper's own store would keep it. Where a record was built on the records be
 offset is counted past an earlier insert, the gatekeeper decides when it may apply: the Google
 Docs gatekeeper applies a document's edits in the order they were queued, pins each write to the
 revision it was built on, and marks a write so that a retry after a lost reply is not sent again.
+A write that landed with no reply leaves its record pending over a document that already holds
+it, and a read that folds it again shows it twice and marks the records built on it, so the Docs
+read skips a record whose write marker the fetched document holds. A gatekeeper whose writes carry
+no such proof marks nothing after a write whose outcome is unknown until that write is settled.
 
 `targets`, the second argument of `createSimulationView`, names every entity a record changes.
 Where a pending create will make the entity, resolve the id through `ProvisionalIds` there
