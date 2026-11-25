@@ -586,34 +586,21 @@ function makeHandle(args: HandleArgs): ModelHandle {
       }
       const transcript = normalizeContext(
           {...context, messages: context.messages.map(wellFormedToolCalls)});
-      // API defaults first, so an explicit per-call option can override them. A handle with a
-      // reasoning level sends that level's options in their place. `thinking: false` replaces
-      // either with a quick request. Managed-effort Anthropic models must use adaptive
-      // thinking, so select their lowest effort; other Anthropic models disable it (or omit
-      // the unsupported off setting). For OpenAI Responses, passing no reasoningEffort disables
-      // reasoning.
-      let reasoning: Record<string, unknown> = thinking
-          ? (args.reasoning === undefined
-              ? apiExtras
-              : reasoningOptions(args.model, args.reasoning, options.maxTokens, args.formatId))
-          : args.model.api === "anthropic-messages"
-              ? (anthropicCompat?.supportsMidConvoEffort === true
-                  ? { effort: "low" } : { thinkingEnabled: false })
-              : {};
-      // Manual-thinking Claude needs the thinking that opened an unfinished tool turn.
-      // Replay can omit it after rewriting image inputs; finish that turn without thinking.
-      if (args.model.api === "anthropic-messages" && reasoning.thinkingEnabled === true &&
-          anthropicCompat?.forceAdaptiveThinking !== true) {
-        // Tool results and trailing steers merge into one user message on Anthropic's wire.
-        const start = transcript.messages.findLastIndex(message => message.role === "assistant" &&
-            !message.content.some(part => part.type === "toolCall"));
-        const turn = transcript.messages.slice(start + 1).find(message => message.role === "assistant");
-        if (turn?.role === "assistant" && !turn.content.some(part => part.type === "thinking")) {
-          reasoning = {...reasoning, thinkingEnabled: false};
-        }
-      }
       const merged: SimpleStreamOptions = {
-        ...reasoning,
+        // API defaults first, so an explicit per-call option can override them. A handle with a
+        // reasoning level sends that level's options in their place. `thinking: false` replaces
+        // either with a quick request. Managed-effort Anthropic models must use adaptive
+        // thinking, so select their lowest effort; other Anthropic models disable it (or omit
+        // the unsupported off setting). For OpenAI Responses, passing no reasoningEffort disables
+        // reasoning.
+        ...(thinking
+            ? (args.reasoning === undefined
+                ? apiExtras
+                : reasoningOptions(args.model, args.reasoning, options.maxTokens, args.formatId))
+            : args.model.api === "anthropic-messages"
+                ? (anthropicCompat?.supportsMidConvoEffort === true
+                    ? { effort: "low" } : { thinkingEnabled: false })
+                : {}),
         ...options,
         ...(fetch !== undefined ? { fetch } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
@@ -637,7 +624,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
-          const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          const continued = fixAnthropicToolThinking(args.model, replaced ?? payload) ?? replaced;
+          const bridged = bridgePdfAttachments(args.model.api, continued ?? payload) ?? continued;
           const grouped = groupGeminiFunctionResponses(args.model, bridged ?? payload) ?? bridged;
           const signed = signGeminiFunctionCalls(args.model, grouped ?? payload) ?? grouped;
           if (options.cacheRetention === "none") return signed;
@@ -762,6 +750,23 @@ function cappedForResend(model: Model<Api>, payload: unknown)
 const hasEnabledThinking = (payload: object): boolean =>
     "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
     "type" in payload.thinking && payload.thinking.type === "enabled";
+
+// Manual Claude thinking needs the opening signed block of an unfinished tool turn. Check pi's
+// wire payload: replay rewrites and model switches can both remove that block during conversion.
+function fixAnthropicToolThinking(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "anthropic-messages" || typeof payload !== "object" || payload === null ||
+      !hasEnabledThinking(payload) || !("messages" in payload) || !Array.isArray(payload.messages)) return undefined;
+  const assistants = (payload.messages as {role?: string; content?: {type?: string}[]}[])
+    .flatMap(message => message.role === "assistant" && Array.isArray(message.content) ? [message.content] : []);
+  // Tool results and trailing steers merge into one user message; only a completed assistant
+  // reply ends the tool turn, whose later tool calls need not repeat its opening thinking.
+  const completed = assistants.findLastIndex(content => !content.some(part => part.type === "tool_use"));
+  const first = assistants[completed + 1]?.[0]?.type;
+  if (first !== undefined && first !== "thinking" && first !== "redacted_thinking") {
+    return {...payload, thinking: {type: "disabled"}};
+  }
+  return undefined;
+}
 
 // Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
 // The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do

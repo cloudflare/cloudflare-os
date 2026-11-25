@@ -560,8 +560,9 @@ describe("images read from a worktree", () => {
 });
 
 describe("file images in provider requests", () => {
-  it.each([["manual", false, false], ["manual", true, false], ["manual", true, true], ["default", false, false]] as const)(
-    "preserves Claude thinking across a tool turn: mode=%s rewritten=%s steered=%s", (mode, rewritten, steered) => inKernel(crypto.randomUUID(), async impl => {
+  it.each([["manual", false, false, false], ["manual", true, false, false], ["manual", true, true, false],
+    ["manual", false, false, true], ["default", false, false, false]] as const)(
+    "preserves Claude thinking across a tool turn: mode=%s rewritten=%s steered=%s switched=%s", (mode, rewritten, steered, switched) => inKernel(crypto.randomUUID(), async impl => {
     const {chatId} = await setup(impl);
     if (rewritten) {
       await expect(scriptedTurn(impl, chatId, [fauxAssistantMessage([read()], {stopReason: "toolUse"}),
@@ -577,8 +578,12 @@ describe("file images in provider requests", () => {
     const actualStream = handle.stream;
     const payloads: string[] = [];
     handle.stream = (model, context, options) => actualStream(model, {
-      ...context, messages: steered && payloads.length > 0 && payloads.length < 3
-        ? [...context.messages, {role: "user", content: "Steered instruction", timestamp: Date.now()}] : context.messages,
+      ...context, messages: [
+        ...context.messages.map(message => switched && message.role === "assistant"
+          ? {...message, model: "claude-sonnet-4-5"} : message),
+        ...(steered && payloads.length > 0 && payloads.length < 3
+          ? [{role: "user" as const, content: "Steered instruction", timestamp: Date.now()}] : []),
+      ],
     }, {...options, maxRetries: 0,
       fetch: async (input, init) => {
         payloads.push(await new Request(input, init).text());
@@ -614,7 +619,7 @@ describe("file images in provider requests", () => {
     expect(payloads).toHaveLength(3);
     expect(JSON.parse(payloads[0]).thinking?.type).toBe(mode === "manual" ? "enabled" : undefined);
     for (const payload of payloads.slice(1)) {
-      expect(JSON.parse(payload).thinking?.type).toBe(mode === "manual" ? (rewritten ? "disabled" : "enabled") : undefined);
+      expect(JSON.parse(payload).thinking?.type).toBe(mode === "manual" ? (rewritten || switched ? "disabled" : "enabled") : undefined);
       expect(payload).toContain(PNG.toBase64());
     }
     impl.addChatMessages(chatId, USER, [{type: "message", message: "New turn"}]);
