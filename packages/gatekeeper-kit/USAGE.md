@@ -1395,15 +1395,17 @@ being fetched shows on the provider's rows of that page, since the view is built
 fold is remembered from one call to the next: a row read again (a refused page's retry) is folded
 again, and so is every stand-in at each `refresh()`, each fold reducing its records again from the
 first. What is kept is the stand-in rows the last `refresh()` made, which `revalidate` looks up.
-`refresh` reads the journal again and not the provider: a row the cursor buffered stays as it was
-fetched, so a record that applies and leaves the journal mid-walk (a delete, an update) is no longer
-folded over a row fetched before it landed, which then shows as it was. A listing that must show
-settled changes reads the rows such a change touches again, or starts the walk again. The other way
-round, a page fetched after `refresh` read the journal can hold a record that applied in between,
-which `overlay` then folds again over a row that already holds it: no harm for a reducer that sets a
-value, but one that adds shows its record twice (an increment of 1 over the new count). Such a
-reducer needs a way to tell what a row already holds (a version or a marker the provider keeps on
-it), or the fetch and the journal read are run together against apply (`runExclusive`).
+A page's rows and the pending records folded over them are not read together, and nothing in the
+hooks reads either against apply: `refresh` reads the journal, the cursor fetches the provider's
+rows, and a record may apply between the two. So a page can show what neither the provider nor the
+pending records say: a row buffered before a record applied, shown without it; a row fetched after
+a record applied that `refresh` still read, shown with it folded again (an increment twice, or an
+earlier rename put back over a later one that applied); and, while a create has landed but its
+apply has not yet bound its id (`isResolved`), both its stand-in and the provider's row, which
+`identity` cannot match. A listing that must not show these runs each page's fetch, its journal
+read and the stand-ins it serves together against apply (`runExclusive`), or tells from a row what
+it already holds (a version or a marker the provider keeps on it) and matches a created row to its
+create before the id binds.
 
 What stays the gatekeeper's, because two listings rarely agree on it:
 
