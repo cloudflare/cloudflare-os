@@ -23,12 +23,13 @@ import {
   type DocPiece, type DocSlice, type DocStore, type DocVersion, type RunPlaces,
 } from "./docs-store";
 import {
-  closesTableGate, commonPrefix, commonSuffix, namesTable, tableGateRefusal, tabOf,
-  tabTableChangeRequests, textReplacementRequests, type TableChange,
+  closesTableGate, commonPrefix, commonSuffix, namesTable, refuseSuggestionsTouched,
+  tableGateRefusal, tabOf, tabTableChangeRequests, textReplacementRequests, type TableChange,
 } from "./docs-tables";
 import {
   docTabToMarkdown, isBlankDocTab, lineStart, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
-  REPLAYABLE_TEXT_EDIT_VERSIONS, type DocTabPart, type DocTabSnapshot, type TabReading,
+  refuseNewSuggestionMarks, REPLAYABLE_TEXT_EDIT_VERSIONS, type DocTabPart, type DocTabSnapshot,
+  type TabReading,
 } from "./markdown-converter";
 
 export { isBlankDocTab };
@@ -266,6 +267,8 @@ export function tabEditRequests(tab: TabReading, edit: DocEdit): GoogleDocsReque
     switch (edit.type) {
       case "replaceText": {
         let { oldMarkdown, newMarkdown, inTable } = edit;
+        // A cell's text marks a suggestion in HTML, which its own reading refuses to write.
+        if (!inTable) refuseNewSuggestionMarks(edit.type, oldMarkdown, newMarkdown);
         let at = uniqueMarkdown(tab, oldMarkdown);
         piece = tab.piece({ markdown: { mdStart: at, mdEnd: at + oldMarkdown.length } });
         // The piece's Markdown starts where its part says: the one place the tab's offset
@@ -276,6 +279,7 @@ export function tabEditRequests(tab: TabReading, edit: DocEdit): GoogleDocsReque
         break;
       }
       case "appendText": {
+        refuseNewSuggestionMarks(edit.type, "", edit.markdown);
         piece = tab.piece("end");
         if (piece.sourceMap.blocks.at(-1)?.docEnd !== piece.bodyEndIndex) {
           throw new Error(
@@ -305,6 +309,10 @@ export function tabEditRequests(tab: TabReading, edit: DocEdit): GoogleDocsReque
   if (side) {
     let cause = new DocPieceOverreachError(side);
     throw new DocModelError(modelRefusal(edit.type, cause), cause);
+  }
+  // A table change is checked for the suggestions its table holds as it is built.
+  if (edit.type === "replaceText" || edit.type === "appendText") {
+    refuseSuggestionsTouched(piece, requests, edit.type);
   }
   return requests;
 }

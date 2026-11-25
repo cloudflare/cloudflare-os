@@ -6,6 +6,7 @@ import type {
   GoogleDocsRequest, GoogleDocsTab, Paragraph, StructuralElement, TableCell, TextStyle,
 } from "../src/docs-api";
 import { applyDocEdit, docEditRequests, renderTab } from "../src/docs-replay";
+import type { DocEdit } from "../src/docs-replay";
 import {
   addedTableCells, besideTableRefusal, changesTables, checkTabTableCells, checkTableTarget,
   chipCopies, closesTableGate, commonPrefix, commonSuffix, headerAfterInsertion, hiddenContent, MAX_TAB_TABLE_CELLS,
@@ -1586,8 +1587,8 @@ describe("a chip alone in a cell", () => {
 });
 
 const suggestedRefusal = (op: string) =>
-  `${op}: this table holds suggested changes to its rows, columns or cells, so its rows and ` +
-  "columns cannot be changed until they are accepted or rejected.";
+  `${op}: this table holds suggested changes to its rows, columns or cells, or to their text, ` +
+  "so its rows and columns cannot be changed until they are accepted or rejected.";
 
 describe("a table that holds suggestions", () => {
   const rows = [["a\n", "b\n"], ["c\n", "d\n"], ["e\n", "f\n"]];
@@ -1607,6 +1608,36 @@ describe("a table that holds suggestions", () => {
       if (table) table.suggestedInsertionIds = ["suggest.table"];
       return tab;
     }],
+    ["suggested text in a cell", () => buildTab([
+      para("Before"),
+      {
+        table: [["a\n", "b\n"], ["c\n", {
+          paragraphs: [{ runs: ["d", { text: " new", suggested: "insertion" }, "\n"] }],
+        }], ["e\n", "f\n"]],
+      },
+      para("After"),
+    ])],
+    ["a suggested style on a cell's text", () => buildTab([
+      para("Before"),
+      {
+        table: [
+          ["a\n", "b\n"],
+          ["c\n", { paragraphs: [{ runs: [{ text: "d\n", suggested: "style" }] }] }],
+          ["e\n", "f\n"],
+        ],
+      },
+      para("After"),
+    ])],
+    ["a suggested change to a cell paragraph's style", () => buildTab([
+      para("Before"),
+      {
+        table: [
+          ["a\n", "b\n"], ["c\n", { paragraphs: [{ ...para("d"), suggestedChange: "style" }] }],
+          ["e\n", "f\n"],
+        ],
+      },
+      para("After"),
+    ])],
   ];
 
   for (let [name, tab] of tabs) {
@@ -1627,6 +1658,120 @@ describe("a table that holds suggestions", () => {
         .toEqual(["deleteContentRange"]);
     });
   }
+});
+
+describe("an edit of text that holds suggestions", () => {
+  // "Plan {++new ++}for {--next --}week" with "week" a suggested style, a table whose first cell
+  // holds a suggested insertion and deletion, a paragraph whose style a suggestion changes and
+  // one whose bullet a suggestion changes.
+  const tab = (last: ParagraphSpec = para("End")) => buildTab([
+    {
+      runs: [
+        "Plan ", { text: "new ", suggested: "insertion" }, "for ",
+        { text: "next ", suggested: "deletion" }, { text: "week\n", suggested: "style" },
+      ],
+    },
+    {
+      table: [[{
+        paragraphs: [{
+          runs: [
+            "a", { text: "new", suggested: "insertion" }, { text: "old", suggested: "deletion" },
+            "b\n",
+          ],
+        }],
+      }, "c\n"]],
+    },
+    { ...para("Centred"), suggestedChange: "style" },
+    { ...para("Listed"), suggestedChange: "bullet" },
+    last,
+  ]);
+  const TOUCHES = /^(?:replaceText|appendText): the text this change touches holds suggested changes/;
+  const replace = (oldMarkdown: string, newMarkdown: string, inTable?: true): DocEdit =>
+    ({ type: "replaceText", oldMarkdown, newMarkdown, ...(inTable ? { inTable } : {}) });
+  const built = (edit: DocEdit, from = tab()) => docEditRequests(read(from), edit);
+
+  it("reads as the marks show it", () => {
+    expect(read(tab()).markdown).toBe(
+      "Plan {++new ++}for {--next --}week\n\n<table>\n  <tr>\n" +
+      "    <td><p>a<ins>new</ins><del>old</del>b</p></td>\n    <td><p>c</p></td>\n  </tr>\n" +
+      "</table>\n\nCentred\n\nListed\n\nEnd\n");
+  });
+
+  it("refuses a replacement that would delete, restyle or write into suggested text", () => {
+    for (let edit of [
+      replace("Plan {++new ++}for", "Plan for"),
+      replace("{++new ++}", "{++newer ++}"),
+      replace("{++new ++}", "{++**new** ++}"),
+      replace("{--next --}week", "{--next --}month"),
+      replace("{--next --}week", "{--next --}**week**"),
+      replace("<del>old</del>b", "b", true),
+      replace("a<ins>new</ins>", "a<ins>nw</ins>", true),
+    ]) {
+      expect(thrownMessage(() => built(edit)), JSON.stringify(edit)).toMatch(TOUCHES);
+    }
+  });
+
+  it("refuses a paragraph or bullet change, a split or a join of a paragraph a suggestion restyles", () => {
+    for (let edit of [
+      replace("Centred", "# Centred"),
+      replace("Centred", "Centred\n\nSplit"),
+      replace("Centred\n\nListed", "Centred Listed"),
+      replace("Listed", "- Listed"),
+      replace("Listed", "## Listed"),
+    ]) {
+      expect(thrownMessage(() => built(edit)), JSON.stringify(edit)).toMatch(TOUCHES);
+    }
+    // An append to a tab that ends in one: Google would give it the bullet.
+    let listedLast = tab({ ...para("Last"), suggestedChange: "bullet" });
+    expect(thrownMessage(() => built({ type: "appendText", markdown: "Tail" }, listedLast)))
+      .toMatch(TOUCHES);
+  });
+
+  it("refuses marks that a replacement in a cell adds or takes off", () => {
+    for (let edit of [
+      replace("a<ins>new</ins>", "a<ins>newer</ins>", true),
+      replace("<del>old</del>b", "oldb", true),
+      replace("<td><p>c</p>", "<td><p><ins>c</ins></p>", true),
+    ]) {
+      expect(thrownMessage(() => built(edit)), JSON.stringify(edit))
+        .toMatch(/^replaceText: in a table cell <ins> and <del> mark/);
+    }
+  });
+
+  it("makes an edit beside suggested text, inside a paragraph a suggestion restyles, and an append", () => {
+    for (let edit of [
+      replace("Plan", "Our plan"),
+      replace("{++new ++}for", "{++new ++}FOR"),
+      replace("for {--next", "to {--next"),
+      replace("<p>a<ins>", "<p>A<ins>", true),
+      replace("a<ins>new</ins>", "<ins>new</ins>", true),
+      replace("<del>old</del>b", "<del>old</del>B", true),
+      replace("Centred", "Centered"),
+      replace("Listed", "Listed here"),
+      { type: "appendText", markdown: "Tail" },
+    ] satisfies DocEdit[]) {
+      let requests = built(edit);
+      expect(requests.length, JSON.stringify(edit)).toBeGreaterThan(0);
+      // The model holds each suggestion where it stood, as Google was recorded doing.
+      let after = docTabToMarkdown(applyDocsRequests(tab(), requests)).markdown;
+      expect(after.match(/\{\+\+new \+\+\}|\{--next --\}|<ins>new<\/ins>|<del>old<\/del>/g))
+        .toEqual(["{++new ++}", "{--next --}", "<ins>new</ins>", "<del>old</del>"]);
+    }
+  });
+
+  it("refuses the deletion of a table whose text came to hold a suggestion, unless it recorded it", () => {
+    let table = (cell: CellSpec) => buildTab([para("Before"), { table: [["a\n", cell]] }, para("After")]);
+    let plain = () => table("b\n");
+    // A suggested style shows nothing, so the table still reads as it was queued.
+    let restyled = () => table({ paragraphs: [{ runs: [{ text: "b\n", suggested: "style" }] }] });
+    expect(read(restyled()).markdown).toBe(read(plain()).markdown);
+    expect(refusal(restyled(), dropTable(read(plain()), 0))).toBe(
+      "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
+      "cells, or to their text, since this change was queued.");
+    let recorded = dropTable(read(restyled()), 0);
+    expect(recorded).toMatchObject({ suggested: 1 });
+    appliedChange(restyled(), recorded);
+  });
 });
 
 const cameToHoldChips = (op: string) =>
@@ -1720,7 +1865,7 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(queuedBefore).not.toHaveProperty("suggested");
     expect(refusal(suggested(), queuedBefore)).toBe(
       "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
-      "cells since this change was queued.");
+      "cells, or to their text, since this change was queued.");
 
     let queuedWith = dropTable(read(suggested()), 0);
     // The row suggested for deletion, and each of its two cells.
@@ -1734,7 +1879,7 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(read(more()).markdown).toBe(read(plain()).markdown);
     expect(refusal(more(), queuedWith)).toBe(
       "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
-      "cells since this change was queued.");
+      "cells, or to their text, since this change was queued.");
     appliedChange(more(), dropTable(read(more()), 0));
 
     // A suggestion in a table inside a cell is deleted with the cell, so it counts the same.
@@ -1751,10 +1896,11 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(outer).not.toHaveProperty("suggested");
     expect(refusal(holding({ 0: "deletion" }), outer)).toBe(
       "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
-      "cells since this change was queued.");
+      "cells, or to their text, since this change was queued.");
     expect(refusal(holding({ 0: "deletion" }), dropRows(read(holding()), 0, 0))).toBe(
-      "deleteTableRows: this table holds suggested changes to its rows, columns or cells, so " +
-      "its rows and columns cannot be changed until they are accepted or rejected.");
+      "deleteTableRows: this table holds suggested changes to its rows, columns or cells, or " +
+      "to their text, so its rows and columns cannot be changed until they are accepted or " +
+      "rejected.");
     expect(dropTable(read(holding({ 0: "deletion" })), 0)).toMatchObject({ suggested: 3 });
   });
 

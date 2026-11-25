@@ -318,8 +318,8 @@ export function storeFromEveryStretch(label: string, sizes: RunSizes, share: num
 
     // The tests of a file run in order: this one reads what the recordings' tests counted.
     it("ran every recorded step, from stretches that hold nothing the batch names too", () => {
-      expect([steps.fixtures, steps.steps]).toEqual([33, 199]);
-      expect(steps.built).toBe(199);
+      expect([steps.fixtures, steps.steps]).toEqual([35, 209]);
+      expect(steps.built).toBe(209);
       expect(steps.applied).toBeGreaterThanOrEqual(150);
       expect(steps.ran).toBeGreaterThan(steps.built);
       expect(steps.nothing).toBeGreaterThan(0);

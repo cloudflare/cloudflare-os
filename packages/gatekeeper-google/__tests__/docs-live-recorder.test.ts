@@ -130,6 +130,11 @@ function modelTransport(start: { created?: GoogleDocsTab; copied?: GoogleDocsTab
       sent.push(requests);
       documents.set(documentId, applyDocsRequests(held(documentId), requests));
     },
+    async suggest(documentId, requests) {
+      calls.push("suggest");
+      sent.push(requests);
+      held(documentId);
+    },
     async discard(documentId) {
       calls.push("discard");
       held(documentId);
@@ -143,13 +148,16 @@ function modelTransport(start: { created?: GoogleDocsTab; copied?: GoogleDocsTab
 /**
  * Record `scenario` against the model. A scenario with a setup starts from a new document, which
  * the setup is sent to, as it does against Google Docs; any other starts from its committed
- * `before` when it has one.
+ * `before` when it has one. The model makes no suggestion, so a scenario that makes some starts
+ * from its committed `before`, without its setup and its suggestions.
  */
 async function recordedByModel(scenario: Scenario, start: { copied?: GoogleDocsTab } = {}) {
   let recorded = fixtureOf(scenario.name);
-  let model = modelTransport({ created: scenario.setup ? undefined : recorded?.before, ...start });
+  let { setup: _setup, suggest: _suggest, ...unsuggested } = scenario;
+  let replayed: Scenario = scenario.suggest ? unsuggested : scenario;
+  let model = modelTransport({ created: replayed.setup ? undefined : recorded?.before, ...start });
   let fresh = await recordScenario(
-    scenario, model.transport, { recorded, templateId: "template", pauseMs: 0 });
+    replayed, model.transport, { recorded, templateId: "template", pauseMs: 0 });
   return { fresh, recorded, ...model };
 }
 
@@ -174,7 +182,7 @@ describe("the batch of a step", () => {
         tab = step.after;
       }
     }
-    expect(equal).toBe(189);
+    expect(equal).toBe(199);
     expect(marked).toEqual([
       "bullets-nesting-2 / a child under the middle item",
       "bullets-nesting-2 / children appended after the list",
@@ -600,6 +608,37 @@ describe("a recording", () => {
     for (let step of fresh.steps) expect(step.requests).not.toEqual(setupBatch);
     expect(docTabToMarkdown(fresh.steps[1].after).markdown).toBe("Set up\n\nOne\n\nTwo\n");
 
+  });
+
+  it("sends a scenario's suggestions after its setup, each on the tab as just read", async () => {
+    let given: GoogleDocsTab[] = [];
+    let { tabId } = newDocument();
+    let setupBatch: GoogleDocsRequest[] =
+      [{ insertText: { location: { index: 1, tabId }, text: "Set up" } }];
+    let suggestion = (text: string) => (tab: GoogleDocsTab): GoogleDocsRequest[] => {
+      given.push(tab);
+      return [{ insertText: { location: { index: 1, tabId }, text } }];
+    };
+    let scenario: Scenario = {
+      name: "with-suggestions",
+      setup: () => setupBatch,
+      suggest: [suggestion("A"), suggestion("B")],
+      steps: [{ name: "first", append: "One" }],
+    };
+    let { transport, calls, sent } = modelTransport();
+    let fresh = await recordScenario(scenario, transport, { pauseMs: 0 });
+
+    expect(calls).toEqual([
+      "create", "read", "send", "read", "suggest", "read", "suggest", "read", "send", "read",
+      "discard",
+    ]);
+    expect(sent.slice(1, 3)).toEqual([
+      [{ insertText: { location: { index: 1, tabId }, text: "A" } }],
+      [{ insertText: { location: { index: 1, tabId }, text: "B" } }],
+    ]);
+    // Each suggestion is written for the tab the setup left; the model's stand-in makes none.
+    expect(given.map(tab => docTabToMarkdown(tab).markdown)).toEqual(["Set up\n", "Set up\n"]);
+    expect(fresh.steps.map(step => step.name)).toEqual(["first"]);
   });
 
   it("records the list item that holds a positioned image as far as the model answers", async () => {

@@ -161,7 +161,7 @@ describe("the path through runs against the path with a tab whole", () => {
 
   // The file's tests run in order: this one reads what the recordings' tests counted.
   it("ran every recorded step on tabs of several runs", () => {
-    expect([readFixtures().length, corpus.steps]).toEqual([33, 199]);
+    expect([readFixtures().length, corpus.steps]).toEqual([35, 209]);
     expect(corpus.runs / corpus.tabs).toBeGreaterThan(2);
     expect(corpus.applied).toBeGreaterThanOrEqual(150);
   });

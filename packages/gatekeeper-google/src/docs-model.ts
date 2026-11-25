@@ -7,11 +7,11 @@ import type {
   Bullet, Dimension as ApiDimension, DocsLocation, DocsRange, GoogleDocsRequest, GoogleDocsTab,
   NestingLevel, OptionalColor as ApiColor, Paragraph, ParagraphElement, ParagraphStyle,
   StructuralElement,
-  Table, TableCell, TableCellLocation, TableCellStyle, TableRow, TextStyle,
+  Table, TableCell, TableCellLocation, TableCellStyle, TableRow, TextRun, TextStyle,
 } from "./docs-api";
 import {
-  BULLET_PRESETS, CHIP_PLACEHOLDER, isGoogleDocsStrippedCharacter, LIST_LEVELS, loneChipCopy,
-  madeByPreset,
+  BULLET_PRESETS, CHIP_PLACEHOLDER, holdsOwnSuggestion, holdsSuggestion,
+  isGoogleDocsStrippedCharacter, LIST_LEVELS, loneChipCopy, madeByPreset,
 } from "./docs-content";
 
 /** A length as Google writes one, in points. */
@@ -1194,8 +1194,34 @@ export function modelFollowing(lists: Readonly<Record<string, unknown>>): ModelF
 // Building content
 // ---------------------------------------------------------------------------
 
-function textRun(content: string, textStyle: ModelTextStyle): ParagraphElement {
-  return { startIndex: 0, endIndex: content.length, textRun: { content, textStyle } };
+/** The fields Google marks suggested text with. */
+type RunSuggestions =
+  Pick<TextRun, "suggestedInsertionIds" | "suggestedDeletionIds" | "suggestedTextStyleChanges">;
+
+/** A copy of the suggestions `run` carries, for a run cut from it: each part keeps them. */
+function runSuggestions(run: TextRun): RunSuggestions {
+  let { suggestedInsertionIds, suggestedDeletionIds, suggestedTextStyleChanges } = run;
+  return structuredClone({
+    ...(suggestedInsertionIds ? { suggestedInsertionIds } : {}),
+    ...(suggestedDeletionIds ? { suggestedDeletionIds } : {}),
+    ...(suggestedTextStyleChanges ? { suggestedTextStyleChanges } : {}),
+  });
+}
+
+function textRun(
+  content: string, textStyle: ModelTextStyle, suggestions: RunSuggestions = {},
+): ParagraphElement {
+  return {
+    startIndex: 0, endIndex: content.length, textRun: { content, textStyle, ...suggestions },
+  };
+}
+
+/**
+ * A run of `written`, styled as `run` is and carrying none of its suggestions: text inserted
+ * beside suggested text is no part of the suggestion (recorded in `suggestions-beside-edits`).
+ */
+function besideSuggestion(written: string, run: TextRun): ParagraphElement {
+  return textRun(written, structuredClone(run.textStyle));
 }
 
 /** A paragraph element holding `elements`, with indexes still to be computed. */
@@ -1488,7 +1514,8 @@ function insertText(
     element.startIndex <= index && index < element.endIndex);
   let here = elements[position];
   if (here.startIndex < index) {
-    // Inside a text run the text joins it, a link included.
+    // Inside a text run the text joins it, a link included, and so does a suggestion on the
+    // run: Google makes the text part of it (probed live; the builders refuse such an insert).
     if (!here.textRun) invariant("insertText inside an element that is not text");
     let offset = index - here.startIndex;
     here.textRun.content =
@@ -1496,13 +1523,22 @@ function insertText(
   } else {
     let before = elements[position - 1]?.textRun;
     if (before && !before.textStyle.link) {
-      before.content += written;
+      if (holdsSuggestion(before)) elements.splice(position, 0, besideSuggestion(written, before));
+      else before.content += written;
     } else if (before) {
       // Text never joins the link it follows: it is styled as what comes after it.
       if (!here.textRun) invariant("insertText between a link and an element that is not text");
-      here.textRun.content = written + here.textRun.content;
+      if (holdsSuggestion(here.textRun)) {
+        elements.splice(position, 0, besideSuggestion(written, here.textRun));
+      } else {
+        here.textRun.content = written + here.textRun.content;
+      }
     } else if (here.textRun && !here.textRun.textStyle.link) {
-      here.textRun.content = written + here.textRun.content;
+      if (holdsSuggestion(here.textRun)) {
+        elements.splice(position, 0, besideSuggestion(written, here.textRun));
+      } else {
+        here.textRun.content = written + here.textRun.content;
+      }
     } else {
       // Nothing to take a style from: before a link, or before an element that is not text.
       elements.splice(position, 0, textRun(written, {}));
@@ -1526,7 +1562,8 @@ function splitAtLineBreaks(place: ParagraphPlace): number {
       continue;
     }
     for (let piece of run.content.split(/(?<=\n)/)) {
-      lines[lines.length - 1].push(textRun(piece, structuredClone(run.textStyle)));
+      lines[lines.length - 1].push(
+        textRun(piece, structuredClone(run.textStyle), runSuggestions(run)));
       if (piece.endsWith("\n")) lines.push([]);
     }
   }
@@ -1535,6 +1572,11 @@ function splitAtLineBreaks(place: ParagraphPlace): number {
   }
   lines.pop();
   if (lines.length === 0) invariant("a paragraph with no content");
+  // Google gives a split paragraph's suggested bullet to the first part as a bullet, and the
+  // suggestion to the last (recorded, and refused by the builders).
+  if (lines.length > 1 && holdsOwnSuggestion(paragraph)) {
+    notModelled("a split of a paragraph that holds a suggested change to its style or bullet");
+  }
   // The first paragraph stays the one it was; each further one copies its style and bullet.
   paragraph.elements = lines[0];
   place.container.splice(place.position + 1, 0,
@@ -1554,7 +1596,7 @@ function elementsWithout(
       let { content, textStyle } = part.textRun;
       let rest = content.slice(0, Math.max(0, from - part.startIndex)) +
         content.slice(Math.min(content.length, to - part.startIndex));
-      if (rest) kept.push(textRun(rest, textStyle));
+      if (rest) kept.push(textRun(rest, textStyle, runSuggestions(part.textRun)));
     } else if (part.startIndex < from || part.endIndex > to) {
       invariant("a deletion of part of an element that is not text");
     }
@@ -1599,12 +1641,24 @@ function deleteContentRange(draft: Draft, { range }: { range: DocsRange }): void
   // What follows the range has to be a paragraph of the same body or cell: the final line break
   // of a body or a cell, and the one before a table, cannot be deleted.
   if (!last || last.container !== first.container) throw new Error(INVALID_DELETION);
+  // Deleting suggested text discards that much of the suggestion, and a paragraph removed or
+  // joined into the next takes the suggested changes to its style and bullet with it.
+  let taken = first.container.slice(first.position, last.position + 1);
+  for (let { paragraph } of taken) {
+    if (!paragraph) continue;
+    if (paragraph.elements.some(part => part.textRun && holdsSuggestion(part.textRun) &&
+        part.startIndex < end && start < part.endIndex)) {
+      notModelled("a deletion of text that holds a suggestion");
+    }
+    if (paragraph !== last.paragraph && holdsOwnSuggestion(paragraph)) {
+      notModelled("a deletion of a paragraph that holds a suggested change to its style or bullet");
+    }
+  }
   let firstStart = first.element.startIndex;
   let lastEnd = last.element.endIndex;
   if (last.position === first.position) {
     first.paragraph.elements = elementsWithout(first.element, start, end);
   } else {
-    let taken = first.container.slice(first.position, last.position + 1);
     if (!taken.every(isParagraph)) {
       invariant(
         "a deletion that takes a table or another structure together with text around it");
@@ -1655,8 +1709,10 @@ function splitRunAt(paragraph: Paragraph, index: number): void {
   if (!element.textRun) invariant("a text style over part of an element that is not text");
   let { content, textStyle } = element.textRun;
   let offset = index - element.startIndex;
-  let head = textRun(content.slice(0, offset), textStyle);
-  let tail = textRun(content.slice(offset), structuredClone(textStyle));
+  let suggestions = runSuggestions(element.textRun);
+  let head = textRun(content.slice(0, offset), textStyle, suggestions);
+  let tail = textRun(
+    content.slice(offset), structuredClone(textStyle), structuredClone(suggestions));
   head.startIndex = element.startIndex;
   head.endIndex = tail.startIndex = index;
   tail.endIndex = element.endIndex;
@@ -1709,6 +1765,20 @@ function namedTextStyle(
   return { bold: resolve("bold"), italic: resolve("italic"), strikethrough: resolve("strikethrough") };
 }
 
+/** What a text style on suggested text is not modelled as. */
+const SUGGESTED_TEXT_STYLE = "a text style on text that holds a suggestion";
+
+/**
+ * Throws for a paragraph request (`request`) on `paragraph` while a suggestion changes its
+ * style or bullet: what Google does with the suggestion is not recorded, and the builders
+ * refuse such a request.
+ */
+function notOnOwnSuggestion(paragraph: Paragraph, request: string): void {
+  if (holdsOwnSuggestion(paragraph)) {
+    notModelled(`${request} on a paragraph that holds a suggested change to its style or bullet`);
+  }
+}
+
 function updateTextStyle(
   draft: Draft,
   { range, textStyle, fields }: { range: DocsRange; textStyle: TextStyle; fields: string },
@@ -1751,6 +1821,7 @@ function updateTextStyle(
       position < elements.length && elements[position].startIndex < end; position++) {
       let element = elements[position];
       if (!element.textRun) invariant("a text style over an element that is not text");
+      if (holdsSuggestion(element.textRun)) notModelled(SUGGESTED_TEXT_STYLE);
       let own: ModelTextStyle = element.textRun.textStyle;
       let hadLink = own.link !== undefined;
       restyle(own, named);
@@ -1771,6 +1842,7 @@ function updateTextStyle(
     // linked text stays as it was.
     let lineBreak = paragraph.elements.at(-1)?.textRun;
     if (end === endIndex - 1 && lineBreak) {
+      if (holdsSuggestion(lineBreak)) notModelled(SUGGESTED_TEXT_STYLE);
       restyle(lineBreak.textStyle, [...named].filter(field => field !== "link"));
     }
   }
@@ -1789,8 +1861,13 @@ function updateParagraphStyle(
 ): void {
   let named = fieldNames<ParagraphField>(fields, PARAGRAPH_FIELDS, "updateParagraphStyle");
   for (let { paragraph } of paragraphsInRange(draft, range, "updateParagraphStyle")) {
+    notOnOwnSuggestion(paragraph, "updateParagraphStyle");
     let style: ModelParagraphStyle = paragraph.paragraphStyle;
     if (named.has("namedStyleType")) {
+      // Naming the style restyles the text, below.
+      if (paragraph.elements.some(element => element.textRun && holdsSuggestion(element.textRun))) {
+        notModelled(SUGGESTED_TEXT_STYLE);
+      }
       let { namedStyleType } = paragraphStyle;
       if (typeof namedStyleType !== "string") {
         invariant("updateParagraphStyle naming namedStyleType without giving one");
@@ -1830,6 +1907,7 @@ function updateParagraphStyle(
 
 function deleteParagraphBullets(draft: Draft, { range }: { range: DocsRange }): void {
   for (let { paragraph } of paragraphsInRange(draft, range, "deleteParagraphBullets")) {
+    notOnOwnSuggestion(paragraph, "deleteParagraphBullets");
     if (!paragraph.bullet) continue;
     // Google leaves the paragraph indented where its bullet stood.
     let style: ModelParagraphStyle = paragraph.paragraphStyle;
@@ -1859,6 +1937,7 @@ function stripLeadingTabs(paragraph: Paragraph): number {
   while (elements[0]?.textRun) {
     let run = elements[0].textRun;
     let own = run.content.length - run.content.replace(/^\t+/, "").length;
+    if (own > 0 && holdsSuggestion(run)) notModelled("a deletion of text that holds a suggestion");
     tabs += own;
     run.content = run.content.slice(own);
     if (run.content !== "") break;
@@ -1897,6 +1976,7 @@ function createParagraphBullets(
   if (paragraphs.some(({ paragraph }) => paragraph.bullet)) {
     invariant("createParagraphBullets over a range that holds a list item");
   }
+  for (let { paragraph } of paragraphs) notOnOwnSuggestion(paragraph, "createParagraphBullets");
 
   // The item joined behind is read before any paragraph changes. It stands before the range's
   // first paragraph: in the body that may be outside the piece in hand, which the body says.

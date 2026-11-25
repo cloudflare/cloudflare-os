@@ -4,11 +4,12 @@
 
 import type {
   GoogleDocsRequest, GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table,
-  TableCell, TextStyle,
+  TableCell, TextRun, TextStyle,
 } from "./docs-api";
 import {
-  atGraphemeBoundary, BULLET_PRESETS, CHIP_PLACEHOLDER, isGoogleDocsStrippedCharacter,
-  joinsGraphemes, LIST_LEVELS, loneChipCopy, madeByPreset, wholeFootnoteNumber,
+  atGraphemeBoundary, BULLET_PRESETS, CHIP_PLACEHOLDER, holdsOwnSuggestion, holdsSuggestion,
+  isGoogleDocsStrippedCharacter, joinsGraphemes, LIST_LEVELS, loneChipCopy, madeByPreset,
+  wholeFootnoteNumber,
 } from "./docs-content";
 import { lookOfTable, renderLook } from "./docs-table-look";
 import type { TableLook } from "./docs-table-look";
@@ -144,10 +145,10 @@ export type TableMapping = MarkdownRange & {
   /** How many rows, from the first, the table pins as its header; absent when it pins none. */
   pinnedRows?: number;
   /**
-   * How many suggestions the table holds that the view does not show: each suggested insertion
-   * or deletion of the table, of a row of it or of a cell of it, each suggested change to a row's
-   * or a cell's style, and those of a table inside
-   * one of its cells. Absent when it holds none.
+   * How many suggestions the table holds: each suggested insertion or deletion of the table, of
+   * a row of it or of a cell of it, each suggested change to a row's or a cell's style, each
+   * suggestion on the text and the paragraphs of its cells, and those of a table inside one of
+   * its cells. Absent when it holds none.
    */
   suggested?: number;
 };
@@ -178,6 +179,8 @@ export type TableCellMapping = MarkdownRange & {
   emptyParagraph: boolean;
   /** The cell's editable texts, in order; none for a cell that holds a table. */
   texts: TableTextMapping[];
+  /** What suggestions the cell's paragraphs hold, those that hold any; absent for none. */
+  suggested?: ParagraphSuggestions[];
   /** Whether the cell holds an item of a list that numbers any of its levels. */
   numbered: boolean;
   /** Whether the cell holds a footnote reference. */
@@ -223,16 +226,18 @@ type TableTextMapping = MarkdownRange & {
  * showed is told apart. A bump also has to decide which earlier versions
  * {@link REPLAYABLE_TEXT_EDIT_VERSIONS} keeps.
  */
-export const MARKDOWN_RENDERING_VERSION = 7;
+export const MARKDOWN_RENDERING_VERSION = 8;
 
 /**
  * Earlier rendering versions whose text edits (a replacement outside tables, an append) still
  * replay under {@link MARKDOWN_RENDERING_VERSION}, because they render everything outside tables
  * as it does. Decide this list again with every bump. Not 6: it read a subtitle whose named style
  * is upright as italic, so a quote that was unique under 6 can be unique under 7 as another
- * paragraph's, and the edit would change text its preview did not show changing.
+ * paragraph's, and the edit would change text its preview did not show changing. 7 showed text
+ * a suggestion inserts or deletes without its marks and is otherwise 8: a quote of it that
+ * crosses where a mark now stands is found nowhere, and one beside the marks is where it was.
  */
-export const REPLAYABLE_TEXT_EDIT_VERSIONS: readonly number[] = [];
+export const REPLAYABLE_TEXT_EDIT_VERSIONS: readonly number[] = [7];
 
 type ListType = "bullet" | "numbered";
 
@@ -266,9 +271,26 @@ export type BlockMapping = {
    * as nesting and remove were the paragraph made a list item again.
    */
   tabbed?: true;
+  /** What suggestions the paragraph holds; absent when it holds none. */
+  suggested?: ParagraphSuggestions;
   /** Fine-grained segments within this block. */
   segments: Segment[];
 }
+
+/**
+ * What suggestions one paragraph holds, which a text edit may not touch: an edit made outside
+ * suggesting mode would discard them, or make its own text part of one.
+ */
+export type ParagraphSuggestions = {
+  /** Where the paragraph starts in the tab's index space. */
+  docStart: number;
+  /** Where it ends, exclusive: after its final line break. */
+  docEnd: number;
+  /** Set when a suggestion changes the paragraph's style or its bullet. */
+  own?: true;
+  /** The ranges of its text runs that a suggestion inserts, deletes or restyles, in order. */
+  runs: readonly { readonly docStart: number; readonly docEnd: number }[];
+};
 
 /**
  * A segment maps a range of Markdown characters to Google Docs characters.
@@ -838,6 +860,7 @@ export function renderRun(
 
     let mdEnd = writer.length;
     if (protects) protectedRanges.push({ mdStart: protectedStart, mdEnd });
+    let suggested = paragraphSuggestions(para, docStart, docEnd);
     blocks.push({
       mdStart, mdEnd, docStart, docEnd, segments,
       namedStyleType: para.paragraphStyle.namedStyleType,
@@ -846,6 +869,7 @@ export function renderRun(
       ...(listItem ? { listId: listItem.listId } : {}),
       ...(para.positionedObjectIds?.length ? { positioned: true as const } : {}),
       ...(para.elements[0]?.textRun?.content.startsWith("\t") ? { tabbed: true as const } : {}),
+      ...(suggested ? { suggested } : {}),
       ...(listItem?.listType && !madeByPreset(
         context.lists[listItem.listId], BULLET_PRESETS[BULLET_PRESET[listItem.listType]],
       ) ? { offPreset: true as const } : {}),
@@ -1525,17 +1549,37 @@ function suggestionsOf(value: {
   suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
   suggestedTableRowStyleChanges?: Record<string, object>;
   suggestedTableCellStyleChanges?: Record<string, object>;
+  suggestedTextStyleChanges?: Record<string, object>;
+  suggestedParagraphStyleChanges?: Record<string, object>;
+  suggestedBulletChanges?: Record<string, object>;
 }): number {
   return (value.suggestedInsertionIds?.length ?? 0) + (value.suggestedDeletionIds?.length ?? 0) +
     Object.keys(value.suggestedTableRowStyleChanges ?? {}).length +
-    Object.keys(value.suggestedTableCellStyleChanges ?? {}).length;
+    Object.keys(value.suggestedTableCellStyleChanges ?? {}).length +
+    Object.keys(value.suggestedTextStyleChanges ?? {}).length +
+    Object.keys(value.suggestedParagraphStyleChanges ?? {}).length +
+    Object.keys(value.suggestedBulletChanges ?? {}).length;
 }
 
 /**
- * How many suggestions the table, its rows and its cells are marked with, those of a table
- * inside one of its cells included: deleting the cell discards that suggestion too. The table's
- * own fields count beside those of its rows and cells, since a table that is itself a
- * suggestion may mark only itself.
+ * What suggestions `paragraph`, which stands at `[docStart, docEnd)`, holds
+ * (`ParagraphSuggestions`), or `undefined` where it holds none.
+ */
+function paragraphSuggestions(
+  paragraph: Paragraph, docStart: number, docEnd: number,
+): ParagraphSuggestions | undefined {
+  let runs = paragraph.elements.flatMap(part => part.textRun && holdsSuggestion(part.textRun)
+    ? [{ docStart: part.startIndex, docEnd: part.endIndex }] : []);
+  let own = holdsOwnSuggestion(paragraph);
+  if (!own && runs.length === 0) return undefined;
+  return { docStart, docEnd, ...(own ? { own: true as const } : {}), runs };
+}
+
+/**
+ * How many suggestions the table, its rows and its cells are marked with, those on the text and
+ * the paragraphs of its cells and those of a table inside one of its cells included: deleting
+ * the cell discards that suggestion too. The table's own fields count beside those of its rows
+ * and cells, since a table that is itself a suggestion may mark only itself.
  */
 function suggestionsIn(table: Table): number {
   let count = suggestionsOf(table);
@@ -1545,6 +1589,11 @@ function suggestionsIn(table: Table): number {
       count += suggestionsOf(cell);
       for (let element of cell.content ?? []) {
         if (element.table) count += suggestionsIn(element.table);
+        if (!element.paragraph) continue;
+        count += suggestionsOf(element.paragraph);
+        for (let part of element.paragraph.elements) {
+          if (part.textRun) count += suggestionsOf(part.textRun);
+        }
       }
     }
   }
@@ -1647,7 +1696,19 @@ function cellMapping(
     loneChip: copy !== undefined,
     ...(copy && copy !== "unseen" ? { copies: copy } : {}),
     unshown: unshownElements(elements),
+    ...cellSuggestions(elements),
   };
+}
+
+/** The `suggested` field of a cell of `elements`, where a paragraph of them holds a suggestion. */
+function cellSuggestions(
+  elements: readonly StructuralElement[],
+): Pick<TableCellMapping, "suggested"> {
+  let suggested = elements.flatMap(({ paragraph, startIndex, endIndex }) => {
+    let found = paragraph && paragraphSuggestions(paragraph, startIndex, endIndex);
+    return found ? [found] : [];
+  });
+  return suggested.length > 0 ? { suggested } : {};
 }
 
 /** Whether a paragraph of `elements`, the cells of tables among them included, passes `test`. */
@@ -1920,8 +1981,10 @@ function tableParagraphContentToHtml(paragraph: Paragraph, subtitleItalic: boole
       italic = nextItalic;
     }
     let { text, style, link } = visible;
+    let mark = part.textRun && suggestionMark(part.textRun);
     runs.push({
       text,
+      ...(mark ? { mark } : {}),
       bold: style.bold,
       // A subtitle's italic is the span around its runs, opened and closed above.
       italic: !inheritedItalic && style.italic,
@@ -1943,6 +2006,8 @@ export function isSafeTableLink(link: string): boolean {
 /** One stretch of a cell paragraph's text with the formatting the table HTML shows. */
 export type CellInlineRun = {
   text: string;
+  /** The suggestion the text is, as the HTML marks it (`<ins>`, `<del>`); absent for none. */
+  mark?: SuggestionMark;
   bold?: boolean;
   italic?: boolean;
   strikethrough?: boolean;
@@ -1968,7 +2033,7 @@ function cellInlineHtml(runs: readonly CellInlineRun[]): string {
 }
 
 function sameInlineFormat(left: CellInlineRun, right: CellInlineRun): boolean {
-  return !left.bold === !right.bold && !left.italic === !right.italic &&
+  return left.mark === right.mark && !left.bold === !right.bold && !left.italic === !right.italic &&
     !left.strikethrough === !right.strikethrough &&
     (left.link || undefined) === (right.link || undefined);
 }
@@ -1979,6 +2044,8 @@ function formattedTextToHtml(text: string, format: CellInlineRun): string {
   if (format.italic) html = `<em>${html}</em>`;
   if (format.bold) html = `<strong>${html}</strong>`;
   if (format.link) html = `<a href="${escapeHtmlAttribute(format.link)}">${html}</a>`;
+  if (format.mark === "deletion" || format.mark === "both") html = `<del>${html}</del>`;
+  if (format.mark === "insertion" || format.mark === "both") html = `<ins>${html}</ins>`;
   return html;
 }
 
@@ -2163,7 +2230,10 @@ function emitParagraphContent(
     formats = nextFormats;
 
     if (element.textRun) {
+      let [open, close] = markdownMarks(suggestionMark(element.textRun));
+      if (open) writer.syntax(open);
       emitMappedTextRun(writer, visible.text, visible.style, element.startIndex, !!visible.link);
+      if (close) writer.syntax(close);
     } else {
       writer.syntax(escapeMarkdownText(visible.text));
     }
@@ -2171,6 +2241,58 @@ function emitParagraphContent(
 
   let transition = markdownFormatTransition(formats, []);
   if (transition) writer.syntax(transition);
+}
+
+/**
+ * What a suggestion on text is, as the rendering marks it: an insertion, a deletion, or both, a
+ * deletion suggested of text another suggestion inserts. A suggested change of style is not
+ * marked: the edits that would discard it are refused, and the refusal says so.
+ */
+export type SuggestionMark = "insertion" | "deletion" | "both";
+
+/** What the text of `run` is as the rendering marks it; `undefined` for text it does not mark. */
+function suggestionMark(run: TextRun): SuggestionMark | undefined {
+  let inserted = !!run.suggestedInsertionIds?.length;
+  let deleted = !!run.suggestedDeletionIds?.length;
+  return inserted && deleted ? "both" : inserted ? "insertion" : deleted ? "deletion" : undefined;
+}
+
+/**
+ * The marks a tab's Markdown writes around text a suggestion inserts and deletes, as
+ * CriticMarkup spells them. A table cell's HTML writes `<ins>` and `<del>` instead.
+ */
+const MARKDOWN_MARKS = ["{++", "++}", "{--", "--}"] as const;
+
+/** The marks written before and after text marked `mark`; empty for none. */
+function markdownMarks(mark: SuggestionMark | undefined): readonly [string, string] {
+  switch (mark) {
+    case "insertion": return ["{++", "++}"];
+    case "deletion": return ["{--", "--}"];
+    case "both": return ["{++{--", "--}++}"];
+    default: return ["", ""];
+  }
+}
+
+/** How many times `markdown` holds `mark`, counted without overlaps. */
+function marksIn(markdown: string, mark: string): number {
+  return markdown.split(mark).length - 1;
+}
+
+/**
+ * Throws, for the edit `op`, where `newMarkdown` holds one of the marks a tab's Markdown writes
+ * around suggested text more times than `oldMarkdown` does: an edit cannot make a suggestion.
+ * The marks of a suggestion the old text quotes may stand in the new text as they are, and so
+ * may text the document holds that reads as a mark.
+ */
+export function refuseNewSuggestionMarks(
+  op: string, oldMarkdown: string, newMarkdown: string,
+): void {
+  if (MARKDOWN_MARKS.some(mark => marksIn(newMarkdown, mark) > marksIn(oldMarkdown, mark))) {
+    throw new Error(
+      `${op}: the new text holds {++, ++}, {-- or --}, which getContent() writes around text ` +
+      "a suggestion inserts or deletes. An edit cannot make a suggestion: use suggestEdit() " +
+      "for that, and leave the marks of a suggestion the old text quotes as they are.");
+  }
 }
 
 /**

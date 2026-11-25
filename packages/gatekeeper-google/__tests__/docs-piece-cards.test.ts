@@ -606,7 +606,7 @@ function summed(tally: Tally) {
 
 /** The steps the recordings prepare, by kind: every step of every recording, and none refused. */
 const RECORDED_STEPS = {
-  appendText: 70, replaceText: 88, insertTable: 10, insertTableRows: 4, insertTableColumns: 4,
+  appendText: 71, replaceText: 95, insertTable: 11, insertTableRows: 5, insertTableColumns: 4,
   deleteTableRows: 3, deleteTableColumns: 1, deleteTable: 1, setTableCellStyle: 7,
   setTableColumnWidths: 4, setTableRowHeights: 1, mergeTableCells: 3, unmergeTableCells: 3,
 };

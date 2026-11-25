@@ -40,9 +40,12 @@ const RECORDED: { name: string; tab: GoogleDocsTab }[] = FIXTURES.flatMap(fixtur
 
 // --- A tab as Google sends it: with what the gatekeeper does not read
 
-/** The parts of which the copy keeps no suggestion ids (it keeps those of tables, rows and cells). */
+/**
+ * The parts of which the copy keeps no suggestion ids (it keeps those of text runs, tables, rows
+ * and cells).
+ */
 const SUGGESTIBLE: ReadonlySet<string> = new Set([
-  "textRun", "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference",
+  "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference",
   "equation", "inlineObjectElement", "person", "richLink", "dateElement", "dropdown",
   "sectionBreak", "tableOfContents",
 ]);
@@ -61,6 +64,11 @@ function dressed(tab: GoogleDocsTab): GoogleDocsTab {
     }
     if (!value || typeof value !== "object") return;
     let held = value as Record<string, unknown>;
+    // Suggested changes are keyed by their ids, so a key added beside them would be one more.
+    if (/^suggested\w*Changes$/.test(key)) {
+      for (let inner of Object.values(held)) dress(inner, "change");
+      return;
+    }
     for (let [name, inner] of Object.entries(held)) dress(inner, name);
     held.zzUnread = { deep: [1] };
     if (key === "paragraphStyle" && !("headingId" in held)) held.direction = "LEFT_TO_RIGHT";
@@ -427,6 +435,12 @@ function everyFieldTab(): GoogleDocsTab {
   };
   let kinds: Omit<ParagraphElement, "startIndex" | "endIndex">[] = [
     { textRun: { content: "Text", textStyle: look } },
+    {
+      textRun: {
+        content: "new", textStyle: {}, suggestedInsertionIds: ["suggest.typed"],
+        suggestedDeletionIds: ["suggest.struck"], suggestedTextStyleChanges: { "suggest.bold": {} },
+      },
+    },
     ...links.map(link => ({ textRun: { content: "to", textStyle: { link } } })),
     { autoText: { type: "PAGE_NUMBER", textStyle: look } },
     { horizontalRule: {} },
@@ -461,6 +475,8 @@ function everyFieldTab(): GoogleDocsTab {
     paragraphStyle,
     bullet: { listId: "kix.list", nestingLevel: 1 },
     positionedObjectIds: ["kix.positioned"],
+    suggestedParagraphStyleChanges: { "suggest.centred": {} },
+    suggestedBulletChanges: { "suggest.listed": {} },
   };
   let border: TableCellBorder = {
     color: { color: { rgbColor: { red: 1, green: 0.5, blue: 0.25 } } },
@@ -626,8 +642,9 @@ function keptFields(tabs: readonly GoogleDocsTab[]): Record<string, string> {
     let keys = fields.get(under) ?? new Set<string>();
     fields.set(under, keys);
     for (let [key, inner] of Object.entries(value)) {
-      if (under === "lists") {
-        visit(inner, "lists.*");
+      // The keys of the lists and of suggested changes are ids, which no version names.
+      if (under === "lists" || /^suggested\w*Changes$/.test(under)) {
+        visit(inner, `${under}.*`);
       } else {
         keys.add(key);
         visit(inner, key);
@@ -877,7 +894,7 @@ it("keeps which style changes a row's and a cell's suggestions make, by ID alone
 it("keeps exactly these fields under this format version", () => {
   let tabs = [RICHEST, ...RECORDED.map(({ tab }) => tab)].map(tab => pruneTab(dressed(tab)));
   expect({ version: DOC_COPY_FORMAT_VERSION, fields: keptFields(tabs) }).toStrictEqual({
-    version: 7,
+    version: 8,
     fields: {
       autoText: "textStyle type",
       backgroundColor: "color",
@@ -920,7 +937,8 @@ it("keeps exactly these fields under this format version", () => {
       paddingRight: "magnitude unit",
       paddingTop: "magnitude unit",
       pageBreak: "textStyle",
-      paragraph: "bullet elements paragraphStyle positionedObjectIds",
+      paragraph: "bullet elements paragraphStyle positionedObjectIds suggestedBulletChanges " +
+        "suggestedParagraphStyleChanges",
       paragraphStyle: "alignment headingId indentFirstLine indentStart namedStyleType",
       person: "personProperties textStyle",
       personProperties: "email name",
@@ -929,6 +947,13 @@ it("keeps exactly these fields under this format version", () => {
       richLinkProperties: "title uri",
       sectionBreak: "",
       styles: "namedStyleType textStyle",
+      // The keys of suggested changes are their ids, and the copy keeps nothing of a change.
+      suggestedBulletChanges: "",
+      "suggestedBulletChanges.*": "",
+      suggestedParagraphStyleChanges: "",
+      "suggestedParagraphStyleChanges.*": "",
+      suggestedTextStyleChanges: "",
+      "suggestedTextStyleChanges.*": "",
       tab: "body index lists namedRanges namedStyles nestingLevel parentTabId tabId title",
       table: "suggestedDeletionIds suggestedInsertionIds tableRows tableStyle",
       tableCellStyle: "backgroundColor borderBottom borderLeft borderRight borderTop columnSpan " +
@@ -941,7 +966,8 @@ it("keeps exactly these fields under this format version", () => {
       tableRows: "endIndex startIndex suggestedDeletionIds suggestedInsertionIds tableCells " +
         "tableRowStyle",
       tableStyle: "tableColumnProperties",
-      textRun: "content textStyle",
+      textRun: "content suggestedDeletionIds suggestedInsertionIds suggestedTextStyleChanges " +
+        "textStyle",
       textStyle: "bold fontSize foregroundColor italic link strikethrough underline",
       width: "magnitude unit",
     },

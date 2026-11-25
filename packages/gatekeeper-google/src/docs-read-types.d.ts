@@ -106,6 +106,13 @@ export interface GoogleDocReadSession {
    * </table>
    * ```
    *
+   * Suggestions made in suggesting mode show where they stand until someone accepts or rejects
+   * them: text a suggestion inserts reads between `{++` and `++}`, and text one deletes between
+   * `{--` and `--}`, as `Plan {++new ++}for {--next --}week`; in a table `<ins>` and `<del>`
+   * mark them. A suggested change of style, or of a paragraph's style or bullet, is not shown.
+   * The marks are not text of the Doc, and an edit made through this connection cannot change
+   * suggested text: it is accepted or rejected in Google Docs.
+   *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.
    */

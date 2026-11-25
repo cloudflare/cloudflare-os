@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Dimension, DocList, GoogleDocsRequest, GoogleDocsTab, Paragraph, ParagraphElement,
-  StructuralElement, TableCellBorder, TableCellStyle,
+  StructuralElement, TableCellBorder, TableCellStyle, TextRun,
 } from "../src/docs-api";
 import type { ModelParagraphStyle } from "../src/docs-model";
 import { pruneTab } from "../src/docs-replica";
@@ -161,12 +161,17 @@ function dropCellDefaults(style: TableCellStyle): void {
 }
 
 /** Join the adjacent text runs of one style into one run, in place. */
+/** What tells two adjacent text runs apart: their style and the suggestions they carry. */
+function runLook({ content: _content, ...look }: TextRun): Omit<TextRun, "content"> {
+  return look;
+}
+
 function joinRuns(paragraph: Paragraph): void {
   let joined: ParagraphElement[] = [];
   for (let element of paragraph.elements) {
     let last = joined.at(-1);
     if (last?.textRun && element.textRun &&
-        canonicalJson(last.textRun.textStyle) === canonicalJson(element.textRun.textStyle)) {
+        canonicalJson(runLook(last.textRun)) === canonicalJson(runLook(element.textRun))) {
       last.textRun.content += element.textRun.content;
       last.endIndex = element.endIndex;
     } else {
@@ -196,16 +201,17 @@ function renaming(prefix: string): (id: string) => string {
  * every list id is renamed (a list a paragraph uses in order of first use, `list.1` on; then
  * the lists no paragraph uses, `unused.1` on, in the order of their definitions as JSON, so
  * that their number and each definition are still compared); the ids of positioned objects,
- * of inline objects and of suggestions are renamed in order of first appearance, each kind on
- * its own (`positioned.1`, `inline.1`, `suggestion.1` on), so that which paragraph, element
- * or cell holds one, and how many, are still compared; heading ids are left out, and so is
- * the least height of the rows `sized` names. Every other id (a footnote's, a dropdown's and
- * its definition's) is compared as sent. What is one document written two ways is
- * written one way: a start index Google leaves out is 0; adjacent text runs of one style are
- * one run; an explicit default is no value (an indent of no or zero magnitude, alignment
- * `START`, and in a cell padding of 5pt, alignment `TOP`, an empty background and a 1pt solid
- * black border); and a colour component is the 32-bit float Google stores. No other field is
- * left out or changed.
+ * of inline objects and of suggestions (the keys of a text's or a paragraph's suggested
+ * changes included) are renamed in order of first appearance, each kind on its own
+ * (`positioned.1`, `inline.1`, `suggestion.1` on), so that which paragraph, element or cell
+ * holds one, and how many, are still compared; heading ids are left out, and so is the least
+ * height of the rows `sized` names. Every other id (a footnote's, a dropdown's and its
+ * definition's) is compared as sent. What is one document written two ways is written one
+ * way: a start index Google leaves out is 0; adjacent text runs of one style and the same
+ * suggestions are one run; an explicit default is no value (an indent of no or zero
+ * magnitude, alignment `START`, and in a cell padding of 5pt, alignment `TOP`, an empty
+ * background and a 1pt solid black border); and a colour component is the 32-bit float
+ * Google stores. No other field is left out or changed.
  */
 export function comparable(
   tab: GoogleDocsTab, sized?: ReadonlyMap<number, ReadonlySet<number>>,
@@ -218,12 +224,20 @@ export function comparable(
   let suggestionName = renaming("suggestion");
   let usedLists = new Map<string, string>();
 
-  let suggestions = (part: { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] }) => {
+  let renamedKeys = (changes: Record<string, object>) => Object.fromEntries(
+    Object.entries(changes).map(([id, change]) => [suggestionName(id), change]));
+  let suggestions = (part: {
+    suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
+    suggestedTextStyleChanges?: Record<string, object>;
+  }) => {
     if (part.suggestedInsertionIds) {
       part.suggestedInsertionIds = part.suggestedInsertionIds.map(suggestionName);
     }
     if (part.suggestedDeletionIds) {
       part.suggestedDeletionIds = part.suggestedDeletionIds.map(suggestionName);
+    }
+    if (part.suggestedTextStyleChanges) {
+      part.suggestedTextStyleChanges = renamedKeys(part.suggestedTextStyleChanges);
     }
   };
   let paragraph = (held: Paragraph) => {
@@ -240,8 +254,15 @@ export function comparable(
     if (held.positionedObjectIds) {
       held.positionedObjectIds = held.positionedObjectIds.map(positionedName);
     }
+    if (held.suggestedParagraphStyleChanges) {
+      held.suggestedParagraphStyleChanges = renamedKeys(held.suggestedParagraphStyleChanges);
+    }
+    if (held.suggestedBulletChanges) {
+      held.suggestedBulletChanges = renamedKeys(held.suggestedBulletChanges);
+    }
     for (let element of held.elements) {
       start(element);
+      if (element.textRun) suggestions(element.textRun);
       let inline = element.inlineObjectElement;
       if (inline?.inlineObjectId !== undefined) {
         inline.inlineObjectId = inlineName(inline.inlineObjectId);

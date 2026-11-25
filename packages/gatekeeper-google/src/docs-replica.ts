@@ -22,7 +22,7 @@ import type { CutRun, RunSizes } from "./docs-runs";
  * would go on lacking a field the rendering or the model reads. What code derives of a stored
  * tab is versioned apart, by the digest of that code (`DOC_DERIVED`).
  */
-export const DOC_COPY_FORMAT_VERSION = 7;
+export const DOC_COPY_FORMAT_VERSION = 8;
 
 // ---------------------------------------------------------------------------
 // Named ranges and write markers
@@ -211,6 +211,10 @@ const PARAGRAPH_ELEMENT = {
   textRun: part({
     content: value,
     textStyle: { kind: "part", fields: TEXT_STYLE, absent: "empty" },
+    // The suggestions on the text, by ID: an edit of the text would discard them.
+    suggestedInsertionIds: values,
+    suggestedDeletionIds: values,
+    suggestedTextStyleChanges: { kind: "map", fields: {}, absent: "skip" },
   } satisfies FieldsOf<TextRun>),
   autoText: whole({ type: value, textStyle }),
   horizontalRule: present,
@@ -241,6 +245,9 @@ const PARAGRAPH = {
   paragraphStyle: { kind: "part", fields: PARAGRAPH_STYLE, absent: "throw" },
   bullet: part({ listId: value, nestingLevel: value } satisfies FieldsOf<Bullet>),
   positionedObjectIds: values,
+  // The suggested changes to the paragraph's style and bullet, by ID, as for a text run.
+  suggestedParagraphStyleChanges: { kind: "map", fields: {}, absent: "skip" },
+  suggestedBulletChanges: { kind: "map", fields: {}, absent: "skip" },
 } satisfies FieldsOf<Paragraph>;
 
 const BORDER = part({

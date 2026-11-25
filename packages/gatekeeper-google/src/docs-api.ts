@@ -212,6 +212,10 @@ export type Paragraph = {
   bullet?: Bullet;
   /** Positioned objects tethered to this paragraph. */
   positionedObjectIds?: string[];
+  /** The suggested changes to the paragraph's style, by suggestion ID: the copy keeps the IDs. */
+  suggestedParagraphStyleChanges?: Record<string, object>;
+  /** The suggested changes to the paragraph's bullet, by suggestion ID: the copy keeps the IDs. */
+  suggestedBulletChanges?: Record<string, object>;
 }
 
 export type ParagraphStyle = {
@@ -268,6 +272,12 @@ export type ParagraphElement = {
 export type TextRun = {
   content: string;
   textStyle: TextStyle;
+  /** IDs of the suggestions that would insert this text; absent for text that exists. */
+  suggestedInsertionIds?: string[];
+  /** IDs of the suggestions that would delete this text. */
+  suggestedDeletionIds?: string[];
+  /** The suggested changes to the text's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTextStyleChanges?: Record<string, object>;
 }
 
 type GoogleDocsLink =

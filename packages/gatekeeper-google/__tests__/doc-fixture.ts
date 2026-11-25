@@ -12,7 +12,8 @@ import { docTabToMarkdown } from "../src/markdown-converter";
 import type { DocTabSnapshot } from "../src/markdown-converter";
 
 type ParagraphPart =
-  | { text: string; style?: TextStyle }
+  /** Text, and the suggestion it is or whose style change it carries, where it is suggested. */
+  | { text: string; style?: TextStyle; suggested?: Suggestion | "style" }
   | { person: { name?: string; email: string }; style?: TextStyle }
   | { richLink: { title: string; uri: string }; style?: TextStyle }
   | { date: string; style?: TextStyle }
@@ -27,6 +28,8 @@ export type ParagraphSpec = {
   runs: (ParagraphPart | string)[];
   namedStyleType?: string;
   bullet?: { listId: string; nestingLevel?: number };
+  /** A suggested change to the paragraph's style, or to its bullet. */
+  suggestedChange?: "style" | "bullet";
 };
 
 type Suggestion = "insertion" | "deletion";
@@ -106,13 +109,17 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
   let index = startIndex;
   let elements: ParagraphElement[] = spec.runs.map(run => {
     if (typeof run === "string" || "text" in run) {
-      let { text, style } = typeof run === "string" ? { text: run, style: undefined } : run;
+      let { text, style, suggested } = typeof run === "string" ? { text: run } : run;
       let runStart = index;
       index += text.length;
       return {
         startIndex: runStart,
         endIndex: index,
-        textRun: { content: text, textStyle: style ?? {} },
+        textRun: {
+          content: text, textStyle: style ?? {},
+          ...suggested === "style"
+            ? { suggestedTextStyleChanges: { "suggest.fixture": {} } } : suggestionIds(suggested),
+        },
       };
     }
     let runStart = index++;
@@ -165,6 +172,10 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
       elements,
       paragraphStyle: { namedStyleType: spec.namedStyleType ?? "NORMAL_TEXT" },
       bullet: spec.bullet,
+      ...spec.suggestedChange === "style"
+        ? { suggestedParagraphStyleChanges: { "suggest.fixture": {} } } : {},
+      ...spec.suggestedChange === "bullet"
+        ? { suggestedBulletChanges: { "suggest.fixture": {} } } : {},
     },
   };
 }

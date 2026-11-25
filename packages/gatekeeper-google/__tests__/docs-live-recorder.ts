@@ -23,7 +23,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GoogleDocsApi } from "../src/docs-api";
-import type { GoogleDocsRequest, GoogleDocsTab, StructuralElement } from "../src/docs-api";
+import type {
+  DocsLocation, DocsRange, GoogleDocsRequest, GoogleDocsTab, StructuralElement,
+} from "../src/docs-api";
 import { docEditRequests, findUniqueMarkdown } from "../src/docs-replay";
 import type { DocEdit } from "../src/docs-replay";
 import { replacementPath, tableIdentity } from "../src/docs-tables";
@@ -45,6 +47,8 @@ export type DocsTransport = {
   read(documentId: string): Promise<GoogleDocsTab>;
   /** Send one batch. */
   send(documentId: string, requests: GoogleDocsRequest[]): Promise<void>;
+  /** Send one batch as one suggestion, as an editor suggesting would make it. */
+  suggest(documentId: string, requests: GoogleDocsRequest[]): Promise<void>;
   /** Move the document to the trash. */
   discard(documentId: string): Promise<void>;
 };
@@ -86,6 +90,12 @@ export type Scenario = {
    * the builders built.
    */
   setup?: (tab: GoogleDocsTab) => GoogleDocsRequest[];
+  /**
+   * Suggestions made after the setup and before `before` is read, in order: each a batch
+   * written by hand for the tab as just read, sent as one suggestion (`writeMode: SUGGEST`).
+   * Like the setup, they are no step of the recording.
+   */
+  suggest?: readonly ((tab: GoogleDocsTab) => GoogleDocsRequest[])[];
   steps: readonly ScenarioStep[];
 };
 
@@ -94,6 +104,7 @@ export type Scenario = {
 // ---------------------------------------------------------------------------
 
 const TABLE_2X2 = [["alpha", "beta"], ["gamma", "delta"]];
+const BOLD = { bold: true };
 const LINK = "[link](https://example.com/)";
 const FORMATTED_ITEM = `    1. **bold** and ${LINK} and *italic*`;
 
@@ -649,6 +660,71 @@ const RECORDED_SCENARIOS: readonly Scenario[] = [
       { name: "the table deleted", table: (_tab, expected) => ({ type: "deleteTable", expected: expected(0) }) },
     ],
   },
+  // Text a suggestion inserts, deletes or makes bold, in a paragraph and in a cell, with edits
+  // beside it that keep it: the copy holds every suggestion where Google holds it.
+  {
+    name: "suggestions-beside-edits",
+    setup: suggestedTextSetup,
+    suggest: [
+      tab => [{ insertText: { location: textAt(tab, "beta"), text: "NEW " } }],
+      tab => [{ deleteContentRange: { range: textRange(tab, "gamma ") } }],
+      tab => [{ updateTextStyle: { range: textRange(tab, "delta"), textStyle: BOLD, fields: "bold" } }],
+      tab => [{ insertText: { location: textAt(tab, "two"), text: "fresh " } }],
+      tab => [{ deleteContentRange: { range: textRange(tab, "three ") } }],
+      tab => [{ updateTextStyle: { range: textRange(tab, "four"), textStyle: BOLD, fields: "bold" } }],
+    ],
+    steps: [
+      {
+        name: "a table inserted before the suggestions",
+        table: () =>
+          ({ type: "insertTable", rows: 1, columns: 2, cells: [["x", "y"]], after: "Intro" }),
+      },
+      {
+        name: "a row inserted in that table",
+        table: (_tab, expected) => ({
+          type: "insertTableRows", at: 1, cells: [["z", "w"]], expected: expected(0),
+        }),
+      },
+      { name: "a word replaced before the suggested insertion", replace: ["Alpha", "Omega"] },
+      { name: "a word replaced right after the suggested insertion", replace: ["beta", "BETA"] },
+      {
+        name: "a word replaced in the cell before its suggested insertion", replace: ["one", "ONE"],
+      },
+      {
+        name: "a word replaced in the cell right after its suggested insertion",
+        replace: ["two", "TWO"],
+      },
+      { name: "a paragraph appended", append: "Tail" },
+    ],
+  },
+  // A paragraph whose alignment a suggestion changes and one a suggestion makes a list item,
+  // with their text and the paragraphs around them edited.
+  {
+    name: "suggested-paragraph-changes",
+    setup: tab => [{
+      insertText: { location: { index: 1, tabId: tab.tabId }, text: "First\nSecond\nThird" },
+    }],
+    suggest: [
+      tab => [{
+        updateParagraphStyle: {
+          range: textRange(tab, "Second"), paragraphStyle: { alignment: "CENTER" },
+          fields: "alignment",
+        },
+      }],
+      tab => [{
+        createParagraphBullets: {
+          range: textRange(tab, "Third"), bulletPreset: "BULLET_DISC_CIRCLE_SQUARE",
+        },
+      }],
+    ],
+    steps: [
+      { name: "the paragraph before them edited", replace: ["First", "Prime"] },
+      { name: "a word added to the centred paragraph", replace: ["Second", "Second line"] },
+      { name: "a word added to the bulleted paragraph", replace: ["Third", "Third line"] },
+      // Not a step: a paragraph appended after the bulleted one, which the builders refuse.
+      // Google gives the bulleted paragraph the bullet, and the new paragraph the suggestions.
+    ],
+  },
 ];
 
 const TABLE_3X3 = [["a1", "a2", "a3"], ["b1", "b2", "b3"], ["c1", "c2", "c3"]];
@@ -691,6 +767,67 @@ function pinnedTable(tab: GoogleDocsTab): GoogleDocsRequest[] {
     pinTableHeaderRows: { tableStartLocation: { index: tableStart, tabId }, pinnedHeaderRowsCount: 1 },
   });
   return requests;
+}
+
+/**
+ * The setup of `suggestions-beside-edits`: on a tab of one paragraph, the paragraphs `Intro`
+ * and `Alpha beta gamma delta`, then a table of two rows and two columns whose first cell holds
+ * `one two three four`.
+ */
+function suggestedTextSetup(tab: GoogleDocsTab): GoogleDocsRequest[] {
+  let { tabId } = tab;
+  let paragraphs = tab.body.content.filter(element => !element.sectionBreak);
+  if (paragraphs.length !== 1 || !paragraphs[0].paragraph) {
+    throw new Error("the document is not one paragraph, as a new document is");
+  }
+  let at = paragraphs[0].startIndex;
+  let tableStart = at + 1;
+  let requests: GoogleDocsRequest[] = [
+    { insertTable: { rows: 2, columns: 2, location: { index: at, tabId } } },
+  ];
+  // Last cell first, as `pinnedTable` writes them; then the paragraphs before the table.
+  let texts = [["one two three four", "c2"], ["c3", "c4"]];
+  for (let row = 1; row >= 0; row--) {
+    for (let column = 1; column >= 0; column--) {
+      let index = tableStart + 3 + row * 5 + column * 2;
+      requests.push({ insertText: { location: { index, tabId }, text: texts[row][column] } });
+    }
+  }
+  requests.push(
+    { insertText: { location: { index: at, tabId }, text: "Intro\nAlpha beta gamma delta" } });
+  return requests;
+}
+
+/** Every text run of `elements`, those in the cells of their tables included. */
+function* textRuns(
+  elements: readonly StructuralElement[],
+): Generator<{ startIndex: number; content: string }> {
+  for (let element of elements) {
+    for (let part of element.paragraph?.elements ?? []) {
+      if (part.textRun) yield { startIndex: part.startIndex, content: part.textRun.content };
+    }
+    for (let row of element.table?.tableRows ?? []) {
+      for (let cell of row.tableCells ?? []) yield* textRuns(cell.content ?? []);
+    }
+  }
+}
+
+/** The range of `text`, which one text run of the tab holds once and no other run holds. */
+function textRange(tab: GoogleDocsTab, text: string): DocsRange {
+  let found: number[] = [];
+  for (let run of textRuns(tab.body.content)) {
+    let at = run.content.indexOf(text);
+    if (at !== -1) found.push(run.startIndex + at);
+    if (at !== -1 && run.content.indexOf(text, at + 1) !== -1) found.push(-1);
+  }
+  if (found.length !== 1) throw new Error(`the tab holds ${JSON.stringify(text)} other than once`);
+  return { startIndex: found[0], endIndex: found[0] + text.length, tabId: tab.tabId };
+}
+
+/** Where `text` starts, as `textRange` finds it. */
+function textAt(tab: GoogleDocsTab, text: string): DocsLocation {
+  let { startIndex, tabId } = textRange(tab, text);
+  return { index: startIndex, tabId };
 }
 
 /**
@@ -1088,6 +1225,10 @@ export async function recordScenario(
       await transport.send(documentId, scenario.setup(await transport.read(documentId)));
       await pause(pauseMs);
     }
+    for (let suggestion of scenario.suggest ?? []) {
+      await transport.suggest(documentId, suggestion(await transport.read(documentId)));
+      await pause(pauseMs);
+    }
     let tab = await transport.read(documentId);
     let fixture: DocsLiveFixture = { name: scenario.name, before: prunedTab(tab), steps: [] };
     for (let [index, step] of scenario.steps.entries()) {
@@ -1210,6 +1351,9 @@ export function googleTransport(token: string): DocsTransport {
     read: async documentId => (await docs.getDocument(documentId)).tabs[0],
     async send(documentId, requests) {
       await docs.batchUpdate(documentId, requests);
+    },
+    async suggest(documentId, requests) {
+      await docs.suggest(documentId, requests);
     },
     async discard(documentId) {
       await drive("moving the document to the trash",

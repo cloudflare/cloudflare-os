@@ -461,9 +461,9 @@ describe("the model on a slice of a tab", () => {
       }
 
       // The builders' own batches, held to the rule a caller chooses its first slice by: no
-      // step widens, and the steps read 277 elements between them.
+      // step widens, and the steps read 287 elements between them.
       expect(widened).toEqual([]);
-      expect([steps, elements]).toEqual([199, 277]);
+      expect([steps, elements]).toEqual([209, 287]);
     });
   });
 
@@ -576,7 +576,7 @@ describe("the model on a slice of a tab", () => {
 
   // The file's tests run in order: this one reads what the recordings' tests counted.
   it("ran every recorded step, from stretches that hold nothing its batch names too", () => {
-    expect([corpus.fixtures, corpus.steps]).toEqual([33, 199]);
+    expect([corpus.fixtures, corpus.steps]).toEqual([35, 209]);
     expect(corpus.built).toBeGreaterThanOrEqual(150);
     expect(corpus.nothing / corpus.stretches).toBeGreaterThan(1 / 3);
   });

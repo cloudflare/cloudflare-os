@@ -6,8 +6,9 @@ import {
   assertMarkdownRangeEditable, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
   canonicalLinkDestination, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
   docTabToMarkdown, LIST_LEVEL_TOO_DEEP, MARKDOWN_RENDERING_VERSION, markdownToDocRequests,
-  plainTextToDocRequests, POSITIONED_ITEM_BEFORE, REPLAYABLE_TEXT_EDIT_VERSIONS,
-  StructuredContentError, stripUnwritableCharacters, TABBED_ITEM_BEFORE,
+  plainTextToDocRequests, POSITIONED_ITEM_BEFORE, refuseNewSuggestionMarks,
+  REPLAYABLE_TEXT_EDIT_VERSIONS, StructuredContentError, stripUnwritableCharacters,
+  TABBED_ITEM_BEFORE,
 } from "../src/markdown-converter";
 import type {
   DocTabSnapshot, MarkdownRange, Segment, TableCellMapping, TableMapping,
@@ -18,7 +19,7 @@ import { lookOfTable } from "../src/docs-table-look";
 import {
   appliedOneWay, BULLET_LIST, buildTab, cellTab, CHECK_LIST, grid, para, presetLevels,
 } from "./doc-fixture";
-import type { BlockSpec } from "./doc-fixture";
+import type { BlockSpec, CellSpec, ParagraphSpec } from "./doc-fixture";
 import { readFixtures } from "./docs-live-fixtures";
 import { indentedParagraphs } from "./docs-model-probes";
 
@@ -389,6 +390,99 @@ describe("docTabToMarkdown", () => {
     )).toThrow("replaceText: structured content cannot be edited");
   });
 
+});
+
+describe("suggestions on text", () => {
+  // "Plan " 1-6, "new " 6-10 a suggested insertion, "for " 10-14, "next " 14-19 suggested for
+  // deletion, "week\n" 19-24 a suggested style.
+  const SUGGESTED: ParagraphSpec = {
+    runs: [
+      "Plan ", { text: "new ", suggested: "insertion" }, "for ",
+      { text: "next ", suggested: "deletion" }, { text: "week\n", suggested: "style" },
+    ],
+  };
+
+  it("marks text a suggestion inserts or deletes, and not a suggested style", () => {
+    let { markdown, sourceMap } = docTabToMarkdown(buildTab([SUGGESTED]));
+    expect(markdown).toBe("Plan {++new ++}for {--next --}week\n");
+    // The marks are syntax: each character of the text maps to its index, as without them.
+    let mapped = sourceMap.blocks[0].segments.filter(isContent);
+    expect(mapped.map(segment => markdown.slice(segment.mdStart, segment.mdEnd)))
+      .toEqual(["Plan ", "new ", "for ", "next ", "week"]);
+    expect(mapped.map(segment => segment.docStart)).toEqual([1, 6, 10, 14, 19]);
+    expect(sourceMap.blocks[0].suggested).toEqual({
+      docStart: 1, docEnd: 24,
+      runs: [{ docStart: 6, docEnd: 10 }, { docStart: 14, docEnd: 19 }, { docStart: 19, docEnd: 24 }],
+    });
+  });
+
+  it("marks suggested text inside its formatting, and a deletion of a suggested insertion", () => {
+    let tab = buildTab([{
+      runs: [
+        { text: "bold", style: { bold: true }, suggested: "insertion" },
+        { text: " link", style: { link: { url: "https://example.com/" } }, suggested: "deletion" },
+        { text: " both\n", suggested: "insertion" },
+      ],
+    }]);
+    let last = tab.body.content[1].paragraph!.elements[2].textRun!;
+    last.suggestedDeletionIds = ["suggest.other"];
+    expect(docTabToMarkdown(tab).markdown)
+      .toBe("**{++bold++}**[{-- link--}](https://example.com/){++{-- both--}++}\n");
+  });
+
+  it("marks a paragraph whose style or bullet a suggestion changes, and shows nothing of it", () => {
+    let plain = docTabToMarkdown(buildTab([para("Centred")]));
+    for (let suggestedChange of ["style", "bullet"] as const) {
+      let { markdown, sourceMap } = docTabToMarkdown(buildTab([{ ...para("Centred"), suggestedChange }]));
+      expect(markdown).toBe(plain.markdown);
+      expect(sourceMap.blocks[0].suggested).toEqual({ docStart: 1, docEnd: 9, own: true, runs: [] });
+    }
+    expect(plain.sourceMap.blocks[0]).not.toHaveProperty("suggested");
+  });
+
+  it("marks suggested text in a cell with <ins> and <del>, inside the tags of its look", () => {
+    let tab = buildTab([para("Before"), {
+      table: [[{
+        paragraphs: [{
+          runs: [
+            "a", { text: "new", style: { bold: true }, suggested: "insertion" },
+            { text: "old", suggested: "deletion" }, { text: "b\n", suggested: "style" },
+          ],
+        }],
+      }, "c\n"]],
+    }, para("After")]);
+    let { markdown, sourceMap } = docTabToMarkdown(tab);
+    expect(markdown).toContain("    <td><p>a<ins><strong>new</strong></ins><del>old</del>b</p></td>\n");
+    let [cell, other] = sourceMap.tables[0].rows[0].cells;
+    let start = cell.docStart + 1;
+    expect(cell.suggested).toEqual([{
+      docStart: start, docEnd: start + 9,
+      runs: [
+        { docStart: start + 1, docEnd: start + 4 }, { docStart: start + 4, docEnd: start + 7 },
+        { docStart: start + 7, docEnd: start + 9 },
+      ],
+    }]);
+    expect(other).not.toHaveProperty("suggested");
+  });
+
+  it("refuses new text that holds more of a suggestion's marks than the text it replaces", () => {
+    let refused = (oldMarkdown: string, newMarkdown: string) => {
+      try {
+        refuseNewSuggestionMarks("replaceText", oldMarkdown, newMarkdown);
+        return false;
+      } catch (error) {
+        expect((error as Error).message).toMatch(/^replaceText: the new text holds \{\+\+/);
+        return true;
+      }
+    };
+    // The marks of a suggestion the old text quotes may stay as they are, or go with it.
+    expect(refused("Plan {++new ++}for", "Plan {++new ++}for all")).toBe(false);
+    expect(refused("Plan {++new ++}for", "Plan")).toBe(false);
+    expect(refused("Plan", "Plan {++new ++}")).toBe(true);
+    expect(refused("{--next --}", "{--next --}{--week--}")).toBe(true);
+    expect(refused("week", "week++}")).toBe(true);
+    expect(refused("", "plain text")).toBe(false);
+  });
 });
 
 describe("Markdown write canonicalization", () => {
@@ -1705,6 +1799,23 @@ describe("Google Docs table map", () => {
     expect(firstTableMap(styled).suggested).toBe(3);
   });
 
+  it("counts the suggestions on the text and the paragraphs of its cells as the table's", () => {
+    let rows = (cell: CellSpec) => [["a\n", "b\n"], ["c\n", cell]];
+    let plain = firstTableMap(buildTab([{ table: rows("d\n") }]));
+    let counted = (cell: CellSpec) => firstTableMap(buildTab([{ table: rows(cell) }])).suggested;
+    expect(plain.suggested).toBeUndefined();
+    expect(counted({ paragraphs: [{ runs: ["d", { text: "new\n", suggested: "insertion" }] }] })).toBe(1);
+    expect(counted({ paragraphs: [{ runs: [{ text: "old", suggested: "deletion" }, "\n"] }] })).toBe(1);
+    expect(counted({ paragraphs: [{ runs: [{ text: "d\n", suggested: "style" }] }] })).toBe(1);
+    expect(counted({ paragraphs: [{ runs: ["d\n"], suggestedChange: "style" }] })).toBe(1);
+    expect(counted({
+      paragraphs: [
+        { runs: [{ text: "d", suggested: "insertion" }, "\n"], suggestedChange: "bullet" },
+        { runs: [{ text: "e\n", suggested: "style" }] },
+      ],
+    })).toBe(3);
+  });
+
   it("marks a table that holds suggestions and counts its pinned rows", () => {
     let rows = [["a\n", "b\n"], ["c\n", "d\n"], ["e\n", "f\n"]];
     let plain = firstTableMap(buildTab([{ table: rows }]));
@@ -1869,7 +1980,7 @@ describe("Google Docs table map", () => {
   });
 
   it("pins the rendering version with the earlier versions it still replays", () => {
-    expect([MARKDOWN_RENDERING_VERSION, REPLAYABLE_TEXT_EDIT_VERSIONS]).toEqual([7, []]);
+    expect([MARKDOWN_RENDERING_VERSION, REPLAYABLE_TEXT_EDIT_VERSIONS]).toEqual([8, [7]]);
   });
 
   it("marks the paragraphs a positioned object is anchored to", () => {

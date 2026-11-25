@@ -20,10 +20,12 @@ export const DOCS_API_FIELD_NAMES: ReadonlySet<string> = new Set([
   "namedRanges", "namedStyleType", "namedStyles", "nestingLevel", "nestingLevels", "pageBreak",
   "paragraph", "paragraphStyle", "person", "personProperties", "positionedObjectIds", "revisionId",
   "richLink", "richLinkProperties", "sectionBreak", "startIndex", "startNumber", "strikethrough",
-  "styles", "suggestedDeletionIds", "suggestedInsertionIds", "suggestedTableCellStyleChanges",
-  "suggestedTableRowStyleChanges", "suggestions", "tabId", "tabProperties", "table", "tableCellStyle",
-  "tableCells", "tableHeader", "tableOfContents", "tableRowStyle", "tableRows", "tableStyle",
-  "tabs", "textRun", "textStyle", "title", "type", "underline", "uri",
+  "styles", "suggestedBulletChanges", "suggestedDeletionIds", "suggestedInsertionIds",
+  "suggestedParagraphStyleChanges", "suggestedTableCellStyleChanges",
+  "suggestedTableRowStyleChanges", "suggestedTextStyleChanges", "suggestions", "tabId",
+  "tabProperties", "table", "tableCellStyle", "tableCells", "tableHeader", "tableOfContents",
+  "tableRowStyle", "tableRows", "tableStyle", "tabs", "textRun", "textStyle", "title", "type",
+  "underline", "uri",
 ]);
 
 /** A parsed field mask: for each field, `null` for the field whole, or the selection inside it. */

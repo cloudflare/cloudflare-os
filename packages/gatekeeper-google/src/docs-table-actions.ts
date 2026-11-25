@@ -668,7 +668,8 @@ function newTableCard(
  */
 function hiddenNotes(change: HiddenContent): string {
   return (change.suggested
-    ? " It holds suggested changes to its rows, columns or cells, which are deleted with it."
+    ? " It holds suggested changes to its rows, columns or cells, or to their text, which are " +
+      "deleted with it."
     : "") +
     (change.unshown
       ? " What is deleted holds a dropdown or other smart chips that are not shown below: a " +

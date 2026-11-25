@@ -1671,10 +1671,10 @@ describe("what an edit does to run boundaries", () => {
         tally.ownDiffer += notAmong(own.listed, own.own);
       }
     }
-    // 87 runs outside the slices, a fetch finds 86: not the run a table ended, where it is deleted.
+    // 113 runs outside the slices, a fetch finds 112: not the run a table ended, where it is deleted.
     expect(tally).toEqual({
-      steps: 199, listed: 306, outsideFound: 86, outsideNot: 1, cutFound: 22, cutNot: 197,
-      sameList: 12, elementsGoogle: 862, elementsNot: 287, ownListed: 306, ownDiffer: 2, ownBefore: 1,
+      steps: 209, listed: 344, outsideFound: 112, outsideNot: 1, cutFound: 23, cutNot: 208,
+      sameList: 12, elementsGoogle: 877, elementsNot: 298, ownListed: 344, ownDiffer: 2, ownBefore: 1,
     });
   });
 

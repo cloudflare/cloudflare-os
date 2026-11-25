@@ -2,7 +2,9 @@
 // preset, as the Markdown rendering, the request builders and the model of
 // `documents.batchUpdate` need it, and what makes a footnote's number a number.
 
-import type { DocList, NestingLevel, ParagraphElement, StructuralElement } from "./docs-api";
+import type {
+  DocList, NestingLevel, Paragraph, ParagraphElement, StructuralElement, TextRun,
+} from "./docs-api";
 
 /** Whether Google Docs strips UTF-16 code unit `code` from text it inserts. */
 export function isGoogleDocsStrippedCharacter(code: number): boolean {
@@ -30,6 +32,18 @@ export function atGraphemeBoundary(text: string, offset: number): boolean {
 export function joinsGraphemes(text: string, prefix: number, suffix: number): boolean {
   return prefix > 0 && suffix > 0 && prefix + suffix < text.length &&
     !atGraphemeBoundary(text.slice(0, prefix) + text.slice(text.length - suffix), prefix);
+}
+
+/** Whether a suggestion inserts, deletes or restyles the text of `run`. */
+export function holdsSuggestion(run: TextRun): boolean {
+  return !!run.suggestedInsertionIds?.length || !!run.suggestedDeletionIds?.length ||
+    Object.keys(run.suggestedTextStyleChanges ?? {}).length > 0;
+}
+
+/** Whether a suggestion changes the style or the bullet of `paragraph`. */
+export function holdsOwnSuggestion(paragraph: Paragraph): boolean {
+  return Object.keys(paragraph.suggestedParagraphStyleChanges ?? {}).length > 0 ||
+    Object.keys(paragraph.suggestedBulletChanges ?? {}).length > 0;
 }
 
 /** The character a text run holds in place of embedded content, such as a building block's chip. */

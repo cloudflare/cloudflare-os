@@ -8,9 +8,9 @@ export type DocCommentOptions = {
    * Text of the Doc this comment is about, within one paragraph and at most 500 characters, which
    * must occur exactly once in the tab as Google has it saved, not counting edits still waiting for
    * approval: the tab's text as `getContent()` shows it, without Markdown formatting (no `**`, list
-   * markers or escapes) and, in a table, without HTML (`&` rather than `&amp;`, no tags). The
-   * comment is attached to it, as one made in Google Docs is, and it must still occur exactly
-   * once in the tab when the comment is approved.
+   * markers, suggestion marks or escapes) and, in a table, without HTML (`&` rather than `&amp;`,
+   * no tags). The comment is attached to it, as one made in Google Docs is, and it must still
+   * occur exactly once in the tab when the comment is approved.
    */
   quote: string;
   /** The tab `quote` is in: an ID returned by `listTabs()`, omitted only when there is one tab. */
@@ -345,6 +345,13 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
    * `"Text\n\n<table"`. That blank line has to stay: to remove the paragraph next to a table,
    * remove the blank line on the paragraph's other side with it.
    *
+   * Text that a suggestion inserts or deletes reads marked, as `getContent()` describes. Keep
+   * the marks of a suggestion that `oldMarkdown` quotes as they are in `newMarkdown`, and write
+   * none of your own: `suggestEdit()` makes a suggestion. A replacement or an append is refused
+   * where it would change, delete or restyle suggested text, write inside it, or change the
+   * style or bullet of a paragraph or list item that a suggestion changes, or split it. Leave
+   * that text as it is, or have the suggestions accepted or rejected in Google Docs first.
+   *
    * Each parameter holds at most 2,000 lines. A table has a line for every cell and two more for
    * every row, so quote only the rows a replacement needs and change a large table in several
    * calls.
@@ -392,12 +399,12 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
    *
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
    * Rows can be added only where the row they copy crosses no merged cell, and not to a table
-   * that holds suggested changes to its rows, columns or cells. Where a cell of the row the new
-   * rows go before (or of the last row, for rows added at the end) holds one dropdown, person
-   * chip, date chip, rich link or placeholder and no text, Google Docs copies it into the new
-   * rows: a dropdown with its first choice, U+E907 for the others. Their cells in that column
-   * then take no text. Rows cannot be added beside a cell of chips and no text in another shape,
-   * such as a chip after a space: add those rows in Google Docs.
+   * that holds suggested changes to its rows, columns or cells, or to their text. Where a cell
+   * of the row the new rows go before (or of the last row, for rows added at the end) holds one
+   * dropdown, person chip, date chip, rich link or placeholder and no text, Google Docs copies
+   * it into the new rows: a dropdown with its first choice, U+E907 for the others. Their cells
+   * in that column then take no text. Rows cannot be added beside a cell of chips and no text in
+   * another shape, such as a chip after a space: add those rows in Google Docs.
    */
   insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void>;
 
@@ -412,14 +419,14 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
    * Columns can be added until the table has 20, and only to a table of at most 500 rows.
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
    * Columns can be added only where the column they copy crosses no merged cell, and not to a
-   * table that holds suggested changes to its rows, columns or cells.
+   * table that holds suggested changes to its rows, columns or cells, or to their text.
    */
   insertTableColumns(columns: DocTableInsertion, tabId?: string): Promise<void>;
 
   /**
    * Delete rows of a table in tab `tabId`, with everything in them. To delete every row, delete
    * the table. Rows that cross a merged cell cannot be deleted, nor rows of a table that holds
-   * suggested changes to its rows, columns or cells. Rows that hold a footnote
+   * suggested changes to its rows, columns or cells, or to their text. Rows that hold a footnote
    * cannot be deleted, nor can rows that hold items of a numbered list while a numbered list
    * follows them in the tab.
    */
@@ -428,9 +435,9 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
   /**
    * Delete columns of a table in tab `tabId`, with everything in them. To delete every column,
    * delete the table. Columns that cross a merged cell cannot be deleted, nor columns of a table
-   * that holds suggested changes to its rows, columns or cells. Columns that hold a
-   * footnote cannot be deleted, nor can columns that hold items of a numbered list while a
-   * numbered list follows them in the tab.
+   * that holds suggested changes to its rows, columns or cells, or to their text. Columns that
+   * hold a footnote cannot be deleted, nor can columns that hold items of a numbered list while
+   * a numbered list follows them in the tab.
    */
   deleteTableColumns(columns: DocTableDeletion, tabId?: string): Promise<void>;
 

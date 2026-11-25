@@ -823,6 +823,61 @@ describe("what the model does not cover", () => {
     }
   });
 
+  it("throws for a request that would discard a suggestion on text or a paragraph", () => {
+    // "Keep " 1-6, "new " 6-10 a suggested insertion, "old " 10-14 suggested for deletion,
+    // "bold\n" 14-19 a suggested style. Then a paragraph whose style a suggestion changes, and
+    // one whose line break alone carries a suggested style.
+    let tab = () => buildTab([
+      {
+        runs: [
+          "Keep ", { text: "new ", suggested: "insertion" }, { text: "old ", suggested: "deletion" },
+          { text: "bold\n", suggested: "style" },
+        ],
+      },
+      { runs: ["Centred\n"], suggestedChange: "style" },
+      { runs: ["Last", { text: "\n", suggested: "style" }] },
+    ]);
+    for (let request of [
+      deleteRange(7, 8), deleteRange(5, 7), deleteRange(13, 15), deleteRange(18, 20),
+      styleText(11, 12, { bold: true }, "bold"), styleText(1, 7, { bold: true }, "bold"),
+      // A style that ends where the line break begins reaches the break.
+      styleText(27, 31, { italic: true }, "italic"),
+      // A named style restyles the text of its paragraph.
+      styleParagraphs(1, 2, { namedStyleType: "HEADING_1" }, "namedStyleType"),
+      // The paragraph whose style a suggestion changes.
+      styleParagraphs(20, 21, { namedStyleType: "HEADING_1" }, "namedStyleType"),
+      bullets(20, 21, BULLETED), deleteBullets(20, 21), deleteRange(26, 28),
+      insertText(23, "split\n"),
+    ]) expectNotModelled(tab(), request);
+    // Beside them, and inside the paragraph whose style a suggestion changes, they are taken.
+    for (let request of [
+      deleteRange(1, 5), styleText(1, 6, { bold: true }, "bold"), insertText(23, "more"),
+      deleteRange(21, 23),
+    ]) expect(() => applyDocsRequests(tab(), [request])).not.toThrow();
+  });
+
+  it("carries a suggestion on text to both parts of it, and none to text inserted beside it", () => {
+    let tab = buildTab([
+      { runs: ["Keep ", { text: "old words", suggested: "deletion" }, " end\n"] },
+      para("Last"),
+    ]);
+    // Inside the run the text joins the suggestion, a line break included, as Google does.
+    let split = applyDocsRequests(tab, [insertText(9, "\n")]);
+    let runs = (from: GoogleDocsTab) => from.body.content.flatMap(element =>
+      element.paragraph?.elements.map(({ textRun }) =>
+        [textRun?.content, textRun?.suggestedDeletionIds ?? []]) ?? []);
+    expect(runs(split)).toEqual([
+      ["Keep ", []], ["old\n", ["suggest.fixture"]], [" words", ["suggest.fixture"]],
+      [" end\n", []], ["Last\n", []],
+    ]);
+    // At either end of the run the text is no part of it.
+    let beside = applyDocsRequests(tab, [insertText(15, "!"), insertText(6, "*")]);
+    expect(runs(beside)).toEqual([
+      ["Keep *", []], ["old words", ["suggest.fixture"]], ["!", []], [" end\n", []],
+      ["Last\n", []],
+    ]);
+  });
+
   it("throws for a row or column request on a line that crosses a merged cell", () => {
     let tab = buildTab([
       { runs: ["\n"] },

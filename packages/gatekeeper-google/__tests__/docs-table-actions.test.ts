@@ -1004,8 +1004,8 @@ describe("cards", () => {
     ]));
     expect(card(dropTable(0), suggested).description).toBe(
       "Delete a table of tab \"Main\" (tab-1), with everything in it. It holds suggested " +
-      "changes to its rows, columns or cells, which are deleted with it. It was table 1 of the " +
-      "tab when this change was requested.");
+      "changes to its rows, columns or cells, or to their text, which are deleted with it. It " +
+      "was table 1 of the tab when this change was requested.");
     expect(card(dropTable(0)).description).not.toContain("suggested");
   });
 
@@ -1099,7 +1099,7 @@ describe("cards", () => {
     expect(unsaid.change).not.toHaveProperty("suggested");
     expect(replayRefusal(suggested, unsaid.change)).toBe(
       "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
-      "cells since this change was queued.");
+      "cells, or to their text, since this change was queued.");
     let said = prepare(suggested, dropTable(0));
     expect(said.description.description).toContain("It holds suggested changes");
     expect(said.change).toMatchObject({ suggested: 3 });

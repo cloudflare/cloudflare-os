@@ -412,6 +412,25 @@ describe("materializeDocEdit", () => {
       .toBeGreaterThan(0);
   });
 
+  it("replays a text edit queued under version 7, which read text without suggestions as now", () => {
+    let tab = TABLED();
+    let rows: DocEdit = { type: "deleteTableRows", at: 0, count: 1, expected: expectedOf(tab) };
+    expect(thrownMessage(() => materializeDocEdit([tab], { ...rows, tabId: TAB, markdownVersion: 7 })))
+      .toBe(EARLIER_FORMAT);
+    for (let edit of [replace, append]) {
+      expect(materializeDocEdit([PROSE()], { ...edit, tabId: TAB, markdownVersion: 7 }))
+        .toEqual(materializeDocEdit([PROSE()], { ...edit, tabId: TAB, ...CURRENT }));
+    }
+    // Text that version 7 showed without the marks a suggestion now reads with is found nowhere.
+    let suggested = buildTab([{ runs: ["Hello ", { text: "new ", suggested: "insertion" }, "world\n"] }]);
+    expect(thrownMessage(() => materializeDocEdit([suggested], {
+      type: "replaceText", oldMarkdown: "Hello new world", newMarkdown: "Hi", tabId: TAB,
+      markdownVersion: 7,
+    }))).toBe(
+      `replaceText: oldMarkdown was not found in the current simulated tab "${TAB}". ` +
+      `Make sure the text exactly matches content returned by getContent("${TAB}").`);
+  });
+
 
   it("gives the rendering of the tab the edit targets and the requests for it", () => {
     let first = PROSE();

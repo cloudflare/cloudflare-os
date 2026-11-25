@@ -15,8 +15,8 @@ import type {
   CellBlock, CellLook, CellStyleChange, CellStyleStep, Spans, TableLook,
 } from "./docs-table-look";
 import type {
-  BlockMapping, CellInlineRun, DocTabSnapshot, MarkdownRange, TabReading, TableCellMapping,
-  TableMapping,
+  BlockMapping, CellInlineRun, DocTabSnapshot, MarkdownRange, ParagraphSuggestions, TabReading,
+  TableCellMapping, TableMapping,
 } from "./markdown-converter";
 
 /**
@@ -60,8 +60,8 @@ export type HiddenContent = {
   /** How many elements the deleted cells hold that the view shows nothing for; absent for none. */
   unshown?: number;
   /**
-   * How many suggested changes to its rows, columns or cells a table deleted whole holds; absent
-   * for none.
+   * How many suggested changes to its rows, columns or cells, or to their text, a table deleted
+   * whole holds; absent for none.
    */
   suggested?: number;
 };
@@ -433,8 +433,8 @@ function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: n
   }
   if ((hidden.suggested ?? 0) > (change.suggested ?? 0)) {
     throw new Error(
-      `${op}: this table has come to hold suggested changes to its rows, columns or cells ` +
-      "since this change was queued.");
+      `${op}: this table has come to hold suggested changes to its rows, columns or cells, or ` +
+      "to their text, since this change was queued.");
   }
   return table;
 }
@@ -599,8 +599,8 @@ function checkLineChange(
 
   if (target.suggested) {
     throw new Error(
-      `${op}: this table holds suggested changes to its rows, columns or cells, so its rows ` +
-      "and columns cannot be changed until they are accepted or rejected.");
+      `${op}: this table holds suggested changes to its rows, columns or cells, or to their ` +
+      "text, so its rows and columns cannot be changed until they are accepted or rejected.");
   }
   let ofRows = op === "insertTableRows" || op === "deleteTableRows";
   let limit = ofRows ? rows : columns;
@@ -714,6 +714,147 @@ export function checkTableTarget(
 ): void {
   if (shape.type === "deleteTable") checkTableDeletion(render, table);
   else checkLineChange(render, table, shape);
+}
+
+// ---------------------------------------------------------------------------
+// Suggested text
+// ---------------------------------------------------------------------------
+
+/** The refusal of the text edit `op`, whose batch touches what a suggestion holds. */
+function suggestionRefusal(op: string): Error {
+  return new Error(
+    `${op}: the text this change touches holds suggested changes, made in suggesting mode: ` +
+    "text a suggestion inserts or deletes, which getContent() marks {++…++} and {--…--} " +
+    "(<ins> and <del> in a table), or a suggested change to the style of the text or of its " +
+    "paragraph or list item, which it does not show. The change would discard them, or make " +
+    "its own text part of one. They must be accepted or rejected in Google Docs first, or the " +
+    "change kept clear of them.");
+}
+
+/** A paragraph that holds suggestions, as the check of a batch moves it along the batch. */
+type HeldParagraph = {
+  start: number;
+  end: number;
+  readonly own: boolean;
+  readonly runs: { start: number; end: number }[];
+};
+
+/** How many characters `text` adds once Google has removed what it strips from inserted text. */
+function writtenLength(text: string): number {
+  let length = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (!isGoogleDocsStrippedCharacter(text.charCodeAt(index))) length++;
+  }
+  return length;
+}
+
+/**
+ * Throws `suggestionRefusal` where `requests`, the batch of the text edit `op` built from
+ * `piece`, would touch what a suggestion holds in the piece (`ParagraphSuggestions`, of its
+ * paragraphs and of the paragraphs of its tables' cells): a deletion or a text style that
+ * reaches suggested text, text inserted strictly inside it, or, on a paragraph whose style or
+ * bullet a suggestion changes, a paragraph or bullet request, a line break inserted into it
+ * or the deletion of its own. A style named on a paragraph restyles its text, so it counts as
+ * a text style on every suggested run of the paragraph. Each request is read where the
+ * requests before it left what it names. A request no text edit sends, and anything after a
+ * bullet request (which may take tabs off that no request states), is left to the model of
+ * the batch, which refuses what it does not know of suggestions.
+ */
+export function refuseSuggestionsTouched(
+  piece: DocTabSnapshot, requests: readonly GoogleDocsRequest[], op: string,
+): void {
+  let held: HeldParagraph[] = [];
+  let take = (found: ParagraphSuggestions | undefined) => {
+    if (!found) return;
+    held.push({
+      start: found.docStart, end: found.docEnd, own: !!found.own,
+      runs: found.runs.map(run => ({ start: run.docStart, end: run.docEnd })),
+    });
+  };
+  // The piece's own entries, told by where they stand: its first element ends where its inner
+  // range starts, and its last starts where that ends.
+  let inner = piece.part?.inner;
+  let own = (entry: { docStart: number; docEnd: number }) =>
+    !inner || entry.docEnd >= inner.from && entry.docStart <= inner.to;
+  for (let block of piece.sourceMap.blocks) if (own(block)) take(block.suggested);
+  for (let table of piece.sourceMap.tables) {
+    if (!own(table)) continue;
+    for (let row of table.rows) {
+      for (let cell of row.cells) for (let found of cell.suggested ?? []) take(found);
+    }
+  }
+  if (held.length === 0) return;
+
+  for (let request of requests) {
+    if ("insertText" in request) {
+      let { location: { index }, text } = request.insertText;
+      for (let paragraph of held) {
+        if (paragraph.runs.some(run => run.start < index && index < run.end) ||
+            paragraph.own && text.includes("\n") && paragraph.start <= index &&
+              index < paragraph.end) {
+          throw suggestionRefusal(op);
+        }
+      }
+      // Text inserted where a run starts goes before it.
+      let length = writtenLength(text);
+      for (let paragraph of held) {
+        if (index < paragraph.start) paragraph.start += length;
+        if (index < paragraph.end) paragraph.end += length;
+        for (let run of paragraph.runs) {
+          if (index > run.start) continue;
+          run.start += length;
+          run.end += length;
+        }
+      }
+      continue;
+    }
+    if ("deleteContentRange" in request) {
+      let { startIndex: from, endIndex: to } = request.deleteContentRange.range;
+      for (let paragraph of held) {
+        let lineBreak = paragraph.end - 1;
+        if (paragraph.runs.some(run => run.start < to && from < run.end) ||
+            paragraph.own && from <= lineBreak && lineBreak < to) {
+          throw suggestionRefusal(op);
+        }
+      }
+      let moved = (at: number) => at <= from ? at : at >= to ? at - (to - from) : from;
+      for (let paragraph of held) {
+        paragraph.start = moved(paragraph.start);
+        paragraph.end = moved(paragraph.end);
+        for (let run of paragraph.runs) {
+          run.start = moved(run.start);
+          run.end = moved(run.end);
+        }
+      }
+      continue;
+    }
+    if ("updateTextStyle" in request) {
+      let { startIndex: from, endIndex: to } = request.updateTextStyle.range;
+      for (let paragraph of held) {
+        // A style that ends where a paragraph's final line break begins reaches the break too.
+        let reach = to === paragraph.end - 1 ? paragraph.end : to;
+        if (paragraph.runs.some(run => run.start < reach && from < run.end)) {
+          throw suggestionRefusal(op);
+        }
+      }
+      continue;
+    }
+    let range = "updateParagraphStyle" in request ? request.updateParagraphStyle.range
+      : "createParagraphBullets" in request ? request.createParagraphBullets.range
+      : "deleteParagraphBullets" in request ? request.deleteParagraphBullets.range
+      : undefined;
+    if (!range) return;
+    let { startIndex: from, endIndex: to } = range;
+    let restyles = "updateParagraphStyle" in request &&
+      request.updateParagraphStyle.fields.split(",").includes("namedStyleType");
+    for (let paragraph of held) {
+      if (paragraph.start < Math.max(to, from + 1) && from < paragraph.end &&
+          (paragraph.own || restyles && paragraph.runs.length > 0)) {
+        throw suggestionRefusal(op);
+      }
+    }
+    if ("createParagraphBullets" in request) return;
+  }
 }
 
 /**
@@ -927,8 +1068,8 @@ function checkMerge(render: DocTabSnapshot, table: number, change: MergeChange):
   let target = render.sourceMap.tables[table];
   if (target.suggested) {
     throw new Error(
-      `${op}: this table holds suggested changes to its rows, columns or cells, so its cells ` +
-      "cannot be merged or split until they are accepted or rejected.");
+      `${op}: this table holds suggested changes to its rows, columns or cells, or to their ` +
+      "text, so its cells cannot be merged or split until they are accepted or rejected.");
   }
   let block: CellBlock;
   if (change.type === "mergeTableCells") {
@@ -1588,7 +1729,7 @@ export type CellInline = { text: string; runs: (CellInlineRun & { start: number;
 /** The tags the text of a cell paragraph is written with, in every spelling that is read. */
 const INLINE_TAGS: readonly string[] = [
   "<strong>", "</strong>", "<em>", "</em>", "<s>", "</s>", "<a>", "<a ", "</a>", "<br>", "<br/>",
-  "<br />",
+  "<br />", "<ins>", "</ins>", "<del>", "</del>",
 ];
 
 /** Whether a `<` at `index` begins a tag: a letter or `/` follows it. Any other `<` is text. */
@@ -1639,15 +1780,17 @@ const ANCHOR = /<a href="([^"]*)">/y;
 
 /**
  * Read the HTML of a cell paragraph's text. Throws for anything the text of a cell cannot be
- * written with.
+ * written with. `<ins>` and `<del>`, which mark suggested text, are read as such
+ * (`CellInlineRun.mark`): whether a text may hold them is its plan's to say.
  */
 export function parseCellInline(html: string): CellInline {
   let text = "";
   let runs: CellInline["runs"] = [];
-  // The tags open, to check they close in order, and how many of each style are open, so a run
-  // starts in the same few steps however deep the tags are.
-  let open: (InlineStyleTag | "a")[] = [];
+  // The tags open, to check they close in order, and how many of each style and mark are open,
+  // so a run starts in the same few steps however deep the tags are.
+  let open: (InlineStyleTag | "a" | "ins" | "del")[] = [];
   let depth: Record<InlineStyleTag, number> = { strong: 0, em: 0, s: 0 };
+  let marks = { ins: 0, del: 0 };
   let link: string | undefined;
   // Text is added to the last run while its formatting is the one in force.
   let current: CellInline["runs"][number] | undefined;
@@ -1659,6 +1802,9 @@ export function parseCellInline(html: string): CellInline {
       current = { text: "", start: text.length, end: text.length };
       for (let tag of ["strong", "em", "s"] as const) if (depth[tag] > 0) current[INLINE_STYLES[tag]] = true;
       if (link !== undefined) current.link = link;
+      if (marks.ins > 0 || marks.del > 0) {
+        current.mark = marks.del === 0 ? "insertion" : marks.ins === 0 ? "deletion" : "both";
+      }
       runs.push(current);
     }
     text += characters;
@@ -1693,6 +1839,15 @@ export function parseCellInline(html: string): CellInline {
     }
     let name = tagNameAt(html, index);
     let closing = html[index + 1] === "/";
+    if ((name === "ins" || name === "del") &&
+        html.startsWith(closing ? `</${name}>` : `<${name}>`, index)) {
+      if (!closing) open.push(name);
+      else if (open.pop() !== name) throw new Error(TAG_ORDER_REFUSAL);
+      marks[name] += closing ? -1 : 1;
+      restyle();
+      index += name.length + (closing ? 3 : 2);
+      continue;
+    }
     if (name === "a" && !closing && (html[index + 2] === " " || html[index + 2] === ">")) {
       ANCHOR.lastIndex = index;
       let anchor = ANCHOR.exec(html);
@@ -1729,7 +1884,8 @@ export function parseCellInline(html: string): CellInline {
   let merged: CellInline["runs"] = [];
   for (let run of runs) {
     let previous = merged.at(-1);
-    if (previous && sameFormat(previous, run) && previous.link === run.link) {
+    if (previous && sameFormat(previous, run) && previous.link === run.link &&
+        previous.mark === run.mark) {
       previous.text += run.text;
       previous.end = run.end;
     } else {
@@ -1742,7 +1898,12 @@ export function parseCellInline(html: string): CellInline {
 /** Bold, italic and strikethrough, the three styles a table's HTML shows beside a link. */
 const SHOWN_STYLES = ["bold", "italic", "strikethrough"] as const;
 
-type InlineFormat = Pick<CellInlineRun, "bold" | "italic" | "strikethrough" | "link">;
+type InlineFormat = Pick<CellInlineRun, "bold" | "italic" | "strikethrough" | "link" | "mark">;
+
+const MARK_REFUSAL = "replaceText: in a table cell <ins> and <del> mark text a suggestion " +
+  "inserts or deletes. Keep each around the text it marks and write none in new text: an edit " +
+  "cannot make a suggestion or take one back. Use suggestEdit() to make one, and accept or " +
+  "reject one in Google Docs.";
 
 function sameFormat(left: InlineFormat, right: InlineFormat): boolean {
   return SHOWN_STYLES.every(style => !left[style] === !right[style]);
@@ -1824,6 +1985,7 @@ function planText(oldHtml: string, newHtml: string, tabId: string): TextPlan {
     if (start < end) insertedPieces.push({ start, end, format: piece.format });
   }
   let insertEnd = prefix + inserted.length;
+  if (insertedPieces.some(piece => piece.format.mark)) throw new Error(MARK_REFUSAL);
 
   // The link shown on the kept character before the insertion and on the one after it.
   let linkAt = (offset: number) =>
@@ -1846,6 +2008,7 @@ function planText(oldHtml: string, newHtml: string, tabId: string): TextPlan {
         while (newPieces[other].end <= start) other++;
         let end = Math.min(piece.end, newPieces[other].end);
         let next = newPieces[other].format;
+        if (next.mark !== piece.format.mark) throw new Error(MARK_REFUSAL);
         segments.push({
           start, end, old: piece.format, next, keepsLink: false,
           link: sameLink(next.link, piece.format.link) ? piece.format.link : written(next.link),
