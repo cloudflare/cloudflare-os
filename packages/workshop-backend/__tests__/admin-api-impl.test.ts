@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  ADMIN_LIST_MAX_LIMIT, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
   createAdminGrantError, getAdminAccessErrorCode, getAdminGrantErrorCode,
   type AdminAccessRecord, type AdminContentRequest, type AdminUserAccessRecord, type AdminVia,
 } from "@gadgets/workshop-shared/api";
@@ -596,7 +596,8 @@ describe("AdminApiImpl audit log", () => {
       handlers: {
         admin: {
           committedAdminConfig: () => DEFAULT_ADMIN_CONFIG,
-          listContentAccessRequests: () => requests,
+          listContentAccessRequests: (query?: { pending?: boolean }) =>
+            requests.filter(request => !query?.pending || request.state === "pending"),
         },
         audit: { list: () => page },
       },
@@ -605,6 +606,8 @@ describe("AdminApiImpl audit log", () => {
     expect(await api.listAdminAudit({ pending: true, admin: "linus" })).toBe(page);
     expect(callsTo("audit", "list")[0]!.args[0]).toMatchObject(
         { admin: "linus", requestIds: ["r1", "r3"] });
+    // AdminSettings is asked for the pending ones alone.
+    expect(callsTo("admin", "listContentAccessRequests")[0]!.args).toStrictEqual([{ pending: true }]);
 
     // `false` is the same as leaving it out: the requests are not read.
     await api.listAdminAudit({ pending: false });
@@ -986,6 +989,14 @@ describe("AdminApiImpl content access requests", () => {
     });
     const api = mint(ADMIN, "cli");
     expect(await api.listContentAccessRequests()).toBe(listed);
+    expect(await api.listContentAccessRequests({ pending: true, ids: [REQUEST_ID] })).toBe(listed);
+    expect(callsTo("admin", "listContentAccessRequests").map(call => call.args))
+        .toStrictEqual([[{}], [{ pending: true, ids: [REQUEST_ID] }]]);
+    // At most a page of ids, refused before AdminSettings is asked.
+    const tooMany = Array.from({ length: ADMIN_LIST_MAX_LIMIT + 1 }, (_, i) => `request-${i}`);
+    await expect(api.listContentAccessRequests({ ids: tooMany })).rejects.toThrow(
+        `At most ${ADMIN_LIST_MAX_LIMIT} request ids can be listed at once.`);
+    expect(callsTo("admin", "listContentAccessRequests")).toHaveLength(2);
     expect(await api.getContentAccessRequest(REQUEST_ID)).toBe(listed[0]);
     await api.denyContentAccess(REQUEST_ID);
     expect(callsTo("admin", "getContentAccessRequest")[0].args).toEqual([REQUEST_ID]);

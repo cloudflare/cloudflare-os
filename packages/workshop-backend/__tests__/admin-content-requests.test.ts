@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
   MAX_PENDING_CONTENT_REQUESTS, getAdminAccessErrorCode, getAdminGrantErrorCode,
-  type AdminContentRequest, type AdminGrantRecord,
+  type AdminContentRequest, type AdminContentRequestQuery, type AdminGrantRecord,
 } from "@gadgets/workshop-shared/api";
 import type { AdminGrantActor } from "../src/admin-access.js";
 import type { AdminSettings } from "../src/admin-settings.js";
@@ -292,5 +292,30 @@ describe("the listing", () => {
     });
     expect((await harness.inDo(admin => admin.listContentAccessRequests())).map(r => r.id))
         .toStrictEqual([sooner.id, later.id, deniedLast.id, deniedFirst.id]);
+
+    // Filtered to the pending, to some ids, or to both, in the same order.
+    const ids = (query: AdminContentRequestQuery) =>
+      harness.inDo(async admin => (await admin.listContentAccessRequests(query)).map(r => r.id));
+    expect(await ids({ pending: true })).toStrictEqual([sooner.id, later.id]);
+    expect(await ids({ ids: [deniedFirst.id, later.id, "no-such-request"] }))
+        .toStrictEqual([later.id, deniedFirst.id]);
+    expect(await ids({ pending: true, ids: [deniedFirst.id, later.id] })).toStrictEqual([later.id]);
+    expect(await ids({ ids: [] })).toStrictEqual([]);
+  });
+
+  it("sweeps only the requests a lookup by id reads", async () => {
+    const overdue = pendingRequest({ workspaceId: "5".repeat(64), expiresAt: new Date(Date.now() - 1) });
+    const elsewhere = pendingRequest({ workspaceId: "6".repeat(64), expiresAt: new Date(Date.now() - 1) });
+    await harness.inDo(admin => {
+      harness.storageOf(admin).contentAccessRequests.put(overdue);
+      harness.storageOf(admin).contentAccessRequests.put(elsewhere);
+    });
+    const listed = await harness.inDo(admin => admin.listContentAccessRequests({ ids: [overdue.id] }));
+    expect(listed.map(r => [r.id, r.state])).toStrictEqual([[overdue.id, "expired"]]);
+    expect((await harness.inDo(admin => admin.getContentAccessRequest(overdue.id))).state).toBe("expired");
+    // The request no lookup read is as it was stored until a method reads it.
+    expect(await harness.inDo(admin => harness.storageOf(admin).contentAccessRequests.get(elsewhere.id)?.state))
+        .toBe("pending");
+    expect(await harness.inDo(admin => admin.listContentAccessRequests({ pending: true }))).toStrictEqual([]);
   });
 });

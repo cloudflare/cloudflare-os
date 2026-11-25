@@ -2468,6 +2468,16 @@ export const MAX_PENDING_CONTENT_REQUESTS = 1000;
  */
 export type AdminContentRequestState = "pending" | "approved" | "failed" | "denied" | "expired";
 
+/** Which content access requests AdminApi.listContentAccessRequests() lists. Both filters apply
+ * together. */
+export type AdminContentRequestQuery = {
+  /** Only the pending requests: those an admin can approve or deny. */
+  pending?: boolean;
+  /** Only the requests with these ids (AdminContentRequest.id); an id no kept request has is left
+   * out. At most ADMIN_LIST_MAX_LIMIT. */
+  ids?: string[];
+};
+
 /** A request to read a workspace's content without its owner's grant, as the AdminApi content
  * access methods return it. */
 export type AdminContentRequest = {
@@ -3043,10 +3053,11 @@ export interface AdminApi {
    */
   requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest>;
 
-  /** Every content access request still kept: the pending ones first, the soonest to expire
-   * first, then those resolved within the last day, the latest first. A request that has run out
-   * is "expired" by the time it is listed. */
-  listContentAccessRequests(): Promise<AdminContentRequest[]>;
+  /** The content access requests still kept that `query` asks for, every one without it: the
+   * pending ones first, the soonest to expire first, then those resolved within the last day, the
+   * latest first. A request that has run out is "expired" by the time it is listed. Refused for
+   * more than ADMIN_LIST_MAX_LIMIT `ids`. */
+  listContentAccessRequests(query?: AdminContentRequestQuery): Promise<AdminContentRequest[]>;
 
   /** One content access request, by id, for a day after it is resolved. Refused
    * `requestNotFound` (ADMIN_GRANT_ERROR_CODES). */

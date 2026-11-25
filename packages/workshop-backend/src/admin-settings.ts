@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, ADMIN_LIST_MAX_LIMIT, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminContentRequestQuery, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -651,7 +651,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // workspace before it stores the grant (see OverseerDurableObject.grantAdminContent()), and the
   // grant's id is stored here once the workspace has given it. A request that runs out records
   // nothing: no admin did anything. Nothing here reads or changes the workspace a request names.
-  // There is no alarm: every method sweeps (see #sweepContentRequests()) before it reads one.
+  // There is no alarm: every method sweeps what it reads before reading it (see
+  // #sweepContentRequest()), the stored requests all or, for a lookup by id, those ids alone.
 
   // Runs `run` once everything queued before it has finished, whether that succeeded or threw
   // (see contentRequestTail). Every method below is one such run, and nothing inside one queues
@@ -681,32 +682,43 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }, adminAccessPolicy(await this.committedAdminConfig(), this.env).retentionDays);
   }
 
-  // Goes through the stored requests and, with nothing awaited, ends a pending one that has run
-  // out ("expired": at its `expiresAt`, or sooner, with an `error`, once its requester is no
-  // longer a deployment admin), fails an approved one whose workspace never gave its grant within
-  // CONTENT_REQUEST_SETTLE_MS (the session that carried the approval was lost; the request is
-  // never approved again), and forgets any other a day after it was resolved.
+  // Goes through the stored requests and, with nothing awaited, sweeps each (see
+  // #sweepContentRequest()).
   #sweepContentRequests(): void {
     let now = Date.now();
     for (let request of this.storage.contentAccessRequests.list()) {
-      let resolvedAt = request.resolvedAt?.getTime() ?? 0;
-      if (request.state === "pending") {
-        let overdue = request.expiresAt.getTime() <= now;
-        if (!overdue && isDeploymentAdmin(this.env, request.requestedBy)) continue;
-        this.storage.contentAccessRequests.put({
+      this.#sweepContentRequest(request, now);
+    }
+  }
+
+  // Brings one stored request up to date, with nothing awaited, and returns it as it now stands,
+  // or undefined once it is forgotten: ends a pending one that has run out ("expired": at its
+  // `expiresAt`, or sooner, with an `error`, once its requester is no longer a deployment admin),
+  // fails an approved one whose workspace never gave its grant within CONTENT_REQUEST_SETTLE_MS
+  // (the session that carried the approval was lost; the request is never approved again), and
+  // forgets any other a day after it was resolved.
+  #sweepContentRequest(request: AdminContentRequest, now: number): AdminContentRequest | undefined {
+    let resolvedAt = request.resolvedAt?.getTime() ?? 0;
+    let swept: AdminContentRequest | undefined = request;
+    if (request.state === "pending") {
+      let overdue = request.expiresAt.getTime() <= now;
+      if (overdue || !isDeploymentAdmin(this.env, request.requestedBy)) {
+        swept = {
           ...request, state: "expired",
           resolvedAt: new Date(Math.min(now, request.expiresAt.getTime())),
           ...(!overdue && { error: "Its requester is no longer a deployment admin." }),
-        });
-      } else if (request.state === "approved" && request.grantId === undefined) {
-        if (resolvedAt + CONTENT_REQUEST_SETTLE_MS > now) continue;
-        this.storage.contentAccessRequests.put({
-          ...request, state: "failed", error: GRANT_ANSWER_LOST,
-        });
-      } else if (resolvedAt + RESOLVED_CONTENT_REQUEST_KEPT_MS <= now) {
-        this.storage.contentAccessRequests.delete(request.id);
+        };
       }
+    } else if (request.state === "approved" && request.grantId === undefined) {
+      if (resolvedAt + CONTENT_REQUEST_SETTLE_MS <= now) {
+        swept = { ...request, state: "failed", error: GRANT_ANSWER_LOST };
+      }
+    } else if (resolvedAt + RESOLVED_CONTENT_REQUEST_KEPT_MS <= now) {
+      swept = undefined;
     }
+    if (swept === undefined) this.storage.contentAccessRequests.delete(request.id);
+    else if (swept !== request) this.storage.contentAccessRequests.put(swept);
+    return swept;
   }
 
   /** Records the request, then stores it (state "pending"). Refused, recording nothing,
@@ -729,15 +741,29 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  /** Every stored request, as AdminApi.listContentAccessRequests() lists them: the pending ones
-   * first, the soonest to expire first, then the rest, the latest resolved first. */
-  listContentAccessRequests(): Promise<AdminContentRequest[]> {
+  /** The stored requests `query` asks for, as AdminApi.listContentAccessRequests() lists them: the
+   * pending ones first, the soonest to expire first, then the rest, the latest resolved first. */
+  listContentAccessRequests(query: AdminContentRequestQuery = {}): Promise<AdminContentRequest[]> {
     return this.#serializeContentRequests(async () => {
-      this.#sweepContentRequests();
+      let now = Date.now();
+      let requests: AdminContentRequest[];
+      if (query.ids === undefined) {
+        this.#sweepContentRequests();
+        requests = [...this.storage.contentAccessRequests.list()];
+      } else {
+        // Each id is read and swept alone, so a page's lookup costs a read per id, not the backlog.
+        requests = [...new Set(query.ids)].flatMap(id => {
+          let stored = id.length === 36 ? this.storage.contentAccessRequests.get(id) : undefined;
+          let swept = stored && this.#sweepContentRequest(stored, now);
+          return swept ? [swept] : [];
+        });
+      }
       let at = (request: AdminContentRequest) => request.state === "pending"
           ? request.expiresAt.getTime() : -(request.resolvedAt?.getTime() ?? 0);
-      return [...this.storage.contentAccessRequests.list()].toSorted((a, b) =>
-          Number(b.state === "pending") - Number(a.state === "pending") || at(a) - at(b));
+      return requests
+          .filter(request => !query.pending || request.state === "pending")
+          .toSorted((a, b) =>
+              Number(b.state === "pending") - Number(a.state === "pending") || at(a) - at(b));
     });
   }
 
@@ -745,8 +771,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * pending. */
   getContentAccessRequest(id: string): Promise<AdminContentRequest> {
     return this.#serializeContentRequests(async () => {
-      this.#sweepContentRequests();
-      return this.#storedContentRequest(id);
+      let swept = this.#sweepContentRequest(this.#storedContentRequest(id), Date.now());
+      if (!swept) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotFound);
+      return swept;
     });
   }
 
@@ -1883,8 +1910,8 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     let { kind, admin, method, workspace, owner, exposed, pending, since, cursor } = options;
     let requestIds: string[] | undefined;
     if (pending) {
-      requestIds = (await this.admin.listContentAccessRequests())
-          .filter(request => request.state === "pending").map(request => request.id);
+      requestIds = (await this.admin.listContentAccessRequests({ pending: true }))
+          .map(request => request.id);
       if (requestIds.length === 0) return { records: [] };
     }
     return await this.audits.getByName("").list(
@@ -1990,9 +2017,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     return request;
   }
 
-  async listContentAccessRequests(): Promise<AdminContentRequest[]> {
+  async listContentAccessRequests(query: AdminContentRequestQuery = {})
+      : Promise<AdminContentRequest[]> {
     this.#requireAdmin();
-    return await this.admin.listContentAccessRequests();
+    if (query.ids !== undefined && query.ids.length > ADMIN_LIST_MAX_LIMIT) {
+      throw new TypeError(`At most ${ADMIN_LIST_MAX_LIMIT} request ids can be listed at once.`);
+    }
+    return await this.admin.listContentAccessRequests(query);
   }
 
   async getContentAccessRequest(requestId: string): Promise<AdminContentRequest> {
