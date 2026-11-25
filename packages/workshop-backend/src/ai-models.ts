@@ -38,6 +38,9 @@ import {
   type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
+import {
+  ANTHROPIC_WEB_SEARCH_TOOL, OPENAI_WEB_SEARCH_TOOL, declaresWebSearch,
+} from "./built-in-search.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import {
   estimateSharedHeadTokens, hasGpt56PromptCaching, splitSystemPrompt,
@@ -96,6 +99,12 @@ export type ModelStreamOptions = SimpleStreamOptions & {
    * false.
    */
   webSearch?: boolean;
+
+  /**
+   * Called with the request as it is sent, after every rewrite the handle makes of it. pi's own
+   * `onPayload` sees the request before those rewrites.
+   */
+  onSent?: (payload: unknown) => void;
 };
 
 /**
@@ -563,7 +572,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const handle: ModelHandle = {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
-    stream: (model, context, { thinking = true, webSearch = false, ...options } = {}) => {
+    stream: (model, context, { thinking = true, webSearch = false, onSent, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata, or leave the
       // previous request to be resent in its place.
       handle.lastResponse = undefined;
@@ -639,12 +648,14 @@ function makeHandle(args: HandleArgs): ModelHandle {
               ? withWebSearchTool(args.model, replaced ?? payload) ?? replaced : replaced;
           const bridged = bridgePdfAttachments(args.model.api, searching ?? payload) ?? searching;
           const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
-          if (options.cacheRetention === "none") return signed;
-          const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
+          const caching = options.cacheRetention !== "none";
+          const split = caching
+              ? splitSystemPrompt(args.model, transcript, signed ?? payload) : undefined;
           const final = split === undefined
               ? signed
               : withoutPromptCacheKey(args.model, split) ?? split;
-          sent = { payload: final ?? payload, at: Date.now() };
+          if (caching) sent = { payload: final ?? payload, at: Date.now() };
+          onSent?.(final ?? payload);
           return final;
         },
       };
@@ -716,12 +727,12 @@ function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefi
       return {
         ...payload,
         tools: [...tools,
-            { type: "web_search_20250305", name: "web_search", max_uses: WEB_SEARCH_LIMIT }],
+            { type: ANTHROPIC_WEB_SEARCH_TOOL, name: "web_search", max_uses: WEB_SEARCH_LIMIT }],
       };
     case "openai-responses":
       return hasMinimalEffort(payload) ? undefined : {
         ...payload,
-        tools: [...tools, { type: "web_search", external_web_access: false }],
+        tools: [...tools, { type: OPENAI_WEB_SEARCH_TOOL, external_web_access: false }],
         max_tool_calls: WEB_SEARCH_LIMIT,
       };
     default:
@@ -732,10 +743,6 @@ function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefi
 const hasMinimalEffort = (payload: object): boolean =>
     "reasoning" in payload && typeof payload.reasoning === "object" && payload.reasoning !== null &&
     "effort" in payload.reasoning && payload.reasoning.effort === "minimal";
-
-const declaresWebSearch = (payload: object): boolean =>
-    "tools" in payload && Array.isArray(payload.tools) && payload.tools.some((tool: unknown) =>
-        typeof tool === "object" && tool !== null && "type" in tool && tool.type === "web_search");
 
 // The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
 // resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending

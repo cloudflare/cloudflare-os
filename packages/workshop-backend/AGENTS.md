@@ -58,7 +58,9 @@ tool for it: `ai-models.ts` adds the provider's tool to a request that asks for 
   record, that record is usable, and the Web Search Worker is installed. A workspace's record is
   not enough: a gadget-spawned chat holds only the bindings its spawner gave it and those it
   gained in its log, such as a resource a user pasted.
-- A turn on a user's own gateway does not declare the tool. Nor does a request that the provider
+- Only `GatewayModels` gives a model `AiModelConfig.webSearch`: a model from a user's storage
+  resolves without it, whatever its stored record holds (`#resolveModel()` in `user.ts`). A turn
+  on a user's own gateway does not declare the tool. Nor does a request that the provider
   refuses with the tool: for OpenAI, one whose `reasoning.effort` is `minimal`.
   `withWebSearchTool()` reads the effort from the request as sent, because a reasoning level can
   be sent as another effort. Outside an agent's turn, two things send the tool. The admin's two
@@ -67,7 +69,10 @@ tool for it: `ai-models.ts` adds the provider's tool to a request that asks for 
   and `cappedForResend()` keeps it from searching.
 - Each thing the provider's tool did is recorded as an observation when it arrives in the stream
   (`recordProviderObservation()`). The provider ran it before the Workshop saw the query, so the
-  record cannot come first, as a gatekeeper's does.
+  record cannot come first, as a gatekeeper's does. The wrapper records, charges and keeps a
+  search only from a response to a request that declared the tool, which it reads from the
+  request as sent (`ModelStreamOptions.onSent`, `declaresWebSearch()`): `offered()` alone does
+  not say so, and a user's own endpoint can send search events for a request with no tool.
 - pi drops Anthropic's search blocks, and Anthropic refuses the next request without them. So the
   wrapper keeps the response's content whole (`StoredAssistantMessage.providerContent`) and sends
   it back in place of pi's form, for the model that produced it. It never keeps a search that has

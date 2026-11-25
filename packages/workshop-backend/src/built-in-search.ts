@@ -30,7 +30,7 @@ import {
 import type { Api, AssistantMessage, Context, Model, TextContent } from "@earendil-works/pi-ai";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { z } from "zod";
-import type { ModelHandle } from "./ai-models.js";
+import type { ModelHandle, ModelStreamOptions } from "./ai-models.js";
 import type { StoredAssistantMessage } from "./storage-schema/overseer-storage.js";
 
 /**
@@ -41,6 +41,24 @@ import type { StoredAssistantMessage } from "./storage-schema/overseer-storage.j
  * it out.
  */
 export const WEB_SEARCH_FEE = 0.01;
+
+/**
+ * The `type` of each provider's own web search tool in a request (see withWebSearchTool in
+ * ai-models.ts, which declares it).
+ */
+export const ANTHROPIC_WEB_SEARCH_TOOL = "web_search_20250305";
+export const OPENAI_WEB_SEARCH_TOOL = "web_search";
+
+/**
+ * Whether `payload`, a request as sent, declares its provider's own web search tool. What a
+ * response to it says of a search counts only then (see withBuiltInSearch).
+ */
+export function declaresWebSearch(payload: unknown): boolean {
+  return typeof payload === "object" && payload !== null && "tools" in payload &&
+      Array.isArray(payload.tools) && payload.tools.some((tool: unknown) =>
+          typeof tool === "object" && tool !== null && "type" in tool &&
+          (tool.type === ANTHROPIC_WEB_SEARCH_TOOL || tool.type === OPENAI_WEB_SEARCH_TOOL));
+}
 
 type Stream = ModelHandle["stream"];
 
@@ -132,7 +150,7 @@ export type BuiltInSearchStream = {
  * Wrap an agent turn's `stream` so that each request asks for the provider's web search tool
  * while `offered()` says so, `observe` records each thing the tool did, before the response
  * continues, and a message that holds what Anthropic sent for a search is sent back to its model
- * as that.
+ * as that. A response is read for searches only if its request declared the tool.
  */
 export function withBuiltInSearch(
     stream: Stream, offered: () => boolean,
@@ -141,12 +159,25 @@ export function withBuiltInSearch(
     stream: (model, context, options = {}) => {
       search.searched = undefined;
       search.sources = undefined;
+      // Whether this request carried the provider's tool, read from the request as sent. A
+      // handle whose model has no tool, as on a user's own endpoint, declares none while
+      // `offered()` says yes, and so does a request the provider refuses the tool for. What
+      // the response to such a request says of a search is not recorded, charged or kept.
+      let declared = false;
+      const asked: ModelStreamOptions = {
+        ...options,
+        webSearch: offered(),
+        onSent: payload => {
+          options.onSent?.(payload);
+          declared = declaresWebSearch(payload);
+        },
+      };
       if (model.api !== "anthropic-messages") {
         return stream(model, context, {
-          ...options,
-          webSearch: offered(),
+          ...asked,
           onProviderStreamEvent: async (event, eventModel) => {
             await options.onProviderStreamEvent?.(event, eventModel);
+            if (!declared) return;
             const count = OpenAiSearchCount.safeParse(event);
             if (count.success) {
               if (search.searched) {
@@ -165,10 +196,9 @@ export function withBuiltInSearch(
         });
       }
       const sent = markKeptContent(context);
-      const reply = readAnthropicReply(search, observe);
+      const reply = readAnthropicReply(search, observe, () => declared);
       const response = stream(model, sent.context, {
-        ...options,
-        webSearch: offered(),
+        ...asked,
         onPayload: async (payload, payloadModel) =>
             sent.restore(await options.onPayload?.(payload, payloadModel) ?? payload),
         onProviderStreamEvent: async (event, eventModel) => {
@@ -277,9 +307,11 @@ function withToolInputs(kept: string | undefined, written: Block[]): Block[] {
 // Reads one Anthropic response's events: rebuilds its content, each block as Anthropic started
 // it with its deltas applied, records each search as its result arrives, and when the response
 // ends reports to `search` what it did. `kept()` is then the content to keep, if the response
-// holds a finished search.
+// holds a finished search. A response whose request did not declare the tool, which `declared()`
+// says once the request is sent, is read for the pages it cites and for nothing else.
 function readAnthropicReply(
-    search: BuiltInSearchStream, observe: (...record: BuiltInSearchRecord) => void) {
+    search: BuiltInSearchStream, observe: (...record: BuiltInSearchRecord) => void,
+    declared: () => boolean) {
   const content: Block[] = [];
   const toolInputs = new Map<number, string>();
   // What the stream held that `content` does not reproduce, each with its block where the loss
@@ -328,7 +360,7 @@ function readAnthropicReply(
             break;
           }
           content.push(content_block);
-          if (content_block.type === "web_search_tool_result") {
+          if (content_block.type === "web_search_tool_result" && declared()) {
             observe("Web search", undefined, describeAnthropicSearch(content, content_block));
           }
           break;
@@ -360,7 +392,7 @@ function readAnthropicReply(
           const answered = new Set(content.flatMap(each =>
               each.type === "web_search_tool_result" ? [each.tool_use_id] : []));
           search.sources = citedSources(content);
-          if (answered.size === 0) break;
+          if (answered.size === 0 || !declared()) break;
           search.searched = { billed };
           // A search with no result is not kept: sent back, Anthropic refuses it unless tool
           // results and nothing else follow. So nothing lost within it can be sent back wrong.

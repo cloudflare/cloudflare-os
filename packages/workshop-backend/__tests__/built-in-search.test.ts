@@ -257,6 +257,41 @@ describe("OpenAI's web search tool", () => {
     expect(bodies[0]?.max_tool_calls).toBeUndefined();
   });
 
+  // An endpoint can send search events in answer to a request that declared no tool: a user's
+  // own endpoint, for example. Nothing is then recorded, charged or kept. A Claude answer still
+  // lists the pages it cites, which it also does when it cites an earlier search.
+  it.each([
+    { name: "a model with the tool off", stream: OPENAI_SEARCH, config: { ...GPT, webSearch: false } },
+    { name: "a chat that is not offered it", stream: OPENAI_SEARCH, config: GPT, offered: false },
+    { name: "an effort the tool is refused for", stream: OPENAI_SEARCH,
+      config: { ...GPT, model: "gpt-5", reasoning: "minimal" } },
+    { name: "a user's own gateway", stream: OPENAI_SEARCH, config: GPT,
+      routing: { userGateway: { accountId: "user-account", apiKey: "key" } } },
+    { name: "a Claude model with the tool off", stream: ANSWER,
+      config: { provider: "anthropic", model: "claude-haiku-5-5", apiToken: "" }, cited: true },
+  ] as const)("reads no search from a response to a request that declared no tool: $name",
+      async ({ stream, config, offered = true, routing, cited = false }) => {
+    const bodies: Record<string, unknown>[] = [];
+    // A user's gateway is reached with the global fetch, so the request is answered there.
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      bodies.push(await new Request(input, init).json());
+      return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+    };
+    const { handle } = gateway(config, routing);
+    const { records, observe } = recorder();
+    const search = withBuiltInSearch(handle.stream, () => offered, observe);
+    const message =
+        await search.stream(handle.model, { messages: [system, QUESTION] }, { fetch }).result();
+
+    expect(bodies).toHaveLength(1);
+    expect(toolTypes(bodies[0]).join()).not.toContain("web_search");
+    expect(message.stopReason).toBe("stop");
+    expect(records).toStrictEqual([]);
+    expect(search.searched).toBeUndefined();
+    expect(message).not.toHaveProperty("providerContent");
+    expect(search.sources !== undefined).toBe(cited);
+  });
+
   // OpenAI refuses the tool for a request whose reasoning effort is "minimal". The level "off"
   // is sent to gpt-5 as that effort too, because the model cannot stop reasoning.
   it.each([

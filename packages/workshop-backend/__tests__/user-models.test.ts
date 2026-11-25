@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiModelConfig } from "@gadgets/workshop-shared/api";
+import {
+  WEB_SEARCH_IN_MODEL, WEB_SEARCH_PROVIDER_SETTING, WEB_SEARCH_VENDOR_ID,
+} from "@gadgets/workshop-shared/web-search-gatekeeper";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "../src/storage-schema/user-storage.js";
@@ -199,10 +202,10 @@ describe("UserDurableObject gateway model modes", () => {
 
   // A model stored under a gateway model's ID, as one added before the deployment provided that
   // model would be.
-  function storeModel(user: UserDurableObject, id: string) {
+  function storeModel(user: UserDurableObject, id: string, set: Partial<AiModelConfig> = {}) {
     const record: UserAiModelRecord = {
       profile: { ...PROFILE, id, name: "Stale" },
-      config: { ...CONFIG, provider: "anthropic", model: id },
+      config: { ...CONFIG, provider: "anthropic", model: id, ...set },
     };
     (user as unknown as { storage: { aiModels: { put(record: UserAiModelRecord): void } } })
         .storage.aiModels.put(record);
@@ -261,6 +264,24 @@ describe("UserDurableObject gateway model modes", () => {
     await user.addModel(PROFILE, own);
     expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toStrictEqual(own);
   }, { defaultReasoning: "high" }));
+
+  // A record from before addModel() dropped the field can hold it. Only the deployment gives a
+  // model its provider's web search tool, and only to its own models.
+  it("resolves a stored model without the web search that its record holds",
+      () => inGatewayUser(async user => {
+    storeModel(user, "claude-mine", { webSearch: true });
+    const own = { ...CONFIG, provider: "anthropic" as const, model: "claude-mine" };
+    expect(storedModel(user, "claude-mine")).toMatchObject({ config: { webSearch: true } });
+    expect((await user.getChatContext("claude-mine")).aiModel?.config).toStrictEqual(own);
+    await user.setQuickModel("claude-mine");
+    expect((await user.getChatContext(null)).quickModel).toStrictEqual(own);
+    // The read stores nothing.
+    expect(storedModel(user, "claude-mine")).toMatchObject({ config: { webSearch: true } });
+
+    expect((await user.getChatContext(ENABLED_ID)).aiModel?.config.webSearch).toBe(true);
+  }, { gatekeeperSettings: { [WEB_SEARCH_VENDOR_ID]: {
+    [WEB_SEARCH_PROVIDER_SETTING]: WEB_SEARCH_IN_MODEL,
+  } } }));
 
   describe("providers", () => {
     // An OpenAI model, on a deployment whose environment enables anthropic alone.
