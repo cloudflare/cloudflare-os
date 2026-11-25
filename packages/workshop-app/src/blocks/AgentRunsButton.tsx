@@ -34,6 +34,8 @@ const MARK = { duration: 0.5, ease: EASE }
 // The button coming beside the composer, or going once the last cloud has left.
 const BUTTON = { duration: 0.3, ease: EASE }
 const LEAVING = { ...BUTTON, delay: MARK.duration }
+// The room round the list for its pills' shadows to fade out in: its padding (`p-6`).
+const SHADOW_ROOM = 24
 
 // "2 agents working, 1 waiting on you".
 const labelOf = (working: number, waiting: number) => {
@@ -108,12 +110,14 @@ export const AgentRunsButton = ({ runs, onOpen }: AgentRunsButtonProps) => {
           {waiting > 0 && <span aria-hidden="true" className="absolute end-0.5 top-0.5 size-2.5 rounded-full bg-kumo-warning ring-2 ring-kumo-base" />}
         </Menu.Trigger>
         <Menu.Portal>
-          <Menu.Positioner side="top" align="end" sideOffset={2} alignOffset={-8} collisionPadding={12} className="z-50">
+          {/* Its padding is where the pills' shadows fade out, so it is set back by as much. */}
+          <Menu.Positioner side="top" align="end" sideOffset={2 - SHADOW_ROOM} alignOffset={-SHADOW_ROOM} collisionPadding={12 - SHADOW_ROOM} className="z-50">
             <Menu.Popup
               aria-label="Agents"
               className={[
-                // Padded, so that what scrolls does not cut the pills' rings and shadows off.
-                'flex max-h-(--available-height) max-w-[min(var(--available-width),24rem)] flex-col items-end gap-1.5 overflow-y-auto p-2 outline-none',
+                // Padded, so that what scrolls does not cut the pills' shadows off; only the pills
+                // are pressed, so the padding over the button and the conversation is not there.
+                'pointer-events-none flex max-h-(--available-height) max-w-[min(var(--available-width),27rem)] flex-col items-end gap-1.5 overflow-y-auto p-6 outline-none',
                 'origin-(--transform-origin) transition-[opacity,translate] duration-200 data-ending-style:translate-y-1 data-ending-style:opacity-0 data-starting-style:translate-y-1 data-starting-style:opacity-0 motion-reduce:transition-none',
               ].join(' ')}
             >
@@ -131,8 +135,9 @@ export const AgentRunsButton = ({ runs, onOpen }: AgentRunsButtonProps) => {
                       status={run.status}
                       aria-label={`${run.title}: ${run.statusWords}`}
                       onOpen={() => onOpen(run.key)}
-                      // Over the conversation, so lifted off it.
-                      className="bg-kumo-elevated shadow-lg"
+                      // Over the conversation, lifted off it as glass is: by a shadow all round it,
+                      // faint and blurred far out, from no side, which its ring stays inside of.
+                      className="pointer-events-auto bg-kumo-elevated shadow-[0_0_6px_rgb(0_0_0/0.03),0_0_20px_rgb(0_0_0/0.06)]"
                     />
                   )}
                 />

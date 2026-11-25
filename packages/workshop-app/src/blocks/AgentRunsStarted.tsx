@@ -13,9 +13,9 @@ export type AgentRunsStartedProps = { runs: readonly StartedRun[] }
 const COUNT = new Intl.NumberFormat('en')
 
 /**
- * The agents a turn started, at its end: how many, over a pill for each, which opens its run. It
- * says only that they started, as it stays in the conversation: how each is getting on is beside
- * the composer, and its end is a mark of its own, where it ended.
+ * The agents the agent started, under what it said of them: how many, over a pill for each, which
+ * opens its run. It says only that they started, as it stays in the conversation: how each is
+ * getting on is beside the composer, and its end is a mark of its own, where it ended.
  */
 export const AgentRunsStarted = ({ runs }: AgentRunsStartedProps) => {
   const caption = runs.length === 1 ? 'Started an agent' : `Started ${COUNT.format(runs.length)} agents`

@@ -35,10 +35,11 @@ export const runsStartedBy = (agents: readonly Agent[], chatId: number): ChatRun
 const timeOf = (item: ChatItem) => (item.kind === 'user' || item.kind === 'assistant' ? item.sentAt : undefined)
 
 /**
- * Where the marks of a chat's runs go among its rows (`items`). The agents a turn started are
- * what it produced, so they go at its end, as its artefacts do: before the next message a person
- * sent after the first of them started, or after everything while that turn is still the last.
- * A run that ended goes where it ended, before the first row said after then, but never above
+ * Where the marks of a chat's runs go among its rows (`items`). The agents the agent started go
+ * under what it says next, which is where it says what it has set them to, as in "I've set up
+ * five agents and am waiting for them": after the first message it wrote after the first of them
+ * started, or, where it wrote none, before the next message a person sent, at the end of the
+ * turn, or after everything while that is still to come. A run that ended goes where it ended, before the first row said after then, but never above
  * the mark of its start. A run's end is when it was last active, as one that has ended does
  * nothing more until someone asks it to. Marks in one place are in the order they happened.
  */
@@ -54,7 +55,8 @@ export const placeRunMarks = (items: readonly ChatItem[], runs: readonly ChatRun
   const startedAt = new Map<number, number>()
   const turns = new Map<number, ChatRun[]>()
   for (const run of runs) {
-    const index = firstAfter(run.started, (item) => item.kind === 'user')
+    const next = firstAfter(run.started, () => true)
+    const index = items[next]?.kind === 'assistant' ? next + 1 : next
     startedAt.set(run.chatId, index)
     turns.set(index, [...(turns.get(index) ?? []), run])
   }

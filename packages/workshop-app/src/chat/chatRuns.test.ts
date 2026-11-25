@@ -29,26 +29,31 @@ describe('runsStartedBy', () => {
 describe('placeRunMarks', () => {
   const items = [said(0, 'user', 0), said(1, 'assistant', 2), output(1), said(2, 'user', 10), said(3, 'assistant', 12)]
 
-  it('puts the agents a turn started at its end, after what it produced, as one mark', () => {
-    expect(keysOf(placeRunMarks(items, [run(20, 1), run(21, 1)]))).toEqual({ before: { 3: ['runs-started:20'] }, after: [] })
+  it('puts the agents started under what the agent says next, as one mark', () => {
+    expect(keysOf(placeRunMarks(items, [run(20, 1), run(21, 1)]))).toEqual({ before: { 2: ['runs-started:20'] }, after: [] })
   })
 
-  it('puts those of the last turn after everything, where they wait until the next message', () => {
-    expect(keysOf(placeRunMarks(items, [run(20, 11)]))).toEqual({ before: {}, after: ['runs-started:20'] })
+  it('puts them at the end of the turn where the agent says nothing more in it', () => {
+    const quiet = [said(0, 'user', 0), said(1, 'assistant', 2), output(1), said(2, 'user', 10)]
+    expect(keysOf(placeRunMarks(quiet, [run(20, 5)]))).toEqual({ before: { 3: ['runs-started:20'] }, after: [] })
+  })
+
+  it('puts them after everything while what the agent says next is still to come', () => {
+    expect(keysOf(placeRunMarks(items, [run(20, 13)]))).toEqual({ before: {}, after: ['runs-started:20'] })
   })
 
   it('marks a run that ended where it ended, and none that is still at work or waits', () => {
     const marks = placeRunMarks(items, [run(20, 1, 'done', 11), run(21, 1, 'waiting', 11), run(22, 1, 'failed', 20)])
-    expect(keysOf(marks)).toEqual({ before: { 3: ['runs-started:20'], 4: ['run-ended:20'] }, after: ['run-ended:22'] })
+    expect(keysOf(marks)).toEqual({ before: { 2: ['runs-started:20'], 4: ['run-ended:20'] }, after: ['run-ended:22'] })
   })
 
-  it('never marks the end above the start, for a run that ended before its turn did', () => {
+  it('never marks the end above the start, for a run that ended before the agent said anything', () => {
     const marks = placeRunMarks(items, [run(20, 1, 'changes', 1)])
-    expect(keysOf(marks)).toEqual({ before: { 3: ['runs-started:20', 'run-ended:20'] }, after: [] })
+    expect(keysOf(marks)).toEqual({ before: { 2: ['runs-started:20', 'run-ended:20'] }, after: [] })
   })
 
   it('keeps marks in one place in the order they happened', () => {
     const marks = placeRunMarks(items, [run(20, 1, 'done', 7), run(21, 1, 'done', 5), run(22, 11)])
-    expect(keysOf(marks).before[3]).toEqual(['runs-started:20', 'run-ended:21', 'run-ended:20'])
+    expect(keysOf(marks).before[3]).toEqual(['run-ended:21', 'run-ended:20'])
   })
 })

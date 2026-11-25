@@ -172,7 +172,7 @@ export const AgentsPreview = () => {
           <AgentRunPill title="A run with a title long enough to be cut off where the pill reaches the end of the column it is in, however wide that is" status="done" statusWords="Finished" onOpen={() => say('opened the long one')} />
         </div>
       </Section>
-      <Section title="AgentRunsStarted (the agents a turn started, at its end: how many, over a pill for each; no spinner, as it stays in the history)">
+      <Section title="AgentRunsStarted (the agents the agent started, under what it said of them: how many, over a pill for each; no spinner, as it stays in the history)">
         <div className="flex w-full flex-col gap-6">
           <AgentRunsStarted runs={[{ key: '1', title: 'Summarising this week’s feedback calls', onOpen: () => say('opened the one run') }]} />
           <AgentRunsStarted runs={LAUNCH.map(({ key, title }) => ({ key, title, onOpen: () => say(`opened “${title}”`) }))} />

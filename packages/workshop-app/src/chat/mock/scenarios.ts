@@ -770,34 +770,64 @@ const spawnRuns = call(
   { code: `for (const [title, brief] of TASKS) {\n  await env.GENERAL.spawn(title, brief)\n}\n` },
   { output: 'Started 5 agents.\n' },
 )
+// Waiting for them, which runs for as long as they take: it says how each ended as it does, and
+// ends once none is at work.
+const WAIT_LINES = [
+  'Reviewing gadget code: finished\n',
+  'Processing tasks from Jira: waiting on you\n',
+  'Testing user interface designs: failed\n',
+  'Updating project documentation: finished, with changes to keep\n',
+  'Conducting user feedback sessions: finished\n',
+]
+const waitRuns = call(
+  'executeCode',
+  { code: 'for await (const run of env.GENERAL.settled(runs)) {\n  console.log(`${run.title}: ${run.status}`)\n}\n' },
+  { output: WAIT_LINES.join('') },
+)
+const waitLine = (line: number): ScriptStep => ({ stream: { type: 'toolOutputDelta', toolCallId: waitRuns.toolCallId, delta: WAIT_LINES[line] }, delay: 0 })
 // One of them, at some point in its run.
 const runStep = (index: number, delay: number, metadata: Partial<Omit<AiChatMetadata, 'id'>>, text?: string): ScriptStep => ({
   run: { id: LAUNCH_RUNS[index].id, metadata, ...(text ? { message: agent({ text }) } : {}) },
   delay,
 })
+const LAUNCH_REASONING = 'Five separate pieces of work. Each can go to an agent of its own, and I can wait for them.'
 
 const agentRunsScenario: Scenario = {
   id: 'agent-runs',
   title: 'Launch prep',
-  description: 'The agent starts five agents. Their start is marked under its turn, without a spinner; beside the composer their clouds go round while they work, the ring filling as they finish, a dot once one waits on you. Each end is marked where it happened. Open one from a pill or the ring’s list: its header goes back. Send a message to see the marks stay in the history.',
+  description: 'The agent starts five agents and says so, then waits for them. Their start is marked under what it says, without a spinner; beside the composer their clouds go round while they work, each leaving as it ends, with a dot once one waits on you. Each end is marked where it happened, and the agent sums up once none is at work. Open one from a pill or the button’s list: its header goes back. Answer the one that waits to see it finish too.',
   history: history([user('Get the launch ready: triage Jira, review the gadget code, test the new screens, update the runbook and sum up the feedback calls.')]),
   script: [
     ...turn(
-      streamReasoning('Five separate pieces of work. Each can go to an agent of its own.'),
+      streamReasoning(LAUNCH_REASONING),
       streamTool(spawnRuns),
-      { message: agent({ reasoning: 'Five separate pieces of work. Each can go to an agent of its own.', toolCalls: [spawnRuns] }), delay: 300 },
+      { message: agent({ reasoning: LAUNCH_REASONING, toolCalls: [spawnRuns] }), delay: 300 },
       LAUNCH_RUNS.map(({ id, title, brief }, index): ScriptStep => ({
         run: { id, metadata: { title, spawnerId: GENERAL.id, spawnerName: 'General', spawnedByChatId: 0, activeAgent: AGENT }, message: user(brief) },
         delay: index === 0 ? 300 : 120,
       })),
-      say(agent({ text: 'I’ve handed each part to an agent of its own. They work side by side, and each one says here when it’s done.' })),
+      say(agent({ text: 'I’ve set up five agents to work on these in the background, one for each part. I’m waiting for them to finish, and I’ll bring what they find together here.' })),
+      streamTool({ ...waitRuns, output: '' }),
+      runStep(1, 3500, { activeAgent: undefined }, 'Nothing would break on launch day. Two handlers swallow errors; I listed them in the review.'),
+      waitLine(0),
+      runStep(0, 2500, { activeAgent: undefined, awaitingDecision: true }, 'Twelve open issues have no owner. Shall I assign them to the platform on-call?'),
+      waitLine(1),
+      runStep(2, 2500, { activeAgent: undefined, lastTurnFailed: true }),
+      { run: { id: LAUNCH_RUNS[2].id, message: error('The model provider returned 529 (overloaded).') }, delay: 0 },
+      waitLine(2),
+      runStep(3, 3000, { activeAgent: undefined, proposedChangeWorkpieces: [7] }, 'The runbook now covers the new deploy step and the rollback flag.'),
+      waitLine(3),
+      runStep(4, 3500, { activeAgent: undefined }, 'Three things came up in most calls: slow first load, the hidden export button, and unclear pricing.'),
+      waitLine(4),
+      { message: agent({ toolCalls: [waitRuns] }), delay: 400 },
+      say(agent({
+        text:
+          'Four of the five are back. The code review found nothing that would break on launch day, the runbook is updated ' +
+          '(its changes are waiting for you to keep), and the feedback calls agree on slow first load, the hidden export ' +
+          'button and unclear pricing. The screen tests failed when the model provider was overloaded, so they need another go.\n\n' +
+          'The Jira agent found **twelve open issues with no owner** and is waiting on you: shall it assign them to the platform on-call?',
+      })),
     ),
-    runStep(1, 3500, { activeAgent: undefined }, 'Nothing would break on launch day. Two handlers swallow errors; I listed them in the review.'),
-    runStep(0, 2500, { activeAgent: undefined, awaitingDecision: true }, 'Twelve open issues have no owner. Shall I assign them to the platform on-call?'),
-    runStep(2, 2500, { activeAgent: undefined, lastTurnFailed: true }),
-    { run: { id: LAUNCH_RUNS[2].id, message: error('The model provider returned 529 (overloaded).') }, delay: 0 },
-    runStep(3, 3000, { activeAgent: undefined, proposedChangeWorkpieces: [7] }, 'The runbook now covers the new deploy step and the rollback flag.'),
-    runStep(4, 3500, { activeAgent: undefined }, 'Three things came up in most calls: slow first load, the hidden export button, and unclear pricing.'),
     ...when('onSend', turn(say(agent({ text: 'I’ve told the Jira agent to go ahead: it’s assigning the twelve issues now.' })))),
     runStep(0, 600, { awaitingDecision: undefined, activeAgent: AGENT }),
     runStep(0, 3500, { activeAgent: undefined }, 'Assigned all twelve to the platform on-call.'),

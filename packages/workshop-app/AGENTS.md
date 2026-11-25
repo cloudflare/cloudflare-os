@@ -333,15 +333,16 @@ reply is drafted its views are only named (`InlineViewDraft`); a block the agent
 shown as code. The `live-view` scenario plays one.
 
 The agents a chat's agent starts (runs whose `spawnedByChatId` is the chat, from the workspace's
-runs, `useWorkspaceAgents`) are what its turn produced, so they are marked at the end of that
-turn, as one group for the turn ("Started 5 agents", `AgentRunsStarted`): a pill each
+runs, `useWorkspaceAgents`) are marked under what it says next, which is where it tells of them
+("I've set up five agents… waiting for them to finish"), or at the end of its turn where it says
+nothing more, as one group ("Started 5 agents", `AgentRunsStarted`): a pill each
 (`AgentRunPill`), which opens the run, with no spinner, as it stays in the history. Each run's end
 is a pill of its own where it ended, saying how ("Finished", "Failed"), never above its start
 (`chat/chatRuns.ts`, plain and tested); those of the last turn are after the live output. How the
 call was made stays in the trace. Neither pills nor the button draw the mascot, which moves and
 is played with: they have the still cloud (`AgentIcon`, `fill` in the button). What is under way
 is beside the composer (`AgentRunsButton`): up to three of their clouds going round a ring in
-depth, the far side smaller, fainter and blurred, while a light sweeps the button for as long as
+depth, tilted as a planet's, the far side smaller, fainter and blurred, while a light sweeps the button for as long as
 any works (one alone stays still in the middle; held still at `off`, with no sweep), and a dot
 while one waits on the user. A run that ends leaves the ring as it goes round, fading and blurring
 out as the others space out again (`--presence` and `--offset`, eased by motion; the ring's turn
@@ -349,7 +350,7 @@ is CSS on the ring, which each cloud inherits), and the button goes after the la
 taking its room. It opens to a pill for each, with how it stands, stacked over it at its end. A
 run's header starts with the way back to the chat that started it (`ChatHeader`'s `back`, from `ChatSnapshot.startedBy`), given where the page
 can open another chat (`ChatPane`'s `onOpenChat`). The `agent-runs` scenario plays five, which end
-in each way.
+in each way, its agent waiting for them in the same turn and summing up once none is at work.
 
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the

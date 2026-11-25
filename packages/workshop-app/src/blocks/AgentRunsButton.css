@@ -1,7 +1,8 @@
-/* The agents' clouds go round a ring seen from a little above: an ellipse whose near side is
-   lower, larger, clearer and over the far side, which is smaller, fainter and out of focus. The
-   ring turns its angle as one, which each cloud inherits and is placed from by trigonometry, so
-   the path is round and a cloud that comes in later is spaced with the others. Where a cloud is
+/* The agents' clouds go round a ring seen from a little above and tilted, as a planet's: an
+   ellipse whose near side is lower, larger, clearer and over the far side, which is smaller,
+   fainter and out of focus. The ring turns its angle as one, which each cloud inherits and is
+   placed from by trigonometry, so the path is round and a cloud that comes in later is spaced
+   with the others. Where a cloud is
    round the ring (`--offset`, a share of a turn), how far it is there (`--presence`, 0 to 1) and
    how far the ring is spread (`--spread`, 0 for one cloud alone, still in the middle) are eased
    from script as clouds come and go. */
@@ -19,9 +20,10 @@
 }
 
 .agent-orbit {
-  /* The ring's half-width and half-height. */
-  --rx: 9px;
-  --ry: 3.5px;
+  /* The ring's half-width and half-height, and how far it is tilted, as a planet's ring is. */
+  --rx: 10px;
+  --ry: 4px;
+  --tilt: -20deg;
   isolation: isolate;
   animation: agent-orbit 4.8s linear infinite;
 }
@@ -51,9 +53,12 @@
   left: 50%;
   display: grid;
   line-height: 0;
+  /* Where it is on the ring level, then turned by the tilt. */
+  --x: calc(cos(var(--a)) * var(--rx) * var(--spread, 1));
+  --y: calc(sin(var(--a)) * var(--ry) * var(--spread, 1));
   translate:
-    calc(-50% + cos(var(--a)) * var(--rx) * var(--spread, 1))
-    calc(-50% + sin(var(--a)) * var(--ry) * var(--spread, 1));
+    calc(-50% + var(--x) * cos(var(--tilt)) - var(--y) * sin(var(--tilt)))
+    calc(-50% + var(--x) * sin(var(--tilt)) + var(--y) * cos(var(--tilt)));
   scale: calc((0.55 + 0.45 * var(--near)) * (0.3 + 0.7 * var(--p)));
   opacity: calc((0.3 + 0.7 * var(--near)) * var(--p));
   /* Out of focus at the back, and more so as it comes or goes. */
