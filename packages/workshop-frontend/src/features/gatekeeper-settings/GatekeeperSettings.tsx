@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Select } from '@cloudflare/kumo'
 import type { AdminResourceVendor } from '@gadgets/workshop-shared/api'
 
@@ -9,11 +10,17 @@ export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
   vendorName: string
   /** Every setting the gatekeeper declares, with the value in effect. */
   settings: Setting[]
-  /** Whether a change to the gatekeeper is being saved. A pick made meanwhile is not taken. */
+  /** Whether a change to the gatekeeper is being saved. No pick is taken meanwhile. */
   saving: boolean
   /** Called with the option an admin picked for the setting `settingId`. */
   onChoose: (settingId: string, value: string) => void
 }) => {
+  // The setting whose pick is being saved. Its select stays enabled: focus returns to a select
+  // when its list closes, and a disabled one drops it. Every other select is disabled until the
+  // save ends, so that none takes a pick that is not saved.
+  const [picked, setPicked] = useState<string>()
+  if (!saving && picked !== undefined) setPicked(undefined)
+
   const shown = settings.filter(({ shownWhen }) => !shownWhen ||
     settings.find((setting) => setting.id === shownWhen.settingId)?.value === shownWhen.value)
   if (shown.length === 0) return null
@@ -27,14 +34,14 @@ export const GatekeeperSettings = ({ vendorName, settings, saving, onChoose }: {
           aria-label={`${setting.label} for ${vendorName}`}
           description={setting.help}
           className="w-full sm:max-w-xs"
-          // Never disabled while a choice is saved: focus returns to a select when its list
-          // closes, and a disabled one drops it.
+          disabled={saving && setting.id !== picked}
           value={setting.value}
           onValueChange={(value, { reason }) => {
             // Only a pick is the admin's. The select also reports changes of its own: to the
             // value it started with, when the stored value is not one of its options, and to an
             // option whose first letter is typed while it is closed.
             if (saving || reason !== 'item-press' || !value || value === setting.value) return
+            setPicked(setting.id)
             onChoose(setting.id, value)
           }}
           // A stored value that the gatekeeper no longer offers shows as it is stored. The

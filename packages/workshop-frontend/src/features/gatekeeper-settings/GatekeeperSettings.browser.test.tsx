@@ -2,42 +2,11 @@
 
 // A gatekeeper's settings in Chromium: keyboard input and focus, which jsdom does not model.
 
-import { act, useState } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
-import type { AdminResourceVendor } from '@gadgets/workshop-shared/api'
-import { GatekeeperSettings } from './GatekeeperSettings'
-
-type Setting = NonNullable<AdminResourceVendor['settings']>[number]
-
-const PROVIDER: Setting = {
-  id: 'provider', label: 'Search provider', help: 'Where web searches run.',
-  options: [{ value: 'ceramic', label: 'Ceramic' }, { value: 'linkup', label: 'Linkup' }],
-  defaultValue: 'ceramic', value: 'ceramic',
-}
-
-// Holds the settings as the admin page does: a pick shows at once, and `save` is its save.
-const Panel = ({ save }: { save: Promise<void> }) => {
-  const [settings, setSettings] = useState([PROVIDER])
-  const [saving, setSaving] = useState(false)
-  return (
-    <>
-      <GatekeeperSettings
-        vendorName="Web Search"
-        settings={settings}
-        saving={saving}
-        onChoose={(settingId, value) => {
-          setSettings((shown) => shown.map((setting) => (
-            setting.id === settingId ? { ...setting, value } : setting)))
-          setSaving(true)
-          void save.then(() => setSaving(false))
-        }}
-      />
-      <button type="button">Next control</button>
-    </>
-  )
-}
+import { SettingsPanel, webSearchSettings } from './gatekeeperSettingsTestHarness'
 
 let root: Root | undefined
 let container: HTMLElement | undefined
@@ -50,24 +19,35 @@ afterEach(() => {
 /** Input as a user gives it, with the updates it causes applied before the next assertion. */
 const input = (action: () => Promise<unknown>) => act(async () => { await action() })
 
-it('keeps the keyboard focus on a select while its choice is saved, and after', async () => {
+it('keeps the keyboard focus on a select while its pick is saved, and lets the next select take one after', async () => {
   const save = Promise.withResolvers<void>()
+  const onSave = vi.fn<(settingId: string, value: string) => Promise<void>>(() => save.promise)
   container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
-  await act(async () => root?.render(<Panel save={save.promise} />))
-  const select = page.getByRole('combobox', { name: 'Search provider for Web Search' })
+  await act(async () => root?.render(
+    <SettingsPanel initial={webSearchSettings('exa')} onSave={onSave} />))
+  const provider = page.getByRole('combobox', { name: 'Search provider for Web Search' })
+  const fallback = page.getByRole('combobox', { name: 'Fallback search provider for Web Search' })
 
+  // Exa is the option before the last, so one step down reaches "The model's provider".
   await input(() => userEvent.tab())
-  await expect.element(select).toHaveFocus()
+  await expect.element(provider).toHaveFocus()
   await input(() => userEvent.keyboard('{Enter}'))
-  await expect.element(page.getByRole('option', { name: 'Linkup' })).toBeVisible()
+  await expect.element(page.getByRole('option', { name: 'The model’s provider' })).toBeVisible()
   await input(() => userEvent.keyboard('{ArrowDown}'))
   await input(() => userEvent.keyboard('{Enter}'))
 
-  await expect.element(select).toHaveTextContent('Linkup')
-  await expect.element(select).toHaveFocus()
+  await expect.element(provider).toHaveTextContent('The model’s provider')
+  await expect.element(provider).toHaveFocus()
+  await expect.element(fallback).toBeDisabled()
+
   await act(async () => { save.resolve() })
-  await expect.element(select).toHaveFocus()
+  await expect.element(provider).toHaveFocus()
   await input(() => userEvent.tab())
-  await expect.element(page.getByRole('button', { name: 'Next control' })).toHaveFocus()
+  await expect.element(fallback).toHaveFocus()
+  await input(() => userEvent.keyboard('{Enter}'))
+  await expect.element(page.getByRole('option', { name: 'Ceramic' })).toBeVisible()
+  await input(() => userEvent.keyboard('{ArrowDown}'))
+  await input(() => userEvent.keyboard('{Enter}'))
+  expect(onSave.mock.calls).toEqual([['provider', 'model'], ['fallback', 'ceramic']])
 })

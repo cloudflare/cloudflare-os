@@ -4,30 +4,12 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { AdminResourceVendor } from '@gadgets/workshop-shared/api'
 import { GatekeeperSettings } from './GatekeeperSettings'
+import {
+  SettingsPanel, webSearchSettings as webSearch, type Setting,
+} from './gatekeeperSettingsTestHarness'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-
-type Setting = NonNullable<AdminResourceVendor['settings']>[number]
-
-// Web Search's two settings, with the choices `provider` and `fallback` in effect.
-const webSearch = (provider: string, fallback = 'none'): Setting[] => [
-  {
-    id: 'provider', label: 'Search provider', help: 'Where web searches run.',
-    options: [
-      { value: 'ceramic', label: 'Ceramic' }, { value: 'linkup', label: 'Linkup' },
-      { value: 'exa', label: 'Exa' }, { value: 'model', label: 'The model’s provider' },
-    ],
-    defaultValue: 'ceramic', value: provider,
-  },
-  {
-    id: 'fallback', label: 'Fallback search provider',
-    help: 'Runs the searches that a model’s provider cannot.',
-    options: [{ value: 'none', label: 'None' }, { value: 'ceramic', label: 'Ceramic' }],
-    defaultValue: 'none', shownWhen: { settingId: 'provider', value: 'model' }, value: fallback,
-  },
-]
 
 let root: Root | undefined
 let host: HTMLElement | undefined
@@ -39,15 +21,17 @@ afterEach(() => {
   host = undefined
 })
 
-const show = async (settings: Setting[], saving = false) => {
-  const onChoose = vi.fn<(settingId: string, value: string) => void>()
+const render = async (node: React.ReactNode) => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
-  await act(async () => {
-    root?.render(
-      <GatekeeperSettings vendorName="Web Search" settings={settings} saving={saving} onChoose={onChoose} />)
-  })
+  await act(async () => { root?.render(node) })
+}
+
+const show = async (settings: Setting[], saving = false) => {
+  const onChoose = vi.fn<(settingId: string, value: string) => void>()
+  await render(
+    <GatekeeperSettings vendorName="Web Search" settings={settings} saving={saving} onChoose={onChoose} />)
   return onChoose
 }
 
@@ -100,10 +84,36 @@ it('reports the option an admin picks, and not the one in effect', async () => {
   expect(onChoose).toHaveBeenCalledExactlyOnceWith('provider', 'model')
 })
 
-it('takes no pick while a change is being saved', async () => {
-  const onChoose = await show(webSearch('ceramic'), true)
-  await choose(select('Search provider for Web Search'), 'The model’s provider')
-  expect(onChoose).not.toHaveBeenCalled()
+it('holds every other select while a pick is saved, and takes no second pick from that one', async () => {
+  const save = Promise.withResolvers<void>()
+  const onSave = vi.fn<(settingId: string, value: string) => Promise<void>>(() => save.promise)
+  await render(<SettingsPanel initial={webSearch('ceramic')} onSave={onSave} />)
+  const provider = () => select('Search provider for Web Search')
+  const fallback = () => select('Fallback search provider for Web Search')
+
+  await choose(provider(), 'The model’s provider')
+  expect(provider().hasAttribute('disabled')).toBe(false)
+  expect(fallback().hasAttribute('disabled')).toBe(true)
+  await choose(provider(), 'Linkup')
+  expect(onSave.mock.calls).toEqual([['provider', 'model']])
+
+  await act(async () => { save.resolve() })
+  expect(fallback().hasAttribute('disabled')).toBe(false)
+  await choose(fallback(), 'Ceramic')
+  expect(onSave.mock.calls).toEqual([['provider', 'model'], ['fallback', 'ceramic']])
+})
+
+it('holds every select while another change to the gatekeeper is saved, one picked from earlier too', async () => {
+  const settings = webSearch('model')
+  const onChoose = await show(settings)
+  await choose(select('Search provider for Web Search'), 'Linkup')
+  expect(onChoose).toHaveBeenCalledOnce()
+
+  await act(async () => {
+    root?.render(
+      <GatekeeperSettings vendorName="Web Search" settings={settings} saving onChoose={onChoose} />)
+  })
+  expect(selects().map((element) => element.hasAttribute('disabled'))).toEqual([true, true])
 })
 
 it('chooses nothing for a letter typed while a select is closed', async () => {
