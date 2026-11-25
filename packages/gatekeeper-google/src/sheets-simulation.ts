@@ -820,7 +820,7 @@ export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   // A guarded area that queued insertions or deletions cut up has hundreds of pieces, across its
   // rows or its columns, and a guard walks many areas over the same rows.
   let spansOn = new Map([...edgesOn].map(([sheetId, edges]) => [sheetId, {
-    edges: [...edges].sort((a, b) => a - b),
+    edges: [...edges].toSorted((a, b) => a - b),
     held: new Map<number, Map<number, number[]>>(),
   }]));
   let holdingRow = (sheetId: number, row: number): Map<number, number[]> | undefined => {
