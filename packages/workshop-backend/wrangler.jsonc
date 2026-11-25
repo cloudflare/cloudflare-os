@@ -47,6 +47,8 @@
       "binding": "LOADER"
     }
   ],
+  "minify": true,
+  "upload_source_maps": true,
   "build": {
     "command": "pnpm run build:worker",
     "watch_dir": "src"

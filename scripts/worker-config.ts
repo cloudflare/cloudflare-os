@@ -11,6 +11,15 @@ export type { DurableObjectMigration };
 /** Workers runtime compatibility date of every Worker here, and of the vitest pools that model them. */
 export const COMPATIBILITY_DATE = "2026-09-04";
 
+/**
+ * How Wrangler bundles every Worker here. @cloudflare/config has no field for either setting, so
+ * scripts/generate-worker-configs.ts adds them to each generated wrangler.jsonc. V8 keeps a
+ * Worker's source text in memory for as long as it runs, so the bundle is minified. A minified
+ * stack needs its source map, and the Wrangler build that deploys previews uploads one only when
+ * this asks for it.
+ */
+export const WORKER_BUNDLE_SETTINGS = { minify: true, upload_source_maps: true };
+
 /** Observability settings shared by the deployed Workers; workshop-backend extends them with traces. */
 export const OBSERVABILITY = {
   enabled: true,

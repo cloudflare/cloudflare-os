@@ -106,6 +106,21 @@ export function collectModules(outDir: string): {
 }
 
 /**
+ * The first character above U+00FF in a module's source, with the text around it, or undefined
+ * when the source has none. V8 keeps a Worker's source in memory for as long as it runs, and
+ * stores all of it two bytes per character if one UTF-16 code unit is above U+00FF.
+ */
+export function firstTwoByteCharacter(
+    source: Buffer): { codePoint: number; excerpt: string } | undefined {
+  // Not a TextDecoder, which drops a leading byte order mark: that is such a character too.
+  const text = source.toString("utf8");
+  const index = text.search(/[\u0100-\uffff]/);
+  const codePoint = index < 0 ? undefined : text.codePointAt(index);
+  if (codePoint === undefined) return undefined;
+  return { codePoint, excerpt: text.slice(Math.max(0, index - 40), index + 40) };
+}
+
+/**
  * Reads a built static-asset directory and returns `{ manifest, blobs }`:
  *  - manifest: { "/path": { hash, size } } in the exact shape the assets-upload-session API takes
  *  - blobs: Map<hash, { bytes, size }> for content-addressed storage
