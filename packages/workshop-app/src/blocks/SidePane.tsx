@@ -15,7 +15,6 @@ import { IconSwitch } from '@/components/IconSwitch'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportItems, type ExportItemsProps } from './ExportItems'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
-import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { SidePaneTitle } from './SidePaneTitle'
 
 export type SidePaneItem = {
@@ -101,8 +100,6 @@ export type SidePaneProps = Placement & {
    * full screen, and the step down is a back button at the start of the header.
    */
   narrow?: boolean
-  /** The agents the one shown, a gadget, starts, after its title (`AgentsBubble`). */
-  agents?: AgentsBubbleProps
   /** What is shown of the one shown. */
   children: ReactNode
 }
@@ -165,7 +162,7 @@ const AWAY_AFTER = 1000
  * pull. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, agents, onFullScreenChange, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, onFullScreenChange, narrow = false, children } = props
   const fullScreen = !narrow && props.fullScreen === true
   const reduceMotion = useReducedMotion() ?? false
 
@@ -284,7 +281,6 @@ export const SidePane = (props: SidePaneProps) => {
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
             {/* Something the one shown has, among what can be done with it rather than in the
                 path to it, where it would read as a step further in. */}
-            {active && agents && !viewingCode && <AgentsBubble {...agents} compact />}
             {people.length > 0 && (
               <HeaderBubble origin="end" className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />

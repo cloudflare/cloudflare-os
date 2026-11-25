@@ -1,7 +1,6 @@
 import { ArrowLeft02Icon, ArrowRight01Icon } from '@/components/icons'
 import { Button, HeaderBubble } from '@gadgets/ui'
 import type { WorkspaceLook } from '@/prefs/preferenceFields'
-import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { AgentCrumb, type AgentCrumbProps } from './AgentCrumb'
 import { WorkspaceCrumb } from './WorkspaceCrumb'
 
@@ -27,20 +26,15 @@ export type ChatHeaderProps = {
   title?: string
   /** Opens the chat's settings, from its title. */
   onOpenSettings?: () => void
-  /**
-   * The agents the chat's gadgets start, after the title: one by its name, opening its page;
-   * several by how many, opening the workspace's Agents.
-   */
-  agents?: AgentsBubbleProps
 }
 
 /**
  * A chat's header: for a run another chat's agent started, the way back to that chat in place of
  * the way to its workspace; else the way to its workspace; for an agent's run the way to its agent, then the chat's title, which opens its
- * settings, then the agents its gadgets start. Each is a bubble of its own, so it pops in as the
+ * settings. Each is a bubble of its own, so it pops in as the
  * first is set up.
  */
-export const ChatHeader = ({ back, workspace, agent, title, onOpenSettings, agents }: ChatHeaderProps) => (
+export const ChatHeader = ({ back, workspace, agent, title, onOpenSettings }: ChatHeaderProps) => (
   <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
     {back && (
       <HeaderBubble name="back" className="shrink-0">
@@ -61,6 +55,5 @@ export const ChatHeader = ({ back, workspace, agent, title, onOpenSettings, agen
         </Button>
       </HeaderBubble>
     )}
-    {agents && <AgentsBubble {...agents} />}
   </nav>
 )

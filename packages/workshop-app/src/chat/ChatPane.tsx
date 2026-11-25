@@ -52,7 +52,6 @@ import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
 import { firstMessageOf } from './firstMessage'
-import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { STATUS_WORDS } from '@/automations/agents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
@@ -67,10 +66,8 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
-  /** Goes to the page of the agent whose run the chat is, or that its gadgets start, by its key. */
+  /** Goes to the page of the agent whose run the chat is, by its key. */
   onOpenAgent?: (agentKey: string) => void
-  /** Goes to the workspace's Agents, for the several the chat's gadgets start. */
-  onOpenAgents?: () => void
   /** Opens the chat's settings, from its title. */
   onOpenSettings?: () => void
   /**
@@ -143,7 +140,7 @@ const keptOutput = (items: readonly ChatItem[], changes: ProposedChanges, gadget
   outputOf(items, gadgetId)
     ?? { kind: 'output', id: 0, key: `keep-${gadgetId}`, workpieceId: gadgetId, title: title ?? 'Untitled', type: 'gadget', draft: changes.created.some((made) => made.gadgetId === gadgetId) }
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenChat, chatHref, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenSettings, onOpenChat, chatHref, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keeping = chat.status === 'ready' ? chat.keep?.changes : undefined
@@ -223,16 +220,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     : work
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
-  // The agents the chat's gadgets start, for the header, read again as each turn ends.
-  const gadgetIds = useMemo(() => (items ?? []).flatMap((item) => (item.kind === 'output' && item.type === 'gadget' ? [item.workpieceId] : [])), [items])
-  const turns = useRef(0)
-  const idle = chat.status === 'ready' && chat.activity === undefined
-  const lastIdle = useRef(idle)
-  if (idle !== lastIdle.current) {
-    lastIdle.current = idle
-    if (idle) turns.current += 1
-  }
-  const gadgetAgents = useGadgetAgents(workspaceId, chatId, gadgetIds, turns.current)
   // The agents the chat's agent started, as the workspace's runs say how each stands, and where
   // the conversation marks them.
   const workspaceAgents = useWorkspaceAgents(workspaceId).state
@@ -490,12 +477,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const agentKey = ready ? chat.agent?.key : undefined
   const agentName = ready ? chat.agent?.name : undefined
   const openAgent = useHandler(() => agentKey !== undefined && onOpenAgent?.(agentKey))
-  // A run's own agent is its crumb already.
-  const startsAgents = gadgetAgents.filter(({ key }) => key !== agentKey)
-  const agentNames = startsAgents.map(({ name }) => name).join('\n')
-  const firstAgentKey = startsAgents[0]?.key
-  const several = startsAgents.length > 1
-  const openStarted = useHandler(() => (several ? onOpenAgents?.() : firstAgentKey !== undefined && onOpenAgent?.(firstAgentKey)))
   const hasAgentPage = onOpenAgent !== undefined
   const hasSettings = onOpenSettings !== undefined
   const workspaceTitle = workspace?.title
@@ -510,9 +491,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       agent={agentKey !== undefined && agentName !== undefined ? { agentKey, name: agentName, onOpen: hasAgentPage ? openAgent : undefined } : undefined}
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
-      agents={agentNames ? { names: agentNames.split('\n'), onOpen: openStarted } : undefined}
     />
-  ), [backTo, goBack, agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
+  ), [backTo, goBack, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
 
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
   const artifacts = chat.status === 'ready' ? chat.artifacts : undefined

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useNavigate, useRouter } from '@tanstack/react-router'
-import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { cn } from '@cloudflare/kumo/utils'
 import { AlertCircleIcon, InboxIcon, NotepadTextDashedIcon, SquareLock01Icon } from '@/components/icons'
 import { FileView } from '@/blocks/FileView'
@@ -281,21 +280,12 @@ export const AsidePane = (props: AsidePaneProps) => {
       },
     },
   }
-  // The agents it starts, beside its title, as it has kept them.
-  const gadgetAgents = useGadgetAgents(gadget?.workspaceId, undefined, gadget ? [gadget.workpieceId] : NO_GADGETS)
-  const agents = gadget && gadgetAgents.length > 0 ? {
-    names: gadgetAgents.map(({ name }) => name),
-    onOpen: () => void (gadgetAgents.length === 1
-      ? navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: gadgetAgents[0]!.key } })
-      : navigate({ to: '/workspace/$workspaceId', params: { workspaceId: gadget.workspaceId }, search: { tab: 'agents' } })),
-  } : undefined
   // Beside the page its settings page is shown in the pane's place; as the page it is the route's.
   const openSettings = gadget && (props.placement === 'beside'
     ? (readsCode ? () => setSettings({ key: item.key, open: true, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB }) : undefined)
     : onOpenSettingsPage && (() => onOpenSettingsPage(gadget, title)))
   const shared = {
     active: paneItem(item, title),
-    agents,
     people: snapshot.people,
     link,
     onReload: connection?.reload,
@@ -405,7 +395,6 @@ const COPY_SHOWN_FOR = 1500
 // How near the window's top, in pixels, the pointer brings back the bar to pull the header down by.
 const NEAR_TOP = 100
 
-const NO_GADGETS: number[] = []
 
 const GadgetView = ({ title, ui, frame, question, offer, onReload, onAskAccess }: {
   title: string
