@@ -231,6 +231,7 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleMcpHttpRequest(req, {
       baseUrl: getBaseUrl(env),
+      env,
       accountForId: id => ctx.exports.McpAccount.get(
         ctx.exports.McpAccount.idFromString(id)),
       log: logger,

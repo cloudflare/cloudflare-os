@@ -7,6 +7,8 @@ import {
   INVALID_LINK_HTML,
 } from "./html.js";
 import type { McpLog } from "./log.js";
+import type { ConnectionEnv } from "./connection.js";
+import { CLIENT_METADATA_PATH, oauthClient } from "./oauth.js";
 
 type OAuthCallbackAccount = {
   /** Finishes the code exchange; null when the callback's nonce doesn't match. */
@@ -55,6 +57,8 @@ export async function handleMcpHttpRequest<A extends OAuthCallbackAccount>(
   request: Request,
   options: {
     baseUrl: string;
+    /** The Worker's environment, for the OAuth client it presents. */
+    env: ConnectionEnv;
     accountForId(id: string): A;
     log: McpLog;
     connect(request: Request, account: A, nonce: string, path: string): Promise<Response>;
@@ -69,6 +73,15 @@ export async function handleMcpHttpRequest<A extends OAuthCallbackAccount>(
   const relativePath = url.pathname.slice(basePath.length);
   if (relativePath === "/oauth") {
     return handleOAuthCallback(url, options.accountForId, options.log);
+  }
+  if (relativePath === CLIENT_METADATA_PATH) {
+    // The Client ID Metadata Document: an authorization server that supports them fetches this
+    // URL, the client_id it was given, in place of a registration. Holds nothing secret.
+    const client = oauthClient(options.baseUrl, options.env);
+    if (!client.metadataUrl) return new Response("Not Found", { status: 404 });
+    return Response.json({ client_id: client.metadataUrl, ...client.metadata }, {
+      headers: { "Cache-Control": "public, max-age=3600" },
+    });
   }
 
   const path = relativePath.slice(1).split("/");

@@ -40,7 +40,9 @@ import {
   OAUTH_NONCE_LIFETIME_MS,
 } from "./connect-nonce.js";
 import {
+  CLIENT_METADATA_PATH,
   isCredentialRejection,
+  oauthClient,
   revokeToken,
   safeOAuthError,
   type OAuthTokens,
@@ -495,19 +497,23 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const clientKey = reconnect ? RECONNECT_CLIENT_KEY : "oauthClient";
     const discoveryKey = reconnect ? RECONNECT_DISCOVERY_KEY : "oauthDiscovery";
 
+    const oauth = oauthClient(this.baseUrl(), this.env);
     return {
       redirectUrl: `${this.baseUrl()}/oauth`,
-      clientMetadata: {
-        client_name: clientName(this.env),
-        redirect_uris: [`${this.baseUrl()}/oauth`],
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        token_endpoint_auth_method: "none",
-      },
+      clientMetadata: oauth.metadata,
+      clientMetadataUrl: oauth.metadataUrl,
       clientInformation: context => {
         current();
         const client = this.ctx.storage.kv.get<StoredOAuthClientInformation>(clientKey);
         if (client && typeof client.client_id !== "string") {
+          this.ctx.storage.kv.delete(clientKey);
+          return undefined;
+        }
+        // A metadata-document client this Worker no longer serves (the document turned off, or
+        // BASE_URL moved) can't work again, and the authorization server reports that on its own
+        // page, where the SDK never sees it. Dropping it lets the flow identify itself afresh.
+        if (client?.client_id.endsWith(CLIENT_METADATA_PATH) &&
+            client.client_id !== oauth.metadataUrl) {
           this.ctx.storage.kv.delete(clientKey);
           return undefined;
         }

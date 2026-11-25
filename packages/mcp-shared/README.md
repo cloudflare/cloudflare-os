@@ -19,7 +19,7 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 | Module | Purpose |
 | --- | --- |
 | `client` | Bounded Streamable HTTP transport (`initialize`, `tools/list`, `tools/call`) using official MCP wire types |
-| `oauth` | Small adapter around the official MCP client's OAuth errors and token revocation gap |
+| `oauth` | Small adapter around the official MCP client's OAuth errors and token revocation gap, and the OAuth client both Workers present |
 | `tools` | The trust boundary: read/action classification, auto-approval eligibility, approval prompts, catalog fingerprinting |
 | `schema-to-ts` | JSON Schema to TypeScript, strict `callTool` overloads plus progressive discovery |
 | `session-methods` | Installs those methods at runtime, so the generated types are not a fiction |
@@ -36,7 +36,7 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 | `session` | The Gadget-facing capability, and the one path every tool call takes |
 | `sharing-policy` | The owner-only sharing rule |
 | `html` | The connect-flow pages, so both connectors look like one product |
-| `http` | Base-path, OAuth callback, and connect-link routing shared by both Workers |
+| `http` | Base-path, OAuth callback, client ID metadata document, and connect-link routing shared by both Workers |
 | `log` | The field vocabulary both connectors log against |
 | `user` | The common account description, revocation, and reconnect lifecycle |
 | `util` | Hex encoding, host extraction, binding-name slugs; no policy |

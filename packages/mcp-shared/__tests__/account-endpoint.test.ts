@@ -502,6 +502,59 @@ describe("connect initiation nonce", () => {
     expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toBeNull();
   });
 
+  it("identifies itself by its metadata document where the server takes no registration", async () => {
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("oauth-protected-resource")) {
+        return Response.json({
+          resource: "https://mcp.example/mcp",
+          authorization_servers: ["https://auth.example"],
+        });
+      }
+      if (url.includes("oauth-authorization-server")) {
+        return Response.json({
+          issuer: "https://auth.example",
+          authorization_endpoint: "https://auth.example/authorize",
+          token_endpoint: "https://auth.example/token",
+          response_types_supported: ["code"],
+          code_challenge_methods_supported: ["S256"],
+          client_id_metadata_document_supported: true,
+        });
+      }
+      return new Response("", { status: 404 });
+    });
+
+    const nonce = "8".repeat(64);
+    const account = new OAuthFlowAccount(
+      fakeContext() as never, { MCP_CLIENT_METADATA_DOCUMENT: "true" });
+    await account.setCallback({} as never, nonce);
+    const outcome = await account.beginConnect(nonce, server("https://mcp.example/mcp"));
+
+    expect(outcome.kind).toBe("redirect");
+    expect(new URL((outcome as { url: string }).url).searchParams.get("client_id"))
+      .toBe("https://gatekeeper.example/oauth/client-metadata.json");
+    expect(requested.some(url => url.endsWith("/register"))).toBe(false);
+  });
+
+  it("registers afresh once its stored metadata-document client is no longer served", async () => {
+    stubOAuthServer();
+    const context = fakeContext();
+    context.storage.kv.put("oauthClient", {
+      client_id: "https://gatekeeper.example/oauth/client-metadata.json",
+      issuer: "https://auth.example",
+    });
+
+    const nonce = "7".repeat(64);
+    const account = new OAuthFlowAccount(context as never, {});
+    await account.setCallback({} as never, nonce);
+    const outcome = await account.beginConnect(nonce, server("https://mcp.example/mcp"));
+
+    expect(new URL((outcome as { url: string }).url).searchParams.get("client_id"))
+      .toBe("client-id");
+  });
+
   it("stages a reconnect's tokens until the Workshop commits them", async () => {
     // The reconnect URL is a bearer capability, so the tokens it yields must not go live before the
     // Workshop has confirmed the finishing browser is the owner's: facets read the live key directly.

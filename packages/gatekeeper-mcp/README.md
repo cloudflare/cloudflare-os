@@ -72,7 +72,8 @@ See `src/types.d.ts` in `@gadgets/mcp-shared` for the base session API.
 | Variable | Meaning |
 | --- | --- |
 | `BASE_URL` | Public base URL of this Worker, for OAuth redirects. |
-| `MCP_CLIENT_NAME` | Client name sent in `initialize` and dynamic client registration. |
+| `MCP_CLIENT_NAME` | Client name sent in `initialize`, dynamic client registration, and the client ID metadata document. |
+| `MCP_CLIENT_METADATA_DOCUMENT` | `"true"` to serve a client ID metadata document and use it with authorization servers that support one. Off by default; see the connect flow below. |
 | `MCP_ALLOW_INSECURE` | `"true"` to disable the endpoint checks entirely: permits `http://` **and** private, loopback, link-local, and cloud-metadata hosts, on the endpoint and on every OAuth URL discovered from it. Local dev only. |
 
 There is nothing to configure per server: users supply endpoints, and an administrator's only lever
@@ -97,18 +98,35 @@ For local development no credentials are needed. Set `MCP_ALLOW_INSECURE=true` i
    ```
    401 + WWW-Authenticate  ->  protected resource metadata   (RFC 9728)
                            ->  authorization server metadata (RFC 8414)
-                           ->  dynamic client registration   (RFC 7591)
+                           ->  client ID metadata document   (OAuth CIMD), or
+                               dynamic client registration   (RFC 7591)
                            ->  authorization code + PKCE     (RFC 7636)
                                + resource indicator          (RFC 8707)
    ```
 
-   The SDK falls back to the conventional
+   With `MCP_CLIENT_METADATA_DOCUMENT` on, and where the authorization server advertises
+   `client_id_metadata_document_supported`, the client ID is the URL of this Worker's own metadata
+   document, `<BASE_URL>/oauth/client-metadata.json`, and nothing is registered: the authorization
+   server fetches that document instead. Some servers take nothing else; Tableau's hosted MCP server
+   is one. The document names the client, its one redirect URI and a public client
+   (`token_endpoint_auth_method: "none"`), and holds nothing secret.
+
+   It is off by default because the authorization server fetches it without the user's cookies. A
+   deployment behind Cloudflare Access must exempt that one path from Access before turning it on:
+   the SDK prefers the document wherever a server offers both, so an unreachable one would break
+   servers that registration serves today. Only an `https:` `BASE_URL` serves it, with a one-hour
+   cache lifetime, so an authorization server may see a changed `MCP_CLIENT_NAME` that much later.
+   Turning it off strands the accounts that connected through it: their refreshes fail, and their
+   reconnect identifies itself afresh, by registration where the server offers it.
+
+   Otherwise the client registers dynamically. With no authorization server metadata, the SDK falls
+   back to the conventional
    paths (`/authorize`, `/token`, `/register`) that the Workers OAuth provider and most MCP servers
    use. That means a server which does not implement dynamic client registration is not detected as
    such up front — the synthesized `/register` is tried and refuses, so the failure reads as a
    rejected registration rather than a missing capability. The remedy is the same either way:
-   connect a server that supports registration, or reach it through a portal an administrator has
-   configured with a preissued token.
+   connect a server that supports registration or metadata documents, or reach it through a portal
+   an administrator has configured with a preissued token.
 4. Tokens are stored in the `McpAccount` Durable Object and refreshed proactively, before the
    recorded expiry. Nothing outside this Worker can obtain one.
 

@@ -6,10 +6,43 @@ import {
   type StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
 
+import { clientName, type ConnectionEnv } from "./connection.js";
 import { redactSecrets, safeServerText } from "./util.js";
 
 /** SDK tokens plus the absolute expiry used by the account's hot path. */
 export type OAuthTokens = StoredOAuthTokens & { expiresAt?: number };
+
+/** Where a connector serves its Client ID Metadata Document, relative to its base URL. */
+export const CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
+
+/**
+ * The connector's OAuth client: registered dynamically (RFC 7591), or, where the authorization
+ * server supports Client ID Metadata Documents, identified by the URL serving this same document,
+ * which that server fetches instead of taking a registration.
+ *
+ * The document is opt-in (`MCP_CLIENT_METADATA_DOCUMENT`) because the authorization server fetches
+ * it without the user's cookies: behind Cloudflare Access it is unreachable until that path is
+ * exempted, and the SDK prefers it over registration wherever both are offered, so turning it on
+ * unexempted would break servers that registration serves today. It also needs an `https:` base
+ * URL, which the SDK requires and local dev lacks. Otherwise `metadataUrl` is `undefined`.
+ */
+export function oauthClient(baseUrl: string, env: ConnectionEnv) {
+  const metadataUrl = env.MCP_CLIENT_METADATA_DOCUMENT === "true" &&
+      new URL(baseUrl).protocol === "https:"
+    ? `${baseUrl}${CLIENT_METADATA_PATH}`
+    : undefined;
+  return {
+    metadataUrl,
+    // No `client_id`: a registration request must not carry one. The served document adds it.
+    metadata: {
+      client_name: clientName(env),
+      redirect_uris: [`${baseUrl}/oauth`],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    },
+  };
+}
 
 const CREDENTIAL_REJECTIONS = new Set([
   "invalid_grant",

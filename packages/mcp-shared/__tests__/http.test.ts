@@ -21,6 +21,7 @@ describe("handleMcpHttpRequest", () => {
       new Request(`https://workshop.example${path}`),
       {
         baseUrl: "https://workshop.example/gatekeeper/mcp",
+        env: {},
         accountForId(id) {
           if (id !== DO_ID) throw new Error("invalid id");
           return { acceptAuthCode: async () => HANDOFF };
@@ -36,6 +37,7 @@ describe("handleMcpHttpRequest", () => {
   it("delegates a valid connect link without imposing connector method policy", async () => {
     const response = await handleMcpHttpRequest(request(`/${DO_ID}/${NONCE}`, "POST"), {
       baseUrl: "https://workshop.example/gatekeeper/mcp",
+      env: {},
       accountForId: () => ({ acceptAuthCode: async () => HANDOFF }),
       log,
       connect: async (req, _account, nonce, path) =>
@@ -54,6 +56,7 @@ describe("handleMcpHttpRequest", () => {
       request(`/oauth?code=code&state=${DO_ID}:${NONCE}`),
       {
         baseUrl: "https://workshop.example/gatekeeper/mcp",
+        env: {},
         accountForId: () => ({ acceptAuthCode: async () => HANDOFF }),
         log,
         connect: async () => new Response("unexpected"),
@@ -77,6 +80,7 @@ describe("handleMcpHttpRequest", () => {
       request(`/oauth?code=code&state=${DO_ID}:${NONCE}`),
       {
         baseUrl: "https://workshop.example/gatekeeper/mcp",
+        env: {},
         accountForId: () => ({ acceptAuthCode: async () => null }),
         log,
         connect: async () => new Response("unexpected"),
@@ -84,5 +88,52 @@ describe("handleMcpHttpRequest", () => {
     );
 
     expect(response.status).toBe(400);
+  });
+
+  it("serves a Client ID Metadata Document whose client_id is its own URL", async () => {
+    const response = await handleMcpHttpRequest(request("/oauth/client-metadata.json"), {
+      baseUrl: "https://workshop.example/gatekeeper/mcp",
+      env: { MCP_CLIENT_NAME: "Acme OS", MCP_CLIENT_METADATA_DOCUMENT: "true" },
+      accountForId: () => { throw new Error("unexpected"); },
+      log,
+      connect: async () => new Response("unexpected"),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      client_id: "https://workshop.example/gatekeeper/mcp/oauth/client-metadata.json",
+      client_name: "Acme OS",
+      redirect_uris: ["https://workshop.example/gatekeeper/mcp/oauth"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    });
+  });
+
+  it("serves no metadata document unless the deployment opts in", async () => {
+    const response = await handleMcpHttpRequest(request("/oauth/client-metadata.json"), {
+      baseUrl: "https://workshop.example/gatekeeper/mcp",
+      env: {},
+      accountForId: () => { throw new Error("unexpected"); },
+      log,
+      connect: async () => new Response("unexpected"),
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it("serves no metadata document from a non-https base URL", async () => {
+    const response = await handleMcpHttpRequest(
+      new Request("http://localhost:8787/gatekeeper/mcp/oauth/client-metadata.json"),
+      {
+        baseUrl: "http://localhost:8787/gatekeeper/mcp",
+        env: { MCP_CLIENT_METADATA_DOCUMENT: "true" },
+        accountForId: () => { throw new Error("unexpected"); },
+        log,
+        connect: async () => new Response("unexpected"),
+      },
+    );
+
+    expect(response.status).toBe(404);
   });
 });

@@ -23,6 +23,8 @@ import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 export type ConnectionEnv = InsecureEnv & {
   /** Name this deployment reports to MCP servers during `initialize`. */
   MCP_CLIENT_NAME?: string;
+  /** `"true"` to offer authorization servers this Worker's client ID metadata document. */
+  MCP_CLIENT_METADATA_DOCUMENT?: string;
 };
 
 export type WithClientOptions = {
