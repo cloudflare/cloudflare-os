@@ -757,7 +757,9 @@ the gatekeeper's, and the recipe leaves both out. Its `apply` reads the record o
 reads mark it on and refuses a marked one before the provider is reached, since the provider may
 take a positional edit whose text no longer matches; it refuses with a plain error, which leaves
 the record pending, because the action set runs no `reject` for a terminal failure and the
-gatekeeper's own store would keep it. Where a record was built on the records before it, as an
+gatekeeper's own store would keep it. Leaving marked records out has a limit: an edit staged while
+a read marked the one before it folds alone on the next read, at an offset that counted the marked
+one's text. Where a record was built on the records before it, as an
 offset is counted past an earlier insert, the gatekeeper decides when it may apply: the Google
 Docs gatekeeper applies a document's edits in the order they were queued, pins each write to the
 revision it was built on, and marks a write so that a retry after a lost reply is not sent again.
