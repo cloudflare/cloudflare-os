@@ -13,7 +13,7 @@ export const ComposerDraftCopy = ({ draft }: { draft: DraftDocument }) => (
       // the draft is.
       <Fragment key={node.id}>
         <span className="composer-draft-caret" />
-        <span className="composer-draft-pill"><span><ComposerPill pill={node} /></span></span>
+        <span className="composer-draft-pill" data-draft-link={node.itemType === 'link' || undefined}><span><ComposerPill pill={node} /></span></span>
       </Fragment>
     )))}
     {/* The line a draft that ends in a new one has after it, which is otherwise not there. */}

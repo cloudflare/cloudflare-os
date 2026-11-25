@@ -1,7 +1,7 @@
 import { createReactItemDefinition } from '@gadgets/billow/react'
 import type { ComposerCommand } from './composerCommand'
 import type { ComposerConnection } from './ComposerConnectionLines'
-import { pillLabel, pillText, type DraftFormat, type DraftRegistry } from './composerDraft'
+import { pillLabel, pillText, type DraftFormat, type DraftLink, type DraftRegistry } from './composerDraft'
 import { ComposerPill } from './ComposerPill'
 
 // What a pill was kept on the clipboard by, and what that stands for here: neither, where it is
@@ -48,5 +48,18 @@ export const createDraftRegistry = (find: {
     getLabel: (data) => pillLabel({ itemType: 'connection', data }),
     serialize: ({ key }) => ({ key }),
     deserialize: (value) => known(find.connection(keyOf(value))),
+  }),
+  // Had back from the clipboard wherever it is pasted, as it is the link it says.
+  link: createReactItemDefinition<DraftLink, DraftLink>({
+    // Marked, as it is laid out among the words rather than with the pills at the start.
+    render: (data) => <span data-draft-link className="contents"><ComposerPill pill={{ itemType: 'link', data }} /></span>,
+    toPlainText: (data) => pillText({ itemType: 'link', data }),
+    getLabel: (data) => pillLabel({ itemType: 'link', data }),
+    serialize: ({ url }) => ({ url }),
+    deserialize: (value) => {
+      const url = (value as { url?: unknown } | null)?.url
+      if (typeof url !== 'string' || !url.startsWith('https://')) throw new TypeError('Not a link')
+      return { url }
+    },
   }),
 })

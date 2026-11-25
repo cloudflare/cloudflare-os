@@ -35,7 +35,7 @@ export const MessageBlocksPreview = () => {
 
   return (
     <>
-      <Section title="UserMessage (plain, a long one cut short with more, a reply, a short reply to a long message, mentions, slash command, attachments, a Word document, deck and workbook drawn on their tiles once fetched, attachments alone, another sender, not read yet)">
+      <Section title="UserMessage (plain, a long one cut short with more, a link as a pill of its site, a reply, a short reply to a long message, mentions, slash command, attachments, a Word document, deck and workbook drawn on their tiles once fetched, attachments alone, another sender, not read yet)">
         <Column>
           <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} onReply={() => say('reply')} />
           <UserMessage
@@ -45,6 +45,7 @@ export const MessageBlocksPreview = () => {
               { type: 'text', text: ' We agreed that the onboarding flow comes first: new workspaces should be set up in under five minutes, which means the template picker has to load instantly and the first chat should already know what the workspace is for. After that, the agents page needs a proper empty state and a way to set one up without asking in a chat. Billing comes third: the usage page is confusing, people cannot tell what a run costs, and the credits warning arrives too late. We also talked about the mobile layout, which breaks below 400px on the settings pages, and about the export button, which half the team could not find. Finally, the support rota for launch week still has gaps on Thursday and Friday, and someone needs to own the status page while the release goes out.' },
             ]}
           />
+          <UserMessage parts={[{ type: 'text', text: 'Compare https://www.cloudflare.com/plans/ with what we pay now.' }]} />
           <UserMessage parts={[{ type: 'text', text: 'Make it twenty-four, and keep the weekly split.' }]} quote="The chart now covers 12 weeks" />
           <UserMessage
             parts={[{ type: 'text', text: 'Yes' }]}

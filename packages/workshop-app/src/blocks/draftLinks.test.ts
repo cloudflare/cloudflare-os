@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { linkEndedAt, linksIn } from './draftLinks'
+import { linkEndedAt, linksIn, splitLinks } from './draftLinks'
 
 describe('linksIn', () => {
   it('finds each link once, without what ends it in prose', () => {
@@ -23,5 +23,12 @@ describe('linkEndedAt', () => {
     expect(typed('https://a.example/x and ')).toBeUndefined()
     expect(typed('https:// ')).toBeUndefined()
     expect(linkEndedAt('https://a.example/x  more', 20)).toBe('https://a.example/x')
+  })
+})
+
+describe('splitLinks', () => {
+  it('is the words with each link apart from them, in order', () => {
+    expect(splitLinks('see https://www.google.com, then https://a.example/x')).toEqual([{ text: 'see ' }, { url: 'https://www.google.com' }, { text: ', then ' }, { url: 'https://a.example/x' }])
+    expect(splitLinks('no links here')).toEqual([{ text: 'no links here' }])
   })
 })

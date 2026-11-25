@@ -82,6 +82,13 @@
   vertical-align: top;
 }
 
+/* A link's pill is among the words, which have spaces of their own: room after it would look like
+   one that is not there. */
+.composer-draft > [data-billow-item]:has([data-draft-link]),
+.composer-draft-pill[data-draft-link] {
+  margin-inline-end: 0;
+}
+
 /* The room the editor keeps before a pill for a cursor, in the copies. */
 .composer-draft-caret {
   display: inline-block;

@@ -530,7 +530,13 @@ draft from outside it (the + menu, a link made a connection, the format its keep
 with) goes through `change`, as a browser gives an editor the focus whenever its cursor is placed,
 so the focus is handed back unless the draft is where to carry on. A link in the draft is still a
 line over it while it waits on something (`ComposerConnectionLines`), as a pill has nothing to
-press in it, and is a pill with the others once it is made, the link gone from the words. Why a draft cannot go as it is
+press in it, and is a pill with the others once it is made, the link gone from the words. Until
+then, and for good where no service knows it, a link written in the draft (pasted, or typed and
+ended with a space or a new line) is a pill of its site where it was written: an item among the
+words (`link` in the registry), which `composerDraft.ts` reads as one character wherever it counts
+places in the words and as the link wherever it says what is sent, so the message is the link as
+written, with a space after it where what follows would otherwise run on into it, as the pill is
+drawn apart from it. A sent message draws each link in its words as the same pill (`splitLinks`). Why a draft cannot go as it is
 (files or connections with a skill, which goes alone) is a line over it (`ComposerNote`). A pill
 is 21px, in the middle of its line, and a person's message is drawn on 23px lines, with pills or
 without, which leave room between pills on lines that follow. Pointed at, a pill has a card over it of what it names (`components/ChipTooltip`:

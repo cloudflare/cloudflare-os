@@ -5,6 +5,8 @@ import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { CommandIcon } from './CommandIcon'
 import { commandTitle } from './composerCommand'
+import { linkSite } from './composerDraft'
+import { splitLinks } from './draftLinks'
 import { MessageAttachment } from './MessageAttachment'
 import { clampParts } from './clampParts'
 import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
@@ -59,16 +61,26 @@ const siteOf = (url: string | undefined) => {
   }
 }
 
+// A stretch of the message as it is drawn: a link written in its words is one of its own.
+type ShownPart = UserMessagePart | { type: 'link'; url: string }
+
+// The message with each link in its words a part of its own, which is a pill.
+const withLinks = (parts: readonly UserMessagePart[]): ShownPart[] =>
+  parts.flatMap((part) => (part.type === 'text' ? splitLinks(part.text).map((piece): ShownPart => ('url' in piece ? { type: 'link', url: piece.url } : { type: 'text', text: piece.text })) : [part]))
+
 // A chip's card says only what is not on the chip: what the message carries of what it mentions
 // (what a connection holds, and where it is), and what whoever has the chat knows of it.
-const Part = ({ part, describe }: { part: UserMessagePart; describe: UserMessageProps['describe'] }) => {
+const Part = ({ part, describe }: { part: ShownPart; describe: UserMessageProps['describe'] }) => {
   const known = (title: string) => () => {
-    const found = describe?.(part)
+    const found = part.type === 'link' ? undefined : describe?.(part)
     return found && { title, ...found }
   }
   switch (part.type) {
     case 'text':
       return part.text
+    case 'link':
+      // By its site, the whole of it in its card, as its pill in the draft was.
+      return <Chip icon={<Link04Icon aria-hidden="true" />} href={part.url} about={{ title: linkSite(part.url), description: part.url }}>{linkSite(part.url)}</Chip>
     case 'capsule':
       return <Chip icon={<Link04Icon aria-hidden="true" />} href={part.url} about={{ title: part.title, description: part.snippet?.trim() || undefined, facts: siteOf(part.url) }}>{part.title}</Chip>
     case 'format':
@@ -91,15 +103,17 @@ const LONG = 600
 
 /**
  * What a person sent: their words with what they mentioned as pills where the message names
- * them, the files they attached in a bubble of their own above, and ahead of the words, set apart
+ * them, and each link in them a pill of its site, the files they attached in a bubble of their own above, and ahead of the words, set apart
  * and quieter, the message they were replying to. The two bubbles join as a run does, and what can be done with the message is on
  * the last. One that runs long is cut short, with "more" right after what is left of it, which
  * shows the rest. Copied, it is what they wrote, whole, without the quote.
  */
 export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], describe, from, unread, onOpenAttachment, loadAttachment, joins, onReply, onMarkUnread, developerCopies, details }: UserMessageProps) => {
   const [whole, setWhole] = useState(false)
-  const head = whole ? undefined : clampParts(parts, LONG, (part) => written(part).length)
-  const shown = (head ?? parts).map((part, index) => <Part key={index} part={part} describe={describe} />)
+  const linked = withLinks(parts)
+  // A link's pill is as long as its site, which is what it shows.
+  const head = whole ? undefined : clampParts(linked, LONG, (part) => (part.type === 'link' ? linkSite(part.url).length : written(part).length))
+  const shown = (head ?? linked).map((part, index) => <Part key={index} part={part} describe={describe} />)
   const more = head && (
     <>
       …{' '}
@@ -160,7 +174,7 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], desc
             )}
             {/* On lines a little taller than a reply's, with or without pills, which leave room
                 between pills on lines that follow. */}
-            <div className={cn('leading-[23px]', parts.some(({ type }) => type !== 'text') && 'chips-on-dark')}>{shown}{more}</div>
+            <div className={cn('leading-[23px]', linked.some(({ type }) => type !== 'text') && 'chips-on-dark')}>{shown}{more}</div>
           </MessageBubble>
         )}
       </div>

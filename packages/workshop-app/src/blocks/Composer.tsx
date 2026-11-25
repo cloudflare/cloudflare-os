@@ -12,8 +12,8 @@ import type { ComposerCommand } from './composerCommand'
 import { ComposerConnectionLines, type ComposerConnection } from './ComposerConnectionLines'
 import {
   appendedText, draftAfterSent, draftAllowed, draftCommand, draftConnections, draftFormat, draftIsEmpty, draftOf, draftPills,
-  draftWords, menuOpenerAt, pillLabel, withoutPill, withoutWordsAt, withPill, withPillForWords, wordsAround, type DraftChange,
-  type DraftDocument, type DraftFormat, type DraftPill, type DraftRegistry, type NewDraftPill,
+  draftWords, menuOpenerAt, pillLabel, withoutPill, withoutWordsAt, withLinkForWords, withPill, withPillForWords, wordsAround, type DraftChange,
+  type DraftDocument, type DraftFormat, type DraftLinkPill, type DraftPill, type DraftRegistry, type NewDraftPill,
 } from './composerDraft'
 import { ComposerDraftCopy } from './ComposerDraftCopy'
 import { createDraftRegistry } from './composerDraftRegistry'
@@ -269,6 +269,18 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     if (at.focus < start) field.setSelection({ anchor: start, focus: start })
   }
 
+  // Links just written in the draft are pills where they were written, each a change to undo on its
+  // own; then whoever can tells what they are, which may make one a connection.
+  const foundLinks = (urls: string[]) => {
+    change(false, (field) => {
+      for (const url of urls) {
+        const written = withLinkForWords(field.getDocument(), asPill({ itemType: 'link', data: { url } }) as DraftLinkPill)
+        if (written) apply(field, written)
+      }
+    })
+    links?.onFound(urls)
+  }
+
   // Adds words to the end of the draft, as a paragraph of their own.
   const append = (added: string) => change(true, (field) => {
     const { range, replacement } = appendedText(field.getDocument(), added)
@@ -401,9 +413,9 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     }
     // A link written out by hand is one once a space or a new line ends it; one pasted is told
     // of as it is pasted, and one had back by undoing is not written again.
-    const link = links && grew > 0 && key !== 'paste' && key !== 'shortcut' ? linkEndedAt(text, offset) : undefined
-    // Once the draft has settled on the change, as what the link is made may change it again.
-    if (link) queueMicrotask(() => links?.onFound([link]))
+    const link = grew > 0 && key !== 'paste' && key !== 'shortcut' ? linkEndedAt(text, offset) : undefined
+    // Once the draft has settled on the change, as what the link is made changes it again.
+    if (link) queueMicrotask(() => foundLinks([link]))
   }
 
   // The message went, so its draft is done with: unless stopping the agent has put what was
@@ -584,8 +596,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
                   return addDraftFiles(pasted.files)
                 }
                 // Pasted as it is; whoever can tells what its links are, once they are in the draft.
-                const found = links && linksIn(pasted.getData('text/plain'))
-                if (found?.length) queueMicrotask(() => links?.onFound(found))
+                const found = linksIn(pasted.getData('text/plain'))
+                if (found.length) queueMicrotask(() => foundLinks(found))
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && reply && !sending) reply.onCancel()

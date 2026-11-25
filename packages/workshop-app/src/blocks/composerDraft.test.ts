@@ -3,7 +3,7 @@ import type { ComposerCommand } from './composerCommand'
 import type { ComposerConnection } from './ComposerConnectionLines'
 import {
   appendedText, draftAfterSent, draftAllowed, draftCommand, draftConnections, draftFormat, draftOf, draftPills, draftWords, menuOpenerAt, withoutPill,
-  withoutWordsAt, withPill, withPillForWords, wordsAround, type DraftDocument, type DraftFormat, type DraftPill,
+  withLinkForWords, withoutWordsAt, withPill, withPillForWords, wordsAround, type DraftDocument, type DraftFormat, type DraftLinkPill, type DraftPill,
 } from './composerDraft'
 
 const brief: ComposerCommand = { key: 'brief', name: 'meeting-brief', title: 'Meeting Brief', description: 'Before a meeting.', kind: 'skill' }
@@ -14,6 +14,7 @@ const document: DraftFormat = { noun: 'Document', icon: 'fileText' }
 const command = (data: ComposerCommand, id = `command-${data.key}`): DraftPill => ({ type: 'item', id, itemType: 'command', data })
 const connection = (data: ComposerConnection, id = `connection-${data.key}`): DraftPill => ({ type: 'item', id, itemType: 'connection', data })
 const format = (data: DraftFormat, id = 'format'): DraftPill => ({ type: 'item', id, itemType: 'format', data })
+const linkPill = (url: string, id = `link-${url}`): DraftLinkPill => ({ type: 'item', id, itemType: 'link', data: { url } })
 const at = (position: number) => ({ anchor: position, focus: position })
 
 describe('what a draft holds', () => {
@@ -206,5 +207,51 @@ describe('appendedText', () => {
     expect(appendedText([], 'the logs')).toEqual({ range: at(0), replacement: ['the logs'] })
     expect(appendedText(['  '], 'the logs')).toEqual({ range: { anchor: 0, focus: 2 }, replacement: ['the logs'] })
     expect(appendedText([connection(plan)], 'the logs')).toEqual({ range: at(1), replacement: ['the logs'] })
+  })
+})
+
+describe('links among the words', () => {
+  const site = linkPill('https://www.google.com')
+  const doc = linkPill('https://docs.google.com/document/d/q3/edit')
+
+  it('are a pill where the link was written, with the cursor kept after it', () => {
+    const draft: DraftDocument = [command(brief), 'see https://www.google.com and more']
+    const change = withLinkForWords(draft, site)!
+    expect(change.draft).toEqual([command(brief), 'see ', site, ' and more'])
+    expect(change.move(1 + 'see https://www.google.com '.length)).toBe(1 + 'see '.length + 2)
+    expect(change.move(3)).toBe(3)
+    expect(withLinkForWords(['see https://www.google.com/maps'], site)).toBeUndefined()
+  })
+
+  it('have a space after them where they end the words, with the cursor after it, as one pasted at the end does', () => {
+    const change = withLinkForWords(['see https://www.google.com'], site)!
+    expect(change.draft).toEqual(['see ', site, ' '])
+    expect(change.move('see https://www.google.com'.length)).toBe('see '.length + 2)
+  })
+
+  it('are sent apart from a word written straight after them, as they are drawn', () => {
+    expect(draftWords(['what is ', site, 'this'])).toBe('what is https://www.google.com this')
+    expect(draftWords([site, doc])).toBe('https://www.google.com https://docs.google.com/document/d/q3/edit')
+    expect(draftWords(['see ', site, ', then ', doc, '.'])).toBe('see https://www.google.com, then https://docs.google.com/document/d/q3/edit.')
+  })
+
+  it('go with the words as they were written, and do not count as the pills at the start', () => {
+    const draft: DraftDocument = [connection(plan), 'see ', site, ' and ', doc]
+    expect(draftWords(draft)).toBe('see https://www.google.com and https://docs.google.com/document/d/q3/edit')
+    expect(draftPills(draft)).toEqual([connection(plan)])
+    expect(draftAllowed(draft)).toBe(true)
+    expect(draftAllowed([site, connection(plan)])).toBe(false)
+    expect(wordsAround(draft, 4)).toEqual({ text: 'see \uFFFC and \uFFFC', offset: 3 })
+  })
+
+  it('stay where they are as pills come and go, and as words are cut round them', () => {
+    const draft: DraftDocument = ['see ', site, ' and ', doc, ' /']
+    expect(withPill(draft, command(brief)).draft).toEqual([command(brief), 'see ', site, ' and ', doc, ' /'])
+    expect(withoutWordsAt(draft, 12, '/')?.draft).toEqual(['see ', site, ' and ', doc, ' '])
+  })
+
+  it('give way to the connection one is made, which joins the pills at the start', () => {
+    const draft: DraftDocument = ['see ', site, ' and ', doc, ' today']
+    expect(withPillForWords(draft, connection(plan), doc.data.url)?.draft).toEqual([connection(plan), 'see ', site, ' and today'])
   })
 })
