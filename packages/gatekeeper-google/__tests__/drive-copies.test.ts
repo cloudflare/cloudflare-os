@@ -3,11 +3,13 @@ import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   APPROVAL_READ_MAX_MS, COMMENT_WRITE_MAX_MS, COPY_TOKEN_PROPERTY, CONVERTED_FROM_PROPERTY,
-  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, SOURCE_MODIFIED_PROPERTY, type DriveScopeNode,
+  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, SAVED_PROPERTY, SOURCE_MODIFIED_PROPERTY,
+  UPLOAD_TOKEN_PROPERTY, type DriveScopeNode,
 } from "../src/drive-api";
+import { pendingFile, pendingFilesInto, waitingFile } from "../src/drive-actions";
 import {
-  DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, pendingActionId, pendingCopiesInto, pendingCopy,
-  planCopy, waitingNativeCopy, type DriveCopiesHost, type DriveCopyAction, type DriveCopyActions,
+  DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, DRIVE_EXPORT_COPIES, pendingActionId, planCopy,
+  type DriveCopiesHost, type DriveCopyAction, type DriveCopyActions,
 } from "../src/drive-copies";
 import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
@@ -47,7 +49,7 @@ function folder(id: string, parent: string): DriveScopeNode {
 
 /** A live file the account can copy, as a scope proof reads it. */
 function file(id: string, parent: string, mimeType = "application/pdf"): DriveScopeNode {
-  return { id, mimeType, parents: [parent], trashed: false, canCopy: true };
+  return { id, mimeType, parents: [parent], trashed: false, canCopy: true, canDownload: true };
 }
 
 /** Folder `R` holds folder `A`, which holds folder `B` and file `F`, a .docx file; `X` is elsewhere. */
@@ -79,6 +81,22 @@ function nativeIntoB(
     toFolderId: "B", toName: "Archive", queuedAt: "2026-05-01T10:00:00.000Z", token: "t0k3n",
     convertTo: "document", ...overrides,
   };
+}
+
+/** An export of `F`, a Google Doc, to PDF, uploaded into `B` under the ID reserved for it. */
+function exportIntoB(
+  overrides: Partial<DriveCopyActions["exportCopy"]> = {},
+): DriveCopyActions["exportCopy"] {
+  return {
+    fileId: "F", fileName: "Notes", name: "Notes.pdf", mimeType: "application/pdf",
+    toFolderId: "B", toName: "Archive", queuedAt: "2026-05-01T10:00:00.000Z", copyId: "E",
+    format: "pdf", ...overrides,
+  };
+}
+
+/** The text of a stream, read to its end. */
+async function text(stream: ReadableStream<Uint8Array>): Promise<string> {
+  return new Response(stream).text();
 }
 
 /** Drive's answer to a send whose outcome it leaves open. */
@@ -133,6 +151,8 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
   /** What Drive stops showing the account. */
   let hidden = new Set<string>();
   let made = new Map<number, string>();
+  /** The bytes each upload sent. */
+  let uploaded: string[] = [];
   let described: ActionDescription | undefined;
   let nextNative = 1;
   /** What Drive does with a copy: a new file in the folder named. */
@@ -158,11 +178,22 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
     swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
     copyFile: vi.fn<DriveApi["copyFile"]>(copy),
-    findCopy: vi.fn<DriveApi["findCopy"]>(async () => undefined),
+    findByToken: vi.fn<DriveApi["findByToken"]>(async () => undefined),
     // What the scope proof reads of the file, as Drive answers both from the same file.
     getConversionSource: vi.fn<DriveApi["getConversionSource"]>(async id =>
       ({ id, name: "Plan.docx", mimeType: nodes[id]?.mimeType ?? "", size: "1000" })),
     getMaxImportSize: vi.fn<DriveApi["getMaxImportSize"]>(async () => 10 * 1024 * 1024),
+    openExport: vi.fn<DriveApi["openExport"]>(async (fileId, mimeType) =>
+      new Response(`${fileId} as ${mimeType}`).body!),
+    /** What Drive does with an upload: a new file in the folder named, made once per ID. */
+    upload: vi.fn<DriveApi["upload"]>(async (content, contentType, target) => {
+      uploaded.push(await text(content));
+      if (!("create" in target) || target.create.id === undefined) throw new Error("Unexpected upload");
+      let { id, parents } = target.create;
+      if (nodes[id]) return undefined;
+      nodes[id] = file(id, parents[0] ?? "", contentType);
+      return { id, mimeType: contentType };
+    }),
   };
   let host: DriveCopiesHost = {
     api,
@@ -177,7 +208,7 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
       put: (id, attempt) => { attempts.set(id, attempt); },
       delete: id => { attempts.delete(id); },
     },
-    madeCopies: { put: (id, fileId) => { made.set(id, fileId); } },
+    madeFiles: { put: (id, fileId) => { made.set(id, fileId); } },
   };
   let journal = new ActionJournal<DriveCopyAction>(new FakeKv(), { namespace: "drive" });
   let actions = COPY_ACTIONS.bind(journal, host);
@@ -187,7 +218,7 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
   let submit = <K extends keyof DriveCopyActions>(kind: K, payload: DriveCopyActions[K]) =>
     actions.submit(queue, kind, payload);
   return {
-    api, host, journal, actions, attempts, made, nodes, hidden, submit, copy,
+    api, host, journal, actions, attempts, made, nodes, hidden, submit, copy, uploaded,
     async card<K extends keyof DriveCopyActions>(
       kind: K, payload: DriveCopyActions[K],
     ): Promise<ActionDescription> {
@@ -209,7 +240,7 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
 }
 
 describe("Drive copy verdict and approval card", () => {
-  it("declares one auto-approvable kind; an ordinary copy goes on, a native one awaits", async () => {
+  it("declares two auto-approvable kinds; a copy under a reserved ID goes on, a native one awaits", async () => {
     let ordinary = harness();
     let card = await ordinary.card("copyFile", intoB());
     expect(card).toMatchObject({
@@ -217,10 +248,16 @@ describe("Drive copy verdict and approval card", () => {
     });
     // An ordinary copy is shown while it waits, so the call does not wait for its decision.
     expect(card.awaitDecision).toBeUndefined();
-    expect(ordinary.actions.autoApprovableKinds()).toEqual([DRIVE_COPIES]);
+    // Exports are a kind of their own, so a rule a user made for copies does not cover them.
+    expect(ordinary.actions.autoApprovableKinds()).toEqual([DRIVE_COPIES, DRIVE_EXPORT_COPIES]);
     expect(await harness().card("copyNative", nativeIntoB())).toMatchObject({
       autoApprovable: true, actionKind: DRIVE_COPIES, awaitDecision: true,
     });
+    let exported = await harness().card("exportCopy", exportIntoB());
+    expect(exported).toMatchObject({
+      autoApprovable: true, actionKind: DRIVE_EXPORT_COPIES, implementsRevert: false,
+    });
+    expect(exported.awaitDecision).toBeUndefined();
   });
 
   it("names the file, the folder, the copy and what the copy can be opened by", async () => {
@@ -252,6 +289,26 @@ describe("Drive copy verdict and approval card", () => {
       { label: "To folder", kind: "inline", value: "B" },
       { label: "Converted to", kind: "inline", value: "Google Doc" },
     ]);
+  });
+
+  it("says an exported copy is Google's export of the file as it is when approved", async () => {
+    let card = await harness().card("exportCopy", exportIntoB());
+    expect(card.description.split("\n\n")).toEqual([
+      "Copy Google Drive file `F` into folder `B`, as the connected account.",
+      "The copy is the file exported to pdf: Google's own conversion of the file as it is when " +
+        "this is approved.",
+      TAKES_SHARING,
+    ]);
+    expect(card.fields).toEqual([
+      { label: "File", kind: "inline", value: "F" },
+      { label: "File name", kind: "inline", value: "Notes" },
+      { label: "Copy name", kind: "inline", value: "Notes.pdf" },
+      { label: "To folder", kind: "inline", value: "B" },
+      { label: "To folder name", kind: "inline", value: "Archive" },
+      { label: "Exported to", kind: "inline", value: "pdf" },
+    ]);
+    // The bytes are Google's own, made from a file the approver can open, so the card is whole.
+    expect(card.descriptionIsComplete).toBe(true);
   });
 });
 
@@ -337,12 +394,13 @@ describe("Drive copy sends", () => {
     let id = await submit("copyNative", nativeIntoB());
     expect(await apply(id)).toBeNull();
     // Drive patches a copy's app properties over its file's: a conversion's markers would offer
-    // the copy for reuse as that conversion.
+    // the copy for reuse as that conversion, a converted upload's token would have that upload's
+    // look take the copy for the file it made, and a save's marker would let a save replace it.
     expect(api.copyFile).toHaveBeenCalledWith("F", {
       name: "Plan", parents: ["B"], mimeType: GOOGLE_DOC_MIME_TYPE,
       appProperties: {
         [COPY_TOKEN_PROPERTY]: "t0k3n", [CONVERTED_FROM_PROPERTY]: null,
-        [SOURCE_MODIFIED_PROPERTY]: null,
+        [SOURCE_MODIFIED_PROPERTY]: null, [UPLOAD_TOKEN_PROPERTY]: null, [SAVED_PROPERTY]: null,
       },
     });
     expect(made.get(id)).toBe("N1");
@@ -362,10 +420,10 @@ describe("Drive copy sends", () => {
     found.copyThenAnswer(unconfirmed());
     let id = await found.submit("copyNative", nativeIntoB({ driveId: "D1" }));
     expect(await found.apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
-    found.api.findCopy.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
+    found.api.findByToken.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
     expect(await found.apply(id)).toBeNull();
-    expect(found.api.findCopy)
-      .toHaveBeenCalledWith("t0k3n", { kind: "drive", driveId: "D1" }, expect.any(AbortSignal));
+    expect(found.api.findByToken).toHaveBeenCalledWith(
+      COPY_TOKEN_PROPERTY, "t0k3n", { kind: "drive", driveId: "D1" }, expect.any(AbortSignal));
     expect(found.api.copyFile).toHaveBeenCalledTimes(1);
     expect(found.made.get(id)).toBe("N1");
 
@@ -378,7 +436,8 @@ describe("Drive copy sends", () => {
     expect(lost.api.copyFile).toHaveBeenCalledTimes(1);
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
-    expect(lost.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "user" }, expect.any(AbortSignal));
+    expect(lost.api.findByToken).toHaveBeenCalledWith(
+      COPY_TOKEN_PROPERTY, "t0k3n", { kind: "user" }, expect.any(AbortSignal));
   });
 
   // An approval sends under the one token it verified the account with, which Drive may refuse
@@ -392,7 +451,7 @@ describe("Drive copy sends", () => {
     expect(attempts.has(id)).toBe(false);
 
     expect(await apply(id)).toBeNull();
-    expect(api.findCopy).not.toHaveBeenCalled();
+    expect(api.findByToken).not.toHaveBeenCalled();
     expect(api.copyFile).toHaveBeenCalledTimes(2);
     expect(made.get(id)).toBe("N1");
   });
@@ -410,7 +469,7 @@ describe("Drive copy sends", () => {
     found.api.copyFile.mockRejectedValueOnce(unconfirmed());
     let again = await found.submit("copyNative", nativeIntoB());
     expect(await found.apply(again)).toBe(UNCONFIRMED_NATIVE_COPY);
-    found.api.findCopy.mockResolvedValue({ id: "N1", mimeType: DOCX });
+    found.api.findByToken.mockResolvedValue({ id: "N1", mimeType: DOCX });
     expect(await found.apply(again)).toBe(DIFFERENT_TYPE);
     expect(found.journal.get(again)?.state).toBe("failed");
     expect(found.made.size).toBe(0);
@@ -432,7 +491,7 @@ describe("Drive copy sends", () => {
     expect(journal.get(id)?.state).toBe("pending");
 
     expect(await apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
-    expect(api.findCopy).toHaveBeenCalledTimes(1);
+    expect(api.findByToken).toHaveBeenCalledTimes(1);
     expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 
@@ -446,7 +505,7 @@ describe("Drive copy sends", () => {
     let { timeout, pass } = deadlines();
     // Drive answers the search's first page, and never its second.
     let { drive, asked } = stallingDrive(Response.json({ files: [], nextPageToken: "p2" }));
-    api.findCopy.mockImplementation((...args) => drive.findCopy(...args));
+    api.findByToken.mockImplementation((...args) => drive.findByToken(...args));
 
     let outcome: string | null | undefined;
     void apply(id).then(message => { outcome = message; });
@@ -490,6 +549,45 @@ describe("Drive copy sends", () => {
     nodes.B = folder("B", "X");
     expect(await apply(id)).toBe(OUT_OF_SCOPE);
     expect(posts).toBe(1);
+  });
+
+  it("uploads an export of the file under the ID reserved for it", async () => {
+    let { api, nodes, uploaded, submit, apply } = harness();
+    nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
+    let id = await submit("exportCopy", exportIntoB());
+    expect(await apply(id)).toBeNull();
+    expect(api.openExport).toHaveBeenCalledWith("F", "application/pdf");
+    expect(api.upload).toHaveBeenCalledWith(
+      expect.any(ReadableStream), "application/pdf",
+      { create: { id: "E", name: "Notes.pdf", parents: ["B"] } });
+    expect(uploaded).toEqual(["F as application/pdf"]);
+    expect(nodes.E?.parents).toEqual(["B"]);
+  });
+
+  it("finds an exported copy an unanswered upload made, and never uploads it again", async () => {
+    let { api, attempts, nodes, submit, apply } = harness();
+    nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
+    let id = await submit("exportCopy", exportIntoB());
+    let upload = api.upload.getMockImplementation()!;
+    api.upload.mockImplementationOnce(async (...args) => {
+      await upload(...args);
+      throw unconfirmed();
+    });
+    expect(await apply(id)).toBe(UNCONFIRMED_COPY);
+    expect(attempts.has(id)).toBe(true);
+    expect(await apply(id)).toBeNull();
+    expect(api.upload).toHaveBeenCalledTimes(1);
+    expect(api.openExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an exported copy of a file the account can no longer download", async () => {
+    let { api, journal, nodes, submit, apply } = harness();
+    nodes.F = { ...file("F", "A", GOOGLE_DOC_MIME_TYPE), canDownload: false };
+    let id = await submit("exportCopy", exportIntoB());
+    expect(await apply(id)).toBe(
+      "The connected account can no longer download that file, so it was not exported.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(api.openExport).not.toHaveBeenCalled();
   });
 });
 
@@ -644,6 +742,23 @@ describe("planCopy", () => {
     });
   });
 
+  it("exports a native file, named with the format as its extension", () => {
+    let doc = { name: "Notes", mimeType: GOOGLE_DOC_MIME_TYPE, canDownload: true as const };
+    expect(planCopy(doc, { convertTo: "pdf" })).toEqual(
+      { kind: "exportCopy", mimeType: "application/pdf", name: "Notes.pdf", format: "pdf" });
+    expect(planCopy({ ...doc, name: "Notes.md" }, { convertTo: "md" }))
+      .toMatchObject({ name: "Notes.md", mimeType: "text/markdown" });
+    expect(planCopy(doc, { convertTo: "docx", name: "Mine.docx" })).toMatchObject({ name: "Mine.docx" });
+    let { canDownload: _canDownload, ...locked } = doc;
+    expect(() => planCopy(locked, { convertTo: "pdf" }))
+      .toThrow("Google Drive does not let the connected account download this file");
+    expect(() => planCopy(doc, { convertTo: "xlsx" }))
+      .toThrow("A Google Doc does not export to xlsx");
+    expect(() => planCopy({ name: "x.pdf", mimeType: "application/pdf", canDownload: true }, {
+      convertTo: "txt",
+    })).toThrow("Only Google Docs, Sheets and Slides files are exported.");
+  });
+
   it("refuses what it cannot copy or convert", () => {
     expect(() => planCopy({ name: "x", mimeType: "application/pdf" }, { name: " " }))
       .toThrow("name is empty.");
@@ -651,9 +766,6 @@ describe("planCopy", () => {
       .toThrow("Only a .docx, .doc, .odt or .rtf file converts to a Google Doc.");
     expect(() => planCopy({ name: "x", mimeType: GOOGLE_DOC_MIME_TYPE }, { convertTo: "document" }))
       .toThrow("That file is already a Google Doc.");
-    expect(() => planCopy(
-      { name: "x", mimeType: DOCX }, { convertTo: "pdf" as unknown as "document" }))
-      .toThrow('convertTo is "document", "spreadsheet" or "presentation".');
     expect(() => planCopy({ name: "x", mimeType: "application/vnd.google-apps.form" }, {}))
       .toThrow("only Google Docs, Sheets and Slides files can be copied here.");
   });
@@ -666,26 +778,37 @@ describe("Drive copies while they wait", () => {
     entry(1, { kind: "copyFile", payload: intoB() }),
     entry(2, { kind: "copyNative", payload: nativeIntoB() }),
     entry(3, { kind: "copyFile", payload: intoB({ copyId: "D", toFolderId: "X" }) }),
+    entry(4, { kind: "exportCopy", payload: exportIntoB({ folderIds: ["R", "A"] }) }),
   ];
 
   it("shows an ordinary copy by its reserved ID, reporting the file it is a copy of", () => {
-    expect(pendingCopy("C", pending)).toEqual({
+    expect(pendingFile("C", pending)).toEqual({
       entry: {
         id: "C", name: "Copy of Budget.docx", mimeType: DOCX, isFolder: false,
         modifiedTime: new Date("2026-05-01T10:00:00.000Z"), size: 1234, parentId: "B",
         pending: true,
       },
-      sourceId: "F",
+      content: { kind: "copy", sourceId: "F" },
     });
-    expect(pendingCopy("F", pending)).toBeUndefined();
-    expect(pendingCopiesInto("B", pending).map(({ entry }) => entry.id)).toEqual(["C"]);
-    expect(pendingCopiesInto("A", pending)).toEqual([]);
+    expect(pendingFile("F", pending)).toBeUndefined();
+    expect(pendingFilesInto("B", pending).map(({ entry }) => entry.id)).toEqual(["C", "E"]);
+    expect(pendingFilesInto("A", pending)).toEqual([]);
+  });
+
+  it("shows an exported copy by its reserved ID, with no size until Google exports it", () => {
+    expect(pendingFile("E", pending)).toEqual({
+      entry: {
+        id: "E", name: "Notes.pdf", mimeType: "application/pdf", isFolder: false,
+        modifiedTime: new Date("2026-05-01T10:00:00.000Z"), parentId: "B", pending: true,
+      },
+      content: { kind: "export", sourceId: "F", format: "pdf", folderIds: ["R", "A"] },
+    });
   });
 
   it("shows a native copy only by its pending ID", () => {
-    expect(waitingNativeCopy(2, pending)?.entry).toMatchObject(
+    expect(waitingFile(2, pending)?.entry).toMatchObject(
       { id: "pending:2", mimeType: GOOGLE_DOC_MIME_TYPE, pending: true });
-    expect(waitingNativeCopy(1, pending)).toBeUndefined();
+    expect(waitingFile(1, pending)).toBeUndefined();
     expect(pendingActionId("pending:2")).toBe(2);
     expect(pendingActionId("pending:x")).toBeUndefined();
     expect(pendingActionId("C")).toBeUndefined();

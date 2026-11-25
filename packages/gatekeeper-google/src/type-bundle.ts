@@ -16,7 +16,7 @@ export const DRIVE_READ_TYPES_MODULE_PREFIX =
 export const DRIVE_TYPES_MODULE_PREFIX =
   'import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";\n' +
   "import type {\n" +
-  "  DriveEntry, GoogleDriveFolderReadSession, GoogleDriveReadSession,\n" +
+  "  DriveEntry, DriveExportFormat, GoogleDriveFolderReadSession, GoogleDriveReadSession,\n" +
   '} from "./drive-read-types";\n' +
   'import type { GoogleDocEditSession } from "./docs-types";\n' +
   'import type { GoogleSpreadsheetSession } from "./sheets-types";\n' +

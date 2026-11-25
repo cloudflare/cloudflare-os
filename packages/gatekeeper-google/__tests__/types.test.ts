@@ -754,7 +754,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
         "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
         "DriveShareRole",
         "DriveRole", "DriveGrantee", "DriveShareOptions", "DriveAccess", "DriveSharing",
-        "DriveNativeType", "DriveCopyOptions",
+        "DriveNativeType", "DriveCopyOptions", "DriveUploadOptions",
         "GoogleDriveSession", "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
     expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
@@ -926,6 +926,14 @@ async function use(): Promise<void> {
   const type: DriveNativeType = "presentation";
   const options: DriveCopyOptions = { convertTo: type };
   await folder.copyFile("file-1", options);
+  const exported: DriveEntry = await drive.copyFile("file-1", { convertTo: "pdf" });
+  await folder.copyFile("file-1", { convertTo: "xlsx", name: "Budget.xlsx" });
+  const uploaded: DriveEntry = await drive.uploadFile("notes.txt", "hi");
+  await drive.uploadFile("photo.png", new Uint8Array([1]), { folderId: "root", mimeType: "image/png" });
+  await folder.uploadFile("Plan.docx", new ReadableStream<Uint8Array>(), { convertTo: "document" });
+  await folder.uploadFile("notes.txt", "again", { folderId: "child-folder", overwrite: true });
+  const upload: DriveUploadOptions = { convertTo: "spreadsheet" };
+  void [exported, uploaded, upload];
 }
 // @ts-expect-error A single-file binding cannot copy its file.
 file.copyFile("file-1");
@@ -933,8 +941,14 @@ file.copyFile("file-1");
 readOnly.copyFile("file-1");
 // @ts-expect-error A read-only folder binding cannot copy.
 readOnlyFolder.copyFile("file-1");
-// @ts-expect-error A conversion is into a Google Doc, Sheet or Slides presentation only.
-drive.copyFile("file-1", { convertTo: "pdf" });
+// @ts-expect-error A copy converts into a native type or exports to a format exportFile() knows.
+drive.copyFile("file-1", { convertTo: "exe" });
+// @ts-expect-error A single-file binding cannot upload.
+file.uploadFile("notes.txt", "hi");
+// @ts-expect-error A read-only binding cannot upload.
+readOnly.uploadFile("notes.txt", "hi");
+// @ts-expect-error An upload converts only into a Google Doc, Sheet or Slides presentation.
+drive.uploadFile("notes.txt", "hi", { convertTo: "pdf" });
 `)).toEqual([]);
   });
 

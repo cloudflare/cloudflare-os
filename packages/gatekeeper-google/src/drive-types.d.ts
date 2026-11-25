@@ -1,6 +1,6 @@
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
 import type {
-  DriveEntry, GoogleDriveFolderReadSession, GoogleDriveReadSession,
+  DriveEntry, DriveExportFormat, GoogleDriveFolderReadSession, GoogleDriveReadSession,
 } from "./drive-read-types";
 import type { GoogleDocEditSession } from "./docs-types";
 import type { GoogleSpreadsheetSession } from "./sheets-types";
@@ -241,31 +241,69 @@ export interface DriveSharing {
   unshare(fileId: string, access: string | DriveGrantee): Promise<void>;
 }
 
-/** A Google-native type `copyFile()` converts an Office file to. */
+/** A Google-native type `copyFile()` and `uploadFile()` convert an Office file to. */
 export type DriveNativeType = "document" | "spreadsheet" | "presentation";
 
 /** Options for `copyFile()`. */
 export type DriveCopyOptions = {
   /**
-   * The copy's name. Defaults to "Copy of " and the file's name; for a file converted with
-   * `convertTo`, to the file's name without its extension.
+   * The copy's name. Defaults to "Copy of " and the file's name; for a file converted to a
+   * {@link DriveNativeType}, to the file's name without its extension; for an export, to the
+   * file's name followed by `.` and the format, unless it already ends so.
    */
   name?: string;
   /** The folder the copy goes into (see each session's `copyFile()`). */
   folderId?: string;
   /**
-   * Converts an Office file into a Google-native one: a .docx, .doc, .odt or .rtf file to a
-   * `"document"` (a Google Doc), an .xlsx, .xls, .xlsm or .ods file to a `"spreadsheet"` (a
-   * Google Sheet), a .pptx, .ppt or .odp file to a `"presentation"` (Google Slides). Omitted, the
+   * Converts the copy. A {@link DriveNativeType} converts an Office file into a Google-native one:
+   * a .docx, .doc, .odt or .rtf file to a `"document"` (a Google Doc), an .xlsx, .xls, .xlsm or
+   * .ods file to a `"spreadsheet"` (a Google Sheet), a .pptx, .ppt or .odp file to a
+   * `"presentation"` (Google Slides). A {@link DriveExportFormat} exports a Google Docs, Sheets or
+   * Slides file to that format, as `exportFile()` does, and the copy is that export: Google's own
+   * conversion of the file as it is when the user approves the copy, which fails then if the
+   * export is larger than the 10 MB Google exports. It fails for a file the connected account is
+   * not allowed to download. While such a copy waits it has no `size`, and `readFile()` of it
+   * fails: `exportFile(fileId, format)` reads the export of the file as it is now. Omitted, the
    * copy is of the same type as the file.
    */
+  convertTo?: DriveNativeType | DriveExportFormat;
+};
+
+/** Options for `uploadFile()`. */
+export type DriveUploadOptions = {
+  /** The folder the file goes into (see each session's `uploadFile()`). */
+  folderId?: string;
+  /**
+   * The file's MIME type. Defaults to the type its name's extension says, such as `text/plain`
+   * for `.txt`, `application/pdf` for `.pdf` or the Word type for `.docx`; for a name with no
+   * extension known here, to the replaced file's type when `overwrite` replaces a file, else to
+   * `text/plain` for a string and `application/octet-stream` otherwise. Google's own types are
+   * refused: upload an Office file with `convertTo` to make a Google Docs, Sheets or Slides file.
+   */
+  mimeType?: string;
+  /**
+   * Converts the upload into a Google-native file, as `copyFile()` converts a copy: a .docx, .doc,
+   * .odt or .rtf file to a `"document"`, an .xlsx, .xls, .xlsm or .ods file to a `"spreadsheet"`,
+   * a .pptx, .ppt or .odp file to a `"presentation"`, as the upload's MIME type says. Any other
+   * type fails, as do an empty file and one larger than Google converts into that type. The file
+   * is named without the Office extension.
+   */
   convertTo?: DriveNativeType;
+  /**
+   * Replaces the content of the one file already named `name` in the folder, rather than failing.
+   * That file keeps its ID, name and sharing, and its current version stays in its version
+   * history, kept for good, from which the user can restore it. Fails when more than one file
+   * there has that name, when that file is a folder, a shortcut or a Google Docs, Sheets, Slides
+   * or other Google file, when the connected account cannot edit it, and with `convertTo`. With no
+   * file of that name there, a new file is uploaded.
+   */
+  overwrite?: boolean;
 };
 
 /**
  * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
  * anywhere the connected account can reach in Google Drive, plus edits of Google Docs, Sheets and
- * Slides files, comment writes, sharing, moves and copies.
+ * Slides files, comment writes, sharing, moves, copies and uploads.
  */
 export interface GoogleDriveSession
     extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
@@ -336,6 +374,46 @@ export interface GoogleDriveSession
    * ID, while a `pending:<n>` ID names nothing once its copy is rejected.
    */
   copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;
+
+  /**
+   * Queue uploading a file named `name` into the folder `options.folderId` names, as the
+   * connected account, and return its entry, marked `pending`. That folder may be in any drive the
+   * connected account can add files to, and `root` names the top level of My Drive; it must be
+   * given. Fails for a folder in the trash, or one the connected account cannot add files to.
+   *
+   * `content` is the file's bytes: a string, uploaded as UTF-8, or a `Uint8Array`, each of at most
+   * 25 MB (26,214,400 bytes), or a `ReadableStream<Uint8Array>` of at most 100 MB (104,857,600
+   * bytes), which is read to its end before this returns. The bytes are kept until the user
+   * decides on the upload, then discarded; uploads waiting at once keep at most 1 GB between them,
+   * past which this fails until some are decided. With `convertTo`, it also fails past the size
+   * Google converts into that type.
+   *
+   * Fails when a file named `name` is already in the folder, unless `overwrite: true` is passed to
+   * replace that file's content; choose another name otherwise. Fails whatever `overwrite` is when
+   * a copy or an upload of that name is waiting to go into the folder. An upload also fails when
+   * it is approved if a file of that name has appeared in the folder since.
+   *
+   * A new file takes the sharing of the folder it goes into: everyone with access to that folder
+   * can open it.
+   *
+   * The file is made once the user approves it. One uploaded without `convertTo` has its own Drive
+   * ID from the start: while it waits, `getEntry()` returns its pending entry, `readFile()` reads
+   * the bytes given here, and `list()` with `directParentId` set to its folder shows it, on the
+   * listing's last page; a listing without `directParentId`, and `search()`, do not. Once made it
+   * is reached by that ID as any file is. A converted upload is returned with ID `pending:<n>`,
+   * which only `getEntry()` takes while it waits, returning the pending entry, and which names the
+   * file itself once it is made: `getEntry()` then returns it under its own ID, which every call
+   * takes. Every other call fails, given the ID of an upload that still waits. A replacement
+   * returns the replaced file's entry, marked `pending`, with the new content's size; until it is
+   * approved every read shows the file as it is, and it fails when approved if the file changed
+   * since. An upload the user rejects before it is sent is never made. One rejected after Google
+   * Drive left the outcome of its send open may have been made: one without `convertTo` is then
+   * reached by its ID if it was, and a `pending:<n>` ID names nothing either way.
+   */
+  uploadFile(
+    name: string, content: string | Uint8Array | ReadableStream<Uint8Array>,
+    options?: DriveUploadOptions,
+  ): Promise<DriveEntry>;
 }
 
 /**
@@ -370,9 +448,10 @@ export interface GoogleDriveFileSession
  * A folder binding with read and write access: navigation within the originally selected folder as
  * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Docs, Sheets and Slides
  * files among the positioned folder's direct children, comment writes on those children, sharing of them
- * and of the positioned folder itself, and moves and copies within the originally selected folder. Writes do
- * not follow shortcuts: a shortcut's target, and anything in a folder opened through one, can be
- * read but not edited, commented on, shared, listed for who it is shared with, moved or copied.
+ * and of the positioned folder itself, and moves, copies and uploads within the originally
+ * selected folder. Writes do not follow shortcuts: a shortcut's target, and anything in a folder
+ * opened through one, can be read but not edited, commented on, shared, listed for who it is
+ * shared with, moved, copied or uploaded into.
  */
 export interface GoogleDriveFolderSession
     extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
@@ -437,4 +516,21 @@ export interface GoogleDriveFolderSession
    * Otherwise as {@link GoogleDriveSession.copyFile}, except that `root` names nothing here.
    */
   copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;
+
+  /**
+   * Queue uploading a file named `name` into `options.folderId`, which is the positioned folder
+   * itself (the default), a live direct child folder of it, or `getScope().parentFolderId`: the
+   * folders `copyFile()` copies into. Fails while a folder on the way to the positioned folder, or
+   * the destination, has a move waiting.
+   *
+   * An upload that is shown while it waits is shown in the session of the folder it goes into:
+   * `getEntry()` and `readFile()` take it there, and `list()` there shows it on its last page;
+   * `search()` does not.
+   *
+   * Otherwise as {@link GoogleDriveSession.uploadFile}, except that `root` names nothing here.
+   */
+  uploadFile(
+    name: string, content: string | Uint8Array | ReadableStream<Uint8Array>,
+    options?: DriveUploadOptions,
+  ): Promise<DriveEntry>;
 }

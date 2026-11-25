@@ -61,7 +61,10 @@ function core(overrides: {
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
-    api: { listFiles, getFile, getScopeNodes, findShortcut, canComment, canShare, listComments },
+    api: {
+      listFiles, getFile, getScopeNodes, findShortcut, canComment, canShare, listComments,
+      findNamed: async () => [],
+    },
     scope: overrides.scope ?? { kind: "account" },
     access: overrides.access ?? "read",
     authorize: async (description: ObservationDescription) => {
@@ -714,6 +717,7 @@ describe("positioned Drive folder session", () => {
         canComment: overrides.canComment ?? (async () => true),
         canShare: overrides.canShare ?? (async () => true),
         listComments: overrides.listComments ?? (async () => ({ comments: [] })),
+        findNamed: async () => [],
       },
       location,
       access: overrides.access ?? "read",
@@ -929,6 +933,7 @@ describe("positioned Drive folder session", () => {
         canComment: async () => true,
         canShare: async () => true,
         listComments: async () => ({ comments: [] }),
+        findNamed: async () => [],
       },
       location: { folderIds: ["R"] },
       access: "read",

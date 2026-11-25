@@ -14,9 +14,9 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import type { Logger } from "@gadgets/observability/logger";
 import {
-  DriveApiDisabledError, DriveApiRequestError, driveWriteFailure, isInsufficientScope,
-  type DriveWriteFailure,
-  type DriveApi, type DriveScopeNode,
+  APPROVAL_READ_MAX_MS, DriveApiDisabledError, DriveApiRequestError, driveWriteFailure,
+  isInsufficientScope, type DriveWriteFailure, type DriveApi, type DriveCorpus, type DriveMadeFile,
+  type DriveScopeNode, type TokenProperty,
 } from "./drive-api";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
@@ -247,9 +247,16 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    * credentials the account holds at that moment.
    */
   actor(): Promise<DriveActor>;
-  /** Queues one write through `queue`, under `fence` when its definition is fenced. */
+  /**
+   * Queues one write through `queue`, under `fence` when its definition is fenced. Given `refuse`,
+   * the write is refused with its answer for the writes still waiting, asked while no other write
+   * can be queued through this queue, so none is queued through it between the answer and this
+   * write. A Doc, Sheet or Slides edit is queued apart, so one can still be.
+   */
   submit<K extends keyof M>(
-    queue: ActionSubmitter, kind: K, payload: M[K], fence?: ActionFence): Promise<number>;
+    queue: ActionSubmitter, kind: K, payload: M[K], fence?: ActionFence,
+    refuse?: (pending: readonly JournalEntry<TaggedAction<M>>[]) => string | undefined,
+  ): Promise<number>;
   /**
    * Runs `read` with the writes awaiting a decision, of every kind, while none is being applied
    * or rejected. These are what a read shows as if made.
@@ -273,10 +280,10 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    */
   queued(): readonly JournalEntry<TaggedAction<M>>[];
   /**
-   * The file native copy `actionId` made, once an approval has made it, read where the copy
-   * recorded it: what `pending:<n>` names from then on.
+   * The file native copy or converted upload `actionId` made, once an approval has made it, read
+   * where it was recorded: what `pending:<n>` names from then on.
    */
-  madeCopy(actionId: number): string | undefined;
+  madeFile(actionId: number): string | undefined;
 };
 
 /**
@@ -341,6 +348,22 @@ export async function requireWritable(host: Pick<DriveWritesHost, "writeRefusal"
   let refused = await host.writeRefusal();
   if (refused === undefined) return;
   throw isLiftable(refused) ? new Error(refused) : new ActionApplyError(refused);
+}
+
+/**
+ * The file made with `token` in app property `property`, as an approval's look searches `corpus`
+ * for it (see DriveApi.findByToken): for {@link APPROVAL_READ_MAX_MS} at most, every corpus and
+ * page told, since the approval holds the binding's decisions while it waits. A search Drive does
+ * not finish by then finds nothing, which, as when it finishes without finding it, proves nothing.
+ */
+export async function lookForToken(
+  api: Pick<DriveApi, "findByToken">, property: TokenProperty, token: string, corpus: DriveCorpus,
+): Promise<DriveMadeFile | undefined> {
+  let deadline = AbortSignal.timeout(APPROVAL_READ_MAX_MS);
+  return api.findByToken(property, token, corpus, deadline).catch((error: unknown) => {
+    if (deadline.aborted) return undefined;
+    throw error;
+  });
 }
 
 /** One kind of write, as {@link sendOnce} drives it. */

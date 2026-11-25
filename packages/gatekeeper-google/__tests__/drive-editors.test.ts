@@ -170,12 +170,14 @@ describe("Slides definitions reused through Drive", () => {
     let drive: DriveHost = {
       api: {} as DriveHost["api"], docs: {} as DriveHost["docs"], scope: () => ({ kind: "account" }),
       writeRefusal: async () => undefined, attempts: { get: () => undefined, put() {}, delete() {} },
-      madeCopies: { put() {} },
+      madeFiles: { put() {} }, uploads: { readStream: async () => { throw new Error("No upload here."); } },
       ...NO_SLIDES,
     };
     let actions = DRIVE_ACTIONS.bind(new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" }), drive);
     expect(actions.autoApprovableKinds()).toEqual([
       { tag: "driveComments", label: "Drive comments" }, { tag: "driveCopies", label: "Drive copies" },
+      { tag: "driveExportCopies", label: "Drive exported copies" },
+      { tag: "driveUploads", label: "Drive uploads" },
       ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
     ]);
   });

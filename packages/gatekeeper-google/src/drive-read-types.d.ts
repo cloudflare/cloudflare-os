@@ -99,8 +99,9 @@ export type DriveEntry = {
   /** Shortcut target metadata, present only for shortcuts. */
   shortcut?: DriveShortcut;
   /**
-   * A copy this binding queued that is still waiting for approval. Only a binding with read and
-   * write access shows one.
+   * A copy or an upload this binding queued that is still waiting for approval, or a file whose
+   * content an upload with `overwrite` replaces once approved. Only a binding with read and write
+   * access shows one.
    */
   pending?: true;
 };

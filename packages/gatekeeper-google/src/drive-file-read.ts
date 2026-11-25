@@ -74,6 +74,32 @@ export function exactRange(
 }
 
 /**
+ * `content` from byte `offset` on, read only as the result is: what comes before is read and
+ * dropped. Cancelling the result cancels `content`.
+ */
+export function fromByte(content: ReadableStream<Uint8Array>, offset: number): ReadableStream<Uint8Array> {
+  let reader = content.getReader();
+  let skip = offset;
+  return new ReadableStream<Uint8Array>({
+    pull: async controller => {
+      for (;;) {
+        let read = await reader.read();
+        if (read.done) return controller.close();
+        let bytes = read.value;
+        if (bytes.byteLength <= skip) {
+          skip -= bytes.byteLength;
+          continue;
+        }
+        controller.enqueue(skip ? bytes.subarray(skip) : bytes);
+        skip = 0;
+        return;
+      }
+    },
+    cancel: reason => reader.cancel(reason),
+  }, { highWaterMark: 0 });
+}
+
+/**
  * `content`, of a length not known ahead, read only as the result is, so none of it is held here,
  * and ended with an error after {@link FILE_READ_IDLE_MS} with no bytes moving, counted from now.
  * However the stream ends, the download is let go.
@@ -174,7 +200,7 @@ export function downloadableFile(
  * restricted downloading it, or one Drive does not say it may, since only a stated leave counts,
  * as it does when a read is authorized.
  */
-function requireDownloadable(file: DriveFile): void {
+function requireDownloadable(file: Pick<DriveFile, "capabilities">): void {
   let canDownload = file.capabilities?.canDownload;
   if (canDownload === true) return;
   throw new Error(canDownload === false
@@ -220,7 +246,7 @@ const EXPORT_FORMATS: Record<string, { name: string; formats: Partial<Record<Dri
  * export to `format`.
  */
 export function exportMimeType(
-  file: DriveFile, format: DriveExportFormat,
+  file: Pick<DriveFile, "mimeType" | "capabilities">, format: DriveExportFormat,
 ): { nativeMimeType: string; mimeType: string } {
   let nativeMimeType = file.mimeType;
   if (!nativeMimeType) throw new Error("Google Drive omitted required file mimeType");
