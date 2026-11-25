@@ -334,41 +334,50 @@ describe("Drive rename proofs and checks at apply", () => {
     expect(await both.apply(id)).toBe(ALREADY_RENAMED);
   });
 
-  // The name is read after the scope proof, and that read says where the file is too: what it
-  // finds moved, put in the trash or gone since the proof is not renamed.
-  it("takes the file as the name's read finds it, not as the proof before it did", async () => {
+  // The name is read before the scope proof, so the proof is the last read before the send: what
+  // moves out of the binding, goes in the trash or disappears while the name is read is not
+  // renamed.
+  it("proves the scope after reading the name, so a change during that read is caught", async () => {
     let cases: [string, DriveBindingScope, DriveRenameActions["renameFile"], string,
       (run: ReturnType<typeof harness>) => void][] = [
       ["moved out of the folder", AT_R, renameFFromA(), OUT_OF_SCOPE,
         run => { run.nodes.F = file("F", "R"); }],
+      // The child keeps its parent: the folder it is in leaves the bound root.
+      ["its folder moved off the saved path", AT_R, renameFFromA(), OUT_OF_SCOPE,
+        run => { run.nodes.A = folder("A", "elsewhere"); }],
       ["the positioned folder moved", AT_R, renameA(), OUT_OF_SCOPE,
         run => { run.nodes.A = folder("A", "elsewhere"); }],
       ["put in the trash", ACCOUNT, renameF(), FILE_IN_TRASH,
         run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
-      ["put in the trash, on a folder binding", AT_R, renameFFromA(), FILE_IN_TRASH,
+      ["put in the trash, on a folder binding", AT_R, renameFFromA(), OUT_OF_SCOPE,
         run => { run.nodes.F = { ...file("F", "A"), trashed: true }; }],
       ["gone", ACCOUNT, renameF(), OUT_OF_SCOPE, run => run.hide("F")],
     ];
     for (let [what, scope, payload, refusal, change] of cases) {
       let run = harness(scope);
       let id = await run.submit(payload);
-      // Drive changes the file between the batched proof and the read of its name.
-      run.api.getScopeNodes.mockImplementationOnce(async ids => {
-        let proved = ids.map(proving => run.nodes[proving] && structuredClone(run.nodes[proving]));
+      let readName = run.api.getFile.getMockImplementation()!;
+      run.api.getFile.mockImplementationOnce(async fileId => {
+        let read = await readName(fileId);
         change(run);
-        return proved;
+        return read;
       });
       expect(await run.apply(id), what).toBe(refusal);
       expect(run.api.renameFile, what).not.toHaveBeenCalled();
+      // The proof came after the name's read.
+      let [nameRead] = run.api.getFile.mock.invocationCallOrder;
+      let [proof] = run.api.getScopeNodes.mock.invocationCallOrder;
+      expect(nameRead, what).toBeLessThan(proof!);
     }
 
     // A file moved within an account binding's reach is still in scope.
     let account = harness();
     let id = await account.submit(renameF());
-    account.api.getScopeNodes.mockImplementationOnce(async ids => {
-      let proved = ids.map(proving => account.nodes[proving] && structuredClone(account.nodes[proving]));
+    let readName = account.api.getFile.getMockImplementation()!;
+    account.api.getFile.mockImplementationOnce(async fileId => {
+      let read = await readName(fileId);
       account.nodes.F = file("F", "R");
-      return proved;
+      return read;
     });
     expect(await account.apply(id)).toBeNull();
     expect(account.names.F).toBe("Budget 2027");
