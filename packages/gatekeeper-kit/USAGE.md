@@ -822,8 +822,9 @@ What a fold does:
 A record that targets several entities is folded once for each, by the call that folds that
 entity, and each of those folds stands alone: refused on one entity, the record still applies to
 the others until the caller leaves it out or removes it. A gatekeeper whose record must take effect
-on all of its entities or none folds the entity that can refuse it first and leaves what that fold
-refused out of the lists it folds next.
+on all of its entities or none, where only one of them can refuse it, folds that one first and leaves
+what that fold refused out of the lists it folds next. Where more than one can, no order of folds
+decides it: fold an entity that holds them all, or check every target before the record is folded.
 
 A reducer on a draft:
 
@@ -1394,6 +1395,10 @@ being fetched shows on the provider's rows of that page, since the view is built
 fold is remembered from one call to the next: a row read again (a refused page's retry) is folded
 again, and so is every stand-in at each `refresh()`, each fold reducing its records again from the
 first. What is kept is the stand-in rows the last `refresh()` made, which `revalidate` looks up.
+`refresh` reads the journal again and not the provider: a row the cursor buffered stays as it was
+fetched, so a record that applies and leaves the journal mid-walk (a delete, an update) is no longer
+folded over a row fetched before it landed, which then shows as it was. A listing that must show
+settled changes reads the rows such a change touches again, or starts the walk again.
 
 What stays the gatekeeper's, because two listings rarely agree on it:
 

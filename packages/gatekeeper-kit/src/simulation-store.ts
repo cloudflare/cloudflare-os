@@ -123,8 +123,10 @@ export type SimulationStore<
    * entities is folded once for each, by the call that folds that entity, and each of those
    * folds stands alone: refused on one entity, the record still applies to the others, unless
    * the caller leaves it out or removes it before it folds them. A caller whose record must
-   * take effect on all of its entities or none folds the entity that can refuse it first and
-   * leaves what that fold refused out of the lists it folds next. A record that targets none
+   * take effect on all of its entities or none, where only one of them can refuse it, folds that
+   * one first and leaves what that fold refused out of the lists it folds next; where more than
+   * one can, no order of folds decides it, and the caller folds an entity that holds them all or
+   * checks every target before the record is folded. A record that targets none
    * of the entities read is never reduced.
    *
    * A record the caller has marked as not to be replayed (a stored reason) is one it leaves

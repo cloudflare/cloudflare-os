@@ -2637,9 +2637,10 @@ session reads it. A record declares the entities it targets
 through the view (§4.9), a read folds only the records that target what it reads, and a record that
 targets several entities is folded for each, by the call that folds that entity. Each of those folds
 stands alone: refused on one entity, the record still applies to the others until the caller leaves
-it out or removes it, so a caller whose record must take effect on all of its entities or none folds
-the entity that can refuse it first and leaves what that fold refused out of the lists it folds
-next. The store holds no index and no resolver: the view is the one index and `ProvisionalIds` the
+it out or removes it, so a caller whose record must take effect on all of its entities or none, where
+only one of them can refuse it, folds that one first and leaves what that fold refused out of the
+lists it folds next; where more than one can, no order of folds decides it, and the caller folds an
+entity that holds them all or checks every target first. The store holds no index and no resolver: the view is the one index and `ProvisionalIds` the
 one resolver. An editor whose state is one thing folds it as its one entity.
 
 **One queue.** Action ids are private to the queue that issued them. The fold takes records in the
