@@ -320,6 +320,15 @@ describe('usePaneFocus', () => {
       expect(offerId()).toBe(last)
     })
 
+    it('when the user moves into the frame, keeping the spot it reported', async () => {
+      await render({ anchor: q3.anchor })
+      await report(q3)
+      const last = offerId()
+      await act(() => uiFocus!.onFocusEnter!())
+      expect(offerId()).not.toBe(last)
+      expect(paneFocus!.focus.spot).toStrictEqual(q3)
+    })
+
     it("when a sent message's chip is opened, even for the spot already shown", async () => {
       await render({ anchor: q3.anchor })
       await report(q3)

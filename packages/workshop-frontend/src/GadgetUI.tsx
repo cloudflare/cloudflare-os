@@ -307,6 +307,11 @@ export type GadgetUIFocus = {
    * anchor, which it may never report.
    */
   onFocusReset?: () => void
+  /**
+   * The user moved into the frame, with a click or Tab. Its reports can't say so: a frame may report
+   * the same spot again for reasons of its own, such as a reload sending it back there.
+   */
+  onFocusEnter?: () => void
 }
 
 interface GadgetUIProps {
@@ -482,6 +487,18 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     focusRef.current?.onFocusReset?.()
     void sendNavigate(frame, anchor)
   }, [navigation])
+
+  // The page sees the user moving into the frame as its window losing focus to the iframe.
+  useEffect(() => {
+    const onBlur = () => {
+      // The iframe may become the active element only once the blur has been dispatched.
+      setTimeout(() => {
+        if (iframeRef.current && document.activeElement === iframeRef.current) focusRef.current?.onFocusEnter?.()
+      })
+    }
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
+  }, [])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.

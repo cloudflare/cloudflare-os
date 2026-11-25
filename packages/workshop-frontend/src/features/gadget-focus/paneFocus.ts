@@ -8,7 +8,7 @@ export type FocusOffer = {
   focus: TitledFocus
   /**
    * Changes with each new focus signal (the gadget selected, a spot other than the last reported,
-   * a sent message's chip opened), so that dismissing the chip, or sending a message, turns down
+   * the user moving into its frame, a sent message's chip opened), so that dismissing the chip, or sending a message, turns down
    * only this focus. A repeat report of the same spot, or a new frame restored to it, is the same
    * offer.
    */

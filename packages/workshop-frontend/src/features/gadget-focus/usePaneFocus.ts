@@ -16,7 +16,7 @@ export type PaneView = 'workpiece' | 'activity' | null
  * Returns the `GadgetUI` focus to give that frame, wrapping `uiFocus` (from `useFocusUrl`), and
  * the focus the pane offers a message: the gadget whenever the pane is showing it, with the spot
  * once the current frame has reported one, or once a sent message's chip has sent it there.
- * Each new focus signal is a new offer (see `FocusOffer`).
+ * Each new focus signal, the user moving into the frame among them, is a new offer (see `FocusOffer`).
  * Call `onFocusOpened` with that chip's focus as it opens it, and `onWorkspaceChange` when the
  * editor moves to another workspace, whose pane has shown nothing yet.
  */
@@ -95,6 +95,8 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
       // it starts, and a frame sent elsewhere has left the spot it reported. The URL keeps the
       // anchor, which the frame is sent to.
       onFocusReset: () => setReported(null),
+      // The user's return to the gadget asks for its focus again, even one dismissed or already sent.
+      onFocusEnter: () => setOffer(current => current.gadgetId === gadgetId ? { ...current, id: current.id + 1 } : current),
     },
     paneFocus: showsGadget
       ? {
