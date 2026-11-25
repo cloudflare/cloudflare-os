@@ -2469,7 +2469,8 @@ async function runAgentPass(
   let answered = false, keptAttachments = 0, keptAttachmentBytes = 0, pastReplayBytes = false;
   // What this pass's requests carry inline: those of the messages from `attachmentsFitFrom` on.
   let sentInline = 0, sentInlineBytes = 0;
-  for (let msg of chatMessages.toReversed()) {
+  for (let index = chatMessages.length - 1; index >= 0; --index) {
+    let msg = chatMessages[index];
     if (msg.type !== "message") continue;
     if (msg.author.type === "agent") answered = true;
     else if (!answered) prompt ??= msg.sequence;
@@ -2482,9 +2483,12 @@ async function runAgentPass(
         messageIds.push(attachment.id);
       }
     }
-    let imageReads = handle.model.input.includes("image") ? (msg.toolCalls ?? []).flatMap(call =>
-        call.toolName === "readFile" && !call.error && call.imageBytes !== undefined
-          ? [{id: call.toolCallId, bytes: call.imageBytes}] : []) : [];
+    // Replay shows a read of content the user later reverted as text, not the image.
+    let imageReads = handle.model.input.includes("image") && !sawRevertedContent(index)
+      ? (msg.toolCalls ?? []).flatMap(call =>
+          call.toolName === "readFile" && !call.error && call.imageBytes !== undefined
+            ? [{id: call.toolCallId, bytes: call.imageBytes}] : [])
+      : [];
     for (let read of imageReads) messageBytes += read.bytes;
     pastReplayBytes ||= keptAttachmentBytes + messageBytes > MAX_INLINE_REPLAY_BYTES;
     if (pastReplayBytes) {

@@ -1044,6 +1044,27 @@ describe("attachment worktree ingress", () => {
     expect(thinking.at(-1)).toMatchObject({thinking: "Look 19"});
   }));
 
+  // Replay shows a read of content the user later reverted as text, so it carries no image.
+  it("counts no image read of content the user later reverted", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+      [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
+    const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
+    await step(impl, chatId, {[worktreeId]: [["notes.txt", {set: "draft"}]]});
+    const changes = [...impl.storage.chats.list()].find(message => message.type === "changes")!;
+    const look = fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "dot.png"});
+    await scriptedTurn(impl, chatId, Array.from({length: 19}, () => look));
+    await impl.revertChanges(chatId, changes.sequence, USER);
+
+    // Counting the 19 reads would take this request to 21 images and compact it first.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this",
+      {attachments: [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
+    const requests = await scriptedTurn(impl, chatId, []);
+    expect(requests).toHaveLength(1);
+    expect(imageParts(requests[0])).toHaveLength(2);
+  }));
+
   // One step's image reads fit one message's budget, as a message's attachments do, so the
   // compaction that keeps the newest messages can always keep the step whole.
   it("refuses image reads past one message's budget within a step", () => inKernel(crypto.randomUUID(), async impl => {
