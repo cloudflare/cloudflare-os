@@ -1146,7 +1146,8 @@ const gate = (op: string) =>
 
 /** What adding to a tab's tables is refused with once they would hold `cells` cells. */
 const room = (op: string, cells: number) =>
-  `${op}: tables, rows and columns can be added only until the tables of a tab hold 5000 ` +
+  `${op}: tables, rows and columns can be added, and cells merged, only until the tables of a ` +
+  "tab hold 5000 " +
   `cells in all, a cell counting once for each paragraph in it, and those of this tab would ` +
   `hold ${cells}.`;
 

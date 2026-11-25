@@ -248,8 +248,10 @@ export type DocTableCell = {
  * Every edit shows in the next `getContent()` call. Adding or deleting a table renumbers the
  * tables after it, and adding or deleting rows or columns renumbers those after them.
  *
- * Tables, rows and columns can be added only until the tables of one tab hold 5,000 cells
- * in all, a cell counting once for each paragraph it holds, a table inside a cell included.
+ * Tables, rows and columns can be added, and cells merged,
+ * only until the tables of one tab hold 5,000 cells in all, a cell counting once for each
+ * paragraph it holds, a table inside a cell included. A merge adds one for each cell past
+ * the first that holds anything, since each cell it covers keeps an empty paragraph.
  *
  * The table methods change a table that is there (add or delete its rows or columns, set
  * the look of its cells, its column widths or its row heights, merge its cells or split a

@@ -145,7 +145,8 @@ const readsTheSame = (op: string, table: number, other: number) =>
   "first, for example by changing the text of a cell with replaceText(), then call " +
   `${op}() again.`;
 const tabCells = (op: string, held: number) =>
-  `${op}: tables, rows and columns can be added only until the tables of a tab hold 5000 cells ` +
+  `${op}: tables, rows and columns can be added, and cells merged, only until the tables of a ` +
+  "tab hold 5000 cells " +
   `in all, a cell counting once for each paragraph in it, and those of this tab would hold ${held}.`;
 const cellCount = (op: string) =>
   `${op}: at most 1000 cells that have text can be added at once, an empty cell counting as ` +
@@ -1826,6 +1827,27 @@ describe("mergeTableCells and unmergeTableCells", () => {
     let after = read(applyDocEdit(from.doc, merged.change));
     let split_ = prepare(after, split({ table: 0, row: 1, column: 0 }));
     expect(split_).toMatchObject({ autoApprovable: true, title: "Split a table cell in Google Doc" });
+  });
+
+  it("counts a merge's cells that hold anything, past the first, against the tab's cells", () => {
+    // 4,990 cells. A merge of 2 by 5 moves the paragraphs of the nine cells it covers into its
+    // top-left cell and leaves each of them one empty paragraph: 4,999.
+    let from = read(buildTab([para("Before"), sized(499, 10), para("After")]));
+    expect(refusal(from, merge({ table: 0, row: 0, column: 0, rows: 2, columns: 6 })))
+      .toBe(tabCells("mergeTableCells", 5_001));
+    let merged = prepare(from, merge({ table: 0, row: 0, column: 0, rows: 2, columns: 5 }));
+    // The tab read back after it holds what the check counted.
+    let after = read(applyDocEdit(from.doc, merged.change));
+    expect(refusal(after, addRows({ table: 0, at: 499 }))).toBe(tabCells("insertTableRows", 5_009));
+
+    // At 5,000, blank cells merge around a label, which adds nothing; a second label adds one.
+    let full = read(buildTab([para("Before"), sized(499, 10), para("Between"),
+      grid(["Label", ""], ["", ""], ["Other", ""], ["", "Text"], ["x", "y"]), para("After")]));
+    let blank = prepare(full, merge({ table: 1, row: 0, column: 0, rows: 2, columns: 2 }));
+    let around = read(applyDocEdit(full.doc, blank.change));
+    expect(refusal(around, addRows({ table: 0, at: 499 }))).toBe(tabCells("insertTableRows", 5_010));
+    expect(refusal(full, merge({ table: 1, row: 2, column: 0, rows: 2, columns: 2 })))
+      .toBe(tabCells("mergeTableCells", 5_001));
   });
 
   it("refuses a block of one cell, and fields it does not declare", () => {

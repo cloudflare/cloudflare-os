@@ -530,7 +530,7 @@ describe("a table change built from a reading of its tab", () => {
     // What the tab as a whole refuses, each from a piece that does not hold what refuses it.
     for (let words of [
       "another table of the tab now reads the same", "holds items of a numbered list",
-      "tables, rows and columns can be added only until the tables of a tab hold",
+      "tables, rows and columns can be added, and cells merged, only until the tables of a tab hold",
       "insertTable: after matches multiple locations", "insertTable: after was not found",
       "the table no longer reads as it did when this change was queued",
     ]) {
@@ -593,7 +593,7 @@ describe("a table call checked against a reading of its tab", () => {
     // calls share with the builders are refused the same.
     for (let words of [
       "reads the same as table", "holds items of a numbered list",
-      "tables, rows and columns can be added only until the tables of a tab hold",
+      "tables, rows and columns can be added, and cells merged, only until the tables of a tab hold",
     ]) {
       expect(refused(words), words).toBeGreaterThan(0);
     }

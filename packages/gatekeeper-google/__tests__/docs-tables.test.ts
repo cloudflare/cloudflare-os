@@ -1333,7 +1333,8 @@ describe("refusals for where a new table goes", () => {
 });
 
 const tabCells = (op: string, held: number) =>
-  `${op}: tables, rows and columns can be added only until the tables of a tab hold 5000 cells ` +
+  `${op}: tables, rows and columns can be added, and cells merged, only until the tables of a ` +
+  "tab hold 5000 cells " +
   `in all, a cell counting once for each paragraph in it, and those of this tab would hold ${held}.`;
 
 const tenCells = (text = "x") => [Array.from({ length: 10 }, () => text)];

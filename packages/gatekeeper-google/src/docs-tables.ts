@@ -906,8 +906,8 @@ export function checkTabTableCells(
   let held = tabOf(source).tables().cells;
   if (held + added > MAX_TAB_TABLE_CELLS) {
     throw new Error(
-      `${op}: tables, rows and columns can be added only until the tables of a tab hold ` +
-      `${MAX_TAB_TABLE_CELLS} cells in all, a cell counting once for each paragraph in it, ` +
+      `${op}: tables, rows and columns can be added, and cells merged, only until the tables of ` +
+      `a tab hold ${MAX_TAB_TABLE_CELLS} cells in all, a cell counting once for each paragraph in it, ` +
       `and those of this tab would hold ${held + added}.`);
   }
 }
@@ -1333,6 +1333,17 @@ function existingTableRequests(
     let { row, column } = change;
     if (change.type === "mergeTableCells") {
       let { rows, columns } = change;
+      // Google moves the paragraphs of the block's cells into its top-left cell, taking none from a
+      // cell that is one empty paragraph, and leaves each other cell one empty paragraph, which
+      // still counts once: the tab gains one for each cell that holds anything, past the first.
+      let filled = 0;
+      for (let r = row; r < row + rows; r++) {
+        for (let c = column; c < column + columns; c++) {
+          let cell = table.rows[r].cells[c];
+          if (cell.nested || cell.lines !== 1 || !cell.emptyParagraph || cell.unshown > 0) filled++;
+        }
+      }
+      checkTabTableCells(piece, Math.max(0, filled - 1), change.type);
       // Only the tab says which rows are pinned: its rendering shows a header row as any other.
       let pinned = table.pinnedRows ?? 0;
       if (row < pinned && row + rows > pinned) {

@@ -1224,9 +1224,11 @@ The limits, and what each is for:
   texts or formatted stretches changed at once.
 - The text of one change's cells holds at most 2,000 paragraph breaks, the limit text edits have,
   since each becomes a paragraph.
-- Tables, rows and columns are added only until the tables of one tab hold 5,000 cells in all, a
-  cell counting once for each paragraph it holds, those of tables inside cells and those no
-  replacement can edit included: a document is read whole, in one answer of
+- Tables, rows and columns are added, and cells merged, only until the tables of one tab hold
+  5,000 cells in all, a cell counting once for each paragraph it holds, those of tables inside cells
+  and those no replacement can edit included (a merge moves the paragraphs of the cells it covers
+  into its top-left cell and leaves one empty paragraph in each of them, so it adds one for every
+  cell past the first that holds anything): a document is read whole, in one answer of
   limited size, and one whose tables grow far past that cannot be read, and so cannot be changed,
   through the connection (see [Known limitations](#known-limitations)).
 - One deletion removes at most 19,005 rows or columns, the most requests a batch holds.
@@ -1627,7 +1629,7 @@ the mask a document that fits only with it is not read. Applying a comment or a 
 the document with the same fields and its suggestion threads, so on a document near the limit a
 read can succeed where applying a comment fails for the size of those threads. A table cell
 takes far more of that answer than of the Markdown. For that reason the table methods add to the
-tables of one tab only up to 5,000 cells (see the limits of
+tables of one tab, and merge their cells, only up to 5,000 cells (see the limits of
 [Google Docs edits](#google-docs-edits)), so that a table grown through the table methods does not by
 itself take the document past the limit. A document whose tables were made larger in Google Docs,
 or that is large in its other tabs or in its text, can still be past it.
