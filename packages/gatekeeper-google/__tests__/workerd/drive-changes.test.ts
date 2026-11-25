@@ -1860,6 +1860,9 @@ describe("renames", () => {
       expect(refused.error, fileId).toBe(message);
       expect(refused.actionId, fileId).toBeUndefined();
     }
+    // What the account may do is its own answer: the file is not reported before it is said.
+    expect((await drive.call("rename", "locked-doc", "Renamed")).reports)
+      .toEqual([{ title: "Check Google Drive file access", subresources: [] }]);
 
     let exact = binding(DOC_FILE);
     expect((await exact.call("rename", "sheet-1", "Renamed")).error).toBe(OUTSIDE);

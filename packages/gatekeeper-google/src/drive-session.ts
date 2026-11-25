@@ -249,6 +249,8 @@ type TargetPurpose = {
   noun: "comments" | "sharing" | "name";
   allowSelf: boolean;
   roots?: { myDrive: string; sharedDrive: string };
+  /** The account must be able to rename the target, which is checked before it is reported. */
+  renames?: true;
 };
 
 const COMMENT_TARGET: TargetPurpose =
@@ -261,6 +263,7 @@ const SHARING_TARGET: TargetPurpose = {
 const RENAME_TARGET: TargetPurpose = {
   title: "Rename a Google Drive file", noun: "name", allowSelf: true,
   roots: { myDrive: MY_DRIVE_ROOT_RENAME, sharedDrive: SHARED_DRIVE_ROOT_RENAME },
+  renames: true,
 };
 
 /** A file as a write's scope check found it, with the folder binding's `path` to it. */
@@ -644,7 +647,8 @@ abstract class DriveCoreBase {
    * My Drive root is refused before anything is reported, relative to that account: no other
    * account can see that folder, so its unit would be a requirement nobody passes. A shared
    * drive's root is refused after its units are reported: that it is one is the file's own
-   * metadata.
+   * metadata. A rename target the account cannot rename is refused before them too, so the
+   * refusal is the call's one report.
    */
   protected async authorizeTarget(
     file: DriveFile, units: DriveObservation[], purpose: TargetPurpose,
@@ -656,8 +660,10 @@ abstract class DriveCoreBase {
       await this.authorizeAccountRelative(purpose.title, description);
       throw new Error(roots.myDrive);
     }
+    let sharedDriveRoot = file.driveId === file.id ? roots?.sharedDrive : undefined;
+    if (purpose.renames && sharedDriveRoot === undefined) await this.requireRenamable(file.id);
     await this.authorizeUnits(units, purpose.title, description);
-    if (roots && file.driveId === file.id) throw new Error(roots.sharedDrive);
+    if (sharedDriveRoot !== undefined) throw new Error(sharedDriveRoot);
   }
 
   /** Authorizes handing the caller `count` ways of access to file `fileId`, reporting `units`. */

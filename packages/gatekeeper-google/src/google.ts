@@ -3262,11 +3262,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async rename(fileId: string, name: string): Promise<void> {
     await this.#requireWritable();
     let toName = newFileName(name);
-    let core = this.#core;
-    let target = await core.renameTarget(fileId);
+    let target = await this.#core.renameTarget(fileId);
     if (target.trashed) throw new Error(RENAME_TRASHED);
     if (target.name === toName) throw new Error(RENAME_SAME_NAME);
-    await core.requireRenamable(target.fileId);
     await this.#refuseBehindMove(target);
     await this.#refuseQueued(pending =>
       hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined);

@@ -1334,7 +1334,8 @@ describe("positioned Drive folder session", () => {
   it("takes the positioned folder as a rename target, and a direct child, and nothing else", async () => {
     const inner = folder("B", { parents: ["A"] });
     const below = positioned(
-      [root, nested, nestedDoc, inner, child("D2", "B")], { folderIds: ["R", "A"] });
+      [root, nested, nestedDoc, inner, child("D2", "B")], { folderIds: ["R", "A"] }, undefined,
+      { abilities: { A: { canRename: true }, D1: { canRename: true } } });
 
     await expect(below.session.renameTarget("A")).resolves.toEqual({
       fileId: "A", name: "A", mimeType: FOLDER_MIME_TYPE, isFolder: true, folderIds: ["R", "A"],
@@ -1374,20 +1375,22 @@ describe("positioned Drive folder session", () => {
     expect(reports(mine.authorizations)).toEqual([["Rename a Google Drive file", []]]);
   });
 
+  // What the account may do is its own answer, so the target is not reported before it.
   it("refuses a child the account cannot rename, reporting nothing", async () => {
     const { session, authorizations } = positioned(
       [root, directDoc, child("D3", "R")], undefined, undefined,
       { abilities: { D0: { canRename: false }, D3: { canRename: true } } });
 
-    await expect(session.requireRenamable("D0"))
+    await expect(session.renameTarget("D0"))
       .rejects.toThrow(new Error("The connected account cannot rename Drive file D0."));
     expect(authorizations).toEqual([{
       title: "Check Google Drive file access",
       description: "Check whether the connected account can rename Drive file D0.",
       subresources: [],
     }]);
-    await expect(session.requireRenamable("D3")).resolves.toBeUndefined();
-    expect(authorizations).toHaveLength(1);
+    await expect(session.renameTarget("D3")).resolves.toMatchObject({ fileId: "D3" });
+    expect(reports(authorizations.slice(1)))
+      .toEqual([["Rename a Google Drive file", ["drive/folder/R", "drive/file/D3"]]]);
   });
 
   // A folder binding can be connected to the top level of My Drive by that folder's own ID. No
@@ -2345,12 +2348,13 @@ describe("Drive sharing targets", () => {
 
 describe("Drive rename targets", () => {
   const myRoot = folder(MY_ROOT, { name: "My Drive" });
+  const renamable = async (ids: readonly string[]) => ids.map(id => ({ id, canRename: true }));
 
   it.each([
     ["an account", { kind: "account" } as const],
     ["an exact-file", { kind: "file", fileId: "file-1" } as const],
   ])("reports the file before a rename on %s binding", async (_name, scope) => {
-    let { session, authorizations } = core({ scope });
+    let { session, authorizations } = core({ scope, getScopeNodes: renamable });
 
     await expect(session.renameTarget("file-1")).resolves.toEqual({
       fileId: "file-1", name: "Quarterly plan", mimeType: "application/pdf", isFolder: false,
@@ -2365,7 +2369,8 @@ describe("Drive rename targets", () => {
   // An account binding reaches a file in the trash by its ID; Google renames it all the same, so
   // the session is told, to refuse it.
   it("says that a rename target is in the trash", async () => {
-    let { session } = core({ getFile: async id => file({ id, trashed: true }) });
+    let { session } = core(
+      { getFile: async id => file({ id, trashed: true }), getScopeNodes: renamable });
     await expect(session.renameTarget("file-1")).resolves.toMatchObject({ trashed: true });
   });
 
@@ -2393,7 +2398,7 @@ describe("Drive rename targets", () => {
   it("refuses a file the account cannot rename, or that Drive no longer shows, reporting nothing", async () => {
     for (let nodes of [[{ id: "file-1", canRename: false }], [{ id: "file-1" }], [undefined]]) {
       let { session, authorizations } = core({ getScopeNodes: async () => nodes });
-      await expect(session.requireRenamable("file-1"))
+      await expect(session.renameTarget("file-1"))
         .rejects.toThrow(new Error("The connected account cannot rename Drive file file-1."));
       expect(reports(authorizations)).toEqual([["Check Google Drive file access", []]]);
     }
