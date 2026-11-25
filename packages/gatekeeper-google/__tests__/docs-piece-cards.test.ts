@@ -17,7 +17,7 @@ import {
   type TableCall,
 } from "../src/docs-table-actions";
 import {
-  chipCopies, replacementPath, resolveTable, wholeTabReading, type TableChange,
+  chipCopies, pinsHeader, replacementPath, resolveTable, wholeTabReading, type TableChange,
 } from "../src/docs-tables";
 import type { DocTableBorder, DocTableCellStyle } from "../src/docs-types";
 import type { DocTabSnapshot, MarkdownRange } from "../src/markdown-converter";
@@ -560,10 +560,12 @@ function heldRecording(
       heldStep(chain, made, tally);
       continue;
     }
-    // A recorded row insertion records what its reference row copies, as one queued now does.
-    if (made.type === "insertTableRows" && made.copies === undefined) {
+    // A recorded row insertion records what its reference row copies and whether it is pinned,
+    // as one queued now does.
+    if (made.type === "insertTableRows" && (made.copies === undefined || made.pins === undefined)) {
       let target = whole.sourceMap.tables[resolveTable(whole, made, made.type)];
-      made = { ...made, copies: chipCopies(target, Math.min(made.at, target.rows.length - 1)) };
+      let reference = Math.min(made.at, target.rows.length - 1);
+      made = { ...made, copies: chipCopies(target, reference), pins: pinsHeader(target, reference) };
     }
     // A table step is prepared by the call naming its table by number, which must give the same
     // change.

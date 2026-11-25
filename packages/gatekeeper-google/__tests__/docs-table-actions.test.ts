@@ -257,7 +257,7 @@ describe("the stored change", () => {
     let from = read(STATUS());
     let expected = tableAt(from.tab, 0);
     expect(prepare(from, addRows({ table: 0, cells: [["a", "b"]] })).change)
-      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected, copies: "--" });
+      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected, copies: "--", pins: false });
     expect(prepare(from, addColumns({ table: 0, at: 1 })).change)
       .toStrictEqual({ type: "insertTableColumns", at: 1, cells: [[""], [""], [""]], expected });
     expect(prepare(from, dropRows({ table: 0, at: 2 })).change)
@@ -956,6 +956,15 @@ describe("cards", () => {
       `it: a dropdown with its first choice, and an empty placeholder for any other chip.${was(1)}`);
     expect(card(addRows({ table: 0, at: 0 }), status).description).toBe(
       `Insert 1 row in a table of tab "Main" (tab-1), before its row 1. They are empty.${was(1)}`);
+  });
+
+  it("says new rows beside a pinned header row are pinned with it", () => {
+    let pinned = read(buildTab([para("Before"), { ...grid(["H1", "H2"], ["a", "b"]), headerRows: 1 }, para("After")]));
+    expect(card(addRows({ table: 0, at: 0, cells: [["x", "y"]] }), pinned).description).toBe(
+      "Insert 1 row in a table of tab \"Main\" (tab-1), before its row 1. It is pinned as a header " +
+      `row, as the row beside it is, and repeats at the top of each page.${was(1)}`);
+    expect(card(addRows({ table: 0, at: 1 }), pinned).description).toBe(
+      `Insert 1 row in a table of tab "Main" (tab-1), before its row 2. They are empty.${was(1)}`);
   });
 
   it("describes deleted columns, with their cells row by row and without indentation", () => {

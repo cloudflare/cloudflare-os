@@ -15,6 +15,7 @@ import { DocRunRenderError, markdownHeld } from "./docs-store";
 import type { DocStore, DocVersion, StoredRun } from "./docs-store";
 import {
   checkLookTarget, checkTabTableCells, checkTableTarget, chipCopies, hiddenContent, insertedTableNumber,
+  pinsHeader,
   lineAbove, MAX_TABLE_COLUMNS, replacementPath, tableIdentity, tableShape, tableSize, tabOf,
 } from "./docs-tables";
 import type { HiddenContent, LookChange, TableChange } from "./docs-tables";
@@ -480,6 +481,7 @@ function insertionChange(tab: TabReading, call: InsertionCall): ExistingTableCha
     ? {
       type: "insertTableRows", at, cells: storedCells(given, count, columns), expected,
       copies: chipCopies(target, at < rows ? at : rows - 1),
+      pins: pinsHeader(target, at < rows ? at : rows - 1),
     }
     : { type: "insertTableColumns", at, cells: storedCells(given, rows, count), expected };
 }
@@ -759,7 +761,8 @@ function existingTableCard(
     case "insertTableRows": {
       let { cells } = change;
       let empty = isEmpty(cells);
-      let copies = rows[at < rows.length ? at : rows.length - 1].cells
+      let reference = at < rows.length ? at : rows.length - 1;
+      let copies = rows[reference].cells
         .flatMap((cell, column) => cell.copies && cell.copies !== "nothing" ? [column + 1] : []);
       let them = cells.length === 1 ? "it" : "them";
       let description = describe(
@@ -770,7 +773,12 @@ function existingTableCard(
           : ` Google Docs copies into ${them} the dropdown or smart chip that stands alone in ` +
             `${copies.length === 1 ? "column" : "columns"} ${copies.join(", ")} of the row ` +
             `beside ${them}: a dropdown with its first choice, and an empty placeholder for ` +
-            "any other chip."));
+            "any other chip.") +
+        (pinsHeader(target, reference)
+          ? (cells.length === 1
+            ? " It is pinned as a header row, as the row beside it is, and repeats at the top of each page."
+            : " They are pinned as header rows, as the row beside them is, and repeat at the top of each page.")
+          : ""));
       if (!empty) description.json("New rows", cells);
       // Below the first row, the first row's field already shows the row above.
       let rowAbove = at >= 2 ? rowsHtml(at - 1, at - 1) : undefined;

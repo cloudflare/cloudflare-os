@@ -69,7 +69,7 @@ export type HiddenContent = {
 /** A change to a tab's tables, as stored with its pending action. */
 export type TableChange =
   | { type: "insertTable"; rows: number; columns: number; cells: string[][]; after?: string }
-  | ({ type: "insertTableRows"; at: number; cells: string[][]; copies?: string } & TableRef)
+  | ({ type: "insertTableRows"; at: number; cells: string[][]; copies?: string; pins?: boolean } & TableRef)
   | ({ type: "insertTableColumns"; at: number; cells: string[][] } & TableRef)
   | ({ type: "deleteTableRows"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTableColumns"; at: number; count: number } & TableRef & HiddenContent)
@@ -159,6 +159,16 @@ export function tableSize(
 export function chipCopies(target: TableMapping, reference: number): string {
   return target.rows[reference].cells
     .map(({ copies }) => copies === "dropdown" ? "d" : copies === "placeholder" ? "p" : "-").join("");
+}
+
+/**
+ * Whether rows added beside row `reference` of the table `target` go among its pinned header
+ * rows, and so are pinned with them: Google moves the pin, so the batch pins the count again. The
+ * approval card says so and the queued change records it, as for `chipCopies`: the table's HTML
+ * does not show a pin.
+ */
+export function pinsHeader(target: TableMapping, reference: number): boolean {
+  return target.pinnedRows !== undefined && reference < target.pinnedRows;
 }
 
 /**
@@ -390,6 +400,15 @@ function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: n
         `${op}: the row the new rows take after has come to hold, or no longer holds, a ` +
         "dropdown or other smart chip that Google Docs copies into them, which getContent() " +
         "does not show, since this change was queued.");
+    }
+  }
+  if (change.type === "insertTableRows" && change.pins !== undefined) {
+    let rows = render.sourceMap.tables[table].rows.length;
+    let reference = change.at < rows ? change.at : rows - 1;
+    if (pinsHeader(render.sourceMap.tables[table], reference) !== change.pins) {
+      throw new Error(
+        `${op}: the row the new rows take after has been pinned as a header row, or unpinned, ` +
+        "since this change was queued, which getContent() does not show.");
     }
   }
   if (change.type === "insertTableRows" || change.type === "insertTableColumns" ||

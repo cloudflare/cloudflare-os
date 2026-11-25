@@ -606,6 +606,20 @@ describe("pinned header rows", () => {
     }
   });
 
+  it("refuses a row insertion whose row has been pinned or unpinned since it was queued", () => {
+    let unpinned = buildTab([para("Before"), grid(["H1", "H2"], ["a", "b"]), para("After")]);
+    let pinned = pinnedTab(["H1", "H2"], ["a", "b"]);
+    let refused =
+      "insertTableRows: the row the new rows take after has been pinned as a header row, or " +
+      "unpinned, since this change was queued, which getContent() does not show.";
+    for (let [queuedOn, appliedOn, pins] of [[unpinned, pinned, false], [pinned, unpinned, true]] as const) {
+      let change = { ...addRows(docTabToMarkdown(queuedOn), 0, 0, [["x", "y"]]), pins };
+      // Its table reads the same: the pin is all that moved.
+      expect(thrownMessage(() => tableChangeRequests(docTabToMarkdown(appliedOn), change))).toBe(refused);
+      expect(() => tableChangeRequests(docTabToMarkdown(queuedOn), change)).not.toThrow();
+    }
+  });
+
   it("refuses to build a merge of a header row with a row below the header", () => {
     let tab = pinnedTab(["H1", "H2"], ["a", "b"], ["c", "d"]);
     let before = docTabToMarkdown(tab);
