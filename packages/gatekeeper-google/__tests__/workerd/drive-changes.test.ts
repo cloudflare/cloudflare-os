@@ -200,6 +200,11 @@ function file(mimeType: string, parents: string[], overrides: Partial<FakeFile> 
 }
 
 /** Google Drive's files, parents, capabilities and permissions as far as these tests need them. */
+/** Settles once `done()` holds, checked on a timer of the caller's own. */
+async function until(done: () => boolean): Promise<void> {
+  while (!done()) await new Promise(resolve => setTimeout(resolve, 1));
+}
+
 class DriveProvider {
   readonly files = new Map<string, FakeFile>([
     [MY_ROOT, file(FOLDER_MIME, [], { name: "My Drive" })],
@@ -235,6 +240,7 @@ class DriveProvider {
   readonly about: { fail?: Answer; omitAddress?: boolean } = {};
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
   readonly rejected = new Set<string>();
+  readonly #holds = new Map<string, { reached: boolean; released: boolean }>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
   #people = new Map<string, string>([
@@ -250,6 +256,17 @@ class DriveProvider {
     for (let id of this.files.keys()) {
       if (id !== "view-only") this.give(id, { ...this.#person("me@example.com"), role: "owner" });
     }
+  }
+
+  /**
+   * Holds the next request made as `call` until `release()`: `reached` settles once it is made,
+   * so a test can act while the gatekeeper waits on Drive. Each side waits on a timer of its own,
+   * since an object one Durable Object's I/O made cannot be used by another's.
+   */
+  hold(call: string): { reached: Promise<void>; release: () => void } {
+    let state = { reached: false, released: false };
+    this.#holds.set(call, state);
+    return { reached: until(() => state.reached), release: () => { state.released = true; } };
   }
 
   install(): this {
@@ -411,6 +428,12 @@ class DriveProvider {
     let token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
     let call = `${request.method} ${url.pathname}`;
     this.requests.push({ call, token });
+    const hold = this.#holds.get(call);
+    if (hold) {
+      this.#holds.delete(call);
+      hold.reached = true;
+      await until(() => hold.released);
+    }
     if (this.rejected.has(token)) return driveError({ status: 401, reason: "authError" });
     if (url.pathname === "/batch/drive/v3") {
       return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
@@ -1964,6 +1987,18 @@ describe("renames", () => {
     expect(await drive.reject(move.actionId)).toBeNull();
     expect(await drive.reject(folderMove.actionId)).toBeNull();
     await drive.queued("rename", "doc-1", "Plan 2028");
+
+    // A move of a folder on the path queued while the file is read is found when the path is
+    // asked again, just before the rename is queued.
+    let read = provider.hold("GET /drive/v3/files/nested-doc");
+    let renaming = drive.callIn(["inner"], "rename", "nested-doc", "Renamed");
+    await read.reached;
+    let lateMove = await drive.queued("move", "inner", "archive");
+    read.release();
+    let late = await renaming;
+    expect(late.error).toBe(MOVE_WAITING);
+    expect(late.actionId).toBeUndefined();
+    expect(await drive.reject(lateMove.actionId)).toBeNull();
 
     // An account binding proves no path, so a move there holds back no rename.
     let account = binding();
