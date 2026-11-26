@@ -1050,7 +1050,9 @@ export default function GadgetEditor() {
     },
   })
   const singlePane = useSyncExternalStore(subscribeToSinglePaneLayout, isSinglePaneLayout, () => false)
-  const { uiFocus: gadgetFocus, paneFocus, onFocusOpened, onWorkspaceChange: forgetPaneFocus } = usePaneFocus({
+  const {
+    uiFocus: gadgetFocus, paneFocus, onFocusOpened, onWorkpieceSelected, onWorkspaceChange: forgetPaneFocus,
+  } = usePaneFocus({
     uiFocus: focusUrl,
     gadget: selectedGadgetSummary,
     pane: !showFullEditor ? null : showingActivity ? 'activity' : 'workpiece',
@@ -1615,6 +1617,8 @@ export default function GadgetEditor() {
     // back. A worktree has only Code.
     handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
     setWorkspaceVisibility('open', workpieceId)
+    // Picking the gadget is a return to it, so the composer offers it again.
+    onWorkpieceSelected()
     const pendingChatId = picked?.chatId
     // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
     const ownerIsAgent = pendingChatId !== undefined && isSpawnedChat(pendingChatId)
@@ -1631,7 +1635,7 @@ export default function GadgetEditor() {
           : undefined,
       }),
     })
-  }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
+  }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect, onWorkpieceSelected])
 
   // A sent message's focus chip. The gadget may since have been deleted, or be a draft this chat
   // can't show, and then there is nothing to open.

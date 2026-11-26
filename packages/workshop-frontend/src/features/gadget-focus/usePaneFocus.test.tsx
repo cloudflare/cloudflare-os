@@ -36,11 +36,12 @@ let state: State
 let uiFocus: GadgetUIFocus | undefined
 let paneFocus: PaneFocus | undefined
 let onFocusOpened: (focus: MessageFocus) => void
+let onWorkpieceSelected: () => void
 let onWorkspaceChange: () => void
 const urlFocusChange = vi.fn<(focus: GadgetFocus | null) => void>()
 
 const Harness = () => {
-  ({ uiFocus, paneFocus, onFocusOpened, onWorkspaceChange } = usePaneFocus({
+  ({ uiFocus, paneFocus, onFocusOpened, onWorkpieceSelected, onWorkspaceChange } = usePaneFocus({
     uiFocus: state.gadget && { anchor: state.anchor, navigation: 0, latestAnchor: () => state.anchor, onFocusChange: urlFocusChange },
     gadget: state.gadget,
     pane: state.pane,
@@ -318,6 +319,21 @@ describe('usePaneFocus', () => {
       expect(offerId()).toBe(last)
       await report(q3)
       expect(offerId()).toBe(last)
+    })
+
+    it('when the user picks the gadget already selected, as they reopen the pane on it', async () => {
+      await render({ anchor: q3.anchor })
+      await report(q3)
+      const last = offerId()
+      await render({ pane: null })
+      await render({ pane: 'workpiece' })
+      // Reopening alone is the same offer, since the pane might only have been switched away from.
+      expect(offerId()).toBe(last)
+      await render({ pane: null })
+      await act(() => onWorkpieceSelected())
+      await render({ pane: 'workpiece' })
+      expect(offerId()).not.toBe(last)
+      expect(paneFocus!.focus.spot).toStrictEqual(q3)
     })
 
     it('when the user moves into the frame, keeping the spot it reported', async () => {
