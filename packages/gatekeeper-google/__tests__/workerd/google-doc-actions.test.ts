@@ -3374,6 +3374,21 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     run.appliedAgain(await hooks().applyAction("normal", actionId));
   });
 
+  it("accepts a rejection of an edit it does not hold", async () => {
+    new DocsModel().install();
+    await expect(hooks().rejectAction("normal", 99)).resolves.toBeUndefined();
+  });
+
+  it("accepts a second rejection of the same edit", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("normal", "first");
+
+    await expect(hooks().rejectAction("normal", actionId)).resolves.toBeUndefined();
+    await expect(hooks().rejectAction("normal", actionId)).resolves.toBeUndefined();
+    expect(docs.contentBatches).toBe(0);
+  });
+
   it("replays a queued edit after applying an escaped parenthesized link", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "target");

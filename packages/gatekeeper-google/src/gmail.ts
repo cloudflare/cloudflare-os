@@ -5340,7 +5340,12 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     if (this.ctx.props.groupAddress !== undefined) throw new Error("A Google Group binding has no actions.");
     const store = new GmailStore(this.ctx.storage);
     const initialAction = store.getAction(actionId);
-    if (!initialAction) throw new Error(`Unknown pending Gmail action: ${actionId}`);
+    if (!initialAction) {
+      // An apply whose reply never reached the kernel. Best effort: the decision is kept only
+      // while a pending action depends on it.
+      if (store.decisions().get(actionId) === "applied") return;
+      throw new Error(`Unknown pending Gmail action: ${actionId}`);
+    }
     if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
     this.#applying.add(actionId);
     try {
@@ -5783,7 +5788,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
     const store = new GmailStore(this.ctx.storage);
     const action = store.getAction(actionId);
-    if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
+    // Nothing left to withdraw, so Deny must not be refused.
+    if (!action) return undefined;
     if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
     // An earlier apply's uncertain outcome does not block the rejection: it withdraws the action,
     // and whatever Gmail already did stays.

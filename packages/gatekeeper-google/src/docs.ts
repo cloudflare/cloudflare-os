@@ -636,7 +636,11 @@ export class GoogleDocGatekeeperImpl
       let pending = pendingActions.list();
       let index = pending.findIndex(({id}) => id === actionId);
       if (index === -1) {
-        throw new Error(`Unknown pending Google Doc action: ${actionId}`);
+        // Nothing left to withdraw, so Deny must not be refused.
+        logger.info("rejected a Google Doc edit it no longer holds", {
+          event: "action.reject.unknown", actionId,
+        });
+        return undefined;
       }
       let rejected = pending[index].action;
       let wasActive = !rejected.invalidatedReason;

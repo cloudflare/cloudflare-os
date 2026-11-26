@@ -4880,6 +4880,31 @@ describe("Gmail pending sends", () => {
     expect(await values.has("pending:action:2")).toBe(false);
   });
 
+  it("accepts a rejection of an action it does not hold", async () => {
+    const {gatekeeper} = mailHarness();
+    await expect(gatekeeper.rejectAction(99)).resolves.toBeUndefined();
+  });
+
+  // The update landed but the overseer never heard; a later update still depends on it, so its
+  // decision is retained.
+  it("accepts a repeated apply of a draft update that already landed", async () => {
+    const {gatekeeper, saveDraft, values} = mailHarness();
+    const imported = saveDraft({});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "First update"});
+    await draft.update({subject: "Second update"});
+    await gatekeeper.applyAction(1);
+    const written = imported.mail.raw;
+    await gatekeeper.restart();
+    await expect(gatekeeper.applyAction(1)).resolves.toBeUndefined();
+    expect(imported.mail.raw).toBe(written);
+    expect(await values.has("pending:action:2")).toBe(true);
+    await gatekeeper.applyAction(2);
+    const parsed = await parseGmailDraft(fakeMailRaw(imported.mail));
+    expect([parsed.subject, parsed.text.trim()]).toEqual(["Second update", "First update"]);
+  });
+
   it("reads a calendar under a pending pre-upgrade update at the provider's exact size", async () => {
     const {gatekeeper, saveDraft, storage} = mailHarness();
     const imported = saveDraft(calendarSpec());
