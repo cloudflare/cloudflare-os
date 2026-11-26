@@ -94,7 +94,8 @@ export async function saveFile(
     }
     let content = upTo(file, await drive.getMaxImportSize(nativeMimeType).catch(() => undefined) ?? MAX_IMPORT_BYTES);
     let made = await drive.upload(content, contentType, typeof into === "string"
-      ? { replace: into } : { create: { ...into, mimeType: nativeMimeType } });
+      ? { replace: into }
+      : { create: { ...into, mimeType: nativeMimeType }, domainDefaultVisibility: true });
     if (made?.mimeType !== nativeMimeType) {
       throw new Error("Google Drive did not convert the uploaded file into the type asked for");
     }

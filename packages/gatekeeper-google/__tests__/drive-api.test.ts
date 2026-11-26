@@ -2920,8 +2920,9 @@ describe("upload", () => {
     let [open, put] = calls;
     expect(open.method).toBe("POST");
     expect(open.url.origin + open.url.pathname).toBe("https://www.googleapis.com/upload/drive/v3/files");
-    expect(Object.fromEntries(open.url.searchParams))
-      .toMatchObject({ uploadType: "resumable", supportsAllDrives: "true" });
+    // A domain's default visibility for uploads would share the file beyond its folder.
+    expect(Object.fromEntries(open.url.searchParams)).toMatchObject(
+      { uploadType: "resumable", supportsAllDrives: "true", ignoreDefaultVisibility: "true" });
     expect(open.headers.get("X-Upload-Content-Type")).toBe("text/plain");
     expect(JSON.parse(open.body ?? "")).toEqual(create);
     expect([put.method, put.url.href, put.headers.get("Content-Range")])
@@ -2935,6 +2936,8 @@ describe("upload", () => {
     expect(calls[0].method).toBe("PATCH");
     expect(calls[0].url.pathname).toBe("/upload/drive/v3/files/F");
     expect(JSON.parse(calls[0].body ?? "")).toEqual({});
+    // The file keeps its own sharing, which no default visibility touches.
+    expect(calls[0].url.searchParams.has("ignoreDefaultVisibility")).toBe(false);
   });
 
   it("reads a 409 for a reserved ID as an earlier upload's file, at the open or the last chunk", async () => {
@@ -2962,16 +2965,18 @@ describe("upload", () => {
 });
 
 describe("findNamed, getContentVersion and keepRevision", () => {
-  it("finds the live files named exactly so in a folder, whatever Drive's search matched", async () => {
+  it("finds the live files named exactly so in a folder, in its corpus, whatever Drive's search matched", async () => {
     let calls = stubFetch([jsonResponse({ files: [
       { id: "A", name: "notes.txt", mimeType: "text/plain" },
       { id: "B", name: "Notes.txt", mimeType: "text/plain" },
     ] })]);
-    expect((await api().findNamed("P", "notes.txt")).map(file => file.id)).toEqual(["A"]);
+    expect((await api().findNamed("P", "notes.txt", { kind: "drive", driveId: "D" })).map(file => file.id))
+      .toEqual(["A"]);
     let params = calls[0].url.searchParams;
     expect(params.get("q")).toContain("'P' in parents");
     expect(params.get("q")).toContain("name = 'notes.txt'");
-    expect(params.get("corpora")).toBe("allDrives");
+    // Not every drive: Drive may leave a search of all of them incomplete, which is refused.
+    expect([params.get("corpora"), params.get("driveId")]).toEqual(["drive", "D"]);
   });
 
   // Drive may answer a short or an empty page before a listing ends.
@@ -2981,7 +2986,7 @@ describe("findNamed, getContentVersion and keepRevision", () => {
       jsonResponse({ files: [{ id: "A", name: "notes.txt" }], nextPageToken: "p3" }),
       jsonResponse({ files: [{ id: "B", name: "notes.txt" }] }),
     ]);
-    expect((await api().findNamed("P", "notes.txt")).map(file => file.id)).toEqual(["A", "B"]);
+    expect((await api().findNamed("P", "notes.txt", { kind: "user" })).map(file => file.id)).toEqual(["A", "B"]);
     expect(calls.map(({ url }) => url.searchParams.get("pageToken"))).toEqual([null, "p2", "p3"]);
   });
 

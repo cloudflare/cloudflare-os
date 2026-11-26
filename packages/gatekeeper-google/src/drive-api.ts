@@ -256,6 +256,11 @@ export type DriveUploadTarget =
       mimeType?: string;
       appProperties?: Record<string, string>;
     };
+    /**
+     * Lets the domain's default visibility for new files apply, as it does to a file the user
+     * makes in Drive: a save is the user's. Left out, the file takes only its folder's sharing.
+     */
+    domainDefaultVisibility?: true;
   }
   | { replace: string };
 
@@ -1610,6 +1615,12 @@ export class DriveApi {
    * Drive answers a create under an ID already used with 409 and makes nothing, so `undefined`
    * means an earlier upload made it.
    *
+   * A new file is made with `ignoreDefaultVisibility` unless `target.domainDefaultVisibility` is
+   * set, so that it takes only the sharing of the folder it goes into: "Domain administrators can
+   * choose to make all uploaded files visible to the domain by default; this parameter bypasses
+   * that behavior for the request. Permissions are still inherited from parent folders."
+   * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create)
+   *
    * It goes through an upload session, a chunk at a time, so only a chunk is held in memory and a
    * lost reply is recovered by asking the session what it holds: sending again never makes a second
    * file. Nothing is made or changed until the last chunk arrives; any failure cancels `file` and
@@ -1621,6 +1632,7 @@ export class DriveApi {
     let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: MADE_FILE_FIELDS });
     let replace = "replace" in target ? target.replace : undefined;
     let create = "create" in target ? target.create : undefined;
+    if ("create" in target && !target.domainDefaultVisibility) params.set("ignoreDefaultVisibility", "true");
     let asked = replace ?? create?.id;
     let session: string | undefined;
     try {
@@ -1881,18 +1893,21 @@ export class DriveApi {
   }
 
   /**
-   * The live files named exactly `name` directly in folder `folderId`, in whichever drive it is,
-   * from every page of the search, since Drive may answer a short or an empty page before the end.
-   * Drive's search is updated some time after a file is made or renamed, so one made a moment ago
-   * may be missing.
+   * The live files named exactly `name` directly in folder `folderId`, searched in `corpus`, the
+   * one the folder is listed in, from every page of the search, since Drive may answer a short or
+   * an empty page before the end. Not every drive: Drive may leave a search of all drives
+   * incomplete, which {@link listFiles} refuses
+   * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list). Drive's
+   * search is updated some time after a file is made or renamed, so one made a moment ago may be
+   * missing.
    */
-  async findNamed(folderId: string, name: string): Promise<DriveFile[]> {
+  async findNamed(folderId: string, name: string, corpus: DriveCorpus): Promise<DriveFile[]> {
     requireDriveFileId(folderId);
     let named: DriveFile[] = [];
     let pageToken: string | undefined;
     do {
       let page = await this.listFiles({
-        directParentIds: [folderId], name, pageSize: 10, orderBy: null, corpus: { kind: "allDrives" },
+        directParentIds: [folderId], name, pageSize: 10, orderBy: null, corpus,
         ...(pageToken === undefined ? {} : { pageToken }),
       });
       named.push(...page.files.filter(file => file.name === name));

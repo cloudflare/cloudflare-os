@@ -33,7 +33,7 @@ import {
   driveRefusal, lookForToken, pendingId, requireWritable, sendOnce, type DriveWritesHost,
   type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
-import { nativeCopyName } from "./office-conversion";
+import { nativeCopyName, officeLabel } from "./office-conversion";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({
@@ -349,10 +349,36 @@ export function requireUploadOptions(
   if (options.overwrite && options.convertTo !== undefined) throw new Error(OVERWRITE_CONVERTS);
 }
 
+/**
+ * The delimited text types an upload converts into a Google Sheet, beside the Office types, by
+ * the extension each is named with. Drive imports CSV and TSV into Sheets
+ * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#import_to_google_docs_types).
+ * A copy does not take them.
+ */
+const SHEET_TEXT_TYPES: Record<string, string> = {
+  "text/csv": "csv", "text/tab-separated-values": "tsv",
+};
+
+const NOT_SHEET_SOURCE =
+  "Only an .xlsx, .xls, .xlsm, .ods, .csv or .tsv file converts to a Google Sheet.";
+
 /** What a converted upload becomes, refused for a type that does not convert into it. */
 export function uploadConversion(
   name: string, contentType: string, convertTo: DriveNativeType,
 ): { mimeType: string; name: string } {
+  if (convertTo === "spreadsheet") {
+    let type = contentType.toLowerCase();
+    let extension = Object.hasOwn(SHEET_TEXT_TYPES, type) ? SHEET_TEXT_TYPES[type] : undefined;
+    if (extension !== undefined) {
+      let suffix = `.${extension}`;
+      let named = name.toLowerCase().endsWith(suffix) && name.length > suffix.length
+        ? name.slice(0, -suffix.length) : name;
+      return { mimeType: NATIVE_TYPES.spreadsheet.mimeType, name: named };
+    }
+    if (officeLabel(NATIVE_TYPES.spreadsheet.kind, contentType) === undefined) {
+      throw new Error(NOT_SHEET_SOURCE);
+    }
+  }
   let native = nativeConversion(contentType, convertTo);
   return { mimeType: native.mimeType, name: nativeCopyName(native.kind, name) };
 }
@@ -443,7 +469,7 @@ async function requireStillUploadable(
   if (replacing === undefined) {
     // Drive takes any number of files of one name; an upload is refused one only when queued,
     // so a file of that name made since then is refused here.
-    let named = await host.api.findNamed(destination.id, payload.name);
+    let named = await host.api.findNamed(destination.id, payload.name, corpusOf(destination.driveId));
     if (named.length) throw new ActionApplyError(NAME_TAKEN_SINCE);
     return;
   }

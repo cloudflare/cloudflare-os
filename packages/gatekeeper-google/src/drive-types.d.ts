@@ -241,7 +241,7 @@ export interface DriveSharing {
   unshare(fileId: string, access: string | DriveGrantee): Promise<void>;
 }
 
-/** A Google-native type `copyFile()` and `uploadFile()` convert an Office file to. */
+/** A Google-native type `copyFile()` and `uploadFile()` convert a file to. */
 export type DriveNativeType = "document" | "spreadsheet" | "presentation";
 
 /** Options for `copyFile()`. */
@@ -282,20 +282,22 @@ export type DriveUploadOptions = {
    */
   mimeType?: string;
   /**
-   * Converts the upload into a Google-native file, as `copyFile()` converts a copy: a .docx, .doc,
-   * .odt or .rtf file to a `"document"`, an .xlsx, .xls, .xlsm or .ods file to a `"spreadsheet"`,
-   * a .pptx, .ppt or .odp file to a `"presentation"`, as the upload's MIME type says. Any other
-   * type fails, as do an empty file and one larger than Google converts into that type. The file
-   * is named without the Office extension.
+   * Converts the upload into a Google-native file, as the upload's MIME type says: a .docx, .doc,
+   * .odt or .rtf file to a `"document"`, an .xlsx, .xls, .xlsm, .ods, .csv or .tsv file to a
+   * `"spreadsheet"`, a .pptx, .ppt or .odp file to a `"presentation"`. Any other type fails, as do
+   * an empty file and one larger than Google converts into that type. The file is named without
+   * that extension.
    */
   convertTo?: DriveNativeType;
   /**
    * Replaces the content of the one file already named `name` in the folder, rather than failing.
-   * That file keeps its ID, name and sharing, and its current version stays in its version
-   * history, kept for good, from which the user can restore it. Fails when more than one file
-   * there has that name, when that file is a folder, a shortcut or a Google Docs, Sheets, Slides
-   * or other Google file, when the connected account cannot edit it, and with `convertTo`. With no
-   * file of that name there, a new file is uploaded.
+   * That file keeps its ID, name and sharing, and the version it holds when the user approves the
+   * upload stays in its version history, kept for good, from which the user can restore it. A
+   * version saved while the new content is being sent is not kept for good: it stays in the
+   * version history as an older version, which Google Drive typically keeps for 30 days. Fails
+   * when more than one file there has that name, when that file is a folder, a shortcut or a
+   * Google Docs, Sheets, Slides or other Google file, when the connected account cannot edit it,
+   * and with `convertTo`. With no file of that name there, a new file is uploaded.
    */
   overwrite?: boolean;
 };

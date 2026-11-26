@@ -154,8 +154,9 @@ const MOVE_ACCESS =
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
 const COPIES = { tag: "driveCopies", label: "Drive copies" };
 const COPY_WAITING =
-  "That file is a copy or an upload still waiting for approval, so this cannot be done with it " +
-  "yet. Do it once it is approved.";
+  "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+  "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+  "getEntry() with this ID later to see whether it has been made.";
 const NAMES_NO_COPY =
   "That pending ID names no copy or upload that was made: it was rejected or failed, or the ID " +
   "is not a copy's or an upload's.";
@@ -2871,8 +2872,9 @@ describe("uploads", () => {
     "Google Drive reports no content checksum for the file of that name in that folder, so its " +
     "content cannot be replaced here. Upload it under another name.";
   const FILE_WAITING =
-    "That file is a copy or an upload still waiting for approval, so this cannot be done with " +
-    "it yet. Do it once it is approved.";
+    "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+    "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+    "getEntry() with this ID later to see whether it has been made.";
   const EMPTY_CONVERSION =
     "An empty file cannot be converted. Leave out convertTo, or upload content.";
   const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

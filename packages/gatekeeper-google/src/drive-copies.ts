@@ -28,7 +28,7 @@ import {
   FOLDER_MIME_TYPE, isListableFolderNode, megabytes, SAVED_PROPERTY, SOURCE_MODIFIED_PROPERTY,
   UPLOAD_TOKEN_PROPERTY, type DriveApi, type DriveMadeFile, type DriveScopeNode,
 } from "./drive-api";
-import { exportMimeType, GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
+import { exportMimeType, GOOGLE_NATIVE_PREFIX, readTimed } from "./drive-file-read";
 import { isDirectChild } from "./drive-folder-scope";
 import {
   corpusOf, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE,
@@ -145,24 +145,30 @@ export type MadeFiles = {
 };
 
 /**
- * Where the file each native copy or converted upload made is kept, by action ID. Never swept:
- * `pending:<n>` names that file for as long as anything holds the ID, and action IDs are never
- * reused.
+ * Where the file each native copy or converted upload made is kept, by action ID: the prefix
+ * native copies were kept under before uploads existed, which their `pending:<n>` IDs still need.
+ * Never swept: `pending:<n>` names that file for as long as anything holds the ID, and action IDs
+ * are never reused.
  */
-const MADE_FILE_PREFIX = "driveFiles:made:";
+const MADE_FILE_PREFIX = "driveCopies:made:";
 
 /** The made-file records of one Drive binding, kept in its Durable Object's storage. */
-export function madeFiles(kv: DurableObjectStorage["kv"]): MadeFiles {
+export function madeFiles(kv: Pick<DurableObjectStorage["kv"], "get" | "put">): MadeFiles {
   return {
     get: id => kv.get<string>(`${MADE_FILE_PREFIX}${id}`),
     put: (id, fileId) => kv.put(`${MADE_FILE_PREFIX}${id}`, fileId),
   };
 }
 
-/** The refusal of a call given the ID of a copy or an upload that still waits. */
+/**
+ * The refusal of a call given the ID of a copy or an upload that still waits. An auto-approval
+ * rule may make the file moments later, with no one to approve it, so this asks for a look later
+ * rather than for an approval.
+ */
 export const FILE_WAITING =
-  "That file is a copy or an upload still waiting for approval, so this cannot be done with it " +
-  "yet. Do it once it is approved.";
+  "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+  "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+  "getEntry() with this ID later to see whether it has been made.";
 
 /** The refusal of a `pending:<n>` ID that names no copy or upload. */
 export const NAMES_NO_FILE =
@@ -654,8 +660,10 @@ export const DRIVE_COPY_DEFINITIONS: {
     describe: describeCopy,
     apply: async (payload, host, ctx) => {
       let { fileId, copyId, name, toFolderId, mimeType } = payload;
+      // The export is read only as the upload sends it, which the binding's decisions wait on, so
+      // a wait for bytes Drive stops sending must end.
       await copyUnderId(host, ctx.id, payload, async () => host.api.upload(
-        await host.api.openExport(fileId, mimeType), mimeType,
+        readTimed(await host.api.openExport(fileId, mimeType)), mimeType,
         { create: { id: copyId, name, parents: [toFolderId] } }));
     },
   },

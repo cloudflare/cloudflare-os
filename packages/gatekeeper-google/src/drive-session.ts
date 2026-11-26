@@ -1130,7 +1130,8 @@ export class DriveSessionCore extends DriveCoreBase {
    *
    * The call reports once: the destination as a file and as a folder whose contents were searched,
    * with each file found there, and what the connected account alone answers with no subresource.
-   * The account's own My Drive root is never reported.
+   * The account's own My Drive root is reported only as a folder whose contents were searched, as
+   * a listing of it is: no other account can see its metadata, but a search tells what it holds.
    */
   async uploadTarget(folderId: string | undefined, name: string): Promise<DriveUploadInto> {
     if (this.#scope.kind === "file") throw new Error(UPLOAD_SINGLE_FILE);
@@ -1138,8 +1139,9 @@ export class DriveSessionCore extends DriveCoreBase {
     let readRoot = this.myDriveRootReader();
     let destination = await this.#namedFolder(folderId, readRoot);
     let toMyDrive = folderId === MY_DRIVE_ROOT || await this.isOwnMyDriveRoot(destination, readRoot);
-    let units: DriveObservation[] = toMyDrive ? [] : [
-      {kind: "file", fileId: destination.id}, {kind: "folder", fileId: destination.id},
+    let units: DriveObservation[] = [
+      ...toMyDrive ? [] : [{kind: "file" as const, fileId: destination.id}],
+      {kind: "folder", fileId: destination.id},
     ];
     let description = uploadDescription(destination.id);
     let refusal = destination.mimeType !== FOLDER_MIME_TYPE ? MOVE_NOT_A_FOLDER
@@ -1149,7 +1151,7 @@ export class DriveSessionCore extends DriveCoreBase {
       throw new Error(refusal);
     }
     await this.requireAddable(destination.id, description);
-    let named = await this.api.findNamed(destination.id, name);
+    let named = await this.api.findNamed(destination.id, name, corpusOf(destination.driveId));
     await this.authorizeUnits(
       [...units, ...named.map(file => ({kind: "file" as const, fileId: file.id}))],
       UPLOAD_TITLE, description);
@@ -1716,20 +1718,23 @@ export class DriveFolderSessionCore extends DriveCoreBase {
    *
    * An upload the connected account may not make reports no subresource; one that is proved
    * reports the positioned folder, each file found named `name`, and, unless it is the positioned
-   * folder or the account's own My Drive root, the destination as a file and as a folder whose
-   * contents were searched.
+   * folder, the destination as a folder whose contents were searched, and, unless it is also the
+   * account's own My Drive root, as a file. The destination's proof is taken again after the
+   * search: a child folder is proved a child, any other the saved path.
    */
   async uploadTarget(folderId: string | undefined, name: string): Promise<DriveUploadInto> {
     let {destination, positioned, toMyDrive} = await this.#destination(folderId, refuseUploadDestination);
     let description = uploadDescription(destination.id);
     await this.requireAddable(destination.id, description);
-    let named = await this.api.findNamed(destination.id, name);
-    await this.#readLocation();
+    let named = await this.api.findNamed(destination.id, name, corpusOf(destination.driveId));
+    if (positioned || destination.id === this.#location.folderIds.at(-2)) await this.#readLocation();
+    else await this.#requireChildFolder(destination.id, refuseUploadDestination);
     await this.authorizeUnits(
       [
         this.#folderObservation(),
-        ...(positioned || toMyDrive ? [] : [
-          {kind: "file" as const, fileId: destination.id}, {kind: "folder" as const, fileId: destination.id},
+        ...(positioned ? [] : [
+          ...toMyDrive ? [] : [{kind: "file" as const, fileId: destination.id}],
+          {kind: "folder" as const, fileId: destination.id},
         ]),
         ...named.map(file => ({kind: "file" as const, fileId: file.id})),
       ],

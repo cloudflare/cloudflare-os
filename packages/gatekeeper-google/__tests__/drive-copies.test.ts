@@ -8,9 +8,10 @@ import {
 } from "../src/drive-api";
 import { pendingFile, pendingFilesInto, waitingFile } from "../src/drive-actions";
 import {
-  DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, DRIVE_EXPORT_COPIES, pendingActionId, planCopy,
+  DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, DRIVE_EXPORT_COPIES, madeFiles, pendingActionId, planCopy,
   type DriveCopiesHost, type DriveCopyAction, type DriveCopyActions,
 } from "../src/drive-copies";
+import { FILE_READ_IDLE_MS } from "../src/drive-file-read";
 import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
 } from "../src/drive-session";
@@ -139,6 +140,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 /**
@@ -589,6 +591,53 @@ describe("Drive copy sends", () => {
     expect(journal.get(id)?.state).toBe("failed");
     expect(api.openExport).not.toHaveBeenCalled();
   });
+
+  it("fails an exported copy whose export stops arriving, letting it go, and sends it again when approved again", async () => {
+    vi.useFakeTimers();
+    let { api, nodes, submit, apply } = harness();
+    nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
+    let cancelled = false;
+    // Drive begins the export, then sends nothing more.
+    api.openExport.mockResolvedValueOnce(new ReadableStream<Uint8Array>({
+      start: controller => { controller.enqueue(new TextEncoder().encode("F as")); },
+      cancel: () => { cancelled = true; },
+    }));
+    let id = await submit("exportCopy", exportIntoB());
+
+    let applied = apply(id);
+    await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS);
+    expect(await applied).toBe(UNCONFIRMED_COPY);
+    expect(cancelled).toBe(true);
+    expect(nodes.E).toBeUndefined();
+
+    // Nothing was made, so the next approval exports the file again.
+    expect(await apply(id)).toBeNull();
+    expect(nodes.E?.parents).toEqual(["B"]);
+  });
+
+  it("does not count the time the upload takes to send what it read of the export", async () => {
+    vi.useFakeTimers();
+    let { api, nodes, submit, apply } = harness();
+    nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
+    let sent: string[] = [];
+    api.upload.mockImplementationOnce(async content => {
+      for await (let chunk of content) {
+        sent.push(new TextDecoder().decode(chunk));
+        // A chunk's send takes up to two minutes, with its retries, before the next is read.
+        let { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 2 * FILE_READ_IDLE_MS);
+        await promise;
+      }
+      nodes.E = file("E", "B");
+      return { id: "E", mimeType: "application/pdf" };
+    });
+    let id = await submit("exportCopy", exportIntoB());
+
+    let applied = apply(id);
+    await vi.advanceTimersByTimeAsync(4 * FILE_READ_IDLE_MS);
+    expect(await applied).toBeNull();
+    expect(sent.join("")).toBe("F as application/pdf");
+  });
 });
 
 describe("Drive copy checks at apply", () => {
@@ -725,6 +774,15 @@ describe("Drive copy checks at apply", () => {
     let away = await moved.submit("copyFile", intoB(fromA));
     moved.nodes.F = file("F", "B");
     expect(await moved.apply(away)).toBe(OUT_OF_SCOPE);
+  });
+});
+
+describe("made-file records", () => {
+  // Native copies made before uploads were recorded under this key, and `pending:<n>` still names them.
+  it("reads the file a native copy made under the key copies have always been kept under", () => {
+    let kv = new FakeKv();
+    kv.put("driveCopies:made:3", "N");
+    expect(madeFiles(kv).get(3)).toBe("N");
   });
 });
 

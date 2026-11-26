@@ -7,10 +7,10 @@ import {
   DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY, type DriveApi,
   type DriveContentVersion, type DriveFile, type DriveScopeNode,
 } from "../src/drive-api";
-import { GOOGLE_DOC_MIME_TYPE, type DriveBindingScope } from "../src/drive-session";
+import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope } from "../src/drive-session";
 import {
   captureUpload, DRIVE_UPLOAD_DEFINITIONS, DRIVE_UPLOADS, MAX_UPLOADS_WAITING_BYTES,
-  replacedFile, replacedVersion, UPLOAD_FILE_STORE, uploadBytes, uploadContentType,
+  replacedFile, replacedVersion, UPLOAD_FILE_STORE, uploadBytes, uploadContentType, uploadConversion,
   type DriveUploadAction, type DriveUploadActions, type DriveUploadsHost,
 } from "../src/drive-uploads";
 import type { WriteAttempt } from "../src/drive-writes";
@@ -224,6 +224,31 @@ describe("uploadContentType", () => {
     expect(() => uploadContentType("a", "x", "Application/Vnd.Google-Apps.Document")).toThrow(
       "mimeType names a Google file type, which an upload cannot be. Upload an Office file with " +
       "convertTo to make a Google file.");
+  });
+});
+
+describe("uploadConversion", () => {
+  it("converts an Office file into its Google type, named without its extension", () => {
+    expect(uploadConversion("Plan.docx", DOCX, "document"))
+      .toEqual({ mimeType: GOOGLE_DOC_MIME_TYPE, name: "Plan" });
+  });
+
+  // Drive imports CSV and TSV into Sheets, as it does Excel files.
+  it("converts a CSV or TSV file into a Google Sheet, named without its extension", () => {
+    let csv = uploadContentType("sales.csv", "region,total\nWest,42", undefined);
+    expect(uploadConversion("sales.csv", csv, "spreadsheet"))
+      .toEqual({ mimeType: GOOGLE_SHEET_MIME_TYPE, name: "sales" });
+    expect(uploadConversion("Sales.TSV", "text/tab-separated-values", "spreadsheet"))
+      .toEqual({ mimeType: GOOGLE_SHEET_MIME_TYPE, name: "Sales" });
+    expect(uploadConversion("export", "text/csv", "spreadsheet"))
+      .toEqual({ mimeType: GOOGLE_SHEET_MIME_TYPE, name: "export" });
+  });
+
+  it("refuses a type that does not convert into the one asked for", () => {
+    expect(() => uploadConversion("sales.csv", "text/csv", "document"))
+      .toThrow("Only a .docx, .doc, .odt or .rtf file converts to a Google Doc.");
+    expect(() => uploadConversion("photo.png", "image/png", "spreadsheet"))
+      .toThrow("Only an .xlsx, .xls, .xlsm, .ods, .csv or .tsv file converts to a Google Sheet.");
   });
 });
 
@@ -446,6 +471,13 @@ describe("Drive upload sends", () => {
     expect(api.upload).toHaveBeenCalledTimes(1);
     expect(nodes.U?.parents).toEqual(["B"]);
     expect(journal.get(id)).toBeUndefined();
+  });
+
+  it("looks for a file of the name in the folder's own drive at approval", async () => {
+    let { api, nodes, submit, apply, newFile } = harness();
+    nodes.B = { ...folder("B", "A"), driveId: "D" };
+    expect(await apply(await submit("uploadFile", await newFile("hello")))).toBeNull();
+    expect(api.findNamed).toHaveBeenCalledWith("B", "notes.txt", { kind: "drive", driveId: "D" });
   });
 
   it("finds the file an unanswered upload made under its ID, and never uploads it again", async () => {
