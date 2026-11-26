@@ -2550,6 +2550,9 @@ export class GoogleDriveGatekeeperImpl
       access: this.#writes ? "write" : "read",
       writeRefusal: () => this.#writeRefusal(),
       actor: () => this.#actor(),
+      useStoredToken: async () => {
+        await this.#getAccessToken({ reloadStored: true });
+      },
       submit: (queue, kind, payload, fence) =>
         this.#actions.submit(queue, kind, payload, fence ? { fence } : undefined),
       undecided: read => this.#reads.read(() => read(this.#journal.listUndecided())),
@@ -2608,10 +2611,12 @@ export class GoogleDriveGatekeeperImpl
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
         // A write staged under no account is checked and made as the account connected now: a
-        // reconnect does not revoke the token this object kept of the one before it. Every
-        // request goes out under that one token, so a reconnect meanwhile cannot split the scope
-        // proof from the change, as for a fenced write below.
-        if (!settled) this.#approvalToken = await this.#getAccessToken({ reloadStored: true });
+        // reconnect does not revoke the token this object kept of the one before it. A rename
+        // goes out under one verified token, as a fenced write does below, so a reconnect
+        // meanwhile cannot split its scope proof from the change; it is refused before a 401
+        // takes another token. A comment is not pinned: its 401 is answered by a refresh.
+        if (!settled && record?.action.kind === "renameFile") await this.#pinApprovalAccount();
+        else if (!settled) await this.#getAccessToken({ reloadStored: true });
         this.#adoptOrphanedClaim(actionId);
         let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
         try {
@@ -2633,12 +2638,8 @@ export class GoogleDriveGatekeeperImpl
       // request Google refuses is never sent again under other credentials. The read itself starts
       // from the token the account stores now and may refresh it, as a token Google stopped
       // accepting before its recorded expiry needs: the fence then checks whatever answered.
-      await this.#getAccessToken({ reloadStored: true });
       try {
-        let verified: string | undefined;
-        let actor = await this.#identity(
-          new DriveApi(async opts => (verified = await this.#getAccessToken(opts))));
-        this.#approvalToken = verified;
+        let actor = await this.#pinApprovalAccount();
         if (record.fence.generation !== actor.permissionId &&
             this.#attempts.get(actionId) !== undefined) {
           // The kit would fail it for good and say to submit again. An earlier send may have
@@ -2656,6 +2657,20 @@ export class GoogleDriveGatekeeperImpl
         this.#approvalToken = undefined;
       }
     });
+  }
+
+  /**
+   * The Google account connected now, read from the token the account stores and refreshed if
+   * Google no longer accepts it; the token that answered is the one the rest of the approval uses.
+   * The caller clears `#approvalToken` when the approval ends.
+   */
+  async #pinApprovalAccount(): Promise<DriveActor> {
+    await this.#getAccessToken({ reloadStored: true });
+    let verified: string | undefined;
+    let actor = await this.#identity(
+      new DriveApi(async opts => (verified = await this.#getAccessToken(opts))));
+    this.#approvalToken = verified;
+    return actor;
   }
 
   /**
@@ -3268,14 +3283,22 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async rename(fileId: string, name: string): Promise<void> {
     await this.#requireWritable();
     let toName = newFileName(name);
+    // A move waiting for a folder on the saved path, which says nothing of the file, is refused
+    // before the file is read and reported.
+    let path = this.#core.pathFolderIds;
+    if (path) {
+      await this.#refuseQueued(pending => hasPendingMove(path, pending) ? MOVE_WAITING : undefined);
+    }
     // The file is read for the card as the account connected now; the rename is not fenced to it.
-    await this.#writes.actor();
+    await this.#writes.useStoredToken();
     let target = await this.#core.renameTarget(fileId);
     if (target.trashed) throw new Error(RENAME_TRASHED);
     if (target.name === toName) throw new Error(RENAME_SAME_NAME);
-    await this.#refuseBehindMove(target);
-    await this.#refuseQueued(pending =>
-      hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined);
+    // A write waiting for this file was reported with it when it was queued.
+    await this.#refuseQueued(pending => {
+      if (path && hasPendingMove([target.fileId], pending)) return MOVE_WAITING;
+      return hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined;
+    });
     await this.#writes.submit(this.#approvalQueue, "renameFile", {
       fileId: target.fileId,
       ...(target.folderIds ? { folderIds: target.folderIds } : {}),

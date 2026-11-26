@@ -248,6 +248,11 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    * credentials the account holds at that moment.
    */
   actor(): Promise<DriveActor>;
+  /**
+   * Replaces the token the binding kept with the one the account stores now, minting nothing
+   * while that is good, so that what is read next is read as the account connected now.
+   */
+  useStoredToken(): Promise<void>;
   /** Queues one write through `queue`, under `fence` when its definition is fenced. */
   submit<K extends keyof M>(
     queue: ActionSubmitter, kind: K, payload: M[K], fence?: ActionFence): Promise<number>;

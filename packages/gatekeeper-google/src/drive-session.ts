@@ -522,6 +522,11 @@ function listingDescription(
  * security rule drift without saying so.
  */
 abstract class DriveCoreBase {
+  /**
+   * The saved path a folder binding proves a write along at approval. An account or file binding
+   * has none.
+   */
+  abstract readonly pathFolderIds: readonly string[] | undefined;
   protected readonly api: DriveSessionApi;
   protected readonly access: DriveBindingAccess;
   protected readonly authorize: SubresourceAuthorizer;
@@ -790,6 +795,7 @@ abstract class DriveCoreBase {
 
 /** Scope enforcement, pagination, mapping, and observation authorization for account/file sessions. */
 export class DriveSessionCore extends DriveCoreBase {
+  readonly pathFolderIds = undefined;
   #scope: DriveSessionScope;
 
   constructor(options: DriveSessionCoreOptions) {
@@ -1483,6 +1489,10 @@ export class DriveFolderSessionCore extends DriveCoreBase {
 
   #currentFolderId(): string {
     return this.#location.folderIds[this.#location.folderIds.length - 1];
+  }
+
+  get pathFolderIds(): readonly string[] {
+    return this.#location.folderIds;
   }
 
   #folderObservation(): DriveObservation {

@@ -1574,6 +1574,30 @@ describe("sharing", () => {
     expect(provider.calls().filter(call => call === "PATCH /drive/v3/files/doc-1")).toHaveLength(1);
     expect(provider.requests.filter(({ token }) => token === OTHER_TOKEN)).toEqual([]);
     expect(await drive.waiting()).toEqual([actionId]);
+
+    // Approved again, it proves its file and reads the name as the account connected now.
+    provider.forget();
+    expect(await drive.apply(actionId)).toBeNull();
+    expect(provider.calls()).toEqual(expect.arrayContaining(
+      ["GET /drive/v3/about", "POST /batch/drive/v3", "PATCH /drive/v3/files/doc-1"]));
+    expect(provider.requests.filter(({ token }) => token !== OTHER_TOKEN)).toEqual([]);
+  });
+
+  it("refreshes a stored token Google stopped accepting before it pins a rename's approval", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("rename", "doc-1", "Plan 2027");
+    await account().setDriveToken("stale-token");
+    await account().setDriveToken("fresh-token", 1);
+    provider.rejected.add("stale-token");
+    provider.forget();
+
+    expect(await drive.apply(actionId)).toBeNull();
+    expect(provider.requests.slice(0, 2)).toEqual([
+      { call: "GET /drive/v3/about", token: "stale-token" },
+      { call: "GET /drive/v3/about", token: "fresh-token" },
+    ]);
+    expect(provider.requests.slice(2).filter(({ token }) => token !== "fresh-token")).toEqual([]);
+    expect(provider.calls()).toContain("PATCH /drive/v3/files/doc-1");
   });
 
   it("never sends a refused change again under credentials installed during its approval", async () => {
@@ -1929,8 +1953,11 @@ describe("renames", () => {
     // The move takes the file out of where this session reaches it.
     expect((await drive.call("rename", "doc-1", "Plan 2028")).error).toBe(MOVE_WAITING);
     let folderMove = await drive.queued("move", "inner", "archive");
-    expect((await drive.callIn(["inner"], "rename", "nested-doc", "Renamed")).error)
-      .toBe(MOVE_WAITING);
+    // A move of a folder on the path is said before the file is read, so the file is not reported.
+    let behind = await drive.callIn(["inner"], "rename", "nested-doc", "Renamed");
+    expect(behind.error).toBe(MOVE_WAITING);
+    expect(behind.reports.flatMap(({ subresources }) => subresources ?? []))
+      .not.toContain("drive/file/nested-doc");
     expect((await drive.call("rename", "inner", "Renamed")).error).toBe(MOVE_WAITING);
     expect(await drive.reject(move.actionId)).toBeNull();
     expect(await drive.reject(folderMove.actionId)).toBeNull();

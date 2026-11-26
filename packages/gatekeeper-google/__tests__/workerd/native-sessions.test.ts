@@ -376,6 +376,7 @@ const NO_COMMENTS: DriveQueue = {
   access: "read",
   writeRefusal: async () => "Unexpected comment write",
   actor: async () => { throw new Error("Unexpected identity read"); },
+  useStoredToken: async () => { throw new Error("Unexpected token reload"); },
   submit: async () => { throw new Error("Unexpected comment submission"); },
   undecided: read => read([]),
   waiting: read => read([]),
