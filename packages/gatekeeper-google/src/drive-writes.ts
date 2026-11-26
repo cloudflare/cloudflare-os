@@ -388,7 +388,11 @@ export type WriteStep<Sent> = {
    * error to leave it pending. Resolves with what the marker should note of what is already there.
    */
   check(): Promise<{ existing?: string[] }>;
-  /** Makes the change at Drive, resolving with what it made. */
+  /**
+   * Makes the change at Drive, resolving with what it made. Throws ActionApplyError only before it
+   * has sent anything, to fail the write for good as a check does: an exported copy proves its file
+   * again once Google has opened the export.
+   */
   send(): Promise<Sent>;
   /** Whether Google can be sent this write twice without a second effect. */
   repeatable: boolean;
@@ -440,13 +444,13 @@ const RATE_LIMITED =
  * A marker is written before the send and is never dropped here for a send that worked, that a
  * look found, or that a look could not judge: the gatekeeper drops it once the action's record is
  * settled, and until then a retry must find it and look, never send. It is dropped once the write
- * fails for good with nothing changed: at a check, by Google's refusal, or when the last send its
- * limit allows is also found to have made nothing. The marker of a send a look proves empty stays
- * until the next send's replaces it, which is what counts the sends. A write that cannot be
- * repeated loses its marker on a rate limit, on a missing scope and on a 401, when no send of it
- * is in doubt. A write that can be repeated keeps it through all three, so that its next
- * approval looks first: a change such a send made all the same is then found and bound, where an
- * approval with no marker would take it for someone else's.
+ * fails for good with nothing changed: at a check, at the send before it sends anything, by
+ * Google's refusal, or when the last send its limit allows is also found to have made nothing. The
+ * marker of a send a look proves empty stays until the next send's replaces it, which is what
+ * counts the sends. A write that cannot be repeated loses its marker on a rate limit, on a missing
+ * scope and on a 401, when no send of it is in doubt. A write that can be repeated keeps it
+ * through all three, so that its next approval looks first: a change such a send made all the
+ * same is then found and bound, where an approval with no marker would take it for someone else's.
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
@@ -492,6 +496,10 @@ export async function sendOnce<Sent>(
   try {
     sent = await step.send();
   } catch (error) {
+    if (error instanceof ActionApplyError) {
+      host.attempts.delete(id);
+      throw error;
+    }
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
       event: `${events}.send.failed`, outcome: failure, error,

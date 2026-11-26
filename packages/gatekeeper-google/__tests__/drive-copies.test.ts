@@ -775,6 +775,27 @@ describe("Drive copy checks at apply", () => {
     moved.nodes.F = file("F", "B");
     expect(await moved.apply(away)).toBe(OUT_OF_SCOPE);
   });
+
+  it("refuses an exported copy whose file leaves the binding while Google opens the export, uploading nothing", async () => {
+    let { api, attempts, journal, nodes, submit, apply } = harness(AT_R);
+    nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
+    let cancelled = false;
+    api.openExport.mockImplementationOnce(async (fileId, mimeType) => {
+      // Moved out of the bound folder while Google builds the export.
+      nodes.F = file("F", "X", GOOGLE_DOC_MIME_TYPE);
+      let bytes = new TextEncoder().encode(`${fileId} as ${mimeType}`);
+      return new ReadableStream<Uint8Array>({
+        pull: controller => { controller.enqueue(bytes); controller.close(); },
+        cancel: () => { cancelled = true; },
+      }, { highWaterMark: 0 });
+    });
+    let id = await submit("exportCopy", exportIntoB({ folderIds: ["R", "A"] }));
+    expect(await apply(id)).toBe(OUT_OF_SCOPE);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(api.upload).not.toHaveBeenCalled();
+    expect(cancelled).toBe(true);
+    expect(attempts.has(id)).toBe(false);
+  });
 });
 
 describe("made-file records", () => {

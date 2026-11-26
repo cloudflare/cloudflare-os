@@ -660,11 +660,21 @@ export const DRIVE_COPY_DEFINITIONS: {
     describe: describeCopy,
     apply: async (payload, host, ctx) => {
       let { fileId, copyId, name, toFolderId, mimeType } = payload;
-      // The export is read only as the upload sends it, which the binding's decisions wait on, so
-      // a wait for bytes Drive stops sending must end.
-      await copyUnderId(host, ctx.id, payload, async () => host.api.upload(
-        readTimed(await host.api.openExport(fileId, mimeType)), mimeType,
-        { create: { id: copyId, name, parents: [toFolderId] } }));
+      await copyUnderId(host, ctx.id, payload, async () => {
+        let exported = await host.api.openExport(fileId, mimeType);
+        // Google exports the file as it is when it answers, which may be after the file left the
+        // binding, so the copy's checks are made again before any of the export is sent.
+        try {
+          await requireStillCopyable(host, payload);
+        } catch (error) {
+          await exported.cancel().catch(() => undefined);
+          throw error;
+        }
+        // The export is read only as the upload sends it, which the binding's decisions wait on,
+        // so a wait for bytes Drive stops sending must end.
+        return host.api.upload(readTimed(exported), mimeType,
+          { create: { id: copyId, name, parents: [toFolderId] } });
+      });
     },
   },
 };
