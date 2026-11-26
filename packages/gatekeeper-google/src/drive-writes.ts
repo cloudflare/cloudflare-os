@@ -266,6 +266,12 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
   waiting<T>(
     read: (pending: readonly JournalEntry<TaggedAction<M>>[]) => Promise<T>,
   ): Promise<T>;
+  /**
+   * The writes `waiting()` reads, read now, without waiting out an approval that is running: its
+   * claim is among them until it settles. For a check that reads nothing from Google alongside,
+   * which has no approval's half-made change to keep out of what it reads.
+   */
+  queued(): readonly JournalEntry<TaggedAction<M>>[];
 };
 
 /**

@@ -380,6 +380,7 @@ const NO_COMMENTS: DriveQueue = {
   submit: async () => { throw new Error("Unexpected comment submission"); },
   undecided: read => read([]),
   waiting: read => read([]),
+  queued: () => [],
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -1793,7 +1794,8 @@ describe("Drive file reads", () => {
     };
     const { queue, session } = newSession(undefined, undefined, {
       ...NO_COMMENTS,
-      waiting: read => read([{ id: 7, action: { kind: "appendText", payload: edit } }]),
+      access: "write",
+      queued: () => [{ id: 7, action: { kind: "appendText", payload: edit } }],
     });
     using owned = session;
 
@@ -1805,6 +1807,43 @@ describe("Drive file reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual([
       "Open file from Google Drive", "Open file from Google Drive", "Export file from Google Drive",
     ]);
+  });
+
+  // The queue is read as it stands: an approval that is running holds reads that replay the queue,
+  // and one of another file, stalled on Google, would otherwise hold the export with it.
+  it("exports a file while an approval is running, without waiting for it to end", async () => {
+    let endApproval!: () => void;
+    const approval = new Promise<void>(resolve => { endApproval = resolve; });
+    const { session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      access: "write",
+      waiting: read => approval.then(() => read([])),
+      undecided: read => approval.then(() => read([])),
+    });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("sheet-1", "csv"))).toEqual(
+      new TextEncoder().encode("sheet-1 as text/csv"));
+    endApproval();
+  });
+
+  // A read-only binding's native sessions replay no queued edit, so the file they read is the one
+  // Google has, and so is its export, even with edits queued before the deployment kept Drive
+  // read-only: those wait until writes are allowed again or the edits are rejected.
+  it("exports a file with edits queued before the binding became read-only", async () => {
+    const edit: DriveEdit<DriveDocEdits["appendText"]> = {
+      target: { fileId: "doc-1" },
+      change: { type: "appendText", markdown: "More", submittedAt: 0 },
+    };
+    const { session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      waiting: read => read([{ id: 7, action: { kind: "appendText", payload: edit } }]),
+      queued: () => [{ id: 7, action: { kind: "appendText", payload: edit } }],
+    });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("doc-1", "txt"))).toEqual(
+      new TextEncoder().encode("doc-1 as text/plain"));
   });
 
   it("exports only the bound file of an exact-file binding", async () => {
@@ -2629,9 +2668,10 @@ describe("folder-scoped native sessions", () => {
     });
     const { session } = folderSession(nodes, undefined, {
       ...NO_COMMENTS,
-      waiting: read => {
+      access: "write",
+      queued: () => {
         checked = true;
-        return read(queued ? [{ id: 7, action: { kind: "appendText", payload: edit } }] : []);
+        return queued ? [{ id: 7, action: { kind: "appendText", payload: edit } }] : [];
       },
     });
     using owned = session;

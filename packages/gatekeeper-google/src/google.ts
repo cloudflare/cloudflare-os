@@ -2557,6 +2557,7 @@ export class GoogleDriveGatekeeperImpl
       // so it waits as much as an undecided write does. Reads wait behind a running approval, so
       // none sees the claim that approval holds.
       waiting: read => this.#reads.read(() => read(this.#journal.listPending())),
+      queued: () => this.#journal.listPending(),
     };
     return new GoogleDriveSessionImpl(
       this.#api,
@@ -3109,7 +3110,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let core = this.#core;
     let file = await core.openFile(fileId, "file");
     let {nativeMimeType, mimeType} = exportMimeType(file, format);
-    await this.#refuseEditsWaiting(file.id);
+    this.#refuseEditsWaiting(file.id);
     let modifiedTime = driveModifiedTime(file);
     let opened: ReadableStream<Uint8Array> | undefined;
     // An export is the file's content, so it needs leave to download as readFile() does, and a
@@ -3122,7 +3123,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     })(async (): Promise<{ content: ReadableStream<Uint8Array> } | { refusal: Error }> => {
       // Asked again as Drive is asked for the export: a folder binding has proved the file again
       // with Drive requests since, in which time another call may have queued an edit to it.
-      await this.#refuseEditsWaiting(file.id);
+      this.#refuseEditsWaiting(file.id);
       try {
         opened = await this.#driveApi.openExport(file.id, mimeType);
       } catch (error) {
@@ -3143,13 +3144,19 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return {mimeType, modifiedTime, content: idleTimed(outcome.content)};
   }
 
-  /** Refuses an export of `fileId` while edits this binding queued to it still wait. */
-  async #refuseEditsWaiting(fileId: string): Promise<void> {
-    // Drive exports the file as Google has it. The binding's own reads show its edits still
-    // waiting as if made, so an export without them would pass for one of the file as read.
-    await this.#refuseQueued(pending =>
-      pending.some(({ action }) => editedFile(action)?.target.fileId === fileId)
-        ? EXPORT_EDITS_WAITING : undefined);
+  /**
+   * Refuses an export of `fileId` while edits this binding queued to it still wait. The queue is
+   * read as it stands, not after an approval that is running, which may be of any other file.
+   */
+  #refuseEditsWaiting(fileId: string): void {
+    // Drive exports the file as Google has it. A writable binding's own reads show its edits still
+    // waiting as if made, so an export without them would pass for one of the file as read. A
+    // read-only binding's show none, even of edits queued before the deployment kept Drive
+    // read-only, so its export is the file as they read it.
+    if (this.#writes.access !== "write") return;
+    if (this.#writes.queued().some(({ action }) => editedFile(action)?.target.fileId === fileId)) {
+      throw new Error(EXPORT_EDITS_WAITING);
+    }
   }
 
   async listComments(fileId: string): Promise<Cursor<DriveComment>> {
