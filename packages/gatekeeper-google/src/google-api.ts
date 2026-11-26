@@ -2863,25 +2863,15 @@ export class GmailApi {
       validateGmailId(snapshot.messageId, "message ID");
       validateGmailId(snapshot.attachmentId, "attachment ID");
       const begin = new AbortController();
-      const opening = this.authedFetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
-        {signal: begin.signal});
-      let timer!: ReturnType<typeof setTimeout>;
-      // The signal ends a request that was made. The wait for a token to make it with heeds no
-      // signal, so the open itself is given up when the time is out, and an answer that comes
-      // after all is let go: its body may have failed with the signal already, which nothing
-      // is left to hear of.
-      const late = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          const reason = new DOMException("Gmail did not answer in time.", "TimeoutError");
-          begin.abort(reason);
-          void opening.then(answer => answer.body?.cancel(reason)).catch(() => undefined);
-          reject(reason);
-        }, GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
-      });
+      const timer = setTimeout(
+        () => begin.abort(new DOMException("Gmail did not answer in time.", "TimeoutError")),
+        GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
       let response: Response;
       try {
-        response = await Promise.race([opening, late]);
+        // The signal ends the wait for a token to ask with as well as the request itself.
+        response = await this.authedFetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
+          {signal: begin.signal});
       } finally {
         clearTimeout(timer);
       }

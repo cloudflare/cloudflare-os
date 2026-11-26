@@ -1810,8 +1810,8 @@ describe("Gmail streamed attachment bytes", () => {
   it("gives up an open whose token never comes, or comes after the time is out", async () => {
     vi.useFakeTimers();
     const calls = stubFetch([]);
-    // The token provider asks Google who the token is for, and the account for the token: neither
-    // heeds the signal the request is made with.
+    // The token provider asks Google who the token is for, and the account for the token: the
+    // time running out ends the wait for them, as it ends the request.
     const stalled = new GmailApi("me@example.com", () => new Promise<string>(() => {}));
     const refused = expect(stalled.openAttachmentContent(detached(3))).rejects.toMatchObject(
       {name: "TimeoutError", message: "Gmail did not answer in time."});
@@ -1820,8 +1820,7 @@ describe("Gmail streamed attachment bytes", () => {
     expect(calls).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
 
-    // A token that comes a moment after the time is out is used for no request that is sent:
-    // fetch is given a signal that has aborted already.
+    // A token that comes a moment after the time is out is used for no request.
     let give!: (token: string) => void;
     const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
     const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
@@ -1829,30 +1828,30 @@ describe("Gmail streamed attachment bytes", () => {
     await late;
     give("token");
     await vi.advanceTimersByTimeAsync(1000);
-    expect(calls.map(({init}) => init.signal?.aborted)).toEqual([true]);
+    expect(calls).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("lets go of an answer that comes after the time is out, also when its body has failed by then", async () => {
+  it("lets go of a token that fails after the time is out", async () => {
     vi.useFakeTimers();
     const unheard: unknown[] = [];
     const hear = (reason: unknown) => { unheard.push(reason); };
     process.on("unhandledRejection", hear);
     try {
-      // The answer a token reload held back: its body failed when the request was given up.
-      const failed = new ReadableStream<Uint8Array>({start: controller => controller.error(new Error("aborted"))});
-      let give!: (token: string) => void;
-      stubFetch([new Response(failed)]);
-      const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
+      const calls = stubFetch([]);
+      let fail!: (error: Error) => void;
+      const slow = new GmailApi("me@example.com",
+        () => new Promise<string>((_resolve, reject) => { fail = reject; }));
       const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
       await vi.advanceTimersByTimeAsync(60_000);
       await late;
-      give("token");
+      fail(new Error("the account could not mint a token"));
       await vi.advanceTimersByTimeAsync(1000);
       vi.useRealTimers();
       // A rejection nothing handles is reported after the turn it was left unhandled in.
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(unheard).toEqual([]);
+      expect(calls).toEqual([]);
     } finally {
       process.off("unhandledRejection", hear);
     }
