@@ -1954,8 +1954,10 @@ describe("renames", () => {
     expect((await drive.call("rename", "doc-1", "Plan 2028")).error).toBe(MOVE_WAITING);
     let folderMove = await drive.queued("move", "inner", "archive");
     // A move of a folder on the path is said before the file is read, so the file is not reported.
+    provider.forget();
     let behind = await drive.callIn(["inner"], "rename", "nested-doc", "Renamed");
     expect(behind.error).toBe(MOVE_WAITING);
+    expect(provider.calls()).not.toContain("GET /drive/v3/files/nested-doc");
     expect(behind.reports.flatMap(({ subresources }) => subresources ?? []))
       .not.toContain("drive/file/nested-doc");
     expect((await drive.call("rename", "inner", "Renamed")).error).toBe(MOVE_WAITING);

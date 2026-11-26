@@ -3294,9 +3294,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let target = await this.#core.renameTarget(fileId);
     if (target.trashed) throw new Error(RENAME_TRASHED);
     if (target.name === toName) throw new Error(RENAME_SAME_NAME);
-    // A write waiting for this file was reported with it when it was queued.
+    // A write waiting for this file was reported with it when it was queued. The path is asked
+    // again, for a move of one of its folders queued while the file was read.
     await this.#refuseQueued(pending => {
-      if (path && hasPendingMove([target.fileId], pending)) return MOVE_WAITING;
+      if (path && hasPendingMove([...path, target.fileId], pending)) return MOVE_WAITING;
       return hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined;
     });
     await this.#writes.submit(this.#approvalQueue, "renameFile", {
