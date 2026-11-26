@@ -5824,6 +5824,17 @@ describe("Google Doc comments", () => {
     expect(docs.commentWrites).toBe(1);
   });
 
+  // The comment posted but the overseer never heard, so the kernel still shows it pending.
+  it("accepts a deny or a repeated approve of a comment that already posted", async () => {
+    let docs = model();
+    let id = (await call("comment-landed", "comment", "Hm.", { quote: "May" })).actionId!;
+    expect(await hooks().applyAction("comment-landed", id)).toBeNull();
+    expect(await hooks().applyAction("comment-landed", id)).toBeNull();
+    expect(await hooks().rejectAction("comment-landed", id)).toBeUndefined();
+    expect(docs.threads.map(thread => thread.headPost.content)).toEqual(["Hm."]);
+    expect(docs.commentWrites).toBe(1);
+  });
+
   it("clears a comment write on deny from every state", async () => {
     let docs = model();
     let theirs = docs.addThread("Date?", { quote: "May" });

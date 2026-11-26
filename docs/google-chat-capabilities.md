@@ -224,7 +224,8 @@ retry. Any action can be rejected unless it is being applied right now. Rejectin
 but does not undo a write an earlier attempt may already have made, and a denied send's message
 capability then says it may have posted (for the binding's 100 most recent such sends; an
 older one reads as never created). Deny also clears an action the connection no longer
-holds, and Approve succeeds on one whose write already landed. A reply Google posts outside its thread, from any
+holds. One it recorded as applied can be approved again without a second write, and a denied
+send of that kind still resolves to the posted message. A reply Google posts outside its thread, from any
 binding, is deleted again; if removing it fails, the error says so. Replies to rejected roots disappear from the simulation. Undoing any change
 whose message was since deleted counts as done, since nothing is left to restore. Authentication
 and permission errors during undo remain retryable rather than being counted as successful

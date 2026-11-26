@@ -4895,10 +4895,11 @@ describe("Gmail pending sends", () => {
     await draft.update({text: "First update"});
     await draft.update({subject: "Second update"});
     await gatekeeper.applyAction(1);
-    const written = imported.mail.raw;
+    const written = {raw: imported.mail.raw, id: imported.mail.id};
     await gatekeeper.restart();
     await expect(gatekeeper.applyAction(1)).resolves.toBeUndefined();
-    expect(imported.mail.raw).toBe(written);
+    // The fake Gmail gives every update a fresh message ID, so this catches a second write.
+    expect({raw: imported.mail.raw, id: imported.mail.id}).toEqual(written);
     expect(await values.has("pending:action:2")).toBe(true);
     await gatekeeper.applyAction(2);
     const parsed = await parseGmailDraft(fakeMailRaw(imported.mail));
