@@ -467,7 +467,7 @@ export class GoogleDocGatekeeperImpl
     // Deny must still clear the card, and the comment stays in the Doc.
     if (this.#commentJournal.wasApplied(actionId)) {
       logger.warn("rejected a Google Doc comment that already applied", {
-        event: "action.reject.unknown", actionId, applied: true,
+        event: "action.reject.unknown", actionId,
       });
       return Promise.resolve();
     }
