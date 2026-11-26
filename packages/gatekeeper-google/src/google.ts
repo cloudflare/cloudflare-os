@@ -3109,13 +3109,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let core = this.#core;
     let file = await core.openFile(fileId, "file");
     let {nativeMimeType, mimeType} = exportMimeType(file, format);
-    // Drive exports the file as Google has it. The binding's own reads show its edits still
-    // waiting as if made, so an export without them would pass for one of the file as read.
-    await this.#writes.waiting(async pending => {
-      if (pending.some(({ action }) => editedFile(action)?.target.fileId === file.id)) {
-        throw new Error(EXPORT_EDITS_WAITING);
-      }
-    });
+    await this.#refuseEditsWaiting(file.id);
     let modifiedTime = driveModifiedTime(file);
     let opened: ReadableStream<Uint8Array> | undefined;
     // An export is the file's content, so it needs leave to download as readFile() does, and a
@@ -3126,6 +3120,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
         if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
       },
     })(async (): Promise<{ content: ReadableStream<Uint8Array> } | { refusal: Error }> => {
+      // Asked again as Drive is asked for the export: a folder binding has proved the file again
+      // with Drive requests since, in which time another call may have queued an edit to it.
+      await this.#refuseEditsWaiting(file.id);
       try {
         opened = await this.#driveApi.openExport(file.id, mimeType);
       } catch (error) {
@@ -3144,6 +3141,15 @@ export class GoogleDriveSessionImpl extends RpcTarget
     });
     if ("refusal" in outcome) throw outcome.refusal;
     return {mimeType, modifiedTime, content: idleTimed(outcome.content)};
+  }
+
+  /** Refuses an export of `fileId` while edits this binding queued to it still wait. */
+  async #refuseEditsWaiting(fileId: string): Promise<void> {
+    // Drive exports the file as Google has it. The binding's own reads show its edits still
+    // waiting as if made, so an export without them would pass for one of the file as read.
+    await this.#refuseQueued(pending =>
+      pending.some(({ action }) => editedFile(action)?.target.fileId === fileId)
+        ? EXPORT_EDITS_WAITING : undefined);
   }
 
   async listComments(fileId: string): Promise<Cursor<DriveComment>> {

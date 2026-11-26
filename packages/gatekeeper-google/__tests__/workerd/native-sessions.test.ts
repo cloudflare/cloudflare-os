@@ -2092,7 +2092,9 @@ describe("folder-scoped native sessions", () => {
     return nativeCalls;
   }
 
-  function folderSession(nodes: Map<string, Node>, convertPdf?: PdfConverter) {
+  function folderSession(
+    nodes: Map<string, Node>, convertPdf?: PdfConverter, writes: DriveQueue = NO_COMMENTS,
+  ) {
     const queue = new TestApprovalQueue();
     return {
       queue,
@@ -2104,7 +2106,7 @@ describe("folder-scoped native sessions", () => {
         convertPdf,
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
-        NO_COMMENTS,
+        writes,
         undefined,
       )),
     };
@@ -2603,6 +2605,40 @@ describe("folder-scoped native sessions", () => {
 
     await expect(Promise.resolve(owned.exportFile("doc-1", "pdf"))).rejects.toThrow(OUTSIDE);
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  // The folder is proved again with Drive requests before the export is asked for, in which time
+  // another call can queue an edit to the file that the export would leave out.
+  it("refuses an export of a file an edit was queued to while the folder was proved again", async () => {
+    const nodes = subtree();
+    nodes.set("doc-1", {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    });
+    const nativeCalls = installFolderProvider(nodes);
+    const edit: DriveEdit<DriveDocEdits["appendText"]> = {
+      target: { fileId: "doc-1" },
+      change: { type: "appendText", markdown: "More", submittedAt: 0 },
+    };
+    let checked = false;
+    let queued = false;
+    const answered = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      if (checked && new Request(input, init).url.includes("/batch/")) queued = true;
+      return answered(input, init);
+    });
+    const { session } = folderSession(nodes, undefined, {
+      ...NO_COMMENTS,
+      waiting: read => {
+        checked = true;
+        return read(queued ? [{ id: 7, action: { kind: "appendText", payload: edit } }] : []);
+      },
+    });
+    using owned = session;
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf"))).rejects.toThrow(
+      "That file has changes waiting for approval, which an export would leave out");
+    expect(nativeCalls).toEqual([]);
   });
 });
 
