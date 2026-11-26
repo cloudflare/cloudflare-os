@@ -869,8 +869,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         client: parked.client,
         discovery: parked.discovery,
       }, Date.now());
+      // `expiresAt` means "stops being refreshable" (gatekeeper.ts `complete()`); an access token's
+      // expiry is internal when a refresh token can renew it.
       handoff = await callback.reconnectComplete(
-        stageId, tokens?.expiresAt ? new Date(tokens.expiresAt) : undefined);
+        stageId,
+        tokens?.refresh_token || !tokens?.expiresAt ? undefined : new Date(tokens.expiresAt));
     } else {
       this.setSessionId(sessionId);
       handoff = await callback.complete(this.mintAccount());
