@@ -1992,9 +1992,14 @@ describe("renames", () => {
     // asked again, just before the rename is queued.
     let read = provider.hold("GET /drive/v3/files/nested-doc");
     let renaming = drive.callIn(["inner"], "rename", "nested-doc", "Renamed");
-    await read.reached;
-    let lateMove = await drive.queued("move", "inner", "archive");
-    read.release();
+    let lateMove: Awaited<ReturnType<typeof drive.queued>>;
+    try {
+      // A rename that ends before it reads the file ends the wait too, and fails below.
+      await Promise.race([read.reached, renaming]);
+      lateMove = await drive.queued("move", "inner", "archive");
+    } finally {
+      read.release();
+    }
     let late = await renaming;
     expect(late.error).toBe(MOVE_WAITING);
     expect(late.actionId).toBeUndefined();
