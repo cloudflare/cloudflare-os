@@ -1900,8 +1900,13 @@ export class GoogleChatGatekeeperImpl
       // landed and the kernel never heard; the action stays in Google Chat.
       const applied = store.getRevert(actionId) !== undefined;
       const fields = { event: "action.reject.unknown", actionId, applied };
-      if (applied) logger.warn("rejected a Google Chat action that already applied", fields);
-      else logger.info("rejected a Google Chat action it no longer holds", fields);
+      if (applied) {
+        // A rejected card is never undone, so the record would only keep the message text.
+        store.clearRevert(actionId);
+        logger.warn("rejected a Google Chat action that already applied", fields);
+      } else {
+        logger.info("rejected a Google Chat action it no longer holds", fields);
+      }
       return undefined;
     }
     if (this.#inFlight.has(actionId)) {

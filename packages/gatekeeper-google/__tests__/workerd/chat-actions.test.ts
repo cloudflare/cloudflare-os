@@ -660,6 +660,10 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.rejectAction(1)).resolves.toBeUndefined();
     expect(backend.state.edits).toHaveLength(1);
     expect(backend.state.messages[0].text).toBe("Resolved");
+    // Denied, so its undo record is gone and the edit stays.
+    await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+    expect(backend.state.messages[0].text).toBe("Resolved");
   });
 
   it("shows the approver the exact message text", async () => {
