@@ -61,6 +61,7 @@ describe("fetchWithAuthRetry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   // Unlike a stream, a byte-array body survives being sent and can be replayed after a 401.
@@ -130,6 +131,8 @@ describe("fetchWithAuthRetry", () => {
       ["a 503", () => new Response(null, { status: 503, headers: { "Retry-After": "10" } })],
       ["a network failure", () => { throw new TypeError("network down"); }],
     ];
+    // Half the longest first pause, so that the abort always comes during it.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
     for (let [what, answer] of answers) {
       vi.useFakeTimers();
       let requests = 0;
@@ -216,6 +219,32 @@ describe("fetchWithAuthRetry", () => {
         await vi.waitFor(() => expect(failed, what).toBe(reason));
       }
       expect(cancels, `${status}: the refused answer is let go`).toBe(1);
+    }
+  });
+
+  // Letting go of a refused answer is never waited on, so a cancel that stalls holds up nothing.
+  it("sends its retry or replay without waiting to let go of the refused answer", async () => {
+    let stalled = () => new ReadableStream<Uint8Array>({ cancel: () => new Promise<void>(() => {}) });
+    let cases: [string, () => Response, (opts?: AccessTokenRequest) => Promise<string>][] = [
+      ["a 503's retry", () => new Response(stalled(), { status: 503, headers: { "Retry-After": "1" } }),
+        async () => "token"],
+      ["a 401's replay", () => new Response(stalled(), { status: 401 }),
+        async opts => opts?.forceRefresh ? "fresh" : "stale"],
+      ["a 403's replay", () => new Response(stalled(), { status: 403 }),
+        async opts => opts?.reloadStored ? "granted" : "token"],
+    ];
+    for (let [what, refused, provider] of cases) {
+      vi.useFakeTimers();
+      let requests = 0;
+      vi.stubGlobal("fetch", async () => requests++ === 0 ? refused() : new Response("{}"));
+      let answered: number | undefined;
+      void fetchWithAuthRetry("https://www.googleapis.com/drive/v3/files/file-1", {}, provider)
+        .then(response => { answered = response.status; });
+      // The 503's pause is the second its Retry-After asks for.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(requests, what).toBe(2);
+      expect(answered, what).toBe(200);
+      vi.useRealTimers();
     }
   });
 
