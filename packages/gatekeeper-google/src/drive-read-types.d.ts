@@ -398,7 +398,8 @@ export interface GoogleDriveReadSession {
    * file, and asks to reconnect when the account was connected before Drive bindings could read
    * file content. Google exports the file as it is on Drive, so on a connection that edits files
    * the export fails while edits queued to the file wait for approval: export it once they are
-   * decided. An edit queued once the export has been asked of Google is not in it.
+   * decided. The last check is made just before Google is asked for the export: an edit queued
+   * after it does not fail the export, and is in it only if it was made before Google exported.
    */
   exportFile(fileId: string, format: DriveExportFormat): Promise<DriveExport>;
 
