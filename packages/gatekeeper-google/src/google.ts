@@ -3439,6 +3439,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     if (isPendingId(fileId)) {
       let actionId = pendingActionId(fileId);
       if (actionId === undefined) throw new Error(NAMES_NO_COPY);
+      // A copy once made is known at once, with no approval that is running to wait for.
+      let made = this.#writes.madeCopy(actionId);
+      if (made !== undefined) return { fileId: made };
       return this.#writes.waiting(async pending => {
         let made = this.#writes.madeCopy(actionId);
         if (made !== undefined) return { fileId: made };
@@ -3449,6 +3452,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     }
     // A read-only binding has queued nothing, so it reads no queue.
     if (this.#writes.access !== "write") return { fileId };
+    // Most IDs are no queued copy's, and need not wait for an approval that is running, which may
+    // be of any other file. One that is waits for it, so as to show the copy made if it makes it.
+    if (pendingCopy(fileId, this.#writes.queued()) === undefined) return { fileId };
     let waiting = await this.#writes.waiting(async pending => pendingCopy(fileId, pending));
     return waiting ? { waiting } : { fileId };
   }
