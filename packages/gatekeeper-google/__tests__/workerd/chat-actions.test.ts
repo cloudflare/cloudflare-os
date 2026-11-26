@@ -666,6 +666,22 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages[0].text).toBe("Resolved");
   });
 
+  it("keeps a posted send's queued edit working after the send is denied", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.post("Working...")).message;
+    await message.edit("Done.");
+    // The send posted but the overseer never heard, so it is denied after the fact.
+    await chat.applyAction(1);
+    await expect(chat.rejectAction(1)).resolves.toBeUndefined();
+    expect(backend.state.deletes).toHaveLength(0);
+    expect(await message.getMetadata()).toMatchObject({id: messageName("M1"), text: "Done."});
+    await chat.applyAction(2);
+    expect(backend.state.creates).toHaveLength(1);
+    expect(backend.state.edits).toEqual([{name: messageName("M1"), text: "Done."}]);
+  });
+
   it("shows the approver the exact message text", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
