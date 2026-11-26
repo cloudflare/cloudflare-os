@@ -181,6 +181,44 @@ describe("fetchWithAuthRetry", () => {
     }
   });
 
+  // The refused answer is let go, but neither a cancel that stalls nor one that fails with the
+  // body's own error may hold up or replace what the call rejects with.
+  it("rejects with the abort's reason whatever letting go of the refused answer does", async () => {
+    let never = new Promise<string>(() => {});
+    let providers: [number, (opts?: AccessTokenRequest) => Promise<string>][] = [
+      [401, async opts => opts?.forceRefresh ? never : "stale"],
+      [403, async opts => opts?.reloadStored ? never : "token"],
+    ];
+    for (let [status, provider] of providers) {
+      let cancels = 0;
+      let bodies: [string, () => ReadableStream<Uint8Array>][] = [
+        ["a cancel that stalls", () => new ReadableStream<Uint8Array>({
+          cancel: () => { cancels++; return new Promise<void>(() => {}); },
+        })],
+        ["a body that has failed", () => new ReadableStream<Uint8Array>({
+          start: controller => controller.error(new Error("body failed")),
+        })],
+      ];
+      for (let [body, stream] of bodies) {
+        let what = `${status}, ${body}`;
+        let asked = vi.fn(provider);
+        vi.stubGlobal("fetch", async () => new Response(stream(), { status }));
+        let caller = new AbortController();
+        let failed: unknown;
+        fetchWithAuthRetry(
+          "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal }, asked,
+        ).catch((error: unknown) => { failed = error; });
+        await vi.waitFor(() => expect(asked, what).toHaveBeenCalledTimes(2));
+
+        let reason = new Error("stop");
+        caller.abort(reason);
+
+        await vi.waitFor(() => expect(failed, what).toBe(reason));
+      }
+      expect(cancels, `${status}: the refused answer is let go`).toBe(1);
+    }
+  });
+
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
     let requests = 0;
     vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });

@@ -231,7 +231,7 @@ export async function fetchWithAuthRetry(
       // A provider that cannot refresh (a fixed token) hands back the one just rejected.
       if (fresh !== token) {
         token = fresh;
-        await response.body?.cancel();
+        discard(response);
         continue;
       }
     }
@@ -244,14 +244,14 @@ export async function fetchWithAuthRetry(
         response, untilAborted(getAccessToken({ reloadStored: true }), init.signal));
       if (stored !== token) {
         token = stored;
-        await response.body?.cancel();
+        discard(response);
         continue;
       }
     }
 
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
-      await response.body?.cancel();
+      discard(response);
       await pause(delay, init.signal);
       attempt++;
       continue;
@@ -261,14 +261,22 @@ export async function fetchWithAuthRetry(
   }
 }
 
-/** Await `token`, cancelling the rejected response's body if it fails. */
+/** Await `token`, letting go of the refused response if it fails. */
 async function releasingOnFailure(response: Response, token: Promise<string>): Promise<string> {
   try {
     return await token;
   } catch (error) {
-    await response.body?.cancel();
+    discard(response);
     throw error;
   }
+}
+
+/**
+ * Lets go of an answer that is not returned, without waiting on it: cancelling a body can stall,
+ * or fail with the body's own error, and neither may hold up or replace what the call does next.
+ */
+function discard(response: Response): void {
+  void response.body?.cancel().catch(() => undefined);
 }
 
 /**
