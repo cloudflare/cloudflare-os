@@ -1617,8 +1617,9 @@ export default function GadgetEditor() {
     // back. A worktree has only Code.
     handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
     setWorkspaceVisibility('open', workpieceId)
-    // Picking the gadget is a return to it, so the composer offers it again.
-    onWorkpieceSelected()
+    // Picking the gadget is a return to it, so the composer offers it again. A deleted one's card
+    // leaves another selected, which the user hasn't picked.
+    if (picked) onWorkpieceSelected()
     const pendingChatId = picked?.chatId
     // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
     const ownerIsAgent = pendingChatId !== undefined && isSpawnedChat(pendingChatId)
