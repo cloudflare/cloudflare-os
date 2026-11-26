@@ -1699,10 +1699,12 @@ describe("sharing", () => {
     provider.nextWrite = { status: 403, reason: "shareOutNotPermitted" };
     expect(await drive.apply(share.actionId)).toBe(SHARE_OUT_REFUSED);
     await switchAccount();
+    provider.nextWrite = { status: 403, reason: "insufficientPermissions" };
 
-    // A comment is applied as the account connected now, not under the failed approval's token.
+    // A comment is applied as whichever account is connected: refused for the scope, it is sent
+    // again under the credentials stored since, which the failed approval's token would prevent.
     expect(await drive.apply(comment.actionId)).toBeNull();
-    expect(sent(COMMENT_ON_DOC).map(({ token }) => token === OTHER_TOKEN)).toEqual([true]);
+    expect(sent(COMMENT_ON_DOC).map(({ token }) => token === OTHER_TOKEN)).toEqual([false, true]);
     expect(provider.comments.get("doc-1")).toEqual(["Hi"]);
   });
 

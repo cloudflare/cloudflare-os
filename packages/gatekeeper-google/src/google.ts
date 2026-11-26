@@ -2610,13 +2610,12 @@ export class GoogleDriveGatekeeperImpl
       let settled = record === undefined || record.state === "failed" ||
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
-        // A write staged under no account is checked and made as the account connected now: a
-        // reconnect does not revoke the token this object kept of the one before it. A rename
-        // goes out under one verified token, as a fenced write does below, so a reconnect
-        // meanwhile cannot split its scope proof from the change; it is refused before a 401
-        // takes another token. A comment is not pinned: its 401 is answered by a refresh.
+        // A rename is checked and made as the account connected now, under one verified token,
+        // as a fenced write is below: a reconnect does not revoke the token this object kept of
+        // the one before it, and one meanwhile cannot split the scope proof from the change. A
+        // comment keeps the token it has: whether an earlier send of it landed is read by its
+        // author, which Drive answers relative to whoever asks.
         if (!settled && record?.action.kind === "renameFile") await this.#pinApprovalAccount();
-        else if (!settled) await this.#getAccessToken({ reloadStored: true });
         this.#adoptOrphanedClaim(actionId);
         let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
         try {
