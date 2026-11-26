@@ -17,7 +17,7 @@ import { DOC_COPY_FORMAT_VERSION, DOC_COPY_UNREADABLE, pruneTab } from "../src/d
 import {
   DOC_COPY_APPROVAL_GRAIN_MS, DOC_ROW_BYTES, DOC_STORE_FORMAT, DocRowTooLargeError, DocStore,
   docStoreCost, heldDoc, runId, type DocCopyHead, type DocPending, type DocRunSummary,
-  type DocStoreCost, type DocVersion,
+  type DocStoreCost, type DocVersion, type StoredRun,
 } from "../src/docs-store";
 import { cutRuns, RUN_SIZES, type RunSizes } from "../src/docs-runs";
 import { tableCellCount, tableShape } from "../src/docs-tables";
@@ -2428,6 +2428,22 @@ describe("DocStore, a version of several runs", () => {
     expect(store.head(DOC)).toBeUndefined();
   });
 
+  it("a run of no element among others is unreadable when its elements are asked for", () => {
+    let { storage, store } = opened(undefined, undefined, ONE);
+    let version = baseOf(store, store.keep(DOC, copyOf([tabOf("t1", [para("One"), para("Two")])], {}, ONE), NONE));
+    let next = store.reader(version, 0);
+    let runs: StoredRun[] = [];
+    for (let run = next(); run; run = next()) runs.push(run);
+    expect(runs).toHaveLength(3);
+    // The middle run's row is made to hold what an empty body's does.
+    storage.sql.exec(
+      "UPDATE doc_run SET json = '[]' WHERE doc = ? AND id = ?", DOC, listOf(storage, version)[1].run).toArray();
+
+    expect(() => runs[1].elements(version.bodyEndIndex - runs[2].size - runs[1].size))
+      .toThrow(new Error(DOC_COPY_UNREADABLE));
+    expect(store.head(DOC)).toBeUndefined();
+  });
+
   // A read that renders finds a run or the context damaged: unreadable, and the copy dropped.
   describe.each([
     ["one run's rendering is missing", undefined],
@@ -4246,6 +4262,39 @@ describe("DocStore.piece, the lists its runs name", () => {
   });
 });
 
+describe("DocStore.lists", () => {
+  it("answers the definitions of the lists asked for alone, with no run read", () => {
+    let storage = fakeDocStorage();
+    let store = new DocStore(storage);
+    let tab = tabOf("t1", [item("One", "N1"), item("Dot", "L1"), para("Plain")], { ...NUMBERED_LIST, ...BULLET_LIST });
+    let base = baseOf(store, store.keep(DOC, copyOf([tab]), NONE));
+    let counted = countedStorage(storage);
+    let reader = new DocStore(counted.storage);
+    let decoded = docStoreCost.runsDecoded, opening = counted.counts().all;
+
+    expect(reader.lists(base, ["N1", "nope"])).toEqual({ N1: tab.lists.N1 });
+    expect(reader.lists(base, ["L1", "N1"])).toEqual(tab.lists);
+    // A call reads the version's row and its context's twice: no page of the list and no run.
+    expect(counted.counts()).toEqual({ all: opening + 6, styles: 2, lists: 2, pages: 0, joined: 0, content: 0 });
+    expect(docStoreCost.runsDecoded).toBe(decoded);
+    // No id asks nothing.
+    expect(reader.lists(base, [])).toEqual({});
+    expect(counted.counts().all).toBe(opening + 6);
+  });
+
+  it("answers a list an edit makes from the edit's version, and not from the one before it", () => {
+    let store = new DocStore(fakeDocStorage());
+    let base = baseOf(store, store.keep(DOC, copyOf([tabOf("t1", [para("Plain")])]), NONE));
+
+    let { after } = docEditResult(store, base, { type: "appendText", markdown: "1. New" });
+
+    let { listId } = store.tab(after).body.content.at(-1)!.paragraph!.bullet!;
+    expect(store.lists(after, [listId])[listId].listProperties?.nestingLevels?.[0])
+      .toMatchObject({ glyphType: "DECIMAL" });
+    expect(store.lists(base, [listId])).toEqual({});
+  });
+});
+
 describe("DocStore.reader", () => {
   const ONE_ELEMENT: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
   /** 1,200 one-run paragraphs: lines repeating every 400, and a list continued near the end. */
@@ -4334,6 +4383,38 @@ describe("DocStore.reader", () => {
       return false;
     });
     expect(handed).toMatchObject({ get: expect.any(Function) });
+  });
+
+  it("names a run's content, and decodes the run where asked at the place it is told", () => {
+    let store = new DocStore(fakeDocStorage(), undefined, undefined, ONE_ELEMENT);
+    let tab = tabOf("t1", [
+      { runs: ["First", footnote(1), "\n"] }, item("same", "N1"), item("same", "N1"),
+      { runs: ["Last", footnote(2), "\n"] },
+    ], NUMBERED_LIST);
+    let base = baseOf(store, store.keep(DOC, copyOf([tab], {}, ONE_ELEMENT), NONE));
+    let next = store.reader(base, 0);
+    let runs: StoredRun[] = [];
+    let cost = { ...docStoreCost };
+    for (let run = next(); run; run = next()) runs.push(run);
+    // The two items hold the same elements and read "1." and "2.": one content, two entries.
+    let [first, second, last] = runs.slice(-3);
+    expect(second.content).toBe(first.content);
+    expect(second.entry).not.toBe(first.entry);
+    expect(last.content).not.toBe(first.content);
+    // A run handed is not decoded. Asked once the reader has passed the list, each decodes
+    // alone, and told where it starts and the footnotes before it, as the tab does.
+    expect(docStoreCost.runsDecoded - cost.runsDecoded).toBe(0);
+    let at = base.bodyEndIndex - runs.reduce((sum, run) => sum + run.size, 0), footnotes = 0;
+    let content = runs.flatMap(run => {
+      let elements = run.elements(at, footnotes);
+      at += run.size;
+      footnotes += JSON.stringify(elements).split("\"footnoteReference\"").length - 1;
+      return elements;
+    });
+    expect(docStoreCost.runsDecoded - cost.runsDecoded).toBe(runs.length);
+    expect(content).toEqual(store.tab(base).body.content);
+    // Told of no footnote before it, a run counts its own from one.
+    expect(JSON.stringify(last.elements(0))).toContain("\"footnoteNumber\":\"1\"");
   });
 
   it("counts the Markdown asked of it in hand, a run at a time, and none of a run it only hands", () => {
@@ -4517,6 +4598,8 @@ describe("DocStore.runs", () => {
 
     let empty = store.putTab(DOC, { ...PROSE(), tabId: "t9", body: { content: [] } }, []);
     expect([...store.runs(empty)]).toEqual([[]]);
+    // The reader, which is not told how many runs there are, decodes that run to none as well.
+    expect(store.reader(empty, 0)()!.elements(0)).toEqual([]);
   });
 
   it("reads the list a page at a time and no rendering", () => {
