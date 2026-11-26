@@ -2813,7 +2813,7 @@ describe("swapParent", () => {
 
 describe("copyFile and findCopy", () => {
   const COPY_URL = "https://www.googleapis.com/drive/v3/files/F/copy" +
-    "?supportsAllDrives=true&fields=id%2CmimeType";
+    "?supportsAllDrives=true&ignoreDefaultVisibility=true&fields=id%2CmimeType";
 
   it("copies a file under the ID reserved for it, and reads a 409 as an earlier send's copy", async () => {
     let calls = stubFetch([
@@ -2845,7 +2845,7 @@ describe("copyFile and findCopy", () => {
       appProperties: { gadgetsCopyToken: "t0k3n", gadgetsConvertedFrom: null },
     };
     await expect(api().copyFile("F", copy)).rejects.toMatchObject({ status: 503 });
-    expect(calls).toHaveLength(1);
+    expect(calls.map(({ method, url }) => [method, url.href])).toEqual([["POST", COPY_URL]]);
     expect(JSON.parse(calls[0].body ?? "")).toEqual(copy);
 
     // A 409 without a reserved ID is Drive's refusal like any other.
@@ -2853,8 +2853,9 @@ describe("copyFile and findCopy", () => {
     await expect(api().copyFile("F", copy)).rejects.toMatchObject({ status: 409 });
   });
 
-  it("finds a copy by its token in every drive, in the trash too, and only the copy that carries it", async () => {
+  it("finds a copy by its token in the folder's corpus past an empty page, in the trash too, and only the copy that carries it", async () => {
     let calls = stubFetch([
+      jsonResponse({ files: [], nextPageToken: "p2" }),
       jsonResponse({ files: [
         { id: "X", appProperties: { gadgetsCopyToken: "other" } },
         { id: "N", mimeType: "application/vnd.google-apps.document",
@@ -2863,15 +2864,18 @@ describe("copyFile and findCopy", () => {
       jsonResponse({ files: [] }),
     ]);
 
-    await expect(api().findCopy("t0k3n"))
+    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
       .resolves.toStrictEqual({ id: "N", mimeType: "application/vnd.google-apps.document" });
-    await expect(api().findCopy("t0k3n")).resolves.toBeUndefined();
+    await expect(api().findCopy("t0k3n", { kind: "user" })).resolves.toBeUndefined();
 
+    expect(calls.map(({ url }) => url.searchParams.get("pageToken"))).toEqual([null, "p2", null]);
     let params = calls[0].url.searchParams;
     // A copy that was made is found though it was put in the trash since.
     expect(params.get("q")).toBe("appProperties has { key='gadgetsCopyToken' and value='t0k3n' }");
-    expect(params.get("corpora")).toBe("allDrives");
+    expect([params.get("corpora"), params.get("driveId")]).toEqual(["drive", "D1"]);
     expect(params.get("includeItemsFromAllDrives")).toBe("true");
+    let mine = calls[2].url.searchParams;
+    expect([mine.get("corpora"), mine.get("driveId")]).toEqual(["user", null]);
   });
 });
 

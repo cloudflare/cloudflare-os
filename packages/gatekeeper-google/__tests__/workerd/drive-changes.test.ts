@@ -151,8 +151,9 @@ const MOVE_ACCESS =
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
 const COPIES = { tag: "driveCopies", label: "Drive copies" };
 const COPY_WAITING =
-  "That file is a copy still waiting for approval, so this cannot be done with it yet. Do it " +
-  "once the copy is approved.";
+  "That file is a copy still waiting to be made, so this cannot be done with it yet. It is made " +
+  "once it is approved, which an auto-approval rule may do in moments: call getEntry() with this " +
+  "ID later to see whether it has been made.";
 const NAMES_NO_COPY =
   "That pending ID names no copy that was made: the copy was rejected or failed, or the ID is " +
   "not a copy's.";
@@ -2257,7 +2258,7 @@ describe("copies", () => {
     expect(queued.action).not.toHaveProperty("awaitDecision");
     expect(field(queued.action, "Copy name")).toBe("Copy of Report.pdf");
     expect(queued.reports)
-      .toEqual([COPY_OF("drive/folder/folder-root", "drive/file/report", "drive/file/inner")]);
+      .toEqual([COPY_OF("drive/folder/folder-root", "drive/file/report", "drive/folder/inner")]);
 
     // Shown in the session of its folder, reporting the file it is a copy of.
     let shown = await drive.callIn(["inner"], "getEntry", "copy-1");
@@ -2310,7 +2311,7 @@ describe("copies", () => {
       modifiedTime: expect.any(Date), parentId: "elsewhere", pending: true,
     });
     expect(queued.action).toMatchObject({ actionKind: COPIES, autoApprovable: true, awaitDecision: true });
-    expect(queued.reports).toEqual([COPY_OF("drive/file/doc-1", "drive/file/elsewhere")]);
+    expect(queued.reports).toEqual([COPY_OF("drive/file/doc-1", "drive/folder/elsewhere")]);
     expect((await drive.call("getEntry", id)).value).toEqual(queued.value);
     expect((await drive.call("listComments", id)).error).toBe(COPY_WAITING);
     expect((await drive.call("readFile", id)).error).toBe(COPY_WAITING);
@@ -2370,17 +2371,22 @@ describe("copies", () => {
 
     await drive.queued("copyFile", "report", { folderId: "elsewhere" });
     let native = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
-    await drive.queued("copyFile", "report", { folderId: "root" });
+    let intoRoot = await drive.queued("copyFile", "report", { folderId: "root" });
 
     let shown = await drive.call("getEntry", "copy-1");
     expect(shown.value).toMatchObject({ id: "copy-1", parentId: "elsewhere", pending: true });
     expect(shown.reports).toEqual([READ("drive/file/report", "drive/folder/elsewhere")]);
     expect((await drive.call("getEntry", `pending:${native.actionId}`)).reports)
       .toEqual([READ("drive/file/doc-1", "drive/folder/elsewhere")]);
+    // A listing that shows the copy reports that folder on the page that shows it.
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+    expect(listed(listing.value)).toContain("copy-1");
+    expect(listing.reports.at(-1)?.subresources).toContain("drive/folder/elsewhere");
     // As a listing of that folder reports it: a read of the account's own My Drive root is no
-    // exception.
+    // exception, and neither is the copy's own call.
     expect((await drive.call("getEntry", "copy-2")).reports)
       .toEqual([READ("drive/file/report", "drive/folder/my-root")]);
+    expect(intoRoot.reports).toEqual([COPY_OF("drive/file/report", "drive/folder/my-root")]);
 
     // Its content too: the folder is reported before anything of the file is read.
     let read = await drive.call("readFile", "copy-1");

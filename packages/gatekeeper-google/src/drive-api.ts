@@ -1689,6 +1689,10 @@ export class DriveApi {
    * is never replayed, since a lost answer may still have made a copy, and its `appProperties`
    * are how {@link findCopy} finds that copy. Drive patches those over the file's own: a property
    * left out is kept from the file, and one set to `null` is cleared.
+   *
+   * Sent with `ignoreDefaultVisibility`, so that a domain's default of making new files visible to
+   * the domain is not applied, and the copy has only the access it inherits from its folder:
+   * https://developers.google.com/workspace/drive/api/reference/rest/v3/files/copy
    */
   async copyFile(fileId: string, copy: {
     name: string;
@@ -1700,7 +1704,9 @@ export class DriveApi {
     requireDriveFileId(fileId);
     requireDriveFileId(copy.parents[0]);
     if (copy.id !== undefined) requireDriveFileId(copy.id);
-    let params = new URLSearchParams({ supportsAllDrives: "true", fields: MADE_COPY_FIELDS });
+    let params = new URLSearchParams({
+      supportsAllDrives: "true", ignoreDefaultVisibility: "true", fields: MADE_COPY_FIELDS,
+    });
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy?${params}`,
       {
@@ -1732,35 +1738,44 @@ export class DriveApi {
   }
 
   /**
-   * The file whose {@link COPY_TOKEN_PROPERTY} is `token`, searched for in every drive, or
-   * `undefined` when Drive shows none. App properties are private to the client that set them,
-   * and the token is random, so only the copy made with it can match. A copy in the trash is
-   * found too: it proves the copy was made. Drive's search is updated some time after a file is
-   * made, so not finding it proves nothing.
+   * The file whose {@link COPY_TOKEN_PROPERTY} is `token`, searched for in `corpus`, the corpus of
+   * the folder the copy went into, or `undefined` when Drive shows none. App properties are private
+   * to the client that set them, and the token is random, so only the copy made with it can match.
+   * A copy in the trash is found too: it proves the copy was made. Drive's search is updated some
+   * time after a file is made, so not finding it proves nothing. Every page is read: Drive may
+   * answer one short, or empty, before the last
+   * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list).
    */
-  async findCopy(token: string): Promise<DriveMadeCopy | undefined> {
-    let params = new URLSearchParams({
-      q: `appProperties has { key='${COPY_TOKEN_PROPERTY}' and value='${
-        escapeDriveQueryLiteral(token)}' }`,
-      pageSize: "2",
-      fields: `files(${MADE_COPY_FIELDS},appProperties)`,
-      spaces: "drive",
-      corpora: "allDrives",
-      supportsAllDrives: "true",
-      includeItemsFromAllDrives: "true",
-    });
-    let body = await this.#getUnknown("/files", params);
-    if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
-    if (body.files === undefined) return undefined;
-    if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
-    for (let file of body.files) {
-      if (!isRecord(file) || typeof file.id !== "string") {
+  async findCopy(token: string, corpus: DriveCorpus): Promise<DriveMadeCopy | undefined> {
+    let pageToken: string | undefined;
+    do {
+      let params = new URLSearchParams({
+        q: `appProperties has { key='${COPY_TOKEN_PROPERTY}' and value='${
+          escapeDriveQueryLiteral(token)}' }`,
+        pageSize: "2",
+        fields: `nextPageToken,files(${MADE_COPY_FIELDS},appProperties)`,
+        spaces: "drive",
+        corpora: corpus.kind,
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true",
+      });
+      if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
+      if (pageToken) params.set("pageToken", pageToken);
+      let body = await this.#getUnknown("/files", params);
+      if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+      if (body.files !== undefined && !Array.isArray(body.files)) {
         throw new Error("Invalid Google Drive file-list response");
       }
-      if (optionalAppProperties(file.appProperties)?.[COPY_TOKEN_PROPERTY] !== token) continue;
-      let mimeType = optionalString(file.mimeType, "file mimeType");
-      return { id: file.id, ...(mimeType === undefined ? {} : { mimeType }) };
-    }
+      for (let file of (body.files ?? []) as unknown[]) {
+        if (!isRecord(file) || typeof file.id !== "string") {
+          throw new Error("Invalid Google Drive file-list response");
+        }
+        if (optionalAppProperties(file.appProperties)?.[COPY_TOKEN_PROPERTY] !== token) continue;
+        let mimeType = optionalString(file.mimeType, "file mimeType");
+        return { id: file.id, ...(mimeType === undefined ? {} : { mimeType }) };
+      }
+      pageToken = optionalString(body.nextPageToken, "nextPageToken");
+    } while (pageToken);
     return undefined;
   }
 

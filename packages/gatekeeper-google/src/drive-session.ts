@@ -351,6 +351,21 @@ export type SimulatedEntry = {
   sourceFolderIds?: readonly string[];
 };
 
+/**
+ * What showing a copy of file `sourceId` into folder `folderId` reports on an account binding: the
+ * file, and that folder. A copy has no sharing of its own, so who could see it is who can list
+ * that folder, as a listing of it reports, the account's own My Drive root included.
+ */
+function copyUnits(sourceId: string, folderId: string): DriveObservation[] {
+  return [{kind: "file", fileId: sourceId}, {kind: "folder", fileId: folderId}];
+}
+
+/** {@link copyUnits} of a simulated entry, which is outside scope with no folder to be in. */
+function simulatedUnits({entry, sourceId}: SimulatedEntry): DriveObservation[] {
+  if (entry.parentId === undefined) outsideScope();
+  return copyUnits(sourceId, entry.parentId);
+}
+
 /** The simulated entries a listing of folder `folderId` shows on its last page. */
 export type SimulatedListing = (folderId: string) => Promise<SimulatedEntry[]>;
 
@@ -757,13 +772,14 @@ abstract class DriveCoreBase {
   /**
    * A listing that shows, on its last page, the simulated entries `simulated` reads once that page
    * is fetched. `listPage` fetches one page; `entries` turns its files into the entries the caller
-   * sees; `authorize` reports a page with the units given, which name each simulated entry's
-   * source rather than the entry.
+   * sees; `authorize` reports a page with the units given, where each simulated entry stands for
+   * the units `simulatedUnits` gives it rather than for itself.
    */
   protected listingPager(options: {
     listPage: (pageToken: string | undefined) => Promise<{ files: DriveFile[]; nextPageToken?: string }>;
     entries: (files: DriveFile[]) => Promise<DriveEntry[]>;
     simulated?: () => Promise<SimulatedEntry[]>;
+    simulatedUnits: (simulated: SimulatedEntry) => DriveObservation[];
     authorize: (entries: DriveEntry[], units: DriveObservation[]) => Promise<void>;
   }): Pager<DriveEntry> {
     // The cursor builds and authorizes each page right after fetching it, so this is always the
@@ -781,9 +797,11 @@ abstract class DriveCoreBase {
         ...await options.entries(files), ...shown.map(({entry}) => entry),
       ],
       authorize: async entries => {
-        let sources = new Map(shown.map(({entry, sourceId}) => [entry, sourceId]));
-        await options.authorize(entries, entries.map(entry =>
-          ({kind: "file" as const, fileId: sources.get(entry) ?? entry.id})));
+        let simulated = new Map(shown.map(item => [item.entry, item]));
+        await options.authorize(entries, entries.flatMap(entry => {
+          let item = simulated.get(entry);
+          return item ? options.simulatedUnits(item) : [{kind: "file" as const, fileId: entry.id}];
+        }));
       },
     });
   }
@@ -939,18 +957,15 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   /**
-   * Shows a simulated entry, reporting the file it is a copy of and the folder it goes into. The
-   * entry comes from what this binding queued; its source is reported in its current state, as
-   * any read of it is. A copy has no sharing of its own, so who could see it is who can list that
-   * folder, as a listing of it reports, the account's own My Drive root included.
+   * Shows a simulated entry, reporting what {@link copyUnits} gives it. The entry comes from what
+   * this binding queued; its source is reported in its current state, as any read of it is.
    */
-  async simulatedEntry({entry, sourceId}: SimulatedEntry): Promise<DriveEntry> {
-    if (this.#scope.kind === "file" || entry.parentId === undefined) outsideScope();
-    await this.authorizeUnits(
-      [{kind: "file", fileId: sourceId}, {kind: "folder", fileId: entry.parentId}],
-      "Read Google Drive metadata",
-      `Read metadata for ${entry.id}, a copy of Drive file ${sourceId} waiting for approval.`);
-    return entry;
+  async simulatedEntry(simulated: SimulatedEntry): Promise<DriveEntry> {
+    if (this.#scope.kind === "file") outsideScope();
+    await this.authorizeUnits(simulatedUnits(simulated), "Read Google Drive metadata",
+      `Read metadata for ${simulated.entry.id}, a copy of Drive file ${simulated.sourceId} ` +
+      "waiting for approval.");
+    return simulated.entry;
   }
 
   /**
@@ -959,9 +974,9 @@ export class DriveSessionCore extends DriveCoreBase {
    * file is in.
    *
    * The call reports once, as {@link moveTarget} does: an objective fact about the file or the
-   * destination with the units it is a fact about, a copy that is proved with the file and the
-   * destination, and what the connected account alone answers with no subresource. The account's
-   * own My Drive root is never reported.
+   * destination with the units it is a fact about, and what the connected account alone answers
+   * with no subresource; a refusal never reports the account's own My Drive root. A copy that is
+   * proved reports what showing it reports ({@link copyUnits}), since the call returns its entry.
    */
   async copyTarget(fileId: string, folderId?: string): Promise<DriveCopyTarget> {
     if (this.#scope.kind === "file") throw new Error(COPY_SINGLE_FILE);
@@ -1004,7 +1019,7 @@ export class DriveSessionCore extends DriveCoreBase {
 
     let description = copyDescription(file.id, destination.id);
     await this.requireCopyable(file.id, destination.id, description);
-    await this.authorizeFiles(reported, COPY_TITLE, description);
+    await this.authorizeUnits(copyUnits(file.id, destination.id), COPY_TITLE, description);
     return copyTarget(file, destination, toMyDrive);
   }
 
@@ -1135,6 +1150,7 @@ export class DriveSessionCore extends DriveCoreBase {
       listPage: pageToken => this.api.listFiles({...query, corpus: {kind: "user"}, pageToken}),
       entries: async files => files.map(file => driveFileToEntry(file)),
       ...(simulated ? {simulated} : {}),
+      simulatedUnits,
       authorize: this.pageAuthorizer(this.#scope, query),
     });
   }
@@ -1197,7 +1213,7 @@ export class DriveSessionCore extends DriveCoreBase {
 }
 
 /** The corpus a folder in `driveId` (a shared drive's, or none for My Drive) is listed in. */
-function corpusOf(driveId: string | undefined): DriveCorpus {
+export function corpusOf(driveId: string | undefined): DriveCorpus {
   return driveId ? {kind: "drive", driveId} : {kind: "user"};
 }
 
@@ -1516,8 +1532,9 @@ export class DriveFolderSessionCore extends DriveCoreBase {
    *
    * A destination that is none of them is refused as {@link moveTarget} refuses one. A copy the
    * connected account may not make reports no subresource; one that is proved reports the
-   * positioned folder, the file and, unless it is the positioned folder or the account's own My
-   * Drive root, the destination.
+   * positioned folder and what showing the copy on an account binding reports
+   * ({@link copyUnits}), since the call returns its entry: the file, and the destination as a
+   * listing of it reports it, the account's own My Drive root included.
    */
   async copyTarget(fileId: string, folderId?: string): Promise<DriveCopyTarget> {
     let file = await this.#requireDirectFile(fileId);
@@ -1548,11 +1565,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     let description = copyDescription(file.id, destination.id);
     await this.requireCopyable(file.id, destination.id, description);
     await this.authorizeUnits(
-      [
-        this.#folderObservation(), {kind: "file", fileId: file.id},
-        ...(positioned || toMyDrive ? [] : [{kind: "file" as const, fileId: destination.id}]),
-      ],
-      COPY_TITLE, description);
+      [this.#folderObservation(), ...copyUnits(file.id, destination.id)], COPY_TITLE, description);
     return copyTarget(file, destination, toMyDrive, folderIds);
   }
 
@@ -1638,6 +1651,8 @@ export class DriveFolderSessionCore extends DriveCoreBase {
         return files.map(file => driveFileToEntry(file));
       },
       ...(simulated ? {simulated} : {}),
+      // The positioned folder every page reports is the folder each of these goes into.
+      simulatedUnits: ({sourceId}) => [{kind: "file", fileId: sourceId}],
       authorize: this.pageAuthorizer(
         {kind: "folder", folderId: this.#currentFolderId()}, audited,
         {revalidate: sinceFetch, baseUnits: [

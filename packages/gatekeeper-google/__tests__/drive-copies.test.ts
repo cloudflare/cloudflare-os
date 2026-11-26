@@ -33,6 +33,7 @@ const UNCONFIRMED_NATIVE_COPY =
 const TAKES_SHARING =
   "The copy takes the sharing of the folder it goes into: everyone with access to that folder " +
   "can open it.";
+const DIFFERENT_TYPE = "Google Drive made a copy of a different type than was asked for";
 
 /** A live folder the account can list and add to, as a scope proof reads it. */
 function folder(id: string, parent: string): DriveScopeNode {
@@ -291,14 +292,14 @@ describe("Drive copy sends", () => {
     expect(plain.api.getConversionSource).not.toHaveBeenCalled();
   });
 
-  it("finds a native copy by its token, and never sends one twice", async () => {
+  it("finds a native copy by its token in its folder's corpus, and never sends one twice", async () => {
     let found = harness();
     found.copyThenAnswer(unconfirmed());
-    let id = await found.submit("copyNative", nativeIntoB());
+    let id = await found.submit("copyNative", nativeIntoB({ driveId: "D1" }));
     expect(await found.apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
     found.api.findCopy.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
     expect(await found.apply(id)).toBeNull();
-    expect(found.api.findCopy).toHaveBeenCalledWith("t0k3n");
+    expect(found.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "drive", driveId: "D1" });
     expect(found.api.copyFile).toHaveBeenCalledTimes(1);
     expect(found.made.get(id)).toBe("N1");
 
@@ -311,6 +312,26 @@ describe("Drive copy sends", () => {
     expect(lost.api.copyFile).toHaveBeenCalledTimes(1);
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
+    expect(lost.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "user" });
+  });
+
+  it("fails a native copy Google Drive made of another type than asked for, recording nothing", async () => {
+    let sent = harness();
+    sent.api.copyFile.mockResolvedValueOnce({ id: "N1", mimeType: DOCX });
+    let id = await sent.submit("copyNative", nativeIntoB());
+    expect(await sent.apply(id)).toBe(DIFFERENT_TYPE);
+    expect(sent.journal.get(id)?.state).toBe("failed");
+    expect(sent.made.size).toBe(0);
+
+    // The same when a look finds it after a lost answer.
+    let found = harness();
+    found.api.copyFile.mockRejectedValueOnce(unconfirmed());
+    let again = await found.submit("copyNative", nativeIntoB());
+    expect(await found.apply(again)).toBe(UNCONFIRMED_NATIVE_COPY);
+    found.api.findCopy.mockResolvedValue({ id: "N1", mimeType: DOCX });
+    expect(await found.apply(again)).toBe(DIFFERENT_TYPE);
+    expect(found.journal.get(again)?.state).toBe("failed");
+    expect(found.made.size).toBe(0);
   });
 });
 

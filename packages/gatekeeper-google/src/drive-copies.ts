@@ -21,12 +21,13 @@ import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-descr
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   CONVERTED_FROM_PROPERTY, COPY_TOKEN_PROPERTY, DriveApiRequestError, FOLDER_MIME_TYPE,
-  isListableFolderNode, megabytes, SOURCE_MODIFIED_PROPERTY, type DriveApi, type DriveScopeNode,
+  isListableFolderNode, megabytes, SOURCE_MODIFIED_PROPERTY, type DriveApi, type DriveMadeCopy,
+  type DriveScopeNode,
 } from "./drive-api";
 import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
 import { isDirectChild } from "./drive-folder-scope";
 import {
-  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE,
+  corpusOf, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE,
   type SimulatedEntry,
 } from "./drive-session";
 import type { DriveNativeType } from "./drive-types";
@@ -131,10 +132,15 @@ export function madeCopies(kv: DurableObjectStorage["kv"]): MadeCopies {
   };
 }
 
-/** The refusal of a call given the ID of a copy that still waits. */
+/**
+ * The refusal of a call given the ID of a copy that still waits. An auto-approval rule may make
+ * the copy moments later, with no one to approve it, so this asks for a look later rather than
+ * for an approval.
+ */
 export const COPY_WAITING =
-  "That file is a copy still waiting for approval, so this cannot be done with it yet. Do it " +
-  "once the copy is approved.";
+  "That file is a copy still waiting to be made, so this cannot be done with it yet. It is made " +
+  "once it is approved, which an auto-approval rule may do in moments: call getEntry() with this " +
+  "ID later to see whether it has been made.";
 
 /** The refusal of a `pending:<n>` ID that names no copy. */
 export const NAMES_NO_COPY =
@@ -156,6 +162,9 @@ const UNCONFIRMED_NATIVE_COPY =
   "Google Drive did not confirm whether this copy was made, and it may have been: Google Drive " +
   "can take a while to show a new file. It won't be sent again. Approving it again looks for the " +
   "copy once more; rejecting it leaves any copy that was made.";
+
+/** Said of a native copy Drive made of another type than asked for, as copyAsNative() says it. */
+const DIFFERENT_TYPE = "Google Drive made a copy of a different type than was asked for";
 
 /** What Drive refuses a copy for, and what the approver is told. */
 const COPY_REFUSALS: readonly RefusalRow[] = [
@@ -415,18 +424,20 @@ function copyOrdinary(
 
 /**
  * Makes one approved native copy, with its token, and records the file it made. A look searches
- * for the token; not finding it leaves the copy unconfirmed and is never followed by a send.
+ * for the token in the corpus of the folder the copy goes into; not finding it leaves the copy
+ * unconfirmed and is never followed by a send. A copy Drive made of another type than asked for
+ * is not the one queued, so it fails the copy rather than being recorded.
  */
 async function copyNative(
   host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyNative"],
 ): Promise<void> {
-  let { fileId, token, name, toFolderId, mimeType, convertTo } = payload;
-  let made = await sendOnce<string>(host, id, {
+  let { fileId, token, name, toFolderId, mimeType, convertTo, driveId } = payload;
+  let made = await sendOnce<DriveMadeCopy>(host, id, {
     log: logger.with({ actionId: id, actionKind: "copyNative", fileId }),
     events: "drive.copies",
     look: async () => {
-      let found = await host.api.findCopy(token);
-      return found ? { found: found.id } : { conclusive: false };
+      let found = await host.api.findCopy(token, corpusOf(driveId));
+      return found ? { found } : { conclusive: false };
     },
     check: async () => {
       await requireStillCopyable(host, payload);
@@ -444,15 +455,24 @@ async function copyNative(
       });
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
       if (!copy) throw new Error("Google Drive answered a copy made without an ID as already made");
-      return copy.id;
+      return copy;
     },
     repeatable: false,
     refusal: error => driveRefusal(error, COPY_REFUSALS, "Google Drive refused this copy."),
     unconfirmed: UNCONFIRMED_NATIVE_COPY,
-    logFields: copy => ({ copyFileId: copy }),
+    logFields: copy => ({ copyFileId: copy.id }),
   });
+  if (made.mimeType !== undefined && made.mimeType !== mimeType) {
+    // The file Drive made stays, as any copy a rejection leaves does; nothing approves this again.
+    logger.warn("Google Drive made a copy of another type than was asked for", {
+      event: "drive.copies.type.mismatch", actionId: id, actionKind: "copyNative", fileId,
+      copyFileId: made.id, outcome: "failed",
+    });
+    host.attempts.delete(id);
+    throw new ActionApplyError(DIFFERENT_TYPE);
+  }
   // Before the action set retires the record, so that `pending:<n>` never names nothing between.
-  host.madeCopies.put(id, made);
+  host.madeCopies.put(id, made.id);
 }
 
 /** The approval card of any copy. */
