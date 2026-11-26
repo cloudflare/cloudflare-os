@@ -9,6 +9,7 @@ afterAll(() => closeViewBrowser());
 const unusedSession: VerifierSession = {
   openGadget: async () => { throw new Error("openGadget is not used by this test"); },
   readBlobText: async () => { throw new Error("readBlobText is not used by this test"); },
+  listActions: async () => ({ entries: [] }),
   connectionDrops: 0,
 };
 

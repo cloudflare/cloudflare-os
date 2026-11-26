@@ -2,17 +2,20 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RpcStub } from "capnweb";
 import {
-  openAgentSession, type AgentSessionOptions, type WorkshopAgentSession,
+  openAgentSession, type AgentSessionOptions, type Connection, type WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
 import {
-  ADMIN_USERNAME, startHarness, type Harness, type WorkerConfig,
+  ADMIN_USERNAME, startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR, TEST_VENDOR_ID,
+  type Harness, type WorkerConfig,
 } from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 import { connect, signUp } from "@gadgets/integration-tests/rpc-client";
-import type { AiModelProvider, GatewayModelSettings } from "@gadgets/workshop-shared/api";
+import type {
+  AiModelProvider, ChatMessageOptions, GatewayModelSettings,
+} from "@gadgets/workshop-shared/api";
 import type { ContextApi } from "../../gatekeeper-context/src/context-types.js";
 import type { EvalModel } from "./config.js";
-import type { EvalSkill } from "./task.js";
+import { linkedThings, type EvalSkill, type EvalTurn } from "./task.js";
 
 // The Skills library, the real Context gatekeeper, which a turn's `skills` write to. It is optional
 // and lists no connectable resources, so a user who never turns it on doesn't see it.
@@ -208,12 +211,14 @@ export function evalNetworkInterceptor(
 const workshops = new Map<string, Promise<Harness>>();
 
 // Settings are applied before the Workshop is handed to any trial, so none runs without them.
+// Only a task with Test Things has their gatekeeper, so that no other task's agent is offered it.
 async function startWorkshop(
     access: LocalModelAccess, model: EvalModel,
-    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
+    modelSettings: GatewayModelSettings | undefined, things: boolean): Promise<Harness> {
   const workshop = await startHarness({
     gatekeepers: [
       { binding: "CONTEXT", dir: SKILLS_DIR, patch: config => { delete config.build; } },
+      ...(things ? [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }] : []),
     ],
     enableGadgetExecution: true,
     ...(access.kind === "gateway"
@@ -236,12 +241,12 @@ async function startWorkshop(
 
 function workshopFor(
     access: LocalModelAccess, model: EvalModel,
-    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
-  const key = `${model.provider}/${model.model}/${JSON.stringify(modelSettings ?? null)}`;
+    modelSettings: GatewayModelSettings | undefined, things: boolean): Promise<Harness> {
+  const key = `${model.provider}/${model.model}/${JSON.stringify(modelSettings ?? null)}/${things}`;
   let workshop = workshops.get(key);
   if (workshop === undefined) {
     unconfirmedRuntimes++;
-    workshop = startWorkshop(access, model, modelSettings);
+    workshop = startWorkshop(access, model, modelSettings, things);
     workshops.set(key, workshop);
   }
   return workshop;
@@ -265,14 +270,18 @@ export async function closeLocalEvalRuntimes(): Promise<void> {
   if (failures.length > 1) throw new AggregateError(failures, "Eval Workshop shutdown failed");
 }
 
-/** Open one fresh agent session, as its own user, on this process's Workshop for `model`. */
+/**
+ * Open one fresh agent session, as its own user, on this process's Workshop for `model`. With
+ * `things`, the user has the account that connects Test Things.
+ */
 export async function openLocalEvalTarget(
     access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number,
-    modelSettings?: GatewayModelSettings): Promise<LocalEvalTarget> {
-  const workshop = await workshopFor(access, model, modelSettings);
+    modelSettings?: GatewayModelSettings, things = false): Promise<LocalEvalTarget> {
+  const workshop = await workshopFor(access, model, modelSettings, things);
   const options: AgentSessionOptions = {
     modelId: model.model,
     turnTimeoutMs,
+    ...(things ? { ambientVendorIds: [TEST_VENDOR_ID] } : {}),
     costAccountingTimeoutMs: access.kind === "gateway" ? GATEWAY_COST_ACCOUNTING_TIMEOUT_MS : 0,
     // A gateway serves every eval model, since each is a suggested model of the provider it
     // enables, and the Workshop refuses a hand-added model that a gateway model would shadow.
@@ -288,6 +297,30 @@ export async function openLocalEvalTarget(
   };
   const session = await openAgentSession(workshop.url, options);
   return { session, [Symbol.asyncDispose]: () => session.close() };
+}
+
+/**
+ * What a turn's message carries besides its prompt: each Test Thing linked in the prompt as the
+ * link the user pasted there, and the one they were viewing as the message's focus. `things`
+ * holds the ones already connected in the session's workspace, by URL.
+ */
+export async function messageOptions(
+    session: WorkshopAgentSession, { prompt, focus }: Pick<EvalTurn, "prompt" | "focus">,
+    things: Map<string, Connection>): Promise<ChatMessageOptions> {
+  const thing = async (url: string) => {
+    const connection = things.get(url) ?? await session.connect(TEST_VENDOR_ID, url);
+    things.set(url, connection);
+    return connection;
+  };
+  const options: ChatMessageOptions = {};
+  for (const { url, position } of linkedThings(prompt)) {
+    (options.capsules ??= []).push({ position, length: url.length, ...await thing(url) });
+  }
+  if (focus !== undefined) {
+    const { gatekeeperId: gadgetId } = await thing(focus.url);
+    options.focus = focus.spot === undefined ? { gadgetId } : { gadgetId, spot: focus.spot };
+  }
+  return options;
 }
 
 /** Turn on Skills for the session's user and add `skills` to a new private collection there. */

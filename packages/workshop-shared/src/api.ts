@@ -5904,9 +5904,9 @@ export type AiChatMessageBody = {
   attachments?: ChatAttachmentRef[];
 
   /**
-   * What the sender was focused on (see `ChatMessageOptions.focus`), with the gadget's title as
-   * it was when the message was sent, so the message still reads the same after the gadget is
-   * renamed or deleted.
+   * What the sender was focused on (see `ChatMessageOptions.focus`), with the title its gadget
+   * or connection had when the message was sent, so the message still reads the same after that
+   * is renamed or deleted.
    */
   focus?: MessageFocus & {gadgetTitle: string};
 
@@ -6751,19 +6751,23 @@ export type ChatMessageOptions = {
 
   /**
    * What the user was focused on when they sent the message, so the agent knows what "this"
-   * refers to. `gadgetId` must name one of the workspace's gadgets, and the spot must be within
-   * the `GadgetFocus` limits, or the message is refused. It grants the agent nothing: the gadget
-   * is not added to the chat's env. A slash-command request cannot carry one.
+   * refers to. `gadgetId` must name one of the workspace's gadgets or connections, and the spot
+   * must be within the `GadgetFocus` limits, or the message is refused. It grants the agent
+   * nothing: what it names is not added to the chat's env. A slash-command request cannot carry
+   * one.
    */
   focus?: MessageFocus;
 };
 
 /** What the user was focused on when they sent a chat message. */
 export type MessageFocus = {
-  /** The gadget they were viewing. */
+  /**
+   * The gadget they were viewing, or the connection whose own UI (see
+   * `GatekeeperClient.getUiBundle()`) they were viewing in a gadget's place.
+   */
   gadgetId: WorkpieceId;
 
-  /** The spot within it, if the gadget's UI had reported one. Absent: the gadget as a whole. */
+  /** The spot within it, if its UI had reported one. Absent: the gadget as a whole. */
   spot?: GadgetFocus;
 };
 

@@ -1,8 +1,9 @@
 import type { RpcPromise, RpcStub } from "capnweb";
 import type {
   ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
-  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
-  Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
+  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi,
+  CapsuleSpecifier, ChatMessageOptions, GadgetClient, Overseer, PublicApi, WorkpieceId,
+  WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
@@ -24,7 +25,12 @@ type UserModel = {
 export type AgentTurnOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** What the prompt carries besides its text: links pasted into it, or what the user was viewing. */
+  message?: ChatMessageOptions;
 };
+
+/** A connection as a message names it: all of a capsule but where in the text it stands. */
+export type Connection = Omit<CapsuleSpecifier, "position" | "length">;
 
 /** Configuration for one fresh local Workshop account and workspace. */
 export type AgentSessionOptions = {
@@ -109,6 +115,8 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   denyWebFetchRequest(requestId: string): Promise<void>;
   listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
   connectedAccount(vendorId: string): ConnectedAccount;
+  /** Connect `resourceUrl` in the workspace through the `vendorId` account, as pasting its link does. */
+  connect(vendorId: string, resourceUrl: string): Promise<Connection>;
   /**
    * Turn on an optional ambient gatekeeper, as the Gatekeepers page does, then come back to the
    * workspace, which provisions it there when it opens again, and wait until it has.
@@ -603,9 +611,10 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
         chatId, options.timeoutMs ?? this.#turnTimeoutMs, options.signal, prompt, false,
         dispatchedAfter);
     const operation = chatId === undefined
-      ? () => this.#startChat(prompt, observer)
+      ? () => this.#startChat(prompt, observer, options.message)
       : () => this.#awaitRpc(
-          this.#workspace.sendChatMessage(chatId, prompt, this.#modelId), chatId, observer);
+          this.#workspace.sendChatMessage(chatId, prompt, this.#modelId, options.message),
+          chatId, observer);
     return this.#observeOperation(observer, operation);
   }
 
@@ -709,6 +718,16 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     return account;
   }
 
+  async connect(vendorId: string, resourceUrl: string): Promise<Connection> {
+    await this.#ready();
+    using connection =
+        await this.#workspace.newGatekeeper(this.connectedAccount(vendorId).id, resourceUrl);
+    if (connection === null) throw new Error(`The ${vendorId} account cannot open ${resourceUrl}`);
+    const [gatekeeperId, description] =
+        await Promise.all([connection.getId(), connection.describe()]);
+    return { gatekeeperId, description, vendorId };
+  }
+
   async enableAmbientGatekeeper(vendorId: string): Promise<void> {
     await this.#ready();
     await this.#authenticatedApi.provisionAmbientAccount(vendorId);
@@ -761,8 +780,9 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     return this.close();
   }
 
-  async #startChat(prompt: string, observer: TurnObserver): Promise<void> {
-    const creating = this.#workspace.newChat(prompt, this.#modelId);
+  async #startChat(
+      prompt: string, observer: TurnObserver, message?: ChatMessageOptions): Promise<void> {
+    const creating = this.#workspace.newChat(prompt, this.#modelId, message);
     this.#pendingRpcs.add(creating);
     creating.then(chatId => {
       const status = observer.outcome?.status;
