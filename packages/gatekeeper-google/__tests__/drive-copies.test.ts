@@ -245,7 +245,7 @@ describe("Drive copy sends", () => {
     expect(journal.get(id)?.state).toBe("pending");
     expect(await apply(id)).toBeNull();
     expect(api.copyFile).toHaveBeenCalledTimes(1);
-    expect(api.getScopeNodes).toHaveBeenCalledWith(["C"]);
+    expect(api.getScopeNodes).toHaveBeenCalledWith(["C", "B"]);
     expect(nodes.C?.parents).toEqual(["B"]);
   });
 
@@ -258,6 +258,26 @@ describe("Drive copy sends", () => {
     expect(api.copyFile).toHaveBeenCalledTimes(2);
     expect(api.copyFile.mock.calls[1]?.[1]).toMatchObject({ id: "C" });
     expect(nodes.C?.parents).toEqual(["B"]);
+  });
+
+  it("leaves an ordinary copy unconfirmed while Drive shows neither its ID nor its folder", async () => {
+    let { api, attempts, journal, hidden, submit, apply, copyThenAnswer } = harness();
+    copyThenAnswer(unconfirmed());
+    let id = await submit("copyFile", intoB());
+    expect(await apply(id)).toBe(UNCONFIRMED_COPY);
+    // The account loses access to the drive the copy went into: Drive answers 404 for both, as it
+    // does for a file the account cannot read.
+    hidden.add("C");
+    hidden.add("B");
+    expect(await apply(id)).toBe(UNCONFIRMED_COPY);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(true);
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
+
+    // Access given back, the look finds the copy.
+    hidden.clear();
+    expect(await apply(id)).toBeNull();
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 
   it("counts a reserved ID Drive refuses as used as the copy made", async () => {

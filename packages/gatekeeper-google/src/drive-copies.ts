@@ -410,8 +410,13 @@ async function requireStillCopyable(
 }
 
 /**
- * Makes one approved ordinary copy under its reserved ID. A look reads that ID: found, the copy
- * was made; not found, it was not, and a send under the same ID could make no second one anyway.
+ * Makes one approved ordinary copy under its reserved ID. A look reads that ID, with the folder
+ * the copy goes into: found, the copy was made; not found while that folder is seen, it was not,
+ * since a copy made there takes the folder's access, and a send under the same ID could make no
+ * second one anyway. Drive answers 404 for a file the account cannot read as for one that does not
+ * exist (https://developers.google.com/workspace/drive/api/guides/handle-errors#notFound), so
+ * while the folder is not seen either, the copy may be there out of the account's sight, and the
+ * look proves nothing.
  */
 function copyOrdinary(
   host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyFile"],
@@ -421,8 +426,8 @@ function copyOrdinary(
     log: logger.with({ actionId: id, actionKind: "copyFile", fileId }),
     events: "drive.copies",
     look: async () => {
-      let [made] = await host.api.getScopeNodes([copyId]);
-      return made ? { found: copyId } : { conclusive: true };
+      let [made, destination] = await host.api.getScopeNodes([copyId, toFolderId]);
+      return made ? { found: copyId } : { conclusive: destination !== undefined };
     },
     check: async () => {
       await requireStillCopyable(host, payload);
