@@ -244,6 +244,16 @@ export type GmailPdfText = {
    * or a reader to stop early; cancel it if unread. Empty when `hasText` is false and
    * `transcribed` is too. A failure partway through errors the stream.
    *
+   * A long PDF's text does not fit a model's context: do not print it or return it whole. To
+   * keep all of it, pass `text` to `writeBytes(path, text)` of a worktree that is no
+   * repository's checkout, where a later commit would take the file with it: create an empty
+   * one with `createWorktree` when you have none. Await the write; then, from your next step
+   * on, read the file a window of lines at a time, or grep it: those tools refuse in the step
+   * a file was written in. `writeBytes()` reads the text to its end, so whatever pages a
+   * vision model reads for it are all read, and billed, however little of the file you then
+   * read; when the text errors, `writeBytes()` fails and the file is left as it was. To read
+   * only some pages, use a reader and cancel.
+   *
    * A page without text of its own is read by a vision model (every page of a scan, and such
    * pages of a PDF that has text), and only once you read the text, then ahead of you: up to
    * 16 pages that are drawn, and up to 4 of a scan read as the file stores it. They may be
@@ -777,6 +787,9 @@ export interface GmailAttachment {
    *
    * Where pages cannot be drawn at all, every scan is read as a larger one is, and a PDF that
    * has text is returned as that text alone.
+   *
+   * A long PDF's text does not fit a model's context: `GmailPdfText.text` says how to keep it
+   * in a worktree and read it in parts.
    */
   readPdf(): Promise<GmailPdfText>;
 }
