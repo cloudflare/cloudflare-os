@@ -1688,7 +1688,8 @@ export class DriveApi {
    * such ID for a copy that is or becomes a Google Docs, Sheets or Slides file; one sent without
    * is never replayed, since a lost answer may still have made a copy, and its `appProperties`
    * are how {@link findCopy} finds that copy. Drive patches those over the file's own: a property
-   * left out is kept from the file, and one set to `null` is cleared.
+   * left out is kept from the file, and one set to `null` is cleared. Each request has a write's
+   * timeout, so a stalled copy releases the approval that sent it.
    *
    * Sent with `ignoreDefaultVisibility`, so that a domain's default of making new files visible to
    * the domain is not applied, and the copy has only the access it inherits from its folder:
@@ -1720,7 +1721,7 @@ export class DriveApi {
           ...(copy.appProperties === undefined ? {} : { appProperties: copy.appProperties }),
         }),
       },
-      this.getAccessToken, { idempotent: copy.id !== undefined });
+      this.getAccessToken, { idempotent: copy.id !== undefined, timeoutMs: WRITE_TIMEOUT_MS });
     if (copy.id !== undefined && response.status === 409) {
       await response.body?.cancel();
       return undefined;

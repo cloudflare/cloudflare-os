@@ -2,8 +2,8 @@ import { ActionJournal, defineActions } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  COPY_TOKEN_PROPERTY, CONVERTED_FROM_PROPERTY, DriveApiRequestError, FOLDER_MIME_TYPE,
-  SOURCE_MODIFIED_PROPERTY, type DriveApi, type DriveScopeNode,
+  COMMENT_WRITE_MAX_MS, COPY_TOKEN_PROPERTY, CONVERTED_FROM_PROPERTY, DriveApi,
+  DriveApiRequestError, FOLDER_MIME_TYPE, SOURCE_MODIFIED_PROPERTY, type DriveScopeNode,
 } from "../src/drive-api";
 import {
   DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, pendingActionId, pendingCopiesInto, pendingCopy,
@@ -91,6 +91,7 @@ const COPY_ACTIONS = defineActions<DriveCopiesHost, DriveCopyActions>(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 /**
@@ -332,6 +333,36 @@ describe("Drive copy sends", () => {
     expect(await found.apply(again)).toBe(DIFFERENT_TYPE);
     expect(found.journal.get(again)?.state).toBe("failed");
     expect(found.made.size).toBe(0);
+  });
+
+  it("gives up on a native copy's send at Drive's write deadline, then looks for it rather than sending again", async () => {
+    let { api, attempts, journal, submit, apply } = harness();
+    // The deadline passes when the test says.
+    let deadline = new AbortController();
+    let timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    // Drive takes the request and never answers it, until the request is aborted.
+    let sent = 0;
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      sent++;
+      let { promise, reject } = Promise.withResolvers<never>();
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      return promise;
+    });
+    let drive = new DriveApi(async () => "token");
+    api.copyFile.mockImplementation((fileId, copy) => drive.copyFile(fileId, copy));
+    let id = await submit("copyNative", nativeIntoB());
+    let outcome: string | null | undefined;
+    void apply(id).then(message => { outcome = message; });
+    await vi.waitFor(() => expect(sent).toBe(1));
+    expect(timeout.mock.calls).toEqual([[COMMENT_WRITE_MAX_MS / 3]]);
+    deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    await vi.waitFor(() => expect(outcome).toBe(UNCONFIRMED_NATIVE_COPY));
+    expect(attempts.has(id)).toBe(true);
+    expect(journal.get(id)?.state).toBe("pending");
+
+    expect(await apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
+    expect(api.findCopy).toHaveBeenCalledTimes(1);
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 });
 
