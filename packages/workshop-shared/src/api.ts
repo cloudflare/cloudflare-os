@@ -1717,8 +1717,10 @@ export type DeploymentUpdateStatus = {
   noticeSnoozeHours: number;
   /**
    * Whether this deployment's running code differs from what the deploy flow installed: true
-   * exactly when `modifiedWorkers` is non-empty. The deploy flow refuses to upgrade a modified
-   * deployment.
+   * exactly when `modifiedWorkers` is non-empty. The deploy flow stops an update at a modified
+   * Worker until it is allowed to replace that Worker with the release's version, which discards
+   * the change. Keeping the change means taking the deployment over, to manage and update it
+   * outside the deploy flow.
    */
   modified: boolean;
   /**
@@ -1730,8 +1732,8 @@ export type DeploymentUpdateStatus = {
   modifiedWorkers: string[];
   /**
    * The Workers still running another release of this installation: an update that did not
-   * finish, which the deploy flow can finish once no Worker is modified. Named as in
-   * `modifiedWorkers`. Unlike those, they do not affect `notify`.
+   * finish, which the deploy flow can finish, replacing a modified Worker only when allowed to.
+   * Named as in `modifiedWorkers`. Unlike those, they do not affect `notify`.
    */
   unfinishedWorkers: string[];
   /** The opaque link that opens the deploy flow for this installation. */
