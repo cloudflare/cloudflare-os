@@ -33,6 +33,9 @@ const DEPLOYMENT_READ_ONLY =
   "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
   "changes, and none can be connected with read and write access. Only the deployment's " +
   "administrator can change that.";
+const COPY_EDITS_WAITING =
+  "That file has changes waiting for approval, which a copy would leave out: Google Drive copies " +
+  "the file as it is on Drive. Copy it once they are decided.";
 
 function hooks() {
   return env.TEST_HOOKS.getByName("drive-editors");
@@ -85,7 +88,8 @@ function connection(binding: Binding, facet = `drive-editors-${++facetCount}`) {
     outline: async (fileId: string) =>
       (await hooks().callDriveNative(facet, binding, "openGoogleSlides", fileId, "getPresentation", []))
         .value as PresentationInfo,
-    drive: (method: "comment", ...args: unknown[]) => hooks().callDrive(facet, binding, method, args),
+    drive: (method: "comment" | "copyFile", ...args: unknown[]) =>
+      hooks().callDrive(facet, binding, method, args),
     apply: (actionId: number) => hooks().applyDrive(facet, binding, actionId),
     reject: (actionId: number) => hooks().rejectDriveEdit(facet, binding, actionId),
     queuedIds: () => hooks().driveQueued(facet, binding),
@@ -247,6 +251,23 @@ describe("Slides edits through a read and write Drive binding", () => {
     expect(refused.error).toBe(NOT_ALLOWED);
     expect(refused.actionId).toBeUndefined();
     expect(slidesRequests.requests).toEqual([]);
+  });
+
+  // Drive copies the file as Google has it, so a copy with changes still waiting would leave out
+  // what the binding's own reads show.
+  it("refuses to copy a presentation with changes waiting, and copies it once they are decided", async () => {
+    let account = connection(ACCOUNT);
+    let skip = await account.queued("deck-1", "setSlidesSkipped", ["s1"], true);
+
+    let refused = await account.drive("copyFile", "deck-1");
+    expect(refused.error).toBe(COPY_EDITS_WAITING);
+    expect(refused.actionId).toBeUndefined();
+    expect(await account.queuedIds()).toEqual([skip]);
+
+    expect(await account.reject(skip)).toBeNull();
+    let copied = await account.drive("copyFile", "deck-1");
+    expect(copied.error).toBeUndefined();
+    expect(await account.queuedIds()).toEqual([copied.actionId]);
   });
 
   it("fails a change claimed by an activation that died as of unknown outcome, without sending it again", async () => {

@@ -315,7 +315,9 @@ export interface GoogleDriveSession
    * the connected account can see, needs `folderId`. Folders, shortcuts and files in the trash
    * cannot be copied, nor a file the connected account is not allowed to copy, which its owner
    * decides; among Google's own file types, only Google Docs, Sheets and Slides files can.
-   * Converting with `convertTo` fails for a file larger than Google converts.
+   * Converting with `convertTo` fails for a file larger than Google converts. Google copies the
+   * file as it is on Drive, so the copy fails while edits queued to the file wait for approval:
+   * copy it once they are decided.
    *
    * The copy takes the sharing of the folder it goes into: everyone with access to that folder can
    * open it.

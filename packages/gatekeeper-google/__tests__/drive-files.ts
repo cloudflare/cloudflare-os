@@ -1,6 +1,7 @@
 /**
  * Google Drive's files as far as reaching native files through a Drive binding needs them: file
- * metadata, the batched scope reads a binding proves its reach with, and capabilities.
+ * metadata, the batched scope reads a binding proves its reach with, capabilities, and the
+ * account a write is queued as.
  */
 
 import type { ProviderFake } from "./slides-provider";
@@ -51,6 +52,9 @@ export class DriveFiles implements ProviderFake {
   async handle(request: Request): Promise<Response | undefined> {
     let url = new URL(request.url);
     if (url.hostname !== "www.googleapis.com") return undefined;
+    if (url.pathname === "/drive/v3/about") {
+      return Response.json({ user: { permissionId: "perm-A", emailAddress: "me@example.com" } });
+    }
     if (url.pathname === "/batch/drive/v3") {
       let body = new TextDecoder().decode(await request.arrayBuffer());
       let ids = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?/g)]
@@ -95,7 +99,7 @@ export class DriveFiles implements ProviderFake {
       parents: file.parents, trashed: file.trashed ?? false,
       capabilities: {
         canListChildren: folder, canComment: file.canComment ?? !folder, canEdit, canShare: true,
-        canAddChildren: folder, canMoveItemWithinDrive: true,
+        canAddChildren: folder, canMoveItemWithinDrive: true, canCopy: !folder,
       },
     };
   }

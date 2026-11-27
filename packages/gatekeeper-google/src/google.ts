@@ -2769,6 +2769,11 @@ const EXPORT_EDITS_WAITING =
   "That file has changes waiting for approval, which an export would leave out: Google Drive " +
   "exports the file as it is on Drive. Export it once they are decided.";
 
+/** Said of a copy of a file with edits this binding queued that are still waiting. */
+const COPY_EDITS_WAITING =
+  "That file has changes waiting for approval, which a copy would leave out: Google Drive " +
+  "copies the file as it is on Drive. Copy it once they are decided.";
+
 /** Said of an export Google refuses for its size. */
 const EXPORT_TOO_LARGE =
   "Google Drive exports at most 10 MB, and this file is larger in that format. Export it to a " +
@@ -3149,7 +3154,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let core = this.#core;
     let file = await core.openFile(id, "file");
     let {nativeMimeType, mimeType} = exportMimeType(file, format);
-    this.#refuseEditsWaiting(file.id);
+    this.#refuseEditsWaiting(file.id, EXPORT_EDITS_WAITING);
     let modifiedTime = driveModifiedTime(file);
     let opened: ReadableStream<Uint8Array> | undefined;
     // An export is the file's content, so it needs leave to download as readFile() does, and a
@@ -3162,7 +3167,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     })(async (): Promise<{ content: ReadableStream<Uint8Array> } | { refusal: Error }> => {
       // Asked again as Drive is asked for the export: a folder binding has proved the file again
       // with Drive requests since, in which time another call may have queued an edit to it.
-      this.#refuseEditsWaiting(file.id);
+      this.#refuseEditsWaiting(file.id, EXPORT_EDITS_WAITING);
       try {
         opened = await this.#driveApi.openExport(file.id, mimeType);
       } catch (error) {
@@ -3184,17 +3189,18 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Refuses an export of `fileId` while edits this binding queued to it still wait. The queue is
-   * read as it stands, not after an approval that is running, which may be of any other file.
+   * Refuses an export or a copy of `fileId` with `message` while edits this binding queued to it
+   * still wait. The queue is read as it stands, not after an approval that is running, which may
+   * be of any other file.
    */
-  #refuseEditsWaiting(fileId: string): void {
-    // Drive exports the file as Google has it. A writable binding's own reads show its edits still
-    // waiting as if made, so an export without them would pass for one of the file as read. A
-    // read-only binding's show none, even of edits queued before the deployment kept Drive
-    // read-only, so its export is the file as they read it.
+  #refuseEditsWaiting(fileId: string, message: string): void {
+    // Drive exports and copies the file as Google has it. A writable binding's own reads show its
+    // edits still waiting as if made, so an export or a copy without them would pass for one of
+    // the file as read. A read-only binding's show none, even of edits queued before the
+    // deployment kept Drive read-only, so its export is the file as they read it.
     if (this.#writes.access !== "write") return;
     if (this.#writes.queued().some(({ action }) => editedFile(action)?.target.fileId === fileId)) {
-      throw new Error(EXPORT_EDITS_WAITING);
+      throw new Error(message);
     }
   }
 
@@ -3385,6 +3391,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let folderId = options.folderId === undefined ? undefined : await this.#fileId(options.folderId);
     let actor = await this.#writes.actor();
     let target = await this.#core.copyTarget(source, folderId);
+    this.#refuseEditsWaiting(target.fileId, COPY_EDITS_WAITING);
     let { folderIds } = target;
     if (folderIds) {
       // As for a move: a folder binding proves the copy again at approval along the saved path,
