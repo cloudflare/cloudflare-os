@@ -86,6 +86,38 @@ describe("fetchWithAuthRetry", () => {
     expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
+  // A resend can follow a pause of seconds, so a caller may need to recheck what it depends on.
+  it("asks the caller before each resend, and stops when it refuses", async () => {
+    let sent = 0;
+    vi.stubGlobal("fetch", async () => {
+      sent++;
+      return new Response("{}", { status: sent === 1 ? 401 : 429, headers: { "Retry-After": "0" } });
+    });
+    let checks = 0;
+    let minted = 0;
+    await expect(fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces/AAAA/messages",
+      { method: "POST", body: "{}" }, async () => `token-${++minted}`,
+      { idempotent: true, beforeResend: async () => {
+        if (++checks === 2) throw new Error("Someone joined.");
+      } })).rejects.toThrow("Someone joined.");
+    // The 401 replay was asked about and allowed; the retry after the 429 was refused unsent.
+    expect(checks).toBe(2);
+    expect(sent).toBe(2);
+  });
+
+  // A quota that resets every second is not helped by a retry a few milliseconds later.
+  it("waits at least the given delay before retrying a 429 that names no wait", async () => {
+    let sentAt: number[] = [];
+    vi.stubGlobal("fetch", async () => {
+      sentAt.push(Date.now());
+      return new Response("{}", { status: sentAt.length === 1 ? 429 : 200 });
+    });
+    let response = await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces/AAAA",
+      {}, async () => "token", { rateLimitDelayMs: 200 });
+    expect(response.status).toBe(200);
+    expect(sentAt[1] - sentAt[0]).toBeGreaterThanOrEqual(200);
+  });
+
   // A GET is replayed after a network failure, but an abort is the caller saying to stop.
   it("does not retry a request its caller's own signal aborted", async () => {
     let requests = 0;

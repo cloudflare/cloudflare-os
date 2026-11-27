@@ -64,6 +64,16 @@ export type FetchWithAuthRetryOptions = {
   idempotent?: boolean;
   /** What the request does, a literal, for the metrics. The HTTP method unless given. */
   operation?: string;
+  /**
+   * Runs before each resend, whatever its reason, to recheck what the request depends on. It
+   * throwing ends the request with its error, sending nothing more.
+   */
+  beforeResend?: () => Promise<void>;
+  /**
+   * Least wait before retrying a 429 that names no `Retry-After`, for a service whose quotas reset
+   * on a known interval. Omitted means the usual backoff alone.
+   */
+  rateLimitDelayMs?: number;
 };
 
 const BASE_DELAY_MS = 500;
@@ -144,8 +154,11 @@ export async function fetchWithAuthRetry(
   let reloaded = false;
   let token = await getAccessToken();
   let attempt = 0;
+  let sent = false;
 
   while (true) {
+    if (sent) await opts.beforeResend?.();
+    sent = true;
     // A fresh timeout signal per attempt so a retry gets the full budget, combined with any
     // caller-supplied signal.
     let signals: AbortSignal[] = [];
@@ -217,7 +230,11 @@ export async function fetchWithAuthRetry(
     }
 
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
-      let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
+      let retryAfter = response.headers.get("Retry-After");
+      let delay = backoffDelayMs(attempt, retryAfter);
+      if (response.status === 429 && !retryAfter && opts.rateLimitDelayMs !== undefined) {
+        delay = Math.max(delay, opts.rateLimitDelayMs);
+      }
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, delay));
       attempt++;

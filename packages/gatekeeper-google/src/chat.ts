@@ -29,8 +29,9 @@
 import { DurableObject, RpcStub, RpcTarget, restore } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
-  buildDescription, codeSpan, plainInline, sanitizeTitle,
+  buildDescription, codeSpan, plainInline, sanitizeTitle, type ActionDescriptionBuilder,
 } from "@gadgets/gatekeeper-kit/action-description";
+import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import type {
@@ -38,26 +39,26 @@ import type {
   ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_MESSAGE_BYTES, isChatNoAccessError,
-  chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
-  chatMessagesSearchFilter,
+  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_ATTACHMENT_BYTES, MAX_CHAT_MESSAGE_BYTES,
+  isChatNoAccessError, chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
+  chatMessagesSearchFilter, normalizeChatAttachments,
   chatSpaceId, chatSpaceNameFromIdOrUrl, chatThreadParts, chatUserName, validateChatEmoji,
   validateChatSpaceId, validateChatThreadId, validateChatWindow,
 } from "./chat-api";
 import {
-  ChatAction, ChatNewConversation, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
+  ChatAction, ChatNewConversation, ChatQueuedAttachment, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
   overlayMessage, overlayMessageList, overlayReactions, pendingMessageActionId,
   pendingMessageInfo, pendingSpaceName, pendingSpaceRequestId, pendingThreadActionId,
 } from "./chat-state";
 import type {
-  Cursor, ChatAttachment, ChatAttachmentInfo,
+  Cursor, ChatAttachment, ChatAttachmentInfo, ChatAttachmentInput,
   ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessage, ChatMessageEntry, ChatMessageInfo,
   ChatMessageSearch, ChatPerson, ChatReaction, ChatSession, ChatSpaceMessageSearch,
-  ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatSubscribeOptions, ChatUser, ChatThread, ChatThreadEntry,
-  ChatThreadInfo, ChatWindow,
+  ChatSendOptions, ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatSubscribeOptions, ChatUser, ChatThread,
+  ChatThreadEntry, ChatThreadInfo, ChatWindow,
 } from "./chat-types";
-import type { ChatMessageRaw } from "./chat-api";
+import type { ChatAttachmentDataRef, ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
 import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
@@ -165,17 +166,67 @@ function userLabel(user: ChatUser | undefined): string {
 
 // ── Storage ─────────────────────────────────────────────────────────
 
+/** The stored files an action holds. */
+const attachmentFiles = (action: ChatAction): ActionFileReference[] =>
+  action.type === "sendMessage" ? (action.attachments ?? []).map(attachment => attachment.file) : [];
+
+/** Most attachment bytes the queued sends of one connection may hold at once. */
+const MAX_PENDING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/**
+ * How long a stored attachment no queued send names survives: one being captured has no send to
+ * name it until the capture finishes.
+ */
+const ATTACHMENT_GRACE_MS = 60 * 60 * 1000;
+
 class ChatStore {
   #kv: DurableObjectStorage["kv"];
+  #files: ActionFileStore;
 
   constructor(storage: DurableObjectStorage) {
     this.#kv = storage.kv;
+    this.#files = new ActionFileStore(storage, {
+      filePrefix: "chat:attachment:",
+      allocationPrefix: "chat:attachmentAllocation:",
+      maxFileBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      maxTotalBytes: MAX_PENDING_ATTACHMENT_BYTES,
+    });
+  }
+
+  /**
+   * Keep exact copies of a send's files until it is applied or rejected, first clearing any left
+   * behind by a send that never finished queueing. All are kept, or none.
+   */
+  async captureAttachments(inputs: readonly ChatAttachmentInput[]): Promise<ChatQueuedAttachment[]> {
+    if (inputs.length === 0) return [];
+    const referenced = new Set(this.list().flatMap(({ action }) => attachmentFiles(action))
+      .map(file => file.handle));
+    this.#files.pruneUnreferenced(referenced, Date.now() - ATTACHMENT_GRACE_MS);
+    const captured: ChatQueuedAttachment[] = [];
+    try {
+      for (const { filename, mimeType, content } of inputs) {
+        captured.push({ filename, mimeType, file: await this.#files.capture(new Uint8Array(content)) });
+      }
+    } catch (error) {
+      for (const { file } of captured) this.#files.delete(file);
+      throw error;
+    }
+    return captured;
+  }
+
+  readAttachment(file: ActionFileReference): Promise<Uint8Array> {
+    return this.#files.read(file);
   }
 
   submit(action: ChatAction): number {
     const id = this.#kv.get<number>("chat:nextActionId") ?? 1;
+    try {
+      this.#kv.put(`chat:action:${id}`, action);
+    } catch (error) {
+      // Nothing names the files now, so they would hold the connection's quota until a sweep.
+      for (const file of attachmentFiles(action)) this.#files.delete(file);
+      throw error;
+    }
     this.#kv.put("chat:nextActionId", id + 1);
-    this.#kv.put(`chat:action:${id}`, action);
     return id;
   }
 
@@ -223,7 +274,10 @@ class ChatStore {
       });
   }
 
+  /** Forget an action once it is applied, rejected or refused, and the files it was to attach. */
   remove(id: number): void {
+    const action = this.#kv.get<ChatAction>(`chat:action:${id}`);
+    for (const file of action ? attachmentFiles(action) : []) this.#files.delete(file);
     this.#kv.delete(`chat:action:${id}`);
     this.clearAttempt(id);
   }
@@ -672,23 +726,25 @@ const isChatMessageGone = (error: unknown): boolean =>
   error instanceof DeletedChatMessageError || (error instanceof ChatApiError && error.status === 404);
 
 /** Undo a send, counting a message already removed in Google Chat as success. */
-async function deleteMessageIfPresent(api: ChatApi, messageName: string): Promise<void> {
+async function deleteMessageIfPresent(api: ChatApi, pacer: SpaceWritePacer, messageName: string): Promise<void> {
   try {
     await api.getMessage(messageName);
-    await api.deleteMessage(messageName);
+    await pacer.note(spaceOf(messageName), () => api.deleteMessage(messageName));
   } catch (error) {
     if (!isChatMessageGone(error)) throw error;
   }
 }
 
 /** Undo one applied change. A target deleted in Google Chat throws, leaving nothing to undo. */
-async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise<RevertResult> {
+async function undo(
+  api: ChatApi, pacer: SpaceWritePacer, self: ChatUser, info: ChatRevertInfo,
+): Promise<RevertResult> {
   switch (info.type) {
     case "none":
       return;
     case "sentMessage":
       try {
-        await deleteMessageIfPresent(api, info.messageName);
+        await deleteMessageIfPresent(api, pacer, info.messageName);
       } catch (error) {
         // Chat refuses a non-force delete of a message with threaded replies, and force would
         // cascade into deleting other people's replies. Leave the revert record so a retry
@@ -705,7 +761,9 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       return;
     case "updatedMessage": {
       const { formattedText } = await api.getMessage(info.messageName);
-      if (formattedText === info.text) await api.updateMessageText(info.messageName, info.previousText);
+      if (formattedText === info.text) {
+        await pacer.note(spaceOf(info.messageName), () => api.updateMessageText(info.messageName, info.previousText));
+      }
       else if (formattedText !== info.previousText) {
         return {
           message: "This message was edited again after this change, so it can't be undone " +
@@ -715,7 +773,7 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       return;
     }
     case "addedReaction":
-      return api.deleteReaction(info.reactionName);
+      return pacer.note(spaceOf(info.reactionName), () => api.deleteReaction(info.reactionName));
     case "removedReaction":
       if (!await api.findOwnReaction(info.messageName, info.emoji, self.id)) {
         await api.createReaction(info.messageName, info.emoji);
@@ -729,16 +787,46 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
 
 // ── Outgoing messages ───────────────────────────────────────────────
 
-function validateMessageText(text: string): string {
-  if (text.trim().length === 0) throw new Error("A message needs some text.");
+function validateMessageText(text: string, { attaches = false } = {}): string {
+  if (text.trim().length === 0 && !(attaches && text === "")) {
+    throw new Error(attaches ? "Pass an empty string for a message with only attachments." : "A message needs some text.");
+  }
   if (new TextEncoder().encode(text).byteLength > MAX_CHAT_MESSAGE_BYTES) {
     throw new Error(`A Chat message must be at most ${MAX_CHAT_MESSAGE_BYTES} bytes.`);
   }
   return text;
 }
 
+/** The files an approval names, for its summary line. */
+function attachedFiles(files: readonly ChatQueuedAttachment[]): string {
+  if (files.length === 0) return "";
+  return files.length === 1 ? " with an attached file" : ` with ${files.length} attached files`;
+}
+
 /**
- * Queue one outgoing text message for approval and return how it reads while pending.
+ * Add a send's files and text to its approval. The approver sees each file's name, type, size and
+ * digest, not its content, so a send that attaches any is not shown in full. The files go first:
+ * their fields are small and bounded, while the text can fill the description's budget.
+ */
+function describeMessage(
+  builder: ActionDescriptionBuilder, text: string, files: readonly ChatQueuedAttachment[],
+): ActionDescriptionBuilder {
+  for (const [index, { filename, mimeType, file }] of files.entries()) {
+    builder.file(files.length === 1 ? "Attachment" : `Attachment ${index + 1}`, {
+      name: filename, mediaType: mimeType, size: file.size, sha256: file.digest, origin: "agent",
+    });
+  }
+  if (text !== "") builder.verbatim("Message", text);
+  return builder;
+}
+
+/** A caller's send options, checked before anything is read or queued. */
+function sendAttachments(options: ChatSendOptions | undefined): ChatAttachmentInput[] {
+  return normalizeChatAttachments(options?.attachments ?? []);
+}
+
+/**
+ * Queue one outgoing message for approval and return how it reads while pending.
  *
  * Shared by space sends, thread/message replies, which name a thread, and sends to exactly some
  * people in their existing group chat, which name those people.
@@ -747,9 +835,10 @@ async function queueChatMessage(
   ctx: ChatContext,
   spaceName: string,
   text: string,
-  { threadName, recipients }: { threadName?: string; recipients?: string[] } = {},
+  { threadName, recipients, attachments = [] }:
+    { threadName?: string; recipients?: string[]; attachments?: readonly ChatAttachmentInput[] } = {},
 ): Promise<ChatMessageInfo> {
-  const body = validateMessageText(text);
+  const body = validateMessageText(text, { attaches: attachments.length > 0 });
   requireInScope(ctx, spaceName);
   requireThreadInScope(ctx, threadName);
   const info = await ctx.api.getSpace(spaceName);
@@ -761,6 +850,8 @@ async function queueChatMessage(
     if (thread.spaceName !== spaceName) throw new Error("That thread belongs to a different conversation.");
     threadName = thread.name;
   }
+  const recipient = await describeConversation(ctx.api, info, ctx.self.id);
+  const files = await ctx.store.captureAttachments(attachments);
   const action: ChatSendMessageAction = {
     type: "sendMessage",
     spaceName,
@@ -769,15 +860,14 @@ async function queueChatMessage(
     startsThread: threadName === undefined && info.supportsThreads,
     requestId: crypto.randomUUID(),
     ...(recipients ? { recipients } : {}),
+    ...(files.length > 0 ? { attachments: files } : {}),
     submittedAt: Date.now(),
   };
-  const recipient = await describeConversation(ctx.api, info, ctx.self.id);
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
-    ...buildDescription(
-      `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(recipient)}` +
-      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`)
-      .verbatim("Message", body)
+    ...describeMessage(buildDescription(
+      `Post a message${attachedFiles(files)} as ${userLabel(ctx.self)} in ${spaceLabel(recipient)}` +
+      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`), body, files)
       .finish(),
     implementsRevert: true,
     actionKind: SEND_MESSAGE_ACTION,
@@ -810,9 +900,9 @@ const personLabel = (person: ChatNewConversation["members"][number]) => person.n
  * belongs to the same Workspace organization.
  */
 async function queueDirectMessage(
-  ctx: ChatContext, people: readonly string[], text: string,
+  ctx: ChatContext, people: readonly string[], text: string, attachments: readonly ChatAttachmentInput[],
 ): Promise<ChatMessageInfo> {
-  const body = validateMessageText(text);
+  const body = validateMessageText(text, { attaches: attachments.length > 0 });
   // Chat matches email addresses case-insensitively, so naming someone twice must not count twice.
   const users = [...new Set(people.map(person => {
     const name = chatUserName(person.trim());
@@ -835,7 +925,9 @@ async function queueDirectMessage(
     ? `Found the ${kind} with ${users.join(", ")} (${existing.spaceName}).`
     : `No ${kind} exists with exactly ${users.join(", ")}.`,
     spaceSubresources([existing?.spaceName]));
-  if (existing) return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids });
+  if (existing) {
+    return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids, attachments });
+  }
 
   const members: ChatNewConversation["members"] = users
     .filter(user => !user.includes("@"))
@@ -865,6 +957,7 @@ async function queueDirectMessage(
   if (members.some(member => member.id === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
 
   const requestId = crypto.randomUUID();
+  const files = await ctx.store.captureAttachments(attachments);
   const action: ChatSendMessageAction = {
     type: "sendMessage",
     spaceName: pendingSpaceName(requestId),
@@ -873,16 +966,16 @@ async function queueDirectMessage(
     startsThread: false,
     requestId: crypto.randomUUID(),
     newConversation: { members, requestId },
+    ...(files.length > 0 ? { attachments: files } : {}),
     submittedAt: Date.now(),
   };
   const one = members.length === 1;
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Start a Google Chat conversation with ${peopleNames(members)}`),
-    ...buildDescription(
+    ...describeMessage(buildDescription(
       `Create a ${one ? "direct message" : "group chat"} between ${userLabel(ctx.self)} and ` +
-      `${one ? "this person" : `these ${members.length} people`}, and post this message in it.`)
-      .list("People", members.map(personLabel))
-      .verbatim("Message", body)
+      `${one ? "this person" : `these ${members.length} people`}, and post this message${attachedFiles(files)} in it.`)
+      .list("People", members.map(personLabel)), body, files)
       .finish(),
     implementsRevert: true,
     actionKind: START_CONVERSATION_ACTION,
@@ -948,6 +1041,77 @@ function deletedTarget(store: ChatStore, actionId: number, cause: unknown): Erro
   store.clearAttempt(actionId);
   return new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
     "Reject it.", { cause });
+}
+
+/** Why a send to exactly some people posted nothing: someone else is in the conversation now. */
+const audienceChanged = (retried: boolean) =>
+  "This Google Chat conversation no longer holds exactly the people this message is for, " +
+  `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
+  "Deny this message to clear it.";
+
+/**
+ * Google allows one write a second in each conversation: uploads, message creates, edits and
+ * deletes, and reaction deletes.
+ */
+const SPACE_WRITE_INTERVAL_MS = 1000;
+
+/** The conversation a committed message, or a reaction to one, is in. */
+const spaceOf = (name: string) =>
+  `spaces/${chatMessageParts(name.replace(/\/reactions\/[^/]+$/, "")).spaceId}`;
+
+/**
+ * Spaces this connection's writes to each conversation. A send with files makes several writes in
+ * a row, so each of its writes waits its turn: one at a time, a second after this connection's
+ * previous write there finished, whatever that was, across actions as well as within one. Every
+ * other write runs at once, as a single write did before, and is only noted, so that a send with
+ * files applied after it still waits. A noted write that starts during a paced one, and others
+ * writing to the conversation, can still collide; Chat's retries of a 429 wait out the second.
+ */
+class SpaceWritePacer {
+  #spaces = new Map<string, { tail: Promise<unknown>; finished: number }>();
+
+  #space(spaceName: string) {
+    const space = this.#spaces.get(spaceName) ?? { tail: Promise.resolve(), finished: 0 };
+    this.#spaces.set(spaceName, space);
+    return space;
+  }
+
+  /** Run a write once the conversation's previous write is a second old. */
+  run<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+    const space = this.#space(spaceName);
+    const result = space.tail.then(async () => {
+      // A noted write can finish during the wait, so it is measured again until a second is clear.
+      for (let wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now(); wait > 0;
+           wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now()) {
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
+      return this.note(spaceName, write);
+    });
+    space.tail = result.catch(() => {});
+    return result;
+  }
+
+  /** Run a write at once, noting when it finished. */
+  async note<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } finally {
+      const space = this.#space(spaceName);
+      space.finished = Math.max(space.finished, Date.now());
+    }
+  }
+}
+
+/** What an earlier attempt at this send posted, when Google shows it under the name the send gives it. */
+async function earlierPost(
+  api: ChatApi, store: ChatStore, actionId: number, spaceName: string, action: ChatSendMessageAction,
+): Promise<ChatMessageInfo | undefined> {
+  return api.getMessage(`${spaceName}/messages/${clientMessageId(action)}`).catch((error: unknown) => {
+    if (error instanceof DeletedChatMessageError) throw deletedTarget(store, actionId, error);
+    // Not finding it doesn't show that the earlier attempt never landed.
+    if (error instanceof ChatApiError && error.status === 404) return undefined;
+    throw error;
+  });
 }
 
 /** Pair a just-queued message with its capability. */
@@ -1029,8 +1193,9 @@ class ChatSessionImpl extends ChatRpcTarget implements ChatSession {
     });
   }
 
-  async sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry> {
-    return postedEntry(this.ctx, await queueDirectMessage(this.ctx, people, text));
+  async sendDirectMessage(people: string[], text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
+    return postedEntry(this.ctx, await queueDirectMessage(this.ctx, people, text, attachments));
   }
 }
 
@@ -1184,8 +1349,9 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     return membership;
   }
 
-  async post(text: string): Promise<ChatMessageEntry> {
-    return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
+  async post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
+    return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text, { attachments }));
   }
 
   async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
@@ -1236,10 +1402,11 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
       thread.spaceName);
   }
 
-  async post(text: string): Promise<ChatMessageEntry> {
+  async post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
     const thread = resolveThread(this.ctx, this.#name);
     return postedEntry(this.ctx,
-      await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name }));
+      await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name, attachments }));
   }
 
   async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>, options: ChatSubscribeOptions = {}): Promise<void> {
@@ -1309,7 +1476,8 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     return this.#read();
   }
 
-  async reply(text: string): Promise<ChatMessageEntry> {
+  async reply(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry> {
+    const attachments = sendAttachments(options);
     const info = await this.#read();
     requireKnownThread(this.ctx, this.#name);
     if (info.threadId === undefined) {
@@ -1317,7 +1485,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
         "This conversation does not support threaded replies; send a new message instead.");
     }
     return postedEntry(this.ctx,
-      await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId }));
+      await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId, attachments }));
   }
 
   async edit(text: string): Promise<void> {
@@ -1526,6 +1694,7 @@ export class GoogleChatGatekeeperImpl
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
   #settingUp = new SingleFlight();
+  #spaceWrites = new SpaceWritePacer();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1733,8 +1902,9 @@ export class GoogleChatGatekeeperImpl
   /**
    * Where a send to exactly some people posts, and what an earlier attempt posted there, if Google
    * shows it. A conversation the send creates is created on its first apply: a retry reuses it
-   * whether or not its response arrived, and sends to the same people share one. Otherwise the
-   * send posts only while they are exactly who else is in the conversation.
+   * whether or not its response arrived, and sends to the same people share one. Either way the
+   * send posts only while they are exactly who else is in the conversation, which is checked just
+   * before posting.
    */
   async #conversationFor(
     api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
@@ -1752,20 +1922,8 @@ export class GoogleChatGatekeeperImpl
     const retried = store.wasAttempted(actionId);
     if (retried) {
       // A post an earlier attempt made is sent, whoever is in the conversation now.
-      const posted = await api.getMessage(`${spaceName}/messages/${clientMessageId(action)}`)
-        .catch((error: unknown) => {
-          if (error instanceof DeletedChatMessageError) throw deletedTarget(store, actionId, error);
-          // Not finding it doesn't show that the earlier attempt never landed.
-          if (error instanceof ChatApiError && error.status === 404) return undefined;
-          throw error;
-        });
+      const posted = await earlierPost(api, store, actionId, spaceName, action);
       if (posted) return { spaceName, posted };
-    }
-    // A retry may follow a post that landed, so it leaves the attempt mark as it is.
-    if (!await hasExactly(api, spaceName, recipients)) {
-      throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
-        `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
-        "Deny this message to clear it.");
     }
     return { spaceName };
   }
@@ -1798,18 +1956,54 @@ export class GoogleChatGatekeeperImpl
         const recipients = action.newConversation?.members.map(member => member.id) ?? action.recipients;
         const { spaceName, posted } = recipients
           ? await this.#conversationFor(api, store, actionId, action, recipients)
-          : { spaceName: action.spaceName, posted: undefined };
+          : {
+            spaceName: action.spaceName,
+            // Retried, a send would upload its files again only for Chat to return the message
+            // they were already posted in.
+            posted: retried && action.attachments?.length
+              ? await earlierPost(api, store, actionId, action.spaceName, action) : undefined,
+          };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
-          // The request id makes Chat itself idempotent, so a retry after a lost response returns
-          // the message the first attempt created rather than posting a second one.
-          const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
-            text: action.text,
-            ...(threadName !== undefined ? { threadName } : {}),
-          }, {
-            requestId: action.requestId,
-            messageId: clientMessageId(action),
-          }));
+          // A send to exactly some people must reach only them. Google has no create that holds
+          // only while the members are unchanged, so someone added between a check and the post
+          // still receives it. A retry may follow a post that landed, so a refusal leaves the
+          // attempt mark as it is.
+          const requireAudience = async (resending = false) => {
+            if (recipients && !await hasExactly(api, spaceName, recipients)) {
+              throw new Error(audienceChanged(retried || resending));
+            }
+          };
+          // Uploads go to the conversation the message is posted to. Google is expected not to show
+          // one until a message attaches it, though no live conversation has confirmed that yet, so
+          // one a lost response leaves behind is simply uploaded again. Each is checked like the
+          // post, so no file goes to a conversation it couldn't be posted in.
+          const attachments: ChatAttachmentDataRef[] = [];
+          for (const { filename, mimeType, file } of action.attachments ?? []) {
+            const content = await store.readAttachment(file);
+            attachments.push(await this.#spaceWrites.run(spaceName, async () => {
+              await requireAudience();
+              return api.uploadAttachment(spaceName, { filename, mimeType, content },
+                recipients ? { beforeResend: () => requireAudience() } : {});
+            }));
+          }
+          // A send with files waits its turn for its post as for its uploads; any other send only notes it.
+          const { id } = await this.#spaceWrites[attachments.length > 0 ? "run" : "note"](spaceName, async () => {
+            // Checked as late as it can be: after any uploads and this write's wait for its turn, and
+            // again before each resend, which can follow a pause of seconds.
+            await requireAudience();
+            // The request id makes Chat itself idempotent, so a retry after a lost response returns
+            // the message the first attempt created rather than posting a second one.
+            return store.attemptWrite(actionId, () => api.createMessage(spaceName, {
+              text: action.text,
+              ...(threadName !== undefined ? { threadName } : {}),
+              ...(attachments.length > 0 ? { attachments } : {}),
+            }, {
+              requestId: action.requestId,
+              messageId: clientMessageId(action),
+              ...(recipients ? { beforeResend: () => requireAudience(true) } : {}),
+            }));
+          });
           // A replayed create echoes the request, not the message Chat stored.
           return readTarget(id);
         };
@@ -1825,7 +2019,7 @@ export class GoogleChatGatekeeperImpl
             event: "chat.send.taken_back", actionId, messageId: created.id, error,
           });
           try {
-            await deleteMessageIfPresent(api, created.id);
+            await deleteMessageIfPresent(api, this.#spaceWrites, created.id);
           } catch (deleteError) {
             logger.error("failed to take back a Google Chat message posted outside its request", {
               event: "chat.send.take_back.failed", actionId, messageId: created.id, error: deleteError,
@@ -1856,7 +2050,8 @@ export class GoogleChatGatekeeperImpl
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
+          text = await this.#spaceWrites.note(spaceOf(target.committed),
+            () => store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text)));
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {
@@ -1878,7 +2073,9 @@ export class GoogleChatGatekeeperImpl
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         const removed = { type: "removedReaction", messageName: action.messageName, emoji: action.emoji } as const;
         if (!existing) return retried ? removed : { type: "none" };
-        await store.attemptWrite(actionId, () => api.deleteReaction(existing.id));
+        // Deleting a reaction counts against the conversation's write quota; adding one doesn't.
+        await this.#spaceWrites.note(spaceOf(action.messageName),
+          () => store.attemptWrite(actionId, () => api.deleteReaction(existing.id)));
         return removed;
       }
       default:
@@ -1913,7 +2110,7 @@ export class GoogleChatGatekeeperImpl
     }
     return this.#exclusively(actionId, async () => {
       try {
-        const result = await undo(this.#api(), await this.#getSelf(), info);
+        const result = await undo(this.#api(), this.#spaceWrites, await this.#getSelf(), info);
         if (result) return result;
       } catch (error) {
         if (!isChatMessageGone(error)) throw error;

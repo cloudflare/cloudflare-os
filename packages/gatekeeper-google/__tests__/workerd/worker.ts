@@ -664,8 +664,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async chatStartSession(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+      rejection?: string,
   ): Promise<void> {
-    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#queues.set(queueId, new TestApprovalQueue(rejection));
     this.#chat(facetName, id, props);
   }
 
@@ -764,6 +765,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
   ): ReturnType<GoogleChatGatekeeperImpl["revertAction"]> {
     return this.#chat(facetName, id, props).revertAction(actionId);
+  }
+
+  /** The facet's storage keys under a prefix, to see what it still holds. */
+  async chatStorageKeys(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, prefix: string,
+  ): Promise<string[]> {
+    return (this.#chat(facetName, id, props) as unknown as TestChat).testStorageKeys(prefix);
   }
 
   failNextObservation(queueId: string, title: string): void {
@@ -1680,6 +1688,7 @@ type TestChat = GoogleChatGatekeeperImpl & {
   runChatTestOperation(queue: unknown, operation: string, args: unknown[]): Promise<unknown>;
   testDeliver(params: ChatHookParams, callback: unknown, queue: unknown, message: ChatMessageRaw): Promise<void>;
   testRestoreThrough(hooks: string, facet: ChatFacet): void;
+  testStorageKeys(prefix: string): string[];
 };
 
 const testChatPrototype = GoogleChatGatekeeperImpl.prototype as TestChat;
@@ -1698,6 +1707,11 @@ testChatPrototype.testRestoreThrough = function(hooks, facet) {
   const exports = ctx.exports as unknown as TestExports;
   ctx.restore = async (params: ChatHookParams) => Object.assign(
     exports.TestHookDelivery({ props: { hooks, facet, params } }), { [Symbol.dispose]() {} });
+};
+
+testChatPrototype.testStorageKeys = function(prefix) {
+  const { ctx } = this as unknown as { ctx: DurableObjectState };
+  return [...ctx.storage.kv.list({ prefix })].map(([key]) => key);
 };
 
 testChatPrototype.runChatTestOperation = async function(

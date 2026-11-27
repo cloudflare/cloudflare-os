@@ -133,7 +133,7 @@ interface ChatThread extends RpcTarget {
   getCurrentUser(): Promise<ChatUser>;
   getRootMessage(): Promise<ChatMessageEntry | null>;
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
-  post(text: string): Promise<ChatMessageEntry>;
+  post(text: string, options?: ChatSendOptions): Promise<ChatMessageEntry>;
 }
 ```
 
@@ -171,8 +171,8 @@ declared filters, so the field is dropped even if an agent sends it. Thread capa
 
 ## Writing and newly created threads
 
-Writes use `space.post(text)`, `thread.post(text)`, `message.reply(text)`, and
-`message.edit(text)`. Memberships, users, and reactions are plain records. A message's
+Writes use `space.post(text, options?)`, `thread.post(text, options?)`,
+`message.reply(text, options?)`, and `message.edit(text)`. Memberships, users, and reactions are plain records. A message's
 metadata already lists its attachments; `message.getAttachment(id)` returns the capability that
 reads one. It also carries `cards`, what a Chat app's cards show (current `cardsV2` and legacy
 `cards` alike): each card's header title and subtitle, its section headers, labels and text items
@@ -188,8 +188,33 @@ message's ID and, when Chat's snapshot of it in the quoting message has them, it
 and its text, and `forwarded` when it was forwarded. The gatekeeper never fetches the quoted message, which
 `getMessage()` returns only when it is in the bound conversation; a forwarded snapshot can hold
 text from another conversation, which Chat shows to everyone who can read the forwarding message.
-Event history, explicit message deletion, outgoing uploads, and generic
-drafts/patches are absent. Undo-send remains supported internally.
+Event history, explicit message deletion, and generic drafts/patches are absent. Undo-send
+remains supported internally.
+
+Every send (`post`, `reply`, `sendDirectMessage`) takes `options.attachments`: up to 10 files of
+at most 10 MiB each and 20 MiB in all, since they arrive as one call's arguments and Workers RPC
+caps those at 32 MiB. Each is a filename, a parameterless media type and its bytes. With one, the text
+may be empty. The gatekeeper keeps exact copies in its own Durable Object storage (at most 50 MiB
+for a connection's queued sends at once) and names each file in the approval by name, media type,
+size and SHA-256, which leaves the description incomplete, since the approver cannot read the
+bytes. Applying the send uploads each file into the conversation it posts to, the one a
+`sendDirectMessage` creates included, and creates the message with them attached. Google is
+expected not to show an upload until a message attaches it, so uploads are simply retried; that
+has not yet been confirmed against a live conversation. Google allows one write a second in a
+conversation, uploads included. A send with files makes several writes in a row, so each of its
+uploads, and its post, waits until a second after the connection's previous write there, whatever
+that was. Other writes run at once, as before, and
+a request Google throttles without saying how long to wait is retried no sooner than a second
+later. A `sendDirectMessage` to a group
+chat, or into a conversation it creates, posts only while exactly the people named are there. It
+checks before each upload and again just before posting, after its wait for its turn, and again
+before Google's retries resend an upload or the post. Google has no create that holds only
+while the members are unchanged, so someone added in the moment between a check and the post
+still receives the message. A send into an existing direct message isn't checked, so a Chat app
+added to that direct message receives it. Applying or rejecting the send frees the copies. Until then the pending message lists its files with `readable: false`, under temporary
+IDs; once it is committed, `getMetadata()` lists them with Google's IDs, which `getAttachment()`
+takes. Google refuses some file types, such as
+executables, at upload, and then nothing is posted.
 
 `space.post(text)` posts a top-level message, which in a threaded conversation starts a new
 thread; `message.getThread()` continues it. The new thread is ready for further posts and edits
