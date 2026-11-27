@@ -550,11 +550,11 @@ export async function sendOnce<Sent>(
           ? step.grantMissing ?? WRITES_GRANT_MISSING : undefined;
     if (later !== undefined) {
       if (!step.repeatable) host.attempts.delete(id);
-      throw new Error(later, { cause: error });
+      throw new Error(later, { cause: caught });
     }
     host.attempts.delete(id);
     let passable = await step.passable?.(error);
-    if (passable !== undefined) throw new Error(passable, { cause: error });
+    if (passable !== undefined) throw new Error(passable, { cause: caught });
     throw new ActionApplyError(step.refusal(error));
   }
   let applied = step.applied ?? { event: "applied", outcome: "applied" };
