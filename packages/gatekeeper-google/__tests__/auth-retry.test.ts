@@ -60,6 +60,8 @@ describe("AccessTokenCache", () => {
 describe("fetchWithAuthRetry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   // Unlike a stream, a byte-array body survives being sent and can be replayed after a 401.
@@ -121,6 +123,129 @@ describe("fetchWithAuthRetry", () => {
 
     expect(response.status).toBe(200);
     expect(requests).toBe(2);
+  });
+
+  // A caller that stops waiting for an answer stops waiting out the pause before a retry too.
+  it("ends a retry's pause once its caller's signal aborts, sending nothing more", async () => {
+    let answers: [string, () => Response][] = [
+      ["a 503", () => new Response(null, { status: 503, headers: { "Retry-After": "10" } })],
+      ["a network failure", () => { throw new TypeError("network down"); }],
+    ];
+    // Half the longest first pause, so that the abort always comes during it.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    for (let [what, answer] of answers) {
+      vi.useFakeTimers();
+      let requests = 0;
+      vi.stubGlobal("fetch", async () => { requests++; return answer(); });
+      let caller = new AbortController();
+      let failed: unknown;
+      fetchWithAuthRetry(
+        "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal },
+        async () => "token").catch((error: unknown) => { failed = error; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requests, what).toBe(1);
+
+      let reason = new Error("stop");
+      caller.abort(reason);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(failed, what).toBe(reason);
+      expect(vi.getTimerCount(), what).toBe(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(requests, what).toBe(1);
+      vi.useRealTimers();
+    }
+  });
+
+  // A mint can take as long as the authority does; the caller's deadline still holds.
+  it("ends a wait for a token once its caller's signal aborts", async () => {
+    let never = new Promise<string>(() => {});
+    let cases: [string, number, (opts?: AccessTokenRequest) => Promise<string>][] = [
+      ["the first token", 200, async () => never],
+      ["a refreshed token", 401, async opts => opts?.forceRefresh ? never : "stale"],
+      ["a reloaded token", 403, async opts => opts?.reloadStored ? never : "token"],
+    ];
+    for (let [what, status, provider] of cases) {
+      let asked = vi.fn(provider);
+      let requests = 0;
+      vi.stubGlobal("fetch", async () => { requests++; return new Response("{}", { status }); });
+      let caller = new AbortController();
+      let failed: unknown;
+      fetchWithAuthRetry(
+        "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal }, asked,
+      ).catch((error: unknown) => { failed = error; });
+      await vi.waitFor(() => expect(asked, what).toHaveBeenCalledTimes(status === 200 ? 1 : 2));
+
+      let reason = new Error("stop");
+      caller.abort(reason);
+
+      await vi.waitFor(() => expect(failed, what).toBe(reason));
+      expect(requests, what).toBe(status === 200 ? 0 : 1);
+    }
+  });
+
+  // The refused answer is let go, but neither a cancel that stalls nor one that fails with the
+  // body's own error may hold up or replace what the call rejects with.
+  it("rejects with the abort's reason whatever letting go of the refused answer does", async () => {
+    let never = new Promise<string>(() => {});
+    let providers: [number, (opts?: AccessTokenRequest) => Promise<string>][] = [
+      [401, async opts => opts?.forceRefresh ? never : "stale"],
+      [403, async opts => opts?.reloadStored ? never : "token"],
+    ];
+    for (let [status, provider] of providers) {
+      let cancels = 0;
+      let bodies: [string, () => ReadableStream<Uint8Array>][] = [
+        ["a cancel that stalls", () => new ReadableStream<Uint8Array>({
+          cancel: () => { cancels++; return new Promise<void>(() => {}); },
+        })],
+        ["a body that has failed", () => new ReadableStream<Uint8Array>({
+          start: controller => controller.error(new Error("body failed")),
+        })],
+      ];
+      for (let [body, stream] of bodies) {
+        let what = `${status}, ${body}`;
+        let asked = vi.fn(provider);
+        vi.stubGlobal("fetch", async () => new Response(stream(), { status }));
+        let caller = new AbortController();
+        let failed: unknown;
+        fetchWithAuthRetry(
+          "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal }, asked,
+        ).catch((error: unknown) => { failed = error; });
+        await vi.waitFor(() => expect(asked, what).toHaveBeenCalledTimes(2));
+
+        let reason = new Error("stop");
+        caller.abort(reason);
+
+        await vi.waitFor(() => expect(failed, what).toBe(reason));
+      }
+      expect(cancels, `${status}: the refused answer is let go`).toBe(1);
+    }
+  });
+
+  // Letting go of a refused answer is never waited on, so a cancel that stalls holds up nothing.
+  it("sends its retry or replay without waiting to let go of the refused answer", async () => {
+    let stalled = () => new ReadableStream<Uint8Array>({ cancel: () => new Promise<void>(() => {}) });
+    let cases: [string, () => Response, (opts?: AccessTokenRequest) => Promise<string>][] = [
+      ["a 503's retry", () => new Response(stalled(), { status: 503, headers: { "Retry-After": "1" } }),
+        async () => "token"],
+      ["a 401's replay", () => new Response(stalled(), { status: 401 }),
+        async opts => opts?.forceRefresh ? "fresh" : "stale"],
+      ["a 403's replay", () => new Response(stalled(), { status: 403 }),
+        async opts => opts?.reloadStored ? "granted" : "token"],
+    ];
+    for (let [what, refused, provider] of cases) {
+      vi.useFakeTimers();
+      let requests = 0;
+      vi.stubGlobal("fetch", async () => requests++ === 0 ? refused() : new Response("{}"));
+      let answered: number | undefined;
+      void fetchWithAuthRetry("https://www.googleapis.com/drive/v3/files/file-1", {}, provider)
+        .then(response => { answered = response.status; });
+      // The 503's pause is the second its Retry-After asks for.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(requests, what).toBe(2);
+      expect(answered, what).toBe(200);
+      vi.useRealTimers();
+    }
   });
 
   it("does not replay a 401 when the provider cannot refresh its token", async () => {

@@ -257,13 +257,13 @@ snapshot.` at the end of the chunk that takes it past `size`, and at the string'
 are fewer. Cancelling the stream cancels Gmail's answer. A part whose data came inside the
 listing is decoded from that string, 65,535 bytes at a time, once its length has been checked.
 Only the wait for an answer to begin is timed, at 60 seconds over all of `fetchWithAuthRetry`'s
-attempts together (a backoff sleep in progress, of up to 10 seconds, is not interrupted), so a
-long attachment is not cut off. Its body is timed by what reads it: the pass described below,
-the idle minute while it streams into the renderer, and during `readPdf()` itself, while it
-streams into the conversion, a minute for each read of it that is outstanding (the conversion
-takes the bytes at the pace of its own upload, which is not counted). An attachment that stops
-arriving then fails `readPdf()` with `The attachment stopped arriving while it was being read;
-read it again.`, having reported nothing and let its approval queue go.
+attempts together, the pauses before its retries and its waits for a token included, which the
+timeout ends as it ends a request, so a long attachment is not cut off. Its body is timed by what
+reads it: the pass described below, the idle minute while it streams into the renderer, and during
+`readPdf()` itself, while it streams into the conversion, a minute for each read of it that is
+outstanding (the conversion takes the bytes at the pace of its own upload, which is not counted).
+An attachment that stops arriving then fails `readPdf()` with `The attachment stopped arriving
+while it was being read; read it again.`, having reported nothing and let its approval queue go.
 
 `readPdf()` has no size limit of its own for bytes Gmail holds (a message's attachment, and a
 draft's part that Gmail stores) and does not go by `readable`; `getContent()` and its 10 MiB

@@ -92,6 +92,36 @@ function backoffDelayMs(attempt: number, retryAfter: string | null): number {
   return Math.random() * capped;
 }
 
+/**
+ * `wait`, or a rejection with `signal`'s reason once it aborts, as an aborted fetch rejects. What
+ * `wait` stands for is not stopped: a token being minted is still minted, for the next request.
+ */
+function untilAborted<T>(wait: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return wait;
+  return new Promise<T>((resolve, reject) => {
+    let stop = () => reject(signal.reason);
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+    wait.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
+/** Waits out `ms` milliseconds, rejecting with `signal`'s reason as soon as it aborts. */
+function pause(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    let stop = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    let timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
 // Counts one request: `answer` is the status it was answered with, or why it threw. Nothing here
 // may throw, since a metric cannot fail the request it counts.
 function recordAttempt(
@@ -120,7 +150,8 @@ function recordAttempt(
  * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
  * described at the top of this file. The `Authorization` header is set from the (possibly
  * refreshed) token on every attempt, so callers must NOT set it themselves; any other headers in
- * `init.headers` are preserved.
+ * `init.headers` are preserved. Aborting `init.signal` ends every wait here, for a token or out a
+ * retry's pause, as it ends the request itself: the call rejects with the signal's reason.
  */
 export async function fetchWithAuthRetry(
   url: string,
@@ -142,7 +173,7 @@ export async function fetchWithAuthRetry(
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
   let reloaded = false;
-  let token = await getAccessToken();
+  let token = await untilAborted(getAccessToken(), init.signal);
   let attempt = 0;
 
   while (true) {
@@ -180,7 +211,7 @@ export async function fetchWithAuthRetry(
       // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
-        await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
+        await pause(backoffDelayMs(attempt, null), init.signal);
         attempt++;
         continue;
       }
@@ -195,11 +226,12 @@ export async function fetchWithAuthRetry(
       refreshed = true;
       // Naming the rejected token lets the authority collapse a concurrent burst of 401s into a
       // single token exchange — see AccessTokenRequest.
-      let fresh = await releasingOnFailure(response, getAccessToken({ forceRefresh: true, staleToken: token }));
+      let fresh = await releasingOnFailure(response, untilAborted(
+        getAccessToken({ forceRefresh: true, staleToken: token }), init.signal));
       // A provider that cannot refresh (a fixed token) hands back the one just rejected.
       if (fresh !== token) {
         token = fresh;
-        await response.body?.cancel();
+        discard(response);
         continue;
       }
     }
@@ -208,18 +240,19 @@ export async function fetchWithAuthRetry(
       // Also one-shot, and it replays only on a token that really changed: an unchanged one means
       // the grant itself is insufficient, and re-sending it would just 403 again.
       reloaded = true;
-      let stored = await releasingOnFailure(response, getAccessToken({ reloadStored: true }));
+      let stored = await releasingOnFailure(
+        response, untilAborted(getAccessToken({ reloadStored: true }), init.signal));
       if (stored !== token) {
         token = stored;
-        await response.body?.cancel();
+        discard(response);
         continue;
       }
     }
 
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
-      await response.body?.cancel();
-      await new Promise(resolve => setTimeout(resolve, delay));
+      discard(response);
+      await pause(delay, init.signal);
       attempt++;
       continue;
     }
@@ -228,14 +261,22 @@ export async function fetchWithAuthRetry(
   }
 }
 
-/** Await `token`, cancelling the rejected response's body if it fails. */
+/** Await `token`, letting go of the refused response if it fails. */
 async function releasingOnFailure(response: Response, token: Promise<string>): Promise<string> {
   try {
     return await token;
   } catch (error) {
-    await response.body?.cancel();
+    discard(response);
     throw error;
   }
+}
+
+/**
+ * Lets go of an answer that is not returned, without waiting on it: cancelling a body can stall,
+ * or fail with the body's own error, and neither may hold up or replace what the call does next.
+ */
+function discard(response: Response): void {
+  void response.body?.cancel().catch(() => undefined);
 }
 
 /**
