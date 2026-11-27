@@ -658,7 +658,7 @@ describe("Drive replacement sends", () => {
     expect(api.upload).not.toHaveBeenCalled();
   });
 
-  it("refuses for good when Drive will not keep the version, and waits out a rate limit", async () => {
+  it("refuses for good when Drive will not keep the version, and waits out a rate limit or a pin it did not answer", async () => {
     for (let [refusal, said] of [
       [new DriveApiRequestError(403, "keepForeverLimit"), `${PIN_REFUSED} [http=403 reason=keepForeverLimit]`],
       [new DriveApiRequestError(400), `${PIN_REFUSED} [http=400]`],
@@ -671,14 +671,20 @@ describe("Drive replacement sends", () => {
       expect(api.upload).not.toHaveBeenCalled();
     }
 
-    let limited = harness();
-    limited.api.keepRevision.mockRejectedValueOnce(new DriveApiRequestError(403, "userRateLimitExceeded"));
-    let id = await limited.submit("replaceFile", await limited.replacement("new"));
-    expect(await limited.apply(id)).not.toBeNull();
-    expect(limited.journal.get(id)?.state).toBe("pending");
-    expect(limited.api.upload).not.toHaveBeenCalled();
-    expect(await limited.apply(id)).toBeNull();
-    expect(limited.uploaded.map(({ content }) => content)).toEqual(["new"]);
+    for (let later of [
+      new DriveApiRequestError(403, "userRateLimitExceeded"),
+      new DOMException("The operation timed out.", "TimeoutError"),
+    ]) {
+      let { api, attempts, journal, submit, apply, replacement, uploaded } = harness();
+      api.keepRevision.mockRejectedValueOnce(later);
+      let id = await submit("replaceFile", await replacement("new"));
+      expect(await apply(id), later.name).not.toBeNull();
+      expect(journal.get(id)?.state, later.name).toBe("pending");
+      expect(attempts.has(id), later.name).toBe(false);
+      expect(api.upload, later.name).not.toHaveBeenCalled();
+      expect(await apply(id), later.name).toBeNull();
+      expect(uploaded.map(({ content }) => content), later.name).toEqual(["new"]);
+    }
   });
 
   it("tells by the content's checksum whether a replacement whose answer was lost was made", async () => {

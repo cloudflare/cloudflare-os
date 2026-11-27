@@ -3042,6 +3042,25 @@ describe("findNamed, getContentVersion and keepRevision", () => {
     expect(calls[0].url.pathname).toBe("/drive/v3/files/F/revisions/r2");
     expect(JSON.parse(calls[0].body ?? "")).toEqual({ keepForever: true });
   });
+
+  it("gives up on a pin Drive does not answer, at the write deadline", async () => {
+    vi.useFakeTimers();
+    // Timed on the faked clock, as Workers' own timeout is on its real one.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      let timer = new AbortController();
+      setTimeout(() => timer.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+      return timer.signal;
+    });
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      let { promise, reject } = Promise.withResolvers<Response>();
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      return promise;
+    });
+    let pinned = api().keepRevision("F", "r2").catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(await Promise.race([pinned, "still waiting"])).toMatchObject({ name: "TimeoutError" });
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(COMMENT_WRITE_MAX_MS / 3);
+  });
 });
 
 /** Each sharing change and the move, as one call on `drive`. */
