@@ -911,6 +911,9 @@ function binding(
     },
     apply: (actionId: number) => hooks.applyDrive(facet, props, actionId),
     reject: (actionId: number) => hooks.rejectDrive(facet, props, actionId),
+    /** Reads `fileId` whole, running `between` once the first of its bytes have arrived. */
+    readAcross: (fileId: string, between: () => Promise<void>) =>
+      hooks.readDriveAcross(facet, props, fileId, between),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
     waiting: () => hooks.driveQueued(facet, props),
@@ -3162,6 +3165,27 @@ describe("uploads", () => {
 
     expect(await heldBytes(drive)).toEqual([held]);
     expect((await drive.call("readFile", "copy-1")).value).toMatchObject({ text: "kept" });
+  });
+
+  it("keeps the bytes a read of a waiting upload has begun until the read ends, though the upload is approved meanwhile", async () => {
+    let drive = binding();
+    // Four of the 1 MB chunks the bytes are kept in, and a fifth, read one at a time.
+    let content = "0123456789abcdef".repeat(1 << 18) + "end";
+    let queued = await drive.queued("uploadFile", "big.txt", content, { folderId: "elsewhere" });
+    let applied: string | null | undefined;
+
+    let read = await drive.readAcross("copy-1", async () => {
+      applied = await drive.apply(queued.actionId);
+    });
+
+    expect(applied).toBeNull();
+    expect(read.before).toBeGreaterThan(0);
+    expect(read.before).toBeLessThan(content.length);
+    expect(read.error).toBeUndefined();
+    expect(read.text === content).toBe(true);
+    expect(uploadedTo("copy-1").map(text => text === content)).toEqual([true]);
+    expect(await heldBytes(drive)).toEqual([]);
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
   });
 
   it("finds a file a lost reply made under its reserved ID, and never uploads it twice", async () => {

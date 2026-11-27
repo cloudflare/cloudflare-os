@@ -65,6 +65,78 @@ export const UPLOAD_FILE_STORE = {
 /** What a session keeps an upload's bytes in, and reads them back from. */
 export type DriveUploadFiles = Pick<ActionFileStore, "capture" | "captureStream" | "readStream" | "delete">;
 
+/**
+ * The upload bytes sessions read and decisions delete, kept for each read until it ends, at its
+ * last byte, an error or a cancel, though they are deleted meanwhile: a read takes each chunk from
+ * storage only as it is pulled, so an approval or a rejection would otherwise cut short a
+ * `readFile()` it meets halfway, whose idle limit cancels a read left unread. Bytes a gatekeeper
+ * evicted meanwhile never deleted are swept as any no waiting upload holds are.
+ */
+export class ReadHeldUploads implements DriveUploadFiles {
+  readonly #files: ActionFileStore;
+  /** How many reads of each upload's bytes are open, by handle, and whether they were deleted. */
+  readonly #reads = new Map<string, { open: number; deleted: boolean }>();
+
+  constructor(files: ActionFileStore) {
+    this.#files = files;
+  }
+
+  capture(bytes: Uint8Array): Promise<ActionFileReference> {
+    return this.#files.capture(bytes);
+  }
+
+  captureStream(content: ReadableStream<Uint8Array>): Promise<ActionFileReference> {
+    return this.#files.captureStream(content);
+  }
+
+  /** `file`'s bytes, which are kept until the stream ends. */
+  async readStream(file: ActionFileReference): Promise<ReadableStream<Uint8Array>> {
+    let content = (await this.#files.readStream(file)).getReader();
+    let reads = this.#reads.get(file.handle) ?? { open: 0, deleted: false };
+    this.#reads.set(file.handle, reads);
+    reads.open++;
+    let ended = false;
+    let end = () => {
+      if (ended) return;
+      ended = true;
+      if (--reads.open > 0) return;
+      this.#reads.delete(file.handle);
+      if (reads.deleted) this.#files.delete(file);
+    };
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        let chunk = await content.read().catch((error: unknown) => {
+          end();
+          throw error;
+        });
+        if (chunk.done) {
+          end();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      },
+      async cancel(reason) {
+        end();
+        await content.cancel(reason);
+      },
+    }, { highWaterMark: 0 });
+  }
+
+  /** Deletes `file`'s bytes once no read of them is open. */
+  delete(file: ActionFileReference | undefined): void {
+    let reads = file && this.#reads.get(file.handle);
+    if (reads) reads.deleted = true;
+    else this.#files.delete(file);
+  }
+
+  /** As {@link ActionFileStore.pruneUnreferenced}, keeping the bytes of every open read too. */
+  pruneUnreferenced(referencedHandles: ReadonlySet<string>, createdBefore: number): void {
+    this.#files.pruneUnreferenced(
+      new Set([...referencedHandles, ...this.#reads.keys()]), createdBefore);
+  }
+}
+
 /** What an upload is given: text, bytes, or a stream of bytes. */
 export type DriveUploadContent = string | Uint8Array | ReadableStream<Uint8Array>;
 

@@ -885,6 +885,32 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   /**
+   * Reads file `fileId` whole through a fresh Drive session, running `between` once its first
+   * chunk has arrived, and reports how many bytes had arrived then and the text read, or the error
+   * the read ended with.
+   */
+  async readDriveAcross(
+    facetName: string, binding: DriveBinding, fileId: string, between: () => Promise<void>,
+  ): Promise<{ before: number; text?: string; error?: string }> {
+    using approvalQueue = new RpcStub<ApprovalQueue>(new TestApprovalQueue());
+    using session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDriveSession & Disposable;
+    let reader = (await session.readFile(fileId)).content.getReader();
+    let chunks: Uint8Array[] = [];
+    let first = await reader.read();
+    if (!first.done) chunks.push(first.value);
+    let before = chunks[0]?.byteLength ?? 0;
+    await between();
+    try {
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) chunks.push(chunk.value);
+    } catch (error) {
+      return { before, ...failure(error) };
+    }
+    return { before, text: await new Blob(chunks).text() };
+  }
+
+  /**
    * Installs other credentials on the test user's Google account, as a reconnect does: the account
    * answers `token` once it has answered `after` more calls with what it answers now, and
    * `undefined` restores its default at once. A gatekeeper already holding a token keeps it.

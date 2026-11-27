@@ -71,9 +71,9 @@ import {
   pendingActionId, planCopy, simulatedCopy,
 } from "./drive-copies";
 import {
-  captureUpload, DRIVE_UPLOADS, NAME_WAITING, replacedFile, replacedVersion, requireConvertible,
-  requireUploadOptions, UPLOAD_FILE_STORE, UPLOAD_GRACE_MS, uploadBytes, uploadContentType,
-  uploadConversion, uploadEntry, uploadFileOf, type DriveUploadAction,
+  captureUpload, DRIVE_UPLOADS, NAME_WAITING, ReadHeldUploads, replacedFile, replacedVersion,
+  requireConvertible, requireUploadOptions, UPLOAD_FILE_STORE, UPLOAD_GRACE_MS, uploadBytes,
+  uploadContentType, uploadConversion, uploadEntry, uploadFileOf, type DriveUploadAction,
 } from "./drive-uploads";
 import {
   ACCESS_WAITING_CHANGE, ACCESS_WAITING_REMOVE, CHANGE_PENDING, checkAccessName, checkShare,
@@ -2361,8 +2361,10 @@ export class GoogleDriveGatekeeperImpl
   #journal = new ActionJournal<DriveAction>(this.ctx.storage.kv, { namespace: "drive" });
   #attempts = writeAttempts(this.ctx.storage.kv);
   #madeFiles = madeFiles(this.ctx.storage.kv);
-  /** The bytes of each upload, from when it is queued until it is decided. */
-  #uploads = new ActionFileStore(this.ctx.storage, UPLOAD_FILE_STORE);
+  /** Each upload's bytes, from when it is queued until it is decided, as an approval reads them. */
+  #uploadFiles = new ActionFileStore(this.ctx.storage, UPLOAD_FILE_STORE);
+  /** The same bytes as sessions read them and decisions delete them: kept for a read still open. */
+  #uploads = new ReadHeldUploads(this.#uploadFiles);
   /**
    * The one token an approval of a sharing change, a move, a copy or an upload sends everything
    * under, while that approval runs (see applyAction()). Approvals run one at a time, behind #reads.
@@ -2382,7 +2384,7 @@ export class GoogleDriveGatekeeperImpl
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
     madeFiles: this.#madeFiles,
-    uploads: this.#uploads,
+    uploads: this.#uploadFiles,
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
