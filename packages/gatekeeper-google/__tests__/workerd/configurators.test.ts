@@ -1356,6 +1356,32 @@ describe("BigQuery picker", () => {
     refresh.resolve(token("fresh"));
   });
 
+  it("asks for a query project once the dry run's deadline passes, even while its answer is being read", async () => {
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => ms === 10_000 ? deadline.signal : timeout(ms));
+    let answering = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = decodeURIComponent(new URL(String(input)).pathname.replace("/bigquery/v2", ""));
+      if (path === "/projects") return Response.json({ projects: [] });
+      if (path === "/projects/slow/datasets") return Response.json({ datasets: [] });
+      // The dry run's answer begins and then stalls. As a fetch's does, its body fails once the
+      // request's signal aborts.
+      const signal = init?.signal;
+      if (!signal) throw new Error("The dry run was sent with no signal.");
+      answering = true;
+      const body = new ReadableStream<Uint8Array>({
+        start: controller => signal.addEventListener("abort", () => controller.error(signal.reason), { once: true }),
+      });
+      return new Response(body, { headers: { "Content-Type": "application/json" } });
+    }));
+    const ui = new BigQueryConfiguratorUI(async () => token("t"));
+    const node = ui.getNode("project:slow");
+    await vi.waitFor(() => expect(answering).toBe(true));
+    deadline.abort(new DOMException("Timed out", "TimeoutError"));
+    expect(await node).toMatchObject({ id: "project:slow", runsQueries: false });
+  });
+
   it("fails a lookup when the project list fails, rather than calling what it names unseen, so it can be asked again", async () => {
     let lists = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
