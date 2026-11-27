@@ -527,7 +527,14 @@ async function putUploadChunk(
           throw new Error("Google Drive ended the upload before the file was sent. Save it again.");
         }
         let refusal = await driveError(response);
-        if (!isThrottle(refusal)) throw refusal;
+        // A refusal to say what the session holds once a request of the last chunk went
+        // unanswered leaves open whether that request made the file: only a 200 or 201, a 308 or
+        // a 404 tells (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload).
+        if (!isThrottle(refusal)) {
+          throw ask && total !== undefined
+            ? new Error("Google Drive did not say whether the upload was made", { cause: refusal })
+            : refusal;
+        }
       } else {
         void response?.body?.cancel();
       }

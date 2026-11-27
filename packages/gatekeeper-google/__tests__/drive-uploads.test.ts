@@ -617,6 +617,32 @@ describe("Drive converted upload sends", () => {
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
   });
+
+  it("keeps a converted upload to look for when Drive refuses to say what the session holds after its last chunk", async () => {
+    vi.useFakeTimers();
+    let { api, attempts, journal, made, submit, apply, converted } = harness();
+    let requests = throughDrive(api, (method, range) => {
+      // The last chunk's answer is lost, and Drive then refuses the question of what it holds.
+      if (method === "PUT" && range === "bytes 0-3/4") throw new TypeError("network connection lost");
+      if (method === "PUT") {
+        return new Response(JSON.stringify({ error: { code: 403, errors: [{ reason: "forbidden" }] } }),
+          { status: 403 });
+      }
+      return session("N1")(method, range);
+    });
+    let id = await submit("uploadConverted", await converted("docx"));
+    let applied = apply(id);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await applied).toBe(UNCONFIRMED_CONVERTED);
+    expect(requests).toEqual(["POST", "PUT bytes 0-3/4", "PUT bytes */4", "DELETE"]);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(true);
+
+    api.findByToken.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
+    expect(await apply(id)).toBeNull();
+    expect(api.upload).toHaveBeenCalledTimes(1);
+    expect(made.get(id)).toBe("N1");
+  });
 });
 
 describe("Drive replacement sends", () => {
