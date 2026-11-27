@@ -33,6 +33,9 @@ const UNCONFIRMED_NATIVE_COPY =
   "Google Drive did not confirm whether this copy was made, and it may have been: Google Drive " +
   "can take a while to show a new file. It won't be sent again. Approving it again looks for the " +
   "copy once more; rejecting it leaves any copy that was made.";
+const NOT_SENT =
+  "Google Drive did not take the upload, and nothing was made or changed by it. Approve it again " +
+  "to send it once more.";
 const TAKES_SHARING =
   "The copy takes the sharing of the folder it goes into: everyone with access to that folder " +
   "can open it.";
@@ -598,7 +601,7 @@ describe("Drive copy sends", () => {
 
   it("fails an exported copy whose export stops arriving, letting it go, and sends it again when approved again", async () => {
     vi.useFakeTimers();
-    let { api, nodes, submit, apply } = harness();
+    let { api, attempts, nodes, submit, apply } = harness();
     nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
     let cancelled = false;
     // Drive begins the export, then sends nothing more.
@@ -610,13 +613,16 @@ describe("Drive copy sends", () => {
 
     let applied = apply(id);
     await vi.advanceTimersByTimeAsync(FILE_READ_IDLE_MS);
-    expect(await applied).toBe(UNCONFIRMED_COPY);
+    // The stall comes before the request that would make the copy, so nothing was made.
+    expect(await applied).toBe(NOT_SENT);
     expect(cancelled).toBe(true);
     expect(nodes.E).toBeUndefined();
+    expect(attempts.has(id)).toBe(false);
 
-    // Nothing was made, so the next approval exports the file again.
+    // The next approval exports the file again, with nothing to look for first.
     expect(await apply(id)).toBeNull();
     expect(nodes.E?.parents).toEqual(["B"]);
+    expect(api.getScopeNodes).not.toHaveBeenCalledWith(["E"]);
   });
 
   it("does not count the time the upload takes to send what it read of the export", async () => {

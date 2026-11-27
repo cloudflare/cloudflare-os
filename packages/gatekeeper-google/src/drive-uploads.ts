@@ -30,8 +30,8 @@ import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
 import { corpusOf, type SimulatedEntry } from "./drive-session";
 import type { DriveEntry, DriveNativeType } from "./drive-types";
 import {
-  driveRefusal, lookForToken, pendingId, requireWritable, sendOnce, type DriveWritesHost,
-  type QueuedWrite, type RefusalRow,
+  driveRefusal, lookForToken, pendingId, requireWritable, sendOnce, uploadChecked,
+  type DriveWritesHost, type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { nativeCopyName, officeLabel } from "./office-conversion";
 import { obsContext } from "./observability";
@@ -516,7 +516,7 @@ function uploadReserved(
     },
     send: async () => {
       // `undefined`: Drive refused the ID as used, so an earlier send made the file.
-      await host.api.upload(bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } },
+      await uploadChecked(host.api, bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } },
         () => requireUploadScope(host, payload));
       return fileId;
     },
@@ -551,7 +551,7 @@ async function uploadConverted(
       return {};
     },
     send: async () => {
-      let uploaded = await host.api.upload(bytes!, contentType, {
+      let uploaded = await uploadChecked(host.api, bytes!, contentType, {
         create: { name, parents: [toFolderId], mimeType, appProperties: { [UPLOAD_TOKEN_PROPERTY]: token } },
       }, () => requireUploadScope(host, payload));
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
@@ -615,7 +615,7 @@ function replaceContent(
       return {};
     },
     send: async () => {
-      await host.api.upload(bytes!, contentType, { replace: fileId },
+      await uploadChecked(host.api, bytes!, contentType, { replace: fileId },
         () => requireUploadScope(host, payload, fileId));
       return fileId;
     },

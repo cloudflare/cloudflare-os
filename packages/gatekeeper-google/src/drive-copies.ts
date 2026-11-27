@@ -37,7 +37,7 @@ import {
 import type { DriveExportFormat, DriveNativeType } from "./drive-types";
 import {
   driveRefusal, isPendingId, lookForToken, PENDING_PREFIX, pendingId, provePath, requireWritable,
-  sendOnce, type DriveWritesHost, type QueuedWrite, type RefusalRow,
+  sendOnce, uploadChecked, type DriveWritesHost, type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { nativeCopyName, officeLabel, type OfficeKind } from "./office-conversion";
 import { obsContext } from "./observability";
@@ -666,7 +666,7 @@ export const DRIVE_COPY_DEFINITIONS: {
         // so a wait for bytes Drive stops sending must end. Google exports the file as it is when
         // it answers, which may be after the file left the binding, so the copy's checks are made
         // again before the request that makes the copy, once all of the export is read.
-        return host.api.upload(readTimed(exported), mimeType,
+        return uploadChecked(host.api, readTimed(exported), mimeType,
           { create: { id: copyId, name, parents: [toFolderId] } }, () => requireStillCopyable(host, payload));
       });
     },

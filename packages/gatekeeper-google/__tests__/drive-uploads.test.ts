@@ -72,6 +72,9 @@ const UNCONFIRMED_CONVERTED =
 const UNCONFIRMED_REPLACE =
   "Google Drive did not confirm whether the file's content was replaced, and it may have been. " +
   "Approving it again first reads the file's content checksum, so it is not replaced twice.";
+const NOT_SENT =
+  "Google Drive did not take the upload, and nothing was made or changed by it. Approve it again " +
+  "to send it once more.";
 const REPLACED_BY_OTHER =
   "That file's content is now neither what it held when this was queued nor this upload, so " +
   "whether this replacement was made cannot be told. Check the file's version history.";
@@ -456,6 +459,14 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
         throw error;
       });
     },
+    /** Makes the next upload send its last chunk, which Drive does not make, then answer `error`. */
+    lastChunkLost(error: Error): void {
+      api.upload.mockImplementationOnce(async (content, _contentType, _target, beforeCommit) => {
+        await new Response(content).text();
+        await beforeCommit?.();
+        throw error;
+      });
+    },
   };
 }
 
@@ -538,7 +549,7 @@ describe("Drive upload sends", () => {
 
   it("uploads again under the same ID when none was made, and counts the ID refused as used as made", async () => {
     let lost = harness();
-    lost.api.upload.mockRejectedValueOnce(unconfirmed());
+    lost.lastChunkLost(unconfirmed());
     let id = await lost.submit("uploadFile", await lost.newFile("hello"));
     expect(await lost.apply(id)).toBe(UNCONFIRMED_UPLOAD);
     expect(await lost.apply(id)).toBeNull();
@@ -609,7 +620,7 @@ describe("Drive converted upload sends", () => {
 
     // Drive's search lags, so a look that finds nothing proves nothing.
     let lost = harness();
-    lost.api.upload.mockRejectedValueOnce(unconfirmed());
+    lost.lastChunkLost(unconfirmed());
     let again = await lost.submit("uploadConverted", await lost.converted("docx"));
     expect(await lost.apply(again)).toBe(UNCONFIRMED_CONVERTED);
     expect(await lost.apply(again)).toBe(UNCONFIRMED_CONVERTED);
@@ -641,6 +652,27 @@ describe("Drive converted upload sends", () => {
     api.findByToken.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
     expect(await apply(id)).toBeNull();
     expect(api.upload).toHaveBeenCalledTimes(1);
+    expect(made.get(id)).toBe("N1");
+  });
+
+  it("leaves a converted upload to send again when Drive would not open its session, which made nothing", async () => {
+    vi.useFakeTimers();
+    let { api, attempts, journal, made, submit, apply, converted } = harness();
+    let down = true;
+    let requests = throughDrive(api, (method, range) =>
+      method === "POST" && down ? new Response("{}", { status: 503 }) : session("N1")(method, range));
+    let id = await submit("uploadConverted", await converted("docx"));
+    let applied = apply(id);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await applied).toBe(NOT_SENT);
+    expect(requests).toEqual(["POST", "POST", "POST"]);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
+
+    down = false;
+    expect(await apply(id)).toBeNull();
+    expect(requests.slice(3)).toEqual(["POST", "PUT bytes 0-3/4"]);
+    expect(api.findByToken).not.toHaveBeenCalled();
     expect(made.get(id)).toBe("N1");
   });
 });
@@ -724,7 +756,7 @@ describe("Drive replacement sends", () => {
 
     // Not made: the checksum is still the one recorded, so it is sent again.
     let none = harness();
-    none.api.upload.mockRejectedValueOnce(unconfirmed());
+    none.lastChunkLost(unconfirmed());
     let again = await none.submit("replaceFile", await none.replacement("new"));
     expect(await none.apply(again)).toBe(UNCONFIRMED_REPLACE);
     expect(await none.apply(again)).toBeNull();

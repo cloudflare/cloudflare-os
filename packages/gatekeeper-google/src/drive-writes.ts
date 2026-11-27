@@ -16,7 +16,7 @@ import type { Logger } from "@gadgets/observability/logger";
 import {
   APPROVAL_READ_MAX_MS, DriveApiDisabledError, DriveApiRequestError, driveWriteFailure,
   isInsufficientScope, type DriveWriteFailure, type DriveApi, type DriveCorpus, type DriveMadeFile,
-  type DriveScopeNode, type TokenProperty,
+  type DriveScopeNode, type DriveUploadTarget, type TokenProperty,
 } from "./drive-api";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
@@ -438,6 +438,37 @@ export const CREDENTIALS_NOT_ACCEPTED =
 const RATE_LIMITED =
   "Google Drive is limiting requests from this account. Approve it again in a minute.";
 
+/** Said of a send that failed having sent nothing that could make it, as an upload says. */
+const NOT_SENT =
+  "Google Drive did not take the upload, and nothing was made or changed by it. Approve it again " +
+  "to send it once more.";
+
+/**
+ * A send's failure, its `cause`, before it sent anything that could make its change. The send's
+ * marker is dropped, since nothing is left for a later approval to look for.
+ */
+export class NothingSentError extends Error {}
+
+/**
+ * Uploads `file` as `api.upload()` does, with `recheck` awaited immediately before each request
+ * that can make the file. A failure before any such request went made nothing, and is thrown as
+ * {@link NothingSentError}.
+ */
+export async function uploadChecked(
+  api: Pick<DriveApi, "upload">, file: ReadableStream<Uint8Array>, contentType: string,
+  target: DriveUploadTarget, recheck: () => Promise<unknown>,
+): Promise<DriveMadeFile | undefined> {
+  let committing = false;
+  try {
+    return await api.upload(file, contentType, target, async () => {
+      await recheck();
+      committing = true;
+    });
+  } catch (error) {
+    throw committing ? error : new NothingSentError(NOT_SENT, { cause: error });
+  }
+}
+
 /**
  * Makes one approved write, looking first for what an earlier send of it may have made.
  *
@@ -451,6 +482,8 @@ const RATE_LIMITED =
  * scope and on a 401, when no send of it is in doubt. A write that can be repeated keeps it
  * through all three, so that its next approval looks first: a change such a send made all the
  * same is then found and bound, where an approval with no marker would take it for someone else's.
+ * A send that fails with {@link NothingSentError} loses its marker however it failed, and one
+ * whose outcome Google left open is then sent again when approved again.
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
@@ -495,11 +528,11 @@ export async function sendOnce<Sent>(
   let sent: Sent;
   try {
     sent = await step.send();
-  } catch (error) {
-    if (error instanceof ActionApplyError) {
-      host.attempts.delete(id);
-      throw error;
-    }
+  } catch (caught) {
+    let unsent = caught instanceof NothingSentError ? caught : undefined;
+    let error = unsent ? unsent.cause : caught;
+    if (unsent || error instanceof ActionApplyError) host.attempts.delete(id);
+    if (error instanceof ActionApplyError) throw error;
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
       event: `${events}.send.failed`, outcome: failure, error,
@@ -508,7 +541,7 @@ export async function sendOnce<Sent>(
         : error instanceof GoogleApiError && error.providerReasons.length
           ? { providerReasons: [...error.providerReasons] } : {}),
     });
-    if (failure === "unknown") throw new Error(step.unconfirmed, { cause: error });
+    if (failure === "unknown") throw unsent ?? new Error(step.unconfirmed, { cause: error });
     // The approval's one token was not accepted, which the next approval's, loaded afresh, may be.
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
     let later = failure === "unauthorized" ? CREDENTIALS_NOT_ACCEPTED
