@@ -96,7 +96,7 @@ import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF,
   MOVE_SINGLE_FILE, PDF_MIME_TYPE, requireDriveBindingScope, type DriveBindingScope,
   type DriveCore, type DriveFolderSessionCoreOptions, type DriveWriteTarget, type NativeRead,
-  type NativeReadOptions, type SimulatedEntry,
+  type NativeReadOptions, type SimulatedEntry, type SimulatedListing,
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply,
@@ -2898,10 +2898,16 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async list(options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
-    // Only a binding that can write has queued copies to show.
-    let copiesInto = this.#writes.access === "write"
-      ? (folderId: string) =>
-        this.#writes.waiting(async pending => pendingCopiesInto(folderId, pending))
+    // Only a binding that can write has queued copies to show. A page and the copies it shows are
+    // read in one read, as comment pages are, so that no approval lands between them: it would
+    // leave a copy it made out of both.
+    let copiesInto: SimulatedListing | undefined = this.#writes.access === "write"
+      ? (folderId, fetch) => this.#writes.waiting(async pending => {
+        let page = await fetch();
+        return {
+          page, shown: page.nextPageToken === undefined ? pendingCopiesInto(folderId, pending) : [],
+        };
+      })
       : undefined;
     return this.#cursor(core => core.list(options, copiesInto));
   }

@@ -273,6 +273,8 @@ class DriveProvider {
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
+  /** Waited on once the next folder listing has read the folder's files, before it answers. */
+  beforeListingAnswers?: () => Promise<void>;
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -483,6 +485,11 @@ class DriveProvider {
         ? held.parents.includes(parent ?? "")
         : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
           (inDrive === undefined || held.driveId === inDrive)));
+      let pause = copyToken === undefined ? this.beforeListingAnswers : undefined;
+      if (pause) {
+        this.beforeListingAnswers = undefined;
+        await pause();
+      }
       return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
@@ -728,7 +735,9 @@ function binding(
       if (outcome.error !== undefined) throw new Error(outcome.error);
       return outcome.value as DriveAccess[];
     },
-    apply: (actionId: number) => hooks.applyDrive(facet, props, actionId),
+    /** Applies a write, calling `entered` once the gatekeeper has started applying it. */
+    apply: (actionId: number, entered?: () => void) =>
+      hooks.applyDrive(facet, props, actionId, entered),
     reject: (actionId: number) => hooks.rejectDrive(facet, props, actionId),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
@@ -2414,6 +2423,35 @@ describe("copies", () => {
     let read = await drive.call("readFile", "copy-1");
     expect(read.value).toMatchObject({ text: "hello copy" });
     expect(read.reports[0]).toEqual(READ("drive/file/report", "drive/folder/elsewhere"));
+  });
+
+  // An approval that ran between the page and the copies it shows would leave the copy out of
+  // both: the page fetched before it was made, and no longer waiting once the copies are read.
+  it("takes a listing's last page and the copies it shows at one moment, which an approval waits out", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    // Flags rather than promises: workerd refuses to resume a promise another Durable Object
+    // resolved.
+    let pause = { reached: false, released: false };
+    provider.beforeListingAnswers = async () => {
+      pause.reached = true;
+      await vi.waitFor(() => expect(pause.released).toBe(true), { timeout: 10_000 });
+    };
+
+    let listing = drive.call("list", { directParentId: "elsewhere" });
+    await vi.waitFor(() => expect(pause.reached).toBe(true));
+    let sentWhileListing: number | undefined;
+    let applying = drive.apply(queued.actionId, () => {
+      sentWhileListing = sent("POST /drive/v3/files/report/copy").length;
+      pause.released = true;
+    });
+    expect((await listing).value).toEqual([[expect.objectContaining({ id: "copy-1", pending: true })]]);
+    expect(await applying).toBeNull();
+    expect(sentWhileListing).toBe(0);
+    let after = await drive.call("list", { directParentId: "elsewhere" });
+    expect(after.value).toEqual([[expect.not.objectContaining({ pending: true })]]);
+    expect(listed(after.value)).toEqual(["copy-1"]);
   });
 
   it("stops showing a waiting copy on a folder binding once the file it copies leaves", async () => {

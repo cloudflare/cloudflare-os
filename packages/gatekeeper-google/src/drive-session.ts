@@ -3,7 +3,7 @@ import { CursorPager, type Pager } from "./cursor";
 import {
   FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, MY_DRIVE_ROOT, SHORTCUT_MIME_TYPE,
   isFileInvisible, isInsufficientScope, isListableFolderFile, isListableFolderNode,
-  type DriveApi, type DriveCommentList, type DriveCorpus, type DriveFile,
+  type DriveApi, type DriveCommentList, type DriveCorpus, type DriveFile, type DriveFileList,
   type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -366,8 +366,18 @@ function simulatedUnits({entry, sourceId}: SimulatedEntry): DriveObservation[] {
   return copyUnits(sourceId, entry.parentId);
 }
 
-/** The simulated entries a listing of folder `folderId` shows on its last page. */
-export type SimulatedListing = (folderId: string) => Promise<SimulatedEntry[]>;
+/** A page of a listing, with the simulated entries it shows. */
+type ShownPage = { page: DriveFileList; shown: SimulatedEntry[] };
+
+/**
+ * A page of a listing, fetched with `fetch`, and the simulated entries it shows, read with it
+ * while no change is applied or rejected, so that no approval lands between the two.
+ */
+type SimulatedPage = (fetch: () => Promise<DriveFileList>) => Promise<ShownPage>;
+
+/** A {@link SimulatedPage} of a listing of folder `folderId`, which shows entries on its last page. */
+export type SimulatedListing =
+  (folderId: string, fetch: () => Promise<DriveFileList>) => Promise<ShownPage>;
 
 /** One page of a file's comments, as the caller sees it. */
 export type CommentPage = {
@@ -770,15 +780,15 @@ abstract class DriveCoreBase {
   }
 
   /**
-   * A listing that shows, on its last page, the simulated entries `simulated` reads once that page
-   * is fetched. `listPage` fetches one page; `entries` turns its files into the entries the caller
+   * A listing that shows, on its last page, the simulated entries `simulated` reads with that
+   * page. `listPage` fetches one page; `entries` turns its files into the entries the caller
    * sees; `authorize` reports a page with the units given, where each simulated entry stands for
    * the units `simulatedUnits` gives it rather than for itself.
    */
   protected listingPager(options: {
-    listPage: (pageToken: string | undefined) => Promise<{ files: DriveFile[]; nextPageToken?: string }>;
+    listPage: (pageToken: string | undefined) => Promise<DriveFileList>;
     entries: (files: DriveFile[]) => Promise<DriveEntry[]>;
-    simulated?: () => Promise<SimulatedEntry[]>;
+    simulated?: SimulatedPage;
     simulatedUnits: (simulated: SimulatedEntry) => DriveObservation[];
     authorize: (entries: DriveEntry[], units: DriveObservation[]) => Promise<void>;
   }): Pager<DriveEntry> {
@@ -788,10 +798,11 @@ abstract class DriveCoreBase {
     return new CursorPager<DriveFile, DriveEntry>({
       provider: "Google Drive",
       fetchPage: async pageToken => {
-        let page = await options.listPage(pageToken);
-        shown = page.nextPageToken === undefined && options.simulated
-          ? await options.simulated() : [];
-        return {items: page.files, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {})};
+        let fetch = () => options.listPage(pageToken);
+        let read = options.simulated ? await options.simulated(fetch) : {page: await fetch(), shown: []};
+        shown = read.shown;
+        let {files, nextPageToken} = read.page;
+        return {items: files, ...(nextPageToken ? {nextPageToken} : {})};
       },
       buildEntries: async files => [
         ...await options.entries(files), ...shown.map(({entry}) => entry),
@@ -919,7 +930,7 @@ export class DriveSessionCore extends DriveCoreBase {
     return this.#cursor({
       ...(directParentId ? {directParentIds: [directParentId]} : {}),
       orderBy: orderBy(options.order),
-    }, directParentId && simulated ? () => simulated(directParentId) : undefined);
+    }, directParentId && simulated ? fetch => simulated(directParentId, fetch) : undefined);
   }
 
   async search(query: DriveSearchQuery): Promise<Pager<DriveEntry>> {
@@ -1144,7 +1155,7 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   async #cursor(
-    query: DriveListFilesOptions, simulated?: () => Promise<SimulatedEntry[]>,
+    query: DriveListFilesOptions, simulated?: SimulatedPage,
   ): Promise<Pager<DriveEntry>> {
     return this.listingPager({
       listPage: pageToken => this.api.listFiles({...query, corpus: {kind: "user"}, pageToken}),
@@ -1289,9 +1300,11 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   ): Promise<Pager<DriveEntry>> {
     rejectDirectParent(options);
     let folderId = this.#currentFolderId();
-    return this.#cursor(
-      {orderBy: orderBy(options.order)}, undefined,
-      simulated ? async () => this.#withSources(await simulated(folderId)) : undefined);
+    // The files a waiting copy copies are proved after the page, which reads nothing more queued.
+    return this.#cursor({orderBy: orderBy(options.order)}, undefined, simulated && (async fetch => {
+      let {page, shown} = await simulated(folderId, fetch);
+      return {page, shown: await this.#withSources(shown)};
+    }));
   }
 
   async search(query: DriveFolderSearchQuery): Promise<Pager<DriveEntry>> {
@@ -1611,7 +1624,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   #cursor(
     query: DriveListFilesOptions,
     childFolderIds?: readonly string[],
-    simulated?: () => Promise<SimulatedEntry[]>,
+    simulated?: SimulatedPage,
   ): Pager<DriveEntry> {
     let bound: {driveId: string | undefined} | undefined;
     // Revalidated per page: the saved path, plus any named child folders, since one moved out
