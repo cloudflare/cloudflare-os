@@ -642,6 +642,22 @@ describe("Drive replacement sends", () => {
     }
   });
 
+  it("proves the file again once its version is read, keeping and replacing nothing when it left the binding", async () => {
+    let { api, journal, nodes, submit, apply, replacement } = harness({ kind: "folder", folderId: "A" });
+    nodes.A = folder("A", "root");
+    let read = api.getContentVersion.getMockImplementation()!;
+    api.getContentVersion.mockImplementationOnce(async fileId => {
+      // Moved out of the bound folder while its version is read.
+      nodes.R = { ...nodes.R!, parents: ["elsewhere"] };
+      return read(fileId);
+    });
+    let id = await submit("replaceFile", { ...await replacement("new"), folderIds: ["A"] });
+    expect(await apply(id)).toBe(NO_REPLACED_FILE);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(api.keepRevision).not.toHaveBeenCalled();
+    expect(api.upload).not.toHaveBeenCalled();
+  });
+
   it("refuses for good when Drive will not keep the version, and waits out a rate limit", async () => {
     for (let [refusal, said] of [
       [new DriveApiRequestError(403, "keepForeverLimit"), `${PIN_REFUSED} [http=403 reason=keepForeverLimit]`],

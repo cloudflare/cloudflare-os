@@ -593,18 +593,25 @@ function replaceContent(
           now.sha256Checksum !== replaced.sha256Checksum) {
         throw new ActionApplyError(CHANGED_SINCE_QUEUED);
       }
-      bytes = await storedBytes(host, file);
-      // Drive drops an old version in time unless it is kept for good, and the card promises it
-      // stays restorable.
-      await host.api.keepRevision(fileId, replaced.headRevisionId).catch(async (error: unknown) => {
-        await bytes?.cancel().catch(() => {});
-        if (error instanceof DriveApiRequestError && (error.status === 400 || error.status === 403) &&
-            error.reason !== "rateLimitExceeded" && error.reason !== "userRateLimitExceeded") {
-          throw new ActionApplyError(`${PIN_REFUSED} [http=${error.status}${
-            error.reason === undefined ? "" : ` reason=${error.reason}`}]`, { cause: error });
-        }
+      let kept = await storedBytes(host, file);
+      try {
+        // The pin changes the file, which may have left the binding while its version was read.
+        await requireUploadScope(host, payload, fileId);
+        // Drive drops an old version in time unless it is kept for good, and the card promises it
+        // stays restorable.
+        await host.api.keepRevision(fileId, replaced.headRevisionId).catch((error: unknown) => {
+          if (error instanceof DriveApiRequestError && (error.status === 400 || error.status === 403) &&
+              error.reason !== "rateLimitExceeded" && error.reason !== "userRateLimitExceeded") {
+            throw new ActionApplyError(`${PIN_REFUSED} [http=${error.status}${
+              error.reason === undefined ? "" : ` reason=${error.reason}`}]`, { cause: error });
+          }
+          throw error;
+        });
+      } catch (error) {
+        await kept.cancel().catch(() => {});
         throw error;
-      });
+      }
+      bytes = kept;
       return {};
     },
     send: async () => {
