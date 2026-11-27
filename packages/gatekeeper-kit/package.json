@@ -31,6 +31,8 @@
     "./oauth-client": "./src/oauth-client.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
+    "./upstream": "./src/upstream.ts",
+    "./route-operation": "./src/route-operation.ts",
     "./serial-queue": "./src/serial-queue.ts",
     "./simulation": "./src/simulation.ts",
     "./simulation-store": "./src/simulation-store.ts",
