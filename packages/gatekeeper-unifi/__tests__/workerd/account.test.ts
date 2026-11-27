@@ -114,6 +114,24 @@ describe("minting a gatekeeper for a resource URL", () => {
       .toMatchObject({ ok: { id: "site" } });
   });
 
+  it("won't bind, or send anything to, a site whose gateway wasn't identified when the console connected", async () => {
+    // Requests to a site are checked by its own gateway: another site's says nothing about it.
+    const { console } = installFake();
+    const barn = homeConsole().network!.sites[0]!;
+    barn.site = { ...barn.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    barn.devices = barn.devices.filter(d => !(d.overview.features as string[]).includes("gateway"));
+    console.network!.sites.push(barn);
+    const accountId = await connectDirect();
+    const consoleId = await directConsoleId(accountId);
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${consoleId}/network/sites/88f7af54-0000-4000-8000-000000000002`]))
+      .toMatchObject({ error: expect.stringMatching(/didn't say which gateway serves that site/) });
+    const target = { kind: "app" as const, app: "network" as const, consoleId };
+    expect(await account(accountId).request({ target, method: "GET", path: "/v1/sites/88f7af54-0000-4000-8000-000000000002/devices" }))
+      .toMatchObject({ ok: false, failure: { kind: "unconfirmed", message: expect.stringMatching(/which gateway serves that site/) } });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${consoleId}/network/sites/${HOME.siteId}`]))
+      .toMatchObject({ ok: { id: "site" } });
+  });
+
   it("refuses a resource the connection can't open, such as a camera that's been removed", async () => {
     // An ID filled in by an agent or a blueprint isn't otherwise looked up before the binding is made.
     const { console } = installFake();
@@ -425,6 +443,17 @@ describe("checking collaborators", () => {
     expect(await verify(barnSite, newcomer)).toEqual(ALLOWED);
   });
 
+  it("refuses a collaborator a site the direct owner's connection never pinned a gateway for", async () => {
+    const { unifi, console } = installFake();
+    const barn = homeConsole().network!.sites[0]!;
+    barn.site = { ...barn.site, id: "88f7af54-0000-4000-8000-000000000002", name: "Barn", internalReference: "barn" };
+    barn.devices = barn.devices.filter(d => !(d.overview.features as string[]).includes("gateway"));
+    console.network!.sites.push(barn);
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    expect(await verify(binding(owner, { kind: "site", consoleId, siteId: "88f7af54-0000-4000-8000-000000000002" }), sam)).toEqual(DENIED);
+    expect(await verify(binding(owner, { kind: "site", consoleId, siteId: HOME.siteId }), sam)).toEqual(ALLOWED);
+  });
+
   it("refuses a cloud collaborator a site whose gateway on their console isn't the owner's, though another site's is", async () => {
     // Site Manager matches their console to the owner's by the barn's gateway, but the home site there has another.
     const { unifi, console } = installFake();
@@ -597,6 +626,25 @@ describe("the resource pickers", () => {
       .toEqual({ ok: [{ value: HOME.sensorId, title: "Garage Door", subtitle: "door", meta: "connected" }] });
     expect(await hooks().pick(accountId, UNIFI_RESOURCES.light.id, "listLights", [HOME.hostId, ""]))
       .toEqual({ ok: [{ value: HOME.lightId, title: "Backyard Floodlight", subtitle: "UP FloodLight", meta: "connected" }] });
+  });
+
+  it("finds a camera, sensor, or floodlight by its ID for a key that can't list them", async () => {
+    // A pre-filled picker names the item it was given this way: a key can be allowed one camera's
+    // details without the camera list.
+    const { unifi } = installFake();
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[LOCAL_KEY, ["/v1/cameras", "/v1/sensors", "/v1/lights"]]]);
+    const accountId = await connectDirect();
+    const consoleId = await directConsoleId(accountId);
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.camera.id, "findCamera", [consoleId, HOME.doorbellId]))
+      .toMatchObject({ ok: { value: HOME.doorbellId, title: "Front Door" } });
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.sensor.id, "findSensor", [consoleId, HOME.sensorId]))
+      .toMatchObject({ ok: { value: HOME.sensorId, title: "Garage Door" } });
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.light.id, "findLight", [consoleId, HOME.lightId]))
+      .toMatchObject({ ok: { value: HOME.lightId, title: "Backyard Floodlight" } });
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.camera.id, "findCamera", [consoleId, "66d025b30096e903e4000599"]))
+      .toEqual({ ok: null });
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.camera.id, "listCameras", [consoleId, ""]))
+      .toHaveProperty("error");
   });
 
   it("asks for a console before listing anything in one", async () => {

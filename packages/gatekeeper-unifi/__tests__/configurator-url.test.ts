@@ -20,13 +20,17 @@ type Values = Record<string, string | null | undefined>;
 type Picker = ConfiguratorUISpec<never, Values>;
 
 const ui = new Proxy({}, { get() { throw new Error("URL handling must not call the ui capability"); } }) as never;
-/** Lists whatever ID it's asked about, named after it: a gatekeeper that reaches every resource. */
+/**
+ * Lists, or finds, whatever ID it's asked about, named after it: a gatekeeper that reaches every
+ * resource. `list*` answers a list, and `find*` the one item or null.
+ */
 const offering = (title: (id: string) => string | null = id => `Name of ${id}`) =>
   new Proxy({}, {
-    get: () => async (...args: string[]) => {
+    get: (_target, method) => async (...args: string[]) => {
       const id = args.at(-1)!;
       const name = title(id);
-      return name === null ? [] : [{ value: id, title: name }];
+      const item = name === null ? null : { value: id, title: name };
+      return String(method).startsWith("find") ? item : item ? [item] : [];
     },
   }) as never;
 const CONSOLE = "70A7419783ED0000000006797F060000000006C719490000000062ABD4EA:1261206302";
@@ -112,6 +116,28 @@ describe("placeholders below a known console", () => {
       .toEqual({ consoleId: CONSOLE, clients: null, prefilled: "console “Home”" });
     const failing = new Proxy({}, { get: () => () => Promise.reject(new Error("offline")) }) as never;
     expect(await prefill(device as Picker, url, "device", failing)).toEqual({ clients: null });
+  });
+
+  it("reads a pre-filled camera, sensor, or floodlight by its ID, not from the list of them", async () => {
+    // A key can be allowed one camera's details without the list.
+    const ids = { consoleId: CONSOLE, item: "66d025b30096e903e4000500" };
+    const lists = new Proxy({}, {
+      get: (_target, method) => async (...args: string[]) => {
+        if (method === "listConsoles") return [{ value: CONSOLE, title: "Home" }];
+        if (String(method).startsWith("find")) return { value: args[1], title: "Front Door" };
+        throw new Error("forbidden");
+      },
+    }) as never;
+    for (const [picker, kind, key] of [[camera, "camera", "cameraId"], [sensor, "sensor", "sensorId"], [light, "light", "lightId"]] as const) {
+      const url = `https://unifi.ui.com/consoles/${CONSOLE}/protect/${kind === "light" ? "lights" : `${kind}s`}/${ids.item}`;
+      expect(await prefill(picker as Picker, url, kind, lists)).toMatchObject({ consoleId: CONSOLE, [key]: ids.item });
+    }
+  });
+
+  it("names what it filled in without the characters that could reorder the notice around a name", async () => {
+    const seeded = await prefill(camera as Picker, `https://unifi.ui.com/consoles/${CONSOLE}/protect/cameras/66d025b30096e903e4000500`,
+      "camera", offering(id => id === CONSOLE ? "Home\u202E\u0007" : "Front\u2066 Door"));
+    expect(seeded.prefilled).toBe("console “Home”, camera “Front Door”");
   });
 
   it("fills in an ID as its list spells it", async () => {

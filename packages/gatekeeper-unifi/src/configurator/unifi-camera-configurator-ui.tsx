@@ -20,6 +20,11 @@ function encodeSegment(value: string): string {
   return encodeURIComponent(value).replaceAll("%3A", ":");
 }
 
+// Control characters and bidirectional formatting, which the runtime strips from the titles it
+// shows: in a name UniFi supplied, they could reorder or hide the notice's text around it.
+const INVISIBLE_CONTROLS = /[\p{Cc}\p{Bidi_Control}]/gu;
+const MAX_NAME_LENGTH = 240;
+
 /**
  * Looks up, in order, what a pre-filled URL's IDs name: a field shows a pre-filled ID rather than
  * its name, so the form says what it holds before it can be submitted. The first ID its list
@@ -43,7 +48,7 @@ async function named(
     }
     if (!option) break;
     found[key] = option.value;
-    names.push(`${label} “${option.title}”`);
+    names.push(`${label} “${option.title.replace(INVISIBLE_CONTROLS, "").slice(0, MAX_NAME_LENGTH) || option.value}”`);
   }
   return names.length > 0 ? { ...found, prefilled: names.join(", ") } : found;
 }
@@ -61,7 +66,8 @@ export default {
     if (url.origin !== ORIGIN || consoles !== "consoles" || protect !== "protect" || cameras !== "cameras") return {};
     return await named([
       ["consoleId", "console", knownId(consoleSegment), (_, query) => ui.listConsoles(query)],
-      ["cameraId", "camera", knownId(cameraSegment), (found, query) => ui.listCameras(found.consoleId!, query)],
+      // Read by its ID: a key can be allowed one camera's details without the list of them.
+      ["cameraId", "camera", knownId(cameraSegment), (found, id) => ui.findCamera(found.consoleId!, id).then(item => item ? [item] : [])],
     ]);
   },
 

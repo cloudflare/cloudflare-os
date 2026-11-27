@@ -19,10 +19,16 @@ export interface ProtectPickerRpc {
   listConsoles(query: string): Promise<PickerOption[]>;
   /** A console's cameras. */
   listCameras(consoleId: string, query: string): Promise<PickerOption[]>;
+  /** One camera by its ID, or null when this connection can't read it. */
+  findCamera(consoleId: string, cameraId: string): Promise<PickerOption | null>;
   /** A console's sensors. */
   listSensors(consoleId: string, query: string): Promise<PickerOption[]>;
+  /** One sensor by its ID, or null when this connection can't read it. */
+  findSensor(consoleId: string, sensorId: string): Promise<PickerOption | null>;
   /** A console's floodlights. */
   listLights(consoleId: string, query: string): Promise<PickerOption[]>;
+  /** One floodlight by its ID, or null when this connection can't read it. */
+  findLight(consoleId: string, lightId: string): Promise<PickerOption | null>;
 }
 
 /** What a pre-filled form's IDs name, shown until the user changes a field. */

@@ -20,6 +20,11 @@ function encodeSegment(value: string): string {
   return encodeURIComponent(value).replaceAll("%3A", ":");
 }
 
+// Control characters and bidirectional formatting, which the runtime strips from the titles it
+// shows: in a name UniFi supplied, they could reorder or hide the notice's text around it.
+const INVISIBLE_CONTROLS = /[\p{Cc}\p{Bidi_Control}]/gu;
+const MAX_NAME_LENGTH = 240;
+
 /**
  * Looks up, in order, what a pre-filled URL's IDs name: a field shows a pre-filled ID rather than
  * its name, so the form says what it holds before it can be submitted. The first ID its list
@@ -43,7 +48,7 @@ async function named(
     }
     if (!option) break;
     found[key] = option.value;
-    names.push(`${label} “${option.title}”`);
+    names.push(`${label} “${option.title.replace(INVISIBLE_CONTROLS, "").slice(0, MAX_NAME_LENGTH) || option.value}”`);
   }
   return names.length > 0 ? { ...found, prefilled: names.join(", ") } : found;
 }

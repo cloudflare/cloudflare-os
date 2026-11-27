@@ -367,7 +367,12 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       if (!("siteId" in requirement)) continue;
       const site = requirement.siteId.toLowerCase();
       const theirs = target.siteGateways?.[site] ?? [];
-      if (sites.has(site) || !theirs.some(isUsableMac)) continue;
+      if (sites.has(site) || target.siteGateways === undefined) continue;
+      // A direct owner's site it never pinned was never confirmed, so nothing vouches for what it read.
+      if (!theirs.some(isUsableMac)) {
+        sites.set(site, false);
+        continue;
+      }
       const ours = identity.mode === "direct"
         ? identity.siteGateways[site] ?? []
         : await this.#gatewaysAt(consoleId, requirement.siteId, connection);
@@ -608,7 +613,16 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         serving = (await protectIdentity(send)).macs;
       } else {
         const hasGateway = (site: string) => (identity.siteGateways[site] ?? []).some(isUsableMac);
-        const site = siteId !== null && hasGateway(siteId) ? siteId : Object.keys(identity.siteGateways).find(hasGateway);
+        // A request to a site is checked by that site's own gateway, which another site's says
+        // nothing about; only one to the whole application may be checked by any site's.
+        if (siteId !== null && !hasGateway(siteId)) {
+          return failure({
+            kind: "unconfirmed",
+            message: "This connection didn't learn which gateway serves that site when it was made, so it can't confirm " +
+              "the console still serves it, and nothing was sent. Reconnect the console, then try again.",
+          });
+        }
+        const site = siteId ?? Object.keys(identity.siteGateways).find(hasGateway);
         if (site === undefined) return unconfirmed;
         pinned = identity.siteGateways[site]!;
         serving = (await networkIdentity(send, site)).bySite[site] ?? [];

@@ -11,7 +11,9 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { UnifiApi } from "./api";
 import type { ConsoleSummary, UnifiSend } from "./consoles";
+import { UnifiError } from "./errors";
 import { isValidId } from "./resources";
+import type { UnifiCameraInfo, UnifiLightInfo, UnifiSensorInfo } from "./protect-types";
 import type {
   NetworkPickerRpc, PickerOption, ProtectPickerRpc,
 } from "./configurator/unifi-configurator-types";
@@ -119,23 +121,56 @@ export class ProtectPickerUI extends RpcTarget implements ProtectPickerRpc {
 
   async listCameras(consoleId: string, query: string): Promise<PickerOption[]> {
     return this.#lists.options(`cameras:${consoleId}`, query, async () =>
-      (await this.#lists.api(consoleId).listCameras()).map(camera => ({
-        value: camera.id, title: camera.name, ...(camera.model && { subtitle: camera.model }), meta: camera.state,
-      })));
+      (await this.#lists.api(consoleId).listCameras()).map(cameraOption));
+  }
+
+  async findCamera(consoleId: string, cameraId: string): Promise<PickerOption | null> {
+    return await found(() => this.#lists.api(consoleId).getCamera(cameraId), cameraOption);
   }
 
   async listSensors(consoleId: string, query: string): Promise<PickerOption[]> {
     return this.#lists.options(`sensors:${consoleId}`, query, async () =>
-      (await this.#lists.api(consoleId).listSensors()).map(sensor => ({
-        value: sensor.id, title: sensor.name, subtitle: sensor.mountType === "none" ? sensor.model ?? "Sensor" : sensor.mountType,
-        meta: sensor.state,
-      })));
+      (await this.#lists.api(consoleId).listSensors()).map(sensorOption));
+  }
+
+  async findSensor(consoleId: string, sensorId: string): Promise<PickerOption | null> {
+    return await found(() => this.#lists.api(consoleId).getSensor(sensorId), sensorOption);
   }
 
   async listLights(consoleId: string, query: string): Promise<PickerOption[]> {
     return this.#lists.options(`lights:${consoleId}`, query, async () =>
-      (await this.#lists.api(consoleId).listLights()).map(light => ({
-        value: light.id, title: light.name, ...(light.model && { subtitle: light.model }), meta: light.state,
-      })));
+      (await this.#lists.api(consoleId).listLights()).map(lightOption));
+  }
+
+  async findLight(consoleId: string, lightId: string): Promise<PickerOption | null> {
+    return await found(() => this.#lists.api(consoleId).getLight(lightId), lightOption);
+  }
+}
+
+function cameraOption(camera: UnifiCameraInfo): PickerOption {
+  return { value: camera.id, title: camera.name, ...(camera.model && { subtitle: camera.model }), meta: camera.state };
+}
+
+function sensorOption(sensor: UnifiSensorInfo): PickerOption {
+  return {
+    value: sensor.id, title: sensor.name, subtitle: sensor.mountType === "none" ? sensor.model ?? "Sensor" : sensor.mountType,
+    meta: sensor.state,
+  };
+}
+
+function lightOption(light: UnifiLightInfo): PickerOption {
+  return { value: light.id, title: light.name, ...(light.model && { subtitle: light.model }), meta: light.state };
+}
+
+/**
+ * One item read by its ID, as a picker option, or null when this connection can't read it: a key
+ * may be allowed one camera's details without its list.
+ */
+async function found<T>(read: () => Promise<T>, option: (item: T) => PickerOption): Promise<PickerOption | null> {
+  try {
+    return option(await read());
+  } catch (error) {
+    if (error instanceof UnifiError && ["notFound", "forbidden", "badRequest"].includes(error.kind)) return null;
+    throw error;
   }
 }

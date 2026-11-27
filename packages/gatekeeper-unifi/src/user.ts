@@ -78,6 +78,12 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
       throw new Error(`${appName} didn't say which hardware it runs on when this connection was made, so it can't ` +
         "be connected safely. Reconnect the console, then try again.");
     }
+    // And a site by its own gateway, which every request to it is checked by.
+    if (identity?.mode === "direct" && "siteId" in resource &&
+        !(identity.siteGateways[resource.siteId.toLowerCase()] ?? []).some(isUsableMac)) {
+      throw new Error("UniFi Network didn't say which gateway serves that site when this connection was made, so it " +
+        "can't be connected safely. Reconnect the console, then try again.");
+    }
     await this.#opens(resource);
     return {
       class: this.ctx.exports.UnifiGatekeeper({ props: { accountId: this.ctx.props.accountId, resource } }),

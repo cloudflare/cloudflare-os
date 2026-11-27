@@ -40,7 +40,8 @@ sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` with every request.
 - The URL can't change on reconnect, and a reconnect must reach the same console: each
   application on the hardware it identified when connecting (the NVR for Protect, the gateway for
   Network), and each site behind the same gateway. A console that didn't report a MAC address when
-  it connected can't be reconnected in place.
+  it connected can't be reconnected in place, and a site whose gateway it didn't identify can't be
+  bound, or sent anything, until a reconnect identifies one.
 - Every request that isn't answered from the cache is preceded by a check that the application at
   the URL still runs on that hardware (for a site, its own gateway), so a tunnel or proxy repointed
   at another console is refused rather than read, and its cached answers are dropped.
