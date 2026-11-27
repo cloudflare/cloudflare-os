@@ -457,18 +457,15 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
    * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
    * other is asked with a dry-run job, which is free, and the answer kept in the picker's cache. A
    * dry run that fails for any reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers
-   * no, as before the check, rather than failing or holding up the lookup. The deadline covers the
-   * whole dry run: its signal ends a request in flight, and the race gives up on a token still being
-   * refreshed.
+   * no, as before the check, rather than failing or holding up the lookup. The deadline's signal
+   * covers the whole dry run: the wait for a token, the request and the reading of its answer.
    */
   async #runsQueries(projectId: string): Promise<boolean> {
     if ((await this.#heldProjects()).has(projectId)) return true;
     return cachedBigQuery(this, `runsQueries:${projectId}`, async () => {
       let deadline = AbortSignal.timeout(BIGQUERY_PROBE_TIMEOUT_MS);
-      let { promise: late, resolve } = Promise.withResolvers<boolean>();
-      deadline.addEventListener("abort", () => resolve(false), { once: true });
-      let probe = (await bigQueryApi(this)).dryRun(projectId, "SELECT 1", { signal: deadline });
-      return Promise.race([probe.then(() => true, () => false), late]);
+      return (await bigQueryApi(this)).dryRun(projectId, "SELECT 1", { signal: deadline })
+        .then(() => true, () => false);
     });
   }
 
