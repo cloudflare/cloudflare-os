@@ -244,10 +244,11 @@ export function replacedFile(
 
 /**
  * What a replacement records of the version it replaces, which approving it checks is still the
- * file's, refused when the account cannot edit the file or Drive gives no checksum to tell it by.
+ * file's, refused when the account cannot change the file's content or Drive gives no checksum to
+ * tell it by.
  */
 export function replacedVersion(version: DriveContentVersion): ReplacedVersion {
-  if (version.canEdit !== true) throw new Error(CANNOT_EDIT);
+  if (version.canModifyContent !== true) throw new Error(CANNOT_EDIT);
   let { headRevisionId, sha256Checksum, size, modifiedTime } = version;
   if (headRevisionId === undefined || sha256Checksum === undefined) throw new Error(NO_CHECKSUM);
   let bytes = Number(size);
@@ -453,8 +454,8 @@ async function storedBytes(
 /**
  * Refuses for good an upload whose folder the binding no longer reaches as a live folder the
  * account may add to, having made nothing. With `replacing`, also the file replaced, which must
- * still be a live direct child of that folder that the account may edit. Made at the check and
- * again before the request that makes the file, which can come long after it.
+ * still be a live direct child of that folder whose content the account may change. Made at the
+ * check and again before the request that makes the file, which can come long after it.
  * @returns The folder, as read now.
  */
 async function requireUploadScope(
@@ -472,7 +473,7 @@ async function requireUploadScope(
       replaced.parents[0] !== destination.id) {
     throw new ActionApplyError(NO_REPLACED_FILE);
   }
-  if (replaced.canEdit !== true) throw new ActionApplyError(CANNOT_REPLACE);
+  if (replaced.canModifyContent !== true) throw new ActionApplyError(CANNOT_REPLACE);
   return destination;
 }
 

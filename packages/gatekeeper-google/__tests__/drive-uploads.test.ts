@@ -53,6 +53,7 @@ const BYTES_GONE =
 const NO_REPLACED_FILE =
   "The file this would replace is no longer in that folder, or no longer in this connection's " +
   "scope, so nothing was replaced.";
+const CANNOT_REPLACE = "The connected account can no longer change that file's content.";
 const CHANGED_SINCE_QUEUED =
   "That file changed since this was queued, so it was not replaced: approving it would have " +
   "discarded that change from the file's current content. Upload it again to replace the file as " +
@@ -275,16 +276,19 @@ describe("what overwrite replaces", () => {
     }
   });
 
-  it("records the version replaced, refused without a checksum to tell it by", () => {
+  it("records the version replaced, refused without a checksum to tell it by or leave to change its content", () => {
     let version: DriveContentVersion = {
       id: "F", headRevisionId: "rev-1", sha256Checksum: sha256("old"), size: "3",
-      modifiedTime: "2026-05-01T10:00:00.000Z", canEdit: true,
+      modifiedTime: "2026-05-01T10:00:00.000Z", canModifyContent: true,
     };
     expect(replacedVersion(version)).toEqual({
       headRevisionId: "rev-1", sha256Checksum: sha256("old"), size: 3,
       modifiedTime: "2026-05-01T10:00:00.000Z",
     });
-    expect(() => replacedVersion({ ...version, canEdit: false })).toThrow(CANNOT_EDIT);
+    // An editor of a file whose content is locked may change all of it but its content.
+    expect(() => replacedVersion({ ...version, canModifyContent: false })).toThrow(CANNOT_EDIT);
+    let { canModifyContent: _modify, ...unsaid } = version;
+    expect(() => replacedVersion(unsaid)).toThrow(CANNOT_EDIT);
     let { sha256Checksum: _checksum, ...native } = version;
     expect(() => replacedVersion(native)).toThrow(NO_CHECKSUM);
     let { headRevisionId: _revision, ...unrevised } = version;
@@ -353,10 +357,13 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
   let { store } = uploadFiles();
   let nodes: Record<string, DriveScopeNode | undefined> = {
     B: folder("B", "A"),
-    R: { id: "R", mimeType: "text/plain", parents: ["B"], trashed: false, canEdit: true },
+    R: {
+      id: "R", mimeType: "text/plain", parents: ["B"], trashed: false, canEdit: true,
+      canModifyContent: true,
+    },
   };
   let version: DriveContentVersion = {
-    id: "R", headRevisionId: "rev-1", sha256Checksum: sha256("old"), size: "3", canEdit: true,
+    id: "R", headRevisionId: "rev-1", sha256Checksum: sha256("old"), size: "3", canModifyContent: true,
   };
   let attempts = new Map<number, WriteAttempt>();
   let made = new Map<number, string>();
@@ -698,6 +705,17 @@ describe("Drive replacement sends", () => {
       expect(api.keepRevision).not.toHaveBeenCalled();
       expect(api.upload).not.toHaveBeenCalled();
     }
+  });
+
+  it("refuses a file whose content was locked since it was queued, keeping and replacing nothing", async () => {
+    let { api, journal, nodes, submit, apply, replacement } = harness();
+    let id = await submit("replaceFile", await replacement("new"));
+    // Locked against content changes: the account may still edit the rest of the file.
+    nodes.R = { ...nodes.R!, canModifyContent: false };
+    expect(await apply(id)).toBe(CANNOT_REPLACE);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(api.keepRevision).not.toHaveBeenCalled();
+    expect(api.upload).not.toHaveBeenCalled();
   });
 
   it("proves the file again once its version is read, keeping and replacing nothing when it left the binding", async () => {

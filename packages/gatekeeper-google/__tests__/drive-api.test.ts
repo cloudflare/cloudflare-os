@@ -689,7 +689,7 @@ describe("bulk access verification", () => {
 /** The one mask a scope proof and an observer check read a file through. */
 const SCOPE_MASK = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canDownload,canComment,canShare,canAddChildren," +
-  "canMoveItemWithinDrive,canCopy,canEdit)";
+  "canMoveItemWithinDrive,canCopy,canEdit,canModifyContent)";
 
 describe("folder scope nodes", () => {
   const node = (id: string, extra: Record<string, unknown> = {}) =>
@@ -698,13 +698,13 @@ describe("folder scope nodes", () => {
   it("parses ancestry facts and asks only for the fields a proof decides from", async () => {
     let calls = stubFetch([batchResponse([
       { status: 200, body: node("one", {
-        driveId: "drive-1", capabilities: { canListChildren: true },
+        driveId: "drive-1", capabilities: { canListChildren: true, canModifyContent: false },
       }) },
     ])]);
 
     await expect(api().getScopeNodes(["one"])).resolves.toEqual([{
       id: "one", mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false,
-      driveId: "drive-1", canListChildren: true,
+      driveId: "drive-1", canListChildren: true, canModifyContent: false,
     }]);
     expect(calls[0].body).toContain(`fields=${encodeURIComponent(SCOPE_MASK)}`);
     expect(calls[0].body).not.toContain("name");
@@ -3026,12 +3026,13 @@ describe("findNamed, getContentVersion and keepRevision", () => {
     expect(calls.map(({ url }) => url.searchParams.get("pageToken"))).toEqual([null, "p2", "p3"]);
   });
 
-  it("reads which version of its content a file holds", async () => {
+  it("reads which version of its content a file holds, and whether the account may change it", async () => {
     let calls = stubFetch([jsonResponse({
-      id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3", capabilities: { canEdit: true },
+      id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3",
+      capabilities: { canEdit: true, canModifyContent: false },
     })]);
     await expect(api().getContentVersion("F")).resolves.toStrictEqual(
-      { id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3", canEdit: true });
+      { id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3", canModifyContent: false });
     expect(calls[0].url.searchParams.get("fields")).toContain("sha256Checksum");
   });
 

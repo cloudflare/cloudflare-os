@@ -189,7 +189,7 @@ type FakeFile = {
   name: string; mimeType: string; modifiedTime: string; parents: string[]; driveId?: string;
   trashed: boolean; canListChildren: boolean; canComment: boolean; canShare: boolean;
   canAddChildren: boolean; canMoveItemWithinDrive: boolean; canCopy: boolean;
-  canEdit: boolean; canDownload: boolean;
+  canEdit: boolean; canModifyContent: boolean; canDownload: boolean;
   /** Set on a shortcut: the file or folder it points to. */
   shortcutTargetId?: string;
   /** A file's bytes, as text: what a download answers, and its size. */
@@ -233,7 +233,8 @@ function file(mimeType: string, parents: string[], overrides: Partial<FakeFile> 
   return {
     name: "", mimeType, modifiedTime: "2026-10-20T09:00:00Z", parents, trashed: false,
     canListChildren: folder, canComment: !folder, canShare: true, canAddChildren: folder,
-    canMoveItemWithinDrive: true, canCopy: !folder, canEdit: true, canDownload: true, ...overrides,
+    canMoveItemWithinDrive: true, canCopy: !folder, canEdit: true, canModifyContent: true,
+    canDownload: true, ...overrides,
   };
 }
 
@@ -481,7 +482,7 @@ class DriveProvider {
         canListChildren: held.canListChildren, canComment: held.canComment,
         canShare: held.canShare, canAddChildren: held.canAddChildren,
         canMoveItemWithinDrive: held.canMoveItemWithinDrive, canCopy: held.canCopy,
-        canEdit: held.canEdit,
+        canEdit: held.canEdit, canModifyContent: held.canModifyContent,
         ...(fields === null || fields.includes("canDownload") ? { canDownload: held.canDownload } : {}),
       },
     };

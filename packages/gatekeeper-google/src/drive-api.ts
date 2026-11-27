@@ -106,8 +106,10 @@ export type DriveFile = {
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
  * `canAddChildren` the destination of a move, a copy or an upload, `canMoveItemWithinDrive` a
  * move's file, `canCopy` a copy's file, `canDownload` an exported copy's file, `canEdit` an edit of
- * a Doc, Sheet or Slides file or a replacement of a file's content. One a part does not carry is
- * absent here, which reads as "cannot".
+ * a Doc, Sheet or Slides file, `canModifyContent` a replacement of a file's content: an editor of
+ * a file whose content is locked may change all of it but its content
+ * (https://developers.google.com/workspace/drive/api/guides/content-restrictions). One a part does
+ * not carry is absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
@@ -123,6 +125,7 @@ export type DriveScopeNode = {
   canMoveItemWithinDrive?: boolean;
   canCopy?: boolean;
   canEdit?: boolean;
+  canModifyContent?: boolean;
   /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
   shortcutTargetId?: string;
 };
@@ -130,7 +133,7 @@ export type DriveScopeNode = {
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canDownload,canComment,canShare,canAddChildren," +
-  "canMoveItemWithinDrive,canCopy,canEdit)";
+  "canMoveItemWithinDrive,canCopy,canEdit,canModifyContent)";
 
 /** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
 const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
@@ -273,12 +276,13 @@ export type DriveContentVersion = {
   /** Bytes, as a decimal string. */
   size?: string;
   modifiedTime?: string;
-  /** Whether the connected account may change the content. */
-  canEdit?: boolean;
+  /** Whether the connected account may change the content, which a lock on it refuses an editor. */
+  canModifyContent?: boolean;
 };
 
 /** Field mask for {@link DriveContentVersion}. */
-const CONTENT_VERSION_FIELDS = "id,headRevisionId,sha256Checksum,size,modifiedTime,capabilities(canEdit)";
+const CONTENT_VERSION_FIELDS =
+  "id,headRevisionId,sha256Checksum,size,modifiedTime,capabilities(canModifyContent)";
 
 /** Where a native copy landed: in the source's folder, or in My Drive when that could not take it. */
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
@@ -773,6 +777,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
   let canCopy = optionalCapability(value.capabilities, "canCopy");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
+  let canModifyContent = optionalCapability(value.capabilities, "canModifyContent");
   let shortcutTargetId: string | undefined;
   if (value.shortcutDetails !== undefined) {
     if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
@@ -791,6 +796,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
     ...(canCopy === undefined ? {} : { canCopy }),
     ...(canEdit === undefined ? {} : { canEdit }),
+    ...(canModifyContent === undefined ? {} : { canModifyContent }),
     ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
 }
@@ -1943,9 +1949,8 @@ export class DriveApi {
       let value = optionalString(body[field], `file ${field}`);
       if (value !== undefined) version[field] = value;
     }
-    if (isRecord(body.capabilities) && typeof body.capabilities.canEdit === "boolean") {
-      version.canEdit = body.capabilities.canEdit;
-    }
+    let canModifyContent = optionalCapability(body.capabilities, "canModifyContent");
+    if (canModifyContent !== undefined) version.canModifyContent = canModifyContent;
     return version;
   }
 
