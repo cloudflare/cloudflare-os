@@ -472,15 +472,17 @@ class DriveProvider {
         !held.trashed && parent !== undefined && held.parents.includes(parent));
       return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
-    // A copy looked for by the token it carries, or a folder's live children. Files in the trash
-    // match only a query that does not leave them out.
+    // A copy looked for by the token it carries, in the shared drive a drive corpus names, or a
+    // folder's live children. Files in the trash match only a query that does not leave them out.
     let copyToken = /appProperties has \{ key='gadgetsCopyToken' and value='([^']+)' \}/.exec(query)?.[1];
     let parent = /'([^']+)' in parents/.exec(query)?.[1];
     let live = query.includes("trashed = false");
+    let inDrive = url.searchParams.get("corpora") === "drive" ? url.searchParams.get("driveId") : undefined;
     if (call === "GET /drive/v3/files" && (copyToken !== undefined || parent !== undefined)) {
       let files = [...this.files].filter(([, held]) => !(live && held.trashed) && (copyToken === undefined
         ? held.parents.includes(parent ?? "")
-        : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken));
+        : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
+          (inDrive === undefined || held.driveId === inDrive)));
       return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
@@ -576,13 +578,17 @@ class DriveProvider {
     if (asked !== undefined && this.files.has(asked)) return driveError({ status: 409 });
     let id = asked ?? `native-${++this.#native}`;
     let mimeType = typeof body.mimeType === "string" ? body.mimeType : source.mimeType;
-    let { appProperties: kept, ...copied } = source;
+    let { appProperties: kept, driveId: _driveId, ...copied } = source;
     let patch = (body.appProperties ?? {}) as Record<string, string | null>;
     let appProperties = Object.fromEntries(Object.entries({ ...kept, ...patch })
       .filter((entry): entry is [string, string] => entry[1] !== null));
+    let parents = body.parents as string[];
+    // The copy is in the drive of the folder it goes into.
+    let driveId = this.files.get(parents[0] ?? "")?.driveId;
     this.files.set(id, {
-      ...copied, name: String(body.name), mimeType, parents: body.parents as string[],
+      ...copied, name: String(body.name), mimeType, parents,
       modifiedTime: new Date().toISOString(),
+      ...(driveId ? { driveId } : {}),
       ...(Object.keys(appProperties).length ? { appProperties } : {}),
     });
     this.give(id, { ...this.#person("me@example.com"), role: "owner" });
@@ -2464,6 +2470,26 @@ describe("copies", () => {
     // Its pending ID names that file, which reads then take as any file in the trash.
     expect((await drive.call("getEntry", `pending:${queued.actionId}`)).value)
       .toEqual((await drive.call("getEntry", "native-1")).value);
+  });
+
+  it("finds a native copy whose answer was lost in the shared drive its folder moved to", async () => {
+    provider.files.set("shared", file(FOLDER_MIME, ["drive-a"], { driveId: "drive-a" }));
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "shared" });
+    expect(queued.value).toMatchObject({ parentId: "shared", driveId: "drive-a" });
+
+    // A manager moves the folder to another shared drive before the copy is approved.
+    let folder = provider.files.get("shared");
+    if (!folder) throw new Error("no folder");
+    folder.driveId = "drive-b";
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_NATIVE_COPY);
+    expect(provider.files.get("native-1")?.driveId).toBe("drive-b");
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/doc-1/copy")).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${queued.actionId}`)).value)
+      .toMatchObject({ id: "native-1", parentId: "shared" });
   });
 
   it("refuses a copy this binding cannot make, queueing nothing", async () => {

@@ -1740,14 +1740,38 @@ export class DriveApi {
 
   /**
    * The file whose {@link COPY_TOKEN_PROPERTY} is `token`, searched for in `corpus`, the corpus of
-   * the folder the copy went into, or `undefined` when Drive shows none. App properties are private
-   * to the client that set them, and the token is random, so only the copy made with it can match.
-   * A copy in the trash is found too: it proves the copy was made. Drive's search is updated some
-   * time after a file is made, so not finding it proves nothing. Every page is read: Drive may
-   * answer one short, or empty, before the last
+   * the folder the copy went into when it was queued, or `undefined` when Drive shows none. App
+   * properties are private to the client that set them, and the token is random, so only the copy
+   * made with it can match, wherever it is found. A copy in the trash is found too: it proves the
+   * copy was made. Drive's search is updated some time after a file is made, so not finding it
+   * proves nothing. Every page is read: Drive may answer one short, or empty, before the last
    * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list).
+   *
+   * A shared drive's corpus that misses it, or that Drive refuses because the account is not the
+   * drive's member (https://developers.google.com/workspace/drive/api/guides/handle-errors#teamDriveMembershipRequired),
+   * is followed by the account's own, which with `includeItemsFromAllDrives` spans the files it
+   * has reached in every drive
+   * (https://developers.google.com/workspace/drive/api/guides/enable-shareddrives#search-for-content-on-a-shared-drive):
+   * the folder may have moved to another shared drive since
+   * (https://support.google.com/a/users/answer/12380484?hl=en#moves), or be shared with an account
+   * that is not the drive's member.
    */
   async findCopy(token: string, corpus: DriveCorpus): Promise<DriveMadeCopy | undefined> {
+    if (corpus.kind === "drive") {
+      let found = await this.#findCopyIn(token, corpus).catch((error: unknown) => {
+        if (error instanceof DriveApiRequestError && error.status === 403 &&
+            error.reason === "teamDriveMembershipRequired") {
+          return undefined;
+        }
+        throw error;
+      });
+      if (found) return found;
+    }
+    return this.#findCopyIn(token, corpus.kind === "drive" ? { kind: "user" } : corpus);
+  }
+
+  /** {@link findCopy}'s search of one corpus. */
+  async #findCopyIn(token: string, corpus: DriveCorpus): Promise<DriveMadeCopy | undefined> {
     let pageToken: string | undefined;
     do {
       let params = new URLSearchParams({

@@ -2877,6 +2877,35 @@ describe("copyFile and findCopy", () => {
     let mine = calls[2].url.searchParams;
     expect([mine.get("corpora"), mine.get("driveId")]).toEqual(["user", null]);
   });
+
+  /** Each search's corpus, shared drive and whether it spans every drive the account reaches. */
+  const corpora = (calls: { url: URL }[]) => calls.map(({ url }) => [
+    url.searchParams.get("corpora"), url.searchParams.get("driveId"),
+    url.searchParams.get("includeItemsFromAllDrives"),
+  ]);
+  const MADE = { id: "N", appProperties: { gadgetsCopyToken: "t0k3n" } };
+
+  // A folder can move to another shared drive, and a shared drive's folder can be shared with an
+  // account that is not the drive's member, which Drive refuses the drive's corpus.
+  it("searches every file the account has reached for a copy its folder's shared drive does not show", async () => {
+    let calls = stubFetch([jsonResponse({ files: [] }), jsonResponse({ files: [MADE] })]);
+    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
+      .resolves.toStrictEqual({ id: "N" });
+    expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
+
+    calls = stubFetch([
+      new Response(JSON.stringify({ error: { errors: [{ reason: "teamDriveMembershipRequired" }] } }),
+        { status: 403 }),
+      jsonResponse({ files: [MADE] }),
+    ]);
+    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
+      .resolves.toStrictEqual({ id: "N" });
+    expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
+
+    calls = stubFetch([jsonResponse({ files: [] }), jsonResponse({ files: [] })]);
+    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" })).resolves.toBeUndefined();
+    expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
+  });
 });
 
 /** Each sharing change and the move, as one call on `drive`. */

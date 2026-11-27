@@ -447,7 +447,8 @@ function copyOrdinary(
 
 /**
  * Makes one approved native copy, with its token, and records the file it made. A look searches
- * for the token in the corpus of the folder the copy goes into; not finding it leaves the copy
+ * for the token in the corpus of the folder the copy goes into as it was queued, then in every
+ * file the account has reached (see DriveApi.findCopy); not finding it leaves the copy
  * unconfirmed and is never followed by a send. A copy Drive made of another type than asked for
  * is not the one queued, so it fails the copy rather than being recorded.
  */
