@@ -2340,6 +2340,22 @@ describe("copies", () => {
     expect((await again.call("getEntry", "pending:999")).error).toBe(NAMES_NO_COPY);
   });
 
+  it("names no waiting native copy once the binding cannot write, and still the copy one made", async () => {
+    let drive = binding();
+    let made = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    expect(await drive.apply(made.actionId)).toBeNull();
+    let waiting = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+
+    // A deployment that keeps Drive read-only shows nothing queued as if made.
+    await drive.restart();
+    let capped = binding(ACCOUNT, "write", drive.facet, "read");
+    let refused = await capped.call("getEntry", `pending:${waiting.actionId}`);
+    expect(refused.error).toBe(NAMES_NO_COPY);
+    expect(refused.reports).toEqual([]);
+    expect((await capped.call("getEntry", `pending:${made.actionId}`)).value)
+      .toMatchObject({ id: "native-1", parentId: "elsewhere" });
+  });
+
   it("sends a lost ordinary copy again under its ID, and never sends a native one twice", async () => {
     provider.files.set("report", report());
     let drive = binding();

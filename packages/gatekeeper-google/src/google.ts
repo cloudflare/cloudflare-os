@@ -3440,7 +3440,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   /**
    * What `fileId` names among the copies this binding queued: one an approval can still make,
    * with what it shows; the file a native copy made, which `pending:<n>` names from then on; or,
-   * for any other ID, that ID. A `pending:` ID that names no copy is refused.
+   * for any other ID, that ID. A `pending:` ID that names no copy is refused, as is one of a copy
+   * that waits on a session that cannot write.
    */
   async #named(fileId: string): Promise<{ waiting: SimulatedEntry } | { fileId: string }> {
     if (isPendingId(fileId)) {
@@ -3449,6 +3450,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
       // A copy once made is known at once, with no approval that is running to wait for.
       let made = this.#writes.madeCopy(actionId);
       if (made !== undefined) return { fileId: made };
+      // A session that cannot write shows nothing queued as if made, even what was queued before
+      // the deployment kept Drive read-only.
+      if (this.#writes.access !== "write") throw new Error(NAMES_NO_COPY);
       return this.#writes.waiting(async pending => {
         let made = this.#writes.madeCopy(actionId);
         if (made !== undefined) return { fileId: made };
@@ -3457,7 +3461,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
         throw new Error(NAMES_NO_COPY);
       });
     }
-    // A read-only binding has queued nothing, so it reads no queue.
+    // Nor does it show a waiting ordinary copy, so it reads no queue.
     if (this.#writes.access !== "write") return { fileId };
     // Most IDs are no queued copy's, and need not wait for an approval that is running, which may
     // be of any other file. One that is waits for it, so as to show the copy made if it makes it.
