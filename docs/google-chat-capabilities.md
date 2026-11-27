@@ -203,7 +203,9 @@ expected not to show an upload until a message attaches it, so uploads are simpl
 has not yet been confirmed against a live conversation. Google allows one write a second in a
 conversation, uploads included. A send with files makes several writes in a row, so each of its
 uploads, and its post, waits until a second after the connection's previous write there, whatever
-that was. Other writes run at once, as before. A `sendDirectMessage` to a group
+that was. Other writes run at once, as before, and
+a request Google throttles without saying how long to wait is retried no sooner than a second
+later. A `sendDirectMessage` to a group
 chat, or into a conversation it creates, posts only while exactly the people named are there. It
 checks before each upload and again just before posting, after its wait for its turn, and again
 before Google's retries resend an upload or the post. Google has no create that holds only

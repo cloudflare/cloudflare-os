@@ -2275,9 +2275,9 @@ describe("Google Chat attachments", () => {
       actionKind: {tag: "chatSendMessage"},
       autoApprovable: true,
       fields: [
-        {label: "Message", kind: "text", value: "Release impact"},
         {label: "Attachment", kind: "file", name: "impact.png", mediaType: "image/png", size: PNG.length,
           sha256: await sha256(PNG), origin: "agent"},
+        {label: "Message", kind: "text", value: "Release impact"},
       ],
     });
     // The approver sees the file's name and digest, not its content.
@@ -2354,6 +2354,37 @@ describe("Google Chat attachments", () => {
     using space = await chat.session();
     await expect(Promise.resolve(space.post("x", {attachments: [png()]}))).rejects.toThrow(/Refused by the test/);
     expect(await kept(chat)).toEqual([]);
+  });
+
+  it("names every file in the approval, however much of it the message takes", async () => {
+    const chat = chatHarness(chatBackend());
+    using space = await chat.session();
+    // Soft hyphens are shown escaped, six characters each, so this message alone outgrows the budget.
+    const text = `R${"\u00ad".repeat(15_999)}`;
+    using _message = (await space.post(text, {
+      attachments: Array.from({length: 10}, (_, index) => png(`impact-${index + 1}.png`)),
+    })).message;
+    const {fields} = (await chat.readQueue()).submissions[0].description as {fields: Array<{kind: string; name?: string}>};
+    expect(fields.filter(field => field.kind === "file").map(field => field.name))
+      .toEqual(Array.from({length: 10}, (_, index) => `impact-${index + 1}.png`));
+  });
+
+  it("waits out an edit applied while a file send waits its turn", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using first = (await space.post("Release 41")).message;
+    await chat.applyAction(1);
+    using _second = (await space.post("Release 42", {attachments: [png()]})).message;
+    await first.edit("Release 41, rolled back");
+    // The file send waits a second after the post; the edit lands partway through that wait.
+    const sending = chat.applyAction(2);
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await chat.applyAction(3);
+    await sending;
+    const [, edited, uploaded] = backend.state.writeTimes;
+    expect(backend.state.writeTimes).toHaveLength(4);
+    expect(uploaded - edited).toBeGreaterThanOrEqual(1000);
   });
 
   it("sends files with no text, in order, and as a reply", async () => {

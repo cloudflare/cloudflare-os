@@ -69,6 +69,11 @@ export type FetchWithAuthRetryOptions = {
    * throwing ends the request with its error, sending nothing more.
    */
   beforeResend?: () => Promise<void>;
+  /**
+   * Least wait before retrying a 429 that names no `Retry-After`, for a service whose quotas reset
+   * on a known interval. Omitted means the usual backoff alone.
+   */
+  rateLimitDelayMs?: number;
 };
 
 const BASE_DELAY_MS = 500;
@@ -225,7 +230,11 @@ export async function fetchWithAuthRetry(
     }
 
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
-      let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
+      let retryAfter = response.headers.get("Retry-After");
+      let delay = backoffDelayMs(attempt, retryAfter);
+      if (response.status === 429 && !retryAfter && opts.rateLimitDelayMs !== undefined) {
+        delay = Math.max(delay, opts.rateLimitDelayMs);
+      }
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, delay));
       attempt++;

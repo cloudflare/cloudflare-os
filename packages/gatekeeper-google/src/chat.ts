@@ -804,18 +804,19 @@ function attachedFiles(files: readonly ChatQueuedAttachment[]): string {
 }
 
 /**
- * Add a send's text and files to its approval. The approver sees each file's name, type, size and
- * digest, not its content, so a send that attaches any is not shown in full.
+ * Add a send's files and text to its approval. The approver sees each file's name, type, size and
+ * digest, not its content, so a send that attaches any is not shown in full. The files go first:
+ * their fields are small and bounded, while the text can fill the description's budget.
  */
 function describeMessage(
   builder: ActionDescriptionBuilder, text: string, files: readonly ChatQueuedAttachment[],
 ): ActionDescriptionBuilder {
-  if (text !== "") builder.verbatim("Message", text);
   for (const [index, { filename, mimeType, file }] of files.entries()) {
     builder.file(files.length === 1 ? "Attachment" : `Attachment ${index + 1}`, {
       name: filename, mediaType: mimeType, size: file.size, sha256: file.digest, origin: "agent",
     });
   }
+  if (text !== "") builder.verbatim("Message", text);
   return builder;
 }
 
@@ -1063,7 +1064,8 @@ const spaceOf = (name: string) =>
  * a row, so each of its writes waits its turn: one at a time, a second after this connection's
  * previous write there finished, whatever that was, across actions as well as within one. Every
  * other write runs at once, as a single write did before, and is only noted, so that a send with
- * files applied after it still waits. Others writing to the conversation can still collide.
+ * files applied after it still waits. A noted write that starts during a paced one, and others
+ * writing to the conversation, can still collide; Chat's retries of a 429 wait out the second.
  */
 class SpaceWritePacer {
   #spaces = new Map<string, { tail: Promise<unknown>; finished: number }>();
@@ -1078,8 +1080,11 @@ class SpaceWritePacer {
   run<T>(spaceName: string, write: () => Promise<T>): Promise<T> {
     const space = this.#space(spaceName);
     const result = space.tail.then(async () => {
-      const wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now();
-      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      // A noted write can finish during the wait, so it is measured again until a second is clear.
+      for (let wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now(); wait > 0;
+           wait = space.finished + SPACE_WRITE_INTERVAL_MS - Date.now()) {
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
       return this.note(spaceName, write);
     });
     space.tail = result.catch(() => {});

@@ -22,6 +22,8 @@ import type {
 
 const CHAT_API_BASE = "https://chat.googleapis.com/v1";
 const CHAT_UPLOAD_BASE = "https://chat.googleapis.com/upload/v1";
+/** Google's Chat quotas count per second, so a throttled request waits at least that long to retry. */
+const CHAT_RATE_LIMIT_DELAY_MS = 1000;
 const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
 
 type PeopleNameRaw = { displayName?: unknown; metadata?: { primary?: boolean } };
@@ -730,7 +732,10 @@ export class ChatApi {
       `${base}${path}`,
       { ...rest, headers },
       this.getAccessToken,
-      { operation, ...(idempotent !== undefined ? { idempotent } : {}), ...(beforeResend ? { beforeResend } : {}) },
+      {
+        operation, rateLimitDelayMs: CHAT_RATE_LIMIT_DELAY_MS,
+        ...(idempotent !== undefined ? { idempotent } : {}), ...(beforeResend ? { beforeResend } : {}),
+      },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;
