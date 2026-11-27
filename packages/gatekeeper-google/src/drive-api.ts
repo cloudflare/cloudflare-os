@@ -104,12 +104,17 @@ export type DriveFile = {
  * asked about and must never see, so it fetches only what membership is decided from, plus what
  * this account may do, which a write is checked against in the same read. Each capability is what
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
- * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canEdit` an edit
- * of a Doc, Sheet or Slides file. One a part does not carry is absent here, which reads as
- * "cannot".
+ * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canRename` a
+ * rename's file, `canEdit` an edit of a Doc, Sheet or Slides file. One a part does not carry is
+ * absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
+  /**
+   * The file's name: present only for the one file a read names in `nameOf`, a rename's target,
+   * so that no folder on a path proved along it is read for its name.
+   */
+  name?: string;
   mimeType?: string;
   parents?: string[];
   driveId?: string;
@@ -121,6 +126,7 @@ export type DriveScopeNode = {
   canShare?: boolean;
   canAddChildren?: boolean;
   canMoveItemWithinDrive?: boolean;
+  canRename?: boolean;
   canEdit?: boolean;
   /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
   shortcutTargetId?: string;
@@ -129,7 +135,7 @@ export type DriveScopeNode = {
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canEdit)";
+  "canRename,canEdit)";
 
 /** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
 const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
@@ -679,6 +685,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   let canShare = optionalCapability(value.capabilities, "canShare");
   let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
+  let canRename = optionalCapability(value.capabilities, "canRename");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
   let shortcutTargetId: string | undefined;
   if (value.shortcutDetails !== undefined) {
@@ -687,7 +694,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   }
   return {
     id: fileId,
-    ...optionalFields(value, ["mimeType", "driveId"]),
+    ...optionalFields(value, ["name", "mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
@@ -696,6 +703,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
     ...(canShare === undefined ? {} : { canShare }),
     ...(canAddChildren === undefined ? {} : { canAddChildren }),
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
+    ...(canRename === undefined ? {} : { canRename }),
     ...(canEdit === undefined ? {} : { canEdit }),
     ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
@@ -1796,6 +1804,25 @@ export class DriveApi {
   }
 
   /**
+   * Renames a file or folder and returns its name as Drive holds it afterwards. Drive renames
+   * before it reads the response mask, and keeps an empty name's file as it was.
+   * Never replayed on a 429, a 5xx or a timeout (see {@link driveWriteFailure}).
+   */
+  async renameFile(fileId: string, name: string): Promise<{ id: string; name: string }> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({ fields: "id,name", supportsAllDrives: "true" });
+    let body = await this.#writeJson(
+      "PATCH", `/files/${encodeURIComponent(fileId)}`, params, { name });
+    if (!isRecord(body) || body.id !== fileId) {
+      throw new Error("Google Drive answered a rename for a different file");
+    }
+    if (typeof body.name !== "string") {
+      throw new Error("Google Drive answered a rename without the file's name");
+    }
+    return { id: fileId, name: body.name };
+  }
+
+  /**
    * One page of a file's comments, deleted ones left out. `startModifiedTime` (RFC 3339) keeps
    * only comments modified at or after it, a reply counting as a modification of its comment.
    */
@@ -1905,17 +1932,26 @@ export class DriveApi {
    * `undefined` marks a file-specific denial (403/404). API disabled, quota, an account-wide policy
    * block, malformed multipart, a bad Content-ID, and a body answering for another file all throw,
    * so none of them can be read as "not a descendant" and quietly narrow a listing. A 403 whose
-   * reason Google does not document as account-wide still counts as a denial.
+   * reason Google does not document as account-wide still counts as a denial. `nameOf` is the one
+   * file whose name is read too, in the same batch: a rename's target.
    */
-  async getScopeNodes(fileIds: readonly string[]): Promise<(DriveScopeNode | undefined)[]> {
-    return this.#batchGetFiles(fileIds, DRIVE_SCOPE_NODE_FIELDS, (part, fileId) =>
-      batchPartAllowed(part) ? parseDriveScopeNode(part.body, fileId) : undefined);
+  async getScopeNodes(
+    fileIds: readonly string[], options: { nameOf?: string } = {},
+  ): Promise<(DriveScopeNode | undefined)[]> {
+    let { nameOf } = options;
+    return this.#batchGetFiles(fileIds,
+      fileId => fileId === nameOf ? `${DRIVE_SCOPE_NODE_FIELDS},name` : DRIVE_SCOPE_NODE_FIELDS,
+      (part, fileId) =>
+        batchPartAllowed(part) ? parseDriveScopeNode(part.body, fileId) : undefined);
   }
 
-  /** Runs `files.get` batches of at most 100 IDs, mapping each placed part back to its ID. */
+  /**
+   * Runs `files.get` batches of at most 100 IDs, mapping each placed part back to its ID. `fields`
+   * is every part's mask, or the mask of each file by its ID.
+   */
   async #batchGetFiles<T>(
     fileIds: readonly string[],
-    fields: string,
+    fields: string | ((fileId: string) => string),
     mapPart: (part: BatchAccessPart, fileId: string, index: number) => T,
   ): Promise<T[]> {
     let result: T[] = [];
@@ -1928,7 +1964,7 @@ export class DriveApi {
   }
 
   async #batchGetChunk(
-    fileIds: readonly string[], fields: string,
+    fileIds: readonly string[], fields: string | ((fileId: string) => string),
   ): Promise<BatchAccessPart[]> {
     let boundary = `gadgets_drive_${crypto.randomUUID()}`;
     let parts = fileIds.map((fileId, index) => [
@@ -1936,7 +1972,8 @@ export class DriveApi {
       "Content-Type: application/http",
       `Content-ID: <item-${index}>`,
       "",
-      `GET /drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}` +
+      `GET /drive/v3/files/${encodeURIComponent(fileId)}?fields=${
+        encodeURIComponent(typeof fields === "string" ? fields : fields(fileId))}` +
         "&supportsAllDrives=true HTTP/1.1",
       "Accept: application/json",
       "",

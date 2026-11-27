@@ -64,6 +64,9 @@ import {
   hasPendingMove, MOVE_DESTINATION_WAITING, MOVE_PENDING, MOVE_WAITING,
 } from "./drive-moves";
 import {
+  hasPendingRename, newFileName, RENAME_PENDING, RENAME_SAME_NAME, RENAME_TRASHED,
+} from "./drive-renames";
+import {
   ACCESS_WAITING_CHANGE, ACCESS_WAITING_REMOVE, CHANGE_PENDING, checkAccessName, checkShare,
   hasPendingChange, hasPendingShare, overlayPendingAccess, pendingAccess, pendingAccessRefusal,
   planShare, planUnshare, planUpdate, readPermissions, SHARE_PENDING, toAccessEntries,
@@ -2547,6 +2550,9 @@ export class GoogleDriveGatekeeperImpl
       access: this.#writes ? "write" : "read",
       writeRefusal: () => this.#writeRefusal(),
       actor: () => this.#actor(),
+      useStoredToken: async () => {
+        await this.#getAccessToken({ reloadStored: true });
+      },
       submit: (queue, kind, payload, fence) =>
         this.#actions.submit(queue, kind, payload, fence ? { fence } : undefined),
       undecided: read => this.#reads.read(() => read(this.#journal.listUndecided())),
@@ -2604,11 +2610,18 @@ export class GoogleDriveGatekeeperImpl
       let settled = record === undefined || record.state === "failed" ||
         this.#journal.wasApplied(actionId);
       if (!record?.fence || settled) {
+        // A rename is checked and made as the account connected now, under one verified token,
+        // as a fenced write is below: a reconnect does not revoke the token this object kept of
+        // the one before it, and one meanwhile cannot split the scope proof from the change. A
+        // comment keeps the token it has: whether an earlier send of it landed is read by its
+        // author, which Drive answers relative to whoever asks.
+        if (!settled && record?.action.kind === "renameFile") await this.#pinApprovalAccount();
         this.#adoptOrphanedClaim(actionId);
         let [comment] = record ? commentEntries([{ id: actionId, ...record }]) : [];
         try {
           await this.#actions.apply(actionId);
         } finally {
+          this.#approvalToken = undefined;
           // Also for a send that failed, which may have landed: the snapshot held of a Doc
           // commented on builds no edit after it.
           if (comment) {
@@ -2624,12 +2637,8 @@ export class GoogleDriveGatekeeperImpl
       // request Google refuses is never sent again under other credentials. The read itself starts
       // from the token the account stores now and may refresh it, as a token Google stopped
       // accepting before its recorded expiry needs: the fence then checks whatever answered.
-      await this.#getAccessToken({ reloadStored: true });
       try {
-        let verified: string | undefined;
-        let actor = await this.#identity(
-          new DriveApi(async opts => (verified = await this.#getAccessToken(opts))));
-        this.#approvalToken = verified;
+        let actor = await this.#pinApprovalAccount();
         if (record.fence.generation !== actor.permissionId &&
             this.#attempts.get(actionId) !== undefined) {
           // The kit would fail it for good and say to submit again. An earlier send may have
@@ -2647,6 +2656,20 @@ export class GoogleDriveGatekeeperImpl
         this.#approvalToken = undefined;
       }
     });
+  }
+
+  /**
+   * The Google account connected now, read from the token the account stores and refreshed if
+   * Google no longer accepts it; the token that answered is the one the rest of the approval uses.
+   * The caller clears `#approvalToken` when the approval ends.
+   */
+  async #pinApprovalAccount(): Promise<DriveActor> {
+    await this.#getAccessToken({ reloadStored: true });
+    let verified: string | undefined;
+    let actor = await this.#identity(
+      new DriveApi(async opts => (verified = await this.#getAccessToken(opts))));
+    this.#approvalToken = verified;
+    return actor;
   }
 
   /**
@@ -3256,6 +3279,36 @@ export class GoogleDriveSessionImpl extends RpcTarget
     }, actorFence(actor));
   }
 
+  async rename(fileId: string, name: string): Promise<void> {
+    await this.#requireWritable();
+    let toName = newFileName(name);
+    // A move waiting for a folder on the saved path, which says nothing of the file, is refused
+    // before the file is read and reported.
+    let path = this.#core.pathFolderIds;
+    if (path) {
+      await this.#refuseQueued(pending => hasPendingMove(path, pending) ? MOVE_WAITING : undefined);
+    }
+    // The file is read for the card as the account connected now; the rename is not fenced to it.
+    await this.#writes.useStoredToken();
+    let target = await this.#core.renameTarget(fileId);
+    if (target.trashed) throw new Error(RENAME_TRASHED);
+    if (target.name === toName) throw new Error(RENAME_SAME_NAME);
+    // A write waiting for this file was reported with it when it was queued. The path is asked
+    // again, for a move of one of its folders queued while the file was read.
+    await this.#refuseQueued(pending => {
+      if (path && hasPendingMove([...path, target.fileId], pending)) return MOVE_WAITING;
+      return hasPendingRename(target.fileId, pending) ? RENAME_PENDING : undefined;
+    });
+    await this.#writes.submit(this.#approvalQueue, "renameFile", {
+      fileId: target.fileId,
+      ...(target.folderIds ? { folderIds: target.folderIds } : {}),
+      ...(target.self ? { self: true as const } : {}),
+      ...(target.isFolder ? { isFolder: true as const } : {}),
+      fromName: target.name,
+      toName,
+    });
+  }
+
   /**
    * Refuses a write this binding may not make: one in a folder opened through a shortcut, or one
    * `writeRefusal()` refuses because the deployment keeps Google Drive read-only, the binding is
@@ -3650,6 +3703,10 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
   }
 
   async move(_fileId: string, _folderId: string): Promise<void> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async rename(_fileId: string, _name: string): Promise<void> {
     throw new Error(UNCREATED_FOLDER);
   }
 

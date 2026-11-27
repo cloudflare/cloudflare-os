@@ -203,6 +203,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
     updatePermission: vi.fn<DriveApi["updatePermission"]>(unexpected),
     deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
     swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
+    renameFile: vi.fn<DriveApi["renameFile"]>(unexpected),
   };
   let doc = { current: docOf(DOC_TEXT), suggestions: [] as DocsSuggestionRecord[] };
   let docs = {

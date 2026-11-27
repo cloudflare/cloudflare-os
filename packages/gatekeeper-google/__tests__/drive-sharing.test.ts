@@ -318,6 +318,7 @@ function harness(permissions: DrivePermissionRecord[] = fixtures()) {
     createComment: vi.fn<DriveApi["createComment"]>(unexpected),
     createReply: vi.fn<DriveApi["createReply"]>(unexpected),
     swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
+    renameFile: vi.fn<DriveApi["renameFile"]>(unexpected),
   };
   let host: DriveWritesHost = {
     api,

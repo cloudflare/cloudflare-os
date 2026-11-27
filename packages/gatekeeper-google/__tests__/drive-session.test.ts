@@ -83,9 +83,9 @@ const folder = (id: string, overrides: Partial<DriveFile> = {}): DriveFile =>
 const child = (id: string, parent: string, overrides: Partial<DriveFile> = {}): DriveFile =>
   file({ id, name: id, parents: [parent], trashed: false, ...overrides });
 
-/** What the connected account may do with a move's file or destination, by file ID. */
+/** What the connected account may do with a move's file or destination, or a rename's file, by ID. */
 type MoveAbilities =
-  Record<string, Pick<DriveScopeNode, "canAddChildren" | "canMoveItemWithinDrive">>;
+  Record<string, Pick<DriveScopeNode, "canAddChildren" | "canMoveItemWithinDrive" | "canRename">>;
 
 /** The account's own My Drive root: a folder with no parent, outside every shared drive. */
 const MY_ROOT = "my-root";
@@ -162,6 +162,9 @@ const SHARED_DRIVE_ROOT =
 const MY_DRIVE_ROOT_SHARING =
   "The top level of My Drive itself is neither listed nor shared here. Share a file or a folder " +
   "in it instead.";
+const SHARED_DRIVE_ROOT_RENAME =
+  "A shared drive's top level is the drive itself, which is renamed in Google Drive, not here.";
+const MY_DRIVE_ROOT_RENAME = "The top level of My Drive cannot be renamed.";
 const SINGLE_FILE =
   "A single-file Drive binding cannot move its file. Moving takes a folder binding that holds " +
   "both the folder the file is in and the folder it goes to, or an all-of-Drive binding, with " +
@@ -1326,6 +1329,71 @@ describe("positioned Drive folder session", () => {
       [["Open Google Drive sharing", ["drive/folder/drive-1", "drive/file/drive-1"]]]);
   });
 
+  // A rename changes no access, so its target is what a sharing change's is: the positioned folder
+  // or a live direct child, reported as reading it is.
+  it("takes the positioned folder as a rename target, and a direct child, and nothing else", async () => {
+    const inner = folder("B", { parents: ["A"] });
+    const below = positioned(
+      [root, nested, nestedDoc, inner, child("D2", "B")], { folderIds: ["R", "A"] }, undefined,
+      { abilities: { A: { canRename: true }, D1: { canRename: true } } });
+
+    await expect(below.session.renameTarget("A")).resolves.toEqual({
+      fileId: "A", name: "A", mimeType: FOLDER_MIME_TYPE, isFolder: true, folderIds: ["R", "A"],
+      self: true,
+    });
+    await expect(below.session.renameTarget("D1")).resolves.toEqual(
+      { fileId: "D1", name: "D1", mimeType: docMime, isFolder: false, folderIds: ["R", "A"] });
+    expect(below.authorizations).toEqual([
+      {
+        title: "Rename a Google Drive file",
+        description: "Check current metadata for Drive file A to work with its name.",
+        subresources: ["drive/folder/A", "drive/file/A"],
+      },
+      {
+        title: "Rename a Google Drive file",
+        description: "Check current metadata for Drive file D1 to work with its name.",
+        subresources: ["drive/folder/A", "drive/file/D1"],
+      },
+    ]);
+
+    // A nested file and an ancestor are outside what the session reaches.
+    await expect(below.session.renameTarget("D2")).rejects.toThrow(/outside this Drive binding/);
+    await expect(below.session.renameTarget("R")).rejects.toThrow(/outside this Drive binding/);
+    expect(below.authorizations).toHaveLength(2);
+
+    // A shared drive's top level is renamed as a drive, which Drive does through another call.
+    const shared = positioned([folder("drive-1", { driveId: "drive-1" })], { folderIds: ["drive-1"] });
+    await expect(shared.session.renameTarget("drive-1"))
+      .rejects.toThrow(new Error(SHARED_DRIVE_ROOT_RENAME));
+    expect(reports(shared.authorizations)).toEqual(
+      [["Rename a Google Drive file", ["drive/folder/drive-1", "drive/file/drive-1"]]]);
+
+    // Drive refuses to rename My Drive's top level, which no other account can see.
+    const mine = positioned([folder(MY_ROOT)], { folderIds: [MY_ROOT] });
+    await expect(mine.session.renameTarget(MY_ROOT))
+      .rejects.toThrow(new Error(MY_DRIVE_ROOT_RENAME));
+    expect(reports(mine.authorizations)).toEqual([["Rename a Google Drive file", []]]);
+  });
+
+  // What the account may do is its own answer, so the target is not reported before it: only
+  // the folder the refusal shows it to be in.
+  it("refuses a child the account cannot rename, reporting only the folder", async () => {
+    const { session, authorizations } = positioned(
+      [root, directDoc, child("D3", "R")], undefined, undefined,
+      { abilities: { D0: { canRename: false }, D3: { canRename: true } } });
+
+    await expect(session.renameTarget("D0"))
+      .rejects.toThrow(new Error("The connected account cannot rename Drive file D0."));
+    expect(authorizations).toEqual([{
+      title: "Check Google Drive file access",
+      description: "Check whether the connected account can rename Drive file D0.",
+      subresources: ["drive/folder/R"],
+    }]);
+    await expect(session.renameTarget("D3")).resolves.toMatchObject({ fileId: "D3" });
+    expect(reports(authorizations.slice(1)))
+      .toEqual([["Rename a Google Drive file", ["drive/folder/R", "drive/file/D3"]]]);
+  });
+
   // A folder binding can be connected to the top level of My Drive by that folder's own ID. No
   // other account can see that folder, so a requirement on it would be one nobody passes.
   it("refuses the positioned folder of a binding connected to the account's own My Drive root", async () => {
@@ -1444,13 +1512,14 @@ describe("positioned Drive folder session", () => {
       )).rejects.toThrow(/outside this Drive binding/);
     });
 
-    it("leaves comment, sharing and move targets to direct children", async () => {
+    it("leaves comment, sharing, move and rename targets to direct children", async () => {
       const { session } = positioned(
         [root, nested, foreignDoc, toDoc], undefined, undefined, { access: "write" });
 
       await expect(session.commentTarget("X")).rejects.toThrow(/outside this Drive binding/);
       await expect(session.sharingTarget("X")).rejects.toThrow(/outside this Drive binding/);
       await expect(session.moveTarget("X", "A")).rejects.toThrow(/outside this Drive binding/);
+      await expect(session.renameTarget("X")).rejects.toThrow(/outside this Drive binding/);
     });
   });
 
@@ -2275,6 +2344,65 @@ describe("Drive sharing targets", () => {
 
     await expect(session.sharingTarget("file-1")).rejects.toBe(failure);
     expect(authorizations).toEqual([]);
+  });
+});
+
+describe("Drive rename targets", () => {
+  const myRoot = folder(MY_ROOT, { name: "My Drive" });
+  const renamable = async (ids: readonly string[]) => ids.map(id => ({ id, canRename: true }));
+
+  it.each([
+    ["an account", { kind: "account" } as const],
+    ["an exact-file", { kind: "file", fileId: "file-1" } as const],
+  ])("reports the file before a rename on %s binding", async (_name, scope) => {
+    let { session, authorizations } = core({ scope, getScopeNodes: renamable });
+
+    await expect(session.renameTarget("file-1")).resolves.toEqual({
+      fileId: "file-1", name: "Quarterly plan", mimeType: "application/pdf", isFolder: false,
+    });
+    expect(authorizations).toEqual([{
+      title: "Rename a Google Drive file",
+      description: "Check current metadata for Drive file file-1 to work with its name.",
+      subresources: ["drive/file/file-1"],
+    }]);
+  });
+
+  // An account binding reaches a file in the trash by its ID; Google renames it all the same, so
+  // the session is told, to refuse it.
+  it("says that a rename target is in the trash", async () => {
+    let { session } = core(
+      { getFile: async id => file({ id, trashed: true }), getScopeNodes: renamable });
+    await expect(session.renameTarget("file-1")).resolves.toMatchObject({ trashed: true });
+  });
+
+  it("refuses a shared drive's top level and the account's own My Drive root", async () => {
+    let shared = core({ getFile: async id => folder(id, { driveId: id }) });
+    await expect(shared.session.renameTarget("drive-1"))
+      .rejects.toThrow(new Error(SHARED_DRIVE_ROOT_RENAME));
+    expect(reports(shared.authorizations)).toEqual(
+      [["Rename a Google Drive file", ["drive/file/drive-1"]]]);
+
+    let mine = core({ getFile: tree([myRoot]).getFile });
+    await expect(mine.session.renameTarget(MY_ROOT))
+      .rejects.toThrow(new Error(MY_DRIVE_ROOT_RENAME));
+    expect(reports(mine.authorizations)).toEqual([["Rename a Google Drive file", []]]);
+  });
+
+  it("refuses another file of an exact-file binding without calling Google", async () => {
+    let { session, getFile, authorizations } = core({ scope: { kind: "file", fileId: "file-1" } });
+
+    await expect(session.renameTarget("file-2")).rejects.toThrow(/outside this Drive binding/);
+    expect(getFile).not.toHaveBeenCalled();
+    expect(authorizations).toEqual([]);
+  });
+
+  it("refuses a file the account cannot rename, or that Drive no longer shows, reporting nothing", async () => {
+    for (let nodes of [[{ id: "file-1", canRename: false }], [{ id: "file-1" }], [undefined]]) {
+      let { session, authorizations } = core({ getScopeNodes: async () => nodes });
+      await expect(session.renameTarget("file-1"))
+        .rejects.toThrow(new Error("The connected account cannot rename Drive file file-1."));
+      expect(reports(authorizations)).toEqual([["Check Google Drive file access", []]]);
+    }
   });
 });
 

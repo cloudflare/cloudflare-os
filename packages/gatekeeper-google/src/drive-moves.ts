@@ -19,7 +19,7 @@ import {
 } from "./drive-api";
 import { isDirectChild } from "./drive-folder-scope";
 import {
-  driveRefusal, isLiftable, provePath, requireWritable, sendOnce, type DriveWritesHost,
+  driveRefusal, provePath, requireWritable, sendOnce, waitWhileRefused, type DriveWritesHost,
   type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { obsContext } from "./observability";
@@ -237,20 +237,6 @@ async function requireStillMovable(
   if (!canEnter(file, destination) || file.canMoveItemWithinDrive !== true ||
       destination.canAddChildren !== true) {
     throw new ActionApplyError(CANNOT_MOVE);
-  }
-}
-
-/**
- * Leaves a move pending, under the binding's own refusal, when that is one a later approval can
- * pass. A token without the Drive scope reads every file as one the account cannot see, so a look
- * that proved nothing asks this before it takes the file for gone.
- */
-async function waitWhileRefused(
-  host: Pick<DriveWritesHost, "writeRefusal">, cause?: unknown,
-): Promise<void> {
-  let refused = await host.writeRefusal();
-  if (refused !== undefined && isLiftable(refused)) {
-    throw new Error(refused, cause === undefined ? undefined : { cause });
   }
 }
 

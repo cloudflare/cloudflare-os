@@ -376,6 +376,7 @@ const NO_COMMENTS: DriveQueue = {
   access: "read",
   writeRefusal: async () => "Unexpected comment write",
   actor: async () => { throw new Error("Unexpected identity read"); },
+  useStoredToken: async () => { throw new Error("Unexpected token reload"); },
   submit: async () => { throw new Error("Unexpected comment submission"); },
   undecided: read => read([]),
   waiting: read => read([]),
@@ -2788,9 +2789,9 @@ describe("Drive comment actions", () => {
 
   const posts = () => provider.requests.filter(request => request.startsWith("POST /drive/v3/files/"));
 
-  it("declares one auto-approvable kind for every comment write, beside the edits' kinds", async () => {
+  it("declares one auto-approvable kind for every comment write, beside renames and the edits' kinds", async () => {
     expect(await binding().autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([{ tag: "driveComments", label: "Drive comments" }, { tag: "driveRenames", label: "Drive renames" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
   });
 
   describe("access level", () => {

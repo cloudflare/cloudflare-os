@@ -47,18 +47,25 @@ export function boundProps<P extends object>(props: P | SimulatedFileProps, kind
   return props;
 }
 
-const MAX_NEW_FILE_TITLE_LENGTH = 256;
+/** Longest name a file is created or renamed with, in UTF-16 code units. */
+export const MAX_FILE_NAME_LENGTH = 256;
 
 /**
- * The title to create a file with: `title`, trimmed. Refuses one the agent should fix: blank, longer
- * than MAX_NEW_FILE_TITLE_LENGTH, or holding a control character or line break (U+2028, U+2029).
+ * `name`, trimmed, or `undefined` for one the agent should fix: blank, longer than
+ * {@link MAX_FILE_NAME_LENGTH}, or holding a control character or line break (U+2028, U+2029).
  */
+export function oneLineFileName(name: string): string | undefined {
+  let trimmed = name.trim();
+  return trimmed.length === 0 || trimmed.length > MAX_FILE_NAME_LENGTH ||
+    /[\p{Cc}\p{Zl}\p{Zp}]/u.test(trimmed) ? undefined : trimmed;
+}
+
+/** The title to create a file with: `title`, trimmed, refused as {@link oneLineFileName} does. */
 export function newFileTitle(title: string): string {
-  let trimmed = title.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_NEW_FILE_TITLE_LENGTH ||
-      /[\p{Cc}\p{Zl}\p{Zp}]/u.test(trimmed)) {
+  let trimmed = oneLineFileName(title);
+  if (trimmed === undefined) {
     throw new Error(
-      `A new Google file needs a one-line title of 1 to ${MAX_NEW_FILE_TITLE_LENGTH} characters.`);
+      `A new Google file needs a one-line title of 1 to ${MAX_FILE_NAME_LENGTH} characters.`);
   }
   return trimmed;
 }

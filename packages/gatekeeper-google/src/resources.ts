@@ -203,7 +203,7 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 /**
  * Files, folders, native Google Docs, Sheets and Slides, PDF text, any other file's bytes, and
  * comments available to the connected account; with read and write access, edits of Docs, Sheets
- * and Slides, comment writes, sharing and moves as well.
+ * and Slides, comment writes, sharing, moves and renames as well.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -216,19 +216,19 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
       "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
       "folder or file, as read only or as read and write, which also lets agents edit Docs, " +
-      "spreadsheets and presentations, comment on files, change who they are shared with and, " +
-      "in all of Drive or a folder, move them, each with your approval; a Doc, spreadsheet or " +
-      "presentation connected on its own can be edited, and a Doc commented on, with your " +
-      "approval, but none of them moved or shared. A connection request asks for read and write " +
-      "by adding ?access=write to the URL.",
+      "spreadsheets and presentations, comment on files, rename them, change who they are " +
+      "shared with and, in all of Drive or a folder, move them, each with your approval; a Doc, " +
+      "spreadsheet or presentation connected on its own can be edited, and a Doc commented on, " +
+      "with your approval, but none of them moved or shared. A connection request asks for read " +
+      "and write by adding ?access=write to the URL.",
   grantable: true,
 };
 
 /**
  * A selected Drive folder or shared-drive root, exposed through direct-child navigation, with its
  * direct children's comments; with read and write access, edits of Docs, Sheets and Slides,
- * comment writes, sharing and moves within it. Creating one (see GatekeeperVendor.createResource())
- * makes an empty folder where its approver chooses.
+ * comment writes, sharing, moves and renames within it. Creating one (see
+ * GatekeeperVendor.createResource()) makes an empty folder where its approver chooses.
  */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   id: "drive-folder",
@@ -238,9 +238,9 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
       "Browse a selected folder or shared drive, search its direct children, and read native " +
       "Google Docs, Sheets and Slides, PDFs as text, any other file's content as bytes, and " +
       "comments. A read and write connection also lets agents edit its Docs, spreadsheets and " +
-      "presentations, comment on its files, move them within it and change who they are shared " +
-      "with, each with your approval; a connection request asks for one by adding ?access=write " +
-      "to the URL.",
+      "presentations, comment on its files, rename and move them within it and change who they " +
+      "are shared with, each with your approval; a connection request asks for one by adding " +
+      "?access=write to the URL.",
   grantable: true,
   creatable: true,
   creationConfigurator: true,
@@ -250,7 +250,7 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
 
 /**
  * Metadata, comments and content of one immutable Drive file; with read and write access, edits
- * of a Doc, spreadsheet or presentation, comment writes and sharing.
+ * of a Doc, spreadsheet or presentation, comment writes, sharing and renaming it.
  */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   id: "drive-file",
@@ -260,8 +260,9 @@ export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
       "Read metadata, comments and, for a native Google Doc, Sheet or Slides presentation, " +
       "content from one Drive file, its text when it is a PDF, or otherwise its content as " +
       "bytes. A read and write connection also lets agents edit the file when it is a Doc, " +
-      "spreadsheet or presentation, comment on it and change who it is shared with, each with " +
-      "your approval; a connection request asks for one by adding ?access=write to the URL.",
+      "spreadsheet or presentation, comment on it, rename it and change who it is shared with, " +
+      "each with your approval; a connection request asks for one by adding ?access=write to " +
+      "the URL.",
   grantable: true,
   groupedWith: "drive",
 };
@@ -480,7 +481,8 @@ export const CREATED_FILES_GRANT = "https://drive.google.com/drive/created-files
 
 /**
  * The grant that lets a read and write Drive binding change files: full `drive`, because comment
- * writes, sharing and moves need it and `drive.file` does not reach a file picked in Drive.
+ * writes, sharing, moves and renames need it and `drive.file` does not reach a file picked in
+ * Drive.
  *
  * Private, as {@link OFFICE_IMPORT_GRANT} is. Every consent that asks for a Google Drive resource
  * asks for it too ({@link withDriveWrites}); the Drive connect dialog's Allow changes action asks

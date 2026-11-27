@@ -754,7 +754,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
         "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
         "DriveShareRole",
         "DriveRole", "DriveGrantee", "DriveShareOptions", "DriveAccess", "DriveSharing",
-        "GoogleDriveSession", "GoogleDriveFileSession", "GoogleDriveFolderSession",
+        "DriveRenames", "GoogleDriveSession", "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
     expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
     expect(compileAgentTypes(driveWriteBundle() + `
@@ -905,9 +905,31 @@ const mixedWithDomain: DriveGrantee = { type: "domain", domain: "example.com", e
 `)).toEqual([]);
   });
 
-  it("gives a read-only Drive session no sharing and no move, and a folder scope its parent", () => {
+  it("declares a rename once, for every read and write Drive session", () => {
+    const writeTypes = source("drive-types.d.ts");
+    expect(writeTypes.split("rename(fileId: string, name: string): Promise<void>;")).toHaveLength(2);
+    expect(compileAgentTypes(driveWriteBundle() + `
+declare const drive: GoogleDriveSession;
+declare const file: GoogleDriveFileSession;
+declare const folder: GoogleDriveFolderSession;
+async function use(): Promise<void> {
+  await drive.rename("file-1", "Budget 2027");
+  await file.rename("file-1", "Budget 2027");
+  await folder.rename("child-1", "Archive");
+  const scope = await folder.getScope();
+  if (scope.kind === "folder") await folder.rename(scope.folderId, "Finance");
+  const renames: DriveRenames = folder;
+}
+// @ts-expect-error A rename takes a name and nothing else.
+drive.rename("file-1", "Budget 2027", { keepRevision: true });
+// @ts-expect-error A rename names the file it renames.
+file.rename("Budget 2027");
+`)).toEqual([]);
+  });
+
+  it("gives a read-only Drive session no sharing, no move and no rename, and a folder scope its parent", () => {
     const readTypes = source("drive-read-types.d.ts");
-    expect(readTypes).not.toMatch(/^\s+(listAccess|share|updateAccess|unshare|move)\(/m);
+    expect(readTypes).not.toMatch(/^\s+(listAccess|share|updateAccess|unshare|move|rename)\(/m);
     expect(compileAgentTypes(driveReadBundle() + `
 declare const drive: GoogleDriveReadSession;
 declare const folder: GoogleDriveFolderReadSession;
@@ -925,6 +947,10 @@ drive.move("file-1", "folder-9");
 folder.unshare("file-1", "1");
 // @ts-expect-error A read-only folder binding has no move().
 folder.move("file-1", "folder-9");
+// @ts-expect-error A read-only binding has no rename().
+drive.rename("file-1", "Budget 2027");
+// @ts-expect-error A read-only folder binding has no rename().
+folder.rename("file-1", "Budget 2027");
 `)).toEqual([]);
   });
 

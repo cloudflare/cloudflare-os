@@ -170,6 +170,7 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     updatePermission: vi.fn<DriveApi["updatePermission"]>(unexpected),
     deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
     swapParent: vi.fn<DriveApi["swapParent"]>(relocate),
+    renameFile: vi.fn<DriveApi["renameFile"]>(unexpected),
   };
   let host: DriveWritesHost = {
     api,

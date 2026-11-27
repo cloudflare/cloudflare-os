@@ -138,7 +138,7 @@ const THROUGH_DRIVE: Run = {
     "Check current metadata for Drive file deck-1 and open it as a Google Slides presentation.",
   ],
   catalog: kinds => [
-    { tag: "driveComments", label: "Drive comments" },
+    { tag: "driveComments", label: "Drive comments" }, { tag: "driveRenames", label: "Drive renames" },
     ...kinds.map(kind => THROUGH_DRIVE.kind(kind)),
   ],
   cannotEdit: "The connected Google account cannot edit that file.",
