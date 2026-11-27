@@ -140,6 +140,10 @@ const NO_REPLACED_FILE =
   "The file this would replace is no longer in that folder, or no longer in this connection's " +
   "scope, so nothing was replaced.";
 const CANNOT_REPLACE = "The connected account can no longer change that file's content.";
+const NOT_THE_NAMED_FILE =
+  "The file this would replace is no longer the one file of its name in that folder: it was " +
+  "renamed, or another file of the name appeared there. Nothing was replaced; upload it again to " +
+  "replace the file of that name as it is now.";
 const CHANGED_SINCE_QUEUED =
   "That file changed since this was queued, so it was not replaced: approving it would have " +
   "discarded that change from the file's current content. Upload it again to replace the file as " +
@@ -479,19 +483,23 @@ async function requireUploadScope(
 
 /**
  * Refuses for good an upload that may not be made at apply, having made nothing, except for a
- * refusal a later approval can pass, which leaves it pending: {@link requireUploadScope}, and for
- * a new file no file of its name in the folder.
+ * refusal a later approval can pass, which leaves it pending: {@link requireUploadScope}, and the
+ * files of its name in the folder, none for a new file and only the file replaced for a
+ * replacement.
  */
 async function requireStillUploadable(
   host: DriveUploadsHost, payload: DriveUploadPayload, replacing?: string,
 ): Promise<void> {
   await requireWritable(host);
   let destination = await requireUploadScope(host, payload, replacing);
-  if (replacing !== undefined) return;
-  // Drive takes any number of files of one name; an upload is refused one only when queued, so a
-  // file of that name made since then is refused here.
+  // Drive takes any number of files of one name; an upload is checked against them only when
+  // queued, so a file of that name made since, or a replaced file renamed since, is refused here.
   let named = await host.api.findNamed(destination.id, payload.name, corpusOf(destination.driveId));
-  if (named.length) throw new ActionApplyError(NAME_TAKEN_SINCE);
+  if (replacing === undefined) {
+    if (named.length) throw new ActionApplyError(NAME_TAKEN_SINCE);
+  } else if (named.length !== 1 || named[0].id !== replacing) {
+    throw new ActionApplyError(NOT_THE_NAMED_FILE);
+  }
 }
 
 /**
