@@ -363,17 +363,19 @@ export interface GoogleDriveSession
    * open it.
    *
    * The copy is made once the user approves it. A copy of any file but a Google Docs, Sheets or
-   * Slides one, made without `convertTo`, has its own Drive ID from the start: while it waits,
-   * `getEntry()` returns its pending entry, `readFile()` reads the file it is a copy of as that
-   * file is then, and `list()` with `directParentId` set to the copy's folder shows it, on the
-   * listing's last page; a listing without `directParentId`, and `search()`, do not. Any other
-   * copy is returned with ID `pending:<n>`, which only `getEntry()` takes while the copy waits,
-   * returning the pending entry, and which names the copy itself once it is made: `getEntry()`
-   * then returns it under its own ID, which every call takes. Every other call fails, given the
-   * ID of a copy that still waits. A copy the user rejects before it is sent, or that Google Drive
-   * refuses, is never made. One rejected after Google Drive left open whether it was made may
-   * have been made all the same: a copy with its own ID from the start is then found under that
-   * ID, while a `pending:<n>` ID names nothing once its copy is rejected.
+   * Slides one made without `convertTo`, and an export of one to a {@link DriveExportFormat}, has
+   * its own Drive ID from the start: while it waits, `getEntry()` returns its pending entry,
+   * `readFile()` reads the file it is a copy of as that file is then, except an export's, which
+   * fails (see `convertTo`), and `list()` with `directParentId` set to the copy's folder shows it,
+   * on the listing's last page; a listing without `directParentId`, and `search()`, do not. Any
+   * other copy, of a Google Docs, Sheets or Slides file as it is or of an Office file converted to
+   * a {@link DriveNativeType}, is returned with ID `pending:<n>`, which only `getEntry()` takes
+   * while the copy waits, returning the pending entry, and which names the copy itself once it is
+   * made: `getEntry()` then returns it under its own ID, which every call takes. Every other call
+   * fails, given the ID of a copy that still waits. A copy the user rejects before it is sent, or
+   * that Google Drive refuses, is never made. One rejected after Google Drive left open whether
+   * it was made may have been made all the same: a copy with its own ID from the start is then
+   * found under that ID, while a `pending:<n>` ID names nothing once its copy is rejected.
    */
   copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;
 
