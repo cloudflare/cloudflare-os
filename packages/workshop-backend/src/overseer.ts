@@ -14348,6 +14348,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
     let affected = (await this.impl.getSharingManager())
         .revokeShareLink(this.#sharingCaller(), linkId, keepUsers);
+    this.#afterShareLinkRevoked(affected);
+    return affected;
+  }
+
+  async changeDefaultShareLink(linkId: string, grant: CollaboratorGrant, keepUsers: string[])
+      : Promise<{ key: string; linkId: string; affected: AffectedCollaborator[] }> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
+    let result = await (await this.impl.getSharingManager()).changeDefaultShareLink(
+        { caller: this.#sharingCaller(), linkId, grant, keepUsers });
+    this.#afterShareLinkRevoked(result.affected);
+    return result;
+  }
+
+  // Run as soon as a link's revocation, which reported `affected`, has been written.
+  #afterShareLinkRevoked(affected: AffectedCollaborator[]): void {
     let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
     // User DO cleanup is already journaled; restart live sessions before observer teardown.
     if (affected.length > 0) {
@@ -14359,7 +14374,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         event: "sharing.link.revocation.cleanup.failed", error,
       });
     }));
-    return affected;
   }
 
   // --- Share link management ---
@@ -14721,6 +14735,10 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listShareLinks(): Promise<ShareLinkInfo[]> { this.#deny(); }
   async updateShareLink(_linkId: string, _note?: string): Promise<void> { this.#deny(); }
   async revokeShareLink(_linkId: string, _keepUsers: string[]): Promise<AffectedCollaborator[]> {
+    this.#deny();
+  }
+  async changeDefaultShareLink(_linkId: string, _grant: CollaboratorGrant, _keepUsers: string[])
+      : Promise<{ key: string; linkId: string; affected: AffectedCollaborator[] }> {
     this.#deny();
   }
   async previewRevokeShareLink(_linkId: string): Promise<AffectedCollaborator[]> { this.#deny(); }

@@ -1023,9 +1023,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const revokeShareLink = async (target: Extract<ConfirmationTarget, { kind: 'revoke' }>) => {
     setConfirmationBusy(true)
     try {
-      // The new link first, so a failure can leave two links but never none.
-      if (target.replaceWith) await createDefaultLink(target.replaceWith)
-      await overseer.revokeShareLink(target.linkId, [...target.keepSet])
+      if (target.replaceWith) {
+        const { key, linkId } = await overseer.changeDefaultShareLink(
+          target.linkId, grantFor(gadgetId, target.replaceWith), [...target.keepSet])
+        // Kept so the first Copy needs no round trip, as createDefaultLink() does.
+        copiedUrlsRef.current.set(linkId, destinationUrl(metadata.id, gadgetId, key))
+      } else {
+        await overseer.revokeShareLink(target.linkId, [...target.keepSet])
+      }
       setConfirmationTarget(null)
       toasts.add({ title: target.replaceWith ? 'Link access changed.' : 'Share link revoked.', variant: 'success' })
     } catch (err: unknown) {

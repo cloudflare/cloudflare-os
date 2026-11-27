@@ -156,6 +156,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listShareLinks: ws => ws.listShareLinks(),
   updateShareLink: ws => ws.updateShareLink("link"),
   revokeShareLink: ws => ws.revokeShareLink("link", []),
+  changeDefaultShareLink: ws => ws.changeDefaultShareLink("link", "workspace", []),
   previewRevokeShareLink: ws => ws.previewRevokeShareLink("link"),
 };
 

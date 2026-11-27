@@ -120,6 +120,12 @@ function grantKey(record: GrantFields): string {
   return `${record.mode ?? "use"}:${record.gadgetIds?.join(",") ?? record.gadgetId}`;
 }
 
+// Identifies what an edge or link grants access to: the workspace, or its gadget or gadgets,
+// whether it grants their use or only a view.
+function grantTarget(record: GrantFields): string {
+  return grantKey({...record, mode: undefined});
+}
+
 // Fixed 256-bit key used to domain-separate share key hashes from other hashes in the system.
 // Not secret -- it only provides personalization.
 const SHARE_KEY_HMAC_KEY = new Uint8Array([
@@ -544,6 +550,10 @@ export class SharingManager {
     let existing = opts.default
         ? this.#findDefaultLink(opts.caller.profileId, fields) : undefined;
     if (existing) {
+      if (grantKey(existing) !== grantKey(fields)) {
+        throw new Error(
+            "You already have a default link to this with different access. Change that link instead.");
+      }
       this.storage.shareKeys.put({ id: hash, alias: existing.id });
       return { key, linkId: existing.id };
     }
@@ -560,16 +570,52 @@ export class SharingManager {
     return { key, linkId: hash };
   }
 
-  // `creator`'s live default link for the grant `fields` records, if they have one.
+  // `creator`'s live default link to what `fields` grants access to, whatever access it gives.
   #findDefaultLink(creator: string, fields: GrantFields): ShareLinkRecord | undefined {
-    let grant = grantKey(fields);
+    let target = grantTarget(fields);
     for (let link of this.#listLinks()) {
       if (link.default && !link.revoked && link.createdBy === creator &&
-          grantKey(link) === grant) {
+          grantTarget(link) === target) {
         return link;
       }
     }
     return undefined;
+  }
+
+  /**
+   * Replaces `caller`'s default link `linkId` with a new default link to the same target giving
+   * `grant`, revoking the old one as revokeShareLink() does (`keepUsers` included). Both writes
+   * happen in one synchronous step, so the caller never holds two defaults, or none.
+   */
+  async changeDefaultShareLink(opts: {
+    caller: SharingCaller;
+    linkId: string;
+    grant: CollaboratorGrant;
+    keepUsers: string[];
+  }): Promise<{ key: string; linkId: string; affected: AffectedCollaborator[] }> {
+    let fields = this.#grantFields(opts.grant);
+    this.#requireCanShare(opts.caller);
+
+    let { key, hash } = await this.#mintKey();
+    this.#requireShareLinksAllowed();
+
+    let old = this.#requireLink(opts.linkId);
+    this.#requireLinkManager(opts.caller, old, "change");
+    // The new link is the caller's, so only the caller's own default can make way for it.
+    if (!old.default || old.revoked || old.createdBy !== opts.caller.profileId ||
+        grantTarget(old) !== grantTarget(fields)) {
+      throw new Error("Only your own default link to this can be changed.");
+    }
+
+    this.storage.shareKeys.put({
+      id: hash,
+      created: new Date(),
+      createdBy: opts.caller.profileId,
+      ...fields,
+      default: true,
+    });
+    let affected = this.#revokeLink(opts.caller, old, opts.keepUsers);
+    return { key, linkId: hash, affected };
   }
 
   /**
@@ -659,7 +705,12 @@ export class SharingManager {
       caller: SharingCaller, linkId: string, keepUsers: string[]): AffectedCollaborator[] {
     let link = this.#requireLink(linkId);
     this.#requireLinkManager(caller, link, "revoke");
+    return this.#revokeLink(caller, link, keepUsers);
+  }
 
+  // The body of revokeShareLink(), once `caller` is known to manage `link`.
+  #revokeLink(caller: SharingCaller, link: ShareLinkRecord, keepUsers: string[])
+      : AffectedCollaborator[] {
     let baseline = this.computeEffectiveAccess();
 
     link.revoked = true;
