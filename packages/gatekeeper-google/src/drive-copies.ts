@@ -364,14 +364,36 @@ async function proveCopy(
 }
 
 /**
+ * Why a conversion of `payload`'s file into `convertTo` cannot be made now, read from Drive, if it
+ * cannot: the file is no longer of an Office type that converts into it, which only a new revision
+ * can change (https://developers.google.com/workspace/drive/api/reference/rest/v3/files#File), or
+ * it is larger than Drive converts.
+ */
+async function conversionRefusal(
+  host: DriveCopiesHost, payload: DriveCopyPayload, convertTo: DriveNativeType,
+): Promise<string | undefined> {
+  let { mimeType, size } = await host.api.getConversionSource(payload.fileId);
+  if (officeLabel(NATIVE_TYPES[convertTo].kind, mimeType) === undefined) {
+    return `That file is no longer ${OFFICE_TYPES[convertTo]}, so it was not converted.`;
+  }
+  return importLimitRefusal(
+    host.api, payload.fileId, size === undefined ? undefined : Number(size), payload.mimeType);
+}
+
+/**
  * Refuses for good a copy that may not be made at apply, having made nothing, except for a
  * refusal a later approval can pass, which leaves it pending. A copy may cross drives, as Drive
- * allows, so no drive is compared.
+ * allows, so no drive is compared. The scope proof is the last request before the send: Drive is
+ * given the folder's ID, not the path the proof walked, so a conversion's reads go first, and what
+ * they refuse is said once the proof passes.
  */
 async function requireStillCopyable(
   host: DriveCopiesHost, payload: DriveCopyPayload & { convertTo?: DriveNativeType },
 ): Promise<void> {
   await requireWritable(host);
+  let converting = payload.convertTo === undefined ? undefined
+    : conversionRefusal(host, payload, payload.convertTo);
+  await converting?.catch(() => {});
   let proved = await proveCopy(host, payload);
   if (!proved) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
   let { source, destination } = proved;
@@ -383,12 +405,8 @@ async function requireStillCopyable(
       destination.canAddChildren !== true) {
     throw new ActionApplyError(CANNOT_COPY);
   }
-  if (payload.convertTo !== undefined) {
-    let { size } = await host.api.getConversionSource(payload.fileId);
-    let refused = await importLimitRefusal(
-      host.api, payload.fileId, size === undefined ? undefined : Number(size), payload.mimeType);
-    if (refused !== undefined) throw new ActionApplyError(refused);
-  }
+  let refused = await converting;
+  if (refused !== undefined) throw new ActionApplyError(refused);
 }
 
 /**

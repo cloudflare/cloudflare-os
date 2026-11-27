@@ -365,6 +365,41 @@ describe("Drive copy checks at apply", () => {
     expect(api.copyFile).not.toHaveBeenCalled();
   });
 
+  it("proves a conversion's folder after Drive's conversion reads, sending nothing once it left", async () => {
+    for (let read of ["getConversionSource", "getMaxImportSize"]) {
+      let { api, journal, nodes, submit, apply } = harness(AT_R);
+      let id = await submit("copyNative", nativeIntoB({ folderIds: ["R", "A"] }));
+      // The folder leaves the bound tree while Drive answers.
+      let leave = () => { nodes.B = folder("B", "X"); };
+      if (read === "getConversionSource") {
+        api.getConversionSource.mockImplementationOnce(async fileId => {
+          leave();
+          return { id: fileId, name: "Plan.docx", mimeType: DOCX, size: "1000" };
+        });
+      } else {
+        api.getMaxImportSize.mockImplementationOnce(async () => {
+          leave();
+          return 10 * 1024 * 1024;
+        });
+      }
+      expect(await apply(id), read).toBe(OUT_OF_SCOPE);
+      expect(journal.get(id)?.state, read).toBe("failed");
+      expect(api.copyFile, read).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses a conversion whose file is no longer of the Office type queued", async () => {
+    let { api, journal, submit, apply } = harness();
+    let id = await submit("copyNative", nativeIntoB());
+    // Drive changes a file's type only with a new revision, which a file of another type can be.
+    api.getConversionSource.mockResolvedValue(
+      { id: "F", name: "Plan.docx", mimeType: "application/pdf", size: "1000" });
+    expect(await apply(id)).toBe(
+      "That file is no longer a .docx, .doc, .odt or .rtf file, so it was not converted.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(api.copyFile).not.toHaveBeenCalled();
+  });
+
   it("proves a folder binding's copy along its saved path, into a folder it reaches", async () => {
     let fromA = { folderIds: ["R", "A"] };
     for (let [what, toFolderId] of [["the positioned folder", "A"], ["a child folder", "B"],
