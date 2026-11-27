@@ -2917,9 +2917,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async getEntry(fileId: string): Promise<DriveEntry> {
-    let named = await this.#named(fileId);
-    if ("waiting" in named) return this.#core.simulatedEntry(named.waiting);
-    return this.#core.getEntry(named.fileId);
+    return this.#named(fileId, async named => "waiting" in named
+      ? this.#core.simulatedEntry(named.waiting) : this.#core.getEntry(named.fileId));
   }
 
   async openFolder(folderId: string): Promise<GoogleDriveSessionImpl> {
@@ -3089,15 +3088,19 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
-    let named = await this.#named(fileId);
-    if (!("waiting" in named)) return this.#readFile(named.fileId, options);
-    let { entry, sourceId } = named.waiting;
-    // Only an ordinary copy is the file it is a copy of until it is made: a conversion is not.
-    if (isPendingId(entry.id)) throw new Error(COPY_WAITING);
-    // As getEntry() shows it, which reports where it is before anything of the file is read: only
-    // in the folder it goes into, and on a folder binding only while its file is still there.
-    await this.#core.simulatedEntry(named.waiting);
-    return this.#readFile(sourceId, options, entry.id);
+    return this.#named(fileId, async named => {
+      if (!("waiting" in named)) return this.#readFile(named.fileId, options);
+      let { entry, sourceId } = named.waiting;
+      // Only an ordinary copy is the file it is a copy of until it is made: a conversion is not.
+      if (isPendingId(entry.id)) throw new Error(COPY_WAITING);
+      // As getEntry() shows it, which reports where it is before anything of the file is read:
+      // only in the folder it goes into, and on a folder binding only while its file is still there.
+      await this.#core.simulatedEntry(named.waiting);
+      // Still in the read that picked the copy, so no approval makes it before the file it copies
+      // is open: that file could change once copied, and the read return bytes the copy never had.
+      // The stream is read after the read ends.
+      return this.#readFile(sourceId, options, entry.id);
+    });
   }
 
   /** Reads Drive file `fileId`, or, given `copyId`, the bytes the copy it is waiting for would hold. */
@@ -3444,43 +3447,50 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * What `fileId` names among the copies this binding queued: one an approval can still make,
-   * with what it shows; the file a native copy made, which `pending:<n>` names from then on; or,
-   * for any other ID, that ID. A `pending:` ID that names no copy is refused, as is one of a copy
-   * that waits on a session that cannot write.
+   * Runs `use` with what `fileId` names among the copies this binding queued: one an approval can
+   * still make, with what it shows; the file a native copy made, which `pending:<n>` names from
+   * then on; or, for any other ID, that ID. A `pending:` ID that names no copy is refused, as is one
+   * of a copy that waits on a session that cannot write. `use` runs in the read that picked a copy
+   * that waits, so no approval makes it while `use` reads it; `use` therefore never reads the queue
+   * itself, which would wait for any approval that started meanwhile, which waits for this read.
    */
-  async #named(fileId: string): Promise<{ waiting: SimulatedEntry } | { fileId: string }> {
+  async #named<T>(
+    fileId: string, use: (named: { waiting: SimulatedEntry } | { fileId: string }) => Promise<T>,
+  ): Promise<T> {
     if (isPendingId(fileId)) {
       let actionId = pendingActionId(fileId);
       if (actionId === undefined) throw new Error(NAMES_NO_COPY);
       // A copy once made is known at once, with no approval that is running to wait for.
       let made = this.#writes.madeCopy(actionId);
-      if (made !== undefined) return { fileId: made };
+      if (made !== undefined) return use({ fileId: made });
       // A session that cannot write shows nothing queued as if made, even what was queued before
       // the deployment kept Drive read-only.
       if (this.#writes.access !== "write") throw new Error(NAMES_NO_COPY);
       return this.#writes.waiting(async pending => {
         let made = this.#writes.madeCopy(actionId);
-        if (made !== undefined) return { fileId: made };
+        if (made !== undefined) return use({ fileId: made });
         let waiting = waitingNativeCopy(actionId, pending);
-        if (waiting) return { waiting };
+        if (waiting) return use({ waiting });
         throw new Error(NAMES_NO_COPY);
       });
     }
     // Nor does it show a waiting ordinary copy, so it reads no queue.
-    if (this.#writes.access !== "write") return { fileId };
+    if (this.#writes.access !== "write") return use({ fileId });
     // Most IDs are no queued copy's, and need not wait for an approval that is running, which may
     // be of any other file. One that is waits for it, so as to show the copy made if it makes it.
-    if (pendingCopy(fileId, this.#writes.queued()) === undefined) return { fileId };
-    let waiting = await this.#writes.waiting(async pending => pendingCopy(fileId, pending));
-    return waiting ? { waiting } : { fileId };
+    if (pendingCopy(fileId, this.#writes.queued()) === undefined) return use({ fileId });
+    return this.#writes.waiting(async pending => {
+      let waiting = pendingCopy(fileId, pending);
+      return use(waiting ? { waiting } : { fileId });
+    });
   }
 
   /** The Drive file `fileId` names, refused while it is a copy that still waits. */
   async #fileId(fileId: string): Promise<string> {
-    let named = await this.#named(fileId);
-    if ("waiting" in named) throw new Error(COPY_WAITING);
-    return named.fileId;
+    return this.#named(fileId, async named => {
+      if ("waiting" in named) throw new Error(COPY_WAITING);
+      return named.fileId;
+    });
   }
 
   /**
