@@ -4,8 +4,8 @@ import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-k
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vitest";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY, type DriveApi,
-  type DriveContentVersion, type DriveFile, type DriveScopeNode,
+  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY, type DriveContentVersion,
+  type DriveFile, type DriveScopeNode,
 } from "../src/drive-api";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope } from "../src/drive-session";
 import {
@@ -50,6 +50,9 @@ const NAME_TAKEN_SINCE =
   "again under another name, or with overwrite: true to replace that file.";
 const BYTES_GONE =
   "The uploaded bytes are no longer kept, so nothing was uploaded. Upload the file again.";
+const NO_REPLACED_FILE =
+  "The file this would replace is no longer in that folder, or no longer in this connection's " +
+  "scope, so nothing was replaced.";
 const CHANGED_SINCE_QUEUED =
   "That file changed since this was queued, so it was not replaced: approving it would have " +
   "discarded that change from the file's current content. Upload it again to replace the file as " +
@@ -98,6 +101,8 @@ afterAll(() => {
   Reflect.deleteProperty(crypto, "DigestStream");
 });
 afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -302,6 +307,41 @@ function folder(id: string, parent: string): DriveScopeNode {
   };
 }
 
+const SESSION = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=S";
+
+/**
+ * Has `api` upload through Drive's own client over a fetch that answers each request with
+ * `answer`, given its method and `Content-Range`. Returns the requests, each as its method and
+ * range.
+ */
+function throughDrive(
+  api: { upload: Mock<DriveApi["upload"]> },
+  answer: (method: string, range: string | null) => Response,
+): string[] {
+  let requests: string[] = [];
+  vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+    let method = init.method ?? "GET";
+    let range = new Headers(init.headers).get("Content-Range");
+    requests.push(range === null ? method : `${method} ${range}`);
+    return answer(method, range);
+  });
+  let drive = new DriveApi(async () => "tok");
+  api.upload.mockImplementation((...args) => drive.upload(...args));
+  return requests;
+}
+
+/** Drive's answers to an upload session, which holds each chunk sent before the last. */
+function session(made: string) {
+  return (method: string, range: string | null): Response => {
+    if (method === "POST" || method === "PATCH") return new Response(null, { headers: { Location: SESSION } });
+    if (method === "DELETE" || !range) return new Response(null);
+    let [, last, total] = /^bytes \d+-(\d+)\/(\d+|\*)$/.exec(range) ?? [];
+    return total === "*"
+      ? new Response(null, { status: 308, headers: { Range: `bytes=0-${last}` } })
+      : new Response(JSON.stringify({ id: made }));
+  };
+}
+
 /**
  * The upload set over an in-memory journal and a real file store, with a host whose Drive holds
  * folder `B` and, in it, file `R` at revision `rev-1` holding `old`, which an upload replaces.
@@ -321,9 +361,13 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
   let uploaded: { content: string; contentType: string; target: unknown }[] = [];
   let described: ActionDescription | undefined;
   let nextFile = 1;
-  /** What Drive does with an upload: a new file, made once per ID, or new content for a file. */
-  let upload: DriveApi["upload"] = async (content, contentType, target) => {
+  /**
+   * What Drive does with an upload: a new file, made once per ID, or new content for a file, once
+   * the check before the request that makes it has passed.
+   */
+  let upload: DriveApi["upload"] = async (content, contentType, target, beforeCommit) => {
     let text = await new Response(content).text();
+    await beforeCommit?.();
     uploaded.push({ content: text, contentType, target });
     if ("replace" in target) {
       version = { ...version, headRevisionId: `rev-${++nextFile}`, sha256Checksum: sha256(text) };
@@ -546,7 +590,7 @@ describe("Drive converted upload sends", () => {
         name: "plan", parents: ["B"], mimeType: GOOGLE_DOC_MIME_TYPE,
         appProperties: { [UPLOAD_TOKEN_PROPERTY]: "t0k3n" },
       },
-    });
+    }, expect.any(Function));
     expect(made.get(id)).toBe("N1");
     expect(nodes.N1?.mimeType).toBe(GOOGLE_DOC_MIME_TYPE);
   });
@@ -650,5 +694,37 @@ describe("Drive replacement sends", () => {
     expect(other.journal.get(theirs)?.state).toBe("failed");
     await other.apply(theirs);
     expect(other.api.upload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Drive upload scope at the request that makes the file", () => {
+  const AT_A: DriveBindingScope = { kind: "folder", folderId: "A" };
+  const CHUNK = 8 * MIB;
+
+  it("proves the folder, and the file replaced, again before the last chunk, sending it no further once either left", async () => {
+    let cases: [string, "uploadFile" | "replaceFile", string][] = [
+      ["the folder moved", "uploadFile", NO_FOLDER], ["the file moved", "replaceFile", NO_REPLACED_FILE],
+    ];
+    for (let [what, kind, message] of cases) {
+      let { api, attempts, journal, nodes, submit, apply, newFile, replacement } = harness(AT_A);
+      nodes.A = folder("A", "root");
+      let content = "x".repeat(CHUNK + 2);
+      let requests = throughDrive(api, (method, range) => {
+        // Moved out of the bound folder while the first chunk goes.
+        if (method === "PUT") {
+          if (kind === "uploadFile") nodes.B = folder("B", "elsewhere");
+          else nodes.R = { ...nodes.R!, parents: ["elsewhere"] };
+        }
+        return session(kind === "uploadFile" ? "U" : "R")(method, range);
+      });
+      let id = kind === "uploadFile"
+        ? await submit(kind, { ...await newFile(content), folderIds: ["A"] })
+        : await submit(kind, { ...await replacement(content), folderIds: ["A"] });
+
+      expect(await apply(id), what).toBe(message);
+      expect(requests.slice(1), what).toEqual([`PUT bytes 0-${CHUNK - 1}/*`, "DELETE"]);
+      expect(journal.get(id)?.state, what).toBe("failed");
+      expect(attempts.has(id), what).toBe(false);
+    }
   });
 });

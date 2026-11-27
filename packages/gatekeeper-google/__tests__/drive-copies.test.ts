@@ -187,9 +187,13 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     getMaxImportSize: vi.fn<DriveApi["getMaxImportSize"]>(async () => 10 * 1024 * 1024),
     openExport: vi.fn<DriveApi["openExport"]>(async (fileId, mimeType) =>
       new Response(`${fileId} as ${mimeType}`).body!),
-    /** What Drive does with an upload: a new file in the folder named, made once per ID. */
-    upload: vi.fn<DriveApi["upload"]>(async (content, contentType, target) => {
+    /**
+     * What Drive does with an upload: a new file in the folder named, made once per ID once the
+     * check before the request that makes it has passed.
+     */
+    upload: vi.fn<DriveApi["upload"]>(async (content, contentType, target, beforeCommit) => {
       uploaded.push(await text(content));
+      await beforeCommit?.();
       if (!("create" in target) || target.create.id === undefined) throw new Error("Unexpected upload");
       let { id, parents } = target.create;
       if (nodes[id]) return undefined;
@@ -561,7 +565,7 @@ describe("Drive copy sends", () => {
     expect(api.openExport).toHaveBeenCalledWith("F", "application/pdf");
     expect(api.upload).toHaveBeenCalledWith(
       expect.any(ReadableStream), "application/pdf",
-      { create: { id: "E", name: "Notes.pdf", parents: ["B"] } });
+      { create: { id: "E", name: "Notes.pdf", parents: ["B"] } }, expect.any(Function));
     expect(uploaded).toEqual(["F as application/pdf"]);
     expect(nodes.E?.parents).toEqual(["B"]);
   });
@@ -776,24 +780,19 @@ describe("Drive copy checks at apply", () => {
     expect(await moved.apply(away)).toBe(OUT_OF_SCOPE);
   });
 
-  it("refuses an exported copy whose file leaves the binding while Google opens the export, uploading nothing", async () => {
+  it("refuses an exported copy whose file leaves the binding before the upload makes it, making nothing", async () => {
     let { api, attempts, journal, nodes, submit, apply } = harness(AT_R);
     nodes.F = file("F", "A", GOOGLE_DOC_MIME_TYPE);
-    let cancelled = false;
-    api.openExport.mockImplementationOnce(async (fileId, mimeType) => {
-      // Moved out of the bound folder while Google builds the export.
+    let upload = api.upload.getMockImplementation()!;
+    api.upload.mockImplementationOnce(async (...args) => {
+      // Moved out of the bound folder while the export is sent.
       nodes.F = file("F", "X", GOOGLE_DOC_MIME_TYPE);
-      let bytes = new TextEncoder().encode(`${fileId} as ${mimeType}`);
-      return new ReadableStream<Uint8Array>({
-        pull: controller => { controller.enqueue(bytes); controller.close(); },
-        cancel: () => { cancelled = true; },
-      }, { highWaterMark: 0 });
+      return upload(...args);
     });
     let id = await submit("exportCopy", exportIntoB({ folderIds: ["R", "A"] }));
     expect(await apply(id)).toBe(OUT_OF_SCOPE);
     expect(journal.get(id)?.state).toBe("failed");
-    expect(api.upload).not.toHaveBeenCalled();
-    expect(cancelled).toBe(true);
+    expect(nodes.E).toBeUndefined();
     expect(attempts.has(id)).toBe(false);
   });
 });

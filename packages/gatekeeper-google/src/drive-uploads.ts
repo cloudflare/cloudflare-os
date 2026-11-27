@@ -23,7 +23,7 @@ import type { ActionFileReference, ActionFileStore } from "@gadgets/gatekeeper-k
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY, type DriveApi,
-  type DriveContentVersion, type DriveFile,
+  type DriveContentVersion, type DriveFile, type DriveScopeNode,
 } from "./drive-api";
 import { NATIVE_TYPES, nativeConversion, proveDestination, type MadeFiles } from "./drive-copies";
 import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
@@ -451,14 +451,15 @@ async function storedBytes(
 }
 
 /**
- * Refuses for good an upload that may not be made at apply, having made nothing, except for a
- * refusal a later approval can pass, which leaves it pending. With `replacing`, also the file
- * replaced, which must still be a live direct child of the folder that the account may edit.
+ * Refuses for good an upload whose folder the binding no longer reaches as a live folder the
+ * account may add to, having made nothing. With `replacing`, also the file replaced, which must
+ * still be a live direct child of that folder that the account may edit. Made at the check and
+ * again before the request that makes the file, which can come long after it.
+ * @returns The folder, as read now.
  */
-async function requireStillUploadable(
+async function requireUploadScope(
   host: DriveUploadsHost, payload: DriveUploadPayload, replacing?: string,
-): Promise<void> {
-  await requireWritable(host);
+): Promise<DriveScopeNode> {
   let proved = await proveDestination(host, payload, replacing === undefined ? [] : [replacing]);
   if (!proved) throw new ActionApplyError(NO_FOLDER);
   let { destination, nodes: [replaced] } = proved;
@@ -466,18 +467,30 @@ async function requireStillUploadable(
   if (destination.mimeType !== FOLDER_MIME_TYPE || destination.canAddChildren !== true) {
     throw new ActionApplyError(CANNOT_UPLOAD);
   }
-  if (replacing === undefined) {
-    // Drive takes any number of files of one name; an upload is refused one only when queued,
-    // so a file of that name made since then is refused here.
-    let named = await host.api.findNamed(destination.id, payload.name, corpusOf(destination.driveId));
-    if (named.length) throw new ActionApplyError(NAME_TAKEN_SINCE);
-    return;
-  }
+  if (replacing === undefined) return destination;
   if (!replaced || replaced.trashed !== false || replaced.parents?.length !== 1 ||
       replaced.parents[0] !== destination.id) {
     throw new ActionApplyError(NO_REPLACED_FILE);
   }
   if (replaced.canEdit !== true) throw new ActionApplyError(CANNOT_REPLACE);
+  return destination;
+}
+
+/**
+ * Refuses for good an upload that may not be made at apply, having made nothing, except for a
+ * refusal a later approval can pass, which leaves it pending: {@link requireUploadScope}, and for
+ * a new file no file of its name in the folder.
+ */
+async function requireStillUploadable(
+  host: DriveUploadsHost, payload: DriveUploadPayload, replacing?: string,
+): Promise<void> {
+  await requireWritable(host);
+  let destination = await requireUploadScope(host, payload, replacing);
+  if (replacing !== undefined) return;
+  // Drive takes any number of files of one name; an upload is refused one only when queued, so a
+  // file of that name made since then is refused here.
+  let named = await host.api.findNamed(destination.id, payload.name, corpusOf(destination.driveId));
+  if (named.length) throw new ActionApplyError(NAME_TAKEN_SINCE);
 }
 
 /**
@@ -503,7 +516,8 @@ function uploadReserved(
     },
     send: async () => {
       // `undefined`: Drive refused the ID as used, so an earlier send made the file.
-      await host.api.upload(bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } });
+      await host.api.upload(bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } },
+        () => requireUploadScope(host, payload));
       return fileId;
     },
     repeatable: true,
@@ -539,7 +553,7 @@ async function uploadConverted(
     send: async () => {
       let uploaded = await host.api.upload(bytes!, contentType, {
         create: { name, parents: [toFolderId], mimeType, appProperties: { [UPLOAD_TOKEN_PROPERTY]: token } },
-      });
+      }, () => requireUploadScope(host, payload));
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
       if (!uploaded) throw new Error("Google Drive answered an upload made without an ID as already made");
       return uploaded.id;
@@ -594,7 +608,8 @@ function replaceContent(
       return {};
     },
     send: async () => {
-      await host.api.upload(bytes!, contentType, { replace: fileId });
+      await host.api.upload(bytes!, contentType, { replace: fileId },
+        () => requireUploadScope(host, payload, fileId));
       return fileId;
     },
     repeatable: true,

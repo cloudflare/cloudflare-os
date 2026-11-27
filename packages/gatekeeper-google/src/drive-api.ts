@@ -486,13 +486,17 @@ const isThrottle = (error: Error) => error instanceof DriveApiRequestError && er
  * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
  * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
  * session holds, and sends only the rest, so nothing Drive finished is sent again.
+ * `beforeCommit` is awaited before each request that sends the last chunk, the only requests
+ * that can complete the file, and throws to send none.
  */
 async function putUploadChunk(
   session: string, bytes: Uint8Array, start: number, total?: number,
+  beforeCommit?: () => Promise<unknown>,
 ): Promise<string | undefined> {
   let ask = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
+    if (total !== undefined && !ask) await beforeCommit?.();
     let response = await fetch(session, {
       // Drive asks for more with a 308, which is not a redirect to follow.
       method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
@@ -1623,11 +1627,16 @@ export class DriveApi {
    *
    * It goes through an upload session, a chunk at a time, so only a chunk is held in memory and a
    * lost reply is recovered by asking the session what it holds: sending again never makes a second
-   * file. Nothing is made or changed until the last chunk arrives; any failure cancels `file` and
-   * abandons the session.
+   * file. Nothing is made or changed until the last chunk arrives: opening a session makes no file,
+   * which exists once all its content is uploaded
+   * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable). So
+   * `beforeCommit` is awaited immediately before each request that can complete the file, the
+   * last chunk and any resend of it, and a check of what the upload may reach made there holds
+   * when the file is made. Any failure, its own too, cancels `file` and abandons the session.
    */
   async upload(
     file: ReadableStream<Uint8Array>, contentType: string, target: DriveUploadTarget,
+    beforeCommit?: () => Promise<unknown>,
   ): Promise<DriveMadeFile | undefined> {
     let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: MADE_FILE_FIELDS });
     let replace = "replace" in target ? target.replace : undefined;
@@ -1667,8 +1676,8 @@ export class DriveApi {
           offset += taken.length;
         }
       }
-      let made = parseDriveJson(
-        (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!, "response");
+      let made = parseDriveJson((await putUploadChunk(
+        session, chunk.subarray(0, filled), sent, sent + filled, beforeCommit))!, "response");
       if (!isRecord(made) || typeof made.id !== "string" || (asked !== undefined && made.id !== asked)) {
         throw new Error("Google Drive answered an upload with another file than the one asked for");
       }

@@ -2962,6 +2962,42 @@ describe("upload", () => {
     await expect(api().upload(stream("hi"), "text/plain", { replace: "F" }))
       .rejects.toThrow("Google Drive answered an upload with another file than the one asked for");
   });
+
+  it("runs the check before each request that can complete the file, and before no other", async () => {
+    vi.useFakeTimers();
+    const CHUNK = 8 * 1024 * 1024;
+    let steps: string[] = [];
+    let held = (bytes: number) => new Response(null, { status: 308, headers: { Range: `bytes=0-${bytes - 1}` } });
+    let answers: (() => Response)[] = [
+      opened, () => held(CHUNK),
+      // The last chunk's answer is lost, and the session says it holds only the first.
+      () => { throw new TypeError("network connection lost"); }, () => held(CHUNK),
+      () => jsonResponse({ id: "U" }),
+    ];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      steps.push(`${init.method} ${new Headers(init.headers).get("Content-Range") ?? ""}`.trim());
+      return answers.shift()!();
+    });
+    let uploaded = api().upload(new Response(new Uint8Array(CHUNK + 2)).body!, "text/plain",
+      { create: { id: "U", name: "notes.txt", parents: ["B"] } }, async () => { steps.push("checked"); });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(uploaded).resolves.toStrictEqual({ id: "U" });
+    expect(steps).toEqual([
+      "POST", `PUT bytes 0-${CHUNK - 1}/*`,
+      "checked", `PUT bytes ${CHUNK}-${CHUNK + 1}/${CHUNK + 2}`,
+      `PUT bytes */${CHUNK + 2}`,
+      "checked", `PUT bytes ${CHUNK}-${CHUNK + 1}/${CHUNK + 2}`,
+    ]);
+  });
+
+  it("sends nothing more once the check refuses, abandoning the session", async () => {
+    let calls = stubFetch([opened(), new Response(null)]);
+    let refusal = new Error("no longer in scope");
+    await expect(api().upload(stream("hi"), "text/plain", { replace: "F" }, async () => { throw refusal; }))
+      .rejects.toBe(refusal);
+    expect(calls.map(({ method }) => method)).toEqual(["PATCH", "DELETE"]);
+  });
 });
 
 describe("findNamed, getContentVersion and keepRevision", () => {
