@@ -12,7 +12,7 @@ import {
 import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
 } from "../src/drive-session";
-import type { QueuedWrite, WriteAttempt } from "../src/drive-writes";
+import { CREDENTIALS_NOT_ACCEPTED, type QueuedWrite, type WriteAttempt } from "../src/drive-writes";
 import { FakeKv } from "./fake-kv";
 
 const ACCOUNT: DriveBindingScope = { kind: "account" };
@@ -350,6 +350,22 @@ describe("Drive copy sends", () => {
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
     expect(lost.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "user" });
+  });
+
+  // An approval sends under the one token it verified the account with, which Drive may refuse
+  // as expired: the next approval's, loaded afresh, may be accepted.
+  it("leaves a native copy Drive refused the approval's token for pending, and sends it at the next approval", async () => {
+    let { api, attempts, journal, made, submit, apply } = harness();
+    api.copyFile.mockRejectedValueOnce(new DriveApiRequestError(401, "authError"));
+    let id = await submit("copyNative", nativeIntoB());
+    expect(await apply(id)).toBe(CREDENTIALS_NOT_ACCEPTED);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
+
+    expect(await apply(id)).toBeNull();
+    expect(api.findCopy).not.toHaveBeenCalled();
+    expect(api.copyFile).toHaveBeenCalledTimes(2);
+    expect(made.get(id)).toBe("N1");
   });
 
   it("fails a native copy Google Drive made of another type than asked for, recording nothing", async () => {

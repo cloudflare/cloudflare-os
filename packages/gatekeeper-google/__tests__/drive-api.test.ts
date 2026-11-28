@@ -2086,10 +2086,6 @@ describe("driveWriteFailure, for a write that cannot be repeated", () => {
       new DOMException("The operation timed out.", "TimeoutError"), { repeatable: false }))
       .toBe("unknown");
   });
-
-  it("reads a 401 that survived the token refresh as posting nothing", () => {
-    expect(driveWriteFailure(new DriveApiRequestError(401), { repeatable: false })).toBe("absent");
-  });
 });
 
 describe("the comment capability on a scope node", () => {
@@ -3012,11 +3008,12 @@ describe("driveWriteFailure", () => {
     // The one 400 Google answers for a write it has made: a response mask it does not accept.
     expect(driveWriteFailure(failed(400, "invalidParameter"), { repeatable: true })).toBe("unknown");
 
-    // A repeatable write goes out under one token nothing refreshes, so its 401 says only that
-    // the token lapsed; any other write's has been tried under a refreshed token by then.
-    expect(driveWriteFailure(failed(401), { repeatable: true })).toBe("unauthorized");
-    expect(driveWriteFailure(failed(401, "authError"), { repeatable: true })).toBe("unauthorized");
-    expect(driveWriteFailure(failed(401), { repeatable: false })).toBe("absent");
+    // A write goes out under one token, and its 401 says only that the token lapsed, whether or
+    // not the write can be repeated: Google refuses the token before it acts.
+    for (let repeatable of [true, false]) {
+      expect(driveWriteFailure(failed(401), { repeatable })).toBe("unauthorized");
+      expect(driveWriteFailure(failed(401, "authError"), { repeatable })).toBe("unauthorized");
+    }
   });
 
   it.each([true, false])("answers alike whether or not the write can be repeated (%s)", repeatable => {

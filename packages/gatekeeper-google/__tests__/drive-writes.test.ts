@@ -453,12 +453,9 @@ describe("Drive write sends and their markers", () => {
       error: new DriveApiRequestError(403, "insufficientPermissions"), repeatable,
       message: WRITES_GRANT_MISSING, ...pending, kept: repeatable, outcome: "absent",
     },
-    repeatable ? {
+    {
       answer: "a 401", error: new DriveApiRequestError(401, "authError"), repeatable,
-      message: CREDENTIALS_NOT_ACCEPTED, ...pending, kept: true, outcome: "unauthorized",
-    } : {
-      answer: "a 401", error: new DriveApiRequestError(401, "authError"), repeatable,
-      message: REFUSED, forGood: true, kept: false, outcome: "absent",
+      message: CREDENTIALS_NOT_ACCEPTED, ...pending, kept: repeatable, outcome: "unauthorized",
     },
     {
       answer: "a 403 Google gives for the change itself",

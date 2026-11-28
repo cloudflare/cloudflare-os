@@ -1211,8 +1211,8 @@ const WRITE_RATE_LIMIT_REASONS: ReadonlySet<string> =
  *   a missing permission or scope, content over Google's limit, an organization's rule), so it is
  *   safe to give up.
  * - `rateLimited`: nothing was changed, and the same write may succeed later.
- * - `unauthorized`: the token of a write that can be repeated was not accepted. Nothing was
- *   changed, and the write is worth approving again under the account's token as it is by then.
+ * - `unauthorized`: the write's token was not accepted. Nothing was changed, and the write is
+ *   worth approving again under the account's token as it is by then.
  * - `unknown`: anything else. Drive can make a write and still answer 400, and a 5xx, a network
  *   failure or an unreadable success leaves the outcome open too, so the write must be looked for
  *   before it is sent again.
@@ -1225,10 +1225,11 @@ export type DriveWriteFailure = "absent" | "rateLimited" | "unauthorized" | "unk
  * 400 is a refusal, since reading it wrongly costs a wrong failure and never a second change. One
  * 400 is not: Google answers `invalidParameter` for a response mask it does not accept after it
  * has made the write, so that reason leaves the outcome open for every write. For a write that
- * cannot be repeated, so does any 400. A 401 of a write that can be repeated is `unauthorized`:
- * its token was not accepted, and the write is worth approving again under the account's token
- * as it is by then. For one that cannot, a 401 is `absent`, as it has been tried under a
- * refreshed token by then.
+ * cannot be repeated, so does any 400. A 401 is `unauthorized` for every write: Google
+ * authenticates before it acts, so its token was refused before anything was made
+ * (https://developers.google.com/workspace/drive/api/guides/handle-errors#authError), and the
+ * write is worth approving again under the account's token as it is by then. An approval sends
+ * under the one token it verified the account with, which is not refreshed when Drive refuses it.
  */
 export function driveWriteFailure(
   error: unknown, options: { repeatable: boolean },
@@ -1238,10 +1239,10 @@ export function driveWriteFailure(
   let { status, reason } = error;
   let rateLimited = status === 403 && reason !== undefined && WRITE_RATE_LIMIT_REASONS.has(reason);
   if (status === 429 || rateLimited) return "rateLimited";
-  if (status === 401) return options.repeatable ? "unauthorized" : "absent";
-  // Google authenticates and authorizes before it acts. A 403 here is a refused permission or
-  // scope, an invisible file, an organization's rule, or `commentLengthLimitExceeded`; a 404 an
-  // absent file, comment or permission.
+  // Google authenticates and authorizes before it acts. A 401 is a refused token; a 403 a refused
+  // permission or scope, an invisible file, an organization's rule, or
+  // `commentLengthLimitExceeded`; a 404 an absent file, comment or permission.
+  if (status === 401) return "unauthorized";
   if (status === 403 || status === 404) return "absent";
   if (status === 400 && options.repeatable && reason !== "invalidParameter") return "absent";
   return "unknown";
