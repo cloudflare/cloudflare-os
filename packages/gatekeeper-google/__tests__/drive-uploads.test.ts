@@ -778,6 +778,7 @@ describe("Drive replacement sends", () => {
 
     for (let later of [
       new DriveApiRequestError(403, "userRateLimitExceeded"),
+      new DriveApiRequestError(503, "backendError"),
       new DOMException("The operation timed out.", "TimeoutError"),
     ]) {
       let { api, attempts, journal, submit, apply, replacement, uploaded } = harness();
@@ -787,7 +788,11 @@ describe("Drive replacement sends", () => {
       expect(journal.get(id)?.state, later.name).toBe("pending");
       expect(attempts.has(id), later.name).toBe(false);
       expect(api.upload, later.name).not.toHaveBeenCalled();
+      let proofs = api.getScopeNodes.mock.calls.length;
       expect(await apply(id), later.name).toBeNull();
+      // The file is proved again before the pin is sent again.
+      expect(api.getScopeNodes.mock.invocationCallOrder[proofs], later.name)
+        .toBeLessThan(api.keepRevision.mock.invocationCallOrder[1]);
       expect(uploaded.map(({ content }) => content), later.name).toEqual(["new"]);
     }
   });

@@ -3044,6 +3044,16 @@ describe("findNamed, getContentVersion and keepRevision", () => {
     expect(JSON.parse(calls[0].body ?? "")).toEqual({ keepForever: true });
   });
 
+  it("sends a pin only once, leaving a failure Drive could retry to the approval that sent it", async () => {
+    let calls = stubFetch([
+      new Response(JSON.stringify({ error: { code: 503, errors: [{ reason: "backendError" }] } }),
+        { status: 503 }),
+      jsonResponse({ id: "r2" }),
+    ]);
+    await expect(api().keepRevision("F", "r2")).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+  });
+
   it("gives up on a pin Drive does not answer, at the write deadline", async () => {
     vi.useFakeTimers();
     // Timed on the faked clock, as Workers' own timeout is on its real one.

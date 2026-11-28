@@ -1956,9 +1956,10 @@ export class DriveApi {
 
   /**
    * Keeps revision `revisionId` of file `fileId` in its version history for good, which Drive would
-   * otherwise drop in time. Setting it again changes nothing, so it is safe to send twice. Drive
-   * keeps at most 200 revisions of a file this way. Each attempt has the write deadline: an
-   * approval holds the binding's decisions while it waits.
+   * otherwise drop in time. Drive keeps at most 200 revisions of a file this way. It is sent once:
+   * setting it again changes nothing, but a resend would skip the proof of the file that comes
+   * before it, so a failure is left to the next approval, which proves the file again first. The
+   * request has the write deadline: an approval holds the binding's decisions while it waits.
    */
   async keepRevision(fileId: string, revisionId: string): Promise<void> {
     requireDriveFileId(fileId);
@@ -1971,7 +1972,7 @@ export class DriveApi {
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ keepForever: true }),
       },
-      this.getAccessToken, { idempotent: true, timeoutMs: WRITE_TIMEOUT_MS });
+      this.getAccessToken, { retries: 1, timeoutMs: WRITE_TIMEOUT_MS });
     if (!response.ok) throw await driveError(response);
     await response.body?.cancel();
   }
