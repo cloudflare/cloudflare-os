@@ -13,7 +13,7 @@ import {
   ReadHeldUploads, replacedFile, replacedVersion, UPLOAD_FILE_STORE, uploadBytes, uploadContentType,
   uploadConversion, type DriveUploadAction, type DriveUploadActions, type DriveUploadsHost,
 } from "../src/drive-uploads";
-import type { WriteAttempt } from "../src/drive-writes";
+import { CREDENTIALS_NOT_ACCEPTED, type WriteAttempt } from "../src/drive-writes";
 import { FakeKv } from "./fake-kv";
 
 const MIB = 1024 * 1024;
@@ -748,6 +748,27 @@ describe("Drive converted upload sends", () => {
     incomplete = false;
     expect(await apply(id)).toBeNull();
     expect(requests.slice(5)).toEqual(["POST", "PUT bytes 0-3/4"]);
+    expect(api.findByToken).not.toHaveBeenCalled();
+    expect(made.get(id)).toBe("N1");
+  });
+
+  // An approval sends under the one token it verified the account with, which Drive may refuse
+  // as expired: the next approval's, loaded afresh, may be accepted.
+  it("leaves a converted upload whose session Drive refused the approval's token for pending, and sends it once at the next approval", async () => {
+    let { api, attempts, journal, made, submit, apply, converted } = harness();
+    let refused = true;
+    let requests = throughDrive(api, (method, range) => method === "POST" && refused
+      ? Response.json({ error: { code: 401, errors: [{ reason: "authError" }] } }, { status: 401 })
+      : session("N1")(method, range));
+    let id = await submit("uploadConverted", await converted("docx"));
+    expect(await apply(id)).toBe(CREDENTIALS_NOT_ACCEPTED);
+    expect(requests).toEqual(["POST"]);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
+
+    refused = false;
+    expect(await apply(id)).toBeNull();
+    expect(requests.slice(1)).toEqual(["POST", "PUT bytes 0-3/4"]);
     expect(api.findByToken).not.toHaveBeenCalled();
     expect(made.get(id)).toBe("N1");
   });
