@@ -47,6 +47,27 @@ export function isDeploymentAdmin(env: Cloudflare.Env, name: string | undefined)
   return admins.some(admin => typeof admin === "string" && asciiLowerCase(admin) === lowered);
 }
 
+/**
+ * Vendor id of the admin gatekeeper (the suffix of GATEKEEPER_ADMIN, lowercased): the one vendor
+ * a deployment admin's connect flow hands their Admin API to (see AdminApiGrantImpl), and the one
+ * told whether a user is a deployment admin (see supportedResourcesHint()). The binding is trusted
+ * as the backend's own configuration is, and the release build refuses any other package whose
+ * install slug folds to this id.
+ */
+export const ADMIN_GATEKEEPER_VENDOR_ID = "admin";
+
+/**
+ * What vendor `vendorId`'s GatekeeperVendor.getSupportedResources() is told of the user it is
+ * asked for. Only the admin gatekeeper is told whether they are a deployment admin: who the
+ * deployment's admins are is no other vendor's to know.
+ */
+export function supportedResourcesHint(env: Cloudflare.Env, userId: string, vendorId: string)
+    : { userId: string, isAdmin?: boolean } {
+  return vendorId === ADMIN_GATEKEEPER_VENDOR_ID
+    ? { userId, isAdmin: isDeploymentAdmin(env, userId) }
+    : { userId };
+}
+
 // Only ASCII letters are folded: toLowerCase() also folds some other characters onto ASCII ones,
 // such as the Kelvin sign onto "k", which would let a look-alike name match an admin's.
 const asciiLowerCase = (text: string) => text.replace(/[A-Z]/g, letter => letter.toLowerCase());

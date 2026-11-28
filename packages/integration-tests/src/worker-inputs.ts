@@ -72,6 +72,17 @@ const WORKER_INPUTS: WorkerInput[] = [
     excludeDirs: [...BUILT, "src", "dist-app", ".wrangler"],
   },
   { kind: "dir", path: "packages/gatekeeper-context/src", excludeDirs: ["generated"] },
+  // The real admin gatekeeper, split the same way: its generated configurator module, its
+  // generated schema and its validated tree stay out of watch.
+  {
+    kind: "dir", path: "packages/gatekeeper-admin",
+    excludeDirs: [...BUILT, "src", ".wrangler"],
+  },
+  { kind: "dir", path: "packages/gatekeeper-admin/src", excludeDirs: ["generated"] },
+  // Bundled into the admin gatekeeper: the argument check and the declarations' emitter, and the
+  // generator of the schema its own is cut from. `generated` is that generator's output, which a
+  // rebuild rewrites.
+  { kind: "dir", path: "packages/api-schema", excludeDirs: [...BUILT, "generated"] },
   // `typed-storage` is the one package that emits: wrangler loads its `dist/index.js`, so `dist` is
   // output here like anywhere else, and it is the package's config -- not just its source -- that
   // decides what gets emitted.

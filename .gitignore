@@ -8,6 +8,8 @@ packages/gatekeeper-*/src/generated/*-configurator-ui.txt
 packages/gatekeeper-*/src/generated/*-configurator-ui.js*
 packages/gatekeeper-*/src/generated/configurator-runtime.js*
 packages/gatekeeper-*/src/generated/app.txt
+# The admin gatekeeper's subset of the API schema (packages/gatekeeper-admin/scripts/generate-schema.ts).
+packages/gatekeeper-admin/src/generated/admin-api.schema.json
 # Bundled blueprints (regenerated at build time from BUNDLED_BLUEPRINTS_DIR).
 packages/workshop-backend/src/generated/bundled-blueprints.ts
 packages/workshop-backend/src/generated/browser-export-runtime.txt

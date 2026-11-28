@@ -20,7 +20,7 @@ import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
-import { isDeploymentAdmin } from './auth/config.js';
+import { isDeploymentAdmin, supportedResourcesHint } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
@@ -1098,7 +1098,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     vendorId = vendorId.toLowerCase();
     const vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error("Unknown gatekeeper vendor.");
-    const resources = await vendor.getSupportedResources({ userId: actor.admin });
+    const resources = await vendor.getSupportedResources(
+        supportedResourcesHint(this.env, actor.admin, vendorId));
     const resource = findResourceType(resources, resourceTypeId)
       ?? findResourceType(resources, undefined, resourceTypeId);
     await this.#mutateAdminConfig(actor, config => {
@@ -1231,7 +1232,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         try {
           let [description, supportedResources] = await Promise.all([
             vendor.describe(),
-            vendor.getSupportedResources({ userId: adminUserId }),
+            vendor.getSupportedResources(supportedResourcesHint(this.env, adminUserId, id)),
           ]);
           if (description.autoProvisionsAccount) {
             // Auto-provisioning ("ambient") gatekeeper: a three-state mode, no resources to toggle.
