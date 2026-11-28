@@ -5,6 +5,7 @@
 import { afterEach, expect, it } from 'vitest'
 import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
+import { previewHost } from './previewBundle'
 import { SHEETS_PREVIEW_BUNDLE } from './sheetsPreviewBundle'
 
 type Cell = Record<string, unknown>
@@ -123,8 +124,12 @@ const holding = (time: number, held: (() => void)[]) => (window: Window) => {
   window.setTimeout = ((run: () => void, ms?: number) => ms === time ? held.push(run) : wait(run, ms)) as typeof setTimeout
 }
 
-/** Draws `book` in a frame `width` wide and `height` tall, and resolves once its first sheet is drawn. */
-async function draw(book: Book, width = 900, height = 600) {
+/**
+ * Draws `book` in a frame `width` wide and `height` tall, and resolves once its first sheet is
+ * drawn. `at` is the spot its host sends it to.
+ */
+async function draw(book: Book, width = 900, height = 600, at?: string) {
+  const { host, said, go } = previewHost(at)
   const reads: string[] = []
   const without: string[][] = []
   const asked: string[] = []
@@ -159,14 +164,14 @@ async function draw(book: Book, width = 900, height = 600) {
       return drawingOf(book.sheets.find(sheet => range.startsWith(`'${sheet.title}'!`))!, range, unfrozen)
     },
   }
-  Object.assign(window, { sheetsPreviewGadget: gadget })
+  Object.assign(window, { sheetsPreviewGadget: gadget, sheetsPreviewHost: host })
   frame = document.body.appendChild(document.createElement('iframe'))
   Object.assign(frame.style, { width: `${width}px`, height: `${height}px` })
-  // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
+  // Started as the gadget UI frame starts it: main(gadget, host) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(SHEETS_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
     import client from ${JSON.stringify(entryUrl)}
-    client.main(parent.sheetsPreviewGadget)
+    client.main(parent.sheetsPreviewGadget, parent.sheetsPreviewHost)
   </script>`
   const doc = () => frame!.contentDocument!
   await expect.poll(() => doc()?.querySelector('#error, #grid .h') !== null, { timeout: 10_000 }).toBe(true)
@@ -178,6 +183,9 @@ async function draw(book: Book, width = 900, height = 600) {
     without,
     /** The sheets whose pending changes were asked for, in order. */
     asked,
+    /** Each focus the host was told, and what sends the preview to a spot as its host does. */
+    said,
+    go,
     /** The fonts asked for, in order: family, weight and whether italic. */
     fonts,
     cells,
@@ -1714,4 +1722,63 @@ it('keeps the grid under the outline and clear of the buttons in a narrow pane',
   // Once it has unfolded from its button.
   await expect.poll(() => outline.contains(doc.elementFromPoint(left + 20, top + 10))).toBe(true)
   expect(outline.contains(doc.elementFromPoint(100, 300))).toBe(true)
+})
+
+it('tells its host a sheet by the title Google has saved for it, and of no sheet that only a change adds', async () => {
+  // A change renames the second sheet, and another adds a third.
+  const book: Book = {
+    saved: [small(1, 'Sales', 0), small(2, 'Costs', 1)].map(info),
+    sheets: [small(1, 'Sales', 0), small(2, 'Expenses', 1, { touched: true }), small(9, 'Plan', 2, { touched: true })],
+  }
+  const { doc, said, go } = await draw(book, 1100, 600, '2')
+  const title = () => doc.querySelector('#strip b')!.textContent
+
+  expect([title(), said]).toEqual(['Expenses', [{ anchor: '2', label: 'Costs' }]])
+  expect(await go('9')).toBe(true)
+  expect([title(), said.at(-1)]).toEqual(['Plan', null])
+})
+
+it('tells its host the sheet shown, opens on the one its host names, and on its own choice when that is gone', async () => {
+  const book: Book = { sheets: [small(1, 'Sales', 0), small(2, 'Costs', 1), small(9, 'Plan', 2, { touched: true })] }
+  const { doc, asked, said, go, cell, tabs } = await draw(book, 1100, 600, '2')
+  const title = () => doc.querySelector('#strip b')!.textContent
+
+  // The sheet its host names is the first read, not the one the changes touch.
+  expect([title(), asked]).toEqual(['Costs', ['Costs']])
+  expect(said).toEqual([{ anchor: '2', label: 'Costs' }])
+
+  expect(await go('1')).toBe(true)
+  expect([title(), cell('A1').textContent]).toEqual(['Sales', 'Sales A1'])
+  expect(said.at(-1)).toEqual({ anchor: '1', label: 'Sales' })
+  // The reader's own move is told too.
+  tabs()[2].click()
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '9', label: 'Plan' })
+  // A sheet that is not there leaves the reader where they are.
+  expect(await go('77')).toBe(false)
+  expect(title()).toBe('Plan')
+  frame!.remove()
+
+  // Sent to a sheet that is gone, it opens where it would have: on the first the changes touch.
+  const anew = await draw(book, 1100, 600, '77')
+  expect(anew.doc.querySelector('#strip b')!.textContent).toBe('Plan')
+  expect(anew.said).toEqual([{ anchor: '9', label: 'Plan' }])
+  frame!.remove()
+
+  // Sent to a sheet whose title another takes while it is read, it opens on the sheet of that ID.
+  const swapped: Book = {
+    sheets: [small(1, 'Sales', 0), small(2, 'Costs', 1)],
+    // Renamed once they are listed, as its changes are first read.
+    failChanges: () => void Object.assign(swapped, { failChanges: undefined, sheets: [small(1, 'Costs', 0), small(2, 'Expenses', 1)] }),
+  }
+  const renamed = await draw(swapped, 1100, 600, '2')
+  expect([renamed.doc.querySelector('#strip b')!.textContent, renamed.asked]).toEqual(['Expenses', ['Costs', 'Expenses']])
+  expect(renamed.said).toEqual([{ anchor: '2', label: 'Expenses' }])
+  frame!.remove()
+
+  // Sent to a sheet that could not be read, it opens on that sheet when asked to read again.
+  const failing: Book = { ...book, fail: 'Google Sheets did not answer.' }
+  const retried = await draw(failing, 1100, 600, '2')
+  failing.fail = undefined
+  retried.doc.querySelector<HTMLElement>('#error button')!.click()
+  await expect.poll(() => retried.doc.querySelector('#strip b')?.textContent).toBe('Costs')
 })

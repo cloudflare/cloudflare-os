@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, type UiFile, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -49,6 +49,7 @@ import {
 import {
   DriveFileEditors, editedFile, editorOfMimeType, editorOfTag, type DriveEditorName,
 } from "./drive-editors";
+import { DRIVE_PREVIEW_FILES } from "./previews/files";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, requireQuote, savedDoc,
   selectTab,
@@ -2521,6 +2522,16 @@ export class GoogleDriveGatekeeperImpl
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleDriveTypesCode(this.#writes);
+  }
+
+  /**
+   * The preview of a file an edit's `previewOf` names: the one each kind of file has when
+   * connected on its own, all three behind one entry, since this is asked before any file is
+   * named. The entry opens the file its host sends it to, by the methods an agent opens one
+   * with, and starts the preview of its kind. A Drive connection has no preview of itself.
+   */
+  async getGadgetUi(): Promise<UiFile[]> {
+    return DRIVE_PREVIEW_FILES;
   }
 
   /**

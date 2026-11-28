@@ -283,6 +283,29 @@ Keep in mind that the agent calling the API (or the agent writing a gadget to ca
 
 For concrete examples, see the Google gatekeeper's Google Docs simulation/cache handling and BigQuery dry-run scope enforcement.
 
+#### Previewing one item of a resource
+
+A gatekeeper whose resource holds several things it can draw one at a time (files in a folder)
+names the one an action changes, and its preview is of that (reference: the Google Drive
+gatekeeper):
+
+- Set `previewOf: { anchor, title, url? }` on the action's description. `anchor` is the
+  gatekeeper's own name for the item, enough to find it again and nothing anyone else reads;
+  parse it strictly.
+- `getGadgetUi()` returns the code that draws whichever item it is sent to, and asks the
+  provider nothing: it is asked before any item is named. Do not report `hasGadgetUi` unless that
+  code draws the resource as a whole too.
+- That code is started as `main(session, host)` with the connection's session, and is told the
+  item as a gadget's UI is told where its user was: it registers `host.onNavigate()`, and the
+  anchor it is called with is the item's `anchor`, or begins with it. Every spot it reports
+  (`host.reportFocus()`) begins with it too, so that a frame started again is sent to the same
+  item. Keep it well under the 256 characters an anchor may have.
+- The anchor may come from any client, so it only chooses what to draw: resolve it through the
+  session, which checks access as any open does. Open the item by the methods a gadget bound to
+  the connection would use (the Drive preview walks `openFolder()` to `openGoogleDoc()`), not by
+  one added for the preview: the session then has nothing an agent's types leave out, and the
+  preview's code is what a gadget could run.
+
 #### Revealing pending changes
 
 A session may let its caller see what is still pending, for a preview that draws what is about to

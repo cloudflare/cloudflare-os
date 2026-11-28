@@ -5,6 +5,8 @@ import { afterEach, expect, it } from 'vitest'
 import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
+import { DRIVE_PREVIEW_BUNDLE } from './drivePreviewBundle'
+import { previewHost } from './previewBundle'
 
 type Edit = { start: number, end: number, blocks: object[] }
 type Doc = {
@@ -29,9 +31,13 @@ const unmade = (tabId: string) => tabId.startsWith('pending-tab-')
 
 /**
  * Draws `doc` and resolves to the frame's document once the page has its blocks. What `session`
- * holds answers in place of the scripted session's own.
+ * holds answers in place of the scripted session's own, and `at` is the spot its host sends it to.
+ * `folder` makes of that session the one of a Drive connection, whose preview then opens the file.
  */
-async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
+async function draw(
+  doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}, at?: string,
+  folder?: (file: object) => object,
+) {
   // The session answers as GoogleDocSession does.
   const waiting = (tabId: string) => unmade(tabId) || !!doc.edited?.includes(tabId) || !doc.tabs && !!doc.edits?.length
   const listed = (tabId: string) => {
@@ -42,6 +48,7 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
   const edits = (tabId: string) => !doc.tabs ? doc.edits ?? []
     : unmade(tabId) ? [{ start: 0, end: 0, blocks: [written(tabId)] }] : waiting(tabId) ? [edit(1, 1, [written('Edited')])] : []
   const fonts: [string, number, boolean][] = []
+  const { host, said, held, go } = previewHost(at)
   const gadget = {
     // No font is served here: each is asked for, and the text is drawn without.
     readFont: async (...font: [string, number, boolean]) => {
@@ -60,23 +67,27 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
     readImage: async () => Promise.reject(new Error('no image')),
     ...session,
   }
-  Object.assign(window, { docsPreviewGadget: gadget })
+  Object.assign(window, { docsPreviewGadget: folder?.(gadget) ?? gadget, docsPreviewHost: host })
   frame = document.body.appendChild(document.createElement('iframe'))
   Object.assign(frame.style, { width: '900px', height: '600px' })
-  // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
-  const { entryUrl, importMap } = prepareUiPage(DOCS_PREVIEW_BUNDLE, '')
+  // Started as the gadget UI frame starts it: main(gadget, host) on the module's default export.
+  const { entryUrl, importMap } = prepareUiPage(folder ? DRIVE_PREVIEW_BUNDLE : DOCS_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
     import client from ${JSON.stringify(entryUrl)}
-    client.main(parent.docsPreviewGadget)
+    client.main(parent.docsPreviewGadget, parent.docsPreviewHost)
   </script>`
   const page = () => frame!.contentDocument?.getElementById('page')
   // The first drawing waits a moment for its fonts.
-  await expect.poll(() => page() && !page()!.hasAttribute('aria-busy'), { timeout: 5_000 }).toBe(true)
+  await expect.poll(() => !!frame!.contentDocument?.getElementById('error') || page() && !page()!.hasAttribute('aria-busy'), { timeout: 5_000 }).toBe(true)
   const blocks = () => [...page()!.querySelectorAll<HTMLElement>('.col > *')]
   return {
     page: page()!,
     /** The fonts asked for, in order: family, weight and whether italic. */
     fonts,
+    /** Each focus the host was told, and what sends the preview to a spot as its host does. */
+    said,
+    held,
+    go,
     blocks,
     sheets: () => [...page()!.querySelectorAll<HTMLElement>('.sheet')],
     look: (element: Element) => frame!.contentWindow!.getComputedStyle(element),
@@ -631,10 +642,14 @@ it('draws a tab that is itself pending from its one edit, in Google\'s own style
   expect(blocks().map(block => block.className)).toEqual(['omit came'])
 })
 
-it('opens another tab at its top, wherever the reading was in the one left', async () => {
+it('opens another tab at its top, wherever the reading was in the one left, and says nothing of where until it is read', async () => {
   const long = (name: string) => drawing(Array.from({ length: 80 }, (_, line) => paragraph(`${name} line ${line}`)))
-  const { blocks } = await draw({ tabs: ['t.0', 't.1'], titles: ['Notes', 'Plan'] }, {
-    readDrawing: async (tabId: string) => ({ ...long(tabId), version: 'v1' }),
+  const { blocks, said } = await draw({ tabs: ['t.0', 't.1'], titles: ['Notes', 'Plan'] }, {
+    readDrawing: async (tabId: string) => {
+      // Long enough in the reading for the scroll back to the top to be heard.
+      if (tabId === 't.1') await new Promise(done => setTimeout(done, 200))
+      return { ...long(tabId), version: 'v1' }
+    },
   })
   const scroller = frame!.contentDocument!.scrollingElement!
   scroller.scrollTop = 900
@@ -643,6 +658,9 @@ it('opens another tab at its top, wherever the reading was in the one left', asy
   frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
   await expect.poll(() => blocks()[0] && text(blocks()[0])).toBe('t.1 line 0')
   expect(scroller.scrollTop).toBe(0)
+  // Nowhere, said of a tab still being read, would have its host forget the place it holds.
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.1', label: 'Plan' })
+  expect(said).not.toContain(null)
 })
 
 it('counts no change of the tab left as no longer fitting once another is opened, though that one cannot be read', async () => {
@@ -1744,4 +1762,240 @@ it('opens on the first tab with changes waiting, and marks each that has them', 
   expect(text(page)).toBe('t.1Edited')
   expect(buttons.map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
     [['Tab 1', 'none'], ['Tab 2 (has pending edits)', '"Edited"'], ['Tab 3 (has pending edits)', '"Edited"']])
+})
+
+/** A first-level heading the drawing names, as a link to it or a reader's spot does. */
+const named = (name: string, more: More = {}) => heading(name, 1, { headingId: `h.${name.toLowerCase()}`, ...more })
+/** More lines than the frame shows at once. */
+const lines = () => Array.from({ length: 55 }, (_, line) => paragraph(`Line ${line}`))
+/** A tab of three named headings, a frame or more apart. */
+const sectioned = () => drawing([named('Intro'), paragraph('Old text'), ...lines(), named('Middle'), ...lines(), named('Last'), paragraph('End')])
+const MIDDLE = { anchor: '?tab=t.0#heading=h.middle', label: 'Middle' }
+const LAST = { anchor: '?tab=t.0#heading=h.last', label: 'Last' }
+
+it('tells its host the heading the reader is under, and goes to one its host names', async () => {
+  // Its host sends it to the heading the reader left, which it opens on, not on its first change.
+  const { page, said, go } = await draw({ drawing: sectioned(), edits: [edit(1, 2, [written('New text')])] }, {}, MIDDLE.anchor)
+  const top = (level: number) => Math.round(page.querySelectorAll('[aria-level="1"]')[level].getBoundingClientRect().top)
+
+  await expect.poll(() => said.at(-1)).toEqual(MIDDLE)
+  expect(top(1)).toBeLessThan(60)
+  // The scroll to the first change, which a tab opens with, has not carried it off.
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), top(1) < 60]).toEqual([MIDDLE, true])
+
+  // At the foot of the tab the last heading is the one read, though it scrolls no higher.
+  expect(await go(LAST.anchor)).toBe(true)
+  await expect.poll(() => said.at(-1)).toEqual(LAST)
+  // Above its first heading, a document of one tab has no spot to tell of.
+  frame!.contentWindow!.scrollTo(0, 0)
+  await expect.poll(() => said.at(-1)).toBeNull()
+  expect(await go('?tab=t.0#heading=h.intro')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#heading=h.intro', label: 'Intro' })
+
+  // A heading or a tab that is not there leaves the reader where they are.
+  expect([await go('?tab=t.0#heading=h.gone'), await go('?tab=t.9'), await go('nowhere')]).toEqual([false, false, false])
+  expect(top(0)).toBeGreaterThan(0)
+})
+
+it('tells its host only what Google has saved: a heading by its saved words, and no heading or tab that only a change makes', async () => {
+  // A change rewrites the middle heading, which keeps its ID, and adds one after it. The session
+  // gives a heading it adds no ID, or the ID of the one it was split from: a new one is a fork's.
+  const { page, said, go } = await draw({
+    drawing: sectioned(),
+    edits: [edit(57, 58, [written('Middle rewritten', { style: 'HEADING_1' }), written('Brand new', { style: 'HEADING_1', headingId: 'h.new' })])],
+  }, {}, MIDDLE.anchor)
+  const headings = () => [...page.querySelectorAll<HTMLElement>('[data-heading]')]
+
+  expect(headings().map(found => [found.dataset.heading, text(found)])).toEqual(
+    [['h.intro', 'Intro'], ['h.middle', 'Middle rewritten'], ['h.new', 'Brand new'], ['h.last', 'Last']])
+  await expect.poll(() => said.at(-1)).toEqual(MIDDLE)
+  // Under the heading the change adds, the last one Google has is still the one told.
+  expect(await go('?tab=t.0#heading=h.new')).toBe(true)
+  expect(Math.round(headings()[2].getBoundingClientRect().top)).toBeLessThan(60)
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(MIDDLE)
+  frame!.remove()
+
+  // A tab still to be added is nowhere its host can be told of.
+  const tabbed = await draw({ tabs: ['t.0', 'pending-tab-1'], titles: ['Notes', 'Plan'] }, {}, '?tab=t.0')
+  expect(tabbed.said).toEqual([{ anchor: '?tab=t.0', label: 'Notes' }])
+  expect(await tabbed.go('?tab=pending-tab-1')).toBe(true)
+  expect(text(tabbed.page)).toBe('pending-tab-1')
+  expect(tabbed.said.at(-1)).toBeNull()
+})
+
+it('tells its host a heading by the words of a chip in it too', async () => {
+  const dated = paragraph([{ text: 'Sync ', look: HEADING }, { chip: 'Nov 25, 2026', look: HEADING }], { style: 'HEADING_1', look: HEADING, headingId: 'h.date' })
+  const anchor = '?tab=t.0#heading=h.date'
+  const { said } = await draw({ drawing: drawing([named('Intro'), ...lines(), dated, ...lines()]) }, {}, anchor)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor, label: 'Sync Nov 25, 2026' })
+})
+
+it('goes to the heading its host names once a read that failed is tried again, and stays on it though others follow close under it', async () => {
+  // Headings as small as the text, so three are within sight of the head of the frame.
+  const small = (name: string) => named(name, { look: NORMAL })
+  let reads = 0
+  const { page, said } = await draw(
+    { drawing: drawing([small('Intro'), ...lines(), small('One'), small('Two'), small('Three'), ...lines()]) },
+    { listTabs: async () => reads++ ? [{ id: 't.0', title: 'Tab 1', index: 0, nestingLevel: 0 }] : Promise.reject(new Error('Google is away')) },
+    '?tab=t.0#heading=h.one')
+  expect(said).toEqual([])
+
+  frame!.contentDocument!.querySelector<HTMLElement>('#error button')!.click()
+  const one = { anchor: '?tab=t.0#heading=h.one', label: 'One' }
+  await expect.poll(() => said).toEqual([one])
+  const tops = [...page.querySelectorAll('[aria-level="1"]')].map(found => Math.round(found.getBoundingClientRect().top))
+  expect(tops[3]).toBeLessThan(96)
+  // Its host would send it back to the same heading: nothing has moved it on to the last of them.
+  await new Promise(done => setTimeout(done, 500))
+  expect(said).toEqual([one])
+})
+
+it('opens on a tab added since its reader left it, which the ID the reader held still reads', async () => {
+  // As the session answers for the provisional ID of a tab Google has since been given.
+  const read = (asked: string) => ({ tabId: asked === 'pending-tab-1' ? 't.1' : asked, version: 'v1' })
+  const { said, blocks } = await draw({ tabs: ['t.0', 't.1'], titles: ['Notes', 'Plan'] }, {
+    getPendingChanges: async (asked: string) => ({ ...read(asked), changes: [] }),
+    readPendingDrawing: async (asked: string) => ({ ...read(asked), edits: [], ...STATED }),
+    readDrawing: async (asked: string) => ({ ...drawing([paragraph(read(asked).tabId)]), version: 'v1' }),
+  }, '?tab=pending-tab-1')
+
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.1', label: 'Plan' })
+  expect(blocks().map(text)).toEqual(['t.1'])
+})
+
+it('says so while Google Drive opens the file, whose preview draws nothing until then', async () => {
+  let open = () => {}
+  // The session of a Drive connection, which opens the file when the test lets it.
+  const drawn = draw({ drawing: drawing([paragraph('Words')]) }, {}, 'docs:file', file => ({
+    openGoogleDoc: () => new Promise(opened => { open = () => opened(file) }),
+  }))
+  const status = () => frame?.contentDocument?.querySelector('[role=status]')?.textContent
+
+  await expect.poll(status).toBe('Opening file…')
+  open()
+  await expect.poll(status).toBe('')
+  const { blocks } = await drawn
+  await expect.poll(() => blocks().map(text)).toEqual(['Words'])
+})
+
+it('lets go of what its host answers each time it says where the reader is', async () => {
+  const direct = await draw({ tabs: ['t.0', 't.1'], titles: ['Notes', 'Plan'] }, {}, '?tab=t.1')
+  await expect.poll(() => direct.said.length).toBeGreaterThan(0)
+  expect(direct.held()).toBe(0)
+  frame!.remove()
+
+  // The file of a Drive connection says it through the connection's own preview.
+  const through = await draw({ drawing: drawing([paragraph('Words')]) }, {}, 'docs:file', file => ({ openGoogleDoc: async () => file }))
+  await expect.poll(() => through.said.length).toBeGreaterThan(0)
+  expect(through.held()).toBe(0)
+})
+
+it('keeps the heading the reader is under when a refresh fails, and the tab stays as it is drawn', async () => {
+  let reads = 0
+  const { said, go } = await draw({ drawing: sectioned() }, {
+    getPendingChanges: async () => reads++ === 1 ? Promise.reject(new Error('Google is away')) : { tabId: 't.0', changes: [] },
+  })
+  expect(await go(MIDDLE.anchor)).toBe(true)
+  await expect.poll(() => said.at(-1)).toEqual(MIDDLE)
+
+  frame!.contentWindow!.postMessage({ type: 'refresh' }, '*')
+  await expect.poll(() => frame!.contentDocument!.getElementById('missed')!.hidden).toBe(false)
+  frame!.contentWindow!.dispatchEvent(new Event('scroll'))
+  frame!.contentDocument!.dispatchEvent(new Event('scroll'))
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(MIDDLE)
+
+  // Read again, the tab is where the reading was.
+  frame!.contentDocument!.querySelector<HTMLElement>('#missed button')!.click()
+  await expect.poll(() => reads).toBe(3)
+  await new Promise(done => setTimeout(done, 300))
+  expect(frame!.contentDocument!.querySelector('[data-heading="h.middle"]')!.getBoundingClientRect().top).toBeLessThan(100)
+  expect(said.at(-1)).toEqual(MIDDLE)
+})
+
+it('leaves the reader at the heading they have gone to since, when the read its host sent it with answers last', async () => {
+  let answer = () => {}
+  let reads = 0
+  const { said, go } = await draw({ drawing: sectioned() }, {
+    getPendingChanges: async () => {
+      // The first read waits, and a refresh starts the one that overtakes it.
+      if (!reads++) {
+        await new Promise<void>(done => {
+          answer = done
+          frame!.contentWindow!.postMessage({ type: 'refresh' }, '*')
+        })
+      }
+      return { tabId: 't.0', changes: [] }
+    },
+  }, MIDDLE.anchor)
+  await expect.poll(() => said).toEqual([MIDDLE])
+
+  expect(await go(LAST.anchor)).toBe(true)
+  await expect.poll(() => said.at(-1)).toEqual(LAST)
+  answer()
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(LAST)
+})
+
+it('follows a link to a heading of another tab though a refresh overtakes the read of that tab', async () => {
+  const drawn: Record<string, object> = {
+    't.0': drawing([paragraph([{ text: 'the plan', look: NORMAL, link: '?tab=t.1#heading=h.one' }])]),
+    't.1': drawing([named('Intro'), ...lines(), named('One'), ...lines()]),
+  }
+  let held = false
+  let answer = () => {}
+  const { page } = await draw({ tabs: ['t.0', 't.1'], titles: ['Notes', 'Plan'] }, {
+    readDrawing: async (tabId: string) => {
+      // The first read of the tab the link leads to waits, and a refresh starts another.
+      if (tabId === 't.1' && !held) {
+        held = true
+        frame!.contentWindow!.postMessage({ type: 'refresh' }, '*')
+        await new Promise<void>(done => { answer = done })
+      }
+      return { ...drawn[tabId], version: 'v1' }
+    },
+  })
+
+  page.querySelector<HTMLElement>('.link')!.click()
+  const top = () => Math.round(frame!.contentDocument!.querySelector('[data-heading="h.one"]')?.getBoundingClientRect().top ?? NaN)
+  await expect.poll(top).toBeLessThan(100)
+
+  // The read that waited ends once the reader has moved on, and does not take them back.
+  frame!.contentDocument!.scrollingElement!.scrollTop = 0
+  answer()
+  await new Promise(done => setTimeout(done, 500))
+  expect(top()).toBeGreaterThan(600)
+})
+
+it('cuts what it tells its host to the length a host takes, at a whole character', async () => {
+  // The cut falls between the two halves of the first face.
+  const { said } = await draw({ tabs: ['t.0', 't.1'], titles: [`${'a'.repeat(118)}😀😀`, 'Plan'] }, {}, '?tab=t.0')
+
+  expect(said).toEqual([{ anchor: '?tab=t.0', label: `${'a'.repeat(118)}…` }])
+})
+
+it('tells its host the tab shown, opens on the one its host names, and on its own choice when that is gone', async () => {
+  const titles = ['Notes', 'Plan', 'Costs']
+  const tabs = ['t.0', 't.1', 't.2']
+  const { page, said, go } = await draw({ tabs, titles, edited: ['t.1'] }, {}, '?tab=t.2')
+
+  expect(text(page)).toBe('t.2')
+  expect(said).toEqual([{ anchor: '?tab=t.2', label: 'Costs' }])
+
+  expect(await go('?tab=t.0')).toBe(true)
+  expect(text(page)).toBe('t.0')
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0', label: 'Notes' })
+  // The reader's own move is told too.
+  frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.1', label: 'Plan' })
+  expect(await go('?tab=t.9')).toBe(false)
+  expect(text(page)).toBe('t.1Edited')
+  frame!.remove()
+
+  // Sent to a tab that is gone, it opens where it would have: on the first with changes waiting.
+  const anew = await draw({ tabs, titles, edited: ['t.1'] }, {}, '?tab=t.9')
+  expect(text(anew.page)).toBe('t.1Edited')
+  expect(anew.said).toEqual([{ anchor: '?tab=t.1', label: 'Plan' }])
 })

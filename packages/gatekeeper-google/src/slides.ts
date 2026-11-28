@@ -17,10 +17,7 @@ import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
-import SLIDES_PREVIEW_CLIENT from "./previews/slides/client.txt";
-import SLIDES_PREVIEW_SHAPES from "./previews/slides/shapes.txt";
-import SLIDES_PREVIEW_SLIDE from "./previews/slides/slide.txt";
-import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { PREVIEW_FILES } from "./previews/files";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
@@ -171,12 +168,7 @@ export class GoogleSlidesGatekeeperImpl
 
   /** The files of the presentation preview: gadget-format client code that reads through a session. */
   async getGadgetUi(): Promise<UiFile[]> {
-    return [
-      { path: "client.js", code: SLIDES_PREVIEW_CLIENT },
-      { path: "slide.js", code: SLIDES_PREVIEW_SLIDE },
-      { path: "shapes.js", code: SLIDES_PREVIEW_SHAPES },
-      ...SHARED_PREVIEW_FILES,
-    ];
+    return PREVIEW_FILES.slides;
   }
 
   async getTypeScriptTypes(): Promise<string> {

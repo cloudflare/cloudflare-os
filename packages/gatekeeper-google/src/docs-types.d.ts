@@ -497,6 +497,20 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
    * top-left one, and the others come back empty, each with the merged cell's look.
    */
   unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void>;
+
+  /**
+   * Return the pending changes of tab `tabId`, oldest first. A change made here may reach
+   * Google Docs later; until it does it is pending, and `getContent()` already shows it.
+   */
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return the declarations of the reads that these types leave out, as TypeScript: what it
+   * takes to render a tab as Google Docs draws it, with its pages, headers, footers, wrapped
+   * images and fonts, and with its pending changes in place. Call it before writing or changing code that
+   * renders the document.
+   */
+  getRenderingTypes(): Promise<string>;
 }
 
 /**
@@ -571,20 +585,6 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
-
-  /**
-   * Return the pending changes of tab `tabId`, oldest first. A change made here may reach
-   * Google Docs later; until it does it is pending, and `getContent()` already shows it.
-   */
-  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
-
-  /**
-   * Return the declarations of the reads that these types leave out, as TypeScript: what it
-   * takes to render a tab as Google Docs draws it, with its pages, headers, footers, wrapped
-   * images and fonts, and with its pending changes in place. Call it before writing or changing code that
-   * renders the document.
-   */
-  getRenderingTypes(): Promise<string>;
 }
 
 /**
