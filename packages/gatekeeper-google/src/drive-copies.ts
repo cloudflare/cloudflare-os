@@ -413,12 +413,15 @@ async function requireStillCopyable(
 
 /**
  * Makes one approved ordinary copy under its reserved ID. A look reads that ID, with the folder
- * the copy goes into: found, the copy was made; not found while that folder is seen, it was not,
- * since a copy made there takes the folder's access, and a send under the same ID could make no
- * second one anyway. Drive answers 404 for a file the account cannot read as for one that does not
- * exist (https://developers.google.com/workspace/drive/api/guides/handle-errors#notFound), so
- * while the folder is not seen either, the copy may be there out of the account's sight, and the
- * look proves nothing.
+ * the copy goes into: found, the copy was made; not found while the account can list that
+ * folder's contents, it was not, since a copy made there takes the folder's access, and a send
+ * under the same ID could make no second one anyway. Drive answers 404 for a file the account
+ * cannot read as for one that does not exist
+ * (https://developers.google.com/workspace/drive/api/guides/handle-errors#notFound), and answers a
+ * folder whose contents the account's access no longer reaches with `canListChildren` false
+ * (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access#list-children-of-a-folder-with-limited-access),
+ * so while the folder is not seen, or seen without its contents, the copy may be there out of the
+ * account's sight, and the look proves nothing.
  */
 function copyOrdinary(
   host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyFile"],
@@ -429,7 +432,8 @@ function copyOrdinary(
     events: "drive.copies",
     look: async () => {
       let [made, destination] = await host.api.getScopeNodes([copyId, toFolderId]);
-      return made ? { found: copyId } : { conclusive: destination !== undefined };
+      return made ? { found: copyId }
+        : { conclusive: destination !== undefined && isListableFolderNode(destination) };
     },
     check: async () => {
       await requireStillCopyable(host, payload);

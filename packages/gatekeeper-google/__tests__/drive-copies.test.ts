@@ -282,6 +282,21 @@ describe("Drive copy sends", () => {
     expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves an ordinary copy unconfirmed while its folder shows only its own metadata", async () => {
+    let { api, attempts, journal, nodes, hidden, submit, apply, copyThenAnswer } = harness();
+    copyThenAnswer(unconfirmed());
+    let id = await submit("copyFile", intoB());
+    expect(await apply(id)).toBe(UNCONFIRMED_COPY);
+    // A shared drive's manager limits access to the folder's contents: Drive still answers the
+    // folder, unable to list its children, and 404 for the copy in it.
+    nodes.B = { ...nodes.B, canListChildren: false };
+    hidden.add("C");
+    expect(await apply(id)).toBe(UNCONFIRMED_COPY);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(true);
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
+  });
+
   it("counts a reserved ID Drive refuses as used as the copy made", async () => {
     let { api, submit, apply } = harness();
     api.copyFile.mockResolvedValueOnce(undefined);
