@@ -671,6 +671,21 @@ describe("Drive converted upload sends", () => {
     expect(made.get(id)).toBe("N1");
   });
 
+  it("stores the marker only as the request that can make the file is about to go", async () => {
+    let { api, attempts, submit, apply, converted } = harness();
+    let id = await submit("uploadConverted", await converted("docx"));
+    let marked: string[] = [];
+    let answer = session("N1");
+    throughDrive(api, (method, range) => {
+      marked.push(`${method} ${attempts.has(id)}`);
+      return answer(method, range);
+    });
+    expect(await apply(id)).toBeNull();
+    // Drive makes the file only once its last chunk arrives: a gatekeeper that restarts before
+    // then leaves nothing to look for, and the upload is sent again.
+    expect(marked).toEqual(["POST false", "PUT true"]);
+  });
+
   it("leaves a converted upload to send again when Drive would not open its session, which made nothing", async () => {
     vi.useFakeTimers();
     let { api, attempts, journal, made, submit, apply, converted } = harness();

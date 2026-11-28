@@ -30,8 +30,8 @@ import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
 import { corpusOf, type SimulatedEntry } from "./drive-session";
 import type { DriveEntry, DriveNativeType } from "./drive-types";
 import {
-  driveRefusal, lookForToken, pendingId, requireWritable, sendOnce, uploadChecked,
-  type DriveWritesHost, type QueuedWrite, type RefusalRow,
+  driveRefusal, lookForToken, pendingId, requireWritable, sendOnce, type DriveWritesHost,
+  type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { nativeCopyName, officeLabel } from "./office-conversion";
 import { obsContext } from "./observability";
@@ -595,12 +595,16 @@ function uploadReserved(
       bytes = await storedBytes(host, file);
       return {};
     },
-    send: async () => {
+    send: async commit => {
       // `undefined`: Drive refused the ID as used, so an earlier send made the file.
-      await uploadChecked(host.api, bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } },
-        () => requireUploadScope(host, payload));
+      await host.api.upload(bytes!, contentType, { create: { id: fileId, name, parents: [toFolderId] } },
+        async () => {
+          await requireUploadScope(host, payload);
+          commit();
+        });
       return fileId;
     },
+    markAtCommit: true,
     repeatable: true,
     refusal: error => driveRefusal(error, UPLOAD_REFUSALS, "Google Drive refused this upload."),
     unconfirmed: UNCONFIRMED_UPLOAD,
@@ -631,14 +635,18 @@ async function uploadConverted(
       bytes = await storedBytes(host, file);
       return {};
     },
-    send: async () => {
-      let uploaded = await uploadChecked(host.api, bytes!, contentType, {
+    send: async commit => {
+      let uploaded = await host.api.upload(bytes!, contentType, {
         create: { name, parents: [toFolderId], mimeType, appProperties: { [UPLOAD_TOKEN_PROPERTY]: token } },
-      }, () => requireUploadScope(host, payload));
+      }, async () => {
+        await requireUploadScope(host, payload);
+        commit();
+      });
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
       if (!uploaded) throw new Error("Google Drive answered an upload made without an ID as already made");
       return uploaded.id;
     },
+    markAtCommit: true,
     repeatable: false,
     refusal: error => driveRefusal(error, UPLOAD_REFUSALS, "Google Drive refused this upload."),
     unconfirmed: UNCONFIRMED_CONVERTED,
@@ -695,11 +703,14 @@ function replaceContent(
       bytes = kept;
       return {};
     },
-    send: async () => {
-      await uploadChecked(host.api, bytes!, contentType, { replace: fileId },
-        () => requireUploadScope(host, payload, fileId));
+    send: async commit => {
+      await host.api.upload(bytes!, contentType, { replace: fileId }, async () => {
+        await requireUploadScope(host, payload, fileId);
+        commit();
+      });
       return fileId;
     },
+    markAtCommit: true,
     repeatable: true,
     refusal: error => driveRefusal(error, UPLOAD_REFUSALS, "Google Drive refused this upload."),
     unconfirmed: UNCONFIRMED_REPLACE,

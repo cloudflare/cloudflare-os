@@ -3325,6 +3325,36 @@ describe("uploads", () => {
     expect(made.value).not.toHaveProperty("pending");
   });
 
+  it("sends a converted upload again when the gatekeeper restarted before its last chunk went", async () => {
+    let drive = binding();
+    let upload = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "elsewhere", convertTo: "document" });
+    let answered = globalThis.fetch;
+    let opening = false;
+    // Drive opens no session: the approval waits there until the gatekeeper restarts.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let request = new Request(input, init);
+      if (request.method !== "POST" || !new URL(request.url).pathname.startsWith("/upload/")) {
+        return answered(input, init);
+      }
+      opening = true;
+      return new Promise<Response>(() => {});
+    });
+    let applying = drive.apply(upload.actionId);
+    // Polled from the test's own context: a promise the gatekeeper resolved would carry the test
+    // into the gatekeeper's context, which the restart ends.
+    await vi.waitFor(() => expect(opening).toBe(true));
+    expect(await drive.attempts()).toEqual({});
+    await drive.restart();
+    expect(await applying).not.toBeNull();
+
+    vi.stubGlobal("fetch", answered);
+    expect(await drive.apply(upload.actionId)).toBeNull();
+    expect(provider.uploads.map(({ fileId }) => fileId)).toEqual(["upload-1"]);
+    expect((await drive.call("getEntry", `pending:${upload.actionId}`)).value)
+      .toMatchObject({ id: "upload-1" });
+  });
+
   it("finds a converted upload whose reply was lost in the shared drive its folder moved to", async () => {
     provider.files.set("shared", file(FOLDER_MIME, ["drive-a"], { driveId: "drive-a" }));
     let drive = binding();

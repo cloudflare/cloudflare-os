@@ -37,7 +37,7 @@ import {
 import type { DriveExportFormat, DriveNativeType } from "./drive-types";
 import {
   driveRefusal, isPendingId, lookForToken, PENDING_PREFIX, pendingId, provePath, requireWritable,
-  sendOnce, uploadChecked, type DriveWritesHost, type QueuedWrite, type RefusalRow,
+  sendOnce, type DriveWritesHost, type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { nativeCopyName, officeLabel, type OfficeKind } from "./office-conversion";
 import { obsContext } from "./observability";
@@ -503,7 +503,7 @@ async function requireStillCopyable(
 function copyUnderId(
   host: DriveCopiesHost, id: number,
   payload: DriveCopyActions["copyFile"] | DriveCopyActions["exportCopy"],
-  make: () => Promise<unknown>,
+  make: (commit: () => void) => Promise<unknown>,
 ): Promise<string> {
   let { fileId, copyId, toFolderId } = payload;
   let exported = "format" in payload;
@@ -519,11 +519,13 @@ function copyUnderId(
       await requireStillCopyable(host, payload);
       return {};
     },
-    send: async () => {
+    send: async commit => {
       // An `undefined` result: Drive refused the ID as used, so an earlier send made the copy.
-      await make();
+      await make(commit);
       return copyId;
     },
+    // An exported copy is an upload, which makes nothing until its last chunk.
+    markAtCommit: exported,
     repeatable: true,
     refusal: error => exported
       ? driveRefusal(error, EXPORT_COPY_REFUSALS, "Google Drive refused this exported copy.")
@@ -660,14 +662,17 @@ export const DRIVE_COPY_DEFINITIONS: {
     describe: describeCopy,
     apply: async (payload, host, ctx) => {
       let { fileId, copyId, name, toFolderId, mimeType } = payload;
-      await copyUnderId(host, ctx.id, payload, async () => {
+      await copyUnderId(host, ctx.id, payload, async commit => {
         let exported = await host.api.openExport(fileId, mimeType);
         // The export is read only as the upload sends it, which the binding's decisions wait on,
         // so a wait for bytes Drive stops sending must end. Google exports the file as it is when
         // it answers, which may be after the file left the binding, so the copy's checks are made
         // again before the request that makes the copy, once all of the export is read.
-        return uploadChecked(host.api, readTimed(exported), mimeType,
-          { create: { id: copyId, name, parents: [toFolderId] } }, () => requireStillCopyable(host, payload));
+        return host.api.upload(readTimed(exported), mimeType,
+          { create: { id: copyId, name, parents: [toFolderId] } }, async () => {
+            await requireStillCopyable(host, payload);
+            commit();
+          });
       });
     },
   },

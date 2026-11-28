@@ -16,7 +16,7 @@ import type { Logger } from "@gadgets/observability/logger";
 import {
   APPROVAL_READ_MAX_MS, DriveApiDisabledError, DriveApiRequestError, driveWriteFailure,
   isInsufficientScope, type DriveWriteFailure, type DriveApi, type DriveCorpus, type DriveMadeFile,
-  type DriveScopeNode, type DriveUploadTarget, type TokenProperty,
+  type DriveScopeNode, type TokenProperty,
 } from "./drive-api";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
@@ -390,10 +390,18 @@ export type WriteStep<Sent> = {
   check(): Promise<{ existing?: string[] }>;
   /**
    * Makes the change at Drive, resolving with what it made. Throws ActionApplyError only before it
-   * has sent anything, to fail the write for good as a check does: an exported copy proves its file
-   * again once Google has opened the export.
+   * has sent anything, to fail the write for good as a check does. With `markAtCommit`, it calls
+   * `commit` immediately before each request that can make the change.
    */
-  send(): Promise<Sent>;
+  send(commit: () => void): Promise<Sent>;
+  /**
+   * Whether the marker is written only once the send calls `commit`, rather than before it starts:
+   * for an upload, which Drive makes only once its last chunk arrives
+   * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable). A send
+   * that fails, or a gatekeeper that restarts, before then has made nothing, so it leaves no
+   * marker and the write is sent again when approved again.
+   */
+  markAtCommit?: boolean;
   /** Whether Google can be sent this write twice without a second effect. */
   repeatable: boolean;
   /**
@@ -438,52 +446,27 @@ export const CREDENTIALS_NOT_ACCEPTED =
 const RATE_LIMITED =
   "Google Drive is limiting requests from this account. Approve it again in a minute.";
 
-/** Said of a send that failed having sent nothing that could make it, as an upload says. */
+/** Said of an upload that failed before it sent anything that could make its file. */
 const NOT_SENT =
   "Google Drive did not take the upload, and nothing was made or changed by it. Approve it again " +
   "to send it once more.";
 
 /**
- * A send's failure, its `cause`, before it sent anything that could make its change. The send's
- * marker is dropped, since nothing is left for a later approval to look for.
- */
-export class NothingSentError extends Error {}
-
-/**
- * Uploads `file` as `api.upload()` does, with `recheck` awaited immediately before each request
- * that can make the file. A failure before any such request went made nothing, and is thrown as
- * {@link NothingSentError}.
- */
-export async function uploadChecked(
-  api: Pick<DriveApi, "upload">, file: ReadableStream<Uint8Array>, contentType: string,
-  target: DriveUploadTarget, recheck: () => Promise<unknown>,
-): Promise<DriveMadeFile | undefined> {
-  let committing = false;
-  try {
-    return await api.upload(file, contentType, target, async () => {
-      await recheck();
-      committing = true;
-    });
-  } catch (error) {
-    throw committing ? error : new NothingSentError(NOT_SENT, { cause: error });
-  }
-}
-
-/**
  * Makes one approved write, looking first for what an earlier send of it may have made.
  *
- * A marker is written before the send and is never dropped here for a send that worked, that a
- * look found, or that a look could not judge: the gatekeeper drops it once the action's record is
- * settled, and until then a retry must find it and look, never send. It is dropped once the write
- * fails for good with nothing changed: at a check, at the send before it sends anything, by
- * Google's refusal, or when the last send its limit allows is also found to have made nothing. The
- * marker of a send a look proves empty stays until the next send's replaces it, which is what
- * counts the sends. A write that cannot be repeated loses its marker on a rate limit, on a missing
- * scope and on a 401, when no send of it is in doubt. A write that can be repeated keeps it
- * through all three, so that its next approval looks first: a change such a send made all the
- * same is then found and bound, where an approval with no marker would take it for someone else's.
- * A send that fails with {@link NothingSentError} loses its marker however it failed, and one
- * whose outcome Google left open is then sent again when approved again.
+ * A marker is written before the send, or for a step with `markAtCommit` as the send commits, and
+ * is never dropped here for a send that worked, that a look found, or that a look could not judge:
+ * the gatekeeper drops it once the action's record is settled, and until then a retry must find it
+ * and look, never send. It is dropped once the write fails for good with nothing changed: at a
+ * check, at the send before it sends anything, by Google's refusal, or when the last send its
+ * limit allows is also found to have made nothing. The marker of a send a look proves empty stays
+ * until the next send's replaces it, which is what counts the sends. A write that cannot be
+ * repeated loses its marker on a rate limit, on a missing scope and on a 401, when no send of it
+ * is in doubt. A write that can be repeated keeps it through all three, so that its next approval
+ * looks first: a change such a send made all the same is then found and bound, where an approval
+ * with no marker would take it for someone else's. A send with `markAtCommit` that fails before it
+ * commits has no marker, however it failed, and one whose outcome Google left open is then sent
+ * again when approved again.
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
@@ -519,19 +502,25 @@ export async function sendOnce<Sent>(
     if (error instanceof ActionApplyError) host.attempts.delete(id);
     throw error;
   }
-  host.attempts.put(id, {
-    at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
-    // Counted only for a write with a limit: a repeatable one is sent again as often as approved.
-    ...(step.exhausted && failedSends ? { failedSends } : {}),
-  });
+  let marked = false;
+  /** Writes the marker, once. */
+  let mark = () => {
+    if (marked) return;
+    marked = true;
+    host.attempts.put(id, {
+      at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
+      // Counted only for a write with a limit: a repeatable one is sent again as often as approved.
+      ...(step.exhausted && failedSends ? { failedSends } : {}),
+    });
+  };
+  if (!step.markAtCommit) mark();
 
   let sent: Sent;
   try {
-    sent = await step.send();
-  } catch (caught) {
-    let unsent = caught instanceof NothingSentError ? caught : undefined;
-    let error = unsent ? unsent.cause : caught;
-    if (unsent || error instanceof ActionApplyError) host.attempts.delete(id);
+    sent = await step.send(mark);
+  } catch (error) {
+    // A marker a look proved empty goes too: nothing is left for a later approval to look for.
+    if (!marked || error instanceof ActionApplyError) host.attempts.delete(id);
     if (error instanceof ActionApplyError) throw error;
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
@@ -541,7 +530,9 @@ export async function sendOnce<Sent>(
         : error instanceof GoogleApiError && error.providerReasons.length
           ? { providerReasons: [...error.providerReasons] } : {}),
     });
-    if (failure === "unknown") throw unsent ?? new Error(step.unconfirmed, { cause: error });
+    if (failure === "unknown") {
+      throw new Error(marked ? step.unconfirmed : NOT_SENT, { cause: error });
+    }
     // The approval's one token was not accepted, which the next approval's, loaded afresh, may be.
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
     let later = failure === "unauthorized" ? CREDENTIALS_NOT_ACCEPTED
@@ -550,11 +541,11 @@ export async function sendOnce<Sent>(
           ? step.grantMissing ?? WRITES_GRANT_MISSING : undefined;
     if (later !== undefined) {
       if (!step.repeatable) host.attempts.delete(id);
-      throw new Error(later, { cause: caught });
+      throw new Error(later, { cause: error });
     }
     host.attempts.delete(id);
     let passable = await step.passable?.(error);
-    if (passable !== undefined) throw new Error(passable, { cause: caught });
+    if (passable !== undefined) throw new Error(passable, { cause: error });
     throw new ActionApplyError(step.refusal(error));
   }
   let applied = step.applied ?? { event: "applied", outcome: "applied" };
