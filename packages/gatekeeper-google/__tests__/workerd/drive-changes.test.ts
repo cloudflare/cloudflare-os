@@ -759,8 +759,12 @@ class DriveProvider {
     } else {
       let mimeType = typeof metadata.mimeType === "string" ? metadata.mimeType : contentType;
       let converted = mimeType.startsWith("application/vnd.google-apps.");
-      this.files.set(fileId, file(mimeType, metadata.parents as string[], {
+      let parents = metadata.parents as string[];
+      // The file is in the drive of the folder it goes into, as a copy is.
+      let driveId = this.files.get(parents[0] ?? "")?.driveId;
+      this.files.set(fileId, file(mimeType, parents, {
         name: String(metadata.name), modifiedTime: new Date().toISOString(),
+        ...(driveId ? { driveId } : {}),
         ...(converted ? {} : binary),
         ...(metadata.appProperties
           ? { appProperties: metadata.appProperties as Record<string, string> } : {}),
@@ -3319,6 +3323,27 @@ describe("uploads", () => {
     let made = await again.call("getEntry", id);
     expect(made.value).toMatchObject({ id: "upload-1", mimeType: DOC_MIME, parentId: "elsewhere" });
     expect(made.value).not.toHaveProperty("pending");
+  });
+
+  it("finds a converted upload whose reply was lost in the shared drive its folder moved to", async () => {
+    provider.files.set("shared", file(FOLDER_MIME, ["drive-a"], { driveId: "drive-a" }));
+    let drive = binding();
+    let upload = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "shared", convertTo: "document" });
+
+    // A manager moves the folder to another shared drive before the upload is approved.
+    let folder = provider.files.get("shared");
+    if (!folder) throw new Error("no folder");
+    folder.driveId = "drive-b";
+    provider.nextUpload = "lost";
+    expect(await drive.apply(upload.actionId)).toBe(UNCONFIRMED_CONVERTED);
+    expect(provider.files.get("upload-1")?.driveId).toBe("drive-b");
+
+    // Not in the drive the folder was in when it was queued, but among the account's own files.
+    expect(await drive.apply(upload.actionId)).toBeNull();
+    expect(sessions()).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${upload.actionId}`)).value)
+      .toMatchObject({ id: "upload-1", parentId: "shared" });
   });
 
   it("settles a converted upload whose reply was lost by its token, not by a copy of the file that carries it", async () => {
