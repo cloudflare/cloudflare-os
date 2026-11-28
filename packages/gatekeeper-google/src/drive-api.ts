@@ -917,6 +917,13 @@ const WRITE_TIMEOUT_MS = 20_000;
  */
 export const COMMENT_WRITE_MAX_MS = 3 * WRITE_TIMEOUT_MS;
 
+/**
+ * The longest an approval's own reads of Drive, beyond its scope proof, wait for Drive, all told,
+ * however many requests or pages they take: an approval holds the binding's decisions until it
+ * settles.
+ */
+export const APPROVAL_READ_MAX_MS = 30_000;
+
 /** A comment's or reply's author, as Drive describes them to the connected account. */
 export type DriveCommentAuthorRecord = {
   displayName: string;
@@ -1443,10 +1450,11 @@ export class DriveApi {
     return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
   }
 
-  /** What converting `fileId` needs to know about it. */
-  async getConversionSource(fileId: string): Promise<DriveConversionSource> {
+  /** What converting `fileId` needs to know about it, given up on when `signal` aborts. */
+  async getConversionSource(fileId: string, signal?: AbortSignal): Promise<DriveConversionSource> {
     let params = new URLSearchParams({ fields: CONVERSION_SOURCE_FIELDS, supportsAllDrives: "true" });
-    return parseConversionSource(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+    return parseConversionSource(
+      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, signal));
   }
 
   /** A copy {@link copyAsNative} may have made, with the app properties that say what from. */
@@ -1532,9 +1540,13 @@ export class DriveApi {
     return optionalBoolean(capabilities?.canAddChildren, "file capabilities") === true;
   }
 
-  /** The largest file, in bytes, Drive converts into native `mimeType`, if it says. */
-  async getMaxImportSize(mimeType: string): Promise<number | undefined> {
-    let body = await this.#getUnknown("/about", new URLSearchParams({ fields: "maxImportSizes" }));
+  /**
+   * The largest file, in bytes, Drive converts into native `mimeType`, if it says, given up on
+   * when `signal` aborts.
+   */
+  async getMaxImportSize(mimeType: string, signal?: AbortSignal): Promise<number | undefined> {
+    let body = await this.#getUnknown(
+      "/about", new URLSearchParams({ fields: "maxImportSizes" }), signal);
     let sizes = isRecord(body) ? body.maxImportSizes : undefined;
     if (!isRecord(sizes)) return undefined;
     let size = Number(optionalString(sizes[mimeType], "maxImportSizes"));
@@ -1756,11 +1768,13 @@ export class DriveApi {
    * (https://developers.google.com/workspace/drive/api/guides/enable-shareddrives#search-for-content-on-a-shared-drive):
    * the folder may have moved to another shared drive since
    * (https://support.google.com/a/users/answer/12380484?hl=en#moves), or be shared with an account
-   * that is not the drive's member.
+   * that is not the drive's member. The whole search is given up on when `signal` aborts.
    */
-  async findCopy(token: string, corpus: DriveCorpus): Promise<DriveMadeCopy | undefined> {
+  async findCopy(
+    token: string, corpus: DriveCorpus, signal?: AbortSignal,
+  ): Promise<DriveMadeCopy | undefined> {
     if (corpus.kind === "drive") {
-      let found = await this.#findCopyIn(token, corpus).catch((error: unknown) => {
+      let found = await this.#findCopyIn(token, corpus, signal).catch((error: unknown) => {
         if (error instanceof DriveApiRequestError && error.status === 403 &&
             error.reason === "teamDriveMembershipRequired") {
           return undefined;
@@ -1769,11 +1783,13 @@ export class DriveApi {
       });
       if (found) return found;
     }
-    return this.#findCopyIn(token, corpus.kind === "drive" ? { kind: "user" } : corpus);
+    return this.#findCopyIn(token, corpus.kind === "drive" ? { kind: "user" } : corpus, signal);
   }
 
   /** {@link findCopy}'s search of one corpus. */
-  async #findCopyIn(token: string, corpus: DriveCorpus): Promise<DriveMadeCopy | undefined> {
+  async #findCopyIn(
+    token: string, corpus: DriveCorpus, signal: AbortSignal | undefined,
+  ): Promise<DriveMadeCopy | undefined> {
     let pageToken: string | undefined;
     do {
       let params = new URLSearchParams({
@@ -1788,7 +1804,7 @@ export class DriveApi {
       });
       if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
       if (pageToken) params.set("pageToken", pageToken);
-      let body = await this.#getUnknown("/files", params);
+      let body = await this.#getUnknown("/files", params, signal);
       if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
       if (body.files !== undefined && !Array.isArray(body.files)) {
         throw new Error("Invalid Google Drive file-list response");
@@ -2186,10 +2202,10 @@ export class DriveApi {
     return parseDriveJson(text, "response");
   }
 
-  async #getUnknown(path: string, params: URLSearchParams): Promise<unknown> {
+  async #getUnknown(path: string, params: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}${path}?${params}`,
-      { headers: { Accept: "application/json" } },
+      { headers: { Accept: "application/json" }, ...(signal ? { signal } : {}) },
       this.getAccessToken);
     if (!response.ok) throw await driveError(response);
     let text = await readBoundedText(

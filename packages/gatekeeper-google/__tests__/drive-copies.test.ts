@@ -2,8 +2,8 @@ import { ActionJournal, defineActions } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  COMMENT_WRITE_MAX_MS, COPY_TOKEN_PROPERTY, CONVERTED_FROM_PROPERTY, DriveApi,
-  DriveApiRequestError, FOLDER_MIME_TYPE, SOURCE_MODIFIED_PROPERTY, type DriveScopeNode,
+  APPROVAL_READ_MAX_MS, COMMENT_WRITE_MAX_MS, COPY_TOKEN_PROPERTY, CONVERTED_FROM_PROPERTY,
+  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, SOURCE_MODIFIED_PROPERTY, type DriveScopeNode,
 } from "../src/drive-api";
 import {
   DRIVE_COPIES, DRIVE_COPY_DEFINITIONS, pendingActionId, pendingCopiesInto, pendingCopy,
@@ -34,6 +34,8 @@ const TAKES_SHARING =
   "The copy takes the sharing of the folder it goes into: everyone with access to that folder " +
   "can open it.";
 const DIFFERENT_TYPE = "Google Drive made a copy of a different type than was asked for";
+const DRIVE_DID_NOT_ANSWER =
+  "Google Drive did not answer in time, so nothing was copied. Approving it again tries once more.";
 
 /** A live folder the account can list and add to, as a scope proof reads it. */
 function folder(id: string, parent: string): DriveScopeNode {
@@ -85,6 +87,32 @@ const unconfirmed = () => new DriveApiRequestError(503, "backendError");
 const unexpected = async (): Promise<never> => {
   throw new Error("Unexpected call");
 };
+
+/** `AbortSignal.timeout()`'s deadlines, which all pass when the test says. */
+function deadlines() {
+  let deadline = new AbortController();
+  return {
+    timeout: vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal),
+    pass: () => deadline.abort(new DOMException("The operation timed out.", "TimeoutError")),
+  };
+}
+
+/**
+ * A real DriveApi over a Drive that answers its requests with `answers`, in turn, then takes each
+ * request and never answers it, until the request is aborted; and how many requests it took.
+ */
+function stallingDrive(...answers: Response[]) {
+  let asked = { count: 0 };
+  vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+    asked.count++;
+    let answer = answers.shift();
+    if (answer) return Promise.resolve(answer);
+    let { promise, reject } = Promise.withResolvers<never>();
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+    return promise;
+  });
+  return { drive: new DriveApi(async () => "token"), asked };
+}
 
 const COPY_ACTIONS = defineActions<DriveCopiesHost, DriveCopyActions>(
   DRIVE_COPY_DEFINITIONS, { fence: "none", vendorId: "google" });
@@ -336,7 +364,8 @@ describe("Drive copy sends", () => {
     expect(await found.apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
     found.api.findCopy.mockResolvedValue({ id: "N1", mimeType: GOOGLE_DOC_MIME_TYPE });
     expect(await found.apply(id)).toBeNull();
-    expect(found.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "drive", driveId: "D1" });
+    expect(found.api.findCopy)
+      .toHaveBeenCalledWith("t0k3n", { kind: "drive", driveId: "D1" }, expect.any(AbortSignal));
     expect(found.api.copyFile).toHaveBeenCalledTimes(1);
     expect(found.made.get(id)).toBe("N1");
 
@@ -349,7 +378,7 @@ describe("Drive copy sends", () => {
     expect(lost.api.copyFile).toHaveBeenCalledTimes(1);
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
-    expect(lost.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "user" });
+    expect(lost.api.findCopy).toHaveBeenCalledWith("t0k3n", { kind: "user" }, expect.any(AbortSignal));
   });
 
   // An approval sends under the one token it verified the account with, which Drive may refuse
@@ -389,31 +418,44 @@ describe("Drive copy sends", () => {
 
   it("gives up on a native copy's send at Drive's write deadline, then looks for it rather than sending again", async () => {
     let { api, attempts, journal, submit, apply } = harness();
-    // The deadline passes when the test says.
-    let deadline = new AbortController();
-    let timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-    // Drive takes the request and never answers it, until the request is aborted.
-    let sent = 0;
-    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
-      sent++;
-      let { promise, reject } = Promise.withResolvers<never>();
-      init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-      return promise;
-    });
-    let drive = new DriveApi(async () => "token");
+    let { timeout, pass } = deadlines();
+    let { drive, asked } = stallingDrive();
     api.copyFile.mockImplementation((fileId, copy) => drive.copyFile(fileId, copy));
     let id = await submit("copyNative", nativeIntoB());
     let outcome: string | null | undefined;
     void apply(id).then(message => { outcome = message; });
-    await vi.waitFor(() => expect(sent).toBe(1));
-    expect(timeout.mock.calls).toEqual([[COMMENT_WRITE_MAX_MS / 3]]);
-    deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    await vi.waitFor(() => expect(asked.count).toBe(1));
+    expect(timeout.mock.calls).toEqual([[APPROVAL_READ_MAX_MS], [COMMENT_WRITE_MAX_MS / 3]]);
+    pass();
     await vi.waitFor(() => expect(outcome).toBe(UNCONFIRMED_NATIVE_COPY));
     expect(attempts.has(id)).toBe(true);
     expect(journal.get(id)?.state).toBe("pending");
 
     expect(await apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
     expect(api.findCopy).toHaveBeenCalledTimes(1);
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
+  });
+
+  // An approval holds the binding's decisions until it settles, so none of its reads waits on
+  // Drive for longer than its deadline, whatever the reads add up to.
+  it("gives up on a lost native copy's search at the approval's read deadline, sending nothing", async () => {
+    let { api, attempts, journal, submit, apply } = harness();
+    api.copyFile.mockRejectedValueOnce(unconfirmed());
+    let id = await submit("copyNative", nativeIntoB({ driveId: "D1" }));
+    expect(await apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
+    let { timeout, pass } = deadlines();
+    // Drive answers the search's first page, and never its second.
+    let { drive, asked } = stallingDrive(Response.json({ files: [], nextPageToken: "p2" }));
+    api.findCopy.mockImplementation((...args) => drive.findCopy(...args));
+
+    let outcome: string | null | undefined;
+    void apply(id).then(message => { outcome = message; });
+    await vi.waitFor(() => expect(asked.count).toBe(2));
+    expect(timeout.mock.calls).toEqual([[APPROVAL_READ_MAX_MS]]);
+    pass();
+    await vi.waitFor(() => expect(outcome).toBe(UNCONFIRMED_NATIVE_COPY));
+    expect(attempts.has(id)).toBe(true);
+    expect(journal.get(id)?.state).toBe("pending");
     expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 
@@ -477,7 +519,7 @@ describe("Drive copy checks at apply", () => {
       { id: "F", name: "Plan.docx", mimeType: DOCX, size: String(20 * 1024 * 1024) });
     expect(await apply(await submit("copyNative", nativeIntoB()))).toBe(
       "That file is 20 MB, larger than the 10 MB Google Drive converts into this format.");
-    expect(api.getMaxImportSize).toHaveBeenCalledWith(GOOGLE_DOC_MIME_TYPE);
+    expect(api.getMaxImportSize).toHaveBeenCalledWith(GOOGLE_DOC_MIME_TYPE, expect.any(AbortSignal));
     expect(api.copyFile).not.toHaveBeenCalled();
   });
 
@@ -502,6 +544,43 @@ describe("Drive copy checks at apply", () => {
       expect(journal.get(id)?.state, read).toBe("failed");
       expect(api.copyFile, read).not.toHaveBeenCalled();
     }
+  });
+
+  it("leaves a conversion pending, with nothing sent, when Drive does not answer for its file in time", async () => {
+    let { api, attempts, journal, submit, apply } = harness();
+    let { timeout, pass } = deadlines();
+    let { drive, asked } = stallingDrive();
+    api.getConversionSource.mockImplementation((...args) => drive.getConversionSource(...args));
+    let id = await submit("copyNative", nativeIntoB());
+
+    let outcome: string | null | undefined;
+    void apply(id).then(message => { outcome = message; });
+    await vi.waitFor(() => expect(asked.count).toBe(1));
+    expect(timeout.mock.calls).toEqual([[APPROVAL_READ_MAX_MS]]);
+    pass();
+    await vi.waitFor(() => expect(outcome).toBe(DRIVE_DID_NOT_ANSWER));
+    expect(attempts.has(id)).toBe(false);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(api.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("converts without the import limit when Drive does not say it in time, proving the folder first", async () => {
+    let { api, submit, apply } = harness();
+    let { pass } = deadlines();
+    let { drive, asked } = stallingDrive();
+    api.getMaxImportSize.mockImplementation((...args) => drive.getMaxImportSize(...args));
+    let id = await submit("copyNative", nativeIntoB());
+
+    let outcome: string | null | undefined;
+    void apply(id).then(message => { outcome = message; });
+    await vi.waitFor(() => expect(asked.count).toBe(1));
+    let proofs = api.getScopeNodes.mock.calls.length;
+    pass();
+    await vi.waitFor(() => expect(outcome).toBeNull());
+    expect(api.getScopeNodes.mock.calls.length).toBeGreaterThan(proofs);
+    expect(api.getScopeNodes.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(api.copyFile.mock.invocationCallOrder[0]);
+    expect(api.copyFile).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a conversion whose file is no longer of the Office type queued when its folder is proved", async () => {

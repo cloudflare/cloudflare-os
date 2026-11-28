@@ -20,9 +20,9 @@ import {
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  CONVERTED_FROM_PROPERTY, COPY_TOKEN_PROPERTY, DriveApiRequestError, FOLDER_MIME_TYPE,
-  isListableFolderNode, megabytes, SOURCE_MODIFIED_PROPERTY, type DriveApi, type DriveMadeCopy,
-  type DriveScopeNode,
+  APPROVAL_READ_MAX_MS, CONVERTED_FROM_PROPERTY, COPY_TOKEN_PROPERTY, DriveApiRequestError,
+  FOLDER_MIME_TYPE, isListableFolderNode, megabytes, SOURCE_MODIFIED_PROPERTY, type DriveApi,
+  type DriveMadeCopy, type DriveScopeNode,
 } from "./drive-api";
 import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
 import { isDirectChild } from "./drive-folder-scope";
@@ -162,6 +162,10 @@ const UNCONFIRMED_NATIVE_COPY =
   "Google Drive did not confirm whether this copy was made, and it may have been: Google Drive " +
   "can take a while to show a new file. It won't be sent again. Approving it again looks for the " +
   "copy once more; rejecting it leaves any copy that was made.";
+
+/** Said when Drive does not answer a conversion's read of its file by the approval's deadline. */
+const DRIVE_DID_NOT_ANSWER =
+  "Google Drive did not answer in time, so nothing was copied. Approving it again tries once more.";
 
 /** Said of a native copy Drive made of another type than asked for, as copyAsNative() says it. */
 const DIFFERENT_TYPE = "Google Drive made a copy of a different type than was asked for";
@@ -309,15 +313,15 @@ const OFFICE_TYPES: Record<DriveNativeType, string> = {
 
 /**
  * The refusal of a conversion of a file of `size` bytes into native `mimeType` when it is larger
- * than Google Drive converts, if it is. When Drive's limit cannot be read nothing is refused, and
- * Drive decides when the copy is sent.
+ * than Google Drive converts, if it is. When Drive's limit cannot be read, or is not read before
+ * `signal` aborts, nothing is refused, and Drive decides when the copy is sent.
  */
 export async function importLimitRefusal(
   api: Pick<DriveApi, "getMaxImportSize">, fileId: string, size: number | undefined,
-  mimeType: string,
+  mimeType: string, signal?: AbortSignal,
 ): Promise<string | undefined> {
   if (size === undefined || !Number.isFinite(size)) return undefined;
-  let max = await api.getMaxImportSize(mimeType).catch((error: unknown) => {
+  let max = await api.getMaxImportSize(mimeType, signal).catch((error: unknown) => {
     logger.warn("could not read Drive's import size limit; copying without the check", {
       event: "drive.copies.import-size.unavailable", fileId,
       ...(error instanceof DriveApiRequestError ? {
@@ -365,14 +369,19 @@ async function proveCopy(
 
 /**
  * Why a conversion of `payload`'s file cannot be made now, if it cannot: it is larger than Drive
- * converts.
+ * converts. Its reads wait for Drive {@link APPROVAL_READ_MAX_MS} at most, together: a file Drive
+ * does not describe by then leaves the copy pending, and a limit it does not say is not checked.
  */
 async function conversionRefusal(
   host: DriveCopiesHost, payload: DriveCopyPayload,
 ): Promise<string | undefined> {
-  let { size } = await host.api.getConversionSource(payload.fileId);
-  return importLimitRefusal(
-    host.api, payload.fileId, size === undefined ? undefined : Number(size), payload.mimeType);
+  let deadline = AbortSignal.timeout(APPROVAL_READ_MAX_MS);
+  let { size } = await host.api.getConversionSource(payload.fileId, deadline)
+    .catch((error: unknown) => {
+      throw deadline.aborted ? new Error(DRIVE_DID_NOT_ANSWER, { cause: error }) : error;
+    });
+  return importLimitRefusal(host.api, payload.fileId,
+    size === undefined ? undefined : Number(size), payload.mimeType, deadline);
 }
 
 /**
@@ -454,9 +463,10 @@ function copyOrdinary(
 /**
  * Makes one approved native copy, with its token, and records the file it made. A look searches
  * for the token in the corpus of the folder the copy goes into as it was queued, then in every
- * file the account has reached (see DriveApi.findCopy); not finding it leaves the copy
- * unconfirmed and is never followed by a send. A copy Drive made of another type than asked for
- * is not the one queued, so it fails the copy rather than being recorded.
+ * file the account has reached (see DriveApi.findCopy), for {@link APPROVAL_READ_MAX_MS} at most;
+ * not finding it by then leaves the copy unconfirmed and is never followed by a send. A copy
+ * Drive made of another type than asked for is not the one queued, so it fails the copy rather
+ * than being recorded.
  */
 async function copyNative(
   host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyNative"],
@@ -466,7 +476,12 @@ async function copyNative(
     log: logger.with({ actionId: id, actionKind: "copyNative", fileId }),
     events: "drive.copies",
     look: async () => {
-      let found = await host.api.findCopy(token, corpusOf(driveId));
+      let deadline = AbortSignal.timeout(APPROVAL_READ_MAX_MS);
+      let found = await host.api.findCopy(token, corpusOf(driveId), deadline)
+        .catch((error: unknown) => {
+          if (deadline.aborted) return undefined;
+          throw error;
+        });
       return found ? { found } : { conclusive: false };
     },
     check: async () => {
