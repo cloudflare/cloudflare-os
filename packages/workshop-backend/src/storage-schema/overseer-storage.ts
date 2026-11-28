@@ -468,7 +468,8 @@ export type GatekeeperCaller = {
    * ActionRecords persisted before multi-gadget support have no gadgetId. `defaultGadgetId`
    * should be assumed when `gadgetId` is absent -- except by observer tracking, which refuses
    * such a caller (see observerContextOf): the default gadget can change, and attribution must
-   * not.
+   * not. May name a connection instead, which is drawing itself as a gadget (see
+   * GatekeeperClient.connectToGadget()).
    */
   gadgetId?: WorkpieceId;
 } | {

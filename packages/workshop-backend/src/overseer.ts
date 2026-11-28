@@ -15680,6 +15680,30 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
         this.joinedAs);
   }
 
+  // The gatekeeper's code is the same in every chat.
+  async getUiBundle(_chatId?: number): Promise<UiBundle> {
+    // getGadgetUi is optional on Gatekeeper; a caller is offered a preview first, by
+    // describe().hasGadgetUi or by an action's previewOf.
+    this.impl.assertGatekeeperUsable(this.id);
+    let files = await (this.facet as Fetcher<Gatekeeper<Session> &
+        Required<Pick<Gatekeeper<Session>, "getGadgetUi">>>).getGadgetUi();
+    let bundle = buildUiBundle(new Map(files.map(({path, code}) => [path, code])));
+    // A preview is new code, which nothing obliges to run as a legacy UI does.
+    if (!bundle || !("modules" in bundle)) {
+      throw new Error("This gatekeeper's UI code has no client.js with a default export.");
+    }
+    return bundle;
+  }
+
+  // The session stands where a gadget's server would, so it reads as a gadget whose ID is the
+  // connection's own. Workpiece IDs come from one counter, so that names no real gadget, and its
+  // reads reach "build" collaborators only (see OverseerImpl.gadgetsReaching). A connection's
+  // pending actions are one queue, so the session is the same whichever chat it is opened for.
+  async connectToGadget(_chatId?: number): Promise<RpcStub<Session>> {
+    return this.impl.openGatekeeperSession(this.id, this.facet,
+        {from: "gadget", gadgetId: this.id}, undefined, this.joinedAs);
+  }
+
   async getCreationSpec(): Promise<GatekeeperCreationSpec> {
     let record = this.#getRecord();
     if (!record.creationSpec) {

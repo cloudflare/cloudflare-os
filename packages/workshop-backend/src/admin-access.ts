@@ -381,11 +381,12 @@ export function withholdCommitContent(commit: CommitInfo): CommitInfo {
 }
 
 /** A copy of `entry` as an AdminWorkspaceView lists it: `description.description` emptied for an
- * action, observation or hook entry, and `description.fields` dropped; never mutates `entry`. */
+ * action, observation or hook entry, and `description.fields` dropped, with an action's
+ * `previewOf`, which names the item those fields do; never mutates `entry`. */
 export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
   switch (entry.type) {
     case "action": {
-      let { fields: _fields, ...description } = entry.description;
+      let { fields: _fields, previewOf: _previewOf, ...description } = entry.description;
       return { ...entry, description: { ...description, description: "" } };
     }
     case "observation": {

@@ -1049,7 +1049,10 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   attributes it (`observerContextOf`): the agent's chat, the calling gadget, the chat a slash
   command runs in, the gadget a firing hook wakes, or the workspace context for a hook naming no
   gadget or a user acting outside any chat (a session opened from the connection itself, a new
-  chat's first slash command). A gadget caller persisted without a `gadgetId` is refused. The
+  chat's first slash command). A gadget caller persisted without a `gadgetId` is refused. A
+  connection drawn as a gadget (`GatekeeperClient.connectToGadget()`) reads as a gadget whose ID
+  is the connection's own: no gadget has that ID, and `gadgetsReaching()` walks gadget records
+  only, so its reads are checked against "build" collaborators only. The
   sparse multi-key `actions.byObserverRequirement` index holds one key per subresource,
   `<connection>:<context><id>:<subresource>` (context `w` for workspace, `c` for chats, `g` for
   gadgets). Per connection, admission lists only the distinct keys of the contexts reached by what
