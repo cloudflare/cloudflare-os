@@ -101,7 +101,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
   await workpieces.loaded;
 
   // Build the gadget, merge it, and have it watch the hook key.
-  const buildChat = await ws.newChat("Build the removable gadget.", SCRIPTED_MODEL_ID);
+  const buildChat = await ws.newChat("Build the removable gadget.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the build turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, buildChat);
   expect(await ws.mergeChanges(buildChat)).toEqual({ outcome: "merged" });
@@ -133,7 +133,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
 
   const blueprint = await removed.createBlueprint("Removed source", "Source removal regression");
 
-  const draftChat = await ws.newChat("Draft", null);
+  const draftChat = await ws.newChat("Draft", null, "auto");
   expect(await ws.submitCodeChange(draftChat, {
     generation: 0, revision: 0, clientId: "draft", seq: 1,
     pins: [{ gadgetId: targetId, baseCommit: targetHead }],

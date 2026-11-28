@@ -133,6 +133,84 @@ export function pendingChangeGroups(
 }
 
 /**
+ * The connections among `pending`'s whose resource is unsaved, each with its creation, which is
+ * still pending (ActionLogEntry.creation). Approving the creation saves the resource; it is
+ * offered once the creation is accepted (ActionLogEntry.accepted), and until then is the chat's
+ * to accept.
+ */
+export function unsavedConnections(pending: readonly ActionLogEntry[]): Map<number, ActionLogEntry> {
+  return new Map(pending.flatMap(log =>
+    log.type === 'action' && log.creation && log.gatekeeperId !== undefined
+      ? [[log.gatekeeperId, log] as const] : []))
+}
+
+/**
+ * Whether `log`, pending, was accepted on a resource that is still unsaved
+ * (ActionLogEntry.accepted), among `unsaved` (see unsavedConnections): it has left its chat, and
+ * waits for the resource to be saved, not for a decision.
+ */
+export function awaitsSave(log: ActionLogEntry, unsaved: ReadonlyMap<number, unknown>): boolean {
+  return log.type === 'action' && log.accepted !== undefined &&
+    log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)
+}
+
+/**
+ * The chat whose accept takes `log`: the chat it was made from, unless it was accepted on a
+ * resource while that was unsaved (ActionLogEntry.accepted), which moved it to staging.
+ */
+export function branchChatId(log: ActionLogEntry): number | undefined {
+  return log.type === 'action' && log.accepted !== undefined ? undefined : log.chatId
+}
+
+/**
+ * The pending requests a tray shows, where accepting a chat applies its own requests and, ahead
+ * of them, those no chat made on the same connections.
+ *
+ * In a chat (`chatId`), its own requests and the unchatted ones on a connection it has a request
+ * on, since accepting it applies those too. Outside any chat, only the unchatted ones, which no
+ * chat's accept covers. Never one accepted already on an unsaved resource (see awaitsSave).
+ */
+export function chatBranchPending(
+  all: readonly ActionLogEntry[],
+  chatId: number | null,
+): ActionLogEntry[] {
+  const unsaved = unsavedConnections(all)
+  const pending = all.filter(log => !awaitsSave(log, unsaved))
+  const connections = new Set(pending.flatMap(log =>
+    chatId !== null && branchChatId(log) === chatId && log.gatekeeperId !== undefined
+      ? [log.gatekeeperId] : []))
+  return pending.filter(log => branchChatId(log) === undefined
+    ? chatId === null || (log.gatekeeperId !== undefined && connections.has(log.gatekeeperId))
+    : branchChatId(log) === chatId)
+}
+
+/**
+ * Whether `log` is an action its gatekeeper's author did not judge safe to apply without a person
+ * looking (ActionDescription.autoApprovable), so the UI singles it out in every chat mode. A
+ * creation is not one: it waits to be saved, not reviewed.
+ */
+export function needsReview(log: ActionLogEntry): boolean {
+  return log.type === 'action' && !log.creation && log.description.autoApprovable !== true
+}
+
+/**
+ * Whether the UI offers to approve `log` on its own: one the agent waits on (`awaitDecision`)
+ * cannot wait for its chat's accept, and one no chat made is covered by no chat's accept. A chat's
+ * other requests apply only when its changes are accepted. Never a change to a resource among
+ * `unsaved` (see unsavedConnections), which can apply only once the resource is saved, nor one
+ * that failed in a way no retry can fix (ActionLogEntry.applyError).
+ */
+export function canApproveAlone(
+  log: ActionLogEntry,
+  unsaved: ReadonlyMap<number, unknown>,
+): boolean {
+  if (log.type !== 'action') return branchChatId(log) === undefined
+  if (!log.creation && log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)) return false
+  if (log.applyError?.retryable === false) return false
+  return log.description.awaitDecision === true || branchChatId(log) === undefined
+}
+
+/**
  * Whether every request in `group` is known to have been asked for somewhere else.
  *
  * One request whose origin is merely unknown is enough to withhold the label: the group may yet
@@ -141,6 +219,23 @@ export function pendingChangeGroups(
 export function isFromElsewhere(group: PendingChangeGroup): boolean {
   return group.entries.every(entry => entry.origin === 'elsewhere')
 }
+
+/**
+ * What an accept of the requests `shown` passes as its bound (MergeChangesOptions.through): the
+ * highest ID among them, or -1 when none were shown, so that it applies nothing that arrived
+ * after the user looked.
+ */
+export function acceptThrough(shown: readonly ActionLogEntry[]): number {
+  return shown.reduce((highest, log) => Math.max(highest, log.id), -1)
+}
+
+/**
+ * Said after a failed request's error when its provider may have applied it anyway
+ * (ActionLogEntry.applyError.outcomeUnknown): it is never retried, so denying it is what is left,
+ * and that is a call to make only once the user has looked.
+ */
+export const OUTCOME_UNKNOWN_COPY =
+  'It may have been applied anyway. Check the resource before you deny it.'
 
 /** Every pending request across `groups`, in the order a bulk resolve would take them. */
 export function pendingChangeEntries(groups: readonly PendingChangeGroup[]): PendingChange[] {

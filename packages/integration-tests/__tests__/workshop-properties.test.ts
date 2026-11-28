@@ -61,11 +61,12 @@ async function freshWorkspace(stack: DisposableStack, prefix: string) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Approvals: writes a gadget stages, decided by the user in any order, with and without an
-// auto-approval rule, while the provider may fail one apply (a timeout, a 5xx). The fixture
-// gatekeeper numbers its actions independently of the Workshop's ledger, so every decision also
-// checks the ledger-to-gatekeeper id mapping: approving the wrong entry applies the wrong value, or
-// throws in the fixture.
+// Approvals: writes a session outside any chat stages, which apply at once unless staging holds
+// them (once the workspace has read restricted data), decided by the user in any order, with and
+// without an auto-approval rule (which staging ignores), while the provider may fail one apply (a
+// timeout, a 5xx). The fixture gatekeeper numbers its actions independently of the Workshop's
+// ledger, so every decision also checks the ledger-to-gatekeeper id mapping: approving the wrong
+// entry applies the wrong value, or throws in the fixture.
 
 type Decision = "approve" | "reject" | "leave";
 /** One staged write, and what the user does with it when they reach it (in `rank` order). */
@@ -73,6 +74,8 @@ type Write = { value: number; autoApprovable: boolean; decision: Decision; rank:
 type ApprovalScenario = {
   writes: Write[];
   ruleEnabled: boolean;
+  /** Whether staging holds the writes, the workspace having read restricted data. */
+  held: boolean;
   concurrent: boolean;
   /**
    * When the provider fails one apply attempt, whichever write and path makes it: the first
@@ -85,20 +88,20 @@ type ApprovalScenario = {
 
 class ApprovalModel {
   readonly states: ("pending" | "approved" | "rejected")[];
-  /** Whether each approved write was applied by the drain rather than by the user. */
+  /** Whether each approved write was applied at once rather than by the user. */
   readonly auto: boolean[];
   applied: number[] = [];
   attempts = 0;
   /** The provider fails the next apply attempt. */
   failNext = false;
 
-  constructor(readonly values: number[], readonly eligible: boolean[]) {
+  constructor(readonly values: number[], readonly held: boolean) {
     this.states = values.map(() => "pending");
     this.auto = values.map(() => false);
   }
 
   /** One apply attempt; false when it is the attempt the provider fails. */
-  apply(index: number, auto: boolean): boolean {
+  #apply(index: number, auto: boolean): boolean {
     this.attempts++;
     if (this.failNext) {
       this.failNext = false;
@@ -110,20 +113,31 @@ class ApprovalModel {
     return true;
   }
 
-  reject(index: number) {
-    this.states[index] = "rejected";
-    this.drain();
+  // Applies the pending writes up to and including `upTo`, in submission order, up to the first
+  // that fails to apply.
+  #applyThrough(upTo: number, auto: boolean): boolean {
+    return this.states.every((state, i) => i > upTo || state !== "pending" || this.#apply(i, auto));
   }
 
-  // The drain, which runs after each auto-approvable write is staged and after each decision:
-  // eligible pending writes apply in submission order, stopping at the first that needs a human or
-  // fails to apply (auto-approval.ts). A write the drain failed stays pending until the user
-  // decides it or a later drain retries it.
+  /**
+   * The user's approval: what staging holds up to the write, in order, and then, unless staging
+   * holds, the rest at once. False when an apply failed.
+   */
+  approve(index: number): boolean {
+    if (!this.#applyThrough(index, false)) return false;
+    this.drain();
+    return true;
+  }
+
+  reject(index: number) {
+    this.states[index] = "rejected";
+  }
+
+  // Staged writes applying at once, after each is staged and after each approval: every pending
+  // write in submission order, stopping at the first that fails to apply, unless staging holds. A
+  // write that failed stays pending until the user decides it or a later apply retries it.
   drain() {
-    for (const [i, state] of this.states.entries()) {
-      if (state !== "pending") continue;
-      if (!this.eligible[i] || !this.apply(i, true)) return;
-    }
+    if (!this.held) this.#applyThrough(Infinity, true);
   }
 }
 
@@ -135,43 +149,55 @@ const approvalScenario: fc.Arbitrary<ApprovalScenario> = fc.record({
     rank: fc.nat(),
   }), { minLength: 1, maxLength: 6, selector: write => write.value }),
   ruleEnabled: fc.boolean(),
+  held: fc.boolean(),
   concurrent: fc.boolean(),
   failBefore: fc.option(fc.nat({ max: 4 }), { freq: 2 }),
   afterFailure: fc.constantFrom("retry" as const, "reject" as const),
 });
 
 /**
- * Deciding a manual write must restart the drain for the auto-approvable writes queued behind it
- * (the turn-resumption fix, 1200259, lives on this path). Random cases reach it only sometimes.
+ * Staging holds three writes; approving the last applies the two before it first, in order, and
+ * a failure stops it there.
  */
-const cascade = (decision: "approve" | "reject", failBefore: number | null = null): ApprovalScenario => ({
+const heldInOrder = (failBefore: number | null = null): ApprovalScenario => ({
   writes: [
-    { value: 1, autoApprovable: false, decision, rank: 0 },
-    { value: 2, autoApprovable: true, decision: "leave", rank: 0 },
-    { value: 3, autoApprovable: true, decision: "leave", rank: 0 },
+    { value: 1, autoApprovable: false, decision: "leave", rank: 1 },
+    { value: 2, autoApprovable: true, decision: "leave", rank: 1 },
+    { value: 3, autoApprovable: true, decision: "approve", rank: 0 },
   ],
   ruleEnabled: true,
+  held: true,
   concurrent: false,
   failBefore,
   afterFailure: "reject",
 });
 
 const failureExamples: ApprovalScenario[] = [
-  // The user's approval fails and they deny the write instead, which must withdraw it (835de9e)
-  // and still restart the drain.
-  cascade("approve", 1),
-  // The restarted drain fails the first write behind the gate: it stops there, never skipping
-  // ahead to the next.
-  cascade("reject", 1),
-  // The drain fails the only write and nothing retries it: it stays pending for the user to
+  // The user's approval fails at the first write and they deny the last instead, which must
+  // withdraw it and leave the others held.
+  heldInOrder(1),
+  // An apply at once fails the only write and nothing retries it: it stays pending for the user to
   // decide, not dropped or recorded as applied, and approving it is then a manual approval.
   ...(["leave", "approve"] as const).map(decision => ({
     writes: [{ value: 1, autoApprovable: true, decision, rank: 0 }],
     ruleEnabled: true,
+    held: false,
     concurrent: false,
     failBefore: 0,
     afterFailure: "retry" as const,
   })),
+  // The next write staged retries the one that failed before applying itself.
+  {
+    writes: [
+      { value: 1, autoApprovable: false, decision: "leave", rank: 0 },
+      { value: 2, autoApprovable: false, decision: "leave", rank: 0 },
+    ],
+    ruleEnabled: false,
+    held: false,
+    concurrent: false,
+    failBefore: 0,
+    afterFailure: "retry",
+  },
 ];
 
 async function writesOf(ws: RpcStub<Overseer>, gatekeeperId: number) {
@@ -194,7 +220,7 @@ const PROVIDER_FAILURE = "The provider is temporarily unavailable.";
 
 it.concurrent("decided writes apply exactly once, to the write the user decided", async () => {
   await fc.assert(fc.asyncProperty(approvalScenario, async scenario => {
-    const { writes, ruleEnabled, concurrent, failBefore, afterFailure } = scenario;
+    const { writes, ruleEnabled, held, concurrent, failBefore, afterFailure } = scenario;
     using stack = new DisposableStack();
     const { api, ws } = await freshWorkspace(stack, "approvals");
     await api.provisionAmbientAccount(TEST_VENDOR_ID);
@@ -205,6 +231,7 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
     if (!gatekeeper) throw new Error("Failed to create the test connection");
     const gatekeeperId = await stack.use(gatekeeper).getId();
     const session = stack.use(await gatekeeper.openSession() as RpcStub<TestSession>);
+    if (held) await session.readValue(true);
     if (ruleEnabled) {
       await ws.setAutoApprovedActionKind(gatekeeperId, { tag: "set-value", label: "Set value" });
     }
@@ -214,18 +241,17 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
     };
 
     const values = writes.map(write => write.value);
-    const eligible = writes.map(write => ruleEnabled && write.autoApprovable);
-    const model = new ApprovalModel(values, eligible);
+    const model = new ApprovalModel(values, held);
     if (failBefore === 0) await failNextApply();
     const submit = ({ value, autoApprovable }: Write) => session.writeValue(value, { autoApprovable });
-    // A gadget may fire its writes concurrently, but the drain then races submission, so the
-    // model's "nothing applies past a pending gate" order holds only for sequential submission.
-    if (concurrent && !ruleEnabled) {
+    // A gadget may fire its writes concurrently, but applying at once then races submission, so
+    // the model's order holds only for sequential submission, or while staging holds.
+    if (concurrent && held) {
       await Promise.all(writes.map(submit));
     } else {
-      for (const [i, write] of writes.entries()) {
+      for (const write of writes) {
         await submit(write);
-        if (eligible[i]) model.drain();
+        model.drain();
       }
     }
 
@@ -233,7 +259,7 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
     expect([...idOf.keys()].toSorted()).toEqual(values.toSorted());
 
     // Apply attempts settle too, and must have finished, not just started: a pending write whose
-    // attempt is still in flight looks the same in the ledger as one the drain already failed, and
+    // attempt is still in flight looks the same in the ledger as one that already failed, and
     // deciding it then would race that attempt for the one-shot failure. Every attempt reaching the
     // provider exactly once is itself part of the contract.
     const matchesModel = async () => {
@@ -252,9 +278,8 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
       expect(state.value).toBe(model.applied.at(-1));
     };
 
-    await waitFor("the initial drain", matchesModel, SETTLE_MS);
-    // The user works through the pending list, including auto-approvable writes still held behind
-    // a gate or failed by the drain.
+    await waitFor("the writes staged", matchesModel, SETTLE_MS);
+    // The user works through the pending list: writes staging holds, or that failed to apply.
     let decisions = 0;
     for (const i of [...writes.keys()].toSorted((a, b) => writes[a]!.rank - writes[b]!.rank)) {
       const { value, decision } = writes[i]!;
@@ -265,9 +290,8 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
       if (decision === "reject") {
         await ws.rejectAction(id);
         model.reject(i);
-      } else if (model.apply(i, false)) {
+      } else if (model.approve(i)) {
         await ws.approveAction(id);
-        model.drain();
       } else {
         const failure = await ws.approveAction(id).then(() => "approved", (error: unknown) => `${error}`);
         expect(failure, `the provider's failure to apply ${value}`).toContain(PROVIDER_FAILURE);
@@ -276,8 +300,7 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
         step = `${afterFailure} after a failed approval`;
         if (afterFailure === "retry") {
           await ws.approveAction(id);
-          model.apply(i, false);
-          model.drain();
+          model.approve(i);
         } else {
           await ws.rejectAction(id);
           model.reject(i);
@@ -287,9 +310,9 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
       await expectFixtureMatches();
     }
 
-    // A drain that wrongly skips past a pending gate runs out of process (ctx.waitUntil), so only
-    // a real delay can show it, and only while an eligible write is still held behind a gate.
-    if (eligible.some((isEligible, i) => isEligible && model.states[i] === "pending")) await sleep(300);
+    // An apply at once that wrongly runs while staging holds does so out of process
+    // (ctx.waitUntil), so only a real delay can show it, and only while a write is still held.
+    if (model.states.includes("pending")) await sleep(300);
     const entries = await matchesModel();
     expect(entries, "ledger states and apply attempts after settling").not.toBeNull();
     for (const entry of entries!) {
@@ -311,7 +334,7 @@ it.concurrent("decided writes apply exactly once, to the write the user decided"
   }), {
     ...PROPERTY_RUN_OPTIONS,
     numRuns: 15,
-    examples: [cascade("reject"), cascade("approve"), ...failureExamples]
+    examples: [heldInOrder(), ...failureExamples]
       .map(example => [example] as [ApprovalScenario]),
   });
 });
@@ -380,7 +403,7 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
       const picked = [...new Set(picks.map(p => p % files.length))];
       const sent = picked.map(f => ({ oid: oids[f]!, mimeType: files[f]!.mimeType, name: files[f]!.name }));
       if (chatId === undefined) {
-        chatId = await ws.newChat(text, null, {attachments: sent});
+        chatId = await ws.newChat(text, null, "auto", {attachments: sent});
         expect(live.has(chatId)).toBe(false);
         live.set(chatId, []);
       } else {
@@ -427,7 +450,7 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
     // Each live id is also tried in one other live chat, and each deleted chat's ids in that chat
     // and every live one.
     const chatIds = [...live.keys()];
-    const fresh = await ws.newChat("Starting over", null);
+    const fresh = await ws.newChat("Starting over", null, "auto");
     for (const [id, chatId] of owner) {
       await expect(ws.getChatAttachmentContent(fresh, id)).rejects.toThrow("Chat attachment not found.");
       const other = chatIds.find(c => c !== chatId);
@@ -518,7 +541,7 @@ it.concurrent("stale and resent edits converge, and accepting commits the conver
     const gadget = stack.use(ws.createGadget("App", undefined, "APP"));
     const gadgetId = await gadget.getId();
     const empty = await headOf(workpieces, gadgetId);
-    const seedChat = await ws.newChat("Seed", null);
+    const seedChat = await ws.newChat("Seed", null, "auto");
     await ws.submitCodeChange(seedChat, {
       generation: 0, revision: 0, clientId: "seed", seq: 1,
       pins: [{ gadgetId, baseCommit: empty }], change: diffFiles(files(gadgetId), files(gadgetId, seed)),
@@ -526,7 +549,7 @@ it.concurrent("stale and resent edits converge, and accepting commits the conver
     expect(await ws.mergeChanges(seedChat)).toEqual({ outcome: "merged" });
     const head = await headOf(workpieces, gadgetId, empty);
 
-    const chatId = await ws.newChat("Edit together", null);
+    const chatId = await ws.newChat("Edit together", null, "auto");
     const pins = [{ gadgetId, baseCommit: head }];
     // The changes broadcast to this chat, in arrival order, which must number them 1..n.
     const stream = async (count: number) => {

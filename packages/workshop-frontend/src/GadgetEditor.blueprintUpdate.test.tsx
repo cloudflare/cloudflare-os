@@ -461,7 +461,7 @@ describe('GadgetEditor, opening a chat from a notification', () => {
 
 /** A chat's metadata, as the chat pane lists it. */
 function chatMeta(id: number, extra: Partial<AiChatMetadata> = {}): AiChatMetadata {
-  return { id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(0), ...extra }
+  return { id, title: `Chat ${id}`, mode: 'auto', started: new Date(0), lastActive: new Date(0), ...extra }
 }
 
 /** A spawned agent's chat, which a gadget names by its token. */

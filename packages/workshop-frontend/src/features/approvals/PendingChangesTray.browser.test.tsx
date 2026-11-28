@@ -4,7 +4,6 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { PendingChangesTray } from './PendingChangesTray'
-import type { BulkFailure } from './useBulkResolve'
 import type { PendingChange, PendingChangeGroup } from './pendingChangeGroups'
 import '../../styles.css'
 
@@ -45,12 +44,6 @@ function group(entries: PendingChange[], gatekeeperId: number, title: string): P
   return { gatekeeperId, title, entries, hasCreation: false }
 }
 
-/** A run that stopped partway, which the tray reports in its longest notice. */
-const STOPPED: BulkFailure = {
-  decision: 'approve', applied: 2, total: 12, title: 'Append a slide 3',
-  reason: 'The provider refused the request because the presentation is locked for editing.',
-}
-
 /** Runs a browser interaction inside act(), so React has committed before the next assertion. */
 const input = (action: () => Promise<unknown>) => act(async () => { await action() })
 
@@ -69,17 +62,13 @@ async function render({
   groups,
   restricted = false,
   maxHeight = '520px',
-  failure = null,
   width = 720,
-  autoApproved = false,
 }: {
   groups: PendingChangeGroup[]
   restricted?: boolean
   maxHeight?: string
-  failure?: BulkFailure | null
   /** The chat pane's width; 280px is the narrowest GadgetEditor supports. */
   width?: number
-  autoApproved?: boolean
 }) {
   host = document.body.appendChild(document.createElement('div'))
   // The width the composer gives it, and a height that forces the tray to scroll rather than
@@ -90,19 +79,15 @@ async function render({
   await act(async () => root!.render(
     <PendingChangesTray
       groups={groups}
-      rules={{ isEnabled: () => autoApproved, restricted }}
-      ready={true}
+      restricted={restricted}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
       actions={{
         processing: new Set<number>(),
         onApprove: () => {},
         onReject: () => {},
-        onAlwaysApprove: () => {},
-        onManageRules: () => {},
-      }}
-      bulk={{
-        run: async () => {}, progress: null, failure, dismissFailure: () => {},
+        canApprove: () => true,
+        onRetry: () => {},
       }}
     />,
   ))
@@ -131,31 +116,20 @@ it('keeps a decision reachable however tall the request is', async () => {
   const body = host!.querySelector('[class*="max-h-[min(18rem"]')!
   expect(body.scrollHeight).toBeGreaterThan(body.clientHeight)
   expect(tray.height).toBeLessThanOrEqual(520)
-
-  // The group's own "Apply all" stays inside the tray's scroller rather than being sliced by it:
-  // the inner cap is set below the outer one precisely so this row survives a full-height body.
-  // The tray header carries the same label, so the group's is the last one.
-  const applyAll = [...host!.querySelectorAll('button')]
-    .filter(b => b.textContent === 'Apply all 2')
-  expect(applyAll).toHaveLength(2)
-  const footer = applyAll[1].getBoundingClientRect()
-  expect(footer.height).toBeGreaterThan(0)
-  expect(footer.bottom).toBeLessThanOrEqual(tray.bottom + 1)
 })
 
 it('leaves the composer room on a short window', async () => {
   // The tray sits in the composer's unshrinkable section, inside a pane that hides its overflow:
   // a list tall enough to fill a short window pushes the composer past the bottom edge, where
   // scrolling the tray cannot bring it back. Enough collapsed groups to overflow any cap, and
-  // a failed run's notice above them, which is the longest line the header can carry and wraps
-  // at this width.
+  // the restricted notice above them, which wraps at this width.
   previousViewport = { width: window.innerWidth, height: window.innerHeight }
   await page.viewport(900, 500)
   await render({
     groups: Array.from({ length: 12 }, (_, i) =>
       group([request(i + 1, `Append a slide ${i + 1}`)], i + 1, `Resource ${i + 1}`)),
     maxHeight: 'none',
-    failure: STOPPED,
+    restricted: true,
   })
 
   const tray = host!.firstElementChild!
@@ -164,41 +138,11 @@ it('leaves the composer room on a short window', async () => {
   // Half the window is the generous reading of "room for the composer and some transcript"; the
   // cap itself is tighter. A fixed rem cap fails this outright at this height.
   expect(tray.getBoundingClientRect().height).toBeLessThanOrEqual(250)
-
-  // The notice has to stay on screen with it: it is the only thing saying where the run
-  // stopped and why, and it is the longest line the header can carry.
-  const notice = host!.querySelector('[role="alert"]')!
-  const box = notice.getBoundingClientRect()
-  expect(box.height).toBeGreaterThan(0)
-  expect(box.bottom).toBeLessThanOrEqual(tray.getBoundingClientRect().bottom + 1)
-})
-
-it('caps a stopped run\'s message once the queue is empty, as it caps the full tray', async () => {
-  // With the queue gone only the failure is left, and it can carry a provider's whole reason.
-  // It sits in the same unshrinkable section as the full tray, so uncapped, a long one on a short
-  // window pushes the composer past the pane's clipped edge.
-  previousViewport = { width: window.innerWidth, height: window.innerHeight }
-  await page.viewport(900, 500)
-  await render({
-    groups: [],
-    maxHeight: 'none',
-    width: 280,
-    failure: {
-      ...STOPPED,
-      reason: Array.from({ length: 12 }, () => STOPPED.reason).join(' '),
-    },
-  })
-
-  const tray = host!.firstElementChild!
-  // 45vh of a 500px window.
-  expect(tray.getBoundingClientRect().height).toBeLessThanOrEqual(226)
-  const scroller = tray.firstElementChild!
-  expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight)
 })
 
 it('keeps a request in reach however many notices stand above it', async () => {
   // The narrowest supported chat pane is 280px (GadgetEditor), where every notice wraps to
-  // several lines. Three can stand at once, and together they were enough to leave the request
+  // several lines. Two can stand at once, and together they were enough to leave the request
   // list no height at all -- a tray whose whole point is below its own clipped edge.
   previousViewport = { width: window.innerWidth, height: window.innerHeight }
   await page.viewport(900, 500)
@@ -209,7 +153,7 @@ it('keeps a request in reach however many notices stand above it', async () => {
       group([request(41, 'Create an event')], 2, 'Team calendar'),
     ],
     maxHeight: 'none',
-    failure: STOPPED,
+    restricted: true,
     width: 280,
   })
 
@@ -225,10 +169,10 @@ it('keeps a request in reach however many notices stand above it', async () => {
   expect(rows.some(row => (row.textContent ?? '').includes('Team calendar'))).toBe(true)
 })
 
-it('keeps the connection name readable when its badges fill the row', async () => {
-  // The badges are non-wrapping siblings of the title, so at the narrowest chat pane they took
-  // the whole row and left the name nothing. The name is what says which service is waiting;
-  // both badges are repeated inside the group.
+it('keeps the connection name readable when its badge fills the row', async () => {
+  // The badge is a non-wrapping sibling of the title, so at the narrowest chat pane it could take
+  // the whole row and leave the name nothing. The name is what says which service is waiting;
+  // the badge is repeated inside the group.
   previousViewport = { width: window.innerWidth, height: window.innerHeight }
   await page.viewport(900, 700)
   await render({
@@ -237,13 +181,12 @@ it('keeps the connection name readable when its badges fill the row', async () =
       request(2, 'Append another slide', [], { origin: 'elsewhere', autoApprovable: true }),
     ], 1, 'Road trip 2026')],
     width: 280,
-    autoApproved: true,
   })
 
   const title = [...host!.querySelectorAll('span')]
     .find(span => span.textContent === 'Road trip 2026')!
   expect(title.getBoundingClientRect().width).toBeGreaterThanOrEqual(56)
-  // The badges are there, just giving way: they are what shrinks, not the name.
+  // The badge is there, just giving way: it is what shrinks, not the name.
   expect(host!.textContent).toContain('Asked elsewhere')
 })
 
@@ -274,11 +217,8 @@ it('reaches every group and its decisions by keyboard alone', async () => {
     group([request(2, 'Create an event')], 2, 'Team calendar'),
   ] })
 
-  const bulk = [...host!.querySelectorAll('button')].find(b => b.textContent?.startsWith('Apply all'))!
-  bulk.focus()
-  await input(() => userEvent.keyboard('{Tab}'))
-
-  const slides = document.activeElement as HTMLButtonElement
+  const slides = host!.querySelector<HTMLButtonElement>('button[aria-expanded]')!
+  slides.focus()
   expect(slides.getAttribute('aria-expanded')).toBe('false')
   await input(() => userEvent.keyboard('{Enter}'))
   expect(slides.getAttribute('aria-expanded')).toBe('true')
@@ -293,7 +233,7 @@ it('reaches every group and its decisions by keyboard alone', async () => {
   expect((document.activeElement as HTMLElement).textContent).toBe('Approve')
 })
 
-it('shows a restricted request in full, with no way to resolve the group at once', async () => {
+it('shows a restricted request in full', async () => {
   await render({
     groups: [group([
       request(1, 'Append a slide', [{ label: 'Event', kind: 'json', value: BIG_JSON }]),
@@ -301,9 +241,6 @@ it('shows a restricted request in full, with no way to resolve the group at once
     ], 1, 'Road trip 2026')],
     restricted: true,
   })
-
-  expect([...host!.querySelectorAll('button')].some(b => b.textContent?.startsWith('Apply all')))
-    .toBe(false)
 
   await input(() => userEvent.click(host!.querySelector('button[aria-expanded="false"]')!))
 

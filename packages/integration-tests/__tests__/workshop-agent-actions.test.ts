@@ -189,28 +189,38 @@ it.concurrent("approving a held write while its code runs lets the agent carry o
   expect(agentSaid((await turn).history, "The value is applied.")).toBe(1);
 });
 
-it.concurrent("always approving a held write's kind applies it and resumes the agent", async () => {
+// In Review an auto-approvable write waits for the user, and enabling a rule for its kind does not
+// stand in for them: rules have no effect.
+it.concurrent("an auto-approvable write in Review waits for the user, whatever the rules", async () => {
   const model = models.script([
-    writeValues("7, { autoApprovable: true }"), { text: "The value is applied." },
+    { text: "Ready." }, writeValues("7, { autoApprovable: true }"), { text: "The value is applied." },
   ]);
-  await using session = await openSession(model, "agentalways");
+  await using session = await openSession(model, "agentreview");
   const label = labelOf(session);
 
+  await session.runTurn("Get ready.");
+  await withOwnerWorkspace(harness.url, session.username, async ws =>
+    ws.setChatMode((await ws.listChats())[0].id, "review"));
   await session.runTurn("Set the test value to 7.");
   const [action] = await waitForPendingActions(session, 1);
-  expect(model.requests).toHaveLength(1);
+  expect(model.requests).toHaveLength(2);
 
   await withOwnerWorkspace(harness.url, session.username, async ws => {
     await ws.setAutoApprovedActionKind(action.gatekeeperId!, SET_VALUE);
+    expect(await actionStatus(session, action.id)).toEqual({ state: "pending" });
+    await ws.approveAction(action.id);
     await waitForResumedTurn(ws, model);
   });
   expect(await actionState(label)).toEqual({ pending: [], value: 7, applyCount: 1 });
   expect(await actionStatus(session, action.id)).toMatchObject(decidedBy(session, "approved"));
-  expect(model.requests).toHaveLength(2);
+  expect(model.requests).toHaveLength(3);
 });
 
+// In Auto an awaited write applies at once only with every earlier write on its chat's branch, and
+// deciding the held one applies nothing after it: approving the queued write applies the held one
+// first, and rejecting the held one leaves the queued one for the user.
 it.concurrent.each(["approve", "reject"] as const)(
-    "an always-approved write queued behind a held one applies once the user chooses %s",
+    "an auto-approvable write queued behind a held one applies once the user approves it (%s)",
     async decision => {
   const model = models.script([
     writeValues(7), writeValues("8, { autoApprovable: true }"), { text: "The value is applied." },
@@ -220,15 +230,18 @@ it.concurrent.each(["approve", "reject"] as const)(
 
   await session.runTurn("Set the test value to 7.");
   const [held] = await waitForPendingActions(session, 1);
-  await withOwnerWorkspace(harness.url, session.username, ws =>
-      ws.setAutoApprovedActionKind(held.gatekeeperId!, SET_VALUE));
 
   await session.runTurn("Set the test value to 8.");
-  await waitForPendingActions(session, 2);
   expect(model.requests).toHaveLength(2);
 
+  const [, queued] = await waitForPendingActions(session, 2);
   await withOwnerWorkspace(harness.url, session.username, async ws => {
-    await (decision === "approve" ? ws.approveAction(held.id) : ws.rejectAction(held.id));
+    if (decision === "reject") {
+      await ws.rejectAction(held.id);
+      expect(await actionStatus(session, queued.id)).toEqual({ state: "pending" });
+      expect(model.requests).toHaveLength(2);
+    }
+    await ws.approveAction(queued.id);
     await waitForResumedTurn(ws, model);
   });
   expect(await actionState(label))
@@ -262,7 +275,6 @@ it.concurrent("approving an older turn's held write leaves a newer finished turn
     using second = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id, secondUrl);
     if (!second) throw new Error("Failed to create the second connection");
     const secondId = await second.getId();
-    await ws.setAutoApprovedActionKind(secondId, SET_VALUE);
     await ws.acceptConnectionRequest(request.requestId, { gatekeeperId: secondId });
     await waitForResumedTurn(ws, model);
 
@@ -323,6 +335,9 @@ it.concurrent("approving one action twice at once applies it once", async () => 
         "https://gadgets-test.example/things/double-approval");
     if (!connection) throw new Error("Failed to create the test connection");
     using testSession = await connection.openSession() as RpcStub<TestSession>;
+    // Outside any chat the write would apply at once; staging holds it once the workspace has
+    // read restricted data.
+    await testSession.readValue(true);
     expect(await testSession.writeValue(23)).toBe(1);
     const [action] = await waitForPendingActions(session, 1);
 
@@ -354,7 +369,6 @@ it.concurrent("an action the drain is applying refuses a manual decision", async
     using connection = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
         "https://gadgets-test.example/things/drain-race");
     if (!connection) throw new Error("Failed to create the test connection");
-    await ws.setAutoApprovedActionKind(await connection.getId(), SET_VALUE);
     using testSession = await connection.openSession() as RpcStub<TestSession>;
 
     await control("hold-next-apply", { label });

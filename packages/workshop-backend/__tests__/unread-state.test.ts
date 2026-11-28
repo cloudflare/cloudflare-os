@@ -36,7 +36,7 @@ const setup = async (user?: DurableObjectStub<UserDurableObject>, participating 
   await user.newWorkspace(workspaceId, "Workspace");
   await withImpl(workspace, async impl => {
     impl.storage.version.put(OVERSEER_STORAGE_VERSION);
-    impl.storage.chatMeta.put({id: 1, title: "Demo", started: new Date(), lastActive: new Date()});
+    impl.storage.chatMeta.put({id: 1, title: "Demo", mode: "auto", started: new Date(), lastActive: new Date()});
     impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 0, notificationParticipants: participating ? undefined : opened ? [profile.id] : []});
     impl.storage.ownerId.put(user!.id.toString());
     impl.ownerId = user!.id.toString();
@@ -551,7 +551,7 @@ describe("chat notification preferences", () => {
   it.each([false, true])("preserves a collaborator's delayed first arrival across preference and reopen (enabled: %s)", async enabled => {
     const fixture = await setup(); const {reader, owner, profile} = await addReader(fixture);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.chatMeta.put({id: 2, title: "New chat", started: new Date(), lastActive: new Date()});
+      impl.storage.chatMeta.put({id: 2, title: "New chat", mode: "auto", started: new Date(), lastActive: new Date()});
       await impl.deliverDirtyChats();
       await impl.setChatNotificationsEnabled(reader.id.toString(), 2, enabled, profile.id);
       const restore = interceptDelivery(impl, async (user, ...args) => {
@@ -811,7 +811,7 @@ describe("chat notification preferences", () => {
     await evictDurableObject(fixture.workspace);
     await evictDurableObject(reader);
     await withImpl(fixture.workspace, async impl => {
-      expect(impl.storage.version.get()).toBe(7);
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toBeUndefined();
       expect([...impl.storage.dirtyChats.list()]).toEqual([]);
       using scan = vi.spyOn(impl.storage.chats, "list");
@@ -1207,7 +1207,7 @@ describe("local counts and explicit read boundaries", () => {
     const other = await setup(fixture.user);
     await append(fixture, 0); await append(other, 0);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(), lastActive: new Date()});
+      impl.storage.chatMeta.put({id: 2, title: "Second", mode: "auto", started: new Date(), lastActive: new Date()});
       write(impl, 2, "Second thread", 2);
       await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true, fixture.profile.id);
       await impl.deliverDirtyChats();
@@ -1270,7 +1270,7 @@ describe("local counts and explicit read boundaries", () => {
     await append(fixture, 0); await append(other, 0);
     await setRead(fixture, 0);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.chatMeta.put({id: 2, title: "Unread", started: new Date(), lastActive: new Date()});
+      impl.storage.chatMeta.put({id: 2, title: "Unread", mode: "auto", started: new Date(), lastActive: new Date()});
       write(impl, 2, "New thread", 2);
       await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true, fixture.profile.id);
       await impl.deliverDirtyChats();
@@ -2108,7 +2108,7 @@ describe("unread counts property", () => {
     const first = await setup(), {reader, owner, profile} = await addReader(first), second = await setup(first.user);
     // A second chat in the first workspace, and the collaborator in the second workspace too.
     await withImpl(first.workspace, async impl => {
-      impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(), lastActive: new Date()});
+      impl.storage.chatMeta.put({id: 2, title: "Second", mode: "auto", started: new Date(), lastActive: new Date()});
       impl.storage.nextChatSequences.put({chatId: 2, nextSequence: 0, notificationParticipants: undefined});
       await impl.deliverDirtyChats();
     });

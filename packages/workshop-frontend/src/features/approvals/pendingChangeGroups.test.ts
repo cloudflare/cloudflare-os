@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { ActionLogEntry, AiChatMessage } from '@gadgets/workshop-shared/api'
 import {
+  chatBranchPending,
   chatRequestIds,
   countFromElsewhere,
   describeGroupSize,
   isFromElsewhere,
+  needsReview,
   pendingChangeEntries,
   pendingChangeGroups,
 } from './pendingChangeGroups'
@@ -203,5 +205,53 @@ describe('describeGroupSize', () => {
 
     expect(describeGroupSize(one)).toBe('1 request')
     expect(describeGroupSize(two)).toBe('2 requests')
+  })
+})
+
+describe('chatBranchPending', () => {
+  const pending = [
+    entry({ id: 1, chatId: 1 }),
+    entry({ id: 2 }),                       // unchatted, on the chat's connection
+    entry({ id: 3, gatekeeperId: 2 }),      // unchatted, on another connection
+    entry({ id: 4, chatId: 2 }),            // another chat's
+  ]
+
+  it("holds a chat's requests and the unchatted ones on its connections", () => {
+    expect(chatBranchPending(pending, 1).map(log => log.id)).toEqual([1, 2])
+  })
+
+  it('holds only the unchatted requests outside any chat', () => {
+    expect(chatBranchPending(pending, null).map(log => log.id)).toEqual([2, 3])
+  })
+
+  it('holds neither what was accepted on an unsaved resource, nor its creation', () => {
+    const by = { type: 'user' as const, id: 'u', name: 'U' }
+    const accepted = { by, at: new Date(0), autoApproved: false }
+    const unsaved = [
+      entry({ id: 5, chatId: 1, gatekeeperId: 3, creation: true, accepted }),
+      entry({ id: 6, chatId: 1, gatekeeperId: 3, accepted }),
+      entry({ id: 7, gatekeeperId: 3, accepted }),
+      entry({ id: 8, chatId: 1, gatekeeperId: 3 }),
+      entry({ id: 9, gatekeeperId: 3 }),
+    ]
+    expect(chatBranchPending(unsaved, 1).map(log => log.id)).toEqual([8, 9])
+    expect(chatBranchPending(unsaved, null).map(log => log.id)).toEqual([9])
+    // Saved, what is left is held in staging, as anything pending with no chat is.
+    expect(chatBranchPending(unsaved.slice(1), null).map(log => log.id)).toEqual([6, 7, 9])
+  })
+})
+
+describe('needsReview', () => {
+  const verdict = (autoApprovable?: boolean) =>
+    ({ title: 'Write', description: '', implementsRevert: false, autoApprovable }) as never
+
+  it('holds for an action its author did not judge auto-approvable, or gave no verdict', () => {
+    expect(needsReview(entry({ id: 1, description: verdict(false) }))).toBe(true)
+    expect(needsReview(entry({ id: 1, description: verdict(undefined) }))).toBe(true)
+    expect(needsReview(entry({ id: 1, description: verdict(true) }))).toBe(false)
+  })
+
+  it('does not hold for a creation, which is saved rather than reviewed', () => {
+    expect(needsReview(entry({ id: 1, creation: true, description: verdict(false) }))).toBe(false)
   })
 })

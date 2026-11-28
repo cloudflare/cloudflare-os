@@ -91,7 +91,7 @@ it.concurrent("a chat's prompt lists the workspace's gadgets and bindings as it 
   using boardExtra = await newConnection(ws, account.id, "board-extra");
   await notes.bind("MEETING_DATA", await meetingData.getId());
 
-  const chatA = await ws.newChat("What is in this workspace?", SCRIPTED_MODEL_ID);
+  const chatA = await ws.newChat("What is in this workspace?", SCRIPTED_MODEL_ID, "auto");
   await settle(ws, model, chatA, 1);
   const first = systemPromptOf(model.requests[0]);
   expect(first).toContain("Meeting notes");
@@ -106,9 +106,9 @@ it.concurrent("a chat's prompt lists the workspace's gadgets and bindings as it 
   // A rename, and a binding proposed in another chat and then merged, show only in chats started
   // after them.
   await board.setTitle("Quarterly roadmap");
-  const chatB = await ws.newChat("Give the roadmap the extra data.", null);
+  const chatB = await ws.newChat("Give the roadmap the extra data.", null, "auto");
   await board.bind("BOARD_EXTRA", await boardExtra.getId(), chatB);
-  const chatC = await ws.newChat("What is in this workspace now?", SCRIPTED_MODEL_ID);
+  const chatC = await ws.newChat("What is in this workspace now?", SCRIPTED_MODEL_ID, "auto");
   await settle(ws, model, chatC, 2);
   const renamed = systemPromptOf(model.requests[1]);
   expect(renamed).toContain("Quarterly roadmap");
@@ -119,7 +119,7 @@ it.concurrent("a chat's prompt lists the workspace's gadgets and bindings as it 
   await ws.sendChatMessage(chatA, "And now?", SCRIPTED_MODEL_ID);
   await settle(ws, model, chatA, 3);
   expect(systemPromptOf(model.requests[2])).toBe(first);
-  const chatD = await ws.newChat("And after that change?", SCRIPTED_MODEL_ID);
+  const chatD = await ws.newChat("And after that change?", SCRIPTED_MODEL_ID, "auto");
   await settle(ws, model, chatD, 4);
   expect(systemPromptOf(model.requests[3])).toContain("BOARD_EXTRA");
 });
@@ -151,7 +151,7 @@ it.concurrent("a pasted link becomes a binding for that chat only", async () => 
   }];
 
   const firstMessage = "Read [0] for me.";
-  const chatId = await ws.newChat(firstMessage, SCRIPTED_MODEL_ID, {capsules: pasting(firstMessage)});
+  const chatId = await ws.newChat(firstMessage, SCRIPTED_MODEL_ID, "auto", {capsules: pasting(firstMessage)});
   await settle(ws, model, chatId, 2);
   expect(JSON.stringify(model.requests[0])).toContain("env.TEST_THING");
   expect(codeOutputs(await history(ws, chatId))).toEqual([expect.stringContaining("42")]);
@@ -169,7 +169,7 @@ it.concurrent("a pasted link becomes a binding for that chat only", async () => 
     [expect.objectContaining({ gatekeeperId: pastedId, bindingName: "TEST_THING" })],
   ]);
 
-  const otherChat = await ws.newChat("What can you reach?", SCRIPTED_MODEL_ID);
+  const otherChat = await ws.newChat("What can you reach?", SCRIPTED_MODEL_ID, "auto");
   await settle(ws, model, otherChat, 5);
   expect(JSON.stringify(model.requests[3])).not.toContain("TEST_THING");
   const [envNames] = codeOutputs(await history(ws, otherChat));
@@ -202,7 +202,7 @@ it.concurrent("an attachment reaches the model in its turn and stays in later tu
   const upload = {oid: await ws.uploadBlob(new TextEncoder().encode(notes)),
     mimeType: "text/plain", name: "agenda.txt"};
 
-  const chatId = await ws.newChat("Read the agenda.", SCRIPTED_MODEL_ID, {attachments: [upload]});
+  const chatId = await ws.newChat("Read the agenda.", SCRIPTED_MODEL_ID, "auto", {attachments: [upload]});
   await settle(ws, model, chatId, 1);
   const withAttachment = expect.stringMatching(/Read the agenda\.[^]*agenda\.txt[^]*Agenda: ship/);
   expect(userTexts(model.requests[0])).toEqual([withAttachment]);

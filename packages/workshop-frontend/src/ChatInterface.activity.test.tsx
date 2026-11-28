@@ -25,7 +25,7 @@ afterEach(() => { testRoot.cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(
 
 const agent = {type: "agent" as const, id: "model", name: "Test agent"};
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Chat ${id}`, started: new Date(), lastActive: new Date(), ...over,
+  id, title: `Chat ${id}`, mode: "auto", started: new Date(), lastActive: new Date(), ...over,
 });
 
 const setup = () => {
@@ -52,7 +52,7 @@ const setup = () => {
         onAgentActiveChange={activity}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-        onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
+        onOpenGadget={() => {}} onOpenFocus={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined} outputOfWorkpiece={() => undefined} />,
     ),
     metadata: (value: AiChatMetadata) => act(async () => { subscriber.metadata(value); }),
     deleted: (id: number) => act(async () => { subscriber.deleted(id); }),

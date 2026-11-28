@@ -138,7 +138,7 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
   const hooked = stack.use(await ws.createGadget("Hooked", undefined, "HOOKED"));
   // Bound before the chat opens: a permanent edge seeds a new chat's env under its name.
   await hooked.bind("TEST_THING", await connection.getId());
-  const chatId = await ws.newChat("Build the hook.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Build the hook.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the build turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect((await ws.mergeChanges(chatId)).outcome).toBe("merged");
@@ -155,6 +155,9 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
     return await binding.openSession() as RpcStub<TestSession>;
   };
   using session = await openSession();
+  // Writes outside any chat apply at once unless staging holds them, as it does once the
+  // workspace has read restricted data.
+  await session.readValue(true);
   const fixtureId = await session.writeValue(701);
   const [held] = await waitFor("the pending pre-reconnect write", async () => {
     const { entries } = await ws.listActions({ filter: "pending" });

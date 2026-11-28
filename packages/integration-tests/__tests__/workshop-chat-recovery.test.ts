@@ -53,7 +53,7 @@ async function recordFirstTurn(username: string, model: RoutedScriptedModel) {
   using recorderStub = stubFor(recorder);
   using _subscription = await ws.subscribeToChat(recorderStub);
 
-  const chatId = await ws.newChat("First", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("First", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
   await waitFor("the first reply on the original subscription", async () =>
@@ -82,7 +82,7 @@ it.concurrent("a transient provider failure is retried, and the turn answers wit
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the retried model request", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
@@ -106,7 +106,7 @@ it.concurrent(
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the failed model requests", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   let history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
@@ -172,7 +172,7 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
   await workpieces.loaded;
 
-  const chatId = await ws.newChat("Write the notes.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Write the notes.", SCRIPTED_MODEL_ID, "auto");
   // Request 3 means both tool steps have been saved at their step boundaries.
   await waitFor("the pending third step", async () => model.requests.length === 3 || null);
   await ws.stopAgent(chatId);
@@ -296,7 +296,7 @@ it.concurrent("a chat over its context budget compacts, and history pages across
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
   await ws.sendChatMessage(chatId, secondPrompt, SCRIPTED_MODEL_ID);
@@ -345,7 +345,9 @@ it.concurrent("discarding a compacted chat's changes keeps its summary", async (
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  // In Review, so that the first turn's changes are left to discard.
+  const chatId = await ws.newChat(
+      "First question", SCRIPTED_MODEL_ID, "review");
   await waitFor("the first turn's requests", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   await ws.sendChatMessage(chatId, "Second question.", SCRIPTED_MODEL_ID);
@@ -386,7 +388,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   await api.setPreferredModel(SCRIPTED_MODEL_ID);
   expect(await api.getPreferredModel()).toBe(SCRIPTED_MODEL_ID);
 
-  const chatId = await ws.newChat("Ask model A.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Ask model A.", SCRIPTED_MODEL_ID, "auto");
   const history = () => loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   const settled = async (model: RoutedScriptedModel, requests: number) => {
     await waitFor(`request ${requests}`, async () => model.requests.length === requests || null);

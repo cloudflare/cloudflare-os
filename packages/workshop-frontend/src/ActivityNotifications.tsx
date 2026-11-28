@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
@@ -8,6 +8,9 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './componen
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
+import {
+  canApproveAlone, OUTCOME_UNKNOWN_COPY, unsavedConnections,
+} from './features/approvals/pendingChangeGroups'
 import {
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
@@ -36,6 +39,7 @@ export default function ActivityNotifications({
   const [processing, setProcessing] = useState<Set<number>>(new Set())
   const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
   const { status, pending } = useActions(overseer)
+  const unsaved = useMemo(() => unsavedConnections(pending), [pending])
   // While restricted each request's approve/deny buttons name the shared notice and their own
   // request text as their description: both follow the controls in DOM order.
   const noticeId = useId()
@@ -140,14 +144,24 @@ export default function ActivityNotifications({
                         onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
-                      <ResolveButton
-                        tone="approve"
-                        disabled={isProcessing}
-                        onClick={() => void resolveAction(action, 'approve')}
-                        describedBy={describedBy}
-                      />
+                      {/* A chat's requests apply only when its changes are accepted, so only
+                          some are offered for approval on their own. */}
+                      {canApproveAlone(action, unsaved) && (
+                        <ResolveButton
+                          tone="approve"
+                          disabled={isProcessing}
+                          onClick={() => void resolveAction(action, 'approve')}
+                          describedBy={describedBy}
+                        />
+                      )}
                     </div>
                   </div>
+                  {action.type === 'action' && action.applyError && (
+                    <p role="alert" className="m-0 mt-1.5 text-[11.5px] leading-4 text-kumo-danger">
+                      Could not apply: {action.applyError.message}
+                      {action.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                    </p>
+                  )}
                   {fields.length > 0 && restricted && (
                     // Outside the preview button, which may hold only phrasing content.
                     <div id={fieldsId}>

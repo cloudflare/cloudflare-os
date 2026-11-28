@@ -888,6 +888,86 @@ Sharp edges:
 - **A base the gatekeeper keeps between reads is provider data.** A read served from it authorizes
   as any cached read does ([Observations](#observations)).
 
+### Branches: one view per session
+
+Each chat has its own branch of pending actions, and a session sees only its own view's
+(`BranchView` in `workshop-shared/src/gatekeeper.ts`; the design is
+[`plans/forking-reality.md`](../../plans/forking-reality.md)). The kit carries all of it: an author
+never reads a `BranchView`, filters by branch, or handles a submission still waiting for its reply.
+A gatekeeper adopts branches as a whole, by doing these things together:
+
+```ts
+// The facet: delegations. Pass `branch` straight through, without looking inside it.
+async startSession(queue: RpcStub<ApprovalQueue>, branch?: BranchView) {
+  const kept = queue.dup();
+  return new TaskSession(kept, await this.#actions.session(kept, branch), /* … */);
+}
+applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>) {
+  return this.#actions.applyList(branch, actions, { gitCache: cache, generation });
+}
+stageActions(branch: BranchView, actions: number[]) {
+  return this.#actions.stageList(branch, actions);
+}
+rejectAction(id: number) {
+  return this.#actions.rejectAction(id);
+}
+
+// The session: submit, and overlay what is pending, through the handle.
+await this.actions.submit("createTask", task, { fence: read });
+const tasks = replaySimulation(await api.listTasks(), this.actions.pending(), applyPending);
+```
+
+- **Implementing `applyActions()` is the declaration.** The Workshop then treats every action the
+  gatekeeper submits as being on its queue's branch, so every submission goes through a session
+  handle, hook firings included (`startHook()` returns the view beside the queue). Drop
+  `applyAction()` in the same release.
+- **Reads overlay `handle.pending()` on every read path**, afresh each time: staging changes under
+  every chat. It returns, in replay order, the actions submitted before the gatekeeper adopted
+  branches (which every session still sees), then staged actions, then the branch's own. That is
+  not ID order, so pass `keepOrder: true` to `createSimulationView`.
+- **Never cache simulated state across branches.** Cache what the provider said and overlay on every
+  read; a cache with pending actions folded in is wrong for every other branch unless keyed by
+  branch.
+- **`session()` may wait.** After a restart, the first session asks the Workshop about each
+  submission the previous activation never saw answered (`holdsAction()`), keeping those it holds
+  and deleting the rest through the `reject` hook, and no session reads or submits until the answer
+  is in. With none, it resolves at once.
+- **`applyList()` applies the Workshop's list in order** through each record's own handler, stops at
+  the first failure, and reports it retryable unless the record failed terminally, with
+  `outcomeUnknown` for an unknown outcome, which the Workshop then leaves for a user. Once it has
+  applied something it returns after about 30 seconds, and the Workshop calls again with the rest.
+  An optional `batch` hook on the set takes runs of consecutive actions of the kinds it names in one
+  provider call, all or nothing; a batch that throws anything but `ActionOutcomeUnknownError` is
+  applied again one action at a time.
+- **`stageList()` moves a branch's actions to staging** when the Workshop says they are staged
+  (`Gatekeeper.stageActions()`): a user accepted them on a resource not created yet, which nothing
+  can apply to until it is saved. It rewrites the records' stored view, so every session sees them
+  as staged actions and a later `applyList()` takes them as such; a repeated call changes nothing.
+  A gatekeeper that offers creation must delegate it, or accepted changes stay private to the chat.
+- **`rejectAction()` reports what a denial did**: the pending and failed actions that needed a
+  reference only the denied one provided are rejected with it, and `restart` asks for a restart when
+  a session was shown the action and something was built on it. `reject()` keeps its old behavior
+  for gatekeepers that have not adopted branches.
+- **Dependencies follow visibility.** `dependsOn` may name a reference only a visible pending action
+  provides: a staged action cannot build on a chat's, and a reference minted on one branch resolves
+  on another only once it is bound.
+- **Capacity is per branch** for submissions through a handle; one with no view still counts against
+  every unresolved action.
+- **Outside a session**, use `journal.pendingBefore(id)` for an apply-time guard over "the changes
+  queued before it" and `journal.pendingAfter(id)` for what was built on an action.
+  `listPendingAcrossBranches()` and `listUndecidedAcrossBranches()` read every branch and are for
+  housekeeping such as pruning stored files; `listPending()` and `listUndecided()` are their
+  deprecated names.
+
+Records submitted before the switch carry no view and stay valid: every view simulates them first,
+and they apply when a list names them.
+
+Test the switch with the branch harness from `./testing` (Workers only): `branchHarnessCases()`
+drives the facet through branch isolation, a refused submission, one awaiting its reply, and an
+apply that outruns the reply, given a callback that submits a marker and one that reads it back.
+Given `stageActions`, or `offersCreation: true` for a gatekeeper that offers creation, which then
+fails without it, it also checks that staged actions are seen by every view.
+
 ## Observations
 
 Every method that returns information to its caller must await `authorizeObservation()` before
@@ -968,7 +1048,9 @@ the reader already received what it replays. Re-reporting adds no admission work
 reads distinct requirement keys, though each read still checks its own audience.
 
 Content one chat writes into a pending action reaches every other chat and gadget on the connection
-before anyone approves it, with no requirement, and stays disclosed if the action is rejected. A
+before anyone approves it, with no requirement, and stays disclosed if the action is rejected,
+unless the gatekeeper has adopted branches ([Branches](#branches-one-view-per-session)): then only
+a staged action, or one submitted before the switch, reaches every session. A
 chat's audience is its "build" collaborators while a gadget's includes "use" collaborators, so text
 a chat quotes from a resource checked only against "build" collaborators can reach "use"
 collaborators this way. The kernel accepts this as indirect disclosure (`docs/observers.md` §10):

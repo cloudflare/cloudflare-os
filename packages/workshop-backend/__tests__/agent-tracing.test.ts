@@ -11,7 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import type { ActionRecord, AutoApproveTagRecord }
+import type { ActionRecord, ActiveAgentRecord }
   from "../src/storage-schema/overseer-storage.js";
 
 // The OverseerImpl members these tests drive; the class itself is private to overseer.ts.
@@ -34,7 +34,7 @@ interface OverseerInternals {
     chats: { put(message: AiChatMessage): void };
     gatekeepers: { put(record: object): void };
     actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
-    autoApproveTags: { put(record: AutoApproveTagRecord): void };
+    activeAgents: { put(record: ActiveAgentRecord): void };
     chatNotifications: OverseerDurableObject["impl"]["storage"]["chatNotifications"];
     nextChatSequences: OverseerDurableObject["impl"]["storage"]["nextChatSequences"];
   };
@@ -48,10 +48,10 @@ interface OverseerInternals {
   cancelAgent(chatId: number): void;
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
-  drainAutoApprovals(gatekeeperId: number): Promise<void>;
   getGatekeeperFacet(): Promise<{ applyAction(): Promise<void> }>;
-  applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
+  applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo)
       : Promise<void>;
+  proposedChangeWorkpieceIds(chatId: number, meta: AiChatMetadata): number[];
 }
 
 interface AiModel {
@@ -205,7 +205,7 @@ function startTurn(responses: (() => Response)[], {
       }),
     };
     impl.storage.chatMeta.put({
-      id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+      id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0),
       activeAgent: MODEL,
       ...(spawned ? {spawnerName: "Spawner"} : {}),
     });
@@ -406,16 +406,26 @@ describe("agent tracing", () => {
           resourceUrl: "https://example.com/repo", typeUrlPattern: "https://*",
         },
       });
-      impl.storage.autoApproveTags.put({ gatekeeperId: 7, actionKind: poke, enabledBy: OWNER });
+      impl.storage.chatMeta.put({
+        id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0),
+      });
+      impl.storage.activeAgents.put({
+        chatId: CHAT_ID, initiatorUserId: OWNER_USER_ID, modelId: MODEL.id, initiator: OWNER,
+        callbackInitiated: false,
+      });
+      impl.users = { ...impl.users, idFromString: (id: string) => id,
+        get: () => ({ getChatContext: async () => ({ profile: OWNER }) }) as never };
       impl.getGatekeeperFacet = async () => ({ applyAction: async () => {} });
 
-      // A rule approves this action without a request. (Submitted first: a pending manual gate
-      // holds back every later action of its connection.)
+      // A chat in Auto approves this action without a request: one the agent waits on applies as
+      // it is submitted. (Submitted first: a pending manual gate holds back every later action of
+      // its connection.)
       await impl.submitAction(7, 1, {
         title: "Poke", description: "", implementsRevert: false, autoApprovable: true,
-        actionKind: poke,
+        actionKind: poke, awaitDecision: true,
       }, { from: "agent", chatId: CHAT_ID });
-      await impl.drainAutoApprovals(7);
+      await vi.waitFor(() => expect([...impl.storage.actions.list()].find(record =>
+          record.type === "action" && record.action === 1)?.state).toBe("approved"));
       await impl.submitAction(7, 2, {
         title: `Send ${SECRET}`, description: SECRET, implementsRevert: false,
         autoApprovable: false,
@@ -431,7 +441,7 @@ describe("agent tracing", () => {
       expect(action(1)?.state).toBe("approved");
       let manual = action(2);
       if (manual === undefined) throw new Error("the agent's action was not queued");
-      await impl.applyPendingAction(manual, OWNER, false);
+      await impl.applyPendingAction(manual, OWNER);
     });
 
     let approvals: RecordedSpan[] = [];
@@ -506,6 +516,58 @@ describe("turn notifications", () => {
     turn.release();
     await turn.session;
     expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  // A turn that leaves its chat forked leaves the user a decision: accepting the chat.
+  it("asks for a decision when a turn leaves only code changes", async () => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, impl => {
+      impl.storage.chatMeta.put({
+        id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+        activeAgent: MODEL, mode: "review",
+      });
+      vi.spyOn(impl, "proposedChangeWorkpieceIds").mockReturnValue([5]);
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, "permissionRequested")]);
+  });
+
+  it("reports completion of a turn that leaves a chat in Fork nothing to accept", async () => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, impl => {
+      impl.storage.chatMeta.put({
+        id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+        activeAgent: MODEL, mode: "fork",
+      });
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  it("reports completion of a turn whose changes its chat in Auto accepted", async () => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, async impl => {
+      impl.storage.gatekeepers.put({id: 7, resourceTitle: "Repository", class: {}});
+      impl.getGatekeeperFacet = async () => ({ applyAction: async () => {} });
+      await impl.submitAction(7, 1, {
+        title: "Poke", description: "", implementsRevert: false, autoApprovable: true,
+      }, { from: "agent", chatId: CHAT_ID });
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+    await inOverseer(turn.workspace, impl => {
+      expect([...impl.storage.actions.list()]).toMatchObject(
+          [{state: "approved", resolvedBy: OWNER, autoApproved: true}]);
+    });
   });
 
   it("sends nothing for a turn that failed", async () => {

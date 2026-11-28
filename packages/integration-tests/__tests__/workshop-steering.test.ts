@@ -72,7 +72,7 @@ async function steerChat(usernamePrefix: string, script: readonly ChatCompletion
   using api = await signUp(publicApi, username!);
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
-  const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await ws.sendChatMessage(chatId, STEER, SCRIPTED_MODEL_ID);
   await test(ws, chatId, model, api);
@@ -235,7 +235,7 @@ it.concurrent("a steer sent while the chat compacts prompts the next turn", asyn
   using api = await signUp(publicApi, username!);
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
-  const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat(PROMPT, SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
 

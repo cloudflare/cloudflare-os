@@ -264,7 +264,7 @@ describe("Anthropic compaction in a chat", () => {
       bindings: {},
     });
     impl.storage.chatMeta.put(
-        { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     post(impl, OWNER, "Plan a recipe app.");
     post(impl, AGENT, "Recipe, Ingredient and Step.");
     post(impl, OWNER, "Add tags.");
@@ -336,7 +336,7 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const batch = (length: number) =>
       Array.from({ length }, (_, i) => ({ oid: blob.oid, mimeType: "image/png", name: `${i}.png` }));
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", {attachments: batch(5)});
+    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", "auto", {attachments: batch(5)});
     for (let i = 0; i < 3; ++i) {
       await impl.sendChatMessage(user, { profile: OWNER }, chatId, "Five more", {attachments: batch(5)});
     }
@@ -381,7 +381,7 @@ describe("Anthropic compaction of a chat's attachments", () => {
     const blob = impl.gitCache.writeBlob(png);
     const dot = { oid: blob.oid, mimeType: "image/png", name: "dot.png" };
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, { profile: OWNER }, "Look at this", { attachments: [dot] });
+    const chatId = await impl.newChat(user, { profile: OWNER }, "Look at this", "auto", { attachments: [dot] });
     impl.addChatMessages(chatId, AGENT, [{ type: "message", message: "", toolCalls:
       Array.from({ length: 20 }, (_, i) => ({ toolCallId: `look-${i}`, toolName: "readFile" as const,
         input: { workpiece: "ATTACHMENTS", filename: "dot.png" }, observedOid: blob.oid, imageBytes: 24 })),

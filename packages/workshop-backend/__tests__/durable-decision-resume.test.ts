@@ -120,7 +120,7 @@ async function scenario(kind: Kind | null = "connection", active = false, initia
   });
   await visit(impl => {
     const timestamp = impl.getChatTimestamp();
-    impl.storage.chatMeta.put({id: CHAT, title: "Resume", started: timestamp, lastActive: timestamp,
+    impl.storage.chatMeta.put({id: CHAT, title: "Resume", mode: "auto", started: timestamp, lastActive: timestamp,
       ...(active ? {activeAgent: MODEL.profile} : {})});
     impl.storage.chatContext.put({chatId: CHAT, bindings: {}, alwaysAvailableCapsuleIds: []});
     if (!kind) return;  // A new chat.
@@ -232,7 +232,9 @@ describe("awaitingDecision on a chat's metadata", () => {
     using client = await openClient(s);
     await (kind === "connection" ? client.denyConnectionRequest("1:connection") : client.rejectAction(7));
     // A denial resumes nothing, which is the write subscribers would otherwise hear it through.
-    expect(heard).toEqual([{awaiting: undefined, responding: false}]);
+    // (A denied action is also sent again as it leaves its chat's pending actions.)
+    expect(heard).not.toHaveLength(0);
+    for (const update of heard) expect(update).toEqual({awaiting: undefined, responding: false});
   });
 
   it("is not sent again when a turn ends with no decision", async () => {
@@ -329,13 +331,15 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it.each([1, 2])("always-approve drains and resumes a legacy pause with %i pending actions", async count => {
+  // Rules have no effect: chat modes replaced them (see Overseer.setAutoApprovedActionKind()).
+  it.each([1, 2])("enabling a rule applies nothing of a legacy pause with %i pending actions", async count => {
     const s = await scenario("action"), requests = inference();
     await s.visit(async impl => {
       impl.storage.activeAgents.delete(CHAT);
       modelLookup(impl, async () => ({profile: USER, aiModel: MODEL}));
-      // Only the rule-setting path reads this record; applying the external effect is stubbed below.
-      fakeGatekeeper(impl);
+      // The gatekeeper's apply is stubbed; the kernel records each action as applied.
+      const apply = vi.fn(async () => {});
+      fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
       const actionKind = {tag: "edit", label: "Edits"};
@@ -345,28 +349,20 @@ describe("decision handoff using the existing execution row", () => {
         }});
         if (i) impl.addChatMessages(CHAT, MODEL.profile, [{type: "action", actionId: 7 + i}]);
       }
-      const apply = vi.spyOn(impl, "applyPendingAction").mockImplementation(async record => {
-        impl.storage.actions.put({...record, state: "approved"});
-      });
-      let background: Promise<unknown> | undefined;
+      const background: Promise<unknown>[] = [];
       using client = await decisionClient(impl, USER, {ctx: {
         id: impl.ctx.id, exports: impl.ctx.exports,
-        waitUntil: (task: Promise<unknown>) => {
-          background = task;
-          void task.catch(() => {}); // Assert background failures through the captured promise.
-        },
+        waitUntil: (task: Promise<unknown>) => { background.push(task); },
       }});
       await client.setAutoApprovedActionKind(31, actionKind);
-      await background;
+      await Promise.all(background);
       expect(impl.storage.autoApproveTags.get("31:edit")?.enabledBy).toEqual(USER);
-      expect(apply).toHaveBeenCalledTimes(count);
       await impl.waitForAllAgentsToComplete();
-      expect([...impl.storage.actions.pendingByGatekeeper.get(31)]).toEqual([]);
-      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(1);
-      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
-      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(apply).not.toHaveBeenCalled();
+      expect([...impl.storage.actions.pendingByGatekeeper.get(31)]).toHaveLength(count);
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(0);
     });
-    expect(requests()).toBe(1);
+    expect(requests()).toBe(0);
   });
 
   it("records a connection decision with no agent author without attempting a model lookup", async () => {
@@ -1009,7 +1005,7 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(1);
   });
 
-  it.each([false, true])("claims an awaited action inside the apply path (auto-approved: %s)", async auto => {
+  it("claims an awaited action inside the apply path", async () => {
     const s = await scenario("action"), requests = inference();
     await s.visit(async impl => {
       const gate = Promise.withResolvers<void>();
@@ -1018,7 +1014,7 @@ describe("decision handoff using the existing execution row", () => {
       fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
-      await impl.applyPendingAction(action, USER, auto);
+      await impl.applyPendingAction(action, USER);
       expect(impl.storage.actions.get(7)?.state).toBe("approved");
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
       expect([...impl.storage.chats.list()].at(-1)?.type).toBe("agentNudge");
@@ -1034,24 +1030,26 @@ describe("decision handoff using the existing execution row", () => {
 // Property: a turn that staged writes carries on exactly once. fast-check generates what a user
 // does around a chat whose agent writes through one connection: prompt it (the turn stages one to
 // three awaited writes, each auto-approvable or not), approve or reject a pending write, in any
-// order, and switch the connection's "always approve" rule on or off, in sessions with a workspace
+// order, and switch the chat between Auto and Review, in sessions with a workspace
 // restart between them, while the provider may fail an apply. Each step goes through the session's
 // RPC interface. After every step the model requests made, the "approved" notes sent to the agent
 // and every write's state are checked against a model: a hung chat is a request that never came,
 // a double resume one too many.
 //
-// The model keeps the writes in submission order, the rule, and the writes the latest turn waits
-// on. Writes apply as auto-approval.ts documents: an approval applies its own write; after it, and
-// after a rejection, the rule being switched on, or an auto-approvable write being staged under
-// it, the pending writes the rule covers apply in order, up to the first that needs a person or
-// fails. A turn makes one more request once everything it staged is approved: within its step and
-// without a note if that all auto-applies, whether before the step ends or after; else as a resume,
-// when the last approval lands. A rejected write ends the wait for good, as does a newer prompt.
+// The model keeps the writes in submission order, the mode, and the writes the latest turn waits
+// on. All are on one chat's branch, so writes apply as the branch approval model has it: an
+// approval applies the chat's pending writes up to and including its own, in order, up to the
+// first that fails. In Auto, an auto-approvable write, with every pending write before it
+// auto-approvable too, applies so as it is staged; switching to Auto applies nothing. A rejection
+// applies nothing. A turn makes one more request once everything it staged is approved: within
+// its step and without a note if that all applied as it was staged, whether before the step ends
+// or after; else as a resume, when the last approval lands. A rejected write ends the wait for
+// good, as does a newer prompt. A turn that ends normally in Auto, with every pending write
+// auto-approvable, applies them all (the end-of-turn accept).
 //
 // Left out: concurrent decisions (pinned in integration-tests' workshop-agent-actions.test.ts),
 // and an apply that fails while the step that staged its write still runs, whose turn carries on
-// regardless (see #drainAutoApprovalsAndResume). Scenarios a seed might miss are pinned as
-// `examples`.
+// regardless. Scenarios a seed might miss are pinned as `examples`.
 
 const EDITS = {tag: "edit", label: "Edits"};
 
@@ -1062,12 +1060,13 @@ const EDITS = {tag: "edit", label: "Edits"};
 type Step =
   | {kind: "prompt"; writes: boolean[]; late: boolean}
   | {kind: "approve" | "reject"; pick: number; fail: number}
-  | {kind: "rule"; on: boolean; fail: number};
+  | {kind: "auto"; on: boolean; fail: number};
 
 class ResumeModel {
   states: ActionState[] = [];
   auto: boolean[] = [];
-  rule = false;
+  /** Whether the chat is in Auto, rather than in Review. */
+  inAuto = false;
   /** The writes the latest turn is suspended on. */
   waiting: number[] = [];
   requests = 0;
@@ -1080,10 +1079,23 @@ class ResumeModel {
     return true;
   }
 
-  #drain() {
-    for (const [i, state] of this.states.entries()) {
-      if (state === "pending" && !(this.rule && this.auto[i] && this.#apply(i))) return;
-    }
+  #pending(): number[] {
+    return this.states.flatMap((state, i) => state === "pending" ? [i] : []);
+  }
+
+  // Applies the pending writes up to and including `upTo`, in order, up to the first that fails.
+  #applyThrough(upTo: number): boolean {
+    return this.#pending().filter(i => i <= upTo).every(i => this.#apply(i));
+  }
+
+  // Whether the pending writes up to and including `upTo` may apply automatically.
+  #covers(upTo: number): boolean {
+    return this.inAuto && this.#pending().filter(i => i <= upTo).every(i => this.auto[i]);
+  }
+
+  // The end-of-turn accept.
+  #autoAccept() {
+    if (this.waiting.length === 0 && this.#covers(Infinity)) this.#applyThrough(Infinity);
   }
 
   #carryOn(resumed: boolean) {
@@ -1093,6 +1105,7 @@ class ResumeModel {
       this.waiting = [];
       this.requests++;
       if (resumed) this.nudges++;
+      this.#autoAccept();
     }
   }
 
@@ -1102,29 +1115,26 @@ class ResumeModel {
     for (const auto of writes) {
       this.states.push("pending");
       this.auto.push(auto);
-      if (this.rule && auto) this.#drain();
+      const i = this.states.length - 1;
+      if (this.#covers(i)) this.#applyThrough(i);
     }
     this.#carryOn(false);
   }
 
   /** False when the provider failed the approval, which leaves the write pending. */
   approve(i: number): boolean {
-    const applied = this.#apply(i);
-    if (applied) this.#drain();
+    const applied = this.#applyThrough(i);
     this.#carryOn(true);
     return applied;
   }
 
   reject(i: number) {
     this.states[i] = "rejected";
-    this.#drain();
     this.#carryOn(true);
   }
 
-  setRule(on: boolean) {
-    this.rule = on;
-    if (on) this.#drain();
-    this.#carryOn(true);
+  setAuto(on: boolean) {
+    this.inAuto = on;
   }
 }
 
@@ -1132,11 +1142,13 @@ class ResumeModel {
 async function replayDecisions(sessions: Step[][]) {
   vi.unstubAllGlobals();  // The previous run's provider.
   const s = await scenario(null), model = new ResumeModel();
+  // The model's chat starts in Review.
+  await s.visit(impl => impl.storage.chatMeta.put({...impl.storage.chatMeta.get(CHAT)!, mode: "review"}));
   // The writes the next executeCode call stages. Until it has, the provider answers with that call.
   let staged: boolean[] | undefined;
   let landing: PromiseWithResolvers<void> | undefined, fail = 0, at = 0;
   const requests = inference(undefined, () => staged !== undefined);
-  // A decision finishes in the background (the drain, and the turn it resumes), so a check first
+  // A decision finishes in the background (the applies, and the turn it resumes), so a check first
   // waits for everything the workspace has started.
   const background: Promise<unknown>[] = [];
   const check = (label: string) => s.visit(async impl => {
@@ -1189,10 +1201,9 @@ async function replayDecisions(sessions: Step[][]) {
         if (step.late) landing = Promise.withResolvers();
         await client.sendChatMessage(CHAT, "Write it.", MODEL.profile.id);
         model.prompt(step.writes);
-      } else if (step.kind === "rule") {
-        await (step.on ? client.setAutoApprovedActionKind(31, EDITS)
-            : client.removeAutoApprovedActionKind(31, EDITS.tag));
-        model.setRule(step.on);
+      } else if (step.kind === "auto") {
+        await client.setChatMode(CHAT, step.on ? "auto" : "review");
+        model.setAuto(step.on);
       } else if (pending.length) {
         const nth = step.pick % pending.length, write = pending[nth];
         // The ledger lists the newest first, under ids of its own.
@@ -1212,7 +1223,7 @@ async function replayDecisions(sessions: Step[][]) {
 }
 
 describe("decisions on a turn's staged writes, for generated sessions", () => {
-  const RULE_ON: Step = {kind: "rule", on: true, fail: 0};
+  const AUTO: Step = {kind: "auto", on: true, fail: 0};
   const fail = fc.constantFrom(0, 0, 0, 0, 1, 2);
   const pick = fc.nat({max: 5});
   const prompt = fc.record({kind: fc.constant("prompt" as const),
@@ -1221,40 +1232,41 @@ describe("decisions on a turn's staged writes, for generated sessions", () => {
   const step: fc.Arbitrary<Step> = fc.oneof(
     {weight: 8, arbitrary: fc.record({kind: fc.constant("approve" as const), pick, fail})},
     {weight: 1, arbitrary: fc.record({kind: fc.constant("reject" as const), pick, fail})},
-    {weight: 3, arbitrary: fc.record({kind: fc.constant("rule" as const),
+    {weight: 3, arbitrary: fc.record({kind: fc.constant("auto" as const),
       on: fc.constantFrom(true, true, false), fail})},
     {weight: 2, arbitrary: prompt},
   );
-  // A run opens on a prompt, as often as not with the rule already on, so that turns whose writes
-  // all auto-apply are common. The workspace restarts between a run's sessions.
+  // A run opens on a prompt, as often as not in Auto, so that turns whose writes all auto-apply
+  // are common. The workspace restarts between a run's sessions.
   const sessions = fc.tuple(fc.boolean(), prompt,
       fc.array(fc.array(step, {maxLength: 6}), {minLength: 1, maxLength: 3}))
-      .map(([ruled, first, [session, ...later]]): Step[][] =>
-          [[...ruled ? [RULE_ON] : [], first, ...session], ...later]);
+      .map(([auto, first, [session, ...later]]): Step[][] =>
+          [[...auto ? [AUTO] : [], first, ...session], ...later]);
 
   const examples: [Step[][]][] = [
-    // "Always approve" applies the first of two held writes and fails on the second, which the
-    // user approves after a restart: one resume, at the second.
+    // Switching to Auto applies neither of two held writes. The user approves the first, and the
+    // second after a restart: one resume, at the second.
     [[
-      [{kind: "prompt", writes: [true, true], late: false}, {kind: "rule", on: true, fail: 2}],
+      [{kind: "prompt", writes: [true, true], late: false}, AUTO,
+        {kind: "approve", pick: 0, fail: 0}],
       [{kind: "approve", pick: 0, fail: 0}],
     ]],
-    // A newer turn's auto-approvable write queues behind an older turn's held one, so that turn
-    // suspends too. Rejecting the older write applies the newer and resumes its turn.
+    // A newer turn's auto-approvable write waits behind an older turn's held one, so that turn
+    // suspends too. Rejecting the older write applies nothing, so the newer turn still waits.
     [[[
-      {kind: "prompt", writes: [false], late: false}, RULE_ON,
+      {kind: "prompt", writes: [false], late: false}, AUTO,
       {kind: "prompt", writes: [true], late: true}, {kind: "reject", pick: 0, fail: 0},
     ]]],
     // A rejection ends the wait: after a restart, neither approving another of the turn's writes,
-    // at the second attempt, nor always-approving the last resumes it.
+    // at the second attempt, nor switching to Auto, resumes it.
     [[
       [{kind: "prompt", writes: [false, true, true], late: false}, {kind: "reject", pick: 0, fail: 0}],
-      [{kind: "approve", pick: 0, fail: 1}, {kind: "approve", pick: 0, fail: 0}, RULE_ON],
+      [{kind: "approve", pick: 0, fail: 1}, {kind: "approve", pick: 0, fail: 0}, AUTO],
     ]],
     // Writes that all auto-apply after their step ended never suspended it. Of two later turns,
-    // approving the newer one's write resumes it, and then the older one's resumes nothing.
+    // approving the newer one's write applies the older one's too and resumes the newer turn.
     [[[
-      RULE_ON, {kind: "prompt", writes: [true, true], late: true},
+      AUTO, {kind: "prompt", writes: [true, true], late: true},
       {kind: "prompt", writes: [false], late: false}, {kind: "prompt", writes: [false], late: false},
       {kind: "approve", pick: 1, fail: 0}, {kind: "approve", pick: 0, fail: 0},
     ]]],

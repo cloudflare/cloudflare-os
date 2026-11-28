@@ -109,7 +109,7 @@ it.concurrent("a compaction lists the workspace's gadgets afresh, and later turn
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
   (await ws.createGadget("Meeting notes", undefined, "NOTES"))[Symbol.dispose]();
@@ -206,7 +206,7 @@ it.concurrent("compacting after a catalog change keeps the catalogs the chat saw
   await setSkills(label, ["Tax rules"]);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
   await waitForIdleChat(ws, chatId);
   await setSkills(label, ["Tax rules", "Travel policy"]);

@@ -256,7 +256,7 @@ async function staleChat(impl: any): Promise<{ h0: string, h1: string }> {
     bindings: {}, commitId: h0,
   });
   impl.storage.chatMeta.put(
-      { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
   await edit(impl, H0_FILES, CHAT_EDIT);
   let h1 = await commitFiles(impl, MAINLINE_EDIT, [h0]);
   setHead(impl, h1);
@@ -519,6 +519,32 @@ describe("what the agent is told of a revert", () => {
   }));
 });
 
+describe("what the agent is told of a denial", () => {
+  it("names the action the user denied", () => withImpl(async impl => {
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
+    putMessage(impl, { type: "actionDenied", actionId: 3, title: "Send the email" });
+    expect(await observations(impl)).toEqual([
+      `The user denied a pending change in this conversation, "Send the email". It will not ` +
+          `be applied, and reads no longer reflect it.`,
+    ]);
+  }));
+
+  it("says a denied action may have taken effect when its outcome was unknown", () =>
+      withImpl(async impl => {
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
+    putMessage(impl, {
+      type: "actionDenied", actionId: 3, title: "Send the email", outcomeUnknown: true,
+    });
+    expect(await observations(impl)).toEqual([
+      `The user denied a pending change in this conversation, "Send the email". An earlier ` +
+          `attempt to apply it may have taken effect anyway, so check the resource before ` +
+          `making the change again.`,
+    ]);
+  }));
+});
+
 // What the agent is shown of the user's changes at the start of its next turn: the results of
 // the observeUserChanges calls that replay inserts, in order.
 async function observations(impl: any): Promise<string[]> {
@@ -587,7 +613,7 @@ describe("what the agent is told of an update from mainline", () => {
       bindings: {}, commitId: h0,
     });
     impl.storage.chatMeta.put(
-        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     await edit(impl, BASE, CHATS);
     setHead(impl, await commitFiles(impl, mainline, [h0]));
     await impl.updateChatFromMainline(CHAT, USER);
@@ -632,7 +658,7 @@ describe("what the agent is told of an update from mainline", () => {
       bindings: {}, commitId: h0,
     });
     impl.storage.chatMeta.put(
-        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     await edit(impl, BASE, CHATS);
     expect(await agentReads(impl, CHATS)).toEqual(CHATS);
     setHead(impl, await commitFiles(impl, { ...BASE, "main.txt": "main!\n" }, [h0]));
@@ -725,7 +751,7 @@ function replayChats(steps: Step[]): Promise<void> {
         .map((own, i): ModelChat => ({ id: CHAT + i, own, pending: [], batches: 0 }));
     for (let { id } of chats) {
       impl.storage.chatMeta.put(
-          { id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id) });
+          { id, title: `Chat ${id}`, mode: "auto", started: new Date(0), lastActive: new Date(id) });
     }
     let latest = () => mainline.length - 1;
     let draft = (chat: ModelChat) =>

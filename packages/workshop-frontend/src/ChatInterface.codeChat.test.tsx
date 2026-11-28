@@ -31,11 +31,11 @@ const WORKING_CHAT = 2;
 const AGENT_CHAT = 5;
 const agent = {type: "agent" as const, id: "model", name: "Test agent"};
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(0), ...over,
+  id, title: `Chat ${id}`, mode: "auto", started: new Date(0), lastActive: new Date(0), ...over,
 });
 // Fixed, distinct times, since the list comes back most recently active first.
 const CHATS = [
-  chat(WORKING_CHAT, {lastActive: new Date(2000), proposedChangeWorkpieces: [3]}),
+  chat(WORKING_CHAT, {lastActive: new Date(2000), proposedChangeWorkpieces: [3], branchGadgets: [3]}),
   chat(AGENT_CHAT, {lastActive: new Date(1000), spawnerName: "Researcher"}),
 ];
 
@@ -73,7 +73,7 @@ const setup = () => {
         onSelectedChatProposedChangesChange={proposed} onChatListChange={listed}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-        onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+        onOpenGadget={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined} outputOfWorkpiece={() => undefined} />,
     ),
     metadata: (value: AiChatMetadata) => act(async () => { subscriber.metadata(value); }),
   };

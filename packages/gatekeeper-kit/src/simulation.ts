@@ -10,12 +10,12 @@ export type SimulationRecord<Action> = {
 
 /** Immutable, ordered simulation records, optionally indexed by target. */
 export type SimulationView<R extends SimulationRecord<unknown>, Target> = {
-  /** @returns Every visible record in action ID order. */
+  /** @returns Every visible record in replay order: by action ID unless the view kept its own. */
   readonly all: () => readonly R[];
   /**
    * Finds records affecting a target.
    * @param target Target to find.
-   * @returns Matching records in action ID order.
+   * @returns Matching records in replay order.
    */
   readonly forTarget: (target: Target) => readonly R[];
 };
@@ -25,13 +25,17 @@ export type SimulationView<R extends SimulationRecord<unknown>, Target> = {
  * caller-owned and must not be mutated afterwards.
  * @param records Journal snapshot.
  * @param targets Extracts targets from an action.
+ * @param options `keepOrder` keeps `records` in the order given instead of sorting them by ID.
+ * Pass it for a session handle's `pending()`, which is already in its view's replay order: staged
+ * actions come before a branch's own, whatever their IDs (see `BranchView`).
  * @returns A frozen, indexed simulation view.
  *
  * @example
  * ```ts
  * const pending = createSimulationView(
- *   journal.listPending(),
+ *   session.pending(),
  *   action => [action.projectId],
+ *   { keepOrder: true },
  * ).forTarget(project.id);
  * return replaySimulation(project, pending, applyPendingAction);
  * ```
@@ -39,8 +43,9 @@ export type SimulationView<R extends SimulationRecord<unknown>, Target> = {
 export function createSimulationView<R extends SimulationRecord<unknown>, Target>(
   records: readonly R[],
   targets: (action: R["action"]) => readonly Target[],
+  options: { keepOrder?: boolean } = {},
 ): SimulationView<R, Target> {
-  const all = Object.freeze(records.toSorted((a, b) => a.id - b.id));
+  const all = Object.freeze(options.keepOrder ? [...records] : records.toSorted((a, b) => a.id - b.id));
   const byTarget = new Map<Target, R[]>();
 
   for (const record of all) {

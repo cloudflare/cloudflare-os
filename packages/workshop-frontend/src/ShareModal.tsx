@@ -28,7 +28,7 @@ import { useUserDirectorySearch } from './features/user-directory/useUserDirecto
 import { useVendorBranding } from './useVendorBranding'
 import { ProtectedResourceList } from './ProtectedResourceList'
 import { ShareSnapshotPreview } from './ShareSnapshotPreview'
-import { getStoredSelectedModel } from './modelSelection'
+import { getStoredSelectedModel, newChatMode } from './modelSelection'
 import { logRpcFailure } from './rpcErrors'
 
 /**
@@ -1057,7 +1057,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         toasts.add({ title: 'No AI models are available to fix the gadget.', variant: 'error' })
         return
       }
-      const chatId = await overseer.newChat(snapshotFixPrompt(target.title), modelId)
+      const chatId = await overseer.newChat(snapshotFixPrompt(target.title), modelId,
+        newChatMode(currentUser?.id, containsRestrictedData))
       onClose()
       navigate({
         to: '/workspace/$id',

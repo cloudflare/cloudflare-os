@@ -29,7 +29,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type {
-  ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
+  ActionDescription, ActionKind, BranchId, Gatekeeper, GitObjectType, GitOid, HookController,
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
@@ -53,6 +53,16 @@ export type GatekeeperRecord = {
 
   /** Records how this gatekeeper was originally created, enabling blueprint metadata derivation. */
   creationSpec?: GatekeeperCreationSpec;
+
+  /**
+   * Set the first time the gatekeeper is found to implement Gatekeeper.applyActions(): the
+   * highest action ID recorded by then. The connection's pending actions up to it are its
+   * leftovers, recorded on no branch of the gatekeeper's: each is visible in every view and
+   * applied ahead of the rest, by name (see OverseerImpl.adoptsBranches). Absent while the
+   * gatekeeper applies one action at a time, so that every pending action is visible in every
+   * view. TODO: Remove once no leftover is pending.
+   */
+  leftoversThrough?: number;
 
   /**
    * Who created the connection: the member whose session made it, or the initiator of the agent
@@ -494,6 +504,9 @@ export type GatekeeperCaller = {
 export type StoredActionDescription =
     Omit<ActionDescription, "autoApprovable"> & {autoApprovable?: boolean};
 
+/** Why an action failed to apply (see ActionLogEntry.applyError). */
+export type ApplyError = {message: string, retryable: boolean, outcomeUnknown?: true};
+
 export type ActionRecord = {
   id: number,
   gatekeeperId: WorkpieceId;
@@ -503,9 +516,10 @@ export type ActionRecord = {
   createdAt: Date;
 
   /**
-   * When the record last changed state: an action's approval/rejection, a hook's enable/disable
-   * toggle or deletion. Absent while nothing has happened since creation (and on legacy records
-   * from before it was tracked).
+   * When the record last changed state: an action's approval/rejection, a failure to apply it or
+   * its accept on an unsaved resource (see `accepted`), a hook's enable/disable toggle or
+   * deletion. Absent while nothing has happened since creation (and on legacy records from before
+   * it was tracked).
    */
   appliedAt?: Date;
 
@@ -525,7 +539,41 @@ export type ActionRecord = {
   action: number | "create";
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
-  autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  autoApproved?: boolean;         // set when applied automatically rather than by a human
+  applyError?: ApplyError;  // see ActionLogEntry.applyError
+
+  /**
+   * The reconciliation mark: set on each action a Gatekeeper.applyActions() call names, before
+   * the call, and cleared once the call's result is recorded for it. Found already set when a
+   * call begins, it means an earlier call that named the action lost its result, so the action
+   * may have been applied then (see OverseerImpl.applyActionList).
+   */
+  applying?: true;
+
+  /**
+   * Set on a staged action that waits for a user's review instead of applying at once: one a
+   * gadget submitted while a "use" collaborator was using it, or had just been (see
+   * OverseerImpl.submitAction), and, by the version 10 migration, each one pending from before
+   * staging applied actions at once. Staging holds it, and what follows it on its connection,
+   * until a user decides it (see OverseerImpl.#stagedRun). Meaningless once it is decided.
+   */
+  heldForReview?: true;
+
+  /**
+   * Set when a user accepted the action on a connection whose resource was unsaved, its creation
+   * pending (see OverseerImpl.acceptBranch): who accepted it, when, and whether automatically.
+   * From then on staging holds it, whatever its caller (see actionBranch), until the resource is
+   * saved, which applies it as approved by `by`.
+   */
+  accepted?: {by: AiChatAuthorInfo, at: Date, autoApproved: boolean};
+
+  /**
+   * The move mark: set with `accepted` on each of a branch's actions that an accept is moving to
+   * staging, before its gatekeeper is told (Gatekeeper.stageActions()), and cleared once that call
+   * has returned. Until then the action stays on its branch, and the gatekeeper is told again
+   * before anything else happens on the connection (see OverseerImpl.settleMoves).
+   */
+  moving?: true;
 } | {
   type: "observation";
 
@@ -587,7 +635,8 @@ export type BoundHookRecord = {
   enabled: boolean;
 };
 
-/** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
+/** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper. It
+ * has no effect: chat modes replaced rules (see AiChatMetadata.mode). */
 export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
   /**
@@ -595,10 +644,7 @@ export type AutoApproveTagRecord = {
    * the rule was enabled so the rule can be listed without showing the raw machine tag.
    */
   actionKind: ActionKind;
-  /**
-   * Who turned this rule on. Auto-approvals run under this user's authority, so each auto-applied
-   * action is attributed to them in the audit log.
-   */
+  /** Who turned this rule on. */
   enabledBy: AiChatAuthorInfo;
 };
 
@@ -1237,6 +1283,30 @@ export function observerContextOf(caller: GatekeeperCaller): ObserverContext | u
   }
 }
 
+/**
+ * The branch `caller`'s actions join (see BranchView): its chat's, or null for a caller outside
+ * any chat, whose actions are staged. Chat IDs are never reused, so a branch ID names one chat's
+ * branch for good.
+ */
+export function branchOf(caller: GatekeeperCaller): BranchId | null {
+  return caller.from !== "hook" && caller.chatId !== undefined ? `chat:${caller.chatId}` : null;
+}
+
+/**
+ * The branch pending action `record` is on: its caller's (branchOf), or null, staging, once an
+ * accept on an unsaved resource has moved it there (see ActionRecord.accepted).
+ *
+ * The actions `pendingByBranch` index stores this mapping's result when each record is written,
+ * so changing it requires reindexing the pending records.
+ */
+export function actionBranch(record: ActionRecord): BranchId | null {
+  return record.type === "action" && record.accepted && !record.moving
+      ? null : branchOf(record.caller);
+}
+
+/** The `pendingByBranch` key of the pending records on no branch: staging. */
+export const STAGING_KEY = "staging";
+
 // Leads the part of an observer requirement key naming its context's type.
 const OBSERVER_CONTEXT_TAGS = {workspace: "w", chat: "c", gadget: "g"} as const;
 
@@ -1377,6 +1447,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
+      //   8 = the actions collection's pendingByBranch index exists and is backfilled.
+      //   9 = no pending action is on a connection the workspace no longer has.
+      //  10 = staged actions pending from before staging applied at once are marked
+      //       ActionRecord.heldForReview.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1425,8 +1499,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
       // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
       // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
-      // approval (autoApprovalRule never fires); the approver checks the action text for restricted
-      // data. The key on disk predates the flag's rename.
+      // approval (a chat in Auto reads as Review; see OverseerImpl.chatMode); the approver checks
+      // the action text for restricted data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
@@ -1591,9 +1665,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // The first three indexes are backfilled by the version-3 migration;
-        // byObserverRequirement needs none: no gatekeeper reported subresources before the
-        // Workshop enforced them, so no earlier observation is a requirement.
+        // The first three indexes are backfilled by the version-3 migration and pendingByBranch
+        // by the version-8 one; byObserverRequirement needs none: no gatekeeper reported
+        // subresources before the Workshop enforced them, so no earlier observation is a
+        // requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1630,6 +1705,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
             }
             return [...keys];
           },
+
+          // Sparse index over just the pending records, keyed by the branch they are on (see
+          // actionBranch), or STAGING_KEY for those on none, so that one chat's pending actions,
+          // or staging's, are one read in ID order.
+          pendingByBranch(record: ActionRecord) {
+            return record.state === "pending" ? actionBranch(record) ?? STAGING_KEY : null;
+          },
         }
       }),
 
@@ -1639,7 +1721,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // User-enabled rules to auto-approve actions carrying a given action kind on a given
       // gatekeeper. Presence of a record -> the rule is enabled. Keyed by
-      // `${gatekeeperId}:${actionKind.tag}`.
+      // `${gatekeeperId}:${actionKind.tag}`. Rules have no effect: chat modes replaced them (see
+      // AiChatMetadata.mode), and nothing consults them.
       autoApproveTags: collection<AutoApproveTagRecord>()({
         primaryKey: (r) => `${r.gatekeeperId}:${r.actionKind.tag}`,
       }),

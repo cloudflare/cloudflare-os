@@ -289,7 +289,7 @@ describe("a workspace's warm pings", () => {
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = (instance as unknown as { impl: OverseerInternals }).impl;
       impl.storage.chatMeta.put(
-          { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+          { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
       let workspaceCost = impl.storage.totalCost.get();
 
       impl.cacheWarmer.view(CHAT);

@@ -53,7 +53,7 @@ const MODEL = {name: "Model"} as AiChatAuthorInfo;
 
 const chat = (over: Partial<AiChatMetadata> & {id: number}): AiChatMetadata => ({
   title: `Chat ${over.id}`,
-  started: new Date(),
+  mode: "auto", started: new Date(),
   lastActive: new Date(),
   ...over,
 });
@@ -67,9 +67,8 @@ async function renderList(chats: AiChatMetadata[], extraOverseer: Record<string,
     onRpcBroken: () => {},
     subscribeToChat: () => ({[Symbol.dispose]: () => {}}),
     getChatHistory: async () => ({messages: []}),
-    // Read by the pending-changes tray, which labels its requests from the real rules.
+    // Read by the pending-changes tray, for its connections' vendors.
     listPreApprovableActions: async () => [],
-    listAutoApprovedActionKinds: async () => [],
     ...extraOverseer,
   });
   const stub = server.overseer;
@@ -81,7 +80,7 @@ async function renderList(chats: AiChatMetadata[], extraOverseer: Record<string,
         selectedChatId={selected} onNavigateToChat={navigate}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-        onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
+        onOpenGadget={() => {}} onOpenFocus={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined} outputOfWorkpiece={() => undefined} />,
     );
   };
   /** Render with whichever chat the route has selected, as navigating to one would. */

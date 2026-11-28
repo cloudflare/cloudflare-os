@@ -15,9 +15,6 @@ vi.mock('./AuthContext', () => {
   const context = { authenticatedApi: { listGatekeeperVendors: async () => [] }, currentUser: null }
   return { useAuthenticatedApi: () => context, useOptionalAuthenticatedApi: () => context }
 })
-vi.mock('./useAlwaysApproveTag', () => ({
-  useAlwaysApproveTag: () => ({ alwaysApproveTag: async () => {}, isTagAutoApproved: () => false }),
-}))
 
 import { deferred, entry, makeOverseer } from './action-test-harness'
 import Activity from './Activity'
@@ -71,7 +68,16 @@ function workspace() {
   } as unknown as BoundHookInfo]
   const enableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = true })
   const disableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = false })
-  return { server, overseer: { listHooks, enableHook, disableHook, [Symbol.dispose]: () => {} } }
+  return {
+    server,
+    overseer: {
+      listHooks, enableHook, disableHook,
+      // The page lists the unsaved resources among its connections from the action log.
+      subscribeToActions: async () => ({ [Symbol.dispose]: () => {} }),
+      listActions: async () => ({ entries: [] }),
+      [Symbol.dispose]: () => {},
+    },
+  }
 }
 
 /** The hook's record in the action log, as a bindHook card or history row shows it. */
@@ -136,7 +142,8 @@ describe('in the Activity log', () => {
     const server = makeOverseer()
     const enableHook = vi.fn<(id: number) => Promise<void>>(async () => {})
     Object.assign(server.overseer as object, { enableHook, disableHook: async () => {} })
-    await render(<Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />)
+    await render(<Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}}
+      chats={[]} onOpenChat={() => {}} />)
     await server.resolveSubscription()
     await server.resolvePage({ entries: [bound(false)] })
 
@@ -172,7 +179,7 @@ describe('in chat', () => {
     await render(
       <ChatInterface workspaceId="workspace" overseer={server.overseer} selectedChatId={1}
         onNavigateToChat={() => {}} pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
-        onConsumeConsoleLogs={() => ''} onDiscardConsoleLogs={() => {}} onOpenGadget={() => {}} onOpenFocus={() => {}}
+        onConsumeConsoleLogs={() => ''} onDiscardConsoleLogs={() => {}} onOpenGadget={() => {}} onOpenFocus={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined}
         outputOfWorkpiece={() => undefined} />,
     )
     await server.resolveSubscription()

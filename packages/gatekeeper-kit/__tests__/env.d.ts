@@ -6,19 +6,21 @@
 
 import type { HookHost, StorageHost, TrackerHost } from "./workerd/worker.js";
 import type { ConformanceAccount, ConformanceResource } from "./workerd/conformance/gatekeeper.js";
+import type { BranchGatekeeper } from "./workerd/branch-gatekeeper.js";
 
 declare global {
   namespace Cloudflare {
     interface GlobalProps {
       mainModule: typeof import("./workerd/worker.js");
-      durableNamespaces:
-        "TrackerHost" | "HookHost" | "ConformanceAccount" | "ConformanceResource" | "StorageHost";
+      durableNamespaces: "TrackerHost" | "HookHost" | "ConformanceAccount" | "ConformanceResource"
+        | "BranchGatekeeper" | "StorageHost";
     }
     interface Env {
       TRACKER_HOST: DurableObjectNamespace<TrackerHost>;
       HOOK_HOST: DurableObjectNamespace<HookHost>;
       CONFORMANCE_ACCOUNT: DurableObjectNamespace<ConformanceAccount>;
       CONFORMANCE_RESOURCE: DurableObjectNamespace<ConformanceResource>;
+      BRANCH_GATEKEEPER: DurableObjectNamespace<BranchGatekeeper>;
       STORAGE_HOST: DurableObjectNamespace<StorageHost>;
     }
   }

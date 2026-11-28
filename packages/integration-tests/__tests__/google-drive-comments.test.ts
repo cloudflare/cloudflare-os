@@ -160,7 +160,9 @@ it.concurrent("a read-only Drive connection refuses to comment, and a read and w
   ], [["DRIVE_RO", fileUrl(fileId)], ["DRIVE_RW", `${fileUrl(fileId)}?access=write`]]);
   const { ws, model } = state;
 
-  const chatId = await ws.newChat("Comment on the file.", SCRIPTED_MODEL_ID);
+  // In Review, so that the comment waits for the user's accept.
+  const chatId = await ws.newChat(
+      "Comment on the file.", SCRIPTED_MODEL_ID, "review");
   await waitFor("the comment turn", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);
@@ -232,7 +234,7 @@ it.concurrent("a collaborator who can only view a file is admitted to a workspac
 
   // The agent lists the file's comments to the end. It has none, and the empty page still reports
   // the file.
-  const chatId = await ws.newChat("Read the comments.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Read the comments.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the listing turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);

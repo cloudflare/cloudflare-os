@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
+  ActionDescription, ApprovalQueue, BranchView, GitCache, HookController, HookDescription,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,11 +52,19 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
   }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
+
   // No test here fetches through the session's caller's policy.
   async getFetcher(): Promise<Fetcher> {
     throw new Error("getFetcher() is not supported by this fake queue.");
   }
-
 }
 
 const METADATA = spreadsheetMetadata("sheet-1", "Budget", [

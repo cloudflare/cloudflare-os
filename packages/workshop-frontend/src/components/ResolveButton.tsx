@@ -6,8 +6,11 @@ export function ResolveButton({
   disabled,
   onClick,
   describedBy,
+  label,
 }: {
   tone: 'approve' | 'deny'
+  /** What the button says, in place of "Approve" or "Deny". */
+  label?: string
   variant?: 'quiet' | 'filled'
   disabled: boolean
   onClick: MouseEventHandler<HTMLButtonElement>
@@ -31,26 +34,7 @@ export function ResolveButton({
       aria-describedby={describedBy}
       className={`flex cursor-pointer items-center rounded-md text-[12px] font-medium tracking-[-0.15px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClassName}`}
     >
-      {tone === 'approve' ? 'Approve' : 'Deny'}
-    </button>
-  )
-}
-
-export function AlwaysApproveButton({
-  disabled,
-  onClick,
-}: {
-  disabled: boolean
-  onClick: MouseEventHandler<HTMLButtonElement>
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex h-6 cursor-pointer items-center rounded-md px-2 text-[12px] font-medium tracking-[-0.15px] text-kumo-inactive transition-colors enabled:hover:bg-kumo-tint enabled:hover:text-kumo-default disabled:cursor-not-allowed disabled:opacity-40"
-    >
-      Always approve
+      {label ?? (tone === 'approve' ? 'Approve' : 'Deny')}
     </button>
   )
 }

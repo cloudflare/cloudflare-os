@@ -70,7 +70,7 @@ it("a chat is charged the AI Gateway log's cost in place of the estimate", async
   using api = await signUp(publicApi, nextUsernames("gatewaycost")[0]!);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("What does this cost?", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("What does this cost?", SCRIPTED_MODEL_ID, "auto");
   await waitForIdleChat(ws, chatId);
   await waitFor("the gateway cost", async () =>
     (await ws.listChats()).find(chat => chat.id === chatId)?.totalCost === 1.25 || null);
@@ -177,7 +177,7 @@ it("an admin's modes, added models and say over users' own decide which models r
     // Disabled: nothing resolves it, the binding minted earlier included, and its ID stays taken.
     await expect(api.setPreferredModel(SCRIPTED_MODEL_ID))
         .rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
-    await expect(ws.newChat("Is anyone there?", SCRIPTED_MODEL_ID))
+    await expect(ws.newChat("Is anyone there?", SCRIPTED_MODEL_ID, "auto"))
         .rejects.toThrow(disabledMessage(scripted.name));
     await expect(ws.newAiModelGatekeeper(SCRIPTED_MODEL_ID))
         .rejects.toThrow(disabledMessage(scripted.name));
@@ -218,7 +218,7 @@ it("an admin's modes, added models and say over users' own decide which models r
     await admin.setGatewayModelMode(ADDED.id, "disabled");
     await expect(addedBinding.openSession()).rejects.toThrow(disabledMessage(ADDED.name));
     await admin.removeGatewayModel(ADDED.id);
-    await expect(ws.newChat("Is anyone there?", ADDED.id))
+    await expect(ws.newChat("Is anyone there?", ADDED.id, "auto"))
         .rejects.toThrow(`No such model: ${ADDED.id}`);
     await admin.addGatewayModel(ADDED);
     expect((await gatewayModels()).models.at(-1)).toEqual(ADDED_VIEW);
@@ -244,7 +244,7 @@ it("an admin's modes, added models and say over users' own decide which models r
     expect(await gatewayModels()).toEqual({ ...before, userModelsEnabled: false });
     expect(await api.getAiConfig()).toMatchObject({ enabled: true, userModelsEnabled: false });
     expect(ids(await api.listModels())).toEqual(offered);
-    await expect(ws.newChat("Is anyone there?", mine.id))
+    await expect(ws.newChat("Is anyone there?", mine.id, "auto"))
         .rejects.toThrow(cantBeUsedMessage(mine.name));
     await expect(mineBinding.openSession()).rejects.toThrow(cantBeUsedMessage(mine.name));
     await expect(api.addModel({ ...mine, id: "gatewaymodes-another" }, mineConfig))
@@ -299,7 +299,7 @@ it("an admin's reasoning levels reach a model's chat turns, its own ahead of the
   // The effort that a new chat's turn on the scripted model asks the provider for.
   const turnEffort = async () => {
     const sent = model.requests.length;
-    await waitForIdleChat(ws, await ws.newChat("How hard is this?", SCRIPTED_MODEL_ID));
+    await waitForIdleChat(ws, await ws.newChat("How hard is this?", SCRIPTED_MODEL_ID, "auto"));
     expect(model.requests).toHaveLength(sent + 1);
     return (model.requests[sent] as { reasoning_effort?: string }).reasoning_effort;
   };

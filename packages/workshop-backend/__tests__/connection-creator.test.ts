@@ -197,12 +197,15 @@ const RESOURCE_INPUT = {
   vendorId: VENDOR_ID, resourceUrlPattern: URL_PATTERN, title: "Notes", bindingName: "NOTES",
 };
 
-// Like withImpl, for createExternalResource(): the creation queues an action for approval, whose
-// trace needs a running agent. A collaborator's turn is under way in another chat, so that only
+// Like withImpl, for createExternalResource(): the creation queues an action for approval, on the
+// branch of a chat that exists, whose trace needs a running agent. A collaborator's turn is under way in another chat, so that only
 // the turn of the chat that creates the resource can name its creator.
 function withResourceImpl(fn: (impl: any) => Promise<void>): Promise<void> {
   return withImpl(async impl => {
     impl.traceAgentActionApproval = () => {};
+    // An action is refused for a chat that no longer exists (see submitAction).
+    let now = new Date();
+    impl.storage.chatMeta.put({id: CHAT_ID, title: "Chat", mode: "auto", started: now, lastActive: now});
     impl.storage.activeAgents.put({
       chatId: OTHER_CHAT_ID, initiatorUserId: COLLABORATOR_USER_ID, modelId: "some-model",
       initiator: COLLABORATOR, callbackInitiated: false,

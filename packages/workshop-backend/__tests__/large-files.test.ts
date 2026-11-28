@@ -54,7 +54,7 @@ async function chatWithWorktree(impl: Impl, files: Map<string, string>) {
     message: "large files", timestamp: new Date(0),
   });
   const user = env.TEST_USER.getByName(crypto.randomUUID());
-  const chatId = await impl.newChat(user, {profile: USER}, "Inspect");
+  const chatId = await impl.newChat(user, {profile: USER}, "Inspect", "auto");
   const create = fauxToolCall("createWorktree", {title: "Repo", bindingName: "REPO", commitId: commit});
   return {user, chatId, commit, create};
 }

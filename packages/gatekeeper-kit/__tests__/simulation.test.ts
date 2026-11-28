@@ -36,6 +36,14 @@ describe("createSimulationView", () => {
     expect(records.map(({ id }) => id)).toEqual([3, 1, 2]);
   });
 
+  it("keeps a view's own replay order when asked to", () => {
+    // A chat's view: a staged action with a higher ID comes before the chat's own.
+    const records = [record(5, "staged", "a"), record(2, "chat", "a")];
+    const view = createSimulationView(records, action => action.targets, { keepOrder: true });
+    expect(view.all().map(({ id }) => id)).toEqual([5, 2]);
+    expect(view.forTarget("a").map(({ id }) => id)).toEqual([5, 2]);
+  });
+
   it("coalesces provisional and real targets when the caller resolves them", () => {
     const ids = new ProvisionalIds<string>(makeKv(), { namespace: "pages:" });
     ids.bind("~1", "real-1");

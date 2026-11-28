@@ -1,41 +1,40 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Switch, useKumoToastManager } from '@cloudflare/kumo'
+import { useMemo, useState, type ReactNode } from 'react'
+import { useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
-import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
 import { WorkshopButton } from './components/WorkshopControls'
 import { useActions } from './useActions'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
-import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
-import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
-import { useAlwaysApproveTag } from './useAlwaysApproveTag'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
-import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
-import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
 import { ActionFields, entryFields } from './components/ActionFields'
+import { StagedChangesBar } from './features/approvals/StagedChangesBar'
+import {
+  awaitsSave, chatBranchPending, unsavedConnections, OUTCOME_UNKNOWN_COPY,
+} from './features/approvals/pendingChangeGroups'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
-export type ActivityView = 'review' | 'history' | 'auto'
+export type ActivityView = 'review' | 'history'
 
 const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
 interface ActivityProps {
   overseer: RpcStub<Overseer>
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden and
-  // existing rules are shown as suspended but stay revocable.
+  // Every request is then reviewed in full.
   restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
-  // Shared with the chat: a rule changed here has to reach the tray's own list.
-  autoApproval?: AutoApprovalChannel
+  // A chat's requests are accepted with its changes, so the review tab lists each chat with
+  // changes waiting, which opens in the chat panel, and what staging holds.
+  chats: readonly ChatWithChanges[]
+  onOpenChat: (chatId: number) => void
 }
 
 /** Pending-status copy while the pending set is still being gathered (also in the popover). */
@@ -90,6 +89,10 @@ function activityStatus(
       : { label: 'Disabled', dotClass: 'bg-kumo-inactive', textClass: 'text-kumo-subtle' }
   }
   if (record.state === 'pending') {
+    // Accepted while its resource was unsaved, and waiting on the resource being saved.
+    if (record.accepted) {
+      return { label: 'Accepted', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
+    }
     return { label: 'Pending', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
   }
   if (record.state === 'rejected') {
@@ -150,24 +153,19 @@ export default function Activity({
   restricted,
   view,
   onViewChange,
-  autoApproval,
+  chats,
+  onOpenChat,
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
-  const [confirmAutoApprove, setConfirmAutoApprove] = useState<{
-    actionId: number
-    gatekeeperId: number
-    resourceTitle: string
-    actionKind: ActionKind
-    actionLabel: string
-  } | null>(null)
 
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
+  const unsavedResources = useMemo(() => unsavedConnections(pendingActions), [pendingActions])
 
   // Grouped by day in id order (newest first). A day label can repeat when resolution order
   // differs from creation order — accepted for a paged, creation-ordered log.
@@ -201,74 +199,11 @@ export default function Activity({
     }
   }
 
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
-
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
   }
 
-  function renderReviewContent(): ReactNode {
-    if (pendingActions.length > 0) {
-      return (
-        <>
-          <div className={`${PANE_BAR} gap-2 px-5`}>
-            <span className="text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
-              {pendingActions.length} {pendingActions.length === 1 ? 'request' : 'requests'} waiting
-            </span>
-            <span className="ml-auto text-[11.5px] leading-[17px] text-kumo-inactive">Oldest first</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {pendingActions.map(record => {
-              const autoApproveTarget =
-                // Never auto-approved while restricted, so no rule is offered.
-                !restricted &&
-                record.type === 'action' && record.gatekeeperId !== undefined &&
-                record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
-                  ? {
-                      actionId: record.id,
-                      gatekeeperId: record.gatekeeperId,
-                      resourceTitle: record.resourceTitle,
-                      actionKind: record.description.actionKind,
-                      actionLabel: record.description.title,
-                    }
-                  : undefined
-              return (
-                <ReviewRequest
-                  key={record.id}
-                  record={record}
-                  restricted={restricted}
-                  expanded={expandedActionId === record.id}
-                  processing={processingActions.has(record.id)}
-                  onToggle={() => toggleExpanded(record.id)}
-                  decide={{
-                    onApprove: () => void resolveAction(record, 'approve'),
-                    onReject: () => void resolveAction(record, 'deny'),
-                    onAlwaysApprove:
-                      autoApproveTarget &&
-                      !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
-                        ? () => setConfirmAutoApprove(autoApproveTarget)
-                        : undefined,
-                  }}
-                />
-              )
-            })}
-            {pendingStatus === 'checking' && (
-              <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
-                Still checking older activity…
-              </p>
-            )}
-            {pendingStatus === 'error' && (
-              <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
-                Could not finish checking for requests — reload the page to try again.
-              </p>
-            )}
-          </div>
-        </>
-      )
-    }
-
+  function renderNothingToReview(): ReactNode {
     if (pendingStatus === 'checking') {
       return (
         <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
@@ -290,12 +225,137 @@ export default function Activity({
       <ActivityNotice
         icon={<Check size={17} weight="bold" />}
         title="Nothing to review"
-        description="Requests that need your approval show up here and in the workspace header."
       >
         <WorkshopButton className="mt-4" onClick={() => onViewChange('history')}>
           View history
         </WorkshopButton>
       </ActivityNotice>
+    )
+  }
+
+  // A chat's requests are accepted with its code, in the chat, so the review tab lists the chats
+  // rather than their requests. What staging holds belongs to no chat, so it is reviewed here:
+  // accepted or discarded as a whole, or denied one at a time.
+  //
+  // A resource an agent created stays unsaved after its chat is accepted, with the changes
+  // accepted on it, until someone saves it to an account. It has left the chat, so it is saved
+  // here, and what was accepted on it can still be denied.
+  function renderReviewContent(): ReactNode {
+    const staged = chatBranchPending(pendingActions, null)
+    const unsaved = unsavedResources
+    const toSave = [...unsaved.values()].flatMap(creation => {
+      const accepted = pendingActions.filter(record =>
+        record.gatekeeperId === creation.gatekeeperId && record.id !== creation.id &&
+        awaitsSave(record, unsaved))
+      return awaitsSave(creation, unsaved) || accepted.length > 0 ? [{ creation, accepted }] : []
+    })
+    const count = chats.length + (staged.length > 0 ? 1 : 0) + toSave.length
+    if (count === 0) {
+      return renderNothingToReview()
+    }
+    return (
+      <>
+        <div className={`${PANE_BAR} gap-2 px-5`}>
+          <span className="text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
+            {count} with changes to review
+          </span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {staged.length > 0 && (
+            <section aria-label="Held changes">
+              <StagedChangesBar
+                overseer={overseer}
+                requests={staged}
+                blocked={pendingStatus === 'ready' ? undefined
+                  : pendingStatus === 'error' ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY}
+              />
+              {staged.map(record => (
+                <div key={record.id}>
+                  {record.type === 'action' && record.applyError && (
+                    <p role="alert" className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger">
+                      Could not apply: {record.applyError.message}
+                      {record.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                    </p>
+                  )}
+                  <ReviewRequest
+                    record={record}
+                    restricted={restricted}
+                    expanded={expandedActionId === record.id}
+                    processing={processingActions.has(record.id)}
+                    onToggle={() => toggleExpanded(record.id)}
+                    decide={{ onReject: () => void resolveAction(record, 'deny') }}
+                  />
+                </div>
+              ))}
+            </section>
+          )}
+          {toSave.length > 0 && (
+            <section aria-label="Unsaved resources">
+              <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
+                Unsaved resources
+              </h3>
+              {toSave.map(({ creation, accepted }) => (
+                <div key={creation.id}>
+                  <ReviewRequest
+                    record={creation}
+                    restricted={restricted}
+                    expanded={expandedActionId === creation.id}
+                    processing={processingActions.has(creation.id)}
+                    onToggle={() => toggleExpanded(creation.id)}
+                    decide={{
+                      onApprove: awaitsSave(creation, unsaved)
+                        ? () => void resolveAction(creation, 'approve')
+                        : undefined,
+                      approveLabel: 'Save to account',
+                      onReject: () => void resolveAction(creation, 'deny'),
+                    }}
+                  />
+                  {accepted.map(record => (
+                    <div key={record.id} className="pl-4">
+                      {record.type === 'action' && record.accepted && (
+                        <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
+                          {record.accepted.autoApproved
+                            ? `Accepted automatically for ${record.accepted.by.name}`
+                            : `Accepted by ${record.accepted.by.name}`}
+                        </p>
+                      )}
+                      <ReviewRequest
+                        record={record}
+                        restricted={restricted}
+                        showResource={false}
+                        expanded={expandedActionId === record.id}
+                        processing={processingActions.has(record.id)}
+                        onToggle={() => toggleExpanded(record.id)}
+                        decide={{ onReject: () => void resolveAction(record, 'deny') }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </section>
+          )}
+          {chats.length > 0 && (
+            <section>
+              <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
+                Chats
+              </h3>
+              {chats.map(chat => (
+                <ChatChangesRow key={chat.id} chat={chat} onOpen={() => onOpenChat(chat.id)} />
+              ))}
+            </section>
+          )}
+          {pendingStatus === 'checking' && (
+            <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+              Still checking for held requests…
+            </p>
+          )}
+          {pendingStatus === 'error' && (
+            <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+              Could not finish checking for held requests — reload the page to try again.
+            </p>
+          )}
+        </div>
+      </>
     )
   }
 
@@ -422,15 +482,6 @@ export default function Activity({
             {renderHistoryBody()}
           </>
         )
-      case 'auto':
-        return (
-          <AutoApprovalPanel
-            overseer={overseer}
-            restricted={restricted}
-            reloadTrigger={autoApproval?.reloadTrigger}
-            onChanged={autoApproval?.changed}
-          />
-        )
     }
   }
 
@@ -438,196 +489,35 @@ export default function Activity({
     <div className="flex h-full flex-col bg-kumo-base">
       {renderActivityContent()}
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && confirmAutoApprove && (
-        <AutoApproveConfirmDialog
-          open
-          actionLabel={confirmAutoApprove.actionLabel}
-          resourceTitle={confirmAutoApprove.resourceTitle}
-          isProcessing={processingActions.has(confirmAutoApprove.actionId)}
-          onOpenChange={open => { if (!open) setConfirmAutoApprove(null) }}
-          onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = confirmAutoApprove
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
-              setConfirmAutoApprove(null)
-            }
-          }}
-        />
-      )}
       {creationAccountModal}
     </div>
   )
 }
 
-function AutoApprovalPanel({
-  overseer,
-  restricted,
-  reloadTrigger,
-  onChanged,
-}: {
-  overseer: RpcStub<Overseer>
-  restricted?: boolean
-  reloadTrigger?: number
-  /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
-  onChanged?: () => void
-}) {
-  const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
-  const { authenticatedApi } = useAuthenticatedApi()
-  const vendorBranding = useVendorBranding(authenticatedApi)
-
-  // No channel means no other surface to hear from, so the panel only ever reloads its own way.
-  const trigger = reloadTrigger ?? 0
-  const previousReloadTrigger = useRef(trigger)
-  // A change made here has already re-read the list on its way out, and its own end of the
-  // channel bumps the trigger for everyone else. Reacting to that bump would read the list a
-  // second time for no new answer.
-  //
-  // Counted rather than flagged, because several completions can land in one React batch. A
-  // flag would swallow the whole advance, so a change made on another surface alongside this
-  // panel's own would go unread: the rule it granted would stay invisible here, and so could not
-  // be revoked from this list, until something else happened to refresh it.
-  const changedHere = useRef(0)
-  useEffect(() => {
-    const advance = trigger - previousReloadTrigger.current
-    if (advance <= 0) return
-    previousReloadTrigger.current = trigger
-    const ours = Math.min(changedHere.current, advance)
-    changedHere.current -= ours
-    if (ours === advance) return
-    void refresh()
-  }, [trigger, refresh])
-
-  const groups = useMemo(() => {
-    const byConnection = new Map<
-      number,
-      { gatekeeperId: number; title: string; vendorId?: string; entries: AutoApprovalEntry[] }
-    >()
-    for (const entry of entries) {
-      const group = byConnection.get(entry.gatekeeperId)
-      if (group) group.entries.push(entry)
-      else {
-        byConnection.set(entry.gatekeeperId, {
-          gatekeeperId: entry.gatekeeperId,
-          title: entry.resourceTitle,
-          vendorId: entry.vendorId,
-          entries: [entry],
-        })
-      }
-    }
-    for (const group of byConnection.values()) {
-      group.title ||= 'Unavailable connection'
-      group.entries = group.entries.toSorted((a, b) =>
-        a.actionKind.label.localeCompare(b.actionKind.label))
-    }
-    return [...byConnection.values()].toSorted((a, b) => a.title.localeCompare(b.title))
-  }, [entries])
-
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-kumo-subtle">
-        Loading auto-approval…
-      </div>
-    )
-  }
-
-  if (entries.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-        <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-          {loadError ? 'Could not load auto-approval' : 'Nothing can run automatically'}
-        </p>
-        <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-          {loadError
-            ? 'The current rules may be incomplete. Try loading them again.'
-            : 'Action types appear here once a connected resource offers one its author marked safe to apply without review.'}
-        </p>
-        {loadError && (
-          <WorkshopButton className="mt-4" onClick={() => void refresh()}>
-            Retry
-          </WorkshopButton>
-        )}
-      </div>
-    )
-  }
-
+/** A chat with changes waiting, which opens the chat, where they are accepted. */
+const ChatChangesRow = ({ chat, onOpen }: { chat: ChatWithChanges; onOpen: () => void }) => {
+  const summary = [
+    chat.requests > 0 && (chat.requests === 1 ? '1 request to apply' : `${chat.requests} requests to apply`),
+    chat.codeChanges && 'code changes',
+    chat.holding && 'holding',
+    chat.awaitingDecision && 'waiting on your decision',
+  ].filter(part => part !== false).join(' · ')
   return (
-    <>
-      <div className={`${PANE_BAR} gap-3 px-5`}>
-        <p className="m-0 min-w-0 flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.2px] text-kumo-subtle">
-          {loadError
-            ? 'Some auto-approval options could not be loaded.'
-            : 'Actions agents may take without asking. Everything else waits for your review.'}
-        </p>
-        {loadError && (
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="cursor-pointer text-[12px] font-medium text-kumo-default hover:text-kumo-default-hover"
-          >
-            Retry
-          </button>
-        )}
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        {groups.map(group => (
-          <section key={group.gatekeeperId}>
-            <div className="sticky top-0 flex items-center gap-2 border-b border-kumo-line bg-kumo-base/90 px-5 py-1.5 backdrop-blur-sm">
-              <GatekeeperIcon
-                vendorId={group.vendorId}
-                {...(group.vendorId ? vendorBranding.get(group.vendorId) : undefined)}
-                fallbackText={group.title}
-                size={12}
-                className="h-5 w-5 rounded-md [&>img]:p-px"
-              />
-              <h3 className="m-0 min-w-0 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-subtle">
-                {group.title}
-              </h3>
-            </div>
-            {group.entries.map(entry => {
-              const key = autoApprovalKey(entry)
-              const busy = pending.has(key)
-              return (
-                <div
-                  key={key}
-                  className="flex w-full items-center gap-3 border-b border-kumo-line/60 px-5 py-2.5 text-left"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                      {entry.actionKind.label}
-                    </span>
-                    <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-                      {restricted
-                        // Rules don't apply while restricted; say so, but keep them revocable.
-                        ? "Won't apply: this workspace has read sensitive data, so actions always require manual approval."
-                        : entry.orphaned
-                          ? 'This connection no longer offers this action; the rule still applies.'
-                          : entry.enabled
-                            ? 'Applied without asking'
-                            : 'Waits for your approval'}
-                    </span>
-                  </span>
-                  <Switch
-                    size="sm"
-                    checked={entry.enabled}
-                    // A rule never fires while restricted, so enabling one is pointless; disabling
-                    // must stay possible.
-                    disabled={busy || (restricted === true && !entry.enabled)}
-                    aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
-                    // Toggling here is the only way to turn a rule off, and the chat tray
-                    // labels its requests from this same list, so it has to be told.
-                    onCheckedChange={enabled =>
-                      void setEnabled(entry, enabled).finally(() => {
-                        changedHere.current += 1
-                        onChanged?.()
-                      })}
-                  />
-                </div>
-              )
-            })}
-          </section>
-        ))}
-      </div>
-    </>
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full cursor-pointer items-center gap-3 border-b border-kumo-line/70 px-5 py-2.5 text-left transition-colors hover:bg-kumo-elevated/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-ring"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+          {chat.title || 'Chat'}
+        </span>
+        <span className="mt-0.5 block truncate text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
+          {summary.charAt(0).toUpperCase() + summary.slice(1)}
+        </span>
+      </span>
+      <CaretRight size={12} className="flex-shrink-0 text-kumo-inactive" />
+    </button>
   )
 }
 
@@ -647,6 +537,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
+  const accepted = record.type === 'action' && record.state === 'pending' ? record.accepted : undefined
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -693,7 +584,14 @@ function HistoryRow({
             <span className="text-kumo-subtle">{record.resourceTitle}</span>
             {resolvedBy && (
               <ResolverBadge profileId={resolvedBy.id}>
-                {autoApproved ? `Auto-approved (${resolvedBy.name}'s rule)` : `By ${resolvedBy.name}`}
+                {autoApproved ? `Auto-approved for ${resolvedBy.name}` : `By ${resolvedBy.name}`}
+              </ResolverBadge>
+            )}
+            {accepted && (
+              <ResolverBadge profileId={accepted.by.id}>
+                {accepted.autoApproved
+                  ? `Accepted automatically for ${accepted.by.name}`
+                  : `Accepted by ${accepted.by.name}`}
               </ResolverBadge>
             )}
             {resourceUrl && (

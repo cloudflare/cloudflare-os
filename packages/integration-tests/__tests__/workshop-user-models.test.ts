@@ -70,7 +70,7 @@ it("editing a model keeps its secrets usable without returning them", async () =
       .rejects.toThrow(/since the provider or API URL changed/);
 
   using ws = await api.newWorkspace();
-  const chatId = await ws.newChat("Prove the saved credentials work.", PROFILE.id);
+  const chatId = await ws.newChat("Prove the saved credentials work.", PROFILE.id, "auto");
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   expect(history.filter(message => message.type === "message" && message.author.type === "agent"))

@@ -15,8 +15,8 @@ import type {
   AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
-  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
-  type LegacyAgentSpawnerConfig, type OverseerStorage,
+  chatKeyPrefix, STAGING_KEY, type AgentSpawnerBindingProps, type BindingRecord,
+  type GadgetRecord, type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 7;
+export const OVERSEER_STORAGE_VERSION = 10;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -426,5 +426,66 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
   });
   host.logger.info("froze grants of every gadget", {
     event: "storage.migration.gadget-grants.completed",
+  });
+}
+
+/**
+ * Version 7 -> 8: backfill the actions `pendingByBranch` index, for the same reason as
+ * migrateToActionIndexes and in the same way.
+ */
+export function migrateToBranchIndex(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 7) return;
+  host.ctx.storage.transactionSync(() => {
+    host.storage.actions.pendingByBranch.rebuild();
+    host.storage.version.put(8);
+  });
+  host.logger.info("backfilled the pending-actions-by-branch index", {
+    event: "storage.migration.branch-index.completed",
+  });
+}
+
+/**
+ * Version 8 -> 9: marks rejected the pending actions left on connections removed before removing
+ * one did so itself (see OverseerImpl.removeGatekeeper). Nothing can apply or reject them, since
+ * their facet is gone, and accepting the chat or staging they are on would stop at them. Their
+ * pending-push marks went with the removal.
+ */
+export function migrateToRejectedOrphans(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 8) return;
+  host.ctx.storage.transactionSync(() => {
+    // Materialized first: rejecting one changes the index.
+    for (let record of Array.from(host.storage.actions.byHistoryFilter.get("pending"))) {
+      if (record.type !== "action" || host.storage.gatekeepers.get(record.gatekeeperId)) continue;
+      host.storage.actions.put({...record, state: "rejected", appliedAt: new Date()});
+    }
+    host.storage.version.put(9);
+  });
+  host.logger.info("rejected the pending actions of removed connections", {
+    event: "storage.migration.orphan-rejection.completed",
+  });
+}
+
+/**
+ * Version 9 -> 10: marks each staged action still pending ActionRecord.heldForReview. Before
+ * staging applied actions at once, such an action was waiting for a user's review, so it is held
+ * for one rather than applied, unreviewed, by the next apply on its connection.
+ *
+ * For the same reason, every chat is put in Review (see AiChatMetadata.mode): until now its user
+ * accepted its changes themselves, so no turn in it, one the upgrade interrupted included, ends
+ * by accepting them before the user chooses Auto.
+ */
+export function migrateToHeldStaging(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 9) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.actions.pendingByBranch.get(STAGING_KEY))) {
+      if (record.type === "action") host.storage.actions.put({...record, heldForReview: true});
+    }
+    for (let meta of Array.from(host.storage.chatMeta.list())) {
+      host.storage.chatMeta.put({...meta, mode: "review"});
+    }
+    host.storage.version.put(10);
+  });
+  host.logger.info("held the staged actions pending from before staging applied at once", {
+    event: "storage.migration.staging-hold.completed",
   });
 }

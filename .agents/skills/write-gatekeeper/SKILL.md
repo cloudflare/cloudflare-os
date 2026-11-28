@@ -201,9 +201,20 @@ Go through all the API methods and decide where to insert `submitAction()` calls
 
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
 
+**Build actions on gatekeeper-kit's `./actions`, kit-first.** Declare each kind with `defineActions`, keep the records in an `ActionJournal`, and adopt branches from the start: each chat has its own branch of pending actions, and a session must see only its own view's. The kit carries all of it, so the gatekeeper never reads a `BranchView` or handles a submission still awaiting its reply:
+
+- `startSession(queue, branch)` dups the queue and creates the session's handle with `await actions.session(kept, branch)`, passing `branch` through untouched. Every submission goes through the handle's `submit()`, and every read overlays the handle's `pending()` (see [Simulation](#simulation)). Hook firings start a handle the same way, from the view `startHook()` returns.
+- `applyActions(branch, actions, cache)` returns `actions.applyList(branch, actions, { gitCache: cache, generation })`. Implementing it is how the gatekeeper declares it has adopted branches, so implement no `applyAction()`.
+- `stageActions(branch, actions)` returns `actions.stageList(branch, actions)`: the Workshop moves a branch's actions to staging with it when a user accepts changes to a resource not created yet. Required for a gatekeeper that offers creation.
+- `rejectAction(id)` returns `actions.rejectAction(id)`, which also reports the dependents it rejected and whether sessions must restart.
+
+The kit's [Branches guide](../../../packages/gatekeeper-kit/USAGE.md#branches-one-view-per-session) has the details, and its `./testing` harness checks the result (see [Reviewing a gatekeeper](#reviewing-a-gatekeeper)).
+
+If a provider truly cannot use the kit's journal, the gatekeeper must keep the submission contract in `ApprovalQueue.submitAction()`'s documentation itself: store the action before submitting it, in a state nothing reads; make it visible only once `submitAction()` returns or the Workshop names it (an `applyActions()` list, a `rejectAction()`, `holdsAction()` answering yes); if `submitAction()` throws first, ask `holdsAction()`, and delete the action, and what was created for it, only when the Workshop does not hold it; and keep a record whose reply was never seen, after a restart or when that question got no answer, unread until `holdsAction()` settles it. Most hand-rolled stores have got this wrong.
+
 #### Action kinds and auto-approval
 
-Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. Nothing auto-applies until the user enables a rule for the kind; the verdict says whether honoring it is safe for *this* action.
+Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) whenever the verdict can be `true`; kit definitions always declare both. A chat its user put in Auto mode (Review is the default) accepts its changes at the end of a turn when every pending action's verdict is `true`, with no further opt-in, and one `false` leaves the whole chat for the user; the verdict says whether applying *this* action unseen is safe.
 
 **The default is `true`.** Use `false` only when the action:
 
@@ -218,7 +229,6 @@ Every action declares an `autoApprovable` verdict, and a kind (`{tag, label}`) w
 Exceptions, kept `true` by decision although a rule covers them; add one only with the maintainers' agreement:
 
 - Gmail's trash, spam, draft delete and label delete (rule 1): routine mailbox upkeep, and trash and spam are undone in Gmail.
-- GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
 - X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
 - Google Drive's comments and replies that mention an address after `@` or `+` (rule 2): Google emails the mentioned person the text, even one who cannot open the file; the comment itself goes on the bound file, and the gatekeeper looks for no mention, so the one "Drive comments" kind covers them (see `packages/gatekeeper-google/README.md`).
 - Google Docs table deletions, Google Slides slide and content deletions, and Google Sheets sheet, row and column deletions and merges (rule 1): Google's version history undoes them.
@@ -226,8 +236,6 @@ Exceptions, kept `true` by decision although a rule covers them; add one only wi
 Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
 
 Where the verdict depends on the payload, compute it instead of a blanket `false`: per payload in a hand-built `ActionDescription` (`autoApprovalOf` in `packages/gatekeeper-github/src/github.ts`), or in the kit as sibling definitions, one `true` and one `false`, that the session picks between at submit (`editSheetValues` and `updateSpreadsheet` in `packages/gatekeeper-google/src/sheets-actions.ts`). The existing definition keeps its name, since stored records resolve by it. When the facts behind a `true` can change before apply (an event gaining attendees), re-check at apply time.
-
-A newly `true` action gets a new tag, never one that already has a `true` action: users' stored rules would silently start covering it.
 
 It's critically important that you add `ApprovalQueue` to all API operations that interact with the outside world, otherwise the gatekeeper security model is broken.
 
@@ -246,7 +254,7 @@ The full Durable Objects storage API (including synchronous KV and SQLite) is do
 
 ### Simulation
 
-When `submitAction()` has been called but `applyAction()` hasn't, reads should reflect the pending action. This allows the calling agent or gadget to be unaware of the approvals mechanism, and proceed with follow-on work immediately. The end user is able to approve a whole batch of changes at once, later on.
+When `submitAction()` has been called but the action hasn't been applied, reads should reflect the pending action. This allows the calling agent or gadget to be unaware of the approvals mechanism, and proceed with follow-on work immediately. The end user is able to approve a whole batch of changes at once, later on.
 
 Two possible implementation approaches include:
 
@@ -254,7 +262,7 @@ Two possible implementation approaches include:
 
 2. **Overlay at read time** — Store pending actions separately; merge them into read results on demand. Cleaner separation; better when the overlay logic is straightforward.
 
-Choose based on the service's data model and the complexity of simulating each action type.
+Choose based on the service's data model and the complexity of simulating each action type. With branches, prefer the overlay: a cache with pending actions folded in is wrong for every branch but the one it was built for, unless keyed by branch. Cache what the provider said, and overlay the session handle's `pending()` on every read, read afresh each time, in the order it returns (staged actions first, whatever their IDs).
 
 **Simulation doesn't change what a read reports.** Provider data is anything that came from the
 provider's API, whether fetched by this read or earlier and cached.
@@ -272,11 +280,12 @@ provider's API, whether fetched by this read or earlier and cached.
 - Do not invent IDs for pending actions or simulated resources.
 
 Keep simulation and cached state in the connection's facet storage, never in the account Durable
-Object. Every chat and gadget on the connection reads it, so authorize each read through the reading
-session's own queue, never one captured at submission, and never assume the reader already received
-what it replays. Content one chat writes into a pending action reaches other chats and gadgets before
-approval, with no requirement, and stays disclosed if the action is rejected; the kernel accepts this
-as indirect disclosure (`docs/observers.md` §10). See the kit's
+Object. Every chat and gadget on the connection reads it, each through its own view, so authorize each
+read through the reading session's own queue, never one captured at submission, and never assume the
+reader already received what it replays. Content a chat writes into a pending action stays on that
+chat's branch until applied, but a staged action (from a session outside any chat) reaches every chat
+and gadget before approval, with no requirement, and stays disclosed if the action is rejected; the
+kernel accepts this as indirect disclosure (`docs/observers.md` §10). See the kit's
 [simulation rules](../../../packages/gatekeeper-kit/USAGE.md#simulation-and-subresources).
 
 Keep in mind that the agent calling the API (or the agent writing a gadget to call it) is generally not aware that actions do not take place immediately. If the simulation is correct, the agent doesn't need to be aware. If the simulation has gaps, you may want to mention it in your API's doc comments, so that the calling agent knows to work around them — but ideally there are no gaps and the calling agent does not need to think about it.
@@ -473,6 +482,7 @@ Reviews tend to stop at general correctness. The most important review is of the
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
   - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
+- **Branches.** Every submission goes through a kit session handle created from the view `startSession()` (or `startHook()`) was handed, every read overlays that handle's `pending()` rather than a facet-wide list (`listPendingAcrossBranches()` is for housekeeping only), no cache holds simulated state shared across branches, and `applyActions()`, `stageActions()` and `rejectAction()` delegate to the kit. Its tests run the kit's branch harness (`branchHarnessCases` from `@gadgets/gatekeeper-kit/testing`) against the facet.
 - **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 - **Hosted code.** A gatekeeper that runs untrusted code sends that code's egress through a `getFetcher()` `Fetcher`, takes a new one for each agent execution it runs code for, and keeps each environment to one workspace (see [Hosting untrusted code](#hosting-untrusted-code-the-callers-fetch-policy)).
 
@@ -481,7 +491,7 @@ Reviews tend to stop at general correctness. The most important review is of the
 - `types.txt` must be a **symlink** to `types.d.ts`, never a copy. Because it is delivered verbatim, `types.d.ts` must not import from other modules — inline any shared types (see [Documenting the API](#documenting-the-api-typesdts)).
 - Call `.dup()` on `approvalQueue` stubs before storing in a session, since Cap'n Web automatically disposes all stubs in parameters to an RPC call when the call returns.
 - `suggestedBindingName` in `describe()` reflects the resource **type** (e.g. `"GMAIL_INBOX"`), not the specific instance.
-- For read-only or push-only gatekeepers, `applyAction()` / `rejectAction()` / `revertAction()` can simply throw (they'll never be called since the gatekeeper never submits actions), and `getAutoApprovableActions()` returns `[]`.
+- For read-only or push-only gatekeepers, `rejectAction()` / `revertAction()` can simply throw (they'll never be called since the gatekeeper never submits actions), both apply methods can be left out, and `getAutoApprovableActions()` returns `[]`.
 - For `WorkerEntrypoint` and `DurableObject` subclasses, pass credentials and resource IDs via `ctx.props`, not constructor arguments. RPC stubs pointing to these types can be stored in long-term storage and restored later, creating a new instance based on the same `props`.
 - If the gatekeeper implements multiple unrelated resource types with disjoint APIs, each may have its own `.d.ts` file, so that the `getTypeScriptTypes()` method of the specific `Gatekeeper` implementation only returns the types that matter for it. The `getTypeScriptTypes()` method on the top-level `GatekeeperVendor` should return the concatenation of all of these.
 - All DO classes must appear in `cloudflare.config.ts`'s `migrations` export under `new_sqlite_classes`.

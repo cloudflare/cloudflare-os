@@ -55,7 +55,7 @@ import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
-import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
@@ -217,7 +217,6 @@ function WorkpieceGlyph({ summary, className }: { summary: WorkpieceSummary; cla
 
 const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
   { value: 'review', label: 'Needs review' },
-  { value: 'auto', label: 'Auto-approval' },
   { value: 'history', label: 'History' },
 ]
 
@@ -645,13 +644,12 @@ export default function GadgetEditor() {
 
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
-  // Shared by the chat and the Activity rule list, which can each change a rule the other is
-  // reading.
-  const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
+  // For the Activity page's review tab.
+  const [chatsWithChanges, setChatsWithChanges] = useState<readonly ChatWithChanges[]>([])
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
   const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
@@ -934,7 +932,8 @@ export default function GadgetEditor() {
   // Show the selected chat's draft only when it proposes changes to the *selected* gadget: a
   // chat that touched some other gadget would otherwise run this one as a needlessly separate
   // chat-scoped instance with identical code (the backend applies the same per-gadget rule in
-  // getGadgetFacetFetcher).
+  // getGadgetFacetFetcher). The list is of the gadgets that run on the chat's branch
+  // (AiChatMetadata.branchGadgets), by the same rule as the backend's.
   const previewChatId =
     workingChatId !== null && selectedGadgetId !== null &&
         selectedChatProposedWorkpieces.includes(selectedGadgetId)
@@ -1201,6 +1200,7 @@ export default function GadgetEditor() {
 
   useEffect(() => {
     setChatChanges(undefined)
+    setChatsWithChanges([])
     setLiveRows(undefined)
     setStreamingActiveFileState(null)
     setHasCode(null)
@@ -1608,12 +1608,13 @@ export default function GadgetEditor() {
       navigate, id])
 
   // ── workpiece picker handlers ───────────────────────────────────────────────────
-  const handleSelectWorkpiece = useCallback((workpieceId: WorkpieceId) => {
+  // Opens `tab`, by default the workpiece's app, or a worktree's code since that is all it has.
+  const openWorkpiece = useCallback((workpieceId: WorkpieceId, tab?: RightTab) => {
     if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
     const picked = workpieces.get(workpieceId)
     // Picking a workpiece is a deliberate move to its view, so the turn must not pull the tab
-    // back. A worktree has only Code.
-    handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
+    // back.
+    handleTabSelect(tab ?? (picked?.type === 'worktree' ? 'code' : 'app'))
     setWorkspaceVisibility('open', workpieceId)
     const pendingChatId = picked?.chatId
     // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
@@ -1632,6 +1633,12 @@ export default function GadgetEditor() {
       }),
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
+  const handleSelectWorkpiece = useCallback(
+    (workpieceId: WorkpieceId) => openWorkpiece(workpieceId), [openWorkpiece])
+  const handleOpenWorkpieceCode = useCallback(
+    (workpieceId: WorkpieceId) => openWorkpiece(workpieceId, 'code'), [openWorkpiece])
+  const workpieceOf = useCallback(
+    (workpieceId: WorkpieceId) => workpieces.get(workpieceId), [workpieces])
 
   // A sent message's focus chip. The gadget may since have been deleted, or be a draft this chat
   // can't show, and then there is nothing to open.
@@ -2241,6 +2248,7 @@ export default function GadgetEditor() {
                   workspaceId={id}
                   overseer={overseer.stub}
                   restricted={metadata?.containsRestrictedData === true}
+                  modeReadOnly={isUseOnly}
                   selectedChatId={shownChatId}
                   codeChatId={paneChatId}
                   returnChatId={agentChatId !== null ? workingChatId : null}
@@ -2267,11 +2275,12 @@ export default function GadgetEditor() {
                   onChatCountChange={handleChatCountChange}
                   onChatListChange={handleChatListChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  autoApproval={autoApproval}
-                  onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
+                  onChatsWithChangesChange={setChatsWithChanges}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
+                  onOpenWorkpieceCode={handleOpenWorkpieceCode}
+                  workpieceOf={workpieceOf}
                   outputOfWorkpiece={outputOfWorkpiece}
                   paneFocus={paneFocus}
                   onOpenFocus={handleOpenFocus}
@@ -2438,7 +2447,12 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  autoApproval={autoApproval}
+                  chats={chatsWithChanges}
+                  onOpenChat={chatId => {
+                    navigateToChat(chatId)
+                    // The chat is where its changes are accepted; on a phone the pane hides it.
+                    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+                  }}
                 />
               </div>
             )}

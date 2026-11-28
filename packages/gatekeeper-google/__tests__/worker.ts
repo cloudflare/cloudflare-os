@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  ActionDescription, ActionField, ActionKind, ApprovalQueue, BranchView, Gatekeeper, GitCache,
+  HookController, HookDescription, ObservationDescription, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { tableCounts } from "./doc-store-scenarios";
 import { TestGitCache } from "./test-git-cache";
@@ -299,11 +299,19 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
   }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
+
   // No test here fetches through the session's caller's policy.
   async getFetcher(): Promise<Fetcher> {
     throw new Error("getFetcher() is not supported by this fake queue.");
   }
-
 }
 
 export class TestHooks extends DurableObject<Env> {

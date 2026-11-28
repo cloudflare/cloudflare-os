@@ -57,7 +57,7 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
 
   await workspace.setTitle("Renamed Workspace");
   await authenticated.setWorkspacePinned(id, true);
-  await workspace.newChat("Record this without running an agent", null);
+  await workspace.newChat("Record this without running an agent", null, "auto");
 
   const listed = await waitFor("the active workspace to appear in the user's list", async () => {
     const workspaces = await authenticated.listWorkspaces();
@@ -83,7 +83,7 @@ it.concurrent("persists an ordered human-only chat without starting an agent", a
   using authenticated = await signUp(publicApi, username());
   using workspace = await authenticated.newWorkspace();
 
-  const chatId = await workspace.newChat("First message", null);
+  const chatId = await workspace.newChat("First message", null, "auto");
   await workspace.sendChatMessage(chatId, "Second message", null);
 
   const history = await workspace.getChatHistory(chatId);
@@ -112,8 +112,8 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   const oid = await ws.uploadBlob(content);
   expect(await ws.uploadBlob(content)).toBe(oid);
   const sent = {oid, mimeType: "text/plain", name: "a.txt"};
-  const chatA = await ws.newChat("With attachment", null, {attachments: [sent]});
-  const chatB = await ws.newChat("Without attachment", null);
+  const chatA = await ws.newChat("With attachment", null, "auto", {attachments: [sent]});
+  const chatB = await ws.newChat("Without attachment", null, "auto");
   const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
   if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
   const attachmentId = message.attachments[0].id;
@@ -123,7 +123,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
 
   await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, {attachments: [sent]});
   using otherWorkspace = await authenticated.newWorkspace();
-  await expect(otherWorkspace.newChat("Unknown blob", null, {attachments: [sent]}))
+  await expect(otherWorkspace.newChat("Unknown blob", null, "auto", {attachments: [sent]}))
     .rejects.toThrow("Unknown Git blob.");
   await otherWorkspace.deleteSelf();
 

@@ -382,7 +382,7 @@ describe("env.GIT presence", () => {
     seedGadget(impl, 100, { GIT: { target: 1 } });
     for (let id of [1, 2]) {
       impl.storage.chatMeta.put(
-          { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+          { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
     }
 
     await impl.prepareChatBindings(1, []);

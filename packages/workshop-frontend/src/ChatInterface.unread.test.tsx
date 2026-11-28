@@ -65,14 +65,14 @@ const renderChat = async (chat: AiChatMetadata, chats: NonNullable<ReturnType<ty
       selectedChatId={null} onNavigateToChat={() => {}}
       pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
+      onOpenGadget={() => {}} onOpenFocus={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined} outputOfWorkpiece={() => undefined} />,
   );
   if (chat.spawnerName) await showSpawnedChat();
   return {server, markRead, markUnread, setNotifications};
 };
 
 it.each([10, 0, undefined])("only offers the useful thread read action (unread count: %s)", async count => {
-  const chat: AiChatMetadata = {id: 1, title: "Unread test", started: new Date(), lastActive: new Date()};
+  const chat: AiChatMetadata = {id: 1, title: "Unread test", mode: "auto", started: new Date(), lastActive: new Date()};
   const {server, markRead, markUnread} = await renderChat(chat, count === undefined ? undefined : [{
     workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: count,
   }]);
@@ -106,7 +106,7 @@ it.each([
 ].flatMap(preference => [0, 2].map(count => ({...preference, count}))))(
     "changes notifications without disabling read actions (spawned: $spawned, enabled: $enabled, override: $override, unread: $count)",
     async ({spawned, enabled, override, expectedEnabled, count}) => {
-  const chat: AiChatMetadata = {id: 1, title: "Notification test", started: new Date(), lastActive: new Date(),
+  const chat: AiChatMetadata = {id: 1, title: "Notification test", mode: "auto", started: new Date(), lastActive: new Date(),
     notificationsRequireParticipation: enabled === undefined ? undefined : true, ...(spawned ? {spawnerName: "Spawner"} : {})};
   const {setNotifications} = await renderChat(chat, [{workspaceId: "workspace", chatId: 1,
     readThroughSequence: 0, unreadMessageCount: count, notificationsEnabled: enabled, notificationsEnabledOverride: override}]);
@@ -129,7 +129,7 @@ it.each([
 it.each([false, true].flatMap(spawned => [undefined, true].map(requiresParticipation => ({spawned, requiresParticipation}))))(
     "shows the source default before unread enrollment (spawned: $spawned, participation: $requiresParticipation)",
     async ({spawned, requiresParticipation}) => {
-  const chat: AiChatMetadata = {id: 1, title: "Empty chat", started: new Date(), lastActive: new Date(),
+  const chat: AiChatMetadata = {id: 1, title: "Empty chat", mode: "auto", started: new Date(), lastActive: new Date(),
     notificationsRequireParticipation: requiresParticipation, ...(spawned ? {spawnerName: "Spawner"} : {})};
   const {setNotifications} = await renderChat(chat, []);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Empty chat"]')!;

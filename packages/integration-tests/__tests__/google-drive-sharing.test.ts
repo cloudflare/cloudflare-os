@@ -174,7 +174,7 @@ it.concurrent("a share is shown pending, reaches Google only when approved, and 
   ], [["DRIVE", `${fileUrl(fileId)}?access=write`]]);
   const { ws, model } = state;
 
-  const chatId = await ws.newChat("Share the file.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Share the file.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the sharing turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);
@@ -230,7 +230,7 @@ it.concurrent("a move waits for its approval and then lands", async () => {
   ], [["DRIVE", `${folderUrl(rootId)}?access=write`]]);
   const { ws, model } = state;
 
-  const chatId = await ws.newChat("File it in the archive.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("File it in the archive.", SCRIPTED_MODEL_ID, "auto");
   const entry = await waitFor("the move to be queued", async () => {
     const { entries } = await ws.listActions({ filter: "pending" });
     return entries[0] ?? null;
@@ -273,7 +273,7 @@ it.concurrent("an organization's refusal reaches the approver with Google's reas
   ], [["DRIVE", `${fileUrl(fileId)}?access=write`]]);
   const { ws, model } = state;
 
-  const chatId = await ws.newChat("Share the file.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Share the file.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the sharing turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   const entry = await pendingAction(ws);
@@ -320,7 +320,7 @@ it.concurrent("a collaborator who can open a file sees its sharing in a shared w
 
   // The agent lists who the file is shared with. It is shared with nobody, and the empty listing
   // still reports the file.
-  const chatId = await ws.newChat("Read who the file is shared with.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Read who the file is shared with.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the listing turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);

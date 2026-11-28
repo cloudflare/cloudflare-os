@@ -71,7 +71,7 @@ function setHead(impl: any, id: number, commitId: string): void {
 
 function addChat(impl: any, id: number): void {
   impl.storage.chatMeta.put(
-      { id, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 }
 
 async function commitFiles(
@@ -1840,7 +1840,7 @@ describe("proposed-changes derivation", () => {
     addChat(impl, 1);
     // (Distinct lastActive: chatMeta.byLastActive is a unique index.)
     impl.storage.chatMeta.put(
-        { id: 2, title: "Chat 2", started: new Date(0), lastActive: new Date(1) });
+        { id: 2, title: "Chat 2", mode: "auto", started: new Date(0), lastActive: new Date(1) });
 
     // A provisional creation in chat 1, and a provisional binding edge on gadget 1 added by
     // chat 2 (seeded directly; only the edge's pending stamp matters here). A binding addition

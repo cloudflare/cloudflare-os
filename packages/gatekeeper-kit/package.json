@@ -35,7 +35,8 @@
     "./simulation": "./src/simulation.ts",
     "./simulation-store": "./src/simulation-store.ts",
     "./single-flight": "./src/single-flight.ts",
-    "./subresource-ids": "./src/subresource-ids.ts"
+    "./subresource-ids": "./src/subresource-ids.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",

@@ -55,7 +55,7 @@ included.
 
 ```sh
 pnpm cf-os api open-workspace <id> list-models                                 # the model ids
-pnpm cf-os api open-workspace <id> new-chat "Make a Counter gadget" <modelId>  # prints the chat id
+pnpm cf-os api open-workspace <id> new-chat "Make a Counter gadget" <modelId> auto  # prints the chat id
 pnpm cf-os api open-workspace <id> wait-for-agent <chatId> --timeout 300       # prints the reply
 pnpm cf-os api open-workspace <id> get-chat-history <chatId>
 pnpm cf-os api open-workspace <id> list-actions --options '{"filter": "pending"}'

@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
+import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Overseer } from '@gadgets/workshop-shared/api'
+
+const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
   // Render the popover inline (open or not) so its content is in the DOM to assert on.
   const Pass = ({ children }: { children?: React.ReactNode }) => children ?? null
   const parts = new Proxy(Pass, { get: () => Pass })
-  const toasts = { add: vi.fn<(options: unknown) => void>() }
+  const toasts = { add: addToast }
   return { ...actual, Popover: parts, useKumoToastManager: () => toasts }
 })
 
@@ -130,5 +134,100 @@ describe('ActivityNotifications action fields', () => {
   it('shows no count for a request without fields', async () => {
     await renderPending(false, true)
     expect(document.body.textContent).not.toMatch(/\d+ fields?/)
+  })
+})
+
+describe('ActivityNotifications approval', () => {
+  // Which of the rendered requests (by title) offer Approve beside Deny.
+  function approvableTitles(): string[] {
+    return [...document.querySelectorAll('button')]
+        .filter(button => button.textContent === 'Approve')
+        .map(button => button.closest('.flex.items-start')?.querySelector('span')?.textContent ?? '')
+  }
+
+  async function renderRequests() {
+    const server = makeOverseer()
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    const description = { description: '', implementsRevert: false, autoApprovable: true }
+    await server.resolvePendingQuery({
+      entries: [
+        entry(1, { chatId: 4, description: { ...description, title: 'Chat write' } }),
+        entry(2, { chatId: 4, description: { ...description, title: 'Awaited', awaitDecision: true } }),
+        entry(3, { description: { ...description, title: 'Staged write' } }),
+      ],
+    })
+    flushFrames()
+  }
+
+  it('offers Approve only where a request can apply without its chat being accepted', async () => {
+    await renderRequests()
+    expect(approvableTitles()).toEqual(['Awaited', 'Staged write'])
+    expect([...document.querySelectorAll('button')]
+        .filter(button => button.textContent === 'Deny')).toHaveLength(3)
+  })
+
+  it('says why a request failed, and offers no Approve once it cannot be retried', async () => {
+    const server = makeOverseer()
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    const description = {
+      title: 'Awaited', description: '', implementsRevert: false, autoApprovable: true,
+      awaitDecision: true,
+    }
+    await server.resolvePendingQuery({
+      entries: [entry(1, {
+        chatId: 4, description,
+        applyError: { message: 'Timed out.', retryable: false, outcomeUnknown: true },
+      })],
+    })
+    flushFrames()
+    expect(approvableTitles()).toEqual([])
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      'Could not apply: Timed out. It may have been applied anyway. Check the resource before you deny it.')
+  })
+
+  it('offers no Approve for a change to an unsaved resource, only for saving it', async () => {
+    const server = makeOverseer()
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    const description = { description: '', implementsRevert: false, autoApprovable: true }
+    const by = { type: 'user' as const, id: 'ada', name: 'Ada' }
+    const accepted = { by, at: new Date(0), autoApproved: false }
+    await server.resolvePendingQuery({
+      entries: [
+        entry(1, {
+          chatId: 4, gatekeeperId: 9, creation: true, accepted,
+          description: { ...description, title: 'Create sheet' },
+        }),
+        entry(2, {
+          chatId: 4, gatekeeperId: 9, accepted,
+          description: { ...description, title: 'Accepted edit' },
+        }),
+        entry(3, { gatekeeperId: 9, description: { ...description, title: 'Gadget edit' } }),
+      ],
+    })
+    flushFrames()
+    expect(approvableTitles()).toEqual(['Create sheet'])
+  })
+
+  it("tells the approver why an approval failed, since the gatekeeper's message says what to do",
+      async () => {
+    const message = 'The previous Gmail send outcome is still unknown. Deny this request to clear it.'
+    const server = makeOverseer()
+    Object.assign(server.overseer, {
+      approveAction: vi.fn<Overseer['approveAction']>(async () => { throw new Error(message) }),
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    flushFrames()
+
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+
+    expect(addToast).toHaveBeenCalledWith(
+      { title: 'Failed to approve action', description: message, variant: 'error' })
   })
 })

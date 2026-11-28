@@ -5,10 +5,19 @@ import type { RpcStub } from "cloudflare:workers";
 import type {
   ActionDescription,
   ActionKind,
+  ApplyActionsResult,
   ApprovalQueue,
+  BranchView,
   GitCache,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { ActionJournal, type ActionFence } from "./action-journal";
+import {
+  ActionJournal,
+  copyView,
+  couldSee,
+  type ActionFence,
+  type JournalEntry,
+  type JournalRecord,
+} from "./action-journal";
 import { SerialTaskQueue } from "./serial-queue";
 
 export {
@@ -25,13 +34,31 @@ export {
 /** The queue surface staging needs; a session's own approval-queue stub satisfies it. */
 export type ActionSubmitter = Pick<RpcStub<ApprovalQueue>, "submitAction">;
 
-type ActionLogFields =
-  { outcome: ResolveOutcome; vendorId: string; action: number; stranded: number };
+/**
+ * The queue surface a session handle needs: staging, and settling a submission an earlier
+ * activation left unconfirmed (see `BoundActionSet.session()`).
+ */
+export type ActionSessionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "holdsAction">;
+
+type ActionLogFields = {
+  outcome: ResolveOutcome; vendorId: string; action: number; stranded: number; settled: number;
+};
 
 const logger = createLogger<ActionLogFields>({ component: "gatekeeper.actions" });
 
 // Serialize submissions per journal so pruning cannot remove an in-flight staged record.
 const submissions = new WeakMap<object, SerialTaskQueue>();
+
+// The records each journal's lane is submitting right now. A staged record with a view that is not
+// among them was left by an earlier activation, and a session settles it (`listUnconfirmed`).
+const submitting = new WeakMap<object, Set<number>>();
+
+// Bounds what an apply failure hands the Workshop, which stores and shows it.
+const MAX_REPORTED_FAILURE = 1024;
+
+// How long one `applyList` call keeps starting actions once it has applied one. The Workshop calls
+// again with what is left, so this bounds a call's duration, not how much a list may hold.
+const APPLY_LIST_BUDGET_MS = 30_000;
 
 /**
  * Stages and submits an action for approval.
@@ -49,7 +76,13 @@ export function stageAction<A>(
   description: ActionDescription,
   fence?: ActionFence,
 ): Promise<number> {
-  return stage(journal, queue, action, description, fence);
+  return stage(journal, queue, action, description, { fence });
+}
+
+// Fails a submitted action that depends on `ref`, which nothing can still resolve.
+function markStranded<A>(journal: ActionJournal<A>, id: number, ref: string): void {
+  journal.markFailed(id, `This action needed ${ref}, whose providing action did not complete.`,
+    { undispatched: true });
 }
 
 // `unmet` names a provisional reference nothing can still resolve. Asked inside the lane, so it
@@ -60,36 +93,51 @@ function stage<A>(
   queue: ActionSubmitter,
   action: A,
   description: ActionDescription,
-  fence?: ActionFence,
-  unmet?: () => string | undefined,
+  { fence, unmet, view, holds }: {
+    fence?: ActionFence;
+    unmet?: () => string | undefined;
+    /** The view a session handle submits under, stored with the record. */
+    view?: BranchView;
+    /** Asks the Workshop whether it holds a submission, for one whose call failed. */
+    holds?: (id: number) => Promise<boolean>;
+  },
 ): Promise<number> {
   // Snapshotted before the lane yields, as `submit` does before `describe`.
   const staged = fence && { generation: fence.generation };
   let lane = submissions.get(journal);
   if (!lane) submissions.set(journal, lane = new SerialTaskQueue());
+  let inFlight = submitting.get(journal);
+  if (!inFlight) submitting.set(journal, inFlight = new Set());
   return lane.run(async () => {
     const refused = unmet?.();
     if (refused !== undefined) {
       throw new Error(`This action depends on ${refused}, which no pending action will create: the `
         + "action that was to create it was rejected or failed. Target an existing ID instead.");
     }
-    const id = journal.allocate(action, staged);
+    const id = journal.allocate(action, staged, view);
+    inFlight.add(id);
     try {
       await queue.submitAction(id, description);
     } catch (error) {
       // Rolled back only while still staged: an auto-approval can resolve the action mid-flight,
       // and a record that left "staged" proves the overseer received it -- only the reply was lost.
       if (journal.get(id)?.state === "staged") {
-        journal.rollbackSubmission(id);
-        throw error;
+        // A session's submission may have been recorded with only its reply lost, and one the
+        // Workshop holds is never dropped (see `ApprovalQueue.submitAction()`, rule 4). With no
+        // answer either, the record stays unconfirmed, as a crash would leave it.
+        const held = holds ? await holds(id).catch(() => undefined) : false;
+        // Read again: an apply naming the record meanwhile confirmed it, whatever the answer.
+        if (journal.get(id)?.state === "staged") {
+          if (held === false) journal.rollbackSubmission(id);
+          if (!held) throw error;
+        }
       }
+    } finally {
+      inFlight.delete(id);
     }
     journal.markSubmitted(id);
     const stranded = unmet?.();
-    if (stranded !== undefined) {
-      journal.markFailed(id, `This action needed ${stranded}, whose providing action did not `
-        + "complete.", { undispatched: true });
-    }
+    if (stranded !== undefined) markStranded(journal, id, stranded);
     return id;
   });
 }
@@ -276,10 +324,53 @@ export type ActionSetOptions<Host, M> = {
   isResolvedReference?(host: Host, ref: string): boolean;
   /** Vendor id for log attribution. */
   vendorId?: string;
+  /**
+   * Applies several consecutive actions of a list in one provider call (see `ActionBatch`).
+   * Only `applyList` uses it; `apply(id)` always runs one action's own handler.
+   */
+  batch?: ActionBatch<Host, M>;
 };
 
 /** A journal entry tagged with the kind that knows how to resolve it. */
 export type TaggedAction<M> = { [K in keyof M]: { kind: K; payload: M[K] } }[keyof M];
+
+/** One action of a batch: its ID, what it carries, and the fence it was staged under. */
+export type BatchedAction<M> = {
+  readonly id: number;
+  readonly action: TaggedAction<M>;
+  readonly fence?: ActionFence;
+};
+
+/**
+ * Coalesces consecutive actions of a list into one provider call, such as several document edits
+ * into one batch update. Optional: without it, `applyList` runs each action's own handler.
+ *
+ * A batch is a run of two or more consecutive actions in the list, each of a kind in `kinds`,
+ * each of which its own handler could run now: pending, fenced to the connection `applyList` was
+ * given, its references resolved. An action that names a reference an earlier one in the run
+ * provides ends the run, since that reference is bound only once the earlier one applies.
+ * Claims are taken first when any of the batch's definitions sets `claimBeforeApply`.
+ *
+ * `apply` is all or nothing. Resolving applies every action in the batch. Throwing
+ * `ActionOutcomeUnknownError` records every one as having an unknown outcome, and the list stops
+ * at the first. Any other error says nothing landed, so the kit applies the same actions again
+ * one at a time through their own handlers, which pin a failure on the action that caused it.
+ */
+export type ActionBatch<Host, M> = {
+  /** The kinds `apply` accepts. */
+  readonly kinds: readonly (keyof M)[];
+  /**
+   * Applies `actions`, in order, in one provider call.
+   * @param actions The batch, in the list's order.
+   * @param host Bound provider host.
+   * @param ctx The apply-time git cache, when the Workshop passed one.
+   */
+  apply(
+    actions: readonly BatchedAction<M>[],
+    host: Host,
+    ctx: { readonly gitCache?: RpcStub<GitCache> },
+  ): Promise<void>;
+};
 
 /** Approval-time context the overseer hands `Gatekeeper.applyAction`. */
 export type ActionApplyContext = {
@@ -326,10 +417,75 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
    */
   apply(id: number, context?: ActionApplyContext): Promise<void>;
   /**
-   * Rejects an action, including one whose definition was removed after submission.
+   * Rejects an action, including one whose definition was removed after submission. The pending
+   * actions that needed a reference only it was to provide are marked failed and left for the
+   * user, as before denials reported their consequences; `rejectAction()` rejects them with it.
    * @param id Action ID to reject.
    */
   reject(id: number): Promise<void>;
+  /**
+   * Starts a session's use of this set: what backs `Gatekeeper.startSession()` once the
+   * gatekeeper implements `applyActions()` (see `applyList`). The handle submits under `branch`
+   * and reads only the pending actions visible in it, so a session cannot see another branch's
+   * actions or file its own on the wrong one. Pass the view the facet was handed, without looking
+   * inside it, and the queue the session keeps (its own `dup()`): the handle calls through it.
+   *
+   * Resolves at once, unless an earlier activation left a submission whose reply it never saw.
+   * Then the first session asks the Workshop whether it holds each one (`holdsAction()`), keeps
+   * those it does and deletes the rest, releasing what their staging set up through the `reject`
+   * hook, before it resolves. Sessions that start meanwhile wait for the same answers, so none
+   * reads or submits around an unsettled record (`ApprovalQueue.submitAction()`, rule 4). If the
+   * question fails, so does this call, and the next session asks again.
+   * @param queue The session's approval queue.
+   * @param branch The view the facet was handed; absent means a session outside any chat.
+   * @returns The session's handle.
+   */
+  session(queue: ActionSessionQueue, branch?: BranchView): Promise<ActionSession<M>>;
+  /**
+   * Applies the actions the Workshop listed, in order: what `Gatekeeper.applyActions()` delegates
+   * to. Each runs through `apply`'s own path, so its definition's handler, claim, fence and
+   * failure classes behave exactly as there; naming a record still waiting for its
+   * `submitAction()` reply confirms it. Stops at the first action that fails and reports it:
+   * `retryable` is false when the record failed terminally (`ActionApplyError`, an unknown
+   * outcome, a replaced connection, a kind no longer declared), which only a rejection clears.
+   * `outcomeUnknown` marks the unknown outcome, which a later call reports again without
+   * dispatching it.
+   *
+   * An action already applied, by an earlier call whose result was lost, is reported applied
+   * again, without a second provider call. One this journal does not hold is left out of the
+   * result. A record with no view, from before the gatekeeper adopted branches, is applied like
+   * any other. Once it has applied something, a call stops starting actions after 30 seconds and
+   * returns, and the Workshop calls again with what is left.
+   * @param branch The view the Workshop applies through.
+   * @param actions The actions to apply, in order.
+   * @param context Apply-time context, as for `apply`.
+   * @returns What the call applied, and the failure that stopped it.
+   */
+  applyList(branch: BranchView, actions: readonly number[], context?: ActionApplyContext):
+    Promise<ApplyActionsResult>;
+  /**
+   * Stages the actions the Workshop listed, pending on `branch`'s branch: what
+   * `Gatekeeper.stageActions()` delegates to, beside `applyList`. Each record this journal holds
+   * among them is restaged (`ActionJournal.restage()`), so that every view sees it, ahead of
+   * every branch's actions, and a later `applyList` takes it as a staged action; naming a record
+   * still waiting for its `submitAction()` reply confirms it. One it does not hold, or that is
+   * staged already, is passed over, so a repeated call changes nothing.
+   * @param branch The view the actions were submitted under.
+   * @param actions The actions to stage.
+   */
+  stageList(branch: BranchView, actions: readonly number[]): Promise<void>;
+  /**
+   * Rejects an action and reports what that did: what `Gatekeeper.rejectAction()` delegates to
+   * once the gatekeeper implements `applyActions()`. Unlike `reject`, it also rejects every
+   * pending or failed action that needed a reference only this one was to provide, transitively,
+   * among those whose view could see it, running each one's `reject` hook as for a rejection of
+   * its own; the Workshop marks them rejected from `rejected`. `restart` is true when a session
+   * was shown the action and a pending action was built on it (see `pendingAfter`), so that
+   * simulated work may have relied on it.
+   * @param id Action ID to reject.
+   * @returns Whether sessions built on it should restart, and the other actions rejected with it.
+   */
+  rejectAction(id: number): Promise<ActionRejection>;
   /** @returns Action kinds eligible for automatic approval. */
   autoApprovableKinds(): ActionKind[];
   /** The retention flag in force, which the facet base's revert-hook assert reads. */
@@ -348,6 +504,47 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
   runExclusive<T>(hook: () => T | Promise<T>): Promise<T>;
 };
 
+/**
+ * One session's use of a bound action set, scoped to the view it reads through. The only way
+ * session code should reach pending actions once the gatekeeper adopts branches.
+ */
+export type ActionSession<M extends Record<string, unknown>> = {
+  /** The view this session reads through and submits under, as the facet was handed it. */
+  readonly view: BranchView;
+  /**
+   * Submits an action under this session's view, as `BoundActionSet.submit` does through this
+   * session's queue. Its `dependsOn` may name only references a pending action visible here
+   * provides, or ones already resolved.
+   * @param kind Declared action kind.
+   * @param payload Action payload.
+   * @param options `fence`, as for `BoundActionSet.submit`.
+   * @returns The allocated action ID.
+   */
+  submit<K extends keyof M>(kind: K, payload: M[K], options?: { fence?: ActionFence }):
+    Promise<number>;
+  /**
+   * The pending actions this session simulates, in the order to replay them: those submitted
+   * before the gatekeeper adopted branches, then staged ones, then this branch's and its
+   * ancestors'. Read it afresh for every read: staging changes under every chat. Replay it in this
+   * order, which is not ID order (`createSimulationView` keeps it with `keepOrder: true`).
+   * @returns Projected pending actions visible in this view.
+   */
+  pending(): JournalEntry<TaggedAction<M>>[];
+  /**
+   * As `pending()`, without actions an apply has claimed.
+   * @returns Undecided actions visible in this view, in its order.
+   */
+  undecided(): JournalEntry<TaggedAction<M>>[];
+};
+
+/** What `BoundActionSet.rejectAction()` did, in the shape `Gatekeeper.rejectAction()` returns. */
+export type ActionRejection = {
+  /** Whether simulated work may have been built on the rejected action. */
+  restart: boolean;
+  /** The other actions rejected along with it, because they could not apply without it. */
+  rejected: number[];
+};
+
 /** Action declarations that can be bound to a resource journal and host. */
 export type ActionSet<Host, M extends Record<string, unknown>> = {
   /**
@@ -359,35 +556,39 @@ export type ActionSet<Host, M extends Record<string, unknown>> = {
   bind(journal: ActionJournal<TaggedAction<M>>, host: Host): BoundActionSet<M>;
 };
 
-// Pending action references used to find stranded dependents.
-type ActionRefs = { id: number; provides: readonly string[]; dependsOn: readonly string[] };
+// Pending action references used to find stranded dependents, with the view each was submitted
+// under.
+type ActionRefs = {
+  id: number; view?: BranchView; provides: readonly string[]; dependsOn: readonly string[];
+};
 
-// Find actions transitively stranded by unresolved provisional references. `isDead` prunes the
-// walk: a reference it clears still resolves for dependents, however its provider ended.
+// Find actions transitively stranded by unresolved provisional references, starting from those
+// `origin` provides. `isDead` prunes the walk: a reference it clears still resolves for dependents,
+// however its provider ended. A dependent is stranded only through a provider its view could see:
+// a reference minted on one branch means nothing on another until it is bound.
 function strandedBy(
+  origin: Pick<ActionRefs, "id" | "view">,
   dead: readonly string[],
   pending: readonly ActionRefs[],
   isDead: (ref: string) => boolean = () => true,
 ): number[] {
-  const dependents = new Map<string, number[]>();
-  const provides = new Map<number, readonly string[]>();
+  const dependents = new Map<string, ActionRefs[]>();
   for (const entry of pending) {
-    provides.set(entry.id, entry.provides);
     for (const ref of entry.dependsOn) {
       const waiting = dependents.get(ref);
-      if (waiting) waiting.push(entry.id);
-      else dependents.set(ref, [entry.id]);
+      if (waiting) waiting.push(entry);
+      else dependents.set(ref, [entry]);
     }
   }
 
   const stranded = new Set<number>();
   // Appended to while it is walked, which is how the cascade reaches dependents of dependents.
-  const unresolved = [...dead];
-  for (const ref of unresolved) {
-    for (const id of dependents.get(ref) ?? []) {
-      if (stranded.has(id)) continue;
-      stranded.add(id);
-      unresolved.push(...(provides.get(id) ?? []).filter(isDead));
+  const unresolved = dead.map(ref => ({ ref, provider: origin }));
+  for (const { ref, provider } of unresolved) {
+    for (const entry of dependents.get(ref) ?? []) {
+      if (stranded.has(entry.id) || !couldSee(entry, provider)) continue;
+      stranded.add(entry.id);
+      unresolved.push(...entry.provides.filter(isDead).map(next => ({ ref: next, provider: entry })));
     }
   }
   return [...stranded];
@@ -516,26 +717,44 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }
       };
 
-      // Retire dependents whose provisional references can no longer resolve.
-      const strandDependents = (id: number, action: TaggedAction<M>): void => {
-        try {
-          // A reference the provider already bound is not dead, however this action ended: apply
-          // consults the same oracle before dispatching a handler, and a cascade that ignored it
-          // would retire dependents whose reference demonstrably exists.
-          const unbound = (ref: string) => options.isResolvedReference?.(host, ref) !== true;
-          const dead = (definitionFor(action)?.provides?.(action.payload) ?? []).filter(unbound);
-          if (dead.length === 0) return;
-
-          // The walk itself prunes through `unbound`, so a stranded action's bound references stop
-          // the cascade. A staged dependent can race this scan; `stage` fails it once submitted.
-          const stranded = strandedBy(dead, journal.listUndecided().map(record => {
-            const definition = definitionFor(record.action);
+      // The outstanding actions, among those `include` keeps, that transitively need a reference
+      // only `id` was to provide. A staged dependent can race the scan; `stage` fails it once
+      // submitted.
+      const strandedFrom = (
+        id: number,
+        record: { action: TaggedAction<M>; view?: BranchView },
+        include: (candidate: { state: string }) => boolean,
+      ): number[] => {
+        // A reference the provider already bound is not dead, however this action ended: apply
+        // consults the same oracle before dispatching a handler, and a cascade that ignored it
+        // would retire dependents whose reference demonstrably exists.
+        const unbound = (ref: string) => options.isResolvedReference?.(host, ref) !== true;
+        const { action } = record;
+        const dead = (definitionFor(action)?.provides?.(action.payload) ?? []).filter(unbound);
+        if (dead.length === 0) return [];
+        // The walk itself prunes through `unbound`, so a stranded action's bound references stop
+        // the cascade.
+        const candidates = journal.listOutstanding().filter(entry => include(entry.record))
+          .map(({ id: candidate, record: { action: pending, view } }) => {
+            const definition = definitionFor(pending);
             return {
-              id: record.id,
-              provides: definition?.provides?.(record.action.payload) ?? [],
-              dependsOn: definition?.dependsOn?.(record.action.payload) ?? [],
+              id: candidate,
+              ...(view ? { view } : {}),
+              provides: definition?.provides?.(pending.payload) ?? [],
+              dependsOn: definition?.dependsOn?.(pending.payload) ?? [],
             };
-          }), unbound);
+          });
+        return strandedBy({ id, ...(record.view ? { view: record.view } : {}) }, dead, candidates,
+          unbound);
+      };
+
+      // Retire dependents whose provisional references can no longer resolve.
+      const strandDependents = (
+        id: number,
+        record: { action: TaggedAction<M>; view?: BranchView },
+      ): void => {
+        try {
+          const stranded = strandedFrom(id, record, ({ state }) => state === "pending");
           // Undispatched: a stranded dependent never reached its handler, so its rejection still
           // owes the cleanup. The reason states only what this scan established -- the reference
           // was never bound -- rather than asserting anything about the provider call.
@@ -626,7 +845,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         if (unpinned) {
           const message = `${unpinned} Reject it and submit it again.`;
           journal.markFailed(id, message, { undispatched: true });
-          strandDependents(id, action);
+          strandDependents(id, record);
           await resolved("failed");
           throw new Error(message);
         }
@@ -656,7 +875,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             // anything else is retryable and restores the pending claim.
             if (error instanceof ActionApplyError) {
               journal.markFailed(id, error.message);
-              strandDependents(id, action);
+              strandDependents(id, record);
             } else if (error instanceof ActionOutcomeUnknownError) {
               journal.markFailed(id, error.message, { outcome: "unknown" });
               if (!definition.claimBeforeApply) {
@@ -682,28 +901,18 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }
       };
 
-      const rejectRecord = async (id: number): Promise<void> => {
-        const record = journal.get(id);
-        // A stray reject must not take the retained record a revert hook reads back ("applied"
-        // exists only in that tier), nor report success for an applied id it cannot undo: unlike
-        // apply, no idempotent reading exists.
-        if (record?.state === "applied" || journal.wasApplied(id)) {
-          throw new Error(`Action ${id} is no longer pending.`);
-        }
-
-        if (record === undefined) return;
-        // The same proof of receipt apply takes.
-        journal.markSubmitted(id);
-
-        const action = record.action;
-        // Rejecting a terminal failure is the user clearing the record: its handler already ran
-        // and owns whatever it left behind. One that never reached the handler is the exception —
-        // its staging artifacts are still the rejection's to release. A claim orphaned by an
-        // earlier activation reached its handler with an unknown outcome, so it is cleared alike.
-        const failed = record.state === "failed"
-          || (record.state === "claimed" && !claimedHere.has(id));
+      // Withdraws a record for good, releasing what its staging set up when its handler never
+      // ran. Rejecting a terminal failure is the user clearing the record: its handler already ran
+      // and owns whatever it left behind. One that never reached the handler is the exception --
+      // its staging artifacts are still the rejection's to release. A claim orphaned by an earlier
+      // activation reached its handler with an unknown outcome, so it is cleared alike.
+      const withdraw = async (id: number, record: JournalRecord<TaggedAction<M>>) => {
+        const { action } = record;
+        const dispatched = record.state === "failed"
+          ? !record.undispatched
+          : record.state === "claimed" && !claimedHere.has(id);
         try {
-          if (!failed || record.undispatched) {
+          if (!dispatched) {
             await definitionFor(action)?.reject?.(action.payload, host, {
               id,
               ...(record.fence ? { fence: record.fence } : {}),
@@ -719,68 +928,355 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           });
         }
         journal.remove(id);
-        // A known failure stranded its dependents when it was recorded. An unknown outcome left
-        // them waiting on a reference it might still bind, which nothing can once it is withdrawn.
-        if (record.state !== "failed" || record.outcome === "unknown") strandDependents(id, action);
+      };
+
+      // `reportsConsequences` is `rejectAction`'s: the dependents are rejected and reported rather
+      // than marked failed and left for the user, and `restart` is worked out.
+      const rejectRecord = async (id: number, reportsConsequences: boolean)
+        : Promise<ActionRejection> => {
+        const record = journal.get(id);
+        // A stray reject must not take the retained record a revert hook reads back ("applied"
+        // exists only in that tier), nor report success for an applied id it cannot undo: unlike
+        // apply, no idempotent reading exists.
+        if (record?.state === "applied" || journal.wasApplied(id)) {
+          throw new Error(`Action ${id} is no longer pending.`);
+        }
+
+        if (record === undefined) return { restart: false, rejected: [] };
+        // The same proof of receipt apply takes.
+        journal.markSubmitted(id);
+        // A staged record was never shown to a session; any other may have been, a failed one
+        // before it failed. Worked out before the record leaves the tier `pendingAfter` reads.
+        const restart = reportsConsequences && record.state !== "staged"
+          && journal.pendingAfter(id).length > 0;
+
+        if (!reportsConsequences) {
+          await withdraw(id, record);
+          // A known failure stranded its dependents when it was recorded. An unknown outcome left
+          // them waiting on a reference it might still bind, which nothing can once it is
+          // withdrawn.
+          if (record.state !== "failed" || record.outcome === "unknown") {
+            strandDependents(id, record);
+          }
+          await resolved("rejected");
+          return { restart: false, rejected: [] };
+        }
+        // Failed dependents too, those an earlier cascade or a refused apply already marked: the
+        // Workshop still holds them pending, and would stop at each on the way to the rest. A
+        // claim is an apply that reached its handler, whose references were therefore bound.
+        const rejected = strandedFrom(id, record, ({ state }) => state !== "claimed")
+          .filter(dependent => dependent !== id);
+        const withdrawn = [[id, record] as const, ...rejected.flatMap(dependent => {
+          const stranded = journal.get(dependent);
+          return stranded === undefined ? [] : [[dependent, stranded] as const];
+        })];
+        // Out of every read before the first hook yields, so a submission meanwhile cannot take
+        // one of them for a live provider. Each hook still sees the record as it was.
+        for (const [member] of withdrawn) {
+          journal.markFailed(member, "This action was rejected.", { undispatched: true });
+        }
+        for (const [member, stored] of withdrawn) await withdraw(member, stored);
         await resolved("rejected");
+        return { restart, rejected };
+      };
+
+      // A provisional reference `action` depends on that nothing can still resolve: one no
+      // pending action its view can see provides.
+      const unmetOf = (action: TaggedAction<M>, view?: BranchView): string | undefined => {
+        const unbound = (definitionFor(action)?.dependsOn?.(action.payload) ?? [])
+          .filter(ref => options.isResolvedReference?.(host, ref) !== true);
+        if (unbound.length === 0) return undefined;
+        const visible = view ? journal.listPendingIn(view) : journal.listPendingAcrossBranches();
+        const live = new Set(visible.flatMap(({ action: pending }) =>
+          definitionFor(pending)?.provides?.(pending.payload) ?? []));
+        return unbound.find(ref => !live.has(ref));
+      };
+
+      // Confirms a record the Workshop named, or said it holds, that was still waiting for its
+      // submission's reply. Its provider may have been rejected meanwhile, in a cascade that
+      // passed it over, so its dependencies are checked as `stage` checks them.
+      const confirm = (id: number): void => {
+        const record = journal.get(id);
+        if (record?.state !== "staged") return;
+        journal.markSubmitted(id);
+        const stranded = unmetOf(record.action, record.view);
+        if (stranded !== undefined) markStranded(journal, id, stranded);
+      };
+
+      // Settles the submissions an earlier activation left unconfirmed (`listUnconfirmed`), once
+      // per activation, through the first session's queue; see `BoundActionSet.session`. Run as a
+      // resolution, so no apply or rejection naming one interleaves with its answer.
+      let recovery: Promise<void> | undefined;
+      let recovered = false;
+      const settleUnconfirmed = (queue: ActionSessionQueue): Promise<void> => {
+        if (recovered) return Promise.resolve();
+        if (recovery) return recovery;
+        const scan: Promise<void> = resolutionQueue.run(async () => {
+          const inFlight = submitting.get(journal);
+          const unconfirmed = journal.listUnconfirmed().filter(id => !inFlight?.has(id));
+          const held = await Promise.all(unconfirmed.map(id => queue.holdsAction(id)));
+          for (const [i, id] of unconfirmed.entries()) {
+            const record = journal.get(id);
+            if (record?.state !== "staged") continue;
+            if (held[i]) confirm(id);
+            else await withdraw(id, record);
+          }
+          if (unconfirmed.length > 0) {
+            attributed.info("settled submissions an earlier activation left unconfirmed", {
+              event: "actions.unconfirmed.settled",
+              settled: unconfirmed.length,
+            });
+          }
+        }).then(() => {
+          // Unless a submission was left unconfirmed meanwhile, which this scan did not cover.
+          if (recovery === scan) recovered = true;
+        }, (error: unknown) => {
+          // Asked again by the next session: this one fails, as it may not read meanwhile.
+          if (recovery === scan) recovery = undefined;
+          throw error;
+        });
+        return recovery = scan;
+      };
+
+      // The batch that starts at `actions[start]`, or `[]` when no batch hook takes it: a run of
+      // consecutive actions of the hook's kinds whose own handlers could each run now.
+      const batchAt = (actions: readonly number[], start: number, context?: ActionApplyContext)
+        : { id: number; record: JournalRecord<TaggedAction<M>> }[] => {
+        const batch = options.batch;
+        if (batch === undefined) return [];
+        const kinds = new Set(batch.kinds.map(String));
+        const run: { id: number; record: JournalRecord<TaggedAction<M>> }[] = [];
+        for (const id of actions.slice(start)) {
+          const record = journal.get(id);
+          if (record === undefined || journal.wasApplied(id)) break;
+          if (record.state !== "pending" && record.state !== "staged") break;
+          const definition = definitionFor(record.action);
+          if (definition === undefined || !kinds.has(String(record.action.kind))) break;
+          const fenced = record.fence === undefined
+            ? fencePolicyFor(record.action.kind) !== "authority"
+            : record.fence.generation === context?.generation;
+          if (!fenced) break;
+          // An earlier member's references are bound only once it applies, so naming one ends the
+          // run here too.
+          if ((definition.dependsOn?.(record.action.payload) ?? [])
+            .some(ref => options.isResolvedReference?.(host, ref) !== true)) break;
+          run.push({ id, record });
+        }
+        return run.length >= 2 ? run : [];
+      };
+
+      // Applies a batch through the hook. "retry" means nothing landed and its actions are to be
+      // applied one at a time.
+      const applyBatch = async (
+        run: readonly { id: number; record: JournalRecord<TaggedAction<M>> }[],
+        context?: ActionApplyContext,
+      ): Promise<"applied" | "retry" | { unknown: string }> => {
+        const claims = run.some(({ record }) => definitionFor(record.action)?.claimBeforeApply);
+        for (const { id } of run) {
+          journal.markSubmitted(id);
+          if (claims) {
+            journal.markClaimed(id);
+            claimedHere.add(id);
+          }
+        }
+        try {
+          try {
+            await options.batch!.apply(run.map(({ id, record }) => ({
+              id,
+              action: record.action,
+              ...(record.fence ? { fence: record.fence } : {}),
+            })), host, context?.gitCache ? { gitCache: context.gitCache } : {});
+          } catch (error) {
+            if (error instanceof ActionOutcomeUnknownError) {
+              for (const { id } of run) journal.markFailed(id, error.message, { outcome: "unknown" });
+              if (!claims) {
+                attributed.error("unknown outcome recorded without a pre-dispatch claim", {
+                  event: "actions.outcome.unclaimed",
+                  action: run[0]!.id,
+                });
+              }
+              await resolved("failed");
+              return { unknown: error.message };
+            }
+            if (claims) for (const { id } of run) journal.restorePending(id);
+            attributed.debug("batch failed; applying its actions one at a time", {
+              event: "actions.batch.retried",
+              action: run[0]!.id,
+              error,
+            });
+            return "retry";
+          }
+          for (const { id } of run) {
+            if (options.retainApplied) journal.retain(id);
+            else journal.retire(id);
+          }
+          await resolved("applied");
+          return "applied";
+        } finally {
+          for (const { id } of run) claimedHere.delete(id);
+        }
+      };
+
+      const applyList = async (actions: readonly number[], context?: ActionApplyContext)
+        : Promise<ApplyActionsResult> => {
+        const result: ApplyActionsResult = { applied: [] };
+        const started = Date.now();
+        // Naming a record proves the Workshop holds it, whether or not the list gets as far.
+        for (const id of actions) confirm(id);
+        // Past a batch that failed, its actions go one at a time up to here.
+        let unbatchedUntil = 0;
+        for (let i = 0; i < actions.length;) {
+          if (result.applied.length > 0 && Date.now() - started >= APPLY_LIST_BUDGET_MS) break;
+          const id = actions[i]!;
+          const run = i < unbatchedUntil ? [] : batchAt(actions, i, context);
+          if (run.length > 0) {
+            const outcome = await applyBatch(run, context);
+            if (outcome === "applied") {
+              result.applied.push(...run.map(member => member.id));
+              i += run.length;
+              continue;
+            }
+            if (outcome !== "retry") {
+              result.failed = {
+                action: id,
+                message: bounded(outcome.unknown),
+                retryable: false,
+                outcomeUnknown: true,
+              };
+              break;
+            }
+            unbatchedUntil = i + run.length;
+          }
+          // Not held: the Workshop settles it from the result. A remembered apply is reported.
+          if (journal.get(id) === undefined && !journal.wasApplied(id)) {
+            i += 1;
+            continue;
+          }
+          try {
+            await applyRecord(id, context);
+          } catch (error) {
+            const record = journal.get(id);
+            result.failed = {
+              action: id,
+              message: bounded(error instanceof Error ? error.message : String(error)),
+              // A terminal failure answers every later attempt the same way, an unknown outcome
+              // included: it is never dispatched again.
+              retryable: record?.state !== "failed",
+              ...(record?.state === "failed" && record.outcome === "unknown"
+                ? { outcomeUnknown: true as const } : {}),
+            };
+            break;
+          }
+          result.applied.push(id);
+          i += 1;
+        }
+        return result;
+      };
+
+      // Submits under `view` when a session handle submits, and with none for `submit`.
+      const submitThrough = async <K extends keyof M>(
+        queue: ActionSubmitter,
+        kind: K,
+        payload: M[K],
+        { fence }: { fence?: ActionFence } = {},
+        view?: BranchView,
+        holds?: (id: number) => Promise<boolean>,
+      ): Promise<number> => {
+        const definition = byName.get(String(kind));
+        if (definition === undefined) throw new Error(`Unknown action kind "${String(kind)}".`);
+        const policy = fencePolicyFor(kind);
+        // Declared, not inferred from what the call site happened to pass: an omitted fence on a
+        // connection-scoped kind is the silent failure this policy exists to prevent, and a
+        // fence on an authority-independent one would pin an action nothing needed pinned.
+        if (policy === "authority" && fence === undefined) {
+          throw new Error(`Action kind "${String(kind)}" is authority-fenced; stage it with the `
+            + "authority this operation ran under -- usually its `CredentialRead` -- as `fence`.");
+        }
+        if (policy === "none" && fence !== undefined) {
+          throw new Error(`Action kind "${String(kind)}" is declared authority-independent; `
+            + "remove the `fence`, or declare the kind \"authority\".");
+        }
+        // Snapshotted before the first await: the payload must be the one describe rendered, the
+        // fence the connection this call staged under.
+        const staged = structuredClone(payload);
+        const pinned = fence && { generation: fence.generation };
+        // Cloned for the same reason as the payload: staging serializes behind the journal's
+        // lane, and `describe` may still own what it returned.
+        const {
+          title, description, fields, descriptionIsComplete, pushedCommits, implementsRevert,
+        } = structuredClone(await definition.describe(staged, host));
+        const action = { kind, payload: staged } as TaggedAction<M>;
+        return stage(journal, queue, action, {
+          // Destructured, not spread: a port returning a full `ActionDescription` here would
+          // otherwise carry its own `awaitDecision` past the delivery the definition declares.
+          title,
+          description,
+          implementsRevert,
+          // Spread, so an action with no fields, no git, no awaited decision, or no claim of
+          // completeness puts no key on the wire at all. A push is never complete, whatever the
+          // hook claims: the approver sees commit ids, not the bytes they carry.
+          ...(fields?.length ? { fields } : {}),
+          ...(pushedCommits ? { pushedCommits } : {}),
+          ...(descriptionIsComplete === true && !pushedCommits?.length
+            ? { descriptionIsComplete: true }
+            : {}),
+          autoApprovable: definition.autoApprovable,
+          actionKind: definition.kind,
+          ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
+        }, {
+          ...(pinned ? { fence: pinned } : {}),
+          ...(view ? { view } : {}),
+          ...(holds ? { holds } : {}),
+          // Only a provider this action's view can see counts: a reference minted on another
+          // branch resolves here only once it is bound.
+          unmet: () => unmetOf(action, view),
+        });
       };
 
       const set: BoundActionSet<M> = {
-        submit: async (queue, kind, payload, { fence } = {}) => {
-          const definition = byName.get(String(kind));
-          if (definition === undefined) throw new Error(`Unknown action kind "${String(kind)}".`);
-          const policy = fencePolicyFor(kind);
-          // Declared, not inferred from what the call site happened to pass: an omitted fence on a
-          // connection-scoped kind is the silent failure this policy exists to prevent, and a
-          // fence on an authority-independent one would pin an action nothing needed pinned.
-          if (policy === "authority" && fence === undefined) {
-            throw new Error(`Action kind "${String(kind)}" is authority-fenced; stage it with the `
-              + "authority this operation ran under -- usually its `CredentialRead` -- as `fence`.");
-          }
-          if (policy === "none" && fence !== undefined) {
-            throw new Error(`Action kind "${String(kind)}" is declared authority-independent; `
-              + "remove the `fence`, or declare the kind \"authority\".");
-          }
-          // Snapshotted before the first await: the payload must be the one describe rendered, the
-          // fence the connection this call staged under.
-          payload = structuredClone(payload);
-          const staged = fence && { generation: fence.generation };
-          // Cloned for the same reason as the payload: staging serializes behind the journal's
-          // lane, and `describe` may still own what it returned.
-          const {
-            title, description, fields, descriptionIsComplete, pushedCommits, implementsRevert,
-          } = structuredClone(await definition.describe(payload, host));
-          const action = { kind, payload } as TaggedAction<M>;
-          return stage(journal, queue, action, {
-            // Destructured, not spread: a port returning a full `ActionDescription` here would
-            // otherwise carry its own `awaitDecision` past the delivery the definition declares.
-            title,
-            description,
-            implementsRevert,
-            // Spread, so an action with no fields, no git, no awaited decision, or no claim of
-            // completeness puts no key on the wire at all. A push is never complete, whatever the
-            // hook claims: the approver sees commit ids, not the bytes they carry.
-            ...(fields?.length ? { fields } : {}),
-            ...(pushedCommits ? { pushedCommits } : {}),
-            ...(descriptionIsComplete === true && !pushedCommits?.length
-              ? { descriptionIsComplete: true }
-              : {}),
-            autoApprovable: definition.autoApprovable,
-            actionKind: definition.kind,
-            ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
-          }, staged, () => {
-            const unbound = (definition.dependsOn?.(payload) ?? [])
-              .filter(ref => options.isResolvedReference?.(host, ref) !== true);
-            if (unbound.length === 0) return undefined;
-            const live = new Set(journal.listPending().flatMap(({ action: pending }) =>
-              definitionFor(pending)?.provides?.(pending.payload) ?? []));
-            return unbound.find(ref => !live.has(ref));
-          });
-        },
+        submit: (queue, kind, payload, submitOptions) =>
+          submitThrough(queue, kind, payload, submitOptions),
 
         apply: (id, context) => resolutionQueue.run(() => applyRecord(id, context)),
 
-        reject: id => resolutionQueue.run(() => rejectRecord(id)),
+        reject: async id => {
+          await resolutionQueue.run(() => rejectRecord(id, false));
+        },
+
+        session: async (queue, branch = { branch: null }) => {
+          const view = copyView(branch);
+          await settleUnconfirmed(queue);
+          const handle: ActionSession<M> = {
+            view,
+            submit: (kind, payload, submitOptions) =>
+              submitThrough(queue, kind, payload, submitOptions, view, async id => {
+                try {
+                  return await queue.holdsAction(id);
+                } catch (error) {
+                  // Left unconfirmed, for the next session to settle.
+                  recovered = false;
+                  recovery = undefined;
+                  throw error;
+                }
+              }),
+            pending: () => journal.listPendingIn(view),
+            undecided: () => journal.listUndecidedIn(view),
+          };
+          return Object.freeze(handle);
+        },
+
+        // The view is the Workshop's, for a batch hook that may one day want it; every record
+        // already carries the view it was submitted under.
+        applyList: (_branch, actions, context) =>
+          resolutionQueue.run(() => applyList(actions, context)),
+
+        stageList: (_branch, actions) =>
+          resolutionQueue.run(() => {
+            // Naming a record confirms it, one with no view to change included.
+            for (const id of actions) { confirm(id); journal.restage(id); }
+          }),
+
+        rejectAction: id => resolutionQueue.run(() => rejectRecord(id, true)),
 
         autoApprovableKinds: () => [...autoApprovableByTag.values()],
 
@@ -794,4 +1290,15 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       return set;
     },
   };
+}
+
+/**
+ * Bounds a failure message for the Workshop, which stores it on the action and shows it.
+ * @param message The failure's message.
+ * @returns It, cut to a bounded length.
+ */
+function bounded(message: string): string {
+  return message.length > MAX_REPORTED_FAILURE
+    ? `${message.slice(0, MAX_REPORTED_FAILURE)}\u2026`
+    : message;
 }

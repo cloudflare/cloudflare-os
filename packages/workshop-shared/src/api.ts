@@ -2874,18 +2874,15 @@ export type AdminObserver = {
 
 /**
  * One auto-approval rule of a workspace, as AdminWorkspaceView.listAutoApprovals() lists it: a
- * member's opt-in for actions of `actionKind` on the connection. A rule alone applies nothing. An
- * action of that kind is applied without a manual approval only when its author also marked it
- * `autoApprovable` (ActionDescription.autoApprovable), and never once the workspace has read
- * restricted data (`containsRestrictedData`, which describe() reports): the rule then stays
- * stored, and listed here, while every action waits for a manual approval.
+ * member's opt-in for actions of `actionKind` on the connection. Rules have no effect: chat modes
+ * replaced them (see ChatMode), and nothing consults them, though they stay stored and listed.
  */
 export type AdminAutoApproval = {
   /** The connection the rule is on. */
   gatekeeperId: WorkpieceId;
   /** The kind of action the rule covers. An action matches by its kind's `tag`. */
   actionKind: ActionKind;
-  /** Who turned the rule on. The actions it applies are applied under their authority. */
+  /** Who turned the rule on. */
   enabledBy: AiChatAuthorInfo;
 };
 
@@ -3005,12 +3002,8 @@ export interface AdminWorkspaceView extends RpcTarget {
   listShareLinks(): Promise<ShareLinkInfo[]>;
 
   /** The auto-approval rules, each with its connection, its kind of action and who turned it on.
-   * A rule is a member's opt-in and applies nothing alone (see AdminAutoApproval): an action is
-   * applied without a manual approval only when its author also marked it `autoApprovable`, and
-   * never once the workspace has read restricted data (`containsRestrictedData`, which
-   * describe() reports), when every action waits whatever the rules say. listActions() shows
-   * each action's `description.autoApprovable` and `description.actionKind`, and `autoApproved`
-   * on one a rule applied. */
+   * Rules have no effect (see AdminAutoApproval). listActions() shows each action's
+   * `description.autoApprovable` and `autoApproved` on one applied automatically. */
   listAutoApprovals(): Promise<AdminAutoApproval[]>;
 
   /** The published blueprints, as Overseer.listBlueprints() lists them. Each `id` is "" and
@@ -3983,6 +3976,16 @@ export type WorkspaceMetadata = {
   containsRestrictedData?: boolean;
 
   /**
+   * How many gatekeeper actions with no chat are pending (see Overseer.mergeChanges()): those
+   * staged by gadgets running outside any chat, hooks, and other sessions with no chat. They
+   * normally apply as soon as they are submitted, so this is present only while they wait (see
+   * Overseer.acceptStagedActions()). Those accepted on a resource still unsaved, which wait for
+   * nobody's decision (see ActionLogEntry.accepted), are not counted. Absent when none, and for a
+   * "use" collaborator.
+   */
+  stagedActions?: number;
+
+  /**
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
@@ -4416,24 +4419,50 @@ export type ActionLogEntry = {
   description: ActionDescription;
   /**
    * Who resolved the action (approved or rejected it). Set when the action leaves "pending"; absent
-   * while still pending (or for legacy actions resolved before this was tracked). For an
-   * auto-approved action this is the user who enabled the rule -- auto-approvals run under their
-   * authority (see `autoApproved`).
+   * while still pending (or for legacy actions resolved before this was tracked). For an action
+   * applied automatically this is the user on whose behalf it was (see `autoApproved`).
    */
   resolvedBy?: AiChatAuthorInfo;
 
   /**
-   * True when the action was applied automatically by an auto-approval rule rather than by a human
-   * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
+   * True when the action was applied automatically rather than by a human accepting it: by a chat
+   * in Auto (see ChatMode), on behalf of the user whose message started the agent's turn, or, for
+   * a turn an agent spawner started, the user whose model it ran; or, staged, on behalf of the
+   * workspace owner. Only ever set alongside state "approved". An action can also be rejected
+   * automatically -- a staged action whose gatekeeper says it can never apply (see
+   * Overseer.acceptStagedActions()) -- but that is recorded as a rejection by the workspace owner,
+   * with its `applyError`, and never with this.
    */
   autoApproved?: boolean;
 
   /**
-   * True for the creation queued by createExternalResource. Approving it requires one of the
-   * approver's accounts for the gatekeeper's vendor (see GatekeeperClient.getCreationSpec()), in
-   * which the resource is created.
+   * Why the last attempt to apply the action failed, as its gatekeeper reported it; cleared once
+   * it applies. `retryable` is false when applying again cannot succeed, so the action can only be
+   * rejected. `outcomeUnknown` says the provider may have applied it anyway, which only a person
+   * checking the provider can settle (see ApplyActionsResult.failed); it is also set, on every
+   * action an apply named, when that apply ended with no result. Also kept on an action rejected
+   * because its gatekeeper turned out not to hold it.
+   */
+  applyError?: {message: string, retryable: boolean, outcomeUnknown?: true};
+
+  /**
+   * True for the creation queued by createExternalResource. While it is pending, its connection's
+   * resource is unsaved: it exists only in the workspace, and nothing applies to it. Approving it
+   * saves the resource, and requires one of the approver's accounts for the gatekeeper's vendor
+   * (see GatekeeperClient.getCreationSpec()), in which the resource is created (see
+   * Overseer.approveAction()).
    */
   creation?: true;
+
+  /**
+   * Present on a pending action accepted while its resource was unsaved (see `creation`): who
+   * accepted it, when, and whether that was automatic, as `resolvedBy` and `autoApproved` record
+   * an approval. It has left its chat, staging holds it, and it applies, as approved by `by`, when
+   * the resource is saved; until then nothing else accepts or discards it, though
+   * Overseer.rejectAction() still denies it. Once the resource is saved, it is held as any
+   * pending action with no chat is.
+   */
+  accepted?: {by: AiChatAuthorInfo, at: Date, autoApproved: boolean};
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -4810,16 +4839,60 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
-   * approver chose to make it.
+   * approval. Refused for any other action on a connection whose resource is unsaved.
+   *
+   * Approving a creation (see ActionLogEntry.creation) saves its resource, and requires
+   * `creation`: how the approver chose to make it. Once it is created, the actions accepted on it
+   * meanwhile (see ActionLogEntry.accepted) apply in ID order, up to the first pending action
+   * there that nobody has accepted, each as approved by the user who accepted it. The first that
+   * fails to apply throws, leaving it pending with its ActionLogEntry.applyError and those after it
+   * held behind it, as staged actions are (see acceptStagedActions()).
+   *
+   * Approving an action applies its chat's earlier actions on that connection first, together
+   * with the pending actions with no chat there, since its gatekeeper simulated it on top of them
+   * (see mergeChanges()). On a connection whose gatekeeper applies actions as a list
+   * (`Gatekeeper.applyActions()`) those with no chat go first; on one that applies one action at
+   * a time, only those older than it go, all in ID order. Either way nothing applies out of
+   * order. The Workshop offers it for an action the agent waits on
+   * (`ActionDescription.awaitDecision`), which cannot wait for its chat to be accepted.
    */
   approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
-   * be approved in the future.
+   * be approved in the future. The pending actions its gatekeeper reports it had to reject along
+   * with it are rejected too.
+   *
+   * When the gatekeeper reports that other simulated work was built on the action, the gadgets
+   * running on its chat's branch restart, or, for an action with no chat, every running gadget,
+   * since every chat sees those; and the chat's agent is told in its next turn that the action was
+   * denied (see the "actionDenied" message).
    */
   rejectAction(id: number): Promise<void>;
+
+  /**
+   * Applies the pending actions with no chat (see WorkspaceMetadata.stagedActions), one connection
+   * at a time, as they stood when the call began, up to `through` as in MergeChangesOptions.through.
+   * Those normally apply as soon as they are submitted; they wait for this while the workspace has
+   * read restricted data, behind one that waits for a user's review, and behind one that failed
+   * to apply. One waits for review when a gadget submitted it while a "use" collaborator had the
+   * gadget open, or within a minute after: the Workshop cannot tell whose request a gadget is
+   * serving, and only a "build" user may act through its connections. So does one pending from
+   * before staged actions applied at once. The first that fails to apply stops it with a "failed"
+   * outcome, leaving that action pending with its ActionLogEntry.applyError and those after it on
+   * its connection pending; calling again retries it. On a connection whose resource is unsaved,
+   * they are accepted instead, and held until it is saved (see ActionLogEntry.accepted); one
+   * accepted already is passed over.
+   */
+  acceptStagedActions(through?: number): Promise<{outcome: "applied" | "failed"}>;
+
+  /**
+   * Rejects the pending actions with no chat (see WorkspaceMetadata.stagedActions), newest first,
+   * as rejectAction() rejects each one: what discarding a chat's changes does to its actions (see
+   * revertChanges()), for staging. Passes over one accepted on a resource still unsaved (see
+   * ActionLogEntry.accepted).
+   */
+  discardStagedActions(): Promise<void>;
 
   /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
@@ -4854,31 +4927,25 @@ export interface Overseer extends RpcTarget {
   deleteHook(id: number): Promise<void>;
 
   /**
-   * Enable auto-approval of actions carrying the given `actionKind` (the
-   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`. Future actions
-   * with that kind's tag whose author marked them `autoApprovable` are then applied automatically
-   * without manual approval, and any matching action(s) already pending are applied immediately.
+   * Store an auto-approval rule for actions carrying the given `actionKind` (the
+   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`.
    *
-   * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
-   * no matter which gadget invokes it.
-   *
-   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
-   * are stored but never fire: every action pends for manual approval.
+   * Rules have no effect: chat modes replaced them (see ChatMode), and nothing consults them. They
+   * are still stored and listed, until they are removed.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
 
-  /**
-   * Remove the auto-approval rule for `tag` on the given gatekeeper; matching actions then
-   * require manual approval again.
-   */
+  /** Remove the auto-approval rule for `tag` on the given gatekeeper. Rules have no effect (see
+   * setAutoApprovedActionKind()). */
   removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void>;
 
-  /** List the currently-enabled auto-approval rules. */
+  /** List the stored auto-approval rules, which have no effect (see setAutoApprovedActionKind()). */
   listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
 
   /**
    * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
-   * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
+   * entry identifies its connection and reports whether a matching auto-approval rule is stored.
+   * Rules have no effect (see setAutoApprovedActionKind()).
    */
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
@@ -5026,8 +5093,12 @@ export interface Overseer extends RpcTarget {
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns the new chat's id without waiting
    * for the agent's turn; `waitForAgent()` waits for it to end.
+   *
+   * `mode` is the chat's mode (see AiChatMetadata.mode). It has no default: which mode a chat
+   * starts in is its user's preference, which only the caller knows. Throws when asked for Auto
+   * in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
    */
-  newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
+  newChat(initialMessage: string | SlashCommandRequest, modelId: string | null, mode: ChatMode,
           options?: ChatMessageOptions): Promise<number>;
 
   /**
@@ -5087,6 +5158,17 @@ export interface Overseer extends RpcTarget {
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   /**
+   * Changes a chat's mode (see AiChatMetadata.mode), taking effect at once, even while its agent
+   * runs: the end of a turn, and an action the agent waits on as it is submitted, read the mode
+   * then. Changing it never accepts or discards anything. A chat switched to Fork holds its
+   * gadgets' actions from then on; one switched away from Fork with nothing to accept sends its
+   * gadgets back to running outside the chat (see AiChatMetadata.branchGadgets). A chat with no
+   * agent (see newChat()) in Fork serves just to hold a gadget's actions. Throws when asked for
+   * Auto in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
+   */
+  setChatMode(chatId: number, mode: ChatMode): Promise<void>;
+
+  /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
    * mainline. Always merges *everything* the chat proposes -- changes not yet materialized into a
    * `changes` message are swept in first, and there is no way to accept only a subset.
@@ -5122,8 +5204,22 @@ export interface Overseer extends RpcTarget {
    * (AiChatMessageBody.blueprintMerges[].conflictPaths and mainlineMerge.gadgets[].conflictPaths),
    * as the Workshop UI does before accepting: it looks for a `<<<<<<< ` or `>>>>>>> ` line left
    * in each of those files, and asks the user whether to accept them as they are.
+   *
+   * Accepting a chat also applies its pending gatekeeper actions, and does so first: on each
+   * connection the chat acted on, the pending actions with no chat there (which the chat's were
+   * simulated on top of), and then the chat's own, one connection at a time, as they stood when the
+   * accept began, up to `options.through`. On a connection whose resource is unsaved, they are
+   * accepted instead, the chat's creation of it included, and leave the chat: staging holds them
+   * until the resource is saved (see ActionLogEntry.accepted), or, if its gatekeeper fails to
+   * take them, stay and the accept throws. The first action that fails to apply stops the accept
+   * with a "failed" outcome, leaving the code unmerged and the
+   * action pending with its ActionLogEntry.applyError; calling again retries it. The accept is not
+   * atomic: what applied stays applied, and a "stale" outcome after the actions applied leaves only
+   * the code for the retry. Refused while the agent waits on a decision. With no code to merge, it
+   * applies the actions alone. An action it leaves out for being past `options.through` stays
+   * pending, and the code merges without it, as it would without one submitted after the accept.
    */
-  mergeChanges(chatId: number): Promise<MergeChangesResult>;
+  mergeChanges(chatId: number, options?: MergeChangesOptions): Promise<MergeChangesResult>;
 
   /**
    * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
@@ -5176,6 +5272,9 @@ export interface Overseer extends RpcTarget {
    * state -- content they may have transformed against is gone -- so ChatCodeBase.generation is
    * bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of
    * corrupting the chat.
+   *
+   * It also rejects, newest first, the chat's pending gatekeeper actions recorded at or after
+   * `revertFrom` in the chat; with `revertFrom` 0, every pending action of the chat's.
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
 
@@ -5197,7 +5296,10 @@ export interface Overseer extends RpcTarget {
    */
   discardChatDraftChanges(chatId: number): Promise<void>;
 
-  /** Delete a chat thread. */
+  /**
+   * Delete a chat thread. Its pending gatekeeper actions are rejected first, as
+   * revertChanges(chatId, 0) rejects them.
+   */
   deleteChat(chatId: number): Promise<void>;
 
   /**
@@ -5411,6 +5513,23 @@ export interface Overseer extends RpcTarget {
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
 
+/**
+ * How a chat's changes are held and accepted; see AiChatMetadata.mode. In every mode, the chat's
+ * gatekeeper actions and code changes wait on its branch for it to be accepted (see
+ * Overseer.mergeChanges()):
+ *
+ * - "auto": at the end of each agent turn that finishes normally, the chat is accepted
+ *   automatically, code included, when every pending action the accept would apply is the chat's
+ *   own and auto-approvable (ActionDescription.autoApprovable). A creation does not count. An
+ *   action the agent waits on (`awaitDecision`) applies as it is submitted when it, and every
+ *   earlier pending action on its connection that approving it would apply, is too, unless its
+ *   resource is unsaved (see ActionLogEntry.creation).
+ * - "review": the chat is accepted only by a user.
+ * - "fork": as "review", and every gadget opened in the chat runs on its branch even while the
+ *   chat has nothing pending (see AiChatMetadata.branchGadgets), so gadget actions wait there too.
+ */
+export type ChatMode = "auto" | "review" | "fork";
+
 /** Metadata about one chat in a workspace. */
 export type AiChatMetadata = {
   id: number,
@@ -5483,6 +5602,32 @@ export type AiChatMetadata = {
    * server-side from the chat's log and delivered on metadata updates; never submitted by clients.
    */
   awaitingDecision?: true;
+
+  /**
+   * How many of the chat's gatekeeper actions are pending (see Overseer.mergeChanges()): they apply
+   * when its changes are accepted. Absent when none. Derived server-side and delivered on metadata
+   * updates; never submitted by clients.
+   */
+  pendingActions?: number;
+
+  /**
+   * The gadgets that run on the chat's branch when opened in the chat's context (see
+   * GadgetClient.connectToGadget()): their reads see the chat's pending actions and their actions
+   * join them. While the chat is forked, that is every gadget: the chat is forked when its mode is
+   * Fork, it has pending actions, or it proposes code or binding changes
+   * (`proposedChangeWorkpieces`, which are listed too). Otherwise it is those an agent turn in the
+   * chat has invoked, until the turn ends. Any other runs as it does outside the chat. Absent when
+   * none. Derived server-side and delivered on metadata updates; never submitted by clients.
+   */
+  branchGadgets?: WorkpieceId[];
+
+  /**
+   * How the chat's changes are held and accepted. Set by newChat() and Overseer.setChatMode();
+   * a chat an agent spawner starts is in Auto, since nobody attends it. In a workspace that has
+   * read restricted data (`WorkspaceMetadata.containsRestrictedData`), a chat in Auto is
+   * delivered, and treated, as in Review.
+   */
+  mode: ChatMode;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
@@ -5745,9 +5890,22 @@ export type MergeChangesResult = {
    * "merged": the changes were accepted; every touched gadget's head fast-forwarded (also the
    * outcome when there was nothing to merge). "stale": nothing was merged -- mainline advanced
    * past one of the chat's pins, so the accept could not fast-forward; call
-   * updateChatFromMainline(), resolve any conflicts, and retry.
+   * updateChatFromMainline(), resolve any conflicts, and retry. "failed": one of the chat's
+   * pending actions could not be applied, so no code was merged; its ActionLogEntry.applyError
+   * says why.
    */
-  outcome: "merged" | "stale";
+  outcome: "merged" | "stale" | "failed";
+};
+
+/** Choices Overseer.mergeChanges() takes from the user accepting the chat. */
+export type MergeChangesOptions = {
+  /**
+   * The highest action ID the user was shown pending when they accepted, or -1 when they were
+   * shown none: the accept applies no action with a higher ID. Action IDs only increase, so this
+   * leaves out whatever was submitted after the user looked, which stays pending for the next
+   * accept. Absent, the accept takes every pending action.
+   */
+  through?: number;
 };
 
 /**
@@ -6231,6 +6389,26 @@ export type AiChatMessageBody = {
   text?: string;
 } | {
   /**
+   * A user denied a pending gatekeeper action on the chat's branch whose gatekeeper reported that
+   * later simulated work was built on it (see Overseer.rejectAction()). Model-visible, so the agent
+   * learns in its next turn that the action will not apply. The action's own card already shows the
+   * denial.
+   */
+  type: "actionDenied";
+
+  /** The denied action (see ActionLogEntry.id). */
+  actionId: number;
+
+  /** The action's title (see ActionDescription.title), as the agent is told it. */
+  title: string;
+
+  /**
+   * Set when the action had failed to apply with an unknown outcome (see
+   * ActionLogEntry.applyError): its provider may have applied it anyway, which the agent is told.
+   */
+  outcomeUnknown?: true;
+} | {
+  /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").
    * Rendered inline in the chat as an accept/deny card. State is mutated in-place when the user
    * accepts or denies; the message is re-delivered to subscribers so the card updates. On accept the
@@ -6699,8 +6877,8 @@ export type AiToolCall = {
 } | {
   /**
    * Create a new external resource of a creatable type (see `SupportedResource.creatable`). Its
-   * binding is usable at once: the gatekeeper simulates the resource until a user approves the
-   * creation action, choosing the account to create it in.
+   * binding is usable at once: the gatekeeper simulates the resource, which is unsaved, until a
+   * user saves it by approving the creation action, choosing the account to create it in.
    */
   toolName: "createExternalResource";
   input: {
@@ -7436,7 +7614,11 @@ export type PreApprovableAction = {
 export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
-  resourceUrl?: string;    // absent until a resource created by createExternalResource exists
+  /**
+   * Absent while a resource createExternalResource created is unsaved: its creation is pending
+   * (see ActionLogEntry.creation).
+   */
+  resourceUrl?: string;
   /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
   resourceTypeId?: string;
   typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.

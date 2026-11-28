@@ -189,7 +189,7 @@ async function seed(ws: Workspace): Promise<void> {
   impl.storage.title.put("Quarterly plan");
 
   impl.storage.chatMeta.put({
-    id: CHAT_ID, title: "Plans", started: new Date(0), lastActive: new Date(0),
+    id: CHAT_ID, title: "Plans", mode: "auto", started: new Date(0), lastActive: new Date(0),
     queuedSteers: [{ text: WITHHELD.steer, author: OWNER }],
   });
   impl.addChatMessages(CHAT_ID, OWNER, [{ type: "message", message: WITHHELD.message }]);
@@ -257,7 +257,7 @@ async function seed(ws: Workspace): Promise<void> {
 
   // lastActive differs by chat: chatMeta.byLastActive is a unique index.
   impl.storage.chatMeta.put(
-      { id: DRAFT_CHAT_ID, title: "Draft", started: new Date(0), lastActive: new Date(1000) });
+      { id: DRAFT_CHAT_ID, title: "Draft", mode: "auto", started: new Date(0), lastActive: new Date(1000) });
   await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["notes.txt", { set: "draft notes\n" }]] },
       [{ gadgetId: ws.gadgetId, baseCommit: ws.commitId }]);
   impl.materializeChatChanges(DRAFT_CHAT_ID);
@@ -415,7 +415,7 @@ async function addWorktreeAt(ws: Workspace, baseCommit: string)
     : Promise<{ id: number, baseCommit: string }> {
   let impl = ws.impl;
   impl.storage.chatMeta.put({
-    id: WORKTREE_CHAT_ID, title: "Repo work", started: new Date(0), lastActive: new Date(2000),
+    id: WORKTREE_CHAT_ID, title: "Repo work", mode: "auto", started: new Date(0), lastActive: new Date(2000),
   });
   let { id, title } = await impl.createWorktree("Repo", WORKTREE_CHAT_ID, baseCommit);
   await impl.commitAgentStep(WORKTREE_CHAT_ID, AGENT, [{ type: "message", message: "step" }], {
@@ -514,7 +514,7 @@ function seedTurn(ws: Workspace): void {
 
 function addIdleChat(ws: Workspace): void {
   ws.impl.storage.chatMeta.put(
-      { id: IDLE_CHAT_ID, title: "Idle", started: new Date(0), lastActive: new Date(0) });
+      { id: IDLE_CHAT_ID, title: "Idle", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 }
 
 // The seeded chat's state once seedTurn() has run, as a view reports it.

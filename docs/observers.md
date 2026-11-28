@@ -50,7 +50,7 @@ observation marked **`containsRestrictedData`**
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
 that data (`AdminConfig.restrictedWebFetchHosts`, none by default) or, where the admin allows it
 (`AdminConfig.restrictedWebFetchApprovals`, off by default), a URL a user approves for the turn, and
-every action requires manual approval (auto-approval rules are suspended), the approver checking
+every action requires manual approval (a chat in Auto is treated as in Review), the approver checking
 the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
@@ -784,7 +784,7 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
    that data or, where the admin allows it, a URL a user approves, and every action requires manual
-   approval (auto-approval rules are suspended), the
+   approval (a chat in Auto is treated as in Review), the
    approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
    pushes are refused.
@@ -900,7 +900,7 @@ its resource types.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
   mode (web fetches reach only admin-trusted hosts or user-approved URLs, and every action requires
   manual approval —
-  auto-approval rules are suspended — the approver checking the action text for restricted data) is
+  a chat in Auto is treated as in Review — the approver checking the action text for restricted data) is
   available separately; combined with strategy A it makes the workspace effectively private once
   sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted,

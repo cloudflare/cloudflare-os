@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AiChatMessage, ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
+import type { AiChatMessage, ChatMode, ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
 import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory, openAgentSession } from "../src/agent-session.js";
@@ -63,9 +63,10 @@ const bindRequestedThing: ChatCompletionStep = {
 
 const actionState = (label: string) => testActionState(harness, label);
 
-const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
+const openSession = (model: RoutedScriptedModel, usernamePrefix: string, mode?: ChatMode) =>
   openAgentSession(harness.url, {
     modelId: SCRIPTED_MODEL_ID,
+    mode,
     userModel: model.userModel,
     ambientVendorIds: [TEST_VENDOR_ID],
     usernamePrefix,
@@ -179,7 +180,8 @@ it.concurrent("an agent spawner request is granted, and the bindings the agent g
     describeDesk,
     { text: "Triaged." },
   ]);
-  await using session = await openSession(model, "spawnerrequest");
+  // In Review, so that the bindings wait for the user's accept.
+  await using session = await openSession(model, "spawnerrequest", "review");
 
   const first = await session.runTurn("Give a new desk gadget its own triage agent.");
   expect(first.outcome).toEqual({ status: "completed" });
@@ -227,6 +229,7 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
         arguments: { title: "App", bindingName: "APP" },
       },
     },
+    { text: "Created." },
     requestConnection,
     writeRequestedThing,
     bindRequestedThing,
@@ -236,13 +239,16 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
   const account = session.connectedAccount(TEST_VENDOR_ID);
   const label = accountLabel(account);
 
-  const first = await session.runTurn("Connect the requested thing.");
-  expect(first.outcome).toEqual({ status: "completed" });
-  const pending = connectionCard(first.history);
-  const appSummary = first.workpieces.find(
+  // APP is accepted before the agent waits on the connection request: a chat's changes are not
+  // accepted while its agent waits on a decision.
+  const created = await session.runTurn("Create APP.");
+  const appSummary = created.workpieces.find(
       summary => summary.type === "gadget" && summary.title === "App");
   if (!appSummary) throw new Error("The agent did not create APP");
   await session.acceptChanges();
+  const first = await session.runTurn("Connect the requested thing.");
+  expect(first.outcome).toEqual({ status: "completed" });
+  const pending = connectionCard(first.history);
 
   await withOwnerWorkspace(harness.url, session.username, async ws => {
     using thing = await ws.newGatekeeper(
@@ -269,10 +275,13 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
     });
     await thing.remove();
 
+    // Its pending action is rejected, since nothing could decide it any more; the gatekeeper,
+    // gone with the connection, is not asked.
     expect((await app.listBindings()).some(binding => binding.target === thingId)).toBe(false);
-    await expect(ws.approveAction(action.id)).rejects.toThrow(/removed from the workspace/);
-    expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
-        .toEqual([action.id]);
+    await expect(ws.approveAction(action.id)).rejects.toThrow(/not pending/);
+    expect((await ws.listActions({ filter: "pending" })).entries).toEqual([]);
+    expect((await ws.listActions({ filter: "action" })).entries
+        .find(entry => entry.id === action.id)?.state).toBe("rejected");
     expect(await actionState(label)).toEqual({
       pending: [{ id: expect.any(Number), value: 7 }],
       applyCount: 0,
@@ -280,8 +289,7 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
 
     await expect(stale.writeValue(8)).rejects.toThrow(
         /^The execution context which hosts this callback is no longer running\.$/);
-    expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
-        .toEqual([action.id]);
+    expect((await ws.listActions({ filter: "pending" })).entries).toEqual([]);
     expect(await actionState(label)).toEqual({
       pending: [{ id: expect.any(Number), value: 7 }],
       applyCount: 0,

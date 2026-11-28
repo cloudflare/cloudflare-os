@@ -9,7 +9,7 @@ const NOW = new Date("2026-11-12T17:00:00Z");
 
 const chat = (over: Partial<AiChatMetadata> & {id: number}): AiChatMetadata => ({
   title: `Chat ${over.id}`,
-  started: new Date("2026-11-12T09:00:00Z"),
+  mode: "auto", started: new Date("2026-11-12T09:00:00Z"),
   lastActive: new Date("2026-11-12T09:00:00Z"),
   ...over,
 });

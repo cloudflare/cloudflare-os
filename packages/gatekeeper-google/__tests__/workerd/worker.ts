@@ -17,7 +17,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
-  ActionKind, HookController, ResourceDescription,
+  ActionKind, BranchView, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
@@ -282,11 +282,19 @@ class TestApprovalQueue extends RpcTarget {
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
   }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
+
   // No test here fetches through the session's caller's policy.
   async getFetcher(): Promise<Fetcher> {
     throw new Error("getFetcher() is not supported by this fake queue.");
   }
-
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */

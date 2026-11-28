@@ -387,7 +387,7 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   const matches = searchCommands(realTable, "start a chat in a workspace");
   assert.equal(matches.length, 5);
   assert.deepEqual(matches[0], {
-    command: "cf-os api open-workspace <id> new-chat <initialMessage> <modelId>",
+    command: "cf-os api open-workspace <id> new-chat <initialMessage> <modelId> <mode>",
     summary: matches[0].summary,
   });
   assert.match(matches[0].summary, /^Starts a new chat/);

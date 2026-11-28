@@ -80,7 +80,7 @@ it("shows a worktree image to the model, live and on replay", async () => {
   const ws = stack.use(await api.newWorkspace());
 
   const upload = { oid: await ws.uploadBlob(DOT), mimeType: "image/png", name: "dot.png" };
-  const chatId = await ws.newChat("What is this?", VISION_MODEL_ID, { attachments: [upload] });
+  const chatId = await ws.newChat("What is this?", VISION_MODEL_ID, "auto", { attachments: [upload] });
   await waitFor("the first turn", async () => model.requests.length >= 3 || null);
   await waitForIdleChat(ws, chatId);
 

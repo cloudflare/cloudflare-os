@@ -1543,6 +1543,8 @@ describe("pending creation", () => {
       let { impl } = world;
       impl.env = { ...impl.env, BLUEPRINTS: { get: async () => null } };
       impl.ownerId = "owner";
+      // The chat the creation is submitted from.
+      impl.storage.chatMeta.put({ id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
       impl.traceAgentActionApproval = () => {};
       impl.wrapUserDo = (user: unknown) => user;
       let sharing = await impl.getSharingManager();
@@ -1597,8 +1599,7 @@ describe("pending creation", () => {
         leave();
         let [creation] = impl.storage.actions.pendingByGatekeeper.get(gatekeeperId);
         await impl.applyPendingAction(creation,
-            { type: "user", id: "owner", name: "Owner" }, false,
-            { creator: {}, configuration: null });
+            { type: "user", id: "owner", name: "Owner" }, { creator: {}, configuration: null });
         expect(impl.storage.actions.get(creation.id).state).toBe("approved");
         expect([...impl.storage.gatekeepers.list()].map((record: GatekeeperRecord) => record.id))
             .toEqual([gatekeeperId]);

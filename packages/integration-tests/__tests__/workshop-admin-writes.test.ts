@@ -115,7 +115,7 @@ class ActionsRecorder extends RpcTarget implements ActionsSubscriber {
 it("refuses writes to a non-admin, whose capabilities run none", async () => {
   using stack = new DisposableStack();
   const { owner, ws, id } = await seededWorkspace(stack, "writesnonadmin");
-  const chatId = await ws.newChat("hello", null);
+  const chatId = await ws.newChat("hello", null, "auto");
   expect(await owner.getAdminApi()).toBeNull();
 
   // Not on AuthenticatedApi: reachable only through an AdminApi.
@@ -137,7 +137,7 @@ it("refuses writes to a non-admin, whose capabilities run none", async () => {
 it("runs a write, recorded once in the audit log and nowhere in the workspace", async () => {
   using stack = new DisposableStack();
   const { ws, id, title, ownerName } = await seededWorkspace(stack, "writesowner");
-  const chatId = await ws.newChat("hello", null);
+  const chatId = await ws.newChat("hello", null, "auto");
   // Subscribed before the write, as a member who has the workspace open is.
   const seen = new ActionsRecorder();
   stack.use(await ws.subscribeToActions(stack.use(stubFor(seen))));
@@ -191,7 +191,7 @@ async function withAuditLogFaulted<T>(fn: () => Promise<T>): Promise<T> {
 it("changes nothing when the write's record cannot be written", async () => {
   using stack = new DisposableStack();
   const { ws, id } = await seededWorkspace(stack, "writesunaudited");
-  const chatId = await ws.newChat("hello", null);
+  const chatId = await ws.newChat("hello", null, "auto");
 
   await withAuditLogFaulted(async () => {
     await expect(admin.writeWorkspace(id, "stopAgent", { chatId }, REASON)).rejects.toThrow();
@@ -227,7 +227,7 @@ it("stops a turn whose model never answers, keeping the message queued for it", 
   // A turn whose model never answers, stopped: the chat goes idle, its turn ended as stopped. A
   // message the owner sent meanwhile, which the agent never read, stays in the chat as theirs: no
   // client stopped the turn to put it back in a draft.
-  const stuck = await ws.newChat("Never answered", SCRIPTED_MODEL_ID);
+  const stuck = await ws.newChat("Never answered", SCRIPTED_MODEL_ID, "auto");
   const stuckChat = async () => (await ws.listChats()).find(chat => chat.id === stuck);
   await waitFor("the unanswered model request", async () => model.requests.length === 1 || null);
   expect((await stuckChat())?.activeAgent).toBeDefined();

@@ -59,7 +59,7 @@ const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
 describe("attachment worktree ingress", () => {
   it("publishes EOF reference pins before tools run, persisting them with the completed step", () => inKernel(crypto.randomUUID(), async impl => {
     const oid = impl.gitCache.writeBlob(new TextEncoder().encode("column\nvalue\n")).oid;
-    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Read this",
+    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Read this", "auto",
         {attachments: [{oid, name: "report.csv", mimeType: "text/csv"}]});
     const source = 'worktree://ATTACHMENTS/report.csv';
     const events: AiChatStreamEvent[] = [];
@@ -96,7 +96,7 @@ describe("attachment worktree ingress", () => {
     const name = crypto.randomUUID(), source = `worktree://OUTPUTS/${path}`;
     let chatId: number, original: string, updated: string;
     await inKernel(name, async impl => {
-      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw an image");
+      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw an image", "auto");
       await scriptedTurn(impl, chatId, [fauxToolCall("createWorktree", {
         title: "Generated images", bindingName: "OUTPUTS",
       })]);
@@ -139,7 +139,7 @@ describe("attachment worktree ingress", () => {
   });
 
   it("does not create a worktree for a chat without uploads", () => inKernel(crypto.randomUUID(), async impl => {
-    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Hello");
+    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Hello", "auto");
     await scriptedTurn(impl, chatId, []);
     await impl.prepareChatBindings(chatId, []);
     expect(impl.getChatAgentContext(chatId).scratch).toBeUndefined();
@@ -153,7 +153,7 @@ describe("attachment worktree ingress", () => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const oid = impl.gitCache.writeBlob(new TextEncoder().encode("uploaded")).oid;
     const upload = {oid, name: "input.txt", mimeType: "text/plain"};
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect",
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", "auto",
       {attachments: initial ? [upload] : undefined});
     const first = await scriptedTurn(impl, chatId, []);
     const system = getCurrentSystemPrompt(first[0]);
@@ -174,7 +174,7 @@ describe("attachment worktree ingress", () => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const oid = impl.gitCache.writeBlob(new TextEncoder().encode("uploaded")).oid;
     const upload = {oid, name: "input.txt", mimeType: "text/plain"};
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", {attachments: [upload]});
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", "auto", {attachments: [upload]});
     const context = impl.getChatAgentContext(chatId);
     const {worktreeId, bindingName} = context.scratch!;
     context.scratch = {worktreeId, bindingName: "SCRATCH"};
@@ -199,7 +199,7 @@ describe("attachment worktree ingress", () => {
     impl.storage.chatAttachmentContent.put({fileId: id, data: original, state: {
       type: "staged", uploadedAt: Date.now(), mimeType: "text/plain", name: "notes.txt",
     }});
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", {attachments: [{id}]});
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", "auto", {attachments: [{id}]});
     const context = impl.getChatAgentContext(chatId);
     const worktreeId = context.scratch!.worktreeId;
     delete context.attachmentsMigrated;
@@ -221,7 +221,7 @@ describe("attachment worktree ingress", () => {
     await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed\n"));
-      chatId = await impl.newChat(user, {profile: USER}, "Old attachments", {attachments:
+      chatId = await impl.newChat(user, {profile: USER}, "Old attachments", "auto", {attachments:
         existing ? [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}] : undefined});
       const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
       if (message.type !== "message") throw new Error("Expected message");
@@ -280,7 +280,7 @@ describe("attachment worktree ingress", () => {
     let chatId: number, worktreeId: number;
     await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
-      chatId = await impl.newChat(user, {profile: USER}, "Old chat");
+      chatId = await impl.newChat(user, {profile: USER}, "Old chat", "auto");
       const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
       if (message.type !== "message") throw new Error("Expected message");
       message.attachments = ids.map((id, i) => ({id, mimeType: "text/plain", name: `${i}.txt`, size: original.length}));
@@ -321,7 +321,7 @@ describe("attachment worktree ingress", () => {
   it.each(["before publication", "after durable publication"])(
     "retries a transient migration failure %s without duplicate projection", boundary => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID()), id = crypto.randomUUID();
-    const chatId = await impl.newChat(user, {profile: USER}, "Old chat");
+    const chatId = await impl.newChat(user, {profile: USER}, "Old chat", "auto");
     const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
     if (message.type !== "message") throw new Error("Expected message");
     message.attachments = [{id, mimeType: "text/plain", name: "old.txt", size: 3}];
@@ -357,7 +357,7 @@ describe("attachment worktree ingress", () => {
   it("reads and greps a full-size text upload without changing its byte-backed OT state", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const small = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Seed", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", "auto", {attachments:
       [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]});
     const text = "first line\nneedle\n" + "padding\n".repeat(524286);
     // Far over MAX_BUFFERED_BLOB_SIZE, so named by its blob, with short lines so the model
@@ -387,7 +387,7 @@ describe("attachment worktree ingress", () => {
   it("accepts a workpiece written with the env. prefix the attachment note uses", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const ref = await impl.gitCache.writeBlob(new TextEncoder().encode("hello needle\n"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect",
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", "auto",
       {attachments: [{oid: ref.oid, mimeType: "text/plain", name: "notes.txt"}]});
     const requests = await scriptedTurn(impl, chatId, [
       fauxToolCall("readFile", {workpiece: "env.ATTACHMENTS", filename: "notes.txt"}),
@@ -410,7 +410,7 @@ describe("attachment worktree ingress", () => {
     const {chatId, worktreeId} = await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const ref = impl.gitCache.writeBlob(new TextEncoder().encode(text));
-      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", {attachments: [
+      const chatId = await impl.newChat(user, {profile: USER}, "The forecasts", "auto", {attachments: [
         {oid: ref.oid, mimeType: "text/csv", name: "edited.csv"},
         {oid: ref.oid, mimeType: "text/csv", name: "untouched.csv"}]});
       const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
@@ -444,7 +444,7 @@ describe("attachment worktree ingress", () => {
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const ref = await impl.gitCache.writeBlob(Uint8Array.of(0, 255));
-    const chatId = await impl.newChat(user, {profile: USER}, "Start", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Start", "auto", {attachments:
       existing ? undefined : [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]});
     if (existing) {
       const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
@@ -504,7 +504,7 @@ describe("attachment worktree ingress", () => {
         type: "staged", uploadedAt: Date.now(), mimeType: "text/csv", name: "input.csv",
       }});
       const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()),
-        {profile: USER}, "Read this CSV", {attachments: [{id}]});
+        {profile: USER}, "Read this CSV", "auto", {attachments: [{id}]});
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(bytes);
       const attachment = impl.storage.chatAttachmentContent.get(id)!;
       const context = impl.getChatAgentContext(chatId);
@@ -539,8 +539,8 @@ describe("attachment worktree ingress", () => {
     assertChatAttachmentSize(bytes.byteLength);
     const upload = await stage(bytes, "large.txt");
     const chatId = existing
-      ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [await stage(new TextEncoder().encode("small"), "small.txt")]})
-      : await impl.newChat(user, {profile: USER}, "Read this", {attachments: [upload]});
+      ? await impl.newChat(user, {profile: USER}, "Initial", "auto", {attachments: [await stage(new TextEncoder().encode("small"), "small.txt")]})
+      : await impl.newChat(user, {profile: USER}, "Read this", "auto", {attachments: [upload]});
     if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", {attachments: [upload]});
     const message = [...impl.storage.chats.list()].findLast(message => message.type === "message" &&
       message.attachments?.some(attachment => attachment.name === "large.txt"));
@@ -583,8 +583,8 @@ describe("attachment worktree ingress", () => {
       };
       const upload = stage(name);
       const chatId = existing
-        ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [stage("seed.txt")]})
-        : await impl.newChat(user, {profile: USER}, "Read this", {attachments: [upload]});
+        ? await impl.newChat(user, {profile: USER}, "Initial", "auto", {attachments: [stage("seed.txt")]})
+        : await impl.newChat(user, {profile: USER}, "Read this", "auto", {attachments: [upload]});
       if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", {attachments: [upload]});
       const attachment = impl.storage.chatAttachmentContent.get(upload.id)!;
       expect(attachment.data).toBeUndefined();
@@ -603,7 +603,7 @@ describe("attachment worktree ingress", () => {
       }});
       return {id};
     };
-    const chatId = await impl.newChat(user, {profile: USER}, "Initial", {attachments: [stage("input", "input.csv")]});
+    const chatId = await impl.newChat(user, {profile: USER}, "Initial", "auto", {attachments: [stage("input", "input.csv")]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const generatedPath = mode === "directory" ? "report.csv/part.txt" : "report.csv";
     await step(impl, chatId, {[worktreeId]: [[generatedPath, {set: "agent-created"}]]});
@@ -619,7 +619,7 @@ describe("attachment worktree ingress", () => {
   it("reuses deleted generated names but keeps historical upload names reserved", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const original = await impl.gitCache.writeBlob(new TextEncoder().encode("original"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Seed", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", "auto", {attachments:
       [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]});
     const id = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[id]: [["generated.txt", {set: "temporary"}]]});
@@ -661,8 +661,8 @@ describe("attachment worktree ingress", () => {
       };
       const upload = await stage(bytes, mimeType, name);
       const chatId = existing
-        ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [await stage(new TextEncoder().encode("seed"), "text/plain", "seed.txt")]})
-        : await impl.newChat(user, {profile: USER}, "Read file", {attachments: [upload]});
+        ? await impl.newChat(user, {profile: USER}, "Initial", "auto", {attachments: [await stage(new TextEncoder().encode("seed"), "text/plain", "seed.txt")]})
+        : await impl.newChat(user, {profile: USER}, "Read file", "auto", {attachments: [upload]});
       if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Another file", {attachments: [upload]});
       const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       const overlay = (await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!)).get(worktreeId)?.get(name);
@@ -708,7 +708,7 @@ describe("attachment worktree ingress", () => {
         }});
         upload = {id};
       }
-      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Initial", {attachments: [upload]});
+      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Initial", "auto", {attachments: [upload]});
       const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.chatId === chatId);
       if (!message || message.type !== "message") throw new Error("Missing attachment message");
       id = message.attachments![0].id;
@@ -733,7 +733,7 @@ describe("attachment worktree ingress", () => {
       impl.storage.chatAttachmentContent.put({fileId: id, data: file.content, state: {
         type: "staged", uploadedAt: Date.now(), mimeType: file.mimeType, name: file.name,
       }});
-      const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Inspect the file", {attachments: [{id}]});
+      const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Inspect the file", "auto", {attachments: [{id}]});
       const faux = createFauxCore({models: [{id: "faux-model"}]});
       faux.setResponses([fauxAssistantMessage(fauxText("Acknowledged"))]);
       const requests: Message[][] = [];
@@ -761,7 +761,7 @@ describe("attachment worktree ingress", () => {
     const bytes = Uint8Array.fromBase64(file.base64);
     const blob = await impl.gitCache.writeBlob(bytes);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", "auto", {attachments:
       [{oid: blob.oid, mimeType: "image/png", name: file.name}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     faux.setResponses([fauxAssistantMessage(fauxText("First turn")), fauxAssistantMessage(fauxText("Second turn"))]);
@@ -801,7 +801,7 @@ describe("attachment worktree ingress", () => {
       ({oid: (await impl.gitCache.writeBlob(new TextEncoder().encode(text))).oid, mimeType: "text/plain", name});
     const fits = "fits\n".padEnd(MAX_TOOL_RESULT_CHARS, "f");
     const large = "needle\n".padEnd(MAX_TOOL_RESULT_CHARS + 1, "l");
-    const chatId = await impl.newChat(user, {profile: USER}, "Read these", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Read these", "auto", {attachments:
       [await upload("fits.txt", fits), await upload("first.txt", large)]});
     const requests = await scriptedTurn(impl, chatId, []);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", {attachments:
@@ -834,7 +834,7 @@ describe("attachment worktree ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const blob = await impl.gitCache.writeBlob(large);
       const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
-      const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch});
+      const chatId = await impl.newChat(user, {profile: USER}, "First five", "auto", {attachments: batch});
       for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch});
       const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
       expect(imageParts(before[0])).toHaveLength(20);
@@ -872,7 +872,7 @@ describe("attachment worktree ingress", () => {
     const share = Math.floor(MAX_INLINE_MESSAGE_BYTES / 2.5);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     // The third of these passes the message's byte limit; the last passes the per-file one.
-    const chatId = await impl.newChat(user, {profile: USER}, "Photos", {attachments: [
+    const chatId = await impl.newChat(user, {profile: USER}, "Photos", "auto", {attachments: [
       await upload("a.png", share, 1), await upload("b.png", share, 2),
       await upload("c.png", share, 3), await upload("huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1, 4)]});
     const attachmentName = (id: string) => [...impl.storage.chats.list()].flatMap(message =>
@@ -911,7 +911,7 @@ describe("attachment worktree ingress", () => {
     const blob = impl.gitCache.writeBlob(pngOfSize(size, 100));
     const batch = (from: number) =>
       Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
-    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", "auto", {attachments: batch(0)});
     for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch(5 * i)});
     const names = new Map([...impl.storage.chats.list()].flatMap(message =>
       message.type === "message" ? message.attachments ?? [] : []).map(attachment => [attachment.id, attachment.name]));
@@ -936,7 +936,7 @@ describe("attachment worktree ingress", () => {
     const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
     const batch = (from: number, length = 5) =>
       Array.from({length}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
-    const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch(0)});
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", "auto", {attachments: batch(0)});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
     const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
@@ -979,7 +979,7 @@ describe("attachment worktree ingress", () => {
   it("compacts mid-turn once the images readFile showed pass the limit", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: blob.oid, mimeType: "image/png", name: "dot.png"}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
@@ -1021,7 +1021,7 @@ describe("attachment worktree ingress", () => {
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
     const ref = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Match this mockup", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Match this mockup", "auto", {attachments:
       [{oid: ref.oid, mimeType: "image/png", name: "ref.png"}]});
     const looks = Array.from({length: 20}, (_, i) => fauxAssistantMessage(
         [fauxThinking(`Look ${i}`), fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "ref.png"})],
@@ -1048,7 +1048,7 @@ describe("attachment worktree ingress", () => {
   it("counts no image read of content the user later reverted", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[worktreeId]: [["notes.txt", {set: "draft"}]]});
@@ -1070,7 +1070,7 @@ describe("attachment worktree ingress", () => {
   it("replays an image read as a note for a model that can't view images", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at this", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     await scriptedTurn(impl, chatId, [fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "dot.png"})]);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Now in words");
@@ -1091,7 +1091,7 @@ describe("attachment worktree ingress", () => {
   it("refuses image reads past one message's budget within a step", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const dot = impl.gitCache.writeBlob(pngOfSize(24, 100));
-    const chatId = await impl.newChat(user, {profile: USER}, "Look at these", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Look at these", "auto", {attachments:
       [{oid: dot.oid, mimeType: "image/png", name: "dot.png"}]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[worktreeId]: [
@@ -1114,7 +1114,7 @@ describe("attachment worktree ingress", () => {
   ] as const)("names the attachments of a refused first request by path from then on (%s)", (api, errorMessage) => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const pdf = impl.gitCache.writeBlob(new TextEncoder().encode("%PDF-1.7 601 pages"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Read this", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this", "auto", {attachments:
       [{oid: pdf.oid, mimeType: "application/pdf", name: "long.pdf"}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     const requests: Message[][] = [];
@@ -1140,7 +1140,7 @@ describe("attachment worktree ingress", () => {
       .mockImplementation(() => { throw new Error("Unexpected workspace-wide payload scan"); });
     try {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
-      const first = await impl.newChat(user, {profile: USER}, "No attachments");
+      const first = await impl.newChat(user, {profile: USER}, "No attachments", "auto");
       await impl.sendChatMessage(user, {profile: USER}, first, "Still no attachments");
       const blob = await impl.gitCache.writeBlob(new TextEncoder().encode("input"));
       const upload = {oid: blob.oid, mimeType: "text/plain", name: "notes.txt"};
@@ -1153,7 +1153,7 @@ describe("attachment worktree ingress", () => {
       const content = await impl.getCurrentChatContent(first, impl.storage.chatMeta.get(first)!);
       expect(content.get(scratch.worktreeId)?.get("plan.md")).toBe("working plan");
       expect(content.get(scratch.worktreeId)?.get("notes-2.txt")).toBe("input");
-      const other = await impl.newChat(user, {profile: USER}, "Other chat", {attachments: [upload]});
+      const other = await impl.newChat(user, {profile: USER}, "Other chat", "auto", {attachments: [upload]});
       const otherScratch = impl.getChatAgentContext(other).scratch!;
       expect(otherScratch.worktreeId).not.toBe(scratch.worktreeId);
       const messages = [...impl.storage.chats.list()].filter(m => m.chatId === other && m.type === "message");
@@ -1168,13 +1168,13 @@ describe("attachment worktree ingress", () => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = await impl.gitCache.writeBlob(Uint8Array.of(1));
     const upload = {oid: blob.oid, mimeType: "image/png", name: "bad.png"};
-    await expect(impl.newChat(user, {profile: USER}, "Bad MIME", {attachments: [upload]}))
+    await expect(impl.newChat(user, {profile: USER}, "Bad MIME", "auto", {attachments: [upload]}))
       .rejects.toThrow("does not match its MIME");
     const local = await impl.gitCache.writeBlob(Uint8Array.of(2));
-    const chatId = await impl.newChat(user, {profile: USER}, "Local blob", {attachments:
+    const chatId = await impl.newChat(user, {profile: USER}, "Local blob", "auto", {attachments:
       [{oid: local.oid, mimeType: "application/octet-stream"}]});
     expect(impl.getChatAgentContext(chatId).scratch).toBeDefined();
-    await expect(impl.newChat(user, {profile: USER}, "Missing blob", {attachments:
+    await expect(impl.newChat(user, {profile: USER}, "Missing blob", "auto", {attachments:
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]}))
       .rejects.toThrow("Unknown Git blob");
     // Streamed, as the composer uploads: the blob is never held whole.
@@ -1196,7 +1196,7 @@ describe("attachment worktree ingress", () => {
       if (chunks.has(oid)) chunkReads++;
       return get(oid);
     };
-    await expect(impl.newChat(user, {profile: USER}, "Too large", {attachments:
+    await expect(impl.newChat(user, {profile: USER}, "Too large", "auto", {attachments:
       [{oid: tooBig.oid, mimeType: "application/octet-stream"}]}))
       .rejects.toThrow("100 MB or smaller");
     expect(chunkReads).toBe(0);
@@ -1264,7 +1264,7 @@ describe("data files for views", () => {
   const answer = (text: string, ...calls: ReturnType<typeof fauxToolCall>[]) =>
     fauxAssistantMessage([fauxText(text), ...calls], calls.length ? {stopReason: "toolUse"} : undefined);
   const newChat = (impl: Impl) =>
-    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data");
+    impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw my data", "auto");
   const createOutputs = fauxToolCall("createWorktree", {title: "Outputs", bindingName: "OUTPUTS"});
   const source = (path: string) => `worktree://OUTPUTS/${path}`;
   const text = (impl: Impl, oid: string | null | undefined) =>

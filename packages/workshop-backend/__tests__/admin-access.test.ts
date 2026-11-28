@@ -280,6 +280,7 @@ describe("withholding content", () => {
     let action = {
       id: 1, resourceTitle: "r", createdAt: new Date(0), state: "pending", type: "action",
       description: { title: "Send", description: "body", fields },
+      applyError: { message: "provider said: secret", retryable: false },
     } as unknown as ActionLogEntry;
     let observation = {
       id: 2, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "observation",
@@ -298,6 +299,8 @@ describe("withholding content", () => {
       expect(withheld.description).not.toHaveProperty("fields");
       expect(entry).toEqual(before);
     }
+    expect(withholdActionContent(action))
+        .toMatchObject({ applyError: { message: "", retryable: false } });
 
     let hook = {
       id: 1, gatekeeperId: 2, gadgetId: 3, enabled: true,

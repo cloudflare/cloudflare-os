@@ -1,22 +1,24 @@
-import { ArrowSquareOut, CaretRight, Lightning } from '@phosphor-icons/react'
+import { Badge, Tooltip } from '@cloudflare/kumo'
+import { ArrowSquareOut, CaretRight } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
-import { BulkResolveButtons } from './BulkResolveButtons'
 import { ReviewRequest } from './ReviewRequest'
 import {
-  blockedBy, canOfferAlwaysApprove, isAutoApproved, type AutoApprovalRules,
-} from './autoApprovalRules'
-import { describeGroupSize, isFromElsewhere, type PendingChange, type PendingChangeGroup } from './pendingChangeGroups'
+  branchChatId, describeGroupSize, isFromElsewhere, needsReview, OUTCOME_UNKNOWN_COPY,
+  type PendingChange, type PendingChangeGroup,
+} from './pendingChangeGroups'
 
 /** What the tray can do with one request, once the user drills into it. */
 export interface PendingChangeActions {
   processing: ReadonlySet<number>
   onApprove: (entry: PendingChange) => void
   onReject: (entry: PendingChange) => void
-  /** Enables a standing rule for the request's kind on its connection. */
-  onAlwaysApprove: (entry: PendingChange) => void
-  /** Opens the pane where a standing rule is turned off again. */
-  onManageRules: () => void
+  /**
+   * Whether a request is approved on its own. Most apply when their chat's changes are accepted.
+   */
+  canApprove: (entry: PendingChange) => boolean
+  /** Tries again to apply a request that failed to. */
+  onRetry: (entry: PendingChange) => void
 }
 
 /**
@@ -31,31 +33,29 @@ export const PendingChangeGroupRow = ({
   group,
   vendorId,
   branding,
-  rules,
+  restricted,
   expandedActionId,
   onToggleAction,
   open,
   onToggle,
   actions,
-  bulk,
 }: {
   group: PendingChangeGroup
   vendorId?: string
   branding?: VendorBranding
-  rules: AutoApprovalRules
+  restricted: boolean
   expandedActionId: number | null
   onToggleAction: (actionId: number) => void
   open: boolean
   onToggle: () => void
   actions: PendingChangeActions
-  /** Absent for a group nothing here can resolve in bulk, such as one holding a pending creation. */
-  bulk?: { onApplyAll: () => void, onDiscardAll: () => void, disabled: boolean }
 }) => {
-  const autoApprovedCount = group.entries.filter(entry => isAutoApproved(entry, rules)).length
   // Nothing in this group is something the open chat asked for, so the row says so once rather
   // than every request inside it repeating the same sentence. This is also why the group sorts
   // below the ones this conversation did ask for.
   const allElsewhere = isFromElsewhere(group)
+  // Said on the row too, since its requests are hidden until it is opened.
+  const flagged = group.entries.some(needsReview)
 
   return (
     <div className="border-t border-kumo-line/70 first:border-t-0">
@@ -74,9 +74,10 @@ export const PendingChangeGroupRow = ({
             size={14}
             className="h-6 w-6 rounded-md"
           />
-          <span className="min-w-[4rem] flex-1 truncate text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
+          <span className={`min-w-[4rem] flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.15px] text-kumo-default ${flagged ? 'font-semibold' : 'font-medium'}`}>
             {group.title}
           </span>
+          {flagged && <Badge variant="warning" className="flex-shrink-0">Needs review</Badge>}
           <span className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-inactive">
             {describeGroupSize(group)}
           </span>
@@ -87,16 +88,6 @@ export const PendingChangeGroupRow = ({
             <span className="flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive">
               <ArrowSquareOut size={11} className="flex-shrink-0" aria-hidden="true" />
               <span className="truncate">Asked elsewhere</span>
-            </span>
-          )}
-          {autoApprovedCount > 0 && (
-            <span className="flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive">
-              <Lightning size={11} weight="fill" className="flex-shrink-0" aria-hidden="true" />
-              <span className="truncate">
-                {autoApprovedCount === group.entries.length
-                  ? 'Standing rule'
-                  : `${autoApprovedCount} on a standing rule`}
-              </span>
             </span>
           )}
           <CaretRight
@@ -116,19 +107,13 @@ export const PendingChangeGroupRow = ({
               too — otherwise the footer with the group's own actions is sliced off. A single
               request can carry a whole JSON document. */}
           <div className="max-h-[min(18rem,20vh)] overflow-y-auto">
-            {group.hasCreation && (
-              <p className="m-0 border-b border-kumo-line px-5 py-2 text-[11.5px] leading-4 text-kumo-inactive">
-                This resource does not exist yet. Approve its creation first — everything queued
-                behind it applies after, and discarding it discards them too.
-              </p>
-            )}
             {group.entries.map(entry => {
-              const blocker = blockedBy(entry, group.entries, rules)
-              // A rule covers this one, so the kernel will apply it unasked once the drain reaches
-              // it. The controls stay, though: a drain stops for good at an apply that fails, and
-              // a request nobody can decide here would be stranded with nothing saying why. One
-              // the drain is applying right now refuses a second decision, whoever sends it.
-              const ruled = isAutoApproved(entry, rules)
+              // An apply stops at the first request that fails, and what its own chat, or no
+              // chat, queued behind it on the connection waits for it to be retried or denied.
+              // Whether another's requests wait too depends on the order the connection applies
+              // them in, which is not known here.
+              const failedBefore = group.entries.find(other => other.id < entry.id &&
+                other.applyError && branchChatId(other) === branchChatId(entry))
               return (
                 <div key={entry.id}>
                   {!allElsewhere && entry.origin === 'elsewhere' && (
@@ -140,51 +125,52 @@ export const PendingChangeGroupRow = ({
                       Asked elsewhere in this workspace
                     </p>
                   )}
-                  {ruled && (
-                    <p className="m-0 flex flex-wrap items-center gap-x-1.5 bg-kumo-tint/60 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
-                      {blocker
-                        ? `Standing rule enabled, waiting on "${blocker.description.title}" above it.`
-                        : 'Standing rule enabled.'}
-                      <button
-                        type="button"
-                        onClick={actions.onManageRules}
-                        className="cursor-pointer text-kumo-default underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-                      >
-                        Manage rule
-                      </button>
+                  {entry.applyError && (
+                    <p
+                      role="alert"
+                      className="m-0 flex flex-wrap items-center gap-x-1.5 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger"
+                    >
+                      <span className="min-w-0">
+                        Could not apply: {entry.applyError.message}
+                        {entry.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                      </span>
+                      {entry.applyError.retryable && (
+                        <button
+                          type="button"
+                          onClick={() => actions.onRetry(entry)}
+                          disabled={actions.processing.has(entry.id)}
+                          className="cursor-pointer text-kumo-default underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Retry
+                        </button>
+                      )}
                     </p>
+                  )}
+                  {failedBefore && (
+                    <div className="flex px-5 pt-2">
+                      <Tooltip content={`Waiting on "${failedBefore.description.title}" above it.`} asChild>
+                        <span className="inline-flex">
+                          <Badge variant="neutral">Blocked</Badge>
+                        </span>
+                      </Tooltip>
+                    </div>
                   )}
                   <ReviewRequest
                     record={entry}
-                    restricted={rules.restricted}
+                    restricted={restricted}
                     showResource={false}
                     expanded={expandedActionId === entry.id}
                     processing={actions.processing.has(entry.id)}
                     onToggle={() => onToggleAction(entry.id)}
                     decide={{
-                      onApprove: () => actions.onApprove(entry),
+                      onApprove: actions.canApprove(entry) ? () => actions.onApprove(entry) : undefined,
                       onReject: () => actions.onReject(entry),
-                      onAlwaysApprove: canOfferAlwaysApprove(entry, rules)
-                        ? () => actions.onAlwaysApprove(entry)
-                        : undefined,
                     }}
                   />
                 </div>
               )
             })}
           </div>
-          {/* Outside the scroller: resolving the group as a whole must not be something the user
-              has to scroll past every request to reach. */}
-          {bulk && group.entries.length > 1 && (
-            <div className="flex items-center gap-2 border-t border-kumo-line/70 px-5 py-2">
-              <BulkResolveButtons
-                count={group.entries.length}
-                disabled={bulk.disabled}
-                onDiscardAll={bulk.onDiscardAll}
-                onApplyAll={bulk.onApplyAll}
-              />
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -92,6 +92,8 @@ describe("git-storage migration via the Overseer constructor", () => {
       // record that predates the pendingByGatekeeper declaration. The version-3 step (chained
       // after the git migration in the same blockConcurrencyWhile) must backfill it.
       putAction(makePreIndexActionStorage(impl.ctx.storage), 1);
+      // On a connection the workspace still has (see migrateToRejectedOrphans).
+      impl.storage.gatekeepers.put({ id: 1, class: {} });
     });
 
     await abortAllDurableObjects();
@@ -193,6 +195,8 @@ describe("action-index backfills via the Overseer constructor", () => {
       putAction(legacy, 1);
       putAction(legacy, 2, { state: "approved" });
       putAction(legacy, 3, { gatekeeperId: 2 });
+      // On connections the workspace still has (see migrateToRejectedOrphans).
+      for (let id of [1, 2]) impl.storage.gatekeepers.put({ id, class: {} });
       // Last write: arm the constructor's version-2 migration.
       impl.storage.version.put(2);
     });
@@ -241,7 +245,7 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
 
   function putChat(impl: any, id: number): void {
     impl.storage.chatMeta.put(
-        { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+        { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
   }
 
   // The agent's message for a step in which it called createGadget, as the log records it. A

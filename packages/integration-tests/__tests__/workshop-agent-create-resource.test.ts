@@ -100,7 +100,7 @@ it.concurrent("a created resource is made in the approver's account, and edits a
     return (await ws.getMetadata()).id;
   });
   using ws = await api.openWorkspace(workspaceId);
-  await expect(ws.approveAction(write.id)).rejects.toThrow("Approve its creation first.");
+  await expect(ws.approveAction(write.id)).rejects.toThrow("Save it to an account first.");
   await expect(ws.approveAction(creation.id)).rejects.toThrow("Choose one of your accounts");
 
   // They approve the creation, into an account of their own, with what its configurator collected.

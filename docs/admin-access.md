@@ -195,13 +195,13 @@ Three of these give less than their names promise:
   listed paths can be empty while there is a change to accept. The one entry it lists with no base
   is a gadget the chat created that is not accepted yet (a worktree is pinned at its first
   modification, so it always has one).
-- **`listAutoApprovals()` lists opt-ins, which apply nothing alone.** They are the rules members
-  turned on. An action is applied without a manual approval only when its author also marked it
-  `autoApprovable`, and never once the workspace has read restricted data: the rules stay stored
-  and listed, and every action waits. A view shows both conditions, which is how an admin answers
-  why an action still waited: `describe()` reports `containsRestrictedData`, and `listActions()`
-  keeps each action's `autoApprovable` verdict and kind, with `autoApproved` on one a rule
-  applied.
+- **`listAutoApprovals()` lists rules that decide nothing.** They are the per-kind opt-ins members
+  turned on before chats had modes; they stay stored and listed, and nothing consults them. A
+  chat's actions apply without its user when the chat is in Auto mode and its author marked every
+  pending one `autoApprovable`, and never once the workspace has read restricted data. An action
+  made outside any chat applies at once unless it is held for review. A view shows why an action
+  still waited: `describe()` reports `containsRestrictedData`, and `listActions()` keeps each
+  action's `autoApprovable` verdict and kind, with `autoApproved` on one applied automatically.
 
 An admin read never reaches a connection, and reads only what the workspace stores:
 
@@ -649,7 +649,7 @@ read nothing the level withholds:
 | `listObservers()` | The collaborators holding an observer record, with their account choices | Nothing |
 | `listObserverRequirements()` | The connections a grant's recipient would have to pass | Nothing |
 | `listShareLinks()` | Each link's id, note, creator, role, gadget or gadgets, and whether it is its creator's default link | Nothing: the listing holds no key that redeems a link |
-| `listAutoApprovals()` | Each rule's connection, kind of action and who turned it on | Nothing |
+| `listAutoApprovals()` | Each stored rule's connection, kind of action and who turned it on (the rules no longer decide anything) | Nothing |
 | `listBlueprints()` | Each published blueprint's title, description, version and code date | Each `id`, and `screenshotUrl`, which holds the id |
 | `getDiagnostics()` | Counts, the chats with an agent turn recorded, the storage's version and size, times and who is present | Nothing |
 

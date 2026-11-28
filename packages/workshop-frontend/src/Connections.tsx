@@ -23,6 +23,9 @@ import {
 import { reportIssue } from './errorReporting'
 import { classifyRpcError, rpcFailureDescription } from './rpcErrors'
 import { isImeComposing } from './keyboardEvent'
+import { useActions } from './useActions'
+import { useResolveAction } from './useResolveAction'
+import { unsavedConnections } from './features/approvals/pendingChangeGroups'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
@@ -37,10 +40,6 @@ interface ConnectionsProps {
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
 }
 
-/**
- * Auto-approval rules live in Activity because they apply across the workspace, while this view is
- * scoped to one gadget.
- */
 export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
@@ -56,6 +55,12 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [annotationTarget, setAnnotationTarget] = useState<GadgetBindingInfo | null>(null)
   const toasts = useKumoToastManager()
+  // A resource an agent created is unsaved until someone saves it to an account, which is offered
+  // here as on its creation's card in the chat, once the chat's changes are accepted.
+  const { pending } = useActions(overseer)
+  const unsaved = useMemo(() => unsavedConnections(pending), [pending])
+  const [savingActions, setSavingActions] = useState<Set<number>>(new Set())
+  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setSavingActions)
   // A connection created here whose bind the restart interrupted. Creating a vendor connection
   // restarts the workspace while any "build" collaborator is live, the creator's own session
   // included, and the doomed session refuses to bind it, so it is bound once the session is replaced.
@@ -271,6 +276,13 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                 // Still provisional to the open chat (see GadgetBindingInfo.chatId). Blueprint
                 // annotations are excluded, since a blueprint only ever exports permanent edges.
                 const isPending = gk.chatId !== undefined
+                const creation = unsaved.get(gk.target)
+                const canSave = creation?.type === 'action' && creation.accepted !== undefined
+                const unsavedPill = (
+                  <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
+                    Unsaved
+                  </span>
+                )
 
                 return (
                   <div
@@ -346,12 +358,29 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                                 </span>
                               </Tooltip>
                             )}
+                            {creation && (canSave ? unsavedPill : (
+                              <Tooltip
+                                content="Exists only in this workspace. Accept the chat's changes, then save it to an account"
+                                asChild
+                              >
+                                {unsavedPill}
+                              </Tooltip>
+                            ))}
                           </p>
                           <p className="mt-0.5 truncate text-[11px] leading-4 tracking-[-0.1px] text-kumo-inactive">
                             Referenced in code as: <span className="font-mono text-kumo-subtle">{gk.name}</span>
                           </p>
                         </div>
                         <div className="ml-auto flex shrink-0 items-center gap-1">
+                          {creation && canSave && (
+                            <WorkshopButton
+                              className="!h-8"
+                              disabled={savingActions.has(creation.id)}
+                              onClick={() => void resolveAction(creation, 'approve')}
+                            >
+                              Save to account
+                            </WorkshopButton>
+                          )}
                           <Tooltip content="Edit name used in code" asChild>
                             <WorkshopIconButton
                               onClick={() => handleEditStart(gk.name)}
@@ -503,6 +532,8 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           }
         }}
       />
+
+      {creationAccountModal}
 
       <BlueprintAnnotationModal
         target={annotationTarget}

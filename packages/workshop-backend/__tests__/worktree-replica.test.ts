@@ -19,7 +19,7 @@ const testEnv = env as Cloudflare.Env & {
 type Impl = OverseerDurableObject["impl"];
 const author = {type: "agent" as const, id: "test", name: "Test"};
 async function setup(impl: Impl) {
-  impl.storage.chatMeta.put({id: 1, title: "Mounted worktree", started: new Date(), lastActive: new Date()});
+  impl.storage.chatMeta.put({id: 1, title: "Mounted worktree", mode: "auto", started: new Date(), lastActive: new Date()});
   const commit = await impl.gitCache.writeFilesAsCommit(new Map([
     ["a.txt", "abc"], ["untouched.txt", "base"], ["raw.bin", "\0binary\xff"],
   ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
@@ -302,7 +302,7 @@ const enc = (value: string) => new TextEncoder().encode(value);
 async function withCommands(test: (impl: Impl, id: number, base: string) => Promise<void>, name?: string) {
   await runInDurableObject(testEnv.TEST_OVERSEER.getByName(name ?? crypto.randomUUID()), async instance => {
     const impl = instance.impl;
-    impl.storage.chatMeta.put({id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0)});
+    impl.storage.chatMeta.put({id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0)});
     const base = await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(BASE)),
       {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0)});
     const {id} = await impl.createWorktree("Repo", 1, base);

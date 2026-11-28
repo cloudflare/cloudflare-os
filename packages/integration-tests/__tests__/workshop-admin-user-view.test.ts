@@ -207,7 +207,7 @@ async function seededUser(prefix: string): Promise<SeededUser> {
   const gadget = stack.use(ws.createGadget("Notes", undefined, "NOTES"));
   const gadgetId = await gadget.getId();
   const empty = await headOf(workpieces, gadgetId);
-  const seedChatId = await ws.newChat("Seed", null);
+  const seedChatId = await ws.newChat("Seed", null, "auto");
   await ws.submitCodeChange(seedChatId, {
     generation: 0, revision: 0, clientId: "seed", seq: 1,
     pins: [{ gadgetId, baseCommit: empty }],

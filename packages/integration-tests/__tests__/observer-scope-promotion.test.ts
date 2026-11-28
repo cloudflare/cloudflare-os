@@ -64,9 +64,11 @@ async function newConnection(ws: RpcStub<Overseer>, accountId: number, resourceU
   return await connection.getId();
 }
 
+// In Review, so that what the agent proposes waits for the user's accept.
 const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
   openAgentSession(harness.url, {
     modelId: SCRIPTED_MODEL_ID,
+    mode: "review",
     userModel: model.userModel,
     ambientVendorIds: [TEST_VENDOR_ID],
     usernamePrefix,
@@ -376,7 +378,7 @@ it("mainline binding names steer clear of another chat's pending binding", async
   const mainlineTargetId =
       await newConnection(ws, account.id, "https://gadgets-test.example/things/mainline-name");
 
-  const chatB = await ws.newChat("Reserve TEST_THING", null);
+  const chatB = await ws.newChat("Reserve TEST_THING", null, "auto");
   await app.bind("TEST_THING", draftTargetId, chatB);
   expect(await app.listBindings()).not.toContainEqual(expect.objectContaining({ name: "TEST_THING" }));
   expect(await app.listBindings(chatB)).toContainEqual(
