@@ -36,6 +36,7 @@ export default function GatekeeperAppPage({ appId, path }: { appId: string, path
           return
         }
         acquired = frame
+        setError(null)
         setState({ frame })
       })
       .catch((err) => {
