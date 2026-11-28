@@ -448,3 +448,58 @@ describe("rejecting", () => {
     expect((await hooks().queueLog(name)).submitted).toEqual([]);
   });
 });
+
+describe("under Sites.Selected", () => {
+  const SELECTED_SCOPES = ["https://graph.microsoft.com/Sites.Selected", "https://graph.microsoft.com/User.Read", "openid", "profile", "email"];
+  const siteId = (n: number) => `contoso.sharepoint.com,dddddddd-0000-0000-0000-${String(n).padStart(12, "0")},eeeeeeee-0000-0000-0000-000000000005`;
+  const nameOf = (n: number) => `Site ${String(n).padStart(2, "0")}`;
+
+  /** A tenant whose search names `count` sites, the first `granted` of them granted to the app; `down` fails every library check. */
+  function tenant(count: number, granted: number, down = false) {
+    const named = Array.from({ length: count }, (_, n) => ({ id: siteId(n), displayName: nameOf(n), webUrl: `https://contoso.sharepoint.com/sites/s${n}` }));
+    const open = new Set(named.slice(0, granted).map(site => site.id));
+    return new FakeGraph()
+      .on("POST", /^\/v1\.0\/search\/query$/, () => json({ value: [{ hitsContainers: [{ hits: named.map(resource => ({ resource })) }] }] }))
+      .on("POST", /^\/v1\.0\/\$batch$/, request => json({
+        responses: (JSON.parse(request.body!) as { requests: { id: string; url: string }[] }).requests
+          .map(sub => ({ id: sub.id, status: down ? 503 : open.has(sub.url.split("/")[1]!) ? 200 : 403, body: {} })),
+      }))
+      .on("GET", /^\/v1\.0\/me\/drive(\?|$)/, () => json({ error: { code: "accessDenied", message: "no OneDrive" } }, { status: 403 }))
+      .install();
+  }
+  const sitesTab = async (id: string, request: Record<string, unknown> = {}) =>
+    unwrap<SharePointBrowserPage>(await hooks().configurator(id, "write", "loadItems", { tab: "sites", ...request }));
+
+  it("pages the picker's Sites tab through the granted sites alone, searching once", async () => {
+    const graph = tenant(70, 60);
+    const id = await seedAccount(graph, PHILLIP, { scopes: SELECTED_SCOPES });
+    const first = await sitesTab(id);
+    expect(first.items.map(item => item.title)).toEqual(Array.from({ length: 50 }, (_, n) => nameOf(n)));
+    expect(first.notice).toBeUndefined();
+    const second = await sitesTab(id, { pageToken: first.nextPageToken });
+    expect(second.items.map(item => item.title)).toEqual(Array.from({ length: 10 }, (_, n) => nameOf(50 + n)));
+    expect(second.nextPageToken).toBeUndefined();
+    expect((await sitesTab(id, { query: "site 07" })).items.map(item => item.title)).toEqual(["Site 07"]);
+    expect(graph.count("POST", /search\/query/)).toBe(1);
+  });
+
+  it("says so in the picker when no site was granted, or not every site could be checked", async () => {
+    const none = await seedAccount(tenant(3, 0), PHILLIP, { scopes: SELECTED_SCOPES });
+    expect(await sitesTab(none)).toMatchObject({ items: [], notice: expect.stringMatching(/hasn't added any sites/) });
+    const unsure = await seedAccount(tenant(3, 3, true), PHILLIP, { scopes: SELECTED_SCOPES });
+    expect(await sitesTab(unsure)).toMatchObject({ items: [], notice: expect.stringMatching(/Some sites may be missing/) });
+  });
+
+  it("lists an agent the granted sites, narrowed by its query, and fails when it could check none", async () => {
+    const graph = tenant(5, 2);
+    const id = await seedAccount(graph, PHILLIP, { scopes: SELECTED_SCOPES });
+    const binding = props(id, { kind: "all" });
+    const [sites] = unwrap<{ name: string }[][]>(await hooks().run(facet("selected-sites"), binding, [["listSites"]], { pages: 2 }));
+    expect(sites!.map(site => site.name)).toEqual(["Site 00", "Site 01"]);
+    const [matched] = unwrap<{ name: string }[][]>(await hooks().run(facet("selected-query"), binding, [["listSites", { query: "site 01" }]], { pages: 2 }));
+    expect(matched!.map(site => site.name)).toEqual(["Site 01"]);
+    const unsure = await seedAccount(tenant(3, 3, true), PHILLIP, { scopes: SELECTED_SCOPES });
+    expect(failure(await hooks().run(facet("selected-unsure"), props(unsure, { kind: "all" }), [["listSites"]], { pages: 1 })))
+      .toMatch(/couldn't check every site/);
+  });
+});

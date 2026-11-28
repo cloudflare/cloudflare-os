@@ -48,6 +48,7 @@ import {
   OAuthClient, createPkce, isInvalidGrant, mergeOAuthTokens, oauthRefresh, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
+import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import { CalendarApi, MAX_SCHEDULE_ADDRESSES, type GraphCalendarPermission } from "./calendar-graph";
 import { findUserByMail, organizationDomains } from "./directory";
 import { GraphApi, MAX_BATCH_REQUESTS, isGraphAuthError } from "./graph-api";
@@ -78,6 +79,7 @@ import {
   oauthEndpoints,
   outlookAccess,
   scopesFor,
+  selectedSiteUrls,
   sharePointAccess,
   tenantPolicy,
   type CalendarGatekeeperProps,
@@ -99,7 +101,8 @@ import { resolveOutlookUrl } from "./outlook-resolve";
 import { OutlookUrlError, parseOutlookUrl } from "./outlook-scope";
 import { decodeUnit, probeUnits, type AccessUnit } from "./sharepoint-observers";
 import { parseMicrosoftSubresource } from "./subresources";
-import { UnresolvableUrlError, resolveSharePointUrl } from "./sharepoint-resolve";
+import { grantedSites, type GrantedSites } from "./sharepoint-reads";
+import { UnresolvableUrlError, namedSites, resolveSharePointUrl } from "./sharepoint-resolve";
 import { parseSharePointHost } from "./sharepoint-urls";
 import MICROSOFT_LOGO_SVG from "./microsoft-logo.svg";
 import TYPES_CODE from "./types.txt";
@@ -145,6 +148,14 @@ const SUBRESOURCE_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 const subresourceAccessTtl = (allowed: boolean) => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
 
+/** How long the sites a `Sites.Selected` connection can open are served without being looked for again. */
+const GRANTED_SITES_FRESH_MS = 5 * 60_000;
+/** Past this the kept sites are too old to show, and a listing waits for them to be looked for. */
+const GRANTED_SITES_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** The kept sites, the connection they were found under, and when the search for them began. */
+type StoredGrantedSites = GrantedSites & { generation: string; fetchedAt: number };
+/** Where the account keeps them. */
+const GRANTED_SITES_KEY = "grantedSites";
 // How long an account reuses what decides observers of its own calendars (calendar-acl.ts) across
 // its Calendar bindings: a calendar's sharing list (a share removed in Outlook stops counting within
 // this long), whether an address is a person, and the organization's domains.
@@ -545,6 +556,8 @@ export class UserAccount extends DurableObject<Env> {
   // account, or one whose grant is dead, serves no answer but throws.
   readonly #access = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#self, { name: "access" });
   readonly #calendarAcl = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#self, { name: "calendarAcl" });
+  /** The search for the granted sites now under way, shared by everyone waiting on it. */
+  readonly #findingGrantedSites = new SingleFlight();
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
                     requestedScopes: string[]): Promise<void> {
@@ -824,6 +837,57 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("This Microsoft 365 connection was reconnected while its access was being checked.");
     }
     return subresources.map(id => answers.get(id) === true);
+  }
+
+  /**
+   * The sites this `Sites.Selected` connection can open: the ones the deployment names
+   * (`MICROSOFT_SHAREPOINT_SELECTED_SITES`) that open, or else every site Microsoft Search names
+   * that does, which on a large tenant takes many requests. So what was found is kept while this
+   * connection lasts and answered at once: after GRANTED_SITES_FRESH_MS the sites are also looked
+   * for again behind the answer, and after GRANTED_SITES_MAX_AGE_MS before it. Finding none is never
+   * kept, so a site granted to the app shows the next time its user looks. A kept site may since
+   * have been taken away; opening it is still Graph's to refuse.
+   */
+  async grantedSites(): Promise<GrantedSites> {
+    const kept = this.ctx.storage.kv.get<StoredGrantedSites>(GRANTED_SITES_KEY);
+    const age = kept === undefined ? Infinity : Date.now() - kept.fetchedAt;
+    if (kept === undefined || kept.generation !== this.#creds.connectionGeneration() || age >= GRANTED_SITES_MAX_AGE_MS) {
+      return await this.#findGrantedSites();
+    }
+    if (age >= GRANTED_SITES_FRESH_MS) {
+      this.ctx.waitUntil(this.#findGrantedSites().catch((error: unknown) => {
+        logger.warn("failed to look again for the sites granted to the app", { event: "microsoft.sharepoint.grantedSites.refresh.failed", error });
+      }));
+    }
+    return { sites: kept.sites, complete: kept.complete };
+  }
+
+  /** Looks for the granted sites and keeps them, once however many callers are waiting. */
+  #findGrantedSites(): Promise<GrantedSites> {
+    // Joined only under the connection it began under: a reconnect's first listing starts its own.
+    const generation = this.#creds.connectionGeneration();
+    return this.#findingGrantedSites.run(generation, async () => {
+      const fetchedAt = Date.now();
+      const identity = await this.getIdentity();
+      const named = identity.sharePointTenant === undefined ? [] : selectedSiteUrls(this.env);
+      let found = await this.#graph(api => named.length === 0 ? grantedSites(api)
+        : namedSites(api, named, { name: identity.sharePointTenant!, id: identity.tenantId }));
+      if (this.#creds.connectionGeneration() !== generation) return found;
+      const kept = this.ctx.storage.kv.get<StoredGrantedSites>(GRANTED_SITES_KEY);
+      if (!found.complete && kept?.generation === generation) {
+        // A search that couldn't check every site loses none an earlier one found.
+        const sites = new Map([...kept.sites, ...found.sites].map(site => [site.id, site]));
+        found = { sites: [...sites.values()].toSorted((a, b) => a.name.localeCompare(b.name)), complete: false };
+      }
+      this.ctx.storage.kv.delete(GRANTED_SITES_KEY);
+      try {
+        if (found.sites.length > 0) this.ctx.storage.kv.put<StoredGrantedSites>(GRANTED_SITES_KEY, { ...found, generation, fetchedAt });
+      } catch (error) {
+        // More sites than one stored value holds: they are answered, and looked for again next time.
+        logger.warn("failed to keep the sites granted to the app", { event: "microsoft.sharepoint.grantedSites.keep.failed", error });
+      }
+      return found;
+    });
   }
 
   /**

@@ -5,11 +5,12 @@
 // resolve each kind of URL unambiguously. A link the user cannot open fails like one that does not
 // exist.
 
-import { GraphApiError, type GraphApi } from "./graph-api";
+import { GraphApiError, GraphTransportError, type GraphApi } from "./graph-api";
 import {
   ITEM_SELECT, LIST_SELECT, SITE_SELECT, canonicalSiteId, parseDriveItem, parseList, parseSite,
   type GraphDriveItem, type GraphList, type GraphSite,
 } from "./graph-parse";
+import { SITE_CHECKS_AT_ONCE, getSite, type GrantedSites } from "./sharepoint-reads";
 import type { SharePointScope } from "./sharepoint-scope";
 import {
   allUrl, isAllUrl, isSitePagesUrl, isSiteRootPath, normalizeForShares, parseSharePointHost, parseSharePointUrl,
@@ -172,6 +173,33 @@ export async function resolveSharePointUrl(api: GraphApi, raw: string, tenant: C
     if (drive === null) throw new SiteNotGrantedError();
   }
   return resolved;
+}
+
+/**
+ * The sites among the links a deployment names (`MICROSOFT_SHAREPOINT_SELECTED_SITES`) that a
+ * `Sites.Selected` connection can open, by name: each is resolved and checked as a pasted link is,
+ * so one that isn't a site of this tenant, or that the user or the app can't open, is left out.
+ * @returns The sites, and `complete: false` when a link couldn't be checked for a reason other
+ * than those.
+ */
+export async function namedSites(api: GraphApi, urls: readonly string[], tenant: ConnectedTenant): Promise<GrantedSites> {
+  const sites = new Map<string, GraphSite>();
+  let complete = true;
+  for (let start = 0; start < urls.length; start += SITE_CHECKS_AT_ONCE) {
+    await Promise.all(urls.slice(start, start + SITE_CHECKS_AT_ONCE).map(async url => {
+      try {
+        const { scope } = await resolveSharePointUrl(api, url, tenant, { selected: true });
+        const site = scope.kind === "site" ? await getSite(api, scope.siteId) : null;
+        if (site !== null) sites.set(site.id, site);
+      } catch (error) {
+        if (error instanceof UnresolvableUrlError) return;
+        // Whatever kept one link from being checked, the others stand; a dead grant is the account's to see.
+        if (!(error instanceof GraphTransportError) && (!(error instanceof GraphApiError) || error.isAuthError)) throw error;
+        complete = false;
+      }
+    }));
+  }
+  return { sites: [...sites.values()].toSorted((a, b) => a.name.localeCompare(b.name)), complete };
 }
 
 /**

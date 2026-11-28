@@ -46,6 +46,7 @@ agent as though already made while it waits, so the agent keeps working.
 | `MICROSOFT_ALLOWED_TENANT_IDS` | var, optional | For a multitenant app. Set `MICROSOFT_TENANT_ID=organizations` and list the tenant IDs (GUIDs) that may connect, comma-separated. `organizations` without this list is refused. `common` and `consumers` are always refused, because personal Microsoft accounts have no SharePoint. |
 | `MICROSOFT_SHAREPOINT_ACCESS` | var, optional | `write` (the default) or `read`; unrecognized values mean `read`. This caps what agents may do whatever the app was granted: the effective access is the lowest of this, the connection's own grant and, for a file, folder or library, the user's own role on it, so something shared with them to view binds read-only. |
 | `MICROSOFT_SHAREPOINT_SITES` | var, optional | `all` (the default) or `selected`; unrecognized values mean `selected`. Which SharePoint permissions a connection asks for: every site the user can open, or only the sites a SharePoint admin grants the app. See [Every site or only selected sites](#every-site-or-only-selected-sites). |
+| `MICROSOFT_SHAREPOINT_SELECTED_SITES` | var, optional | Only under `selected`: links to the sites granted to the app, separated by commas or whitespace, e.g. `https://contoso.sharepoint.com/sites/Engineering`. The Sites tab and an agent's site list then check just these instead of every site the user can open, which matters on a tenant with thousands of sites. It grants nothing, and a site left off it can still be chosen by pasting its link. See [Only selected sites](#only-selected-sites). |
 | `MICROSOFT_OUTLOOK_ACCESS` | var, optional | `send` (the default), `draft` or `read`, capping Outlook bindings the same way. Unrecognized values mean `read`. |
 | `MICROSOFT_CALENDAR_ACCESS` | var, optional | `schedule` (the default), `edit` or `read`, capping Calendar bindings the same way. Unrecognized values mean `read`. |
 
@@ -135,6 +136,15 @@ connection holding both kinds of permission reaches every site. Under `Sites.Sel
   lists only the sites whose document library Microsoft opens. Microsoft answers for any site's name
   and ID, granted or not, so the library is the test. A site that hasn't been granted can't be found
   or bound, and a pasted link to one says to ask the SharePoint admin.
+- Microsoft lists the sites granted to an app to nobody, so the first time a user's sites are
+  listed, every site they can open is tested, twenty to a request: a second or two on most tenants,
+  and up to half a minute where a user can open thousands (after a minute it stops and lists what it
+  found; the Sites tab then says some sites may be missing, and an agent is told only when none was
+  found). What is found is kept with the
+  connection and shown at once from then on, and looked for again behind that once it is five
+  minutes old, so a newly granted site appears the second time a user looks (at once if none was
+  granted before, or by pasting its link). To skip the search altogether, list the granted sites'
+  links in `MICROSOFT_SHAREPOINT_SELECTED_SITES`: then only those are tested, and only those listed.
 - The user's own OneDrive is offered only with `Files.Read` or `Files.ReadWrite`. **Shared with you**
   isn't offered, because nobody else's OneDrive is granted.
 - Microsoft Search doesn't honor `Sites.Selected`, but every hit is read again as the user, which

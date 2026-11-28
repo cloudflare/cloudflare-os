@@ -137,6 +137,7 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
       scope: this.ctx.props.scope,
       access,
       sites,
+      grantedSites: () => this.#account().grantedSites(),
       owner: () => this.#user.get(),
       fixesTenant: fixedTenant(this.env) !== null,
       read: op => this.#graph(op, true),

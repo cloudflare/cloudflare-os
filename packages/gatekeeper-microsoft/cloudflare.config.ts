@@ -9,7 +9,8 @@ import {
  * `MICROSOFT_OUTLOOK_ACCESS` (`send`, the default, `draft` or `read`) and
  * `MICROSOFT_CALENDAR_ACCESS` (`schedule`, the default, `edit` or `read`). `MICROSOFT_SHAREPOINT_SITES`
  * (`all`, the default, or `selected`) chooses whether SharePoint asks for every site the user can
- * open or only the sites a SharePoint admin grants the app.
+ * open or only the sites a SharePoint admin grants the app, which `MICROSOFT_SHAREPOINT_SELECTED_SITES`
+ * may name by link so they needn't be searched for.
  */
 export default defineGadgetsWorker({
   name: "gatekeeper-microsoft",

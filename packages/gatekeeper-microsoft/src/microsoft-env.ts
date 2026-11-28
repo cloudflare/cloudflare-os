@@ -35,6 +35,12 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
    */
   MICROSOFT_SHAREPOINT_SITES?: string;
   /**
+   * Optional, and read only under `Sites.Selected`: links to the sites granted to the app, separated
+   * by commas or whitespace. Naming them lets the site list skip looking through every site the user
+   * can open for the granted ones. It grants nothing: a site is still listed only if it opens.
+   */
+  MICROSOFT_SHAREPOINT_SELECTED_SITES?: string;
+  /**
    * `send` (the default), `draft` or `read`: the most this deployment lets agents do in
    * Outlook. Each binding chooses its own level, up to this.
    */
@@ -165,6 +171,11 @@ export function sharePointSites(env: Env): SharePointSites {
   const value = env.MICROSOFT_SHAREPOINT_SITES?.trim().toLowerCase();
   if (value === undefined || value === "") return "all";
   return value === "all" ? "all" : "selected";
+}
+
+/** The links to granted sites this deployment names for `Sites.Selected` connections, each once; none when unset. */
+export function selectedSiteUrls(env: Env): string[] {
+  return [...new Set((env.MICROSOFT_SHAREPOINT_SELECTED_SITES ?? "").split(/[\s,]+/).filter(url => url !== ""))];
 }
 
 /** The SharePoint access ceiling. Unrecognized values are `read`, the safe side; unset is `write`. */
