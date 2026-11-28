@@ -4082,9 +4082,12 @@ function ChatInterface({
           if (cancelled) return;
           applyLoadedHistory(selectedChatId, page);
         } catch (err) {
-          console.error("Failed to load chat history:", err);
-          // If loading fails (e.g., invalid chat ID), navigate back to chat list
+          // Back to the chat list. Say why unless a reconnect will cure the failure: a silent
+          // return reads as a click that did nothing.
+          const transient = logRpcFailure("Failed to load chat history:", err);
+          if (!transient) reportIssue("chat.history-load", err);
           if (!cancelled) {
+            if (!transient) toasts.add({ title: "Failed to open this chat", variant: "error" });
             onNavigateToChatRef.current(null, { replace: true });
           }
         } finally {
