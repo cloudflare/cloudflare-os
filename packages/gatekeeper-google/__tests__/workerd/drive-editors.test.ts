@@ -16,6 +16,7 @@ import { serveFakes, SlidesProvider, type ProviderFake } from "../slides-provide
 const ROOT = "folder-root";
 const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
 const COMMENTS = { tag: "driveComments", label: "Drive comments" };
+const COPIES = { tag: "driveCopies", label: "Drive copies" };
 
 const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
 const IN_TRASH = "That file is in the trash, so it cannot be changed.";
@@ -32,6 +33,9 @@ const DEPLOYMENT_READ_ONLY =
   "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
   "changes, and none can be connected with read and write access. Only the deployment's " +
   "administrator can change that.";
+const COPY_EDITS_WAITING =
+  "That file has changes waiting for approval, which a copy would leave out: Google Drive copies " +
+  "the file as it is on Drive. Copy it once they are decided.";
 
 function hooks() {
   return env.TEST_HOOKS.getByName("drive-editors");
@@ -84,7 +88,8 @@ function connection(binding: Binding, facet = `drive-editors-${++facetCount}`) {
     outline: async (fileId: string) =>
       (await hooks().callDriveNative(facet, binding, "openGoogleSlides", fileId, "getPresentation", []))
         .value as PresentationInfo,
-    drive: (method: "comment", ...args: unknown[]) => hooks().callDrive(facet, binding, method, args),
+    drive: (method: "comment" | "copyFile", ...args: unknown[]) =>
+      hooks().callDrive(facet, binding, method, args),
     apply: (actionId: number) => hooks().applyDrive(facet, binding, actionId),
     reject: (actionId: number) => hooks().rejectDriveEdit(facet, binding, actionId),
     queuedIds: () => hooks().driveQueued(facet, binding),
@@ -248,6 +253,23 @@ describe("Slides edits through a read and write Drive binding", () => {
     expect(slidesRequests.requests).toEqual([]);
   });
 
+  // Drive copies the file as Google has it, so a copy with changes still waiting would leave out
+  // what the binding's own reads show.
+  it("refuses to copy a presentation with changes waiting, and copies it once they are decided", async () => {
+    let account = connection(ACCOUNT);
+    let skip = await account.queued("deck-1", "setSlidesSkipped", ["s1"], true);
+
+    let refused = await account.drive("copyFile", "deck-1");
+    expect(refused.error).toBe(COPY_EDITS_WAITING);
+    expect(refused.actionId).toBeUndefined();
+    expect(await account.queuedIds()).toEqual([skip]);
+
+    expect(await account.reject(skip)).toBeNull();
+    let copied = await account.drive("copyFile", "deck-1");
+    expect(copied.error).toBeUndefined();
+    expect(await account.queuedIds()).toEqual([copied.actionId]);
+  });
+
   it("fails a change claimed by an activation that died as of unknown outcome, without sending it again", async () => {
     let account = connection(ACCOUNT);
     let queued = await account.queued("deck-1", "deleteSlide", "s3");
@@ -316,9 +338,9 @@ describe("Slides edits through a read and write Drive binding", () => {
 
   it("lists the presentations' kinds where the binding can edit them", async () => {
     expect(await connection(ACCOUNT).autoApprovable())
-      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, COPIES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
     expect(await connection(FOLDER).autoApprovable())
-      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, COPIES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
 
     // An exact-file binding lists its own file's editor alone, once it has described the file.
     let doc = connection(fileBinding("doc-1"));

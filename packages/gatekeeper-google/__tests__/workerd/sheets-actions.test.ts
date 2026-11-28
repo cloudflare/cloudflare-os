@@ -3008,6 +3008,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     { scope: typeof ACCOUNT.scope; access: "write"; deployment: "read" } | { scope: typeof ACCOUNT.scope };
   const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
   const COMMENTS = { tag: "driveComments", label: "Drive comments" };
+  const COPIES = { tag: "driveCopies", label: "Drive copies" };
   const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
   const DEPLOYMENT_READ_ONLY =
     "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
@@ -3306,7 +3307,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
   it("lists the spreadsheets' kinds where the binding can edit them", async () => {
     serve(budget());
     expect(await connection(ACCOUNT).autoApprovable())
-      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, COPIES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
 
     let spreadsheetFile = connection(fileBinding("sheet-1"));
     expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS]);

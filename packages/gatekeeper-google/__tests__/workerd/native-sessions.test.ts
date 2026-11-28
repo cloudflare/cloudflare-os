@@ -381,6 +381,7 @@ const NO_COMMENTS: DriveQueue = {
   undecided: read => read([]),
   waiting: read => read([]),
   queued: () => [],
+  madeCopy: () => undefined,
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -1827,6 +1828,24 @@ describe("Drive file reads", () => {
     endApproval();
   });
 
+  // pending:<n> names the file a native copy made from then on, which needs no queue read.
+  it("exports a native copy by its pending ID once made, while another approval is running", async () => {
+    let endApproval!: () => void;
+    const approval = new Promise<void>(resolve => { endApproval = resolve; });
+    const { session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      access: "write",
+      waiting: read => approval.then(() => read([])),
+      undecided: read => approval.then(() => read([])),
+      madeCopy: actionId => actionId === 5 ? "sheet-1" : undefined,
+    });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("pending:5", "csv"))).toEqual(
+      new TextEncoder().encode("sheet-1 as text/csv"));
+    endApproval();
+  });
+
   // A read-only binding's native sessions replay no queued edit, so the file they read is the one
   // Google has, and so is its export, even with edits queued before the deployment kept Drive
   // read-only: those wait until writes are allowed again or the edits are rejected.
@@ -3083,9 +3102,11 @@ describe("Drive comment actions", () => {
 
   const posts = () => provider.requests.filter(request => request.startsWith("POST /drive/v3/files/"));
 
-  it("declares one auto-approvable kind for every comment write, beside the edits' kinds", async () => {
-    expect(await binding().autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+  it("declares one auto-approvable kind for every comment write, beside the copies' and the edits' kinds", async () => {
+    expect(await binding().autoApprovable()).toEqual([
+      { tag: "driveComments", label: "Drive comments" }, { tag: "driveCopies", label: "Drive copies" },
+      ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
+    ]);
   });
 
   describe("access level", () => {
@@ -3192,7 +3213,7 @@ describe("Drive comment actions", () => {
             "read native Google Docs, Sheets and Slides and export them with exportFile(), read " +
             "PDFs' text with readPdf() and any " +
             "other file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files, " +
-            "read and queue comments, change who files are shared with, and move files",
+            "read and queue comments, change who files are shared with, and move and copy files",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveSession",
         },
@@ -3217,7 +3238,7 @@ describe("Drive comment actions", () => {
             "text with readPdf() and any other " +
             "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
             "direct children, read and queue comments on direct children, change who they and the " +
-            "folder are shared with, and move them within Drive folder \"folder-root\"",
+            "folder are shared with, and move and copy them within Drive folder \"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
           tsType: "GoogleDriveFolderSession",
         },

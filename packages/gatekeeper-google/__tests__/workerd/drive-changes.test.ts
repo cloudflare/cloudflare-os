@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DriveBindingScope } from "../../src/drive-session";
-import type { DriveAccess, GoogleDriveFolderSession } from "../../src/drive-types";
+import type { DriveAccess, DriveEntry, GoogleDriveFolderSession } from "../../src/drive-types";
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
@@ -149,6 +149,33 @@ const MOVE_ACCESS =
   "directly that the new folder also gives is merged into the folder's, and does not come back if " +
   "it is moved out again.";
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
+const COPIES = { tag: "driveCopies", label: "Drive copies" };
+const COPY_WAITING =
+  "That file is a copy still waiting to be made, so this cannot be done with it yet. It is made " +
+  "once it is approved, which an auto-approval rule may do in moments: call getEntry() with this " +
+  "ID later to see whether it has been made.";
+const NAMES_NO_COPY =
+  "That pending ID names no copy that was made: the copy was rejected or failed, or the ID is " +
+  "not a copy's.";
+const COPY_SINGLE_FILE =
+  "A single-file Drive binding cannot copy its file. Copying takes a folder binding or an " +
+  "all-of-Drive binding, with read and write access.";
+const COPY_FOLDER_DESTINATION =
+  "That is not a folder this binding can copy into: the destination is the positioned folder, a " +
+  "direct child folder of it, or getScope().parentFolderId. A folder further away inside the " +
+  "connected folder is reached from a session opened at it or next to it; one outside it takes a " +
+  "binding to a folder that holds both, or to all of Drive.";
+const COPY_FOLDER = "A folder cannot be copied. Copy the files in it one at a time.";
+const UNCONFIRMED_COPY =
+  "Google Drive did not confirm whether this copy was made, and it may have been. Approving it " +
+  "again first checks for it, so it is not made twice; rejecting it leaves any copy that was made.";
+const UNCONFIRMED_NATIVE_COPY =
+  "Google Drive did not confirm whether this copy was made, and it may have been: Google Drive " +
+  "can take a while to show a new file. It won't be sent again. Approving it again looks for the " +
+  "copy once more; rejecting it leaves any copy that was made.";
+const COPY_SHARING =
+  "The copy takes the sharing of the folder it goes into: everyone with access to that folder " +
+  "can open it.";
 
 type Role = "reader" | "commenter" | "writer" | "fileOrganizer" | "organizer" | "owner";
 const RANK: Record<Role, number> = {
@@ -158,9 +185,14 @@ const RANK: Record<Role, number> = {
 type FakeFile = {
   name: string; mimeType: string; modifiedTime: string; parents: string[]; driveId?: string;
   trashed: boolean; canListChildren: boolean; canComment: boolean; canShare: boolean;
-  canAddChildren: boolean; canMoveItemWithinDrive: boolean;
+  canAddChildren: boolean; canMoveItemWithinDrive: boolean; canCopy: boolean;
+  canDownload: boolean;
   /** Set on a shortcut: the file or folder it points to. */
   shortcutTargetId?: string;
+  /** A file's bytes, as text: what a download answers, and its size. */
+  content?: string;
+  /** Its app properties, which a copy keeps unless the request sets or clears them. */
+  appProperties?: Record<string, string>;
 };
 
 /** Access given on one file itself. Anyone's carries no ID of its own: its form decides it. */
@@ -195,7 +227,7 @@ function file(mimeType: string, parents: string[], overrides: Partial<FakeFile> 
   return {
     name: "", mimeType, modifiedTime: "2026-10-20T09:00:00Z", parents, trashed: false,
     canListChildren: folder, canComment: !folder, canShare: true, canAddChildren: folder,
-    canMoveItemWithinDrive: true, ...overrides,
+    canMoveItemWithinDrive: true, canCopy: !folder, canDownload: true, ...overrides,
   };
 }
 
@@ -233,10 +265,21 @@ class DriveProvider {
   nextWrite?: Answer | "lost";
   /** How `about` answers: with a failure, or with the permission ID alone. */
   readonly about: { fail?: Answer; omitAddress?: boolean } = {};
+  /** The largest file, in bytes, Drive converts into each native type. */
+  readonly maxImportSizes: Record<string, string> = { [DOC_MIME]: "10485760" };
+  /** Whether a search by app property finds nothing yet, as Drive's lagging index may. */
+  searchLags = false;
+  /** How many IDs `generateIds` has given, and how many copies Drive gave IDs of its own. */
+  #generated = 0;
+  #native = 0;
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
+  /** How many files a folder listing answers on a page, when a test sets it: by default all. */
+  listingPageSize?: number;
+  /** The request held before it answers, once, and whether it was reached and released. */
+  #stall?: { request: "listing" | "download"; reached: boolean; released: boolean };
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -256,6 +299,25 @@ class DriveProvider {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       this.#handle(new Request(input, init))));
     return this;
+  }
+
+  /**
+   * Holds the next `request` before it answers until the test releases it: a folder listing once
+   * it has read the folder's files, or a download before it reads the file. Flags rather than
+   * promises: workerd refuses to resume a promise another Durable Object resolved.
+   */
+  stallNext(request: "listing" | "download"): { reached: boolean; released: boolean } {
+    let stall = { request, reached: false, released: false };
+    this.#stall = stall;
+    return stall;
+  }
+
+  async #stalled(request: "listing" | "download"): Promise<void> {
+    let stall = this.#stall;
+    if (stall?.request !== request) return;
+    this.#stall = undefined;
+    stall.reached = true;
+    await vi.waitFor(() => expect(stall.released).toBe(true), { timeout: 10_000 });
   }
 
   /** Forgets the requests and writes seen so far. */
@@ -376,11 +438,14 @@ class DriveProvider {
       ...(held.parents.length ? { parents: held.parents } : {}),
       ...(held.driveId ? { driveId: held.driveId } : {}),
       ...(held.shortcutTargetId ? { shortcutDetails: { targetId: held.shortcutTargetId } } : {}),
+      ...(held.content === undefined ? {} : { size: String(held.content.length) }),
+      ...(held.appProperties ? { appProperties: held.appProperties } : {}),
       trashed: held.trashed,
       capabilities: {
         canListChildren: held.canListChildren, canComment: held.canComment,
         canShare: held.canShare, canAddChildren: held.canAddChildren,
-        canMoveItemWithinDrive: held.canMoveItemWithinDrive,
+        canMoveItemWithinDrive: held.canMoveItemWithinDrive, canCopy: held.canCopy,
+        canDownload: held.canDownload,
       },
     };
   }
@@ -413,10 +478,16 @@ class DriveProvider {
     }
     if (url.pathname === "/drive/v3/about") {
       if (this.about.fail) return driveError(this.about.fail);
+      if (url.searchParams.get("fields") === "maxImportSizes") {
+        return Response.json({ maxImportSizes: this.maxImportSizes });
+      }
       let { permissionId, emailAddress } = token === OTHER_TOKEN ? ACCOUNT_B : ACCOUNT_A;
       return Response.json({
         user: { permissionId, ...(this.about.omitAddress ? {} : { emailAddress }) },
       });
+    }
+    if (call === "GET /drive/v3/files/generateIds") {
+      return Response.json({ ids: [`copy-${++this.#generated}`] });
     }
     // A folder binding's lookup of a shortcut to a file that is not its child: the folder's
     // untrashed shortcuts.
@@ -427,7 +498,29 @@ class DriveProvider {
         !held.trashed && parent !== undefined && held.parents.includes(parent));
       return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
-    let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments)(?:\/([^/]+))?)?$/
+    // A copy looked for by the token it carries, in the shared drive a drive corpus names, or a
+    // folder's live children. Files in the trash match only a query that does not leave them out.
+    let copyToken = /appProperties has \{ key='gadgetsCopyToken' and value='([^']+)' \}/.exec(query)?.[1];
+    let parent = /'([^']+)' in parents/.exec(query)?.[1];
+    let live = query.includes("trashed = false");
+    let inDrive = url.searchParams.get("corpora") === "drive" ? url.searchParams.get("driveId") : undefined;
+    if (call === "GET /drive/v3/files" && (copyToken !== undefined || parent !== undefined)) {
+      let files = [...this.files].filter(([, held]) => !(live && held.trashed) && (copyToken === undefined
+        ? held.parents.includes(parent ?? "")
+        : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
+          (inDrive === undefined || held.driveId === inDrive)));
+      if (copyToken !== undefined) {
+        return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
+      }
+      await this.#stalled("listing");
+      let start = Number(url.searchParams.get("pageToken") ?? 0);
+      let end = start + (this.listingPageSize ?? files.length);
+      return Response.json({
+        files: files.slice(start, end).map(([id, held]) => this.#fileJson(id, held)),
+        ...(end < files.length ? { nextPageToken: String(end) } : {}),
+      });
+    }
+    let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
       .exec(url.pathname);
     if (!match) throw new Error(`Unexpected provider request: ${call}`);
     let [, rawFileId, collection, rawItemId] = match;
@@ -438,6 +531,10 @@ class DriveProvider {
     if (!held) return driveError({ status: 404, reason: "notFound" });
 
     if (collection === undefined) {
+      if (request.method === "GET" && url.searchParams.get("alt") === "media") {
+        await this.#stalled("download");
+        return this.#download(held, request.headers.get("Range"));
+      }
       if (request.method === "GET") return Response.json(this.#fileJson(fileId, held));
       if (request.method !== "PATCH") throw new Error(`Unexpected provider request: ${call}`);
       let add = url.searchParams.get("addParents");
@@ -449,6 +546,11 @@ class DriveProvider {
         }
         return Response.json({ id: fileId, parents: held.parents });
       });
+    }
+
+    if (collection === "copy") {
+      let body = await request.json() as Record<string, unknown>;
+      return this.#write(call, url, token, body, () => this.#copy(held, body));
     }
 
     if (collection === "comments") {
@@ -499,6 +601,46 @@ class DriveProvider {
     if (outcome !== undefined && outcome !== "lost") return driveError(outcome);
     let made = make();
     return outcome === "lost" ? driveError({ status: 503, reason: "backendError" }) : made;
+  }
+
+  /**
+   * What Drive makes of a copy: a file of its own, under the ID asked for or one it gives. The
+   * request patches the source's metadata: an app property it leaves out is kept, and one it sets
+   * to null is cleared.
+   */
+  #copy(source: FakeFile, body: Record<string, unknown>): Response {
+    let asked = typeof body.id === "string" ? body.id : undefined;
+    // Drive answers a copy under an ID already used with 409, and makes nothing.
+    if (asked !== undefined && this.files.has(asked)) return driveError({ status: 409 });
+    let id = asked ?? `native-${++this.#native}`;
+    let mimeType = typeof body.mimeType === "string" ? body.mimeType : source.mimeType;
+    let { appProperties: kept, driveId: _driveId, ...copied } = source;
+    let patch = (body.appProperties ?? {}) as Record<string, string | null>;
+    let appProperties = Object.fromEntries(Object.entries({ ...kept, ...patch })
+      .filter((entry): entry is [string, string] => entry[1] !== null));
+    let parents = body.parents as string[];
+    // The copy is in the drive of the folder it goes into.
+    let driveId = this.files.get(parents[0] ?? "")?.driveId;
+    this.files.set(id, {
+      ...copied, name: String(body.name), mimeType, parents,
+      modifiedTime: new Date().toISOString(),
+      ...(driveId ? { driveId } : {}),
+      ...(Object.keys(appProperties).length ? { appProperties } : {}),
+    });
+    this.give(id, { ...this.#person("me@example.com"), role: "owner" });
+    return Response.json({ id, mimeType });
+  }
+
+  /** A download of `held`, whole or of the byte range asked for. */
+  #download(held: FakeFile, range: string | null): Response {
+    let content = held.content ?? "";
+    let asked = /^bytes=(\d+)-(\d+)$/.exec(range ?? "");
+    if (!asked) return new Response(content);
+    let start = Number(asked[1]);
+    let end = Math.min(Number(asked[2]), content.length - 1);
+    return new Response(content.slice(start, end + 1), {
+      status: 206, headers: { "Content-Range": `bytes ${start}-${end}/${content.length}` },
+    });
   }
 
   /** The permission of `fileId` Drive lists under `permissionId`, anyone's under either of its IDs. */
@@ -736,13 +878,15 @@ describe("access level", () => {
     let readWrite = binding();
     let readOnly = binding(ACCOUNT, null);
 
-    for (let name of ["interface DriveSharing", "move("]) {
+    for (let name of ["interface DriveSharing", "move(", "copyFile("]) {
       expect(await readWrite.types(), name).toContain(name);
       expect(await readOnly.types(), name).not.toContain(name);
     }
-    // Neither sharing nor moves is offered for auto-approval.
-    expect(await readWrite.autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+    // Neither sharing nor moves is offered for auto-approval; copies are.
+    expect(await readWrite.autoApprovable()).toEqual([
+      { tag: "driveComments", label: "Drive comments" }, COPIES, ...DRIVE_SLIDES_KINDS,
+      ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
+    ]);
     expect(await readOnly.autoApprovable()).toEqual([]);
   });
 
@@ -2125,6 +2269,408 @@ describe("moves", () => {
     expect(movesOf("doc-1")).toHaveLength(1);
     expect(parentsOf("doc-1")).toEqual(["inner"]);
     expect(await drive.attempts()).toEqual({});
+  });
+});
+
+describe("copies", () => {
+  const COPY_OF = (...subresources: string[]) => ({ title: "Check Google Drive copy", subresources });
+  const READ = (...subresources: string[]) => ({ title: "Read Google Drive metadata", subresources });
+  /** The entries of every page a listing yielded. */
+  const listed = (value: unknown) => (value as DriveEntry[][]).flat().map(entry => entry.id);
+  const report = () => file("application/pdf", [ROOT], { name: "Report.pdf", content: "hello copy" });
+
+  it("shows an ordinary copy in the folder it goes into while it waits, then makes it once", async () => {
+    provider.files.set("report", report());
+    let drive = binding(FOLDER);
+
+    let queued = await drive.queued("copyFile", "report", { folderId: "inner" });
+
+    let pending = {
+      id: "copy-1", name: "Copy of Report.pdf", mimeType: "application/pdf", isFolder: false,
+      modifiedTime: expect.any(Date), size: 10, parentId: "inner", pending: true,
+    };
+    expect(queued.value).toEqual(pending);
+    expect(queued.action).toMatchObject({
+      title: "Copy a Google Drive file",
+      description: "Copy Google Drive file `report` into folder `inner`, as the connected " +
+        `account.\n\n${COPY_SHARING}`,
+      actionKind: COPIES, autoApprovable: true, implementsRevert: false,
+      descriptionIsComplete: true,
+    });
+    expect(queued.action).not.toHaveProperty("awaitDecision");
+    expect(field(queued.action, "Copy name")).toBe("Copy of Report.pdf");
+    expect(queued.reports)
+      .toEqual([COPY_OF("drive/folder/folder-root", "drive/file/report", "drive/folder/inner")]);
+
+    // Shown in the session of its folder, reporting the file it is a copy of.
+    let shown = await drive.callIn(["inner"], "getEntry", "copy-1");
+    expect(shown.value).toEqual(pending);
+    expect(shown.reports.at(-1)).toEqual(READ("drive/folder/inner", "drive/file/report"));
+    let listing = await drive.callIn(["inner"], "list");
+    expect(listed(listing.value)).toEqual(["nested-doc", "copy-1"]);
+    expect(listing.reports.at(-1)?.subresources)
+      .toEqual(["drive/folder/inner", "drive/file/nested-doc", "drive/file/report"]);
+    // Nowhere else, and no other call takes it yet.
+    expect((await drive.call("getEntry", "copy-1")).error).toBe(OUTSIDE);
+    expect(listed((await drive.call("list")).value)).not.toContain("copy-1");
+    expect((await drive.callIn(["inner"], "share", "copy-1", BOB, "reader")).error)
+      .toBe(COPY_WAITING);
+    expect((await drive.callIn(["inner"], "listComments", "copy-1")).error).toBe(COPY_WAITING);
+    expect(provider.writes).toEqual([]);
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/report/copy").map(({ body }) => body))
+      .toEqual([{ id: "copy-1", name: "Copy of Report.pdf", parents: ["inner"] }]);
+    let made = await drive.callIn(["inner"], "getEntry", "copy-1");
+    expect(made.value).toMatchObject({ id: "copy-1", parentId: "inner" });
+    expect(made.value).not.toHaveProperty("pending");
+    expect(listed((await drive.callIn(["inner"], "list")).value)).toEqual(["nested-doc", "copy-1"]);
+  });
+
+  it("reads a waiting copy as the file it is a copy of", async () => {
+    provider.files.set("report", report());
+    let drive = binding(FOLDER);
+
+    let queued = await drive.queued("copyFile", "report", { name: "Report (2).pdf" });
+
+    expect(queued.value).toMatchObject({ id: "copy-1", name: "Report (2).pdf", parentId: ROOT });
+    // Into the positioned folder, which the folder's report already covers.
+    expect(queued.reports).toEqual([COPY_OF("drive/folder/folder-root", "drive/file/report")]);
+    let read = await drive.call("readFile", "copy-1");
+    expect(read.value).toMatchObject({ mimeType: "application/pdf", size: 10, text: "hello copy" });
+    expect(read.reports.flatMap(({ subresources }) => subresources ?? []))
+      .toContain("drive/file/report");
+  });
+
+  it("shows a native copy as pending:<n>, which names the copy once it is made", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+
+    let id = `pending:${queued.actionId}`;
+    expect(queued.value).toEqual({
+      id, name: "Copy of doc-1", mimeType: DOC_MIME, isFolder: false,
+      modifiedTime: expect.any(Date), parentId: "elsewhere", pending: true,
+    });
+    expect(queued.action).toMatchObject({ actionKind: COPIES, autoApprovable: true, awaitDecision: true });
+    expect(queued.reports).toEqual([COPY_OF("drive/file/doc-1", "drive/folder/elsewhere")]);
+    expect((await drive.call("getEntry", id)).value).toEqual(queued.value);
+    expect((await drive.call("listComments", id)).error).toBe(COPY_WAITING);
+    expect((await drive.call("readFile", id)).error).toBe(COPY_WAITING);
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/doc-1/copy").map(({ body }) => body)).toEqual([{
+      name: "Copy of doc-1", parents: ["elsewhere"],
+      appProperties: {
+        gadgetsCopyToken: expect.stringMatching(/^[0-9a-f]{32}$/),
+        gadgetsConvertedFrom: null, gadgetsSourceModified: null,
+      },
+    }]);
+    expect(parentsOf("native-1")).toEqual(["elsewhere"]);
+
+    // The made copy is recorded where a later activation reads it.
+    await drive.restart();
+    let again = binding(ACCOUNT, "write", drive.facet);
+    let made = await again.call("getEntry", id);
+    expect(made.value).toMatchObject({ id: "native-1", mimeType: DOC_MIME, parentId: "elsewhere" });
+    expect(made.value).not.toHaveProperty("pending");
+
+    // A copy the user rejects before it is sent is never made, and its ID names nothing.
+    let rejected = await again.queued("copyFile", "doc-1");
+    expect(await again.reject(rejected.actionId)).toBeNull();
+    expect((await again.call("getEntry", `pending:${rejected.actionId}`)).error).toBe(NAMES_NO_COPY);
+    expect((await again.call("getEntry", "pending:999")).error).toBe(NAMES_NO_COPY);
+  });
+
+  it("names no waiting native copy once the binding cannot write, and still the copy one made", async () => {
+    let drive = binding();
+    let made = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    expect(await drive.apply(made.actionId)).toBeNull();
+    let waiting = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+
+    // A deployment that keeps Drive read-only shows nothing queued as if made.
+    await drive.restart();
+    let capped = binding(ACCOUNT, "write", drive.facet, "read");
+    let refused = await capped.call("getEntry", `pending:${waiting.actionId}`);
+    expect(refused.error).toBe(NAMES_NO_COPY);
+    expect(refused.reports).toEqual([]);
+    expect((await capped.call("getEntry", `pending:${made.actionId}`)).value)
+      .toMatchObject({ id: "native-1", parentId: "elsewhere" });
+  });
+
+  it("finds a lost ordinary copy by its ID at the next approval, and never sends a native one twice", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+
+    // An approval sends a copy once; the next one finds it made under the reserved ID.
+    let ordinary = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    provider.nextWrite = "lost";
+    expect(await drive.apply(ordinary.actionId)).toBe(UNCONFIRMED_COPY);
+    expect(await drive.apply(ordinary.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/report/copy").map(({ body }) => body.id)).toEqual(["copy-1"]);
+    expect([...provider.files.keys()].filter(id => id.startsWith("copy-"))).toEqual(["copy-1"]);
+
+    let native = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    provider.nextWrite = "lost";
+    provider.searchLags = true;
+    expect(await drive.apply(native.actionId)).toBe(UNCONFIRMED_NATIVE_COPY);
+    expect(await drive.apply(native.actionId)).toBe(UNCONFIRMED_NATIVE_COPY);
+    provider.searchLags = false;
+    expect(await drive.apply(native.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/doc-1/copy")).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${native.actionId}`)).value)
+      .toMatchObject({ id: "native-1" });
+    expect(await drive.waiting()).toEqual([]);
+  });
+
+  it("reports the folder a waiting copy goes into, with the file it copies, before showing it", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+
+    await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    let native = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    let intoRoot = await drive.queued("copyFile", "report", { folderId: "root" });
+
+    let shown = await drive.call("getEntry", "copy-1");
+    expect(shown.value).toMatchObject({ id: "copy-1", parentId: "elsewhere", pending: true });
+    expect(shown.reports).toEqual([READ("drive/file/report", "drive/folder/elsewhere")]);
+    expect((await drive.call("getEntry", `pending:${native.actionId}`)).reports)
+      .toEqual([READ("drive/file/doc-1", "drive/folder/elsewhere")]);
+    // A listing that shows the copy reports that folder on the page that shows it.
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+    expect(listed(listing.value)).toContain("copy-1");
+    expect(listing.reports.at(-1)?.subresources).toContain("drive/folder/elsewhere");
+    // As a listing of that folder reports it: a read of the account's own My Drive root is no
+    // exception, and neither is the copy's own call.
+    expect((await drive.call("getEntry", "copy-2")).reports)
+      .toEqual([READ("drive/file/report", "drive/folder/my-root")]);
+    expect(intoRoot.reports).toEqual([COPY_OF("drive/file/report", "drive/folder/my-root")]);
+
+    // Its content too: the folder is reported before anything of the file is read.
+    let read = await drive.call("readFile", "copy-1");
+    expect(read.value).toMatchObject({ text: "hello copy" });
+    expect(read.reports[0]).toEqual(READ("drive/file/report", "drive/folder/elsewhere"));
+  });
+
+  /**
+   * Runs `during` once `stall` holds its request, and releases it once `during` has settled:
+   * failing if `during` cannot settle while Drive has not answered.
+   */
+  async function settlesWhile<T>(stall: { reached: boolean; released: boolean }, during: () => Promise<T>) {
+    await vi.waitFor(() => expect(stall.reached).toBe(true));
+    let settled = false;
+    let running = during();
+    running.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(settled).toBe(true));
+    } finally {
+      stall.released = true;
+    }
+    return running;
+  }
+
+  it("approves a change while a listing of a folder no copy goes into waits on Drive", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "root" });
+    let stall = provider.stallNext("listing");
+
+    let listing = drive.call("list", { directParentId: "elsewhere" });
+
+    expect(await settlesWhile(stall, () => drive.apply(queued.actionId))).toBeNull();
+    expect(listed((await listing).value)).toEqual([]);
+  });
+
+  it("shows a copy approved while its folder's page is fetched once, as made", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    let stall = provider.stallNext("listing");
+
+    // Drive has read the folder's files, so the page it answers holds no copy.
+    let listing = drive.call("list", { directParentId: "elsewhere" });
+
+    expect(await settlesWhile(stall, () => drive.apply(queued.actionId))).toBeNull();
+    let shown = (await listing).value;
+    expect(listed(shown)).toEqual(["copy-1"]);
+    expect(shown).toEqual([[expect.not.objectContaining({ pending: true })]]);
+  });
+
+  it("lists a copy Drive made under its reserved ID while the action waits once, as Drive's", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    // Drive makes the copy and loses the answer, so the action still waits.
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_COPY);
+    provider.files.set("later", file(DOC_MIME, ["elsewhere"]));
+    // The copy is on the first page, and the copies that wait show on the last.
+    provider.listingPageSize = 1;
+
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+
+    expect(listed(listing.value)).toEqual(["copy-1", "later"]);
+    expect(listing.value).toEqual([[expect.not.objectContaining({ pending: true })], expect.anything()]);
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+  });
+
+  // Changed or shortened once copied, the file no longer holds what the copy holds: a shortened
+  // one fails its own read, which says nothing of the copy.
+  it.each([["changed", "edited rpt"], ["shortened", "short"]])(
+    "reads a copy approved while the file it copies opens, then %s, from the copy made",
+    async (_, content) => {
+      provider.files.set("report", report());
+      let drive = binding();
+      let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+      let stall = provider.stallNext("download");
+
+      let reading = drive.call("readFile", "copy-1");
+
+      expect(await settlesWhile(stall, async () => {
+        let outcome = await drive.apply(queued.actionId);
+        provider.files.get("report")!.content = content;
+        return outcome;
+      })).toBeNull();
+      expect((await reading).value).toMatchObject({ text: "hello copy" });
+    });
+
+  it("stops showing a waiting copy on a folder binding once the file it copies leaves", async () => {
+    provider.files.set("report", report());
+    let drive = binding(FOLDER);
+    // One crosses into a child folder, one stays beside the file.
+    await drive.queued("copyFile", "report", { folderId: "inner" });
+    await drive.queued("copyFile", "report");
+    let source = provider.files.get("report");
+    if (!source) throw new Error("no report");
+
+    source.parents = ["elsewhere"];
+    expect((await drive.callIn(["inner"], "getEntry", "copy-1")).error).toBe(OUTSIDE);
+    expect((await drive.call("getEntry", "copy-2")).error).toBe(OUTSIDE);
+    expect(listed((await drive.callIn(["inner"], "list")).value)).toEqual(["nested-doc"]);
+    expect(listed((await drive.call("list")).value)).not.toContain("copy-2");
+
+    // Back where it was queued from, it is shown again.
+    source.parents = [ROOT];
+    expect((await drive.callIn(["inner"], "getEntry", "copy-1")).value)
+      .toMatchObject({ id: "copy-1", pending: true });
+    expect(listed((await drive.call("list")).value)).toContain("copy-2");
+  });
+
+  // The binding can no longer make the copy in a folder that left its tree, which a shortcut in it
+  // still reaches: that session is read-only, and shows the folder as Drive does.
+  it("shows no waiting copy in a folder reached through a shortcut, and reads its ID from Drive", async () => {
+    provider.files.set("report", report());
+    let drive = binding(FOLDER);
+    let queued = await drive.queued("copyFile", "report", { folderId: "inner" });
+    let inner = provider.files.get("inner")!;
+    provider.files.set("to-inner", file(SHORTCUT_MIME, [ROOT], { shortcutTargetId: "inner" }));
+    inner.parents = ["elsewhere"];
+
+    expect((await drive.callIn(["inner"], "getScope")).value)
+      .toMatchObject({ folderId: "inner", access: "read" });
+    expect(listed((await drive.callIn(["inner"], "list")).value)).toEqual(["nested-doc"]);
+    expect((await drive.callIn(["inner"], "getEntry", "copy-1")).error).toBe(OUTSIDE);
+
+    // Drive makes the copy while the folder is in the tree, and loses the answer.
+    inner.parents = [ROOT];
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_COPY);
+    inner.parents = ["elsewhere"];
+    let made = await drive.callIn(["inner"], "getEntry", "copy-1");
+    expect(made.value).toMatchObject({ id: "copy-1", parentId: "inner" });
+    expect(made.value).not.toHaveProperty("pending");
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+  });
+
+  it("makes a native copy without the markers that offer a conversion for reuse", async () => {
+    let doc = provider.files.get("doc-1");
+    if (!doc) throw new Error("no doc-1");
+    doc.appProperties = {
+      gadgetsConvertedFrom: "office", gadgetsSourceModified: "2024-01-01T00:00:00.000Z", kept: "yes",
+    };
+    let drive = binding();
+
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    expect(await drive.apply(queued.actionId)).toBeNull();
+
+    expect(provider.files.get("native-1")?.appProperties).toEqual({
+      kept: "yes", gadgetsCopyToken: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+  });
+
+  it("settles a native copy whose answer was lost by its token, even once it is in the trash", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_NATIVE_COPY);
+    let made = provider.files.get("native-1");
+    if (!made) throw new Error("no copy");
+    made.trashed = true;
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/doc-1/copy")).toHaveLength(1);
+    expect(await drive.waiting()).toEqual([]);
+    // Its pending ID names that file, which reads then take as any file in the trash.
+    expect((await drive.call("getEntry", `pending:${queued.actionId}`)).value)
+      .toEqual((await drive.call("getEntry", "native-1")).value);
+  });
+
+  it("finds a native copy whose answer was lost in the shared drive its folder moved to", async () => {
+    provider.files.set("shared", file(FOLDER_MIME, ["drive-a"], { driveId: "drive-a" }));
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "shared" });
+    expect(queued.value).toMatchObject({ parentId: "shared", driveId: "drive-a" });
+
+    // A manager moves the folder to another shared drive before the copy is approved.
+    let folder = provider.files.get("shared");
+    if (!folder) throw new Error("no folder");
+    folder.driveId = "drive-b";
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_NATIVE_COPY);
+    expect(provider.files.get("native-1")?.driveId).toBe("drive-b");
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sent("POST /drive/v3/files/doc-1/copy")).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${queued.actionId}`)).value)
+      .toMatchObject({ id: "native-1", parentId: "shared" });
+  });
+
+  it("refuses a copy this binding cannot make, queueing nothing", async () => {
+    provider.files.set("locked", file("application/pdf", [ROOT], { canCopy: false }));
+    let folder = binding(FOLDER);
+
+    let refused = [
+      [await folder.call("copyFile", "doc-1", { folderId: "elsewhere" }), COPY_FOLDER_DESTINATION],
+      [await folder.call("copyFile", "inner"), COPY_FOLDER],
+      [await folder.call("copyFile", "locked"), "The connected account cannot copy Drive file locked."],
+      [await folder.call("copyFile", "doc-1", { convertTo: "spreadsheet" }),
+        "Only an .xlsx, .xls, .xlsm or .ods file converts to a Google Sheet."],
+      [await binding(DOC_FILE).call("copyFile", "doc-1"), COPY_SINGLE_FILE],
+      [await binding(ACCOUNT, null).call("copyFile", "doc-1"), READ_ONLY_ACCOUNT],
+    ] as const;
+
+    for (let [outcome, message] of refused) {
+      expect(outcome.error).toBe(message);
+      expect(outcome.actionId).toBeUndefined();
+    }
+    expect(await folder.waiting()).toEqual([]);
+    expect(provider.writes).toEqual([]);
+  });
+
+  it("waits for a move of the file or of the destination in a folder binding", async () => {
+    let drive = binding(FOLDER);
+    await drive.queued("move", "doc-1", "inner");
+    expect((await drive.call("copyFile", "doc-1")).error).toBe(MOVE_WAITING);
+    await drive.queued("move", "archive", "inner");
+    expect((await drive.call("copyFile", "sheet-1", { folderId: "archive" })).error)
+      .toBe(MOVE_DESTINATION_WAITING);
+    expect((await drive.call("copyFile", "sheet-1")).error).toBeUndefined();
+  });
+
+  it("offers a single-file binding no copies for auto-approval", async () => {
+    expect(await binding(DOC_FILE).autoApprovable()).not.toContainEqual(COPIES);
+    expect(await binding(FOLDER).autoApprovable()).toContainEqual(COPIES);
   });
 });
 

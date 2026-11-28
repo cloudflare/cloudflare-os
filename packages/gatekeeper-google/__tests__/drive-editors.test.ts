@@ -166,15 +166,18 @@ describe("Slides definitions reused through Drive", () => {
     expect(editorMimeType("slides")).toBe(GOOGLE_SLIDES_MIME_TYPE);
   });
 
-  it("join the Drive action set, which lists comments and the presentations' kinds", () => {
+  it("join the Drive action set, which lists comments, copies and the presentations' kinds", () => {
     let drive: DriveHost = {
       api: {} as DriveHost["api"], docs: {} as DriveHost["docs"], scope: () => ({ kind: "account" }),
       writeRefusal: async () => undefined, attempts: { get: () => undefined, put() {}, delete() {} },
+      madeCopies: { put() {} },
       ...NO_SLIDES,
     };
     let actions = DRIVE_ACTIONS.bind(new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" }), drive);
-    expect(actions.autoApprovableKinds()).toEqual(
-      [{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+    expect(actions.autoApprovableKinds()).toEqual([
+      { tag: "driveComments", label: "Drive comments" }, { tag: "driveCopies", label: "Drive copies" },
+      ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
+    ]);
   });
 });
 

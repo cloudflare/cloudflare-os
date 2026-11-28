@@ -1,5 +1,7 @@
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
-import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";
+import type {
+  DriveEntry, GoogleDriveFolderReadSession, GoogleDriveReadSession,
+} from "./drive-read-types";
 import type { GoogleDocEditSession } from "./docs-types";
 import type { GoogleSpreadsheetSession } from "./sheets-types";
 import type { GooglePresentationSession } from "./slides-types";
@@ -239,10 +241,31 @@ export interface DriveSharing {
   unshare(fileId: string, access: string | DriveGrantee): Promise<void>;
 }
 
+/** A Google-native type `copyFile()` converts an Office file to. */
+export type DriveNativeType = "document" | "spreadsheet" | "presentation";
+
+/** Options for `copyFile()`. */
+export type DriveCopyOptions = {
+  /**
+   * The copy's name. Defaults to "Copy of " and the file's name; for a file converted with
+   * `convertTo`, to the file's name without its extension.
+   */
+  name?: string;
+  /** The folder the copy goes into (see each session's `copyFile()`). */
+  folderId?: string;
+  /**
+   * Converts an Office file into a Google-native one: a .docx, .doc, .odt or .rtf file to a
+   * `"document"` (a Google Doc), an .xlsx, .xls, .xlsm or .ods file to a `"spreadsheet"` (a
+   * Google Sheet), a .pptx, .ppt or .odp file to a `"presentation"` (Google Slides). Omitted, the
+   * copy is of the same type as the file.
+   */
+  convertTo?: DriveNativeType;
+};
+
 /**
  * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
  * anywhere the connected account can reach in Google Drive, plus edits of Google Docs, Sheets and
- * Slides files, comment writes, sharing and moves.
+ * Slides files, comment writes, sharing, moves and copies.
  */
 export interface GoogleDriveSession
     extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
@@ -283,6 +306,36 @@ export interface GoogleDriveSession
    * user rejected: either way the file is where it was.
    */
   move(fileId: string, folderId: string): Promise<void>;
+
+  /**
+   * Queue copying a file into a folder, as the connected account, and return the copy's entry,
+   * marked `pending`. `options.folderId` names the folder, which may be in any drive the
+   * connected account can add files to; it defaults to the folder the file is in, and `root`
+   * names the top level of My Drive, as for `move()`. A file in more than one folder, or in none
+   * the connected account can see, needs `folderId`. Folders, shortcuts and files in the trash
+   * cannot be copied, nor a file the connected account is not allowed to copy, which its owner
+   * decides; among Google's own file types, only Google Docs, Sheets and Slides files can.
+   * Converting with `convertTo` fails for a file larger than Google converts. Google copies the
+   * file as it is on Drive, so the copy fails while edits queued to the file wait for approval:
+   * copy it once they are decided.
+   *
+   * The copy takes the sharing of the folder it goes into: everyone with access to that folder can
+   * open it.
+   *
+   * The copy is made once the user approves it. A copy of any file but a Google Docs, Sheets or
+   * Slides one, made without `convertTo`, has its own Drive ID from the start: while it waits,
+   * `getEntry()` returns its pending entry, `readFile()` reads the file it is a copy of as that
+   * file is then, and `list()` with `directParentId` set to the copy's folder shows it, on the
+   * listing's last page; a listing without `directParentId`, and `search()`, do not. Any other
+   * copy is returned with ID `pending:<n>`, which only `getEntry()` takes while the copy waits,
+   * returning the pending entry, and which names the copy itself once it is made: `getEntry()`
+   * then returns it under its own ID, which every call takes. Every other call fails, given the
+   * ID of a copy that still waits. A copy the user rejects before it is sent, or that Google Drive
+   * refuses, is never made. One rejected after Google Drive left open whether it was made may
+   * have been made all the same: a copy with its own ID from the start is then found under that
+   * ID, while a `pending:<n>` ID names nothing once its copy is rejected.
+   */
+  copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;
 }
 
 /**
@@ -317,9 +370,9 @@ export interface GoogleDriveFileSession
  * A folder binding with read and write access: navigation within the originally selected folder as
  * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Docs, Sheets and Slides
  * files among the positioned folder's direct children, comment writes on those children, sharing of them
- * and of the positioned folder itself, and moves within the originally selected folder. Writes do
+ * and of the positioned folder itself, and moves and copies within the originally selected folder. Writes do
  * not follow shortcuts: a shortcut's target, and anything in a folder opened through one, can be
- * read but not edited, commented on, shared, listed for who it is shared with, or moved.
+ * read but not edited, commented on, shared, listed for who it is shared with, moved or copied.
  */
 export interface GoogleDriveFolderSession
     extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
@@ -367,4 +420,21 @@ export interface GoogleDriveFolderSession
    * Otherwise as {@link GoogleDriveSession.move}, except that `root` names nothing here.
    */
   move(fileId: string, folderId: string): Promise<void>;
+
+  /**
+   * Queue copying a live direct child of the positioned folder into `options.folderId`, which is
+   * the positioned folder itself (the default), a live direct child folder of it, or
+   * `getScope().parentFolderId`, the folders `move()` takes and the one it moves out of. Fails
+   * while that file, or a folder on the way to it, has a move waiting, and while the destination
+   * has one.
+   *
+   * A copy that is shown while it waits is shown in the session of the folder it goes into, and
+   * only while the file it is a copy of is still in the folder it was copied from: `getEntry()`
+   * returns it there, `readFile()` there reads the file it is a copy of when that file is in the
+   * same folder, and `list()` there shows it on its last page; `search()` does not. Once made, a
+   * copy is reached as any file in its folder is.
+   *
+   * Otherwise as {@link GoogleDriveSession.copyFile}, except that `root` names nothing here.
+   */
+  copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;
 }

@@ -64,6 +64,10 @@ import {
   hasPendingMove, MOVE_DESTINATION_WAITING, MOVE_PENDING, MOVE_WAITING,
 } from "./drive-moves";
 import {
+  COPY_WAITING, DRIVE_COPIES, importLimitRefusal, madeCopies, NAMES_NO_COPY, pendingActionId,
+  pendingCopiesInto, pendingCopy, planCopy, simulatedCopy, waitingNativeCopy,
+} from "./drive-copies";
+import {
   ACCESS_WAITING_CHANGE, ACCESS_WAITING_REMOVE, CHANGE_PENDING, checkAccessName, checkShare,
   hasPendingChange, hasPendingShare, overlayPendingAccess, pendingAccess, pendingAccessRefusal,
   planShare, planUnshare, planUpdate, readPermissions, SHARE_PENDING, toAccessEntries,
@@ -88,14 +92,15 @@ import {
 } from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
-  driveModifiedTime, DriveFolderSessionCore, DriveSessionCore, GOOGLE_DOC_MIME_TYPE,
-  GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF, MOVE_SINGLE_FILE,
-  PDF_MIME_TYPE, requireDriveBindingScope, type DriveBindingScope, type DriveCore,
-  type DriveFolderSessionCoreOptions, type DriveWriteTarget, type NativeRead,
-  type NativeReadOptions,
+  COPY_SINGLE_FILE, driveModifiedTime, DriveFolderSessionCore, DriveSessionCore,
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF,
+  MOVE_SINGLE_FILE, PDF_MIME_TYPE, requireDriveBindingScope, type DriveBindingScope,
+  type DriveCore, type DriveFolderSessionCoreOptions, type DriveWriteTarget, type NativeRead,
+  type NativeReadOptions, type SimulatedEntry, type SimulatedListing,
 } from "./drive-session";
 import type {
-  DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
+  DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply,
+  DriveCopyOptions, DriveEntry,
   DriveExport, DriveExportFormat, DriveFileBytes, DriveFileReadOptions, DriveGrantee,
   DriveListOptions, DrivePdfText, DriveScope,
   DriveSessionSearchQuery, DriveShareOptions, DriveShareRole,
@@ -284,6 +289,9 @@ function hexEncode(bytes: Uint8Array): string {
 function generateNonce(): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
 }
+
+/** The random bytes of a native copy's token, by which a look finds what it made. */
+const COPY_TOKEN_BYTES = 16;
 
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
@@ -2338,9 +2346,10 @@ export class GoogleDriveGatekeeperImpl
   #api = new DriveApi(opts => this.#getAccessToken(opts));
   #journal = new ActionJournal<DriveAction>(this.ctx.storage.kv, { namespace: "drive" });
   #attempts = writeAttempts(this.ctx.storage.kv);
+  #madeCopies = madeCopies(this.ctx.storage.kv);
   /**
-   * The one token an approval of a sharing change or a move sends everything under, while that
-   * approval runs (see applyAction()). Approvals run one at a time, behind #reads.
+   * The one token an approval of a sharing change, a move or a copy sends everything under, while
+   * that approval runs (see applyAction()). Approvals run one at a time, behind #reads.
    */
   #approvalToken: string | undefined;
   /**
@@ -2356,6 +2365,7 @@ export class GoogleDriveGatekeeperImpl
     docs: new GoogleDocsApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
+    madeCopies: this.#madeCopies,
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
@@ -2482,7 +2492,7 @@ export class GoogleDriveGatekeeperImpl
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: titled("Google Drive Account"),
         snippet: write
-          ? `Read and write: ${reads}, queue edits to Google Docs, Sheets and Slides files, read and queue comments, change who files are shared with, and move files`
+          ? `Read and write: ${reads}, queue edits to Google Docs, Sheets and Slides files, read and queue comments, change who files are shared with, and move and copy files`
           : `Read-only: ${reads}, and read comments`,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: write ? "GoogleDriveSession" : "GoogleDriveReadSession",
@@ -2499,7 +2509,7 @@ export class GoogleDriveGatekeeperImpl
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: titled(folder.name),
         snippet: write
-          ? `Read and write: ${reads}, queue edits to Google Docs, Sheets and Slides files among direct children, read and queue comments on direct children, change who they and the folder are shared with, and move them within Drive folder "${folder.name}"`
+          ? `Read and write: ${reads}, queue edits to Google Docs, Sheets and Slides files among direct children, read and queue comments on direct children, change who they and the folder are shared with, and move and copy them within Drive folder "${folder.name}"`
           : `Read-only: ${reads}, and read comments on direct children in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: write ? "GoogleDriveFolderSession" : "GoogleDriveFolderReadSession",
@@ -2525,7 +2535,8 @@ export class GoogleDriveGatekeeperImpl
 
   /**
    * A read-only binding submits nothing, so it lists no kind. An exact-file binding lists the
-   * kinds of its file's editor alone, once describe() has read which that is.
+   * kinds of its file's editor alone, once describe() has read which that is, and no copies,
+   * which it cannot make.
    */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     if (!this.#writes) return [];
@@ -2533,6 +2544,7 @@ export class GoogleDriveGatekeeperImpl
     if (this.#scope.kind !== "file") return kinds;
     let bound = this.ctx.storage.kv.get<DriveEditorName | null>(BOUND_FILE_EDITOR_KEY);
     return kinds.filter(({ tag }) => {
+      if (tag === DRIVE_COPIES.tag) return false;
       let editor = editorOfTag(tag);
       return editor === undefined || editor === bound;
     });
@@ -2558,6 +2570,7 @@ export class GoogleDriveGatekeeperImpl
       // none sees the claim that approval holds.
       waiting: read => this.#reads.read(() => read(this.#journal.listPending())),
       queued: () => this.#journal.listPending(),
+      madeCopy: id => this.#madeCopies.get(id),
     };
     return new GoogleDriveSessionImpl(
       this.#api,
@@ -2601,7 +2614,7 @@ export class GoogleDriveGatekeeperImpl
     let edit = this.#editors.apply(actionId);
     if (edit) return edit;
     return this.#reads.resolve(async () => {
-      // A sharing change or a move was staged under the Google account that queued it. Only a
+      // A sharing change, a move or a copy was staged under the Google account that queued it. Only a
       // record still to be applied needs the account asked: the kit answers an applied or failed
       // one from what it stored, and that must not depend on Google answering.
       let record = this.#journal.get(actionId);
@@ -2756,6 +2769,11 @@ const EXPORT_EDITS_WAITING =
   "That file has changes waiting for approval, which an export would leave out: Google Drive " +
   "exports the file as it is on Drive. Export it once they are decided.";
 
+/** Said of a copy of a file with edits this binding queued that are still waiting. */
+const COPY_EDITS_WAITING =
+  "That file has changes waiting for approval, which a copy would leave out: Google Drive " +
+  "copies the file as it is on Drive. Copy it once they are decided.";
+
 /** Said of an export Google refuses for its size. */
 const EXPORT_TOO_LARGE =
   "Google Drive exports at most 10 MB, and this file is larger in that format. Export it to a " +
@@ -2880,21 +2898,48 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async list(options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
-    return this.#cursor(core => core.list(options));
+    // Only a session that can write has queued copies to show. The queue is read in a read of its
+    // own, never across Drive's answer, which could keep every approval waiting.
+    let copiesInto: SimulatedListing | undefined = this.#showsQueued
+      ? async (folderId, fetch) => {
+        // Most folders have no copy waiting to go into them, and their pages read no queue.
+        if (pendingCopiesInto(folderId, this.#writes.queued()).length === 0) {
+          return { page: await fetch(), shown: [] };
+        }
+        let copies = () => this.#writes.waiting(async pending => pendingCopiesInto(folderId, pending));
+        let shown = await copies();
+        for (;;) {
+          let page = await fetch();
+          if (page.nextPageToken !== undefined) return { page, shown: [] };
+          // A copy waiting before the page and after it waited throughout, so the page does not
+          // hold it, and one waiting only after it was queued meanwhile. One decided meanwhile
+          // may or may not be on the page, so it is fetched again: each time takes a decision of a
+          // copy that was waiting, so this ends.
+          let now = await copies();
+          let waiting = new Set(now.map(({ entry }) => entry.id));
+          if (shown.every(({ entry }) => waiting.has(entry.id))) return { page, shown: now };
+          shown = now;
+        }
+      }
+      : undefined;
+    return this.#cursor(core => core.list(options, copiesInto));
   }
 
   async search(query: DriveSessionSearchQuery): Promise<Cursor<DriveEntry>> {
     return this.#cursor(core => core.search(query));
   }
 
-  getEntry(fileId: string): Promise<DriveEntry> {
-    return this.#core.getEntry(fileId);
+  async getEntry(fileId: string): Promise<DriveEntry> {
+    let named = await this.#named(fileId);
+    if ("waiting" in named) return this.#core.simulatedEntry(named.waiting);
+    return this.#core.getEntry(named.fileId);
   }
 
   async openFolder(folderId: string): Promise<GoogleDriveSessionImpl> {
     if (this.#scope.kind !== "folder") outsideScope();
+    let id = await this.#fileId(folderId);
     return this.#withQueue(async (queue, core) => {
-      let location = await (core as DriveFolderSessionCore).openFolder(folderId);
+      let location = await (core as DriveFolderSessionCore).openFolder(id);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
         this.#scope, queue, this.#writes, this.#editors, location, this.#docCopies,
@@ -2969,11 +3014,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {
+    let id = await this.#fileId(fileId);
     // A text that reads the file again has those reads authorized as it is read, which may be
     // after this session is disposed, so the text holds a queue of its own until it ends. Any
     // other text needs none, and its queue is let go before it is returned.
     return this.#withQueue(async (queue, core) => {
-      let {text, hasText, transcribed, rereads} = await this.#readPdf(core, fileId);
+      let {text, hasText, transcribed, rereads} = await this.#readPdf(core, id);
       let release = () => queue[Symbol.dispose]();
       if (rereads) return {text: releasedAtEnd(text, release), hasText, transcribed};
       release();
@@ -3056,6 +3102,40 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
+    let named = await this.#named(fileId);
+    if (!("waiting" in named)) return this.#readFile(named.fileId, options);
+    let { entry, sourceId } = named.waiting;
+    // Only an ordinary copy is the file it is a copy of until it is made: a conversion is not.
+    if (isPendingId(entry.id)) throw new Error(COPY_WAITING);
+    // As getEntry() shows it, which reports where it is before anything of the file is read: only
+    // in the folder it goes into, and on a folder binding only while its file is still there.
+    await this.#core.simulatedEntry(named.waiting);
+    return this.#readWaiting(entry.id, options, () => this.#readFile(sourceId, options, entry.id));
+  }
+
+  /**
+   * Reads waiting file `fileId` with `read`, which reads what it would hold, then checks it still
+   * waits. An approval may have made it while `read` read, and what `read` read changed since, so
+   * that its bytes, or its failure, say nothing of the file made: then that file is read instead.
+   * The queue is read only once `read` is done, never across Drive's answer, which could keep every
+   * approval waiting.
+   */
+  async #readWaiting(
+    fileId: string, options: DriveFileReadOptions, read: () => Promise<DriveFileBytes>,
+  ): Promise<DriveFileBytes> {
+    let [outcome] = await Promise.allSettled([read()]);
+    if (await this.#writes.waiting(async pending => pendingCopy(fileId, pending))) {
+      if (outcome.status === "rejected") throw outcome.reason;
+      return outcome.value;
+    }
+    if (outcome.status === "fulfilled") await outcome.value.content.cancel();
+    return this.#readFile(fileId, options);
+  }
+
+  /** Reads Drive file `fileId`, or, given `copyId`, the bytes the copy it is waiting for would hold. */
+  async #readFile(
+    fileId: string, options: DriveFileReadOptions, copyId?: string,
+  ): Promise<DriveFileBytes> {
     let range = fileReadRange(options);
     // The stream needs no queue of its own, so this reads through the session's, as getEntry.
     let core = this.#core;
@@ -3092,7 +3172,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
       return opened;
     }, () => ({
       title: "Read file from Google Drive",
-      description: `Read ${length} bytes of Drive file ${file.id}, from byte ${offset}.`,
+      description: `Read ${length} bytes of Drive file ${file.id}, from byte ${offset}` +
+        (copyId === undefined ? "." : `, for ${copyId}, a copy of it waiting for approval.`),
     })).catch(async (error: unknown) => {
       // A read refused after Drive began its answer still holds the download open.
       await opened?.cancel().catch(() => undefined);
@@ -3106,11 +3187,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async exportFile(fileId: string, format: DriveExportFormat): Promise<DriveExport> {
+    let id = await this.#fileId(fileId);
     // As readFile(): the stream needs no queue of its own.
     let core = this.#core;
-    let file = await core.openFile(fileId, "file");
+    let file = await core.openFile(id, "file");
     let {nativeMimeType, mimeType} = exportMimeType(file, format);
-    this.#refuseEditsWaiting(file.id);
+    this.#refuseEditsWaiting(file.id, EXPORT_EDITS_WAITING);
     let modifiedTime = driveModifiedTime(file);
     let opened: ReadableStream<Uint8Array> | undefined;
     // An export is the file's content, so it needs leave to download as readFile() does, and a
@@ -3123,7 +3205,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     })(async (): Promise<{ content: ReadableStream<Uint8Array> } | { refusal: Error }> => {
       // Asked again as Drive is asked for the export: a folder binding has proved the file again
       // with Drive requests since, in which time another call may have queued an edit to it.
-      this.#refuseEditsWaiting(file.id);
+      this.#refuseEditsWaiting(file.id, EXPORT_EDITS_WAITING);
       try {
         opened = await this.#driveApi.openExport(file.id, mimeType);
       } catch (error) {
@@ -3145,23 +3227,25 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Refuses an export of `fileId` while edits this binding queued to it still wait. The queue is
-   * read as it stands, not after an approval that is running, which may be of any other file.
+   * Refuses an export or a copy of `fileId` with `message` while edits this binding queued to it
+   * still wait. The queue is read as it stands, not after an approval that is running, which may
+   * be of any other file.
    */
-  #refuseEditsWaiting(fileId: string): void {
-    // Drive exports the file as Google has it. A writable binding's own reads show its edits still
-    // waiting as if made, so an export without them would pass for one of the file as read. A
-    // read-only binding's show none, even of edits queued before the deployment kept Drive
-    // read-only, so its export is the file as they read it.
+  #refuseEditsWaiting(fileId: string, message: string): void {
+    // Drive exports and copies the file as Google has it. A writable binding's own reads show its
+    // edits still waiting as if made, so an export or a copy without them would pass for one of
+    // the file as read. A read-only binding's show none, even of edits queued before the
+    // deployment kept Drive read-only, so its export is the file as they read it.
     if (this.#writes.access !== "write") return;
     if (this.#writes.queued().some(({ action }) => editedFile(action)?.target.fileId === fileId)) {
-      throw new Error(EXPORT_EDITS_WAITING);
+      throw new Error(message);
     }
   }
 
   async listComments(fileId: string): Promise<Cursor<DriveComment>> {
+    let named = await this.#fileId(fileId);
     return this.#withQueue(async (queue, core) => {
-      let { fileId: id } = await core.commentTarget(fileId);
+      let { fileId: id } = await core.commentTarget(named);
       await core.requireCommentable(id);
       let pager = core.commentPager(id, fetch => this.#writes.undecided(async pending => {
         let { comments, nextPageToken } = await fetch().catch((error: unknown) => {
@@ -3252,7 +3336,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(`${LISTING_TAKES_WRITES} ${refused}`);
     let actor = await this.#writes.actor();
-    let { target } = await this.#sharing(fileId);
+    let { target } = await this.#sharing(await this.#fileId(fileId));
     let id = target.fileId;
     let entries = await this.#writes.undecided(async pending => overlayPendingAccess(
       id, toAccessEntries(await this.#permissions(target), actor.permissionId), pending));
@@ -3266,7 +3350,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     await this.#requireWritable();
     let checked = checkShare(grantee, options);
     let actor = await this.#writes.actor();
-    let { target, base } = await this.#sharing(fileId);
+    let { target, base } = await this.#sharing(await this.#fileId(fileId));
     await this.#refuseBehindMove(target);
     let id = target.fileId;
     await this.#refuseQueued(pending =>
@@ -3311,9 +3395,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
       throw new Error(refused === readOnlyRefusal({ kind: "account" })
         ? `${MOVE_NEEDS_A_FOLDER} ${refused}` : refused);
     }
-    if (folderId === fileId) throw new Error(MOVE_INTO_ITSELF);
+    let [source, destination] = [await this.#fileId(fileId), await this.#fileId(folderId)];
+    if (destination === source) throw new Error(MOVE_INTO_ITSELF);
     let actor = await this.#writes.actor();
-    let target = await this.#core.moveTarget(fileId, folderId);
+    let target = await this.#core.moveTarget(source, destination);
     await this.#refuseQueued(pending => {
       if (hasPendingMove([target.fileId], pending)) return MOVE_PENDING;
       // A folder binding proves the move again at approval along the saved path, and the
@@ -3334,6 +3419,110 @@ export class GoogleDriveSessionImpl extends RpcTarget
       ...(target.toMyDrive ? { toMyDrive: true as const } : {}),
       ...(target.folderIds ? { folderIds: target.folderIds } : {}),
     }, actorFence(actor));
+  }
+
+  async copyFile(fileId: string, options: DriveCopyOptions = {}): Promise<DriveEntry> {
+    // Said before the write refusal, whose URL on a read-only file binding could not copy either.
+    if (this.#scope.kind === "file") throw new Error(COPY_SINGLE_FILE);
+    await this.#requireWritable();
+    let source = await this.#fileId(fileId);
+    let folderId = options.folderId === undefined ? undefined : await this.#fileId(options.folderId);
+    let actor = await this.#writes.actor();
+    let target = await this.#core.copyTarget(source, folderId);
+    this.#refuseEditsWaiting(target.fileId, COPY_EDITS_WAITING);
+    let { folderIds } = target;
+    if (folderIds) {
+      // As for a move: a folder binding proves the copy again at approval along the saved path,
+      // and the destination from there, so a move of any of them would leave it unprovable.
+      await this.#refuseQueued(pending => {
+        if (hasPendingMove([...folderIds, target.fileId], pending)) return MOVE_WAITING;
+        return hasPendingMove([target.toFolderId], pending) ? MOVE_DESTINATION_WAITING : undefined;
+      });
+    }
+    let plan = planCopy(target, options);
+    if (plan.convertTo !== undefined) {
+      let refused = await importLimitRefusal(
+        this.#driveApi, target.fileId, target.size, plan.mimeType);
+      if (refused !== undefined) throw new Error(refused);
+    }
+    let base = {
+      fileId: target.fileId,
+      fileName: shownFileName(target.name),
+      name: plan.name,
+      mimeType: plan.mimeType,
+      toFolderId: target.toFolderId,
+      ...(target.toName === undefined ? {} : { toName: shownFileName(target.toName) }),
+      ...(target.toMyDrive ? { toMyDrive: true as const } : {}),
+      ...(target.driveId ? { driveId: target.driveId } : {}),
+      ...(folderIds ? { folderIds } : {}),
+      queuedAt: new Date().toISOString(),
+    };
+    if (plan.kind === "copyFile") {
+      let payload = {
+        ...base, copyId: await this.#driveApi.generateFileId(),
+        ...(target.size === undefined ? {} : { size: target.size }),
+      };
+      let id = await this.#writes.submit(
+        this.#approvalQueue, "copyFile", payload, actorFence(actor));
+      return simulatedCopy({ id, action: { kind: "copyFile", payload } }).entry;
+    }
+    let payload = {
+      ...base, token: hexEncode(crypto.getRandomValues(new Uint8Array(COPY_TOKEN_BYTES))),
+      ...(plan.convertTo === undefined ? {} : { convertTo: plan.convertTo }),
+    };
+    let id = await this.#writes.submit(
+      this.#approvalQueue, "copyNative", payload, actorFence(actor));
+    return simulatedCopy({ id, action: { kind: "copyNative", payload } }).entry;
+  }
+
+  /**
+   * What `fileId` names among the copies this binding queued: one an approval can still make,
+   * with what it shows; the file a native copy made, which `pending:<n>` names from then on; or,
+   * for any other ID, that ID. A `pending:` ID that names no copy is refused, as is one of a copy
+   * that waits on a session that cannot write ({@link #showsQueued}).
+   */
+  async #named(fileId: string): Promise<{ waiting: SimulatedEntry } | { fileId: string }> {
+    if (isPendingId(fileId)) {
+      let actionId = pendingActionId(fileId);
+      if (actionId === undefined) throw new Error(NAMES_NO_COPY);
+      // A copy once made is known at once, with no approval that is running to wait for.
+      let made = this.#writes.madeCopy(actionId);
+      if (made !== undefined) return { fileId: made };
+      // A session that cannot write shows nothing queued as if made, even what was queued before
+      // the deployment kept Drive read-only.
+      if (!this.#showsQueued) throw new Error(NAMES_NO_COPY);
+      return this.#writes.waiting(async pending => {
+        let made = this.#writes.madeCopy(actionId);
+        if (made !== undefined) return { fileId: made };
+        let waiting = waitingNativeCopy(actionId, pending);
+        if (waiting) return { waiting };
+        throw new Error(NAMES_NO_COPY);
+      });
+    }
+    // Nor does it show a waiting ordinary copy, so it reads no queue.
+    if (!this.#showsQueued) return { fileId };
+    // Most IDs are no queued copy's, and need not wait for an approval that is running, which may
+    // be of any other file. One that is waits for it, so as to show the copy made if it makes it.
+    if (pendingCopy(fileId, this.#writes.queued()) === undefined) return { fileId };
+    let waiting = await this.#writes.waiting(async pending => pendingCopy(fileId, pending));
+    return waiting ? { waiting } : { fileId };
+  }
+
+  /**
+   * Whether this session shows what the binding queued as if made: only one that can write, which
+   * one the deployment keeps read-only, a read-only binding, and a folder opened through a
+   * shortcut cannot. The binding can no longer make a copy into a folder that left its tree,
+   * which a shortcut may still reach.
+   */
+  get #showsQueued(): boolean {
+    return this.#writes.access === "write" && !this.#location?.shortcuts;
+  }
+
+  /** The Drive file `fileId` names, refused while it is a copy that still waits. */
+  async #fileId(fileId: string): Promise<string> {
+    let named = await this.#named(fileId);
+    if ("waiting" in named) throw new Error(COPY_WAITING);
+    return named.fileId;
   }
 
   /**
@@ -3456,9 +3645,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
     permissions: DrivePermissionRecord[];
   }> {
     await this.#requireWritable();
-    let named = await this.#namedAccess(fileId, access, call);
+    let resolved = await this.#fileId(fileId);
+    let named = await this.#namedAccess(resolved, access, call);
     let actor = await this.#writes.actor();
-    let { target, base } = await this.#sharing(fileId);
+    let { target, base } = await this.#sharing(resolved);
     await this.#refuseBehindMove(target);
     let id = target.fileId;
     await this.#refuseQueued(pending => {
@@ -3490,7 +3680,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     prepare: (target: DriveWriteTarget, base: CommentTargetPayload) => Promise<DriveActions[K]>,
   ): Promise<{ id: number; payload: DriveActions[K] }> {
     let core = this.#core;
-    let target = await core.commentTarget(fileId);
+    let target = await core.commentTarget(await this.#fileId(fileId));
     // Before the account is asked whether it can comment: of a folder, Drive says it can.
     if (target.isFolder) throw new Error(FOLDER_COMMENT_REFUSED);
     await core.requireCommentable(target.fileId);
@@ -3603,8 +3793,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
       id: string, queue: RpcStub<ApprovalQueue>, read: NativeRead, target: DriveWriteTargetPayload,
     ) => T,
   ): Promise<T> {
+    let id = await this.#fileId(fileId);
     return this.#withQueue(async (queue, core) => {
-      let file = await core.openNative(fileId, mimeType, description);
+      let file = await core.openNative(id, mimeType, description);
       let target: DriveWriteTargetPayload = {
         fileId: file.id, fileName: shownFileName(file.name),
         ...(this.#location ? { folderIds: [...this.#location.folderIds] } : {}),
@@ -3734,6 +3925,10 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
   }
 
   async move(_fileId: string, _folderId: string): Promise<void> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async copyFile(_fileId: string, _options?: DriveCopyOptions): Promise<DriveEntry> {
     throw new Error(UNCREATED_FOLDER);
   }
 

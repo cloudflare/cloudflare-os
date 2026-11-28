@@ -98,6 +98,11 @@ export type DriveEntry = {
   webViewLink?: string;
   /** Shortcut target metadata, present only for shortcuts. */
   shortcut?: DriveShortcut;
+  /**
+   * A copy this binding queued that is still waiting for approval. Only a binding with read and
+   * write access shows one.
+   */
+  pending?: true;
 };
 
 /** Supported ordering for Drive listing and structured search. */
@@ -280,14 +285,15 @@ export type DriveExport = {
  *
  * A read-only binding changes nothing, and the native sessions it opens have no write methods.
  * Editing Google Docs, Sheets and Slides files, commenting on files, seeing or changing who they
- * are shared with, and moving them take a binding with read and write access, which the user chooses when
+ * are shared with, and moving and copying them take a binding with read and write access, which the user chooses when
  * connecting: request one with `?access=write` added to the resource URL, the narrowest that covers
  * the files to change: `https://drive.google.com/file/d/<fileId>/view?access=write` for one file
- * (which can be commented on and shared, not moved),
+ * (which can be commented on and shared, not moved or copied),
  * `https://drive.google.com/drive/folders/<folderId>?access=write` for a folder, or
  * `https://drive.google.com/drive/my-drive?access=write` for all of Drive. A folder binding moves a
  * file only within that folder, one level per move: into a child folder, or back up to the folder
- * above. So to move a file, request a folder that holds both where the file is and where it goes,
+ * above, and copies a file into the folder it is in or one of those. So to move or copy a file,
+ * request a folder that holds both where the file is and where it goes,
  * or all of Drive. Where the deployment keeps Google Drive read-only, no binding has read and write
  * access, whatever was requested, and a write fails saying so.
  */
@@ -419,7 +425,7 @@ export interface GoogleDriveReadSession {
  * Read-only navigation within the originally selected folder, with its direct children's content
  * and comments. A shortcut among those children stands for its target, file or folder, wherever
  * that lives: `getEntry`, the native opens, `readPdf`, `readFile`, `exportFile` and `openFolder` take the
- * target's ID as they take a direct child's; `listComments` does not. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
+ * target's ID as they take a direct child's; `listComments` does not. Editing Google Docs, Sheets and Slides files, commenting, sharing, moving and copying take
  * a binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
  */
 export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSession, "getScope"> {

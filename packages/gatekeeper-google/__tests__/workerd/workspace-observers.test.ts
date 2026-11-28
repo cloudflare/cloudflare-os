@@ -48,7 +48,11 @@ type FileNode = {
   name: string;
   mimeType: string;
   trashed: boolean;
-  capabilities?: {canListChildren?: boolean; canDownload?: boolean; canComment?: boolean; canShare?: boolean};
+  parents?: string[];
+  capabilities?: {
+    canListChildren?: boolean; canDownload?: boolean; canComment?: boolean; canShare?: boolean;
+    canAddChildren?: boolean; canCopy?: boolean;
+  };
 };
 
 type Observation = {
@@ -142,7 +146,8 @@ const FILES: Record<string, FileNode> = {
   [SHEET]: {id: SHEET, name: "Forecast", mimeType: SHEET_MIME, trashed: false},
   [DECK]: {id: DECK, name: "Review", mimeType: SLIDES_MIME, trashed: false},
   [LOCKED]: {
-    id: LOCKED, name: "Locked", mimeType: FOLDER_MIME, trashed: false, capabilities: {canListChildren: false},
+    id: LOCKED, name: "Locked", mimeType: FOLDER_MIME, trashed: false, parents: ["owner-root"],
+    capabilities: {canListChildren: false, canAddChildren: true},
   },
   [OPEN]: {
     id: OPEN, name: "Open", mimeType: FOLDER_MIME, trashed: false, capabilities: {canListChildren: true},
@@ -151,7 +156,8 @@ const FILES: Record<string, FileNode> = {
     id: RESTRICTED, name: "Restricted", mimeType: "text/csv", trashed: false, capabilities: {canDownload: false},
   },
   [REPORT]: {
-    id: REPORT, name: "Report", mimeType: "text/csv", trashed: false, capabilities: {canDownload: true},
+    id: REPORT, name: "Report", mimeType: "text/csv", trashed: false,
+    capabilities: {canDownload: true, canCopy: true},
   },
 };
 
@@ -197,6 +203,7 @@ function workspaceBackend(): WorkspaceBackend {
       return json({permissions: [OWNER_PERMISSION]});
     }
     if (url.pathname === "/drive/v3/about") return json({user: OWNER});
+    if (url.pathname === "/drive/v3/files/generateIds") return json({ids: ["copy-1"]});
     const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
     if (observer) state.lookups.push(`${token} ${url.hostname} ${id}`);
     if (state.failing.has(token)) return json({error: {code: 500, message: "Backend error"}}, 500);
@@ -515,6 +522,23 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
     expect(await drive.verify(observers, [`drive/file/${LOCKED}`])).toEqual({allowedObserverIds: ["viewer"]});
     expect(await drive.verify(observers, [`drive/folder/${OPEN}`, `drive/file/${LOCKED}`]))
       .toEqual({allowedObserverIds: ["viewer"]});
+  });
+
+  it("allows a copy's result only to an account that can list the folder it goes into, though it can open the file", async () => {
+    const drive = workspaceHarness(
+      workspaceBackend(), "drive", {scope: {kind: "account"}, access: "write"},
+      [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT]);
+    using session = await drive.driveSession();
+    expect(await session.copyFile(REPORT, {folderId: LOCKED}))
+      .toMatchObject({id: "copy-1", parentId: LOCKED, pending: true});
+    const copied = (await drive.observations())
+      .filter(observation => observation.title === "Check Google Drive copy");
+    expect(copied).toHaveLength(1);
+
+    const observers = [
+      {id: "viewer", userObjectId: await drive.observer("viewer-token", [REPORT, LOCKED], {drive: true})},
+    ];
+    expect(await drive.verify(observers, copied[0].subresources ?? [])).toEqual({allowedObserverIds: []});
   });
 
   it("allows a Drive file's content only to an account that may download it, though it can see it", async () => {

@@ -754,6 +754,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
         "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
         "DriveShareRole",
         "DriveRole", "DriveGrantee", "DriveShareOptions", "DriveAccess", "DriveSharing",
+        "DriveNativeType", "DriveCopyOptions",
         "GoogleDriveSession", "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
     expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
@@ -902,6 +903,38 @@ entry.name;
 // The literal above also lacks its domain, so this one holds the seam on the address alone.
 // @ts-expect-error A domain grantee carries no address, even with its domain.
 const mixedWithDomain: DriveGrantee = { type: "domain", domain: "example.com", emailAddress: "a@example.com" };
+`)).toEqual([]);
+  });
+
+  it("declares copies for the account and folder sessions, and for no other", () => {
+    const writeTypes = source("drive-types.d.ts");
+    expect(writeTypes.split("copyFile(fileId: string, options?: DriveCopyOptions): Promise<DriveEntry>;"))
+      .toHaveLength(3);
+    expect(source("drive-read-types.d.ts")).not.toMatch(/^\s+copyFile\(/m);
+    expect(compileAgentTypes(driveWriteBundle() + `
+declare const drive: GoogleDriveSession;
+declare const folder: GoogleDriveFolderSession;
+declare const file: GoogleDriveFileSession;
+declare const readOnly: GoogleDriveReadSession;
+declare const readOnlyFolder: GoogleDriveFolderReadSession;
+async function use(): Promise<void> {
+  const copy: DriveEntry = await drive.copyFile("file-1");
+  const waits: true | undefined = copy.pending;
+  await drive.copyFile("file-1", { name: "Draft", folderId: "root" });
+  await drive.copyFile("file-1", { convertTo: "document" });
+  await folder.copyFile("file-1", { folderId: "child-folder", convertTo: "spreadsheet" });
+  const type: DriveNativeType = "presentation";
+  const options: DriveCopyOptions = { convertTo: type };
+  await folder.copyFile("file-1", options);
+}
+// @ts-expect-error A single-file binding cannot copy its file.
+file.copyFile("file-1");
+// @ts-expect-error A read-only binding cannot copy.
+readOnly.copyFile("file-1");
+// @ts-expect-error A read-only folder binding cannot copy.
+readOnlyFolder.copyFile("file-1");
+// @ts-expect-error A conversion is into a Google Doc, Sheet or Slides presentation only.
+drive.copyFile("file-1", { convertTo: "pdf" });
 `)).toEqual([]);
   });
 
