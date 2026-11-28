@@ -48,13 +48,13 @@ function file(id: string, parent: string, mimeType = "application/pdf"): DriveSc
   return { id, mimeType, parents: [parent], trashed: false, canCopy: true };
 }
 
-/** Folder `R` holds folder `A`, which holds folder `B` and file `F`; `X` is elsewhere. */
+/** Folder `R` holds folder `A`, which holds folder `B` and file `F`, a .docx file; `X` is elsewhere. */
 type Tree = Record<"R" | "A" | "B" | "F" | "X", DriveScopeNode> &
   Record<string, DriveScopeNode | undefined>;
 
 function tree(): Tree {
   return {
-    R: folder("R", "above"), A: folder("A", "R"), B: folder("B", "A"), F: file("F", "A"),
+    R: folder("R", "above"), A: folder("A", "R"), B: folder("B", "A"), F: file("F", "A", DOCX),
     X: folder("X", "elsewhere"),
   };
 }
@@ -62,7 +62,7 @@ function tree(): Tree {
 /** An ordinary copy of `F` into `B`, as an account binding queues it. */
 function intoB(overrides: Partial<DriveCopyActions["copyFile"]> = {}): DriveCopyActions["copyFile"] {
   return {
-    fileId: "F", fileName: "Budget.pdf", name: "Copy of Budget.pdf", mimeType: "application/pdf",
+    fileId: "F", fileName: "Budget.docx", name: "Copy of Budget.docx", mimeType: DOCX,
     toFolderId: "B", toName: "Archive", queuedAt: "2026-05-01T10:00:00.000Z", copyId: "C",
     size: 1234, ...overrides,
   };
@@ -131,8 +131,9 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
     copyFile: vi.fn<DriveApi["copyFile"]>(copy),
     findCopy: vi.fn<DriveApi["findCopy"]>(async () => undefined),
+    // What the scope proof reads of the file, as Drive answers both from the same file.
     getConversionSource: vi.fn<DriveApi["getConversionSource"]>(async id =>
-      ({ id, name: "Plan.docx", mimeType: DOCX, size: "1000" })),
+      ({ id, name: "Plan.docx", mimeType: nodes[id]?.mimeType ?? "", size: "1000" })),
     getMaxImportSize: vi.fn<DriveApi["getMaxImportSize"]>(async () => 10 * 1024 * 1024),
   };
   let host: DriveCopiesHost = {
@@ -201,8 +202,8 @@ describe("Drive copy verdict and approval card", () => {
       "Copy Google Drive file `F` into folder `B`, as the connected account.\n\n" + TAKES_SHARING);
     expect(card.fields).toEqual([
       { label: "File", kind: "inline", value: "F" },
-      { label: "File name", kind: "inline", value: "Budget.pdf" },
-      { label: "Copy name", kind: "inline", value: "Copy of Budget.pdf" },
+      { label: "File name", kind: "inline", value: "Budget.docx" },
+      { label: "Copy name", kind: "inline", value: "Copy of Budget.docx" },
       { label: "To folder", kind: "inline", value: "B" },
       { label: "To folder name", kind: "inline", value: "Archive" },
     ]);
@@ -233,7 +234,7 @@ describe("Drive copy sends", () => {
     expect(await apply(id)).toBeNull();
     expect(api.copyFile).toHaveBeenCalledTimes(1);
     expect(api.copyFile).toHaveBeenCalledWith(
-      "F", { id: "C", name: "Copy of Budget.pdf", parents: ["B"] });
+      "F", { id: "C", name: "Copy of Budget.docx", parents: ["B"] });
     expect(nodes.C?.parents).toEqual(["B"]);
     expect(journal.get(id)).toBeUndefined();
   });
@@ -290,7 +291,6 @@ describe("Drive copy sends", () => {
 
   it("makes a native copy with its token, clearing the markers it would keep, and records the file it made", async () => {
     let { api, made, nodes, submit, apply } = harness();
-    nodes.F = file("F", "A", DOCX);
     let id = await submit("copyNative", nativeIntoB());
     expect(await apply(id)).toBeNull();
     // Drive patches a copy's app properties over its file's: a conversion's markers would offer
@@ -473,16 +473,31 @@ describe("Drive copy checks at apply", () => {
     }
   });
 
-  it("refuses a conversion whose file is no longer of the Office type queued", async () => {
-    let { api, journal, submit, apply } = harness();
-    let id = await submit("copyNative", nativeIntoB());
-    // Drive changes a file's type only with a new revision, which a file of another type can be.
-    api.getConversionSource.mockResolvedValue(
-      { id: "F", name: "Plan.docx", mimeType: "application/pdf", size: "1000" });
-    expect(await apply(id)).toBe(
-      "That file is no longer a .docx, .doc, .odt or .rtf file, so it was not converted.");
-    expect(journal.get(id)?.state).toBe("failed");
-    expect(api.copyFile).not.toHaveBeenCalled();
+  it("refuses a conversion whose file is no longer of the Office type queued when its folder is proved", async () => {
+    // Drive changes a file's type only with a new revision, which a file of another type can be:
+    // before the approval, or while Drive answers a conversion's reads.
+    for (let moment of ["before", "getConversionSource", "getMaxImportSize"]) {
+      let { api, journal, nodes, submit, apply } = harness();
+      let id = await submit("copyNative", nativeIntoB());
+      let revise = () => { nodes.F = file("F", "A", "application/pdf"); };
+      if (moment === "before") revise();
+      if (moment === "getConversionSource") {
+        api.getConversionSource.mockImplementationOnce(async fileId => {
+          revise();
+          return { id: fileId, name: "Plan.docx", mimeType: DOCX, size: "1000" };
+        });
+      }
+      if (moment === "getMaxImportSize") {
+        api.getMaxImportSize.mockImplementationOnce(async () => {
+          revise();
+          return 10 * 1024 * 1024;
+        });
+      }
+      expect(await apply(id), moment).toBe(
+        "That file is no longer a .docx, .doc, .odt or .rtf file, so it was not converted.");
+      expect(journal.get(id)?.state, moment).toBe("failed");
+      expect(api.copyFile, moment).not.toHaveBeenCalled();
+    }
   });
 
   it("proves a folder binding's copy along its saved path, into a folder it reaches", async () => {
@@ -546,7 +561,7 @@ describe("Drive copies while they wait", () => {
   it("shows an ordinary copy by its reserved ID, reporting the file it is a copy of", () => {
     expect(pendingCopy("C", pending)).toEqual({
       entry: {
-        id: "C", name: "Copy of Budget.pdf", mimeType: "application/pdf", isFolder: false,
+        id: "C", name: "Copy of Budget.docx", mimeType: DOCX, isFolder: false,
         modifiedTime: new Date("2026-05-01T10:00:00.000Z"), size: 1234, parentId: "B",
         pending: true,
       },
