@@ -20,7 +20,8 @@ import {
 // the one a gadget's UI names), how a spawned agent's chat is shown over the chat the gadget pane
 // follows,
 // which gadget stub a use-only collaborator's view is given while gadgets are admitted or viewed
-// as snapshots, and which workspace a gadget's deletion is confirmed in.
+// as snapshots, which workspace a gadget's deletion is confirmed in, and which preview the pane
+// shows when the chips of sent messages are opened one after another.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -65,7 +66,11 @@ const mocks = vi.hoisted(() => {
       returnChatId?: number | null
       pendingConsoleLogCount: number
       onNavigateToChat: (chatId: number | null) => void
+      onOpenFocus: (focus: { gadgetId: number; gadgetTitle: string }) => void
     },
+    // What each connection says of itself when asked, by its ID, and the preview last drawn.
+    describes: {} as Record<number, Promise<{ hasGadgetUi: boolean }>>,
+    preview: null as null | { gatekeeperId: number },
     codeView: null as null | { selectedChatId?: number | null },
     connections: null as null | { chatId?: number },
     gadgetUi: null as null | { onConsoleLog?: (log: unknown) => void },
@@ -88,6 +93,9 @@ const mocks = vi.hoisted(() => {
             return disposable
           },
           getGadget: () => disposable,
+          getGatekeeperById: (id: number) => ({
+            ...disposable, describe: () => mocks.describes[id], getCreationSpec: async () => undefined,
+          }),
           isViewOnly: async () => false,
           getGadgetSnapshot: () => disposable,
           listHooks: async () => [],
@@ -210,6 +218,12 @@ vi.mock('./Connections', () => ({
   },
 }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
+vi.mock('./features/connection-preview/ConnectionPreviewPane', () => ({
+  ConnectionPreviewPane: ({ preview }: { preview: NonNullable<typeof mocks.preview> }) => {
+    mocks.preview = preview
+    return null
+  },
+}))
 vi.mock('./GadgetUI', () => ({
   default: ({ onOpenAgentChat, onConsoleLog }: {
     onOpenAgentChat?: typeof mocks.onOpenAgentChat
@@ -307,6 +321,8 @@ beforeEach(() => {
   mocks.codeView = null
   mocks.connections = null
   mocks.gadgetUi = null
+  mocks.describes = {}
+  mocks.preview = null
   mocks.navigate.mockReset()
   mocks.search = {}
   mocks.workspaceId = 'workspace'
@@ -966,5 +982,22 @@ describe('GadgetEditor, deleting a gadget', () => {
     await openWorkspace('trips', ['Itinerary', 'Packing'])
     expect(hasButton('confirm deleting Packing')).toBe(false)
     expect(removed).toEqual([])
+  })
+})
+
+describe('GadgetEditor, opening the preview a sent message was focused on', () => {
+  const open = (gadgetId: number) => act(async () => mocks.chatPane!.onOpenFocus({ gadgetId, gadgetTitle: 'Plan' }))
+
+  it('stays on the chip opened last when the connection of an earlier one answers late', async () => {
+    const slow = Promise.withResolvers<{ hasGadgetUi: boolean }>()
+    mocks.describes = { 5: slow.promise, 6: Promise.resolve({ hasGadgetUi: true }) }
+    await openEditor('desktop')
+
+    await open(5)
+    await open(6)
+    expect(mocks.preview?.gatekeeperId).toBe(6)
+
+    await act(async () => slow.resolve({ hasGadgetUi: true }))
+    expect(mocks.preview?.gatekeeperId).toBe(6)
   })
 })

@@ -1137,6 +1137,18 @@ it('reads a large sheet a window at a time: first around its changes, then where
 
 const pause = (time: number) => new Promise(resolve => setTimeout(resolve, time))
 
+/** Picks the cell drawn at `node` as a reader does: a press on it, let go there, and the click that makes. */
+const pick = (node: HTMLElement) => {
+  for (const type of ['pointerdown', 'pointerup']) node.dispatchEvent(new PointerEvent(type, { bubbles: true }))
+  node.click()
+}
+
+/** Resolves once the refresh that asked for the pending changes the `count`th time has drawn what it read. */
+async function settled(asked: string[], count: number) {
+  await expect.poll(() => asked.length).toBe(count)
+  await expect.poll(() => frame!.contentDocument!.querySelector('[role=status]')!.textContent).toBe('')
+}
+
 it('draws the window in view again in a font that arrives after it was scrolled to', async () => {
   let arrive!: (bytes: ArrayBuffer) => void
   const { doc, cell } = await draw({ ...bigBook({ formats: [{ fontFamily: 'Poppins' }] }), font: new Promise(resolve => { arrive = resolve }) })
@@ -1750,6 +1762,51 @@ it('tells its host the sheet shown, opens on the one its host names, and on its 
   expect(await go('1')).toBe(true)
   expect([title(), cell('A1').textContent]).toEqual(['Sales', 'Sales A1'])
   expect(said.at(-1)).toEqual({ anchor: '1', label: 'Sales' })
+  // A cell the reader picks is told after its sheet, as the session names one, with what is in
+  // it, and its host sends it back to one.
+  cell('B2').click()
+  expect(said.at(-1)).toEqual({ anchor: '1!B2', label: 'Sales › B2' })
+  // Sent to the sheet alone, the cell picked is let go: what is ringed is what was asked for.
+  expect(await go('1')).toBe(true)
+  expect([said.at(-1), doc.querySelector('.picked')]).toEqual([{ anchor: '1', label: 'Sales' }, null])
+  // So it is by cells the sheet no longer reaches, at either end of a range, or named backwards.
+  for (const past of ['1!B2:C9', '1!C9:B2']) {
+    cell('B2').click()
+    expect(await go(past)).toBe(true)
+    expect([said.at(-1), doc.querySelector('.picked')]).toEqual([{ anchor: '1', label: 'Sales' }, null])
+  }
+  expect(await go('1!A1')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: '1!A1', label: 'Sales › A1', context: 'Sales A1' })
+  expect(cell('A1').matches('.picked')).toBe(true)
+  // A press let go on another cell picks the range between them, whichever corner it began at,
+  // and so does a click with Shift held. Its host sends it back to a range too. Each of its rows
+  // and columns is told, the empty ones too.
+  const range = { anchor: '1!A1:B2', label: 'Sales › A1:B2', context: 'Sales A1\t\n\t' }
+  cell('B2').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  // The range is ringed as it is dragged out, and told once the press is let go.
+  const heard = said.length
+  cell('A1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true, buttons: 1 }))
+  expect([said.length, doc.querySelectorAll('.ranged').length, doc.querySelector('#strip .at')!.textContent, doc.querySelector('.ranging') !== null])
+    .toEqual([heard, 4, 'A1:B2', true])
+  cell('A1').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  expect([said.at(-1), doc.querySelector('.ranging')]).toEqual([range, null])
+  expect(['A1', 'B1', 'B2', 'C2'].map(name => ['.picked', '.ranged'].map(lit => cell(name).matches(lit))))
+    .toEqual([[true, true], [false, true], [false, true], [false, false]])
+  // Sent to that range by its host, it grows from the range's first cell, not the one pressed.
+  expect(await go('1!A1:B2')).toBe(true)
+  cell('B1').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+  expect(said.at(-1)).toMatchObject({ anchor: '1!A1:B1' })
+  cell('C2').click()
+  expect(said.at(-1)).toEqual({ anchor: '1!C2', label: 'Sales › C2' })
+  cell('A1').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+  expect(said.at(-1)).toEqual({ anchor: '1!A1:C2', label: 'Sales › A1:C2', context: 'Sales A1\t\t\n\t\t' })
+  // It still grows from the cell first clicked, as a spreadsheet's does.
+  cell('B1').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+  expect(said.at(-1)).toEqual({ anchor: '1!B1:C2', label: 'Sales › B1:C2', context: '\t\n\t' })
+  cell('B2').click()
+  expect(await go('1!A1:B2')).toBe(true)
+  expect(said.at(-1)).toEqual(range)
+  expect(doc.querySelectorAll('.ranged').length).toBe(4)
   // The reader's own move is told too.
   tabs()[2].click()
   await expect.poll(() => said.at(-1)).toEqual({ anchor: '9', label: 'Plan' })
@@ -1781,4 +1838,186 @@ it('tells its host the sheet shown, opens on the one its host names, and on its 
   failing.fail = undefined
   retried.doc.querySelector<HTMLElement>('#error button')!.click()
   await expect.poll(() => retried.doc.querySelector('#strip b')?.textContent).toBe('Costs')
+  frame!.remove()
+
+  // The only sheet of a spreadsheet is not worth telling, until cells of it are picked, which
+  // are told after it.
+  const entered = { A1: { text: 'Sales A1' }, B1: { text: 'West', change: 4, entered: 'West', saved: 'EMEA' }, C1: { change: 4, entered: null, saved: 'APAC' } }
+  const alone = await draw({ sheets: [small(1, 'Sales', 0, { cells: entered })] }, 1100)
+  expect(alone.said).toEqual([])
+  alone.cell('A1').click()
+  expect(alone.said).toEqual([{ anchor: '1!A1', label: 'Sales › A1', context: 'Sales A1' }])
+  // What a pending change enters is told as not yet approved, alone or among the cells of a
+  // range. What one clears is still what the spreadsheet holds.
+  const unsaved = '(shown with changes not yet approved)\n'
+  alone.cell('B1').click()
+  expect(alone.said.at(-1)).toEqual({ anchor: '1!B1', label: 'Sales › B1', context: `${unsaved}West` })
+  alone.cell('A1').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+  expect(alone.said.at(-1)).toEqual({ anchor: '1!A1:B1', label: 'Sales › A1:B1', context: `${unsaved}Sales A1\tWest` })
+  alone.cell('C1').click()
+  expect(alone.said.at(-1)).toEqual({ anchor: '1!C1', label: 'Sales › C1', context: 'APAC' })
+  frame!.remove()
+  // A sheet the changes add is no spot yet, and nothing on it is picked: by a click, a press or
+  // its host.
+  const added = await draw({ saved: [small(1, 'Sales', 0)].map(info), sheets: [small(1, 'Sales', 0), small(9, 'Plan', 1, { touched: true })] }, 1100, 600, '9')
+  added.cell('A1').click()
+  added.cell('A1').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  added.cell('B2').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  expect(await added.go('9!A1')).toBe(true)
+  expect([added.said.filter(Boolean), added.doc.querySelector('.picked, .ranged')]).toEqual([[], null])
+})
+
+it('picks no range from a press let go off the grid, and tells what a range holds only when all of it is drawn', async () => {
+  const { doc, said, cell } = await draw({ sheets: [small(1, 'Sales', 0), small(2, 'Costs', 1)] }, 1100, 600, '1')
+  const press = (name: string) => cell(name).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  const told = said.length
+  // Let go outside the grid, or taken away, the press is over: the next cell the pointer comes
+  // up on starts no range from it.
+  for (const end of ['pointerup', 'pointercancel']) {
+    press('B2')
+    // The range dragged out until then is ringed, and unringed with the press.
+    cell('A1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true, buttons: 1 }))
+    expect(doc.querySelectorAll('.ranged').length).toBe(4)
+    doc.body.dispatchEvent(new PointerEvent(end, { bubbles: true }))
+    expect(doc.querySelector('.ranged, .ranging')).toBeNull()
+    cell('A1').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  }
+  // A press whose end never came, as when a menu opens over it, is over at the next move with
+  // no button down: a cell the pointer then passes over rings nothing.
+  press('B2')
+  cell('A1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+  cell('A1').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  expect([said.length, doc.querySelector('.picked, .ranged, .ranging')]).toEqual([told, null])
+  frame!.remove()
+
+  // A range wholly in the window drawn is told with what it holds. One that reaches past it is
+  // told by its name alone, not with the part that happens to be drawn.
+  const big = await draw(bigBook(), 900, 600, '1')
+  expect(await big.go('1!A3000:B3001')).toBe(true)
+  const unsaved = '(shown with changes not yet approved)\n'
+  await expect.poll(() => big.said.at(-1)).toEqual({ anchor: '1!A3000:B3001', label: 'Big › A3000:B3001', context: `${unsaved}row 3000\tnew\nrow 3001\t` })
+  expect(await big.go('1!A3000:B5000')).toBe(true)
+  await expect.poll(() => big.said.at(-1)).toEqual({ anchor: '1!A3000:B5000', label: 'Big › A3000:B5000' })
+})
+
+it('keeps cells picked while the sheet reads as it did, and lets them go, telling its host, when it has other rows or changes', async () => {
+  const sales = small(1, 'Sales', 0, { rowCount: 6, cells: { A1: { text: 'Item' }, A2: { text: 'Rent' }, B2: { text: '12' } } })
+  const costs = small(2, 'Costs', 1)
+  const book: Book = { sheets: [sales, costs] }
+  const { doc, said, asked, cell, refresh } = await draw(book, 1100, 600, '1')
+  const none = [{ anchor: '1', label: 'Sales' }, null]
+  const write = (id: number, title: string, at: string) => ({
+    changes: [{ id, type: 'updateSpreadsheet', changes: [{ op: 'writeCells', range: `${title}!${at}`, values: [['More']] }] }],
+    areas: [{ change: id, op: 'writeCells', range: at }],
+  })
+
+  // A change queued on another sheet leaves this one as it was read: nothing is told anew.
+  pick(cell('B2'))
+  expect(said.at(-1)).toEqual({ anchor: '1!B2', label: 'Sales › B2', context: '12' })
+  const told = said.length
+  Object.assign(costs, { touched: true, cells: { A1: { text: 'More', change: 3, entered: 'More' } } })
+  book.pending = { Costs: write(3, 'Costs', 'A1') }
+  refresh()
+  await settled(asked, 2)
+  expect([said.length, cell('B2').matches('.picked')]).toEqual([told, true])
+
+  // A row saved above them leaves other cells under their name, which here hold as little as
+  // the cell picked did: it is let go.
+  pick(cell('C2'))
+  expect(said.at(-1)).toEqual({ anchor: '1!C2', label: 'Sales › C2' })
+  Object.assign(sales, { rowCount: 7, cells: { A1: { text: 'Item' }, A2: { text: 'Tax' }, B2: { text: '7' }, A3: { text: 'Rent' }, B3: { text: '12' } } })
+  refresh()
+  await expect.poll(() => cell('B3').textContent).toBe('12')
+  expect([said.at(-1), doc.querySelector('.picked')]).toEqual(none)
+  // So is a range, when a change is queued on its sheet.
+  cell('A2').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  cell('B3').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  expect(said.at(-1)).toEqual({ anchor: '1!A2:B3', label: 'Sales › A2:B3', context: 'Tax\t7\nRent\t12' })
+  Object.assign(sales, { touched: true, cells: { ...sales.cells, C4: { text: 'More', change: 4, entered: 'More' } } })
+  book.pending = { ...book.pending, Sales: write(4, 'Sales', 'C4') }
+  refresh()
+  await expect.poll(() => cell('C4').textContent).toBe('More')
+  expect([said.at(-1), doc.querySelector('.picked, .ranged')]).toEqual(none)
+})
+
+it('tells a range with a row hidden in it by its name alone: what is drawn of it is not all it holds', async () => {
+  const folded = small(1, 'Sales', 0, { rows: { 2: { hidden: true } }, cells: { A1: { text: 'One' }, A2: { text: 'Two' }, A3: { text: 'Three' } } })
+  const { said, cell } = await draw({ sheets: [folded, small(2, 'Costs', 1)] }, 1100, 600, '1')
+  cell('A1').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  cell('A3').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  expect(said.at(-1)).toEqual({ anchor: '1!A1:A3', label: 'Sales › A1:A3' })
+})
+
+it('tells no text selected off the sheet, and text selected in the cells picked as not yet approved where they are', async () => {
+  const entered = { A1: { text: 'Sales A1' }, B1: { text: 'West', change: 4, entered: 'West', saved: 'EMEA' } }
+  const { doc, said, cell } = await draw({ sheets: [small(1, 'Sales', 0, { cells: entered })] }, 1100)
+  const unsaved = '(shown with changes not yet approved)\n'
+  const selection = frame!.contentWindow!.getSelection()!
+
+  // The bar over the grid says what the cell picked holds with no mark on it.
+  cell('B1').click()
+  const entry = { anchor: '1!B1', label: 'Sales › B1', context: `${unsaved}West` }
+  expect(said.at(-1)).toEqual(entry)
+  selection.selectAllChildren(doc.querySelector('#strip b')!)
+  expect(selection.toString()).toBe('Sales')
+  await pause(300)
+  expect(said.at(-1)).toEqual(entry)
+  // Saved text selected outside the cell picked is told as saved.
+  selection.selectAllChildren(cell('A1'))
+  await expect.poll(() => said.at(-1)).toEqual({ ...entry, context: 'Sales A1' })
+  selection.removeAllRanges()
+  await expect.poll(() => said.at(-1)).toEqual(entry)
+  // A saved cell among cells picked with one a change enters is told as they are.
+  cell('A1').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+  const both = { anchor: '1!A1:B1', label: 'Sales › A1:B1', context: `${unsaved}Sales A1\tWest` }
+  expect(said.at(-1)).toEqual(both)
+  selection.selectAllChildren(cell('A1'))
+  await expect.poll(() => said.at(-1)).toEqual({ ...both, context: `${unsaved}Sales A1` })
+  selection.removeAllRanges()
+  await expect.poll(() => said.at(-1)).toEqual(both)
+})
+
+it('tells nothing anew of a cell picked as it scrolls out of the window drawn and back, and lets it go there when the sheet has other changes', async () => {
+  const book = bigBook()
+  const { doc, said, go, cell, refresh } = await draw(book, 900, 600, '1')
+  const scroll = doc.getElementById('scroll')!
+  const picked = { anchor: '1!A3000', label: 'Big › A3000', context: 'row 3000' }
+  expect(await go('1!A3000')).toBe(true)
+  await expect.poll(() => said.at(-1)).toEqual(picked)
+  const away = async () => {
+    scroll.scrollTo(0, 100 * 21)
+    await expect.poll(() => cell('A101')?.textContent, { timeout: 10_000 }).toBe('row 101')
+    expect(cell('A3000')).toBeUndefined()
+  }
+  const back = async () => {
+    scroll.scrollTo(0, 2990 * 21)
+    await expect.poll(() => cell('A3000')?.textContent, { timeout: 10_000 }).toBe('row 3000')
+  }
+
+  // Out of the window it holds what it did: a host that turned it down is not asked again.
+  const told = said.length
+  await away()
+  await back()
+  expect([said.length, cell('A3000').matches('.picked')]).toEqual([told, true])
+  // Read again there, the sheet may hold something else under the name: it is told by its name
+  // alone until it is drawn.
+  await away()
+  refresh()
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: picked.anchor, label: picked.label })
+  await back()
+  await expect.poll(() => said.at(-1)).toEqual(picked)
+  expect(cell('A3000').matches('.picked')).toBe(true)
+
+  // Read there with another change waiting, its name may be of another cell: it is let go.
+  await away()
+  const { changes, areas } = book.pending!.Big
+  book.pending = { Big: {
+    changes: [...changes!, { id: 3, type: 'updateSpreadsheet', changes: [{ op: 'writeCells', range: 'Big!B2999', values: [['more']] }] }],
+    areas: [...areas!, { change: 3, op: 'writeCells', range: 'B2999' }],
+  } }
+  book.sheets[0].cells!.B2999 = { text: 'more', change: 3, entered: 'more' }
+  refresh()
+  await expect.poll(() => said.at(-1)).toBeNull()
+  await back()
+  expect([said.at(-1), cell('A3000').matches('.picked')]).toEqual([null, false])
 })

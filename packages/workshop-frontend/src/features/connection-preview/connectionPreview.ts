@@ -4,6 +4,7 @@ import type {
 } from '@gadgets/workshop-shared/api'
 import { findResourceType } from '@gadgets/workshop-shared/gatekeeper'
 import { safeExternalUrl } from '../../utils/safeExternalUrl'
+import type { TitledFocus } from '../gadget-focus/paneFocus'
 
 /** A connection's content, or one item of it, that can be drawn beside the chat. */
 export type ConnectionPreview = {
@@ -14,6 +15,8 @@ export type ConnectionPreview = {
    */
   item?: string
   title: string
+  /** The title of the connection, which is what a message's focus names, when the item has its own. */
+  connectionTitle?: string
   /** The real file, for the pane's link out. */
   url?: string
   /** The icon of the connection's type of resource, when its vendor gives one. */
@@ -39,10 +42,31 @@ export const previewOf = (
     gatekeeperId,
     item: item?.anchor,
     title: item?.title ?? entry.resourceTitle,
+    connectionTitle: item && entry.resourceTitle,
     // An item with no address of its own has no link out: the connection's is to something else.
     url: safeExternalUrl(item ? item.url : entry.resourceUrl) ?? undefined,
     iconUrl: offer?.iconUrl,
   }
+}
+
+/**
+ * The preview a sent message's `focus` was on, or undefined when there is none to open. One with
+ * changes waiting is among `pending`. Any other is told from what its connection offers (`offer`,
+ * which rejects when the connection is gone): a connection with no preview of its own draws its
+ * items, each at the anchor that starts with the item's name, and such an item is drawn under the
+ * connection's title, the only one the message kept.
+ */
+export const previewAt = async (
+  { gadgetId: gatekeeperId, gadgetTitle: title, spot }: TitledFocus,
+  pending: readonly ConnectionPreview[],
+  offer: () => Promise<PreviewOffer | undefined>,
+): Promise<ConnectionPreview | undefined> => {
+  const item = spot?.anchor.split(' ', 1)[0]
+  const waiting = pending.find(preview =>
+    preview.gatekeeperId === gatekeeperId && (preview.item ?? item) === item)
+  if (waiting) return waiting
+  const whole = await offer()
+  return whole ? { gatekeeperId, title, ...whole } : item === undefined ? undefined : { gatekeeperId, item, title }
 }
 
 /** What tells one preview from another: its connection and, of a connection with several, its item. */

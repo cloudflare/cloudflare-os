@@ -116,6 +116,10 @@ class FolderSession extends RpcTarget {
     if (this.doc.away) throw new Error('Google is away')
     return new DocSession(this.doc)
   }
+
+  getEntry() {
+    return { name: 'Paul Pierce' }
+  }
 }
 
 class DocConnection extends RpcTarget {
@@ -436,7 +440,7 @@ it('hears of a spot in an item by the item\'s name, which sends the frame back t
   const { doc, said } = renderPane([], 'docs:file', { at: 'docs:file ?tab=t.1', tabs: ['t.0', 't.1'] })
 
   // Nothing of the file alone first: its host would keep that in place of the spot it is sent to.
-  await expect.poll(() => said).toEqual([{ anchor: 'docs:file ?tab=t.1', label: 'Document › Tab 2' }])
+  await expect.poll(() => said).toEqual([{ anchor: 'docs:file ?tab=t.1', label: 'Paul Pierce › Tab 2' }])
   expect(doc.calls[0]).toBe('openGoogleDoc file')
 })
 

@@ -528,6 +528,8 @@ export function drawer(drawing, width, lists) {
         }
         const box = cells.appendChild(make('td'));
         box.dataset.column = cell.column;
+        // Its row and column in the table drawn, by which a client names it.
+        box.dataset.cell = `${at} ${cell.column}`;
         if (cell.rowSpan) box.rowSpan = cell.rowSpan;
         if (span > 1) box.colSpan = span;
         if (cell.mark) box.classList.add(cell.mark);

@@ -20,6 +20,8 @@ import { MAX_CELLS, inView, laidOut, learnt, lines, readOn, smaller, starts, win
 let gadget;
 // Tells the host where the reader is, once main() has one to tell.
 let saySpot = () => {};
+// What is drawn of a pending change's own, on the sheet: a value it enters, in its cell.
+const UNSAVED = '.c.new';
 
 // The headers' height and width.
 const HEAD_H = 24;
@@ -143,6 +145,8 @@ styleSheet.textContent = `
   .sift::after { content: ''; flex: none; width: 9px; height: 7px; margin: 0 0 4px auto;
     background: var(--dim); clip-path: polygon(0 0, 100% 0, 62% 55%, 62% 100%, 38% 100%, 38% 55%); }
   .picked { box-shadow: inset 0 0 0 2px var(--pick); }
+  .ranging { user-select: none; }
+  .ranged:not(.picked) { box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--pick) 16%, transparent); }
 
   /* What a pending change did. A changed cell is tinted and keeps its change at hand. */
   .c { --corner: linear-gradient(135deg, var(--mark-ink) 5px, transparent 5px); }
@@ -423,8 +427,15 @@ function stick(node, track, across) {
 // The window drawn: what readDrawing() returned, its visible rows and columns, and its cells'
 // elements by row and column number.
 let shown;
-// The cell picked, by name, and the pending changes of the sheet shown.
+// The cells picked, by name: one, or a range such as `B2:D5`. And the pending changes of the
+// sheet shown.
 let picked;
+// The cell a range grows from with Shift held: the one the pointer first picked, until the host
+// sends this elsewhere.
+let origin;
+// What a host is told of the cells picked: what they were last drawn as holding, and whether a
+// pending change wrote any of it. Nothing, of cells never drawn whole.
+let told;
 let info = { changes: [], areas: [], sheets: { saved: [], pending: [] } };
 
 // The header of a column or a row, which stays in view as the sheet scrolls.
@@ -879,19 +890,100 @@ function showPeek(node) {
 // it: one the pointer opened is closed.
 const peekFocused = () => showPeek(document.activeElement.closest('.c'));
 
-// The cell picked is ringed as Google Sheets rings it, and said in the strip above the grid.
-function pick(name) {
-  picked = name;
-  for (const lit of grid.querySelectorAll('.picked, .h.on')) lit.classList.remove('picked', 'on');
-  const node = shown?.nodes.get(name);
+// Rings the cells named as Google Sheets rings them, and says them in the strip above the grid.
+// Of a range that is its first cell, and the rest are tinted.
+function showPick(name) {
+  for (const lit of grid.querySelectorAll('.picked, .ranged, .h.on')) lit.classList.remove('picked', 'ranged', 'on');
+  const [first] = name?.split(':') ?? [];
+  const node = shown?.nodes.get(first);
   stripAt.textContent = node ? name : '';
   stripText.textContent = '';
-  if (!node) return;
-  node.classList.add('picked');
-  const { row, column, cell } = node.at;
-  shown.head.row[trackOf(shown.rows, row)]?.classList.add('on');
-  shown.head.column[trackOf(shown.columns, column)]?.classList.add('on');
-  stripText.textContent = cell?.change !== undefined && cell.entered !== null ? String(cell.entered) : showing(cell).text;
+  if (name !== first) {
+    for (const other of shown?.nodes.values() ?? []) other.classList.toggle('ranged', holdsCell(name, other.at.row, other.at.column));
+  }
+  if (node) {
+    node.classList.add('picked');
+    const { row, column, cell } = node.at;
+    shown.head.row[trackOf(shown.rows, row)]?.classList.add('on');
+    shown.head.column[trackOf(shown.columns, column)]?.classList.add('on');
+    stripText.textContent = cell?.change !== undefined && cell.entered !== null ? String(cell.entered) : showing(cell).text;
+  }
+}
+
+// Picks the cells named, or none, and tells the host.
+function pick(name) {
+  if (name !== picked) told = undefined;
+  picked = name;
+  showPick(name);
+  const text = pickedText();
+  // Cells out of the window drawn are told as they were last drawn: scrolling tells nothing new.
+  if (text !== undefined) told = { text, pending: !!grid.querySelector(':is(.picked, .ranged).new') };
+  saySpot();
+}
+
+// What the cells picked hold, as drawn: a range's as lines of tab-separated cells, each of its
+// rows and columns. Nothing where any line of them is not drawn, being hidden or outside the
+// window: they are then told by name alone, which is what the agent reads them by.
+function pickedText() {
+  if (!picked || !shown) return undefined;
+  const { r0, r1, c0, c1 } = rectOf(picked);
+  const [rows, columns] = [within(shown.rows, r0, r1), within(shown.columns, c0, c1)];
+  if (rows.length < r1 - r0 || columns.length < c1 - c0) return undefined;
+  if (!picked.includes(':')) return shown.nodes.has(picked) ? stripText.textContent : undefined;
+  // A cell a merge covers has no box, and holds nothing.
+  return rows.map(row => columns.map(column => showing(shown.nodes.get(cellName(row.number - 1, column.number - 1))?.at.cell).text).join('\t')).join('\n');
+}
+
+// The name of the cells from one corner to the other: a cell, or a range.
+function areaName(one, other) {
+  const [first, last] = [Math.min, Math.max]
+    .map(most => cellName(most(one.row, other.row), most(one.column, other.column)));
+  return first === last ? first : `${first}:${last}`;
+}
+
+// A click picks a cell. A press dragged to another cell, or a click with Shift held, picks the
+// range from the first to it, in place of the text the browser would select: the range is ringed
+// as it is dragged out, and picked when the press is let go. A press let go anywhere else, or
+// taken from the pointer, is none, and nothing is picked on a sheet that is no spot to tell of
+// (here()).
+const cellAt = event => savedSheet() && event.target.closest?.('#grid .c')?.at;
+function pickByPointer() {
+  // The cell pressed. Cells are told apart by place: a window drawn anew makes them again.
+  let pressed;
+  const picks = (from, at) => pick(areaName(origin = from, at));
+  // Ends a press: the range to `at` is picked, and with none what was picked stands.
+  const letGo = at => {
+    const [from, dragged] = [pressed, grid.classList.contains('ranging')];
+    pressed = undefined;
+    grid.classList.remove('ranging');
+    if (dragged) getSelection().removeAllRanges();
+    if (from && at && areaName(from, at).includes(':')) picks(from, at);
+    else if (dragged) showPick(picked);
+  };
+  addEventListener('pointerdown', event => {
+    pressed = event.button ? undefined : cellAt(event);
+  });
+  grid.addEventListener('pointerover', event => {
+    // A press whose end never came, as under a menu, is over once no button is down.
+    if (!(event.buttons & 1)) return letGo();
+    const at = pressed && cellAt(event);
+    const range = at && areaName(pressed, at);
+    // Text is the browser's to select until the press leaves its cell.
+    if (!at || !(range.includes(':') || grid.classList.contains('ranging'))) return;
+    grid.classList.add('ranging');
+    getSelection().removeAllRanges();
+    showPick(range);
+  });
+  addEventListener('pointerup', event => letGo(cellAt(event)));
+  addEventListener('pointercancel', () => letGo());
+  grid.addEventListener('click', event => {
+    const at = cellAt(event);
+    if (!at) return;
+    if (!event.shiftKey || !picked) return picks(at, at);
+    const { r0, c0 } = rectOf(picked);
+    picks(origin ?? { row: r0, column: c0 }, at);
+    getSelection().removeAllRanges();
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1030,6 +1122,12 @@ let aim;
 // The sheet `of`, whose lines are `known`, as window.js takes it.
 const laid = (of = sheet, known = axes) => laidOut(known, { rows: of.frozenRowCount ?? 0, columns: of.frozenColumnCount ?? 0 }, pane());
 
+// Brings the cell at `r0` and `c0` into view, clear of the frozen lines, which lie over what
+// scrolls.
+const scrollToCell = ({ r0, c0 }) => scroller.scrollTo(
+  Math.max(0, starts(axes.columns)[c0] - stuck(shown.columns) - 120),
+  Math.max(0, starts(axes.rows)[r0] - stuck(shown.rows) - 90));
+
 // Reads the window around `view` of the sheet `of`, whose lines are `known`: which cells, the
 // axes whose frozen lines are `cut`, drawn as lines that scroll, and those the window is asked
 // for `without` (windowOf()). `lacks` names the ways the read before left the view short. One
@@ -1096,9 +1194,7 @@ function drawWindow({ drawing: read, r0, r1, c0, c1, cut, chain }, target) {
   scroller.style.scrollPadding = `${HEAD_H + stuck(shown.rows) + 8}px 8px calc(8px + var(--foot, 0px)) ${HEAD_W + stuck(shown.columns) + 8}px`;
   placeRings();
   if (target) {
-    // Clear of the frozen lines, which lie over what scrolls.
-    scroller.scrollTo(Math.max(0, starts(axes.columns)[target.c0] - stuck(shown.columns) - 120),
-      Math.max(0, starts(axes.rows)[target.r0] - stuck(shown.rows) - 90));
+    scrollToCell(target);
   } else if (Math.abs(held.rows - scroller.scrollTop) >= 1 || Math.abs(held.columns - scroller.scrollLeft) >= 1) {
     // Only where it is not there already: a step on its way to a change is not stopped for nothing.
     scroller.scrollTo(held.columns, held.rows);
@@ -1178,7 +1274,7 @@ async function follow(retry) {
 function forget() {
   loaded = false;
   ringed = new Set();
-  picked = reached = undefined;
+  picked = origin = reached = told = undefined;
   room = MAX_CELLS;
 }
 
@@ -1269,6 +1365,11 @@ async function load() {
     const drawn = await readWindow(view, current, found, known);
     if (current !== generation) return;
 
+    // A name is of the same cells only on the sheet as it was read: one read with other rows,
+    // columns or changes may have others under it, so what was picked by name is let go. What is
+    // kept is told as this read draws it, and by name alone while it is out of the window.
+    told = undefined;
+    if (!same || JSON.stringify([read.changes, read.areas]) !== JSON.stringify([info.changes, info.areas])) picked = undefined;
     // What was read takes the place of what is drawn only now that its window is read: a read
     // that fails leaves the sheet drawn, with its own changes, rings and places to stop at.
     [info, sheet, axes, rings, ringed] = [read, found, known, made, keys];
@@ -1334,10 +1435,7 @@ function build() {
   // A window that arrives as the sheet is scrolled takes its place without moving.
   sizer.addEventListener('animationend', () => sizer.classList.remove('arriving'));
   grid.addEventListener('keydown', moveAmong);
-  grid.addEventListener('click', event => {
-    const node = event.target.closest('.c');
-    if (node?.at) pick(cellName(node.at.row, node.at.column));
-  });
+  pickByPointer();
   grid.addEventListener('pointerover', event => showPeek(event.target.closest('.c')));
   // The card stays while the pointer is on it.
   grid.addEventListener('pointerleave', event => peek.contains(event.relatedTarget) || showPeek());
@@ -1360,35 +1458,55 @@ function build() {
 // ---------------------------------------------------------------------------------------------
 // Where the reader is
 
-// The sheet shown, in a spreadsheet of several, by its ID and under the title Google has saved
-// for it, since a host shows it and tells an agent of it: a title can be changed, and a sheet
-// only a change adds is no spot yet.
+// The sheet shown as Google has it saved. One only a change adds is none, and no spot yet.
+const savedSheet = () => loaded ? info.sheets.saved.find(listed => listed.id === sheet.id) : undefined;
+
+// The sheet shown, by its ID and under the title Google has saved for it: a title can be changed.
+// One of several is labelled. The cells picked are named after it as the session names them, with
+// what they hold, and always under its title.
 function here() {
-  const saved = loaded && info.sheets.pending.length > 1 ? info.sheets.saved.find(listed => listed.id === sheet.id) : undefined;
-  return saved && { anchor: String(sheet.id), label: saved.title };
+  const saved = savedSheet();
+  return saved && {
+    anchor: picked ? `${sheet.id}!${picked}` : String(sheet.id),
+    label: [(picked || info.sheets.pending.length > 1) && saved.title, picked].filter(Boolean).join(' › ') || undefined,
+    context: told?.text,
+    // The values the changes enter.
+    pending: told?.pending,
+  };
 }
 
-// Shows the sheet `anchor` names (GadgetHost.onNavigate()). It is one here() gave, but may come
-// from anywhere, so it only chooses what to show. False for a sheet no longer there, or one with
-// no cells to draw: the reader stays on the sheet they are on, or starts where readChanges() does.
+// Shows the sheet `anchor` names, at the cell named after it (GadgetHost.onNavigate()). It is one
+// here() gave, but may come from anywhere, so it only chooses what to show. False for a sheet no
+// longer there, or one with no cells to draw: the reader stays on the sheet they are on, or
+// starts where readChanges() does. Cells the sheet does not reach leave them on the sheet.
 async function goTo(anchor) {
+  const [id, cell] = anchor.split('!');
   if (!sheet) {
-    sent = anchor;
+    sent = id;
     await load();
     // Not read, as when Google could not be reached: the sheet may well still be there.
     if (!loaded) return true;
   } else {
-    const listed = info.sheets.pending.find(found => String(found.id) === anchor && found.rowCount);
+    const listed = info.sheets.pending.find(found => String(found.id) === id && found.rowCount);
     if (listed && listed.id !== sheet.id) await open(listed);
   }
-  return String(sheet?.id) === anchor;
+  if (String(sheet?.id) !== id) return false;
+  const { r0, r1, c0, c1 } = /^[A-Z]+[1-9]\d*(:[A-Z]+[1-9]\d*)?$/.test(cell) ? rectOf(cell) : {};
+  const there = shown && savedSheet() && r0 < r1 && r1 <= axes.rows.count && c0 < c1 && c1 <= axes.columns.count;
+  // What is picked is what the anchor names: nothing, for a sheet alone or cells it does not
+  // reach. It is the host's pick, not the pointer's.
+  origin = undefined;
+  if (there || picked) pick(there ? cell : undefined);
+  // The window read around where this lands rings it (follow()).
+  if (there) scrollToCell({ r0, c0 });
+  return true;
 }
 
 export default {
   async main(session, host) {
     gadget = session;
     build();
-    saySpot = reportSpot(host, here);
+    saySpot = reportSpot(host, here, UNSAVED, '#grid', '.picked, .ranged');
     loadOnRefresh(load);
     // The host sends this to the sheet the reader left, if there is one, before anything is read:
     // the first sheet read is then that one.

@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
 import type { AgentTurnResult, WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
 import type {
-  AiChatMessage, ChatEmbeds, GadgetClient, WorkpieceId, WorkpieceSummary,
+  ActionLogEntry, AiChatMessage, ChatEmbeds, GadgetClient, WorkpieceId, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { EvalCheck, EvalCheckOutcome } from "./task.js";
 import { RenderedView, ViewHostError } from "./view-host.js";
@@ -11,7 +11,7 @@ const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
 export type VerifierSession =
-  Pick<WorkshopAgentSession, "openGadget" | "connectionDrops" | "readBlobText">;
+  Pick<WorkshopAgentSession, "openGadget" | "connectionDrops" | "readBlobText" | "listActions">;
 
 /** The chat as the Workshop recorded it when the turn ended. */
 export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
@@ -91,6 +91,23 @@ export class EvalVerifier {
     } finally {
       opened.client[Symbol.dispose]();
     }
+  }
+
+  /** The writes the agent last asked of a connection in this workspace, newest first: a page of the log. */
+  writes() {
+    return this.#logged("action");
+  }
+
+  /** The reads of a connection last logged in this workspace, newest first: a page of the log. */
+  reads() {
+    return this.#logged("observation");
+  }
+
+  async #logged<Type extends ActionLogEntry["type"]>(
+      type: Type): Promise<Extract<ActionLogEntry, { type: Type }>[]> {
+    const { entries } = await this.#session.listActions({ filter: type });
+    return entries.filter(
+        (entry): entry is Extract<ActionLogEntry, { type: Type }> => entry.type === type);
   }
 
   /**

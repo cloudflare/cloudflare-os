@@ -1,7 +1,7 @@
 // The Google Doc preview client, run in a same-origin frame with a scripted session so its drawing
 // can be read. ConnectionPreviewPane's test runs it in the real sandbox, where it cannot.
 
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
@@ -25,6 +25,18 @@ afterEach(() => frame?.remove())
 
 // What ends every paragraph, so an empty one is a line high.
 const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
+
+/** Picks what is drawn at `node` as a reader does: a press on it, and the click that makes. */
+const pick = (node: Element) => {
+  node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  ;(node as HTMLElement).click()
+}
+
+/** Resolves once the refresh that asked `reads()` for the `count`th time has drawn what it read, or left what is drawn. */
+async function settled(reads: () => number, count: number) {
+  await expect.poll(reads).toBe(count)
+  await expect.poll(() => frame!.contentDocument!.querySelector('[role=status]')!.textContent).toBe('')
+}
 
 /** Whether `tabId` names a tab still to be added, as the gatekeeper names one. */
 const unmade = (tabId: string) => tabId.startsWith('pending-tab-')
@@ -1775,7 +1787,7 @@ const LAST = { anchor: '?tab=t.0#heading=h.last', label: 'Last' }
 
 it('tells its host the heading the reader is under, and goes to one its host names', async () => {
   // Its host sends it to the heading the reader left, which it opens on, not on its first change.
-  const { page, said, go } = await draw({ drawing: sectioned(), edits: [edit(1, 2, [written('New text')])] }, {}, MIDDLE.anchor)
+  const { page, blocks, said, go, show } = await draw({ drawing: sectioned(), edits: [edit(1, 2, [written('New text')])] }, {}, MIDDLE.anchor)
   const top = (level: number) => Math.round(page.querySelectorAll('[aria-level="1"]')[level].getBoundingClientRect().top)
 
   await expect.poll(() => said.at(-1)).toEqual(MIDDLE)
@@ -1790,12 +1802,58 @@ it('tells its host the heading the reader is under, and goes to one its host nam
   // Above its first heading, a document of one tab has no spot to tell of.
   frame!.contentWindow!.scrollTo(0, 0)
   await expect.poll(() => said.at(-1)).toBeNull()
-  expect(await go('?tab=t.0#heading=h.intro')).toBe(true)
-  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#heading=h.intro', label: 'Intro' })
+  // Text selected is what "this" is, and is told with the heading it is under, which need not
+  // be one the view has reached.
+  const selection = frame!.contentWindow!.getSelection()!
+  const intro = { anchor: '?tab=t.0#heading=h.intro', label: 'Intro' }
+  selection.selectAllChildren(page.querySelector('[aria-level="1"]')!)
+  await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: 'Intro' })
+  selection.selectAllChildren(blocks().findLast(block => text(block) === 'Line 0')!)
+  await expect.poll(() => said.at(-1)).toEqual({ ...MIDDLE, context: 'Line 0' })
+  // Text a pending change wrote is told as not yet approved, also where only some of it is.
+  const unsaved = '(shown with changes not yet approved)\n'
+  selection.selectAllChildren(blocks()[1].querySelector('ins')!)
+  await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: `${unsaved}New` })
+  selection.setBaseAndExtent(blocks()[0], 0, blocks()[1], blocks()[1].childNodes.length)
+  await expect.poll(() => said.at(-1)?.context).toBe(`${unsaved}Intro\nNew text`)
+  selection.removeAllRanges()
+  await expect.poll(() => said.at(-1)).toBeNull()
+  expect(await go(intro.anchor)).toBe(true)
+  expect(said.at(-1)).toEqual(intro)
+  // A paragraph the reader clicks is told by the heading it is under and by its text, since a
+  // document names no paragraph, and is framed until a click picks none.
+  const line = blocks().find(block => text(block) === 'Line 0')!
+  line.click()
+  const picked = { ...intro, label: 'Intro › “Line 0”', context: 'Line 0' }
+  expect([said.at(-1), line.matches('.chosen')]).toEqual([picked, true])
+  // It is picked again where another copy of the tab draws the same row of the merge.
+  show('Inline')
+  expect([said.at(-1), blocks().find(block => text(block) === 'Line 0')!.matches('.chosen')]).toEqual([picked, true])
+  show('With changes')
+  // A heading clicked is told as itself.
+  blocks()[0].click()
+  expect(said.at(-1)).toEqual({ ...intro, context: 'Intro' })
+  // One a pending change wrote in is told as that, and its label holds none of its words.
+  blocks()[1].click()
+  expect([said.at(-1), page.querySelectorAll('.chosen').length]).toEqual([{ ...intro, label: 'Intro › Pending change', context: `${unsaved}New text` }, 1])
+  // As saved it is the same paragraph, read as Google Docs has it, which its host is told plainly.
+  show('As saved')
+  expect([said.at(-1), blocks()[1].matches('.chosen')]).toEqual([{ ...intro, label: 'Intro › “Old text”', context: 'Old text' }, true])
+  page.click()
+  expect(said.at(-1)).toEqual(intro)
+  show('With changes')
 
   // A heading or a tab that is not there leaves the reader where they are.
   expect([await go('?tab=t.0#heading=h.gone'), await go('?tab=t.9'), await go('nowhere')]).toEqual([false, false, false])
   expect(top(0)).toBeGreaterThan(0)
+})
+
+it('tells text selected above a document\'s first heading as selected text, wherever the view is', async () => {
+  const intro = '?tab=t.0#heading=h.intro'
+  const { blocks, said } = await draw({ drawing: drawing([paragraph('Preamble'), named('Intro'), ...lines()]) }, {}, intro)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: intro, label: 'Intro' })
+  frame!.contentWindow!.getSelection()!.selectAllChildren(blocks()[0])
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: '?tab=t.0', label: 'Selected text', context: 'Preamble' })
 })
 
 it('tells its host only what Google has saved: a heading by its saved words, and no heading or tab that only a change makes', async () => {
@@ -1815,6 +1873,15 @@ it('tells its host only what Google has saved: a heading by its saved words, and
   expect(Math.round(headings()[2].getBoundingClientRect().top)).toBeLessThan(60)
   await new Promise(done => setTimeout(done, 300))
   expect(said.at(-1)).toEqual(MIDDLE)
+  // The outline lists a heading as the change leaves it, with no mark on it: text selected
+  // there, outside the document as drawn, is none to tell.
+  frame!.contentDocument!.getElementById('outline-toggle')!.click()
+  const entry = [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#rail .entry')].find(found => found.textContent === 'Middle rewritten')!
+  const selection = frame!.contentWindow!.getSelection()!
+  selection.selectAllChildren(entry)
+  expect(selection.toString()).toBe('Middle rewritten')
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(MIDDLE)
   frame!.remove()
 
   // A tab still to be added is nowhere its host can be told of.
@@ -1830,6 +1897,518 @@ it('tells its host a heading by the words of a chip in it too', async () => {
   const anchor = '?tab=t.0#heading=h.date'
   const { said } = await draw({ drawing: drawing([named('Intro'), ...lines(), dated, ...lines()]) }, {}, anchor)
   await expect.poll(() => said.at(-1)).toEqual({ anchor, label: 'Sync Nov 25, 2026' })
+})
+
+it('keeps what is picked while the merge it was picked in is drawn, and lets it go, telling its host, when the tab is read as another', async () => {
+  // Two paragraphs say the same: which was picked is known by where it is in the merge, never by its words.
+  const tab = (...head: object[]) => drawing([named('Intro'), ...head, paragraph('Same'), paragraph('Same'), ...lines(), named('Last'), paragraph('End')])
+  const intro = { anchor: '?tab=t.0#heading=h.intro', label: 'Intro' }
+  let reads = 0
+  const { page, blocks, said, show, refresh } = await draw({ drawing: tab(), edits: [edit(59, 60, [written('End changed')])] }, {
+    getPendingChanges: async (tabId: string) => (reads++, { tabId, changes: [{ id: 1, type: 'replaceText' }] }),
+  }, intro.anchor)
+  const chosen = () => blocks().flatMap((block, at) => block.matches('.chosen') ? [at] : [])
+  const view = frame!.contentWindow!
+
+  pick(blocks()[2])
+  expect([said.at(-1), chosen()]).toEqual([{ ...intro, label: 'Intro › “Same”', context: 'Same' }, [2]])
+  // Each copy of the tab is drawn from the one merge, and nothing is told anew.
+  const told = said.length
+  for (const copy of ['As saved', 'Inline', 'With changes']) {
+    show(copy)
+    expect([said.length, chosen()]).toEqual([told, [2]])
+  }
+  // So is a refresh that finds the tab as it was, as when a change is queued on another.
+  await refresh({})
+  await settled(() => reads, 2)
+  expect([said.length, chosen()]).toEqual([told, [2]])
+
+  // Saved anew, the document is read as another, where a paragraph that says the same stands
+  // in its place: it is let go, and its host told.
+  await refresh({ drawing: tab(paragraph('Same')), edits: [edit(60, 61, [written('End changed')])], version: 'v2' })
+  await expect.poll(() => blocks().map(text).slice(1, 5)).toEqual(['Same', 'Same', 'Same', 'Line 0'])
+  expect([said.at(-1), chosen()]).toEqual([intro, []])
+  // And so with other changes waiting on it.
+  pick(blocks()[3])
+  expect(chosen()).toEqual([3])
+  await refresh({ edits: [edit(60, 61, [written('End rewritten')])] })
+  await expect.poll(() => text(blocks().at(-1)!)).toBe('End rewritten')
+  expect([said.at(-1)?.context, chosen()]).toEqual([undefined, []])
+
+  // The reader scrolling on from what they picked lets it go too: here from the change that
+  // arrived, which the tab was scrolled to.
+  await expect.poll(() => blocks().at(-1)!.getBoundingClientRect().bottom).toBeLessThan(600)
+  pick(blocks().at(-1)!)
+  expect(said.at(-1)?.context).toBe('(shown with changes not yet approved)\nEnd rewritten')
+  view.dispatchEvent(new WheelEvent('wheel'))
+  view.scrollTo(0, 0)
+  await expect.poll(() => page.querySelector('.chosen')).toBeNull()
+  expect(said.at(-1)?.context).toBeUndefined()
+})
+
+it('picks one entry of a table of contents, which is one block drawn as a paragraph for each entry', async () => {
+  const contents = { type: 'contents', blocks: [paragraph('Intro 1'), paragraph('Methods 2'), paragraph('Results 3')] }
+  const { blocks, said } = await draw({ drawing: drawing([named('Intro'), contents, paragraph('After')]) })
+
+  pick(blocks()[2])
+  expect(blocks().map(block => block.matches('.chosen'))).toEqual([false, false, true, false, false])
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#heading=h.intro', label: 'Intro › “Methods 2”', context: 'Methods 2' })
+})
+
+it('picks a cell in every piece its pages cut it into, and the cell of a row its table repeats on each page as the one cell', async () => {
+  const intro = '?tab=t.0#heading=h.intro'
+  const changed = [edit(2, 3, [written('After changed')])]
+  // Each copy of the tab sets it on its pages again.
+  const again = (drawn: { show: (view: string) => void }) => ['As saved', 'With changes'].forEach(drawn.show)
+
+  const long = table([120, 60], [['Head', 'Qty'], ...Array.from({ length: 30 }, (_, row) => [`Row ${row}`, 'x'])])
+  Object.assign(long.rows[0], { header: true })
+  const repeated = await draw({ drawing: drawing([named('Intro'), long, paragraph('After')]), edits: changed }, {}, intro)
+  const heads = () => [...repeated.page.querySelectorAll<HTMLElement>('tr[data-header] > td:first-child')]
+  expect(heads().length).toBeGreaterThan(2)
+  // Clicked on a later page, it is ringed there as on every page, and says its words once.
+  pick(heads()[1])
+  const head = { anchor: `${intro}&table=0&row=0&column=0`, label: 'Intro › Table 1 › row 1, column 1', context: 'Head' }
+  expect([repeated.said.at(-1), heads().map(cell => cell.matches('.chosen')).includes(false)]).toEqual([head, false])
+  const told = repeated.said.length
+  again(repeated)
+  expect([repeated.said.length, heads().length > 2 && heads().every(cell => cell.matches('.chosen'))]).toEqual([told, true])
+  frame!.remove()
+
+  // A cell too tall for its page is one cell, whichever part of it is clicked.
+  const words = 'Word '.repeat(300).trim()
+  const tall = { ...CELL, column: 1, blocks: [paragraph(words)] }
+  const split = await draw({ drawing: drawing([named('Intro'), table([120, 200], [['Name', tall]]), paragraph('After')]), edits: changed }, {}, intro)
+  const pieces = () => [...split.page.querySelectorAll<HTMLElement>('td[data-cell="0 1"]')]
+  expect(new Set(pieces().map(piece => piece.closest('.sheet'))).size).toBeGreaterThan(1)
+  pick(pieces().at(-1)!.querySelector('.para')!)
+  const cell = { anchor: `${intro}&table=0&row=0&column=1`, label: 'Intro › Table 1 › row 1, column 2', context: words }
+  expect([split.said.at(-1), pieces().map(piece => piece.matches('.chosen')).includes(false)]).toEqual([cell, false])
+  const said = split.said.length
+  again(split)
+  expect([split.said.length, pieces().length > 1 && pieces().every(piece => piece.matches('.chosen'))]).toEqual([said, true])
+})
+
+it('tells what a change only takes words from as not yet approved, picked or selected, and reads a selection once', async () => {
+  const { page, blocks, said, show } = await draw({
+    drawing: drawing([named('Intro'), paragraph('Old text here'), ...lines()]), edits: [edit(1, 2, [written('Old text')])],
+  }, {}, '?tab=t.0#heading=h.intro')
+  const intro = { anchor: '?tab=t.0#heading=h.intro', label: 'Intro' }
+  const unsaved = '(shown with changes not yet approved)\n'
+  const view = frame!.contentWindow!
+  const selection = view.getSelection()!
+  const pending = { ...intro, label: 'Intro › Pending change', context: `${unsaved}Old text` }
+
+  for (const copy of ['With changes', 'Inline']) {
+    show(copy)
+    blocks()[1].click()
+    expect(said.at(-1)).toEqual(pending)
+    page.click()
+    // In place, what is selected reads as a pick does: without the words that go.
+    selection.selectAllChildren(blocks()[1])
+    await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: `${unsaved}Old text` })
+    selection.removeAllRanges()
+    await expect.poll(() => said.at(-1)).toEqual(intro)
+  }
+  // Saved text selected outside a pick that is not yet approved is told as saved.
+  show('With changes')
+  pick(blocks()[1])
+  selection.selectAllChildren(blocks()[2])
+  await expect.poll(() => said.at(-1)).toEqual({ ...pending, context: 'Line 0' })
+  page.click()
+  // As saved it is what Google has.
+  show('As saved')
+  selection.selectAllChildren(blocks()[1])
+  await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: 'Old text here' })
+  // A triple click on the last paragraph ends at the start of whatever follows the document.
+  const after = page.ownerDocument.createRange()
+  after.setStart(blocks().at(-1)!, 0)
+  let last: Node = page.ownerDocument.getElementById('sheets')!
+  while (!last.nextSibling) last = last.parentNode!
+  after.setEnd(last.nextSibling!, 0)
+  selection.removeAllRanges()
+  selection.addRange(after)
+  await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: 'Line 54' })
+  selection.selectAllChildren(blocks()[1])
+  await expect.poll(() => said.at(-1)).toEqual({ ...intro, context: 'Old text here' })
+
+  // The selection is read when it changes, not at each scroll under it.
+  const read = vi.spyOn((view as unknown as typeof globalThis).Selection.prototype, 'toString')
+  view.scrollBy(0, 40)
+  await expect.poll(() => view.scrollY).toBeGreaterThan(0)
+  await new Promise(done => setTimeout(done, 100))
+  expect(read).not.toHaveBeenCalled()
+  // And is gone with the drawing it was made on.
+  show('With changes')
+  await expect.poll(() => said.at(-1)?.context).toBeUndefined()
+  read.mockRestore()
+})
+
+it('picks nothing on a tab still to be added, and tells no text that is not seen', async () => {
+  // All such a tab holds is what the changes write, as the session tells it: one edit of a blank tab.
+  const grid = table([100, 100], [['Item', 'Q1'], ['Rent', '10']], written)
+  const tabbed = await draw({ tabs: ['t.0', 'pending-tab-1'], titles: ['Notes', 'Plan'] }, {
+    readPendingDrawing: async (tabId: string) => ({ tabId, edits: [{ start: 0, end: 0, blocks: [written('Words'), grid] }], ...STATED }),
+  }, '?tab=pending-tab-1#table=0&row=1&column=1')
+  expect(tabbed.blocks().map(text)).toEqual(['Words', expect.stringContaining('Rent')])
+  // Not by its host, which opened it on a cell, nor by a click.
+  const picked = () => [tabbed.page.querySelector('.chosen'), tabbed.said.some(focus => focus?.context)]
+  expect(picked()).toEqual([null, false])
+  tabbed.page.querySelector('td')!.click()
+  tabbed.blocks()[0].click()
+  expect(picked()).toEqual([null, false])
+  frame!.remove()
+
+  // A mark that turns the text after it about is left out of what a host shows and tells.
+  const { blocks, said } = await draw({ drawing: drawing([named('Intro'), paragraph('Pay \u202Eeno on')]) })
+  blocks()[1].click()
+  expect(said.at(-1)).toMatchObject({ label: 'Intro › “Pay eno on”', context: 'Pay eno on' })
+})
+
+it('tells its host the cell the reader clicks as the session\'s table methods name it, and picks it again', async () => {
+  // A table that goes, and one that loses a column and a row and gains a row: the session counts
+  // tables, rows and columns as the pending changes leave them, from 0.
+  const gone = table([100, 100], [['Old', 'Gone']])
+  const plain = table([100, 100], [['Left', 'Right']])
+  const { page, blocks, said, go, show, refresh } = await draw({
+    drawing: drawing([named('Stock'), gone, FRUIT, paragraph('After'), plain]), edits: [edit(1, 2, []), edit(2, 3, [FEWER])],
+  })
+  const cell = (words: string) => [...page.querySelectorAll<HTMLElement>('td')].find(found => text(found) === words)!
+  const stock = { anchor: '?tab=t.0#heading=h.stock', label: 'Stock' }
+  const at = (row: number, column: number, more: object = {}) => ({
+    anchor: `${stock.anchor}&table=0&row=${row}&column=${column}`, label: `Stock › Table 1 › row ${row + 1}, column ${column + 1}`, ...more,
+  })
+  const unsaved = '(shown with changes not yet approved)\n'
+
+  // The table that stays is the tab's first, and the row under the one that goes its third.
+  cell('Plums').click()
+  expect([said.at(-1), cell('Plums').matches('.chosen')]).toEqual([at(2, 0, { context: 'Plums' }), true])
+  // What a pending change wrote in a cell, or a cell it adds, is told as not yet approved.
+  cell('4').click()
+  expect(said.at(-1)).toEqual(at(1, 1, { context: `${unsaved}4` }))
+  cell('Kiwis').click()
+  expect(said.at(-1)).toEqual(at(3, 0, { context: `${unsaved}Kiwis` }))
+
+  // A table no change touches is numbered among those the changes leave, in every copy of the tab.
+  const right = { anchor: `${stock.anchor}&table=1&row=0&column=1`, label: 'Stock › Table 2 › row 1, column 2', context: 'Right' }
+  cell('Right').click()
+  expect(said.at(-1)).toEqual(right)
+  for (const view of ['As saved', 'Inline']) {
+    show(view)
+    expect([said.at(-1), cell('Right').matches('.chosen')]).toEqual([right, true])
+  }
+
+  // A table a change touches is told its place only where it is drawn as the changes leave it.
+  // Drawn with what it was, its cells are not certainly the ones the session would act on, so a
+  // cell picked there is let go, and one clicked there is told by its heading and its text alone.
+  show('With changes')
+  cell('4').click()
+  show('As saved')
+  expect([said.at(-1), page.querySelector('.chosen')]).toEqual([null, null])
+  cell('3').click()
+  expect(said.at(-1)).toEqual({ ...stock, label: 'Stock › Cell of a table being changed', context: '3' })
+  // A cell that goes with its row, its column or its table is told as that.
+  for (const words of ['Pears', 'Note', 'Gone']) {
+    cell(words).click()
+    expect(said.at(-1)).toEqual({ ...stock, label: 'Stock › Cell being deleted', context: words })
+  }
+  show('Inline')
+  cell('Plums').click()
+  expect(said.at(-1)).toEqual({ ...stock, label: 'Stock › Cell of a table being changed', context: 'Plums' })
+  cell('Kiwis').click()
+  expect(said.at(-1)).toEqual({ ...stock, label: 'Stock › Cell of a table being changed', context: `${unsaved}Kiwis` })
+  // At the top of a tab of one, with nothing picked, there is nowhere to tell of.
+  page.click()
+  expect(said.at(-1)).toBeNull()
+  // Its host sends it to no cell of such a table there, which leaves the reader at its heading.
+  expect(await go(at(3, 1).anchor)).toBe(true)
+  expect([said.at(-1), page.querySelector('.chosen')]).toEqual([stock, null])
+  show('With changes')
+
+  // Its host sends it back to a cell, which is picked again. One that is gone leaves the reader
+  // at its heading.
+  expect(await go(at(3, 1).anchor)).toBe(true)
+  expect([said.at(-1), cell('9').matches('.chosen')]).toEqual([at(3, 1, { context: `${unsaved}9` }), true])
+  expect([await go(`${stock.anchor}&table=0&row=9&column=0`), await go(`${stock.anchor}&table=4&row=0&column=0`)]).toEqual([true, true])
+  expect([said.at(-1), page.querySelector('.chosen')]).toEqual([stock, null])
+  // A cell picked is let go when the tab is read as another, though it stands at the same place
+  // in its table: here one more block stands before that.
+  pick(cell('Plums'))
+  await refresh({
+    drawing: drawing([named('Stock'), paragraph('More'), gone, FRUIT, paragraph('After'), plain]), edits: [edit(2, 3, []), edit(3, 4, [FEWER])], version: 'v2',
+  })
+  await expect.poll(() => blocks().some(block => text(block) === 'More')).toBe(true)
+  expect([said.at(-1)?.context, page.querySelector('.chosen')]).toEqual([undefined, null])
+  // With no heading over it, a cell is named after its tab.
+  await refresh({ drawing: drawing([FRUIT]), edits: [], version: 'v3' })
+  await expect.poll(() => blocks().length).toBe(1)
+  cell('Pears').click()
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#table=0&row=2&column=0', label: 'Table 1 › row 3, column 1', context: 'Pears' })
+  expect(await go('?tab=t.0#table=0&row=0&column=2')).toBe(true)
+  expect(said.at(-1)).toEqual({ anchor: '?tab=t.0#table=0&row=0&column=2', label: 'Table 1 › row 1, column 3', context: 'Note' })
+})
+
+it('names a cell\'s table, row and column only where they are certainly the ones the session would act on', async () => {
+  const costs = '?tab=t.0#heading=h.costs'
+  const unsaved = '(shown with changes not yet approved)\n'
+  // Each cell clicked in turn, by its words, and the anchor its host is told.
+  const anchors = (page: HTMLElement, said: ({ anchor: string } | null)[], words: string[]) => words.map(found => {
+    [...page.querySelectorAll<HTMLElement>('td')].find(cell => text(cell) === found)!.click()
+    return said.at(-1)!.anchor
+  })
+  const [first, second] = [table([100, 100], [['Item', 'Q1'], ['Rent', '10']]), table([100, 100], [['Item', 'Q2'], ['Rent', '12']])]
+
+  // One change takes the first of two tables with the paragraph after it and edits the second:
+  // the table that stays is drawn beside whichever one it was lined up with.
+  const taken = await draw({
+    drawing: drawing([named('Costs'), first, paragraph('Between'), second]),
+    edits: [edit(1, 4, [table([100, 100], [['Item', 'Q2'], ['Rent', '13']], written)])],
+  })
+  expect(anchors(taken.page, taken.said, ['Q2', '13'])).toEqual([`${costs}&table=0&row=0&column=1`, `${costs}&table=0&row=1&column=1`])
+  expect(taken.said.at(-1)).toMatchObject({ label: 'Costs › Table 1 › row 2, column 2', context: `${unsaved}13` })
+  taken.show('As saved')
+  expect(anchors(taken.page, taken.said, ['Q1', '10', 'Q2', '12'])).toEqual([costs, costs, costs, costs])
+  taken.show('Inline')
+  expect(anchors(taken.page, taken.said, ['Item', 'Rent', '12'])).toEqual([costs, costs, costs])
+  frame!.remove()
+
+  // One change puts a table directly above one it also edits: the new one is the tab's first.
+  const above = await draw({
+    drawing: drawing([named('Costs'), table([100, 100], [['Name', 'Date'], ['Ann', 'Mon']])]),
+    edits: [edit(1, 2, [table([100, 100], [['Name', 'Total'], ['Sum', '9']], written), table([100, 100], [['Name', 'Date'], ['Ann', 'Tue']], written)])],
+  })
+  expect(anchors(above.page, above.said, ['Total', 'Tue'])).toEqual([`${costs}&table=0&row=0&column=1`, `${costs}&table=1&row=1&column=1`])
+  above.show('As saved')
+  expect(anchors(above.page, above.said, ['Date', 'Mon'])).toEqual([costs, costs])
+  above.show('Inline')
+  expect(anchors(above.page, above.said, ['Name', 'Mon', 'Tue'])).toEqual([costs, costs, costs])
+  frame!.remove()
+
+  // A table put before one no change touches, by a change of its own, moves that one's number
+  // in every copy. A cell that takes in others is told by its first, and those it covers count.
+  const wide = { ...CELL, column: 0, columnSpan: 2, blocks: [paragraph('Wide')] }
+  const merged = table([80, 80, 80], [[wide, { ...CELL, column: 1, blocks: [paragraph('')] }, 'Right'], ['a', 'b', 'c']])
+  const before = await draw({
+    drawing: drawing([named('Costs'), merged]),
+    edits: [edit(1, 1, [table([100], [['New']], written)])],
+  })
+  for (const view of ['With changes', 'Inline', 'As saved']) {
+    before.show(view)
+    expect(anchors(before.page, before.said, ['Wide', 'Right', 'b'])).toEqual(
+      [`${costs}&table=1&row=0&column=0`, `${costs}&table=1&row=0&column=2`, `${costs}&table=1&row=1&column=1`])
+  }
+  // A row a change puts above a merged cell moves it down, where the table is drawn as changed.
+  await before.refresh({
+    edits: [edit(1, 2, [table([80, 80, 80], [['x', 'y', 'z'], [wide, { ...CELL, column: 1, blocks: [written('')] }, 'Right'], ['a', 'b', 'c']], written)])],
+    version: 'v2',
+  })
+  before.show('With changes')
+  await expect.poll(() => cells(before.page).includes('x')).toBe(true)
+  expect(anchors(before.page, before.said, ['Wide', 'Right', 'b'])).toEqual(
+    [`${costs}&table=0&row=1&column=0`, `${costs}&table=0&row=1&column=2`, `${costs}&table=0&row=2&column=1`])
+  frame!.remove()
+
+  // A preview opened on a cell goes to it and picks it, as the read that draws the tab.
+  const cell = `${costs}&table=0&row=1&column=1`
+  const opened = await draw({ drawing: drawing([named('Costs'), ...lines(), first]) }, {}, cell)
+  const chosen = opened.page.querySelector('td.chosen')!
+  expect([text(chosen), opened.said.at(-1)]).toEqual(['10', { anchor: cell, label: 'Costs › Table 1 › row 2, column 2', context: '10' }])
+  expect(chosen.getBoundingClientRect().top).toBeGreaterThan(0)
+  expect(chosen.getBoundingClientRect().bottom).toBeLessThan(600)
+})
+
+const RENT = (...above: string[][]) => table([100, 100], [['Item', 'Q1'], ...above, ['Rent', '10']])
+const NAMES = table([100, 100], [['Name', 'Date'], ['Ann', 'Mon']])
+const COSTS = '?tab=t.0#heading=h.costs'
+/** The cell at `row` and `column` of table `table` under the heading Costs, as its host is told it. */
+const costAt = (table: number, row: number, column: number, more: object = {}) => ({
+  anchor: `${COSTS}&table=${table}&row=${row}&column=${column}`, label: `Costs › Table ${table + 1} › row ${row + 1}, column ${column + 1}`, ...more,
+})
+
+it.each<[string, string, Partial<Doc>]>([
+  ['a table saved above its table', '10', { drawing: drawing([named('Costs'), NAMES, RENT()]), version: 'v2' }],
+  ['a row saved above it', '10', { drawing: drawing([named('Costs'), RENT(['Tax', '7'])]), version: 'v2' }],
+  ['a row a pending change puts above it', '10', { edits: [edit(1, 2, [table([100, 100], [['Item', 'Q1'], ['Tax', '7'], ['Rent', '10']], written)])] }],
+  // The cell that takes its place says the same as it did: nothing.
+  ['a row saved above it, where both are empty', '', { drawing: drawing([named('Costs'), table([100, 100], [['Item', 'Q1'], ['Tax', ''], ['Rent', '']])]), version: 'v2' }],
+])('lets go of a cell when its tab is read as another, with %s', async (_name, words, next) => {
+  const { page, said, refresh } = await draw({ drawing: drawing([named('Costs'), table([100, 100], [['Item', 'Q1'], ['Rent', words]])]) })
+  const cells = () => [...page.querySelectorAll<HTMLElement>('td')]
+
+  pick(cells()[3])
+  expect([said.at(-1), cells()[3].matches('.chosen')]).toEqual([costAt(0, 1, 1, words ? { context: words } : {}), true])
+  await refresh(next)
+  await expect.poll(() => cells().length).toBeGreaterThan(4)
+  // Its host is told that nothing is picked, and no other cell is ringed in its place.
+  expect([String(said.at(-1)?.anchor).includes('table='), page.querySelector('.chosen')]).toEqual([false, null])
+})
+
+it('goes to the cell a chip names as it reads now, and keeps a cell picked through a refresh that finds its tab as it was', async () => {
+  let reads = 0
+  const { page, said, go, refresh } = await draw({ drawing: drawing([named('Costs'), RENT()]) }, {
+    getPendingChanges: async (tabId: string) => (reads++, { tabId, changes: [] }),
+  })
+  const cell = (words: string) => [...page.querySelectorAll<HTMLElement>('td')].find(found => text(found) === words)!
+
+  // A chip made when the place held `10` goes to the cell there now, which is what it names.
+  await refresh({ drawing: drawing([named('Costs'), NAMES, RENT()]), version: 'v2' })
+  await expect.poll(() => !!cell('Mon')).toBe(true)
+  expect(await go(costAt(0, 1, 1).anchor)).toBe(true)
+  expect([said.at(-1), cell('Mon').matches('.chosen')]).toEqual([costAt(0, 1, 1, { context: 'Mon' }), true])
+  // Read again and found as it was, as when a change is queued on another tab, the tab stays as drawn.
+  pick(cell('Q1'))
+  const told = said.length
+  await refresh({})
+  await settled(() => reads, 3)
+  expect([said.length, said.at(-1), cell('Q1').matches('.chosen')]).toEqual([told, costAt(1, 0, 1, { context: 'Q1' }), true])
+})
+
+// A change puts a paragraph before one that says the same.
+const TWICE: Doc = { drawing: drawing([named('Intro'), paragraph('Twice'), paragraph('Once')]), edits: [edit(1, 1, [written('Twice')])] }
+
+it('lets go of a paragraph that another copy of the tab does not draw, though one there says the same', async () => {
+  const { page, blocks, said, show } = await draw({ ...TWICE }, {}, '?tab=t.0#heading=h.intro')
+  const picked = () => [said.at(-1)?.context, page.querySelectorAll('.chosen').length]
+  expect(blocks().map(text)).toEqual(['Intro', 'Twice', 'Twice', 'Once'])
+
+  // As saved the one a change adds is not drawn, and the only one that then says the same is not it.
+  blocks()[1].click()
+  expect(picked()).toEqual(['(shown with changes not yet approved)\nTwice', 1])
+  show('As saved')
+  expect(blocks().map(text).filter(Boolean)).toEqual(['Intro', 'Twice', 'Once'])
+  expect(picked()).toEqual([undefined, 0])
+})
+
+it('lets go of a paragraph when its tab is read as another, though one that says the same stands where it did', async () => {
+  const { page, blocks, said, refresh } = await draw({ ...TWICE }, {}, '?tab=t.0#heading=h.intro')
+  const picked = () => [said.at(-1)?.context, page.querySelectorAll('.chosen').length]
+
+  // With a paragraph more above them, the one a change adds is where the saved one picked was.
+  blocks()[2].click()
+  expect(picked()).toEqual(['Twice', 1])
+  await refresh({ drawing: drawing([named('Intro'), paragraph('More'), paragraph('Twice'), paragraph('Once')]), edits: [edit(2, 2, [written('Twice')])], version: 'v2' })
+  await expect.poll(() => blocks().map(text)).toEqual(['Intro', 'More', 'Twice', 'Twice', 'Once'])
+  expect(picked()).toEqual([undefined, 0])
+})
+
+it('picks a paragraph whole that its pages cut in two, and keeps it as its pages are set again', async () => {
+  const WORDS = 'Word '.repeat(200).trim()
+  const intro = { anchor: '?tab=t.0#heading=h.intro', label: 'Intro' }
+  const { blocks, said, show } = await draw({
+    drawing: drawing([named('Intro'), paragraph('First'), ...Array.from({ length: 18 }, (_, line) => paragraph(`Line ${line}`)), paragraph(WORDS), paragraph('End')]),
+    edits: [edit(1, 2, [written('First changed')])],
+  }, {}, intro.anchor)
+  const parts = () => blocks().filter(block => block.matches('.chosen'))
+  const view = frame!.contentWindow!
+  const picked = { ...intro, label: `Intro › “${'Word '.repeat(8).trim()}…”`, context: WORDS }
+
+  // Both parts are ringed, on a sheet each, and told as the one paragraph they are.
+  blocks().find(block => text(block).startsWith('Word'))!.click()
+  expect(new Set(parts().map(part => part.closest('.sheet'))).size).toBe(2)
+  expect(said.at(-1)).toEqual(picked)
+  // The second in view is the paragraph in view, though the first is not.
+  view.dispatchEvent(new WheelEvent('wheel'))
+  parts()[1].scrollIntoView({ block: 'start' })
+  await expect.poll(() => parts()[0].getBoundingClientRect().bottom).toBeLessThan(0)
+  await new Promise(done => setTimeout(done, 100))
+  expect([said.at(-1), parts().length]).toEqual([picked, 2])
+  // On no pages it is in one part, and on pages again in two: the same paragraph throughout.
+  const told = said.length
+  show('Inline')
+  expect(parts()).toHaveLength(1)
+  show('With changes')
+  expect([parts().length, said.length]).toEqual([2, told])
+})
+
+it('numbers no table while the drawing and the edits are of the document as saved at different times', async () => {
+  const saved = drawing([named('Costs'), table([100, 100], [['Item', 'Q1'], ['Rent', '10']])])
+  const costs = '?tab=t.0#heading=h.costs'
+  // The edits stay of another saving however often they are asked for again.
+  const { page, said, go } = await draw({ drawing: saved }, {
+    readDrawing: async () => ({ ...saved, version: 'b' }),
+    readPendingDrawing: async (tabId: string) => ({ tabId, version: 'a', ...STATED, edits: [] }),
+  })
+
+  // The edits may be counted from other blocks than these, so no cell is told by a place.
+  ;[...page.querySelectorAll<HTMLElement>('td')].find(cell => text(cell) === '10')!.click()
+  expect(said.at(-1)).toEqual({ anchor: costs, label: 'Costs › Cell of a table being changed', context: '10' })
+  expect(await go(`${costs}&table=0&row=1&column=1`)).toBe(true)
+  expect([said.at(-1), page.querySelector('.chosen')]).toEqual([{ anchor: costs, label: 'Costs' }, null])
+})
+
+it('opens a file of Google Drive once, though its host sends it there again while the file is being opened', async () => {
+  let open = () => {}
+  let opens = 0
+  const drawn = draw({ drawing: drawing([named('Intro'), ...lines(), named('Middle'), paragraph('Words')]) }, {}, 'docs:file', file => ({
+    openGoogleDoc: () => new Promise(opened => {
+      opens++
+      open = () => opened(file)
+    }),
+    getEntry: async () => ({ name: 'Report' }),
+  }))
+  // What its host sends it by, kept as the preview registers it: draw() gives it only once the file is drawn.
+  type Navigate = (anchor: string) => Promise<boolean>
+  const { docsPreviewHost: host } = window as unknown as { docsPreviewHost: { onNavigate: (navigate: Navigate) => Promise<void> } }
+  const register = host.onNavigate
+  let navigate: Navigate | undefined
+  host.onNavigate = to => register(navigate = to)
+
+  await expect.poll(() => opens).toBe(1)
+  const again = navigate!('docs:file ?tab=t.0#heading=h.middle')
+  open()
+  // The second is gone to in the one preview the first started.
+  expect(await again).toBe(true)
+  const { said, page } = await drawn
+  expect([opens, page.ownerDocument.querySelectorAll('#sheets').length]).toEqual([1, 1])
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 'docs:file ?tab=t.0#heading=h.middle', label: 'Report › Middle' })
+})
+
+it('opens a file of Google Drive that could not be opened where its host last sent it, and answers each send that waited alike', async () => {
+  let fail = (_error: Error) => {}
+  let opens = 0
+  const drawn = draw({ drawing: sectioned() }, {}, 'docs:file ?tab=t.0#heading=h.middle', file => ({
+    // Google is away the first time.
+    openGoogleDoc: () => opens++ ? Promise.resolve(file) : new Promise((_opened, failed) => { fail = failed }),
+    getEntry: async () => ({ name: 'Report' }),
+  }))
+  type Navigate = (anchor: string) => Promise<boolean>
+  const { docsPreviewHost: host } = window as unknown as { docsPreviewHost: { onNavigate: (navigate: Navigate) => Promise<void> } }
+  const register = host.onNavigate
+  let navigate: Navigate | undefined
+  host.onNavigate = to => register(navigate = to)
+
+  await expect.poll(() => opens).toBe(1)
+  const again = navigate!('docs:file ?tab=t.0#heading=h.last')
+  fail(new Error('Google is away'))
+  // The file may well still be there, with either spot in it.
+  expect(await again).toBe(true)
+  const { said } = await drawn
+  expect(said).toEqual([])
+  frame!.contentDocument!.querySelector<HTMLElement>('#error button')!.click()
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 'docs:file ?tab=t.0#heading=h.last', label: 'Report › Last' })
+  // And is gone to again, opened as it now is.
+  expect([await navigate!('docs:file ?tab=t.0#heading=h.middle'), opens]).toEqual([true, 2])
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 'docs:file ?tab=t.0#heading=h.middle', label: 'Report › Middle' })
+})
+
+it('keeps what is picked in a document Google names no saving of while it reads as it did', async () => {
+  // As Google answers an account that may not edit the document: with no name for the saving.
+  const doc = { drawing: drawing([named('Intro'), paragraph('Words'), paragraph('After')]) }
+  let reads = 0
+  const { blocks, said, refresh } = await draw(doc, {
+    getPendingChanges: async (tabId: string) => (reads++, { tabId, changes: [] }),
+    readDrawing: async () => structuredClone(doc.drawing),
+    readPendingDrawing: async (tabId: string) => ({ tabId, edits: [], ...STATED }),
+  })
+  const picked = () => [said.at(-1)?.context, blocks().findIndex(block => block.matches('.chosen'))]
+
+  pick(blocks()[1])
+  await refresh({})
+  await settled(() => reads, 2)
+  expect(picked()).toEqual(['Words', 1])
+  await refresh({ drawing: drawing([named('Intro'), paragraph('More'), paragraph('Words'), paragraph('After')]) })
+  await expect.poll(() => blocks().length).toBe(4)
+  expect(picked()).toEqual([undefined, -1])
 })
 
 it('goes to the heading its host names once a read that failed is tried again, and stays on it though others follow close under it', async () => {
@@ -1870,6 +2449,7 @@ it('says so while Google Drive opens the file, whose preview draws nothing until
   // The session of a Drive connection, which opens the file when the test lets it.
   const drawn = draw({ drawing: drawing([paragraph('Words')]) }, {}, 'docs:file', file => ({
     openGoogleDoc: () => new Promise(opened => { open = () => opened(file) }),
+    getEntry: async () => ({ name: 'Report' }),
   }))
   const status = () => frame?.contentDocument?.querySelector('[role=status]')?.textContent
 
@@ -1887,7 +2467,9 @@ it('lets go of what its host answers each time it says where the reader is', asy
   frame!.remove()
 
   // The file of a Drive connection says it through the connection's own preview.
-  const through = await draw({ drawing: drawing([paragraph('Words')]) }, {}, 'docs:file', file => ({ openGoogleDoc: async () => file }))
+  const through = await draw({ drawing: drawing([paragraph('Words')]) }, {}, 'docs:file', file => ({
+    openGoogleDoc: async () => file, getEntry: async () => ({ name: 'Report' }),
+  }))
   await expect.poll(() => through.said.length).toBeGreaterThan(0)
   expect(through.held()).toBe(0)
 })
@@ -1974,6 +2556,13 @@ it('cuts what it tells its host to the length a host takes, at a whole character
   const { said } = await draw({ tabs: ['t.0', 't.1'], titles: [`${'a'.repeat(118)}😀😀`, 'Plan'] }, {}, '?tab=t.0')
 
   expect(said).toEqual([{ anchor: '?tab=t.0', label: `${'a'.repeat(118)}…` }])
+  frame!.remove()
+
+  // And what is there, where the cut falls the same way.
+  const words = 'ab '.repeat(666)
+  const long = await draw({ drawing: drawing([named('Intro'), paragraph(`${words}😀😀`)], TALL) })
+  long.blocks()[1].click()
+  expect(long.said.at(-1)?.context).toBe(`${words}…`)
 })
 
 it('tells its host the tab shown, opens on the one its host names, and on its own choice when that is gone', async () => {

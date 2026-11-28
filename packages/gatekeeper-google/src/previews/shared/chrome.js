@@ -36,6 +36,8 @@ styleSheet.textContent = `
     from, 35% { outline: 2px solid var(--glow, var(--link)); outline-offset: 3px; }
     to { outline: 2px solid transparent; outline-offset: 3px; }
   }
+  /* The frame round what the reader picked with a click, which each preview draws, fades in as one. */
+  @keyframes choose { from { opacity: 0; } }
   .ghost, .wait { background: linear-gradient(90deg, var(--chip) 25%, var(--shine) 50%, var(--chip) 75%) 0 0 / 200% 100%;
     animation: shimmer 1.4s linear infinite; }
   .ghost { height: 12px; margin: 14px 0 !important; min-height: 0 !important; border-radius: 6px; }
@@ -621,32 +623,152 @@ export function loadOnRefresh(load) {
 // ---------------------------------------------------------------------------------------------
 // Where the reader is
 
-// The longest label a host takes (MAX_FOCUS_LABEL_LENGTH).
+// The longest anchor, label and context a host takes (MAX_FOCUS_ANCHOR_LENGTH and the like).
+const LONGEST_ANCHOR = 256;
 const LONGEST_LABEL = 120;
+const LONGEST_CONTEXT = 2000;
+// What a context starts with where it takes in what a pending change wrote, which the file does
+// not hold yet: the agent is told what the reader saw, not that it is saved.
+const UNSAVED_NOTE = '(shown with changes not yet approved)\n';
+// How long a selection is left to settle: one being dragged out changes at every move.
+const SELECTION_SETTLE_MS = 200;
 
-/** `label` cut to what a host takes, and at no half of a character. */
-export const fitLabel = label => label.length > LONGEST_LABEL ? `${label.slice(0, LONGEST_LABEL - 1).replace(/[\ud800-\udbff]$/, '')}…` : label;
+// `text` in no more than `most` characters, one cut short saying so, and at no half of a character.
+const cut = (text, most) => text.length > most ? `${text.slice(0, most - 1).replace(/[\ud800-\udbff]$/, '')}…` : text;
+
+/** `label` cut to what a host takes. */
+export const fitLabel = label => cut(label, LONGEST_LABEL);
+
+// What is not seen and can change how the text beside it reads: control characters but a tab and
+// a line's end, and the marks that turn the direction text runs in.
+const UNSEEN = /(?![\t\n])[\p{Cc}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+
+/** `text` as a host is told it: with nothing in it that is not seen. */
+export const seen = text => text.replace(UNSEEN, '');
+
+/** The start of `text`, as short as a label has room for. */
+export function quote(text) {
+  const line = seen(text).replace(/\s+/g, ' ').trim();
+  return `“${cut(line, 40)}”`;
+}
+
+/** Whether `node` is in, or holds, what `unsaved` matches: what a preview draws of a pending change's own. */
+export const takesIn = (node, unsaved) => !!(node.closest(unsaved) ?? node.querySelector(unsaved));
 
 /**
- * Tells the frame's `host` where the reader is (GadgetHost.reportFocus()), so that the preview
- * can be sent back there. `spot()` gives the place as `{ anchor, label }`, nothing when it is
- * nowhere more particular than the resource, or false when what was last said still stands.
- * Returns what to call when the place may have moved: the host hears only of one that has.
+ * Tells the frame's `host` where the reader is and what is there (GadgetHost.reportFocus()), so
+ * that the preview can be sent back there and the agent told what "this" is. `spot(range)` gives
+ * the place as `{ anchor, label, context, pending }`: with no label where it is nowhere more
+ * particular than the resource, which is said only with text selected, nothing where there is
+ * no place yet, and false where what was last said still stands. It is given the range of the
+ * text selected that is told, if any, which may lie where the view is not.
+ * The text selected is told in place of the spot's own `context`, where all of it is in what
+ * `content`, a selector, matches: the document as drawn. What a preview writes around that (a
+ * title, an outline, a cell's value in a bar) it writes unmarked, so text selected there is none
+ * to tell. What is told is told as not yet approved where either takes in what a pending change
+ * wrote: `pending` says so of the context, and of text selected in what `picked`, a selector,
+ * matches, which is the thing picked; `unsaved`, a selector, matches what the preview draws of
+ * one, which is how a spot tells its own `pending` too (takesIn()). A label is the preview's to
+ * keep free of such text. Returns what to call when the place may have moved: the host hears
+ * only of what has changed.
  */
-export function reportSpot(host, spot) {
+export function reportSpot(host, spot, unsaved, content, picked = '.chosen') {
   // A frame that has said nothing is nowhere in particular, which is what null says.
   let said = 'null';
-  return () => {
+  // The text selected, read as the selection settles and not as the place moves: it can be all
+  // there is on the page.
+  const NONE = { text: '', noted: false };
+  let selected = NONE;
+  const say = () => {
     // Behind an error nothing is drawn to be anywhere in: what was last said stands.
     if (page.hidden) return;
-    const place = spot();
+    // What a selection held is gone with it, as when the page is drawn again under it.
+    if (document.getSelection().isCollapsed) selected = NONE;
+    const place = spot(selected.range);
     if (place === false) return;
-    const { anchor, label } = place ?? {};
-    const focus = anchor === undefined ? null : { anchor, label: fitLabel(label) };
+    const { anchor, label = selected.text && 'Selected text', context = '', pending } = place ?? {};
+    // Without the word joiners a document's paragraphs end in.
+    const text = seen(selected.text || context).replaceAll('\u2060', '');
+    // Text selected in what is picked is no more saved than the pick is, and text selected
+    // anywhere else is as saved as it is itself.
+    const noted = selected.noted || pending && (!selected.text || liesIn(selected.range, picked));
+    const there = cut(text && `${noted ? UNSAVED_NOTE : ''}${text}`, LONGEST_CONTEXT);
+    const focus = anchor === undefined || !label || anchor.length > LONGEST_ANCHOR
+      ? null : { anchor, label: fitLabel(seen(label)), ...there && { context: there } };
     const saying = JSON.stringify(focus);
     if (saying === said) return;
     said = saying;
     // Over RPC the call answers with a stub of nothing, which is held until it is let go.
     host.reportFocus(focus)?.[Symbol.dispose]?.();
   };
+  let settling;
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(settling);
+    settling = setTimeout(() => {
+      const selection = document.getSelection();
+      const range = selection.rangeCount ? selection.getRangeAt(0) : undefined;
+      const text = range && liesIn(range, content) ? selection.toString().trim() : '';
+      selected = !text ? NONE
+        : { text, range, noted: [...document.querySelectorAll(unsaved)].some(node => selection.containsNode(node, true)) };
+      say();
+    }, SELECTION_SETTLE_MS);
+  });
+  return say;
+}
+
+// Whether `range` lies in something `within` matches: it starts there and takes no text from
+// past it, though it may end past it, as a triple click ends at the start of the next block.
+function liesIn(range, within) {
+  const { startContainer: start } = range;
+  const root = (start.closest ? start : start.parentElement)?.closest(within);
+  if (!root) return false;
+  const rest = range.cloneRange();
+  rest.setStartAfter(root);
+  return !rest.toString().trim();
+}
+
+// Whether `node` is wholly above or below what is in view.
+function outOfView(node) {
+  const { top, bottom } = node.getBoundingClientRect();
+  return bottom < 0 || top > innerHeight;
+}
+
+/**
+ * Lets the reader pick one thing drawn on the page with a click, which says what "this" is more
+ * finely than the place. `pickable(target)` gives what a click on `target` picks, if anything:
+ * the node drawn of it, or the nodes, where it is drawn in parts. It is framed until another is
+ * picked, a click picks none, or the reader scrolls it from in view to out of view: they have
+ * then moved on. `changed()` is called when the pick changes. Returns `set(parts)`, which picks
+ * as a click does, `parts()`, the nodes of what is picked that are still drawn, `node()`, the
+ * first of them, and `keep()`, to call before the preview scrolls the page itself, which moves
+ * no reader on.
+ */
+export function picking(pickable, changed) {
+  let picked = [];
+  // Whether any of it was in view when last looked at: the reader moves on from what they saw.
+  let inView = false;
+  const shows = () => picked.some(node => !outOfView(node));
+  // Whether the scrolling is the preview's own, which it is until the reader next moves. Not
+  // until it ends: one scroll cut short by the next ends after that one has begun.
+  let kept = false;
+  for (const type of ['wheel', 'touchmove', 'keydown', 'pointerdown']) {
+    addEventListener(type, () => { kept = false; }, { capture: true, passive: true });
+  }
+  const set = nodes => {
+    const next = [nodes].flat().filter(Boolean);
+    if (next.length === picked.length && next.every((node, at) => node === picked[at])) return;
+    for (const node of picked) node.classList.remove('chosen');
+    picked = next;
+    for (const node of picked) node.classList.add('chosen');
+    inView = shows();
+    changed();
+  };
+  page.addEventListener('click', event => set(pickable(event.target)));
+  addEventListener('scroll', () => {
+    const was = inView;
+    inView = shows();
+    if (was && !inView && !kept) set();
+  }, { passive: true });
+  const parts = () => picked.filter(node => node.isConnected);
+  return { set, parts, node: () => parts()[0], keep: () => { kept = true; } };
 }

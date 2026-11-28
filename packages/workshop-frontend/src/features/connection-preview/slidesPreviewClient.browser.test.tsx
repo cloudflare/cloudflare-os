@@ -1169,11 +1169,46 @@ it('tells its host of no slide that only a change adds', async () => {
   await expect.poll(() => said.at(-1)).toBeNull()
 })
 
+it('picks nothing a slide takes from its master, and nothing on a slide still to be added', async () => {
+  const [a] = listed('Alpha')
+  const { card, said, go, doc } = await draw({
+    saved: [a],
+    slides: [a, { ...a, id: 'new', title: 'Added', index: 1 }],
+    shared: [[{ ...box('brand', 420, 300, 'Brand'), from: 'master' }]],
+    changes: [{ id: 1, type: 'createSlide', slideIds: ['new'], layoutId: 'l', newSlideId: 'new' }],
+    drawings: {
+      s1: { drawing: { ...slide([box('own', 20, 20, 'Own')]), behind: [0] } },
+      new: { drawing: slide([box('n', 20, 20, 'Added')]), saved: null },
+    },
+  }, 1100, 700, 's1')
+  const drawn = (slide: string, id: string) => card(slide).querySelector<HTMLElement>(`.sheet [data-id="${id}"]`)!
+  const first = { anchor: 's1', label: 'Slide 1' }
+  await expect.poll(() => said.at(-1)).toEqual(first)
+
+  // What the master draws is not the slide's to edit: a click on it picks none, as one on the
+  // slide itself, and its host sends the reader to the slide alone.
+  drawn('s1', 'own').click()
+  expect(said.at(-1)).toEqual({ anchor: 's1#own', label: 'Slide 1 › “Own”', context: 'Own' })
+  drawn('s1', 'brand').click()
+  expect([said.at(-1), doc.querySelector('.chosen')]).toEqual([first, null])
+  expect(await go('s1#brand')).toBe(true)
+  expect([said.at(-1), doc.querySelector('.chosen')]).toEqual([first, null])
+  // Nor is anything on a slide a change adds, which is no spot to tell of yet.
+  drawn('new', 'n').click()
+  expect(await go('new#n')).toBe(true)
+  expect(doc.querySelector('.chosen')).toBeNull()
+  expect(said.some(focus => focus?.anchor.includes('#n'))).toBe(false)
+})
+
 it('tells its host the slide the reader is on, and goes to one its host names', async () => {
   // Its host sends it to the slide the reader left, which it opens on, not on its first change.
-  const { all, said, go } = await draw({
+  const { all, card, said, go } = await draw({
     saved: listed('One', 'Two', 'Three', 'Four', 'Five', 'Six'),
-    changes: [edit(1, 's1', 's1-title')], drawings: { s1: retitled('s1') },
+    changes: [edit(1, 's1', 's1-title')],
+    drawings: { s1: { ...retitled('s1'), saved: slide([box('s1-title', 20, 20, 's1'), box('s1-old', 300, 200, 'Old')]) }, s2: { drawing: slide([
+      box('s2-title', 20, 20, 's2'), box('s2-blank', 300, 200),
+      box('s2-spill', 420, 20, 'Spilt', { bounds: { x: 420, y: 20, width: 200, height: 4 } }),
+    ]) } },
   }, 1100, 700, 's3')
   const top = (slide: number) => Math.round(all('.card')[slide].getBoundingClientRect().top)
   const third = { anchor: 's3', label: 'Slide 3' }
@@ -1184,7 +1219,46 @@ it('tells its host the slide the reader is on, and goes to one its host names', 
   expect([said.at(-1), top(2) < 700 / 3]).toEqual([third, true])
 
   expect(await go('s2')).toBe(true)
-  expect(said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2' })
+  const second = { anchor: 's2', label: 'Slide 2' }
+  expect(said.at(-1)).toEqual(second)
+  // An element the reader clicks is told after its slide, by its ID and its text, and is ringed
+  // until a click on the slide itself lets it go.
+  const title = { anchor: 's2#s2-title', label: 'Slide 2 › “s2”', context: 's2' }
+  const drawn = () => card('s2').querySelector<HTMLElement>('.sheet [data-id="s2-title"]')!
+  drawn().click()
+  expect([said.at(-1), drawn().matches('.chosen')]).toEqual([title, true])
+  // One with no text is told by what it is.
+  card('s2').querySelector<HTMLElement>('.sheet [data-id="s2-blank"]')!.click()
+  expect([said.at(-1), drawn().matches('.chosen')]).toEqual([{ anchor: 's2#s2-blank', label: 'Slide 2 › Shape' }, false])
+  // The frame is over what the element draws, as a change's ring is: text that spills from a
+  // box too small for it is framed with it.
+  const framed = () => card('s2').querySelector('.marks .pick')?.getBoundingClientRect()
+  const spilling = card('s2').querySelector<HTMLElement>('.sheet [data-id="s2-spill"]')!
+  spilling.click()
+  const words = spilling.querySelector('p > *')!.getBoundingClientRect()
+  expect([words.bottom > spilling.getBoundingClientRect().bottom, framed()!.bottom >= words.bottom]).toEqual([true, true])
+  card('s2').querySelector<HTMLElement>('.sheet .stage')!.click()
+  expect([said.at(-1), framed()]).toEqual([second, undefined])
+  // Its host sends it back to the element, and to the slide of one that is gone.
+  expect(await go('s2#s2-title')).toBe(true)
+  expect(said.at(-1)).toEqual(title)
+  expect(await go('s2#gone')).toBe(true)
+  expect(said.at(-1)).toEqual(second)
+  // An element a pending change wrote in is told as not yet approved, and by what it is, not by
+  // its words. As saved it is told as Google Slides has it.
+  const first = (view: string) => {
+    [...card('s1').querySelectorAll<HTMLElement>('.views button')].find(button => button.textContent === view)?.click()
+    // The slide as it was drawn fades out under the one that takes its place.
+    ;[...card('s1').querySelectorAll<HTMLElement>('.sheet [data-id="s1-title"]')].at(-1)!.click()
+    return said.at(-1)
+  }
+  expect(first('With changes')).toEqual(
+    { anchor: 's1#s1-title', label: 'Slide 1 › Shape', context: '(shown with changes not yet approved)\nEdited' })
+  expect(first('As saved')).toEqual({ anchor: 's1#s1-title', label: 'Slide 1 › “s1”', context: 's1' })
+  // One a pending change deletes is still there to be asked about, and is told as going.
+  ;[...card('s1').querySelectorAll<HTMLElement>('.sheet [data-id="s1-old"]')].at(-1)!.click()
+  expect(said.at(-1)).toEqual({ anchor: 's1#s1-old', label: 'Slide 1 › “Old”, being deleted', context: 'Old' })
+  ;[...card('s1').querySelectorAll<HTMLElement>('.sheet .stage')].at(-1)!.click()
   // The reader's own move is told too.
   frame!.contentWindow!.scrollTo(0, 0)
   await expect.poll(() => said.at(-1)).toEqual({ anchor: 's1', label: 'Slide 1' })
@@ -1192,4 +1266,96 @@ it('tells its host the slide the reader is on, and goes to one its host names', 
   // A slide that is not there leaves the reader where they are.
   expect(await go('s9')).toBe(false)
   expect(top(0)).toBeGreaterThanOrEqual(0)
+})
+
+it('keeps an element picked through the scroll to a change that arrives, and tells no text selected off the slides', async () => {
+  const saved = listed('One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight')
+  const { doc, card, said, refresh } = await draw({ saved, drawings: {} }, 1100, 700, 's1')
+  const view = frame!.contentWindow!
+  const drawn = () => card('s1').querySelector<HTMLElement>('.sheet [data-id="s1-title"]')!
+  const title = { anchor: 's1#s1-title', label: 'Slide 1 › “s1”', context: 's1' }
+  // Picked as a reader does, with the pointer: the scroll that opened the deck is theirs no longer.
+  drawn().dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  drawn().click()
+  expect(said.at(-1)).toEqual(title)
+
+  // A change that arrives on a slide far below is scrolled to, which is not the reader moving on.
+  await refresh({
+    slides: saved.map(info => info.id === 's8' ? { ...info, title: 'Renamed' } : info),
+    changes: [edit(1, 's8', 's8-title')], drawings: { s8: retitled('s8') },
+  })
+  await expect.poll(() => view.scrollY).toBeGreaterThan(1000)
+  await new Promise(done => setTimeout(done, 500))
+  expect([said.at(-1), drawn().matches('.chosen')]).toEqual([title, true])
+  // Nor is the reader's first move from there, with the element out of view already.
+  const below = view.scrollY
+  view.dispatchEvent(new WheelEvent('wheel'))
+  view.scrollBy(0, -5)
+  await new Promise(done => setTimeout(done, 200))
+  expect([said.at(-1), drawn().matches('.chosen')]).toEqual([title, true])
+  // Their scrolling on from it once it is back in view is.
+  view.scrollTo(0, 0)
+  await expect.poll(() => view.scrollY).toBe(0)
+  await new Promise(done => view.requestAnimationFrame(done))
+  expect(drawn().matches('.chosen')).toBe(true)
+  view.scrollTo(0, below)
+  await expect.poll(() => doc.querySelector('.chosen')).toBeNull()
+  const eighth = { anchor: 's8', label: 'Slide 8' }
+  await expect.poll(() => said.at(-1)).toEqual(eighth)
+
+  // Over a slide its title is written as the changes leave it, with no mark on it: text
+  // selected there is none to tell. Text selected on the slide is, as not yet approved.
+  const selection = view.getSelection()!
+  selection.selectAllChildren(card('s8').querySelector('header .title')!)
+  expect(selection.toString()).toBe('Renamed')
+  await new Promise(done => setTimeout(done, 300))
+  expect(said.at(-1)).toEqual(eighth)
+  selection.selectAllChildren(card('s8').querySelector('.sheet [data-id="s8-title"]')!)
+  await expect.poll(() => said.at(-1)).toEqual({ ...eighth, context: '(shown with changes not yet approved)\nEdited' })
+})
+
+it('tells text selected in a slide\'s notes with that slide, though the view is on another', async () => {
+  const saved = listed('One', 'Two')
+  saved[1].hasSpeakerNotes = true
+  const { card, said } = await draw({ saved, drawings: { s2: { drawing: slide([box('s2-title', 20, 20, 's2')], 'Mind the gap') } } }, 1100, 700, 's1')
+  const first = { anchor: 's1', label: 'Slide 1' }
+  await expect.poll(() => said.at(-1)).toEqual(first)
+
+  const selection = frame!.contentWindow!.getSelection()!
+  selection.selectAllChildren(card('s2').querySelector('.notes > div')!)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2', context: 'Mind the gap' })
+  selection.removeAllRanges()
+  await expect.poll(() => said.at(-1)).toEqual(first)
+})
+
+it('tells text selected in notes a pending change rewrites as they will read, as not yet approved', async () => {
+  const drawn = (id: string, notes: string) => slide([box(`${id}-title`, 40, 30, id)], notes)
+  const { card, said } = await draw({
+    saved: listed('One', 'Two'),
+    changes: [edit(4, 's1', 's1-title'), edit(5, 's2', 's2-title')],
+    drawings: {
+      s1: { saved: drawn('s1', 'Send to Alice.'), drawing: drawn('s1', 'Send to Carol.') },
+      s2: { saved: drawn('s2', 'Do not send.'), drawing: drawn('s2', 'Do send.') },
+    },
+  })
+  const unsaved = '(shown with changes not yet approved)\n'
+  const selection = frame!.contentWindow!.getSelection()!
+  // Without the words the change takes away, which are none to select.
+  selection.selectAllChildren(card('s1').querySelector('.notes > div')!)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's1', label: 'Slide 1', context: `${unsaved}Send to Carol.` })
+  // Also where it only takes words away.
+  selection.selectAllChildren(card('s2').querySelector('.notes > div')!)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's2', label: 'Slide 2', context: `${unsaved}Do send.` })
+})
+
+it('tells text selected in a slide\'s notes by a triple click, which ends at the start of the slide after it', async () => {
+  const saved = listed('One', 'Two')
+  saved[0].hasSpeakerNotes = true
+  const { card, said } = await draw({ saved, drawings: { s1: { drawing: slide([box('s1-title', 20, 20, 's1')], 'Mind the gap') } } }, 1100, 700, 's1')
+  const view = frame!.contentWindow!
+  const range = view.document.createRange()
+  range.setStart(card('s1').querySelector('.notes > div')!, 0)
+  range.setEnd(card('s2'), 0)
+  view.getSelection()!.addRange(range)
+  await expect.poll(() => said.at(-1)).toEqual({ anchor: 's1', label: 'Slide 1', context: 'Mind the gap' })
 })

@@ -90,7 +90,6 @@ import {
   SlashCommandRequest,
   ChatCodeBase,
   ChatMessageOptions,
-  MessageFocus,
   WorkpieceId,
   BlueprintMerge,
   BlueprintOutput,
@@ -1198,7 +1197,7 @@ function FormatMention({ format }: { format: MessageFormatRef }) {
 // What a sent message told the agent the user was focused on, under its bubble.
 function MessageFocusChip({ focus, onOpenFocus }: {
   focus: TitledFocus;
-  onOpenFocus: (focus: MessageFocus) => void;
+  onOpenFocus: (focus: TitledFocus) => void;
 }) {
   return (
     <div className="mt-1 flex max-w-[min(680px,78%)] justify-end">
@@ -2476,7 +2475,7 @@ interface ChatInterfaceProps {
   // What the workspace pane is showing, which the composers offer to send as the message's focus.
   paneFocus?: PaneFocus;
   // Opens a sent message's focus: its gadget and, if it has one, the spot within it.
-  onOpenFocus: (focus: MessageFocus) => void;
+  onOpenFocus: (focus: TitledFocus) => void;
 
   // The output format a workpiece was built as, so a created-app card can name and draw it as the
   // Document (or whatever) it is rather than a generic app.

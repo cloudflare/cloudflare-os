@@ -44,6 +44,27 @@ export type GoogleDocTab = {
  *
  * Each tab holds its own content. Call `listTabs()` before `getContent()` to see which tabs
  * exist, then read one of them.
+ *
+ * A `<user-focus>` on this document says where the user was reading. Its `anchor` is
+ * `?tab=<tabId>`, then `#heading=<ID>`, as in a link to a heading: of the last heading at or
+ * before what they had selected or clicked, where there is one, or with neither of the last they
+ * had passed. Its `label` gives the tab's and the heading's titles as last saved, where
+ * `getContent()` shows them as the edits awaiting approval leave them: take the tab from the
+ * anchor, by its ID in `listTabs()`. `getContent()` marks no heading with its ID, so find the
+ * heading by the label's title, which such an edit may have rewritten: with none of that title
+ * there, or several, go by the body, or ask which is meant. Its body is the text they had
+ * selected, or else the paragraph they had clicked. It is the text as they saw it: look for it in
+ * `getContent()`, where an edit awaiting approval may have changed it, and where the paragraphs
+ * of a table cell stand apart that the body runs together. What they clicked is told only for as
+ * long as the document and the edits awaiting approval read as they did when they clicked it. For
+ * a table cell they had clicked, the anchor ends `table=<table>&row=<row>&column=<column>`, after
+ * `#` or `&`: the cell as the table methods of a read and write session name it, each counted
+ * from 0 and the table among those `getContent()` shows. The label counts the same three from 1,
+ * as the user would, so take them from the anchor. A label that ends `Cell of a table being
+ * changed` is of a cell whose place was not certain where the user clicked it, as where edits
+ * awaiting approval were not shown applied: the anchor names no cell, so find it by the body,
+ * which is its text. A body whose first line is `(shown with changes not yet approved)` reads as
+ * the edits still awaiting approval leave it, so the document may not hold that text.
  */
 export interface GoogleDocReadSession {
   /** Return current document metadata. Works with any number of tabs. */
