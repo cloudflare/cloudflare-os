@@ -3374,6 +3374,21 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     run.appliedAgain(await hooks().applyAction("normal", actionId));
   });
 
+  it("accepts a rejection of an edit it does not hold", async () => {
+    new DocsModel().install();
+    await expect(hooks().rejectAction("normal", 99)).resolves.toBeUndefined();
+  });
+
+  it("accepts a second rejection of the same edit", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("normal", "first");
+
+    await expect(hooks().rejectAction("normal", actionId)).resolves.toBeUndefined();
+    await expect(hooks().rejectAction("normal", actionId)).resolves.toBeUndefined();
+    expect(docs.contentBatches).toBe(0);
+  });
+
   it("replays a queued edit after applying an escaped parenthesized link", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "target");
@@ -5806,6 +5821,17 @@ describe("Google Doc comments", () => {
     expect(await hooks().applyAction("comment-lost", id)).toMatch(/did not confirm whether this was posted/);
     expect(await hooks().applyAction("comment-lost", id)).toBeNull();
     expect(theirs.replies.map(post => post.content)).toEqual(["Yes."]);
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  // The comment posted but the overseer never heard, so the kernel still shows it pending.
+  it("accepts a deny or a repeated approve of a comment that already posted", async () => {
+    let docs = model();
+    let id = (await call("comment-landed", "comment", "Hm.", { quote: "May" })).actionId!;
+    expect(await hooks().applyAction("comment-landed", id)).toBeNull();
+    expect(await hooks().applyAction("comment-landed", id)).toBeNull();
+    expect(await hooks().rejectAction("comment-landed", id)).toBeUndefined();
+    expect(docs.threads.map(thread => thread.headPost.content)).toEqual(["Hm."]);
     expect(docs.commentWrites).toBe(1);
   });
 

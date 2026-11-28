@@ -1712,7 +1712,12 @@ export class GoogleChatGatekeeperImpl
   async applyAction(actionId: number): Promise<void> {
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
-    if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
+    if (!action) {
+      // The write landed but its reply never reached the kernel: the revert record is set in the
+      // same step that drops the pending one, so it proves the apply and keeps Undo working.
+      if (store.getRevert(actionId)) return;
+      throw new Error(`Unknown pending Google Chat action: ${actionId}`);
+    }
     await this.#exclusively(actionId, async () => {
       const revert = await this.#perform(store, actionId, action, await this.#getSelf());
       store.setRevert(actionId, revert);
@@ -1890,7 +1895,20 @@ export class GoogleChatGatekeeperImpl
   async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
-    if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
+    if (!action) {
+      // Nothing left to withdraw, so Deny must not be refused. A revert record means the write
+      // landed and the kernel never heard; the action stays in Google Chat.
+      const applied = store.getRevert(actionId) !== undefined;
+      const fields = { event: "action.reject.unknown", actionId, applied };
+      if (applied) {
+        // A rejected card is never undone, so the record would only keep the message text.
+        store.clearRevert(actionId);
+        logger.warn("rejected a Google Chat action that already applied", fields);
+      } else {
+        logger.info("rejected a Google Chat action it no longer holds", fields);
+      }
+      return undefined;
+    }
     if (this.#inFlight.has(actionId)) {
       throw new Error("This Google Chat action is being applied and can no longer be rejected.");
     }

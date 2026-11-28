@@ -627,6 +627,61 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages).toEqual([]);
   });
 
+  it("accepts a rejection of an action it does not hold", async () => {
+    const chat = chatHarness(chatBackend());
+    await expect(chat.rejectAction(99)).resolves.toBeUndefined();
+  });
+
+  // The edit landed but the overseer never heard, so the kernel still shows it pending.
+  it("accepts a repeated apply of an edit that already landed and keeps its undo", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    await chat.applyAction(1);
+    await chat.restart();
+    await expect(chat.applyAction(1)).resolves.toBeUndefined();
+    expect(backend.state.edits).toHaveLength(1);
+    await chat.revertAction(1);
+    expect(backend.state.messages[0].text).toBe("root");
+  });
+
+  it("accepts a rejection of an edit that already landed, leaving it in Google Chat", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    await chat.applyAction(1);
+    await chat.restart();
+    await expect(chat.rejectAction(1)).resolves.toBeUndefined();
+    expect(backend.state.edits).toHaveLength(1);
+    expect(backend.state.messages[0].text).toBe("Resolved");
+    // Denied, so its undo record is gone and the edit stays.
+    await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+    expect(backend.state.messages[0].text).toBe("Resolved");
+  });
+
+  it("keeps a posted send's queued edit working after the send is denied", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.post("Working...")).message;
+    await message.edit("Done.");
+    // The send posted but the overseer never heard, so it is denied after the fact.
+    await chat.applyAction(1);
+    await expect(chat.rejectAction(1)).resolves.toBeUndefined();
+    expect(backend.state.deletes).toHaveLength(0);
+    expect(await message.getMetadata()).toMatchObject({id: messageName("M1"), text: "Done."});
+    await chat.applyAction(2);
+    expect(backend.state.creates).toHaveLength(1);
+    expect(backend.state.edits).toEqual([{name: messageName("M1"), text: "Done."}]);
+  });
+
   it("shows the approver the exact message text", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));

@@ -463,6 +463,17 @@ export class GoogleDocGatekeeperImpl
 
   /** Withdraws a comment write. No edit waits on it, so nothing restarts. */
   #rejectComment(actionId: number): Promise<void> {
+    // The comment posted but the kernel never heard. The kit refuses to reject an applied id;
+    // Deny must still clear the card, and the comment stays in the Doc.
+    if (this.#commentJournal.wasApplied(actionId)) {
+      // Idempotent: finishes an interrupted retire, which nothing would retry once the card clears.
+      this.#commentJournal.retire(actionId);
+      this.#commentAttempts.delete(actionId);
+      logger.warn("rejected a Google Doc comment that already applied", {
+        event: "action.reject.unknown", actionId,
+      });
+      return Promise.resolve();
+    }
     return this.#reads.resolve(async () => {
       await this.#comments.reject(actionId);
       this.#commentAttempts.delete(actionId);
@@ -636,7 +647,11 @@ export class GoogleDocGatekeeperImpl
       let pending = pendingActions.list();
       let index = pending.findIndex(({id}) => id === actionId);
       if (index === -1) {
-        throw new Error(`Unknown pending Google Doc action: ${actionId}`);
+        // Nothing left to withdraw, so Deny must not be refused.
+        logger.info("rejected a Google Doc edit it no longer holds", {
+          event: "action.reject.unknown", actionId,
+        });
+        return undefined;
       }
       let rejected = pending[index].action;
       let wasActive = !rejected.invalidatedReason;
