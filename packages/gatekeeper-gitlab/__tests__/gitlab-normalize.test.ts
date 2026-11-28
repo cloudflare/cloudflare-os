@@ -11,6 +11,7 @@ import {
   commentTargetFromPosition,
   commitIdsOfMergeRequestSummary,
   diffAnchor,
+  discussionCommentFromNote,
   hasDraftPrefix,
   issuableComparator,
   issueMatchesFilter,
@@ -183,6 +184,24 @@ describe("labels, tags, merge request summary", () => {
 
   it("carries an issue's upvotes, the key a popularity listing is ordered by", () => {
     expect(normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data).upvotes).toBe(4);
+  });
+
+  it("reads an issue as confidential unless GitLab says it is not", () => {
+    const { confidential: _, ...unflagged } = fx.issueResponse.data;
+    expect(normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data).confidential).toBe(false);
+    expect(normalizeIssueSummary(INSTANCE, "group/project", { ...fx.issueResponse.data, confidential: true }).confidential).toBe(true);
+    // A row without the flag is never served, or reported, as an open one.
+    expect(normalizeIssueSummary(INSTANCE, "group/project", unflagged as typeof fx.issueResponse.data).confidential).toBe(true);
+  });
+
+  it("reads a note as internal by its flag or the deprecated name older instances send alone, and by neither as internal", () => {
+    const note = fx.issueNotesResponse.data[1];
+    const comment = (flags: { internal?: boolean; confidential?: boolean }) =>
+      discussionCommentFromNote(INSTANCE, `${INSTANCE}/group/project/-/issues/1`, { ...note, ...flags }).internal;
+    expect(comment({})).toBe(false);
+    expect(comment({ internal: true, confidential: true })).toBe(true);
+    expect(comment({ internal: undefined, confidential: true })).toBe(true);
+    expect(comment({ internal: undefined, confidential: undefined })).toBe(true);
   });
 
   it("uses the returned project path for moved issue and merge request references, including fork targets", () => {

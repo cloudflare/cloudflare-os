@@ -38,6 +38,15 @@ describe("push card", () => {
   });
 });
 
+describe("rename card", () => {
+  it("shows the new title but never the one it replaces, which may be a confidential issue's", () => {
+    const card = describeGitLabAction({ ...BASE, type: "setTitle", targetKind: "issue", targetId: "7",
+      title: "New name", previousTitle: "Confidential: acquisition plan" });
+    expect(card.fields).toEqual([{ label: "New title", kind: "inline", value: "New name" }]);
+    expect(JSON.stringify(card)).not.toMatch(/acquisition plan/);
+  });
+});
+
 describe("merge card", () => {
   it("names the head the merge is bound to and every option it sends", () => {
     const card = describeGitLabAction({

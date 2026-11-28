@@ -30,7 +30,6 @@ import {
 } from "@gadgets/gatekeeper-kit/ci";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
-import { ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -75,6 +74,8 @@ import {
   type GitLabProjectResponse,
   type GitLabSimpleUser,
   type PinnedProject,
+  type GitLabTestSuitePage,
+  type GitLabTestReportSummaryResponse,
 } from "./gitlab-api";
 import {
   apiKind,
@@ -131,6 +132,7 @@ import {
   issuableComparator,
   issueMatchesFilter,
   issueMatchesSearch,
+  isInternalNote,
   issueOrder,
   issueUrl,
   mergeRequestCreateTitle,
@@ -166,10 +168,19 @@ import {
   textSnippet,
   type GitLabDiscussionCommentEntry,
 } from "./gitlab-normalize";
-import { StreamingCursor, mapPage } from "./gitlab-cursors";
+import { StreamingCursor, mapPage, type GuardedListing } from "./gitlab-cursors";
 import type { GitLabVerifierApi } from "./gitlab";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
-import { jobSubresourceId, parseProjectSubresource, projectSubresourceId } from "./project-subresources";
+import {
+  featureSubresourceId,
+  issueSubresourceId,
+  jobSubresourceId,
+  noteSubresourceId,
+  parseProjectSubresource,
+  projectSubresourceId,
+  type Noteable,
+  type ProjectFeature,
+} from "./project-subresources";
 import type {
   GitLabActor,
   GitLabBranchFilter,
@@ -237,6 +248,13 @@ const MAX_PROTECTED_BRANCH_PAGES = 10;
 const MAX_REPLY_TARGET_HOPS = 50;
 /** Most rows a CI listing reads before paging: a merge request's pipelines, a pipeline's jobs. */
 const MAX_CI_ROWS = 1000;
+/** How many pages of a suite's test cases (100 each) failed tests read before refusing it as too large. */
+const MAX_TEST_CASE_PAGES = 100;
+/**
+ * How many failed and errored cases one failed-tests read keeps before refusing it as too large:
+ * each holds at most TEST_OUTPUT_MAX_CHARS of output, so this bounds the read near 8 MiB.
+ */
+const MAX_FAILED_TEST_CASES = 2000;
 /**
  * How many of the project's latest push events are searched for one that left a ref at a commit:
  * one page, GitLab's most. A push older than that many others is outside the window anyway on all
@@ -250,8 +268,8 @@ const PUSH_EVENTS_SEARCHED = 100;
 const OBSERVED_SET_PREFIX = "observedSet:";
 /**
  * The sets those reads marked: what a job-log or test-report read disclosed. Each once needed a
- * role on the project; it now needs the baseline membership alone, as the reads' legacy role IDs do
- * (see parseProjectSubresource).
+ * role on the project; it now needs the baseline alone, the project itself, as the reads' legacy
+ * role IDs do (see parseProjectSubresource).
  */
 const CI_DATA_SETS: Record<string, true> = { "ci-logs": true, "ci-test-reports": true };
 // Admits an observer only if their own account can read every project subresource a binding's
@@ -350,23 +368,26 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   constructor(ctx: DurableObjectState<GitLabGatekeeperImplProps>, env: Env) {
     super(ctx, env);
-    this.#discardPathAddressedCaches();
+    this.#discardStaleCaches();
   }
 
   /**
    * Discards, once, what the caches held when this binding's reads were addressed by path: a path
    * the project left could then have served another project's data, which a read now reporting the
-   * pinned id must not return. Run before anything can read them, by moving the generation every
-   * `cache:*` entry is checked against. Finished CI logs stay: each is revalidated by job id beneath
-   * the pinned project before use, and dropped if it isn't there. The roster marker earlier versions
-   * kept, for CI-data reads that no longer consult it, goes too.
+   * pinned id must not return. And, once, what they held before cached issues said whether they
+   * are confidential and cached notes whether they are internal: a row without the flag would be
+   * served, and reported, as if it were neither. Run before anything can read them, by moving the
+   * generation every `cache:*` entry is checked against. Finished CI logs stay: each is revalidated
+   * by job id beneath the pinned project before use, and dropped if it isn't there. The roster
+   * marker earlier versions kept, for CI-data reads that no longer consult it, goes too.
    */
-  #discardPathAddressedCaches(): void {
+  #discardStaleCaches(): void {
     const kv = this.ctx.storage.kv;
-    if (kv.get<boolean>("cachesByProjectId")) return;
+    if (kv.get<boolean>("cachesByProjectId") && kv.get<boolean>("cachesFlagConfidential")) return;
     this.#clearCaches();
     kv.delete("observerRoster");
     kv.put("cachesByProjectId", true);
+    kv.put("cachesFlagConfidential", true);
   }
 
   // -- identity ---------------------------------------------------------------------------
@@ -457,20 +478,44 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Authorizes a read made through this binding, reporting what it depends on as its subresources:
-   * `subresources`, the jobs whose log or artifacts a job-log or test-report read disclosed (see
-   * readJobLog, pipelineTestReport), each of which needs membership of the project as well, or
-   * otherwise the project it was made in, by its id (see projectSubresourceId). Whatever a read
-   * returned, an observer can see it only if they are a member of that project, and GitLab would
-   * show them each of those jobs' data. Every read, each page of a listing included, authorizes
-   * through here, so none can leave it out.
+   * always the project it was made in, by its id (see projectSubresourceId), which an observer must
+   * be shown; each project feature in `features` the read returned data from (see
+   * featureSubresourceId), whose data an observer's own account must be able to list; and
+   * `subresources`, what the read disclosed that GitLab guards item by item: each confidential
+   * issue and each internal note it returned (see issueSubresourceId, noteSubresourceId), and the
+   * jobs whose log or artifacts a job-log or test-report read disclosed (see readJobLog,
+   * pipelineTestReport). A feature is named only for data the read returned, so a feature the
+   * project turned off, which returns none, is never required. An observer can see what a read
+   * returned only if GitLab would show them each of those. Every read, each page of a listing
+   * included, authorizes through here, so none can leave the project out.
    */
   async authorizeRead(
     approvalQueue: RpcStub<ApprovalQueue>, observation: Omit<ObservationDescription, "subresources">,
-    subresources: string[] = [],
+    features: readonly ProjectFeature[], subresources: string[],
   ): Promise<void> {
-    // A test report holding no jobs' reports names none, and still reports the project.
-    const required = subresources.length > 0 ? subresources : [projectSubresourceId((await this.#pinnedProject()).id)];
-    await approvalQueue.authorizeObservation({ ...observation, subresources: required });
+    const { id } = await this.#pinnedProject();
+    const required = [projectSubresourceId(id), ...features.map(feature => featureSubresourceId(id, feature)), ...subresources];
+    await approvalQueue.authorizeObservation({ ...observation, subresources: [...new Set(required)] });
+  }
+
+  /**
+   * The subresources of the confidential issues among `issues` (see authorizeRead). One a queued
+   * create stands for names none: it is not on GitLab, and what it shows is the caller's own.
+   */
+  #issueSubresources(projectId: number, issues: readonly GitLabIssueSummary[]): string[] {
+    return issues.filter(issue => issue.confidential && !issue.id.startsWith("~"))
+      .map(issue => issueSubresourceId(projectId, Number(issue.id)));
+  }
+
+  /**
+   * The subresources of the internal notes among `comments`, on issue or merge request `iid` (see
+   * authorizeRead). A queued comment, not on GitLab yet (`~` id), names none.
+   */
+  #noteSubresources(
+    projectId: number, noteable: Noteable, iid: number, comments: readonly { id: string; internal: boolean }[],
+  ): string[] {
+    return comments.filter(comment => comment.internal && !comment.id.startsWith("~"))
+      .map(comment => noteSubresourceId(projectId, noteable, iid, Number(comment.id)));
   }
 
   /**
@@ -722,24 +767,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return normalizeProjectMetadata(this.#instanceUrl(), await this.#getProjectResponse());
   }
 
-  /** A fork's project ref, for a merge request whose source project is not this one. */
-  async #projectRefById(id: number): Promise<GitLabProjectRef> {
-    return await this.#cached(this.#cacheKey("project-by-id", String(id)), ENTITY_CACHE_TTL_MS, async () => {
-      try {
-        const project = await this.#withApi(api => api.getProjectById(id));
-        return projectRef(this.#instanceUrl(), project.path_with_namespace, project.name);
-      } catch (error) {
-        // A fork the user cannot see: keep the merge request readable with an opaque ref.
-        logger.warn("failed to resolve a merge request's source project", {
-          event: "merge.request.source.project.resolve.failed", error,
-        });
-        return { path: `project-${id}`, name: `project-${id}`, namespace: "", url: this.#instanceUrl() };
-      }
-    });
+  /**
+   * A fork's project ref, for a merge request or pipeline whose project is not this one: its id
+   * alone. GitLab's merge request and pipeline responses name a fork only by id, and a fork can be
+   * more restricted than the project it targets, so resolving its path and name with the binding
+   * account's token would disclose what observers of this project may not see.
+   */
+  #projectRefById(id: number): GitLabProjectRef {
+    return { path: `project-${id}`, name: `project-${id}`, namespace: "", url: this.#instanceUrl() };
   }
 
-  async #sourceProjectRef(mr: GitLabMergeRequestResponse): Promise<GitLabProjectRef | undefined> {
-    return mr.source_project_id === mr.target_project_id ? undefined : await this.#projectRefById(mr.source_project_id);
+  #sourceProjectRef(mr: GitLabMergeRequestResponse): GitLabProjectRef | undefined {
+    return mr.source_project_id === mr.target_project_id ? undefined : this.#projectRefById(mr.source_project_id);
   }
 
   // -- issues and merge requests ----------------------------------------------------------
@@ -787,10 +826,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   async #getRemoteMergeRequestDetails(realId: string): Promise<GitLabMergeRequestDetails> {
     return await this.#cached(this.#cacheKey("mr", realId), ENTITY_CACHE_TTL_MS, async () => {
-      const raw = this.#getRawMergeRequest(realId);
-      const [mr, approvers, sourceProject] = await Promise.all([
-        raw, this.#getApprovers(realId), raw.then(fetched => this.#sourceProjectRef(fetched))]);
-      return normalizeMergeRequestDetails(this.#instanceUrl(), this.#projectPath(), mr, approvers, sourceProject);
+      const [mr, approvers] = await Promise.all([this.#getRawMergeRequest(realId), this.#getApprovers(realId)]);
+      return normalizeMergeRequestDetails(this.#instanceUrl(), this.#projectPath(), mr, approvers, this.#sourceProjectRef(mr));
     });
   }
 
@@ -890,6 +927,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       updatedAt: new Date(action.submittedAt),
       commentCount: 0,
       upvotes: 0,
+      // A queued create cannot make an issue confidential.
+      confidential: false,
       bodyMarkdown: this.#postedText(action.options.bodyMarkdown ?? "", false),
     };
   }
@@ -1040,11 +1079,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Issues, listed or searched: GitLab's list endpoint is its search endpoint (`search=`), so one
    * path serves both. Touched (queued-mutation) issues are removed from the remote pages and
-   * re-injected overlaid; provisional issues are injected too.
+   * re-injected overlaid; provisional issues are injected too. A page reports each confidential
+   * issue on it.
    */
   async #listIssueSummaries(
     filter: GitLabIssueFilter | undefined, search: string | undefined, pageSize: number,
-  ): Promise<Cursor<GitLabIssueSummary>> {
+  ): Promise<GuardedListing<GitLabIssueSummary>> {
+    const { id: projectId } = await this.#pinnedProject();
     const compare = issuableComparator<GitLabIssueSummary>(filter?.sort, filter?.direction);
     const matches = (item: GitLabIssueDetails) =>
       search === undefined ? issueMatchesFilter(item, filter) : issueMatchesSearch(item, { ...filter, text: search });
@@ -1060,7 +1101,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const { orderBy, sort } = issueOrder(filter);
     const projectPath = this.#projectPath();
     const key = stableKey({ ...filter, search });
-    return new StreamingCursor<GitLabIssueSummary>({
+    const cursor = new StreamingCursor<GitLabIssueSummary>({
       fetchPage: async (page, perPage) =>
         await this.#cached(this.#cacheKey("list-issues", key, `p${page}`), LIST_CACHE_TTL_MS, async () => {
           const raw = await this.#withApi(api => api.listIssues(projectPath, {
@@ -1088,6 +1129,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       identity: item => this.#currentId(item.id),
       pageSize,
     });
+    return { cursor, subresources: items => this.#issueSubresources(projectId, items) };
   }
 
   async #listMergeRequestSummaries(
@@ -1126,14 +1168,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             perPage,
             page,
           }));
-          // One lookup per fork, not per merge request: concurrent lookups would all miss the cache.
-          const forkIds = new Set(raw.items
-            .filter(item => item.source_project_id !== item.target_project_id)
-            .map(item => item.source_project_id));
-          const forkRefs = new Map(await Promise.all(
-            [...forkIds].map(async id => [id, await this.#projectRefById(id)] as const)));
           return mapPage(raw, item =>
-            normalizeMergeRequestSummary(this.#instanceUrl(), projectPath, item, forkRefs.get(item.source_project_id)));
+            normalizeMergeRequestSummary(this.#instanceUrl(), projectPath, item, this.#sourceProjectRef(item)));
         }),
       overlay: item => this.#overlayMergeRequestSummaryHead(this.#overlayIssueLike(item, "mergeRequest", item.id)),
       // As for issues: touched rows are dropped, since they are served as injected items.
@@ -1176,7 +1212,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
-  async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<Cursor<GitLabDiscussionEntry>> {
+  /**
+   * An issue's or merge request's discussion, with the queued comments on it. Every page of a
+   * confidential issue's reports the issue, whose words its comments answer, and each page the
+   * internal notes on it. The issue is read afresh once the comments have been, never from the
+   * cache, so a page reports it unless it was still public after its comments were read: cached
+   * details may predate its being made confidential, and the comments since.
+   */
+  async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<GuardedListing<GitLabDiscussionEntry>> {
     const realId = this.#realIdOf(logicalId);
     const compare = (a: GitLabDiscussionEntry, b: GitLabDiscussionEntry) => a.createdAt.getTime() - b.createdAt.getTime();
 
@@ -1195,11 +1238,23 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     provisionals.sort(compare);
 
     if (!realId) {
-      return new ArrayCursor(provisionals, pageSize);
+      return { cursor: new ArrayCursor(provisionals, pageSize), subresources: () => [] };
     }
 
-    const comments = await this.#fetchRemoteDiscussionComments(kind, realId);
-    return new ArrayCursor([...comments, ...provisionals].toSorted(compare), pageSize);
+    const [{ id: projectId }, comments] = await Promise.all([
+      this.#pinnedProject(),
+      this.#fetchRemoteDiscussionComments(kind, realId),
+    ]);
+    const iid = Number(realId);
+    let guarded: string[] = [];
+    if (kind === "issue") {
+      this.ctx.storage.kv.delete(this.#cacheKey("issue", realId));
+      guarded = this.#issueSubresources(projectId, [await this.#getRemoteIssueDetails(realId)]);
+    }
+    return {
+      cursor: new ArrayCursor([...comments, ...provisionals].toSorted(compare), pageSize),
+      subresources: items => [...guarded, ...this.#noteSubresources(projectId, kind, iid, items)],
+    };
   }
 
   /** A queued comment as it will read once posted. */
@@ -1212,6 +1267,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       bodyMarkdown: this.#postedText(bodyMarkdown, false),
       createdAt: new Date(submittedAt),
       url: `${noteableUrl}#note_${id}`,
+      // Queued comments are posted without GitLab's internal flag.
+      internal: false,
     };
   }
 
@@ -1250,6 +1307,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           createdAt: new Date(note.created_at),
           updatedAt: note.updated_at ? new Date(note.updated_at) : undefined,
           url: `${noteableUrl}#note_${note.id}`,
+          internal: isInternalNote(note),
         })),
       });
     }
@@ -1464,12 +1522,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /** When this gatekeeper's pushes made each commit a head: the absence policy's best source. */
   readonly #appliedPushes = new AppliedPushLog(this.ctx.storage.kv);
 
-  /** A pipeline as a summary, naming the project it ran in when that is not this one. */
-  async #pipelineSummary(pipeline: GitLabPipelineBasicResponse, boundProjectId: number): Promise<GitLabPipelineSummary> {
-    return normalizePipelineSummary(pipeline,
-      pipeline.project_id === boundProjectId ? undefined : await this.#projectRefById(pipeline.project_id));
-  }
-
   /**
    * `read`'s answer, or undefined (logged as `event`) when GitLab fails it: CI rides on details
    * that must still be returned. A refused token is not GitLab failing and still propagates:
@@ -1571,8 +1623,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * account cannot see pipelines or the head is unknown. `mr` is a fresh read of the merge
    * request, or undefined while its creation is queued. GitLab's `head_pipeline` can briefly be
    * an earlier head's after a push, so it counts only when `pipelineIsForHead` says it ran for this
-   * one. A merge request still queued for creation, or a head a queued push will move it to, has
-   * no pipeline yet, and GitLab is not asked.
+   * one. A head pipeline that ran in another project (a fork's) counts as none, as in
+   * `mergeRequestPipelines`. A merge request still queued for creation, or a head a queued push
+   * will move it to, has no pipeline yet, and GitLab is not asked.
    */
   async #mergeRequestCi(details: GitLabMergeRequestDetails, mr: GitLabMergeRequestResponse | undefined):
       Promise<GitLabCommitCi | undefined> {
@@ -1587,9 +1640,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const realId = String(mr.iid);
     const head = mr.head_pipeline ?? null;
-    if (head !== null && await pipelineIsForHead(head, headSha, realId,
+    if (head !== null && head.project_id === mr.target_project_id && await pipelineIsForHead(head, headSha, realId,
       async sha => (await this.#getRawCommit(sha))?.parent_ids ?? null)) {
-      const summary = await this.#pipelineSummary(head, mr.target_project_id);
+      const summary = normalizePipelineSummary(head);
       return { commitId: headSha, phase: summary.phase, pipeline: summary };
     }
     return await this.#ciWithoutPipeline(headSha, realId);
@@ -1704,6 +1757,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return jobId;
   }
 
+  /**
+   * The merge request's pipelines that ran in this project. GitLab also lists those of its source
+   * project that the binding account may read, a fork's, which observers of this project may not:
+   * they are left out, page by page.
+   */
   async mergeRequestPipelines(logicalId: string, pageSize: number): Promise<Cursor<GitLabPipelineSummary>> {
     const realId = this.#realIdOf(logicalId);
     if (!realId) return new ArrayCursor<GitLabPipelineSummary>([], pageSize);
@@ -1712,11 +1770,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return new StreamingCursor<GitLabPipelineSummary>({
       fetchPage: async (page, perPage) => {
         const rows = await this.#withApi(api => api.listMergeRequestPipelines(projectPath, Number(realId), page, perPage));
-        // A fork's pipelines all run in its one project: look each distinct project up once, as the
-        // rows would otherwise all miss the cache together.
-        const forks = new Set(rows.items.map(row => row.project_id).filter(id => id !== boundProjectId));
-        const refs = new Map(await Promise.all([...forks].map(async id => [id, await this.#projectRefById(id)] as const)));
-        return { items: rows.items.map(row => normalizePipelineSummary(row, refs.get(row.project_id))), nextPage: rows.nextPage };
+        const own = rows.items.filter(row => row.project_id === boundProjectId);
+        return { items: own.map(row => normalizePipelineSummary(row)), nextPage: rows.nextPage };
       },
       pageSize,
     });
@@ -1724,7 +1779,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The pipeline `mr.getPipeline(id?)` opens: without `id`, the head commit's (`ci.pipeline`);
-   * with it, one of the merge request's pipelines. One that ran in another project is refused.
+   * with it, one of the merge request's pipelines that ran in this project.
    */
   async openMergeRequestPipeline(logicalId: string, id: string | undefined, gitCache?: RpcStub<GitCache>): Promise<number> {
     const boundProjectId = await this.#boundProjectId();
@@ -1742,17 +1797,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           ? "There is no pipeline yet for the head commit; it appears after the pushed commits reach GitLab."
           : "There is no pipeline yet for the head commit; read again shortly.");
       }
-      if (ci.pipeline.project !== undefined) {
-        throw new Error(`The head commit's pipeline ran in ${ci.pipeline.project.path}, another project, so it cannot be opened.`);
-      }
       return Number(ci.pipeline.id);
     }
     const pipelineId = this.#parseCiId(id, "Pipeline");
     const realId = this.#requireRealId(logicalId, "Merge request");
     const row = await this.#findInMergeRequestPipelines(realId, rows => rows.find(pipeline => pipeline.id === pipelineId));
-    if (row === undefined) throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines.`);
-    if (row.project_id !== boundProjectId) {
-      throw new Error(`Pipeline ${pipelineId} ran in another project (the merge request's source project), so it cannot be opened.`);
+    if (row === undefined || row.project_id !== boundProjectId) {
+      throw new Error(`Pipeline ${pipelineId} is not one of merge request !${logicalId}'s pipelines in this project.`);
     }
     return pipelineId;
   }
@@ -1833,56 +1884,87 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * The summary of pipeline `pipelineId`'s test reports, with the subresources it discloses (see
    * authorizeRead): the artifacts of each job whose reports it holds, which it names itself
-   * (`build_ids`). GitLab decides per job who may read them (`artifacts:access`), so the observer's
-   * own account is asked of each.
+   * (`build_ids`). GitLab decides per job who may read them: from 19.1.4 it leaves out of the
+   * summary and the report every job whose test report artifacts the reader may not read
+   * (`artifacts:access`), so the observer's own account is asked of each (see canReadJobTestReport).
    */
   async pipelineTestReport(pipelineId: number): Promise<{ subresources: string[]; report: GitLabTestReportSummary }> {
     const { id } = await this.#pinnedProject();
     const summary = await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId));
-    const jobs = new Set(summary.test_suites.flatMap(suite => suite.build_ids));
-    return {
-      subresources: [...jobs].map(jobId => jobSubresourceId(id, "artifacts", jobId)),
-      report: normalizeTestReportSummary(summary),
-    };
+    return { subresources: this.#testReportSubresources(id, summary), report: normalizeTestReportSummary(summary) };
   }
 
   /**
-   * The failed cases of pipeline `pipelineId`'s test reports, with the subresources they disclose,
-   * as for pipelineTestReport. The whole report names no jobs, and the summary may not either: its
-   * rows are written by a worker after each job finishes, while the report reads the artifacts
-   * themselves and GitLab may answer it from a cache up to two minutes old. So the report is taken
-   * to have come from every job that could have made it (see #testReportJobIds), listed once it has
-   * been read: any job it holds a report of existed by then.
+   * The failed cases of pipeline `pipelineId`'s test reports, with the subresources they disclose:
+   * the artifacts of exactly the jobs read. Each suite of the summary this account is shown that
+   * has failed or errored cases is read through GraphQL's `testSuite(buildIds:)`, once for each
+   * pipeline of the tree its jobs ran in, asking for those jobs alone. GitLab reads of them only
+   * the pipeline's latest attempts (and from 19.1.4 only those whose reports this account may
+   * read), so what comes back came from the jobs asked for, which are the jobs named, on every
+   * version: a job retried since the summary, or one whose summary row GitLab's worker has yet to
+   * write, is neither read nor named.
    */
   async pipelineFailedTests(pipelineId: number, pageSize: number):
       Promise<{ subresources: string[]; cases: Cursor<GitLabTestCase> }> {
-    const { id } = await this.#pinnedProject();
-    const report = await this.#withApi(api => api.getPipelineTestReport(this.#projectPath(), pipelineId))
-      .catch((error: unknown) => {
-        // The client reports a body past its cap as a 502 caused by the cap.
-        if (!(error instanceof GitLabApiError && error.cause instanceof ResponseTooLargeError)) throw error;
-        throw new Error(
-          `Pipeline ${pipelineId}'s test report is too large to read here. Use getTestReport() for its totals, ` +
-          `and the failing jobs' logs for details.`, { cause: error });
-      });
-    const jobs = await this.#testReportJobIds(pipelineId);
+    const projectId = await this.#boundProjectId();
+    const summary = await this.#withApi(api => api.getPipelineTestReportSummary(this.#projectPath(), pipelineId));
+    const failing = summary.test_suites.filter(suite => suite.failed_count + suite.error_count > 0);
+    const pipelineOf = failing.length === 0 ? new Map<number, number>() : await this.#latestJobPipelines(pipelineId);
+    // A job the capped listings left out is looked up on its own, so no failing job goes unread.
+    for (const jobId of new Set(failing.flatMap(suite => suite.build_ids))) {
+      if (pipelineOf.has(jobId)) continue;
+      const job = await this.#withApi(api => api.getJob(this.#projectPath(), jobId));
+      if (job?.pipeline.iid !== undefined) pipelineOf.set(jobId, job.pipeline.iid);
+    }
+    const read = new Set<number>();
+    const cases: GitLabTestCase[] = [];
+    for (const suite of failing) {
+      const jobsByPipeline = Map.groupBy(suite.build_ids.filter(jobId => pipelineOf.has(jobId)), jobId => pipelineOf.get(jobId)!);
+      for (const [pipelineIid, jobIds] of jobsByPipeline) {
+        for (const jobId of jobIds) read.add(jobId);
+        await this.#readFailedCases(projectId, pipelineId, suite.name, pipelineIid, jobIds, cases);
+      }
+    }
     return {
-      subresources: jobs.map(jobId => jobSubresourceId(id, "artifacts", jobId)),
-      cases: new ArrayCursor(failedTestCases(report), pageSize),
+      subresources: [...read].map(jobId => jobSubresourceId(projectId, "artifacts", jobId)),
+      cases: new ArrayCursor(cases, pageSize),
     };
   }
 
   /**
-   * Every job a test report of pipeline `pipelineId` can hold reports of: GitLab's report gathers
-   * the latest jobs with a test report (`junit`) artifact in the pipeline and in its child pipelines
-   * in the same project, so this lists every such job of them, retried attempts included, since a
-   * cached report can predate a retry. Throws rather than leave any out when a listing is cut short.
+   * Appends to `cases` the failed and errored cases of jobs `jobIds` in the pipeline numbered
+   * `pipelineIid`, as suite `suite`, page after page. Each page is cut down to them, their output
+   * cut short, before the next is read, and a read holding more than MAX_FAILED_TEST_CASES of them,
+   * or a suite of more than MAX_TEST_CASE_PAGES pages, is refused: one bound on what it keeps.
    */
-  async #testReportJobIds(pipelineId: number): Promise<number[]> {
+  async #readFailedCases(projectId: number, pipelineId: number, suite: string, pipelineIid: number,
+      jobIds: number[], cases: GitLabTestCase[]): Promise<void> {
+    const tooLarge = () => new Error(`Pipeline ${pipelineId}'s test report is too large to read here. Use ` +
+      `getTestReport() for its totals, and the failing jobs' logs for details.`);
+    let after: string | null = null;
+    for (let pages = 0; ; pages++) {
+      if (pages === MAX_TEST_CASE_PAGES) throw tooLarge();
+      const cursor: string | null = after;
+      const page: GitLabTestSuitePage | null =
+        await this.#withApi(api => api.getPipelineTestSuitePage(projectId, pipelineIid, jobIds, cursor));
+      if (page === null) return;
+      cases.push(...failedTestCases({ test_suites: [{ name: suite, test_cases: page.cases }] }));
+      if (cases.length > MAX_FAILED_TEST_CASES) throw tooLarge();
+      if (page.endCursor === null) return;
+      after = page.endCursor;
+    }
+  }
+
+  /**
+   * The pipeline number (`iid`) of each latest job of pipeline `pipelineId` and of its child
+   * pipelines in the project, the jobs GitLab's test report gathers. A listing cut short leaves
+   * jobs out, which the caller looks up on their own.
+   */
+  async #latestJobPipelines(pipelineId: number): Promise<Map<number, number>> {
     const projectId = await this.#boundProjectId();
     const projectPath = this.#projectPath();
     const route = supportsTriggerJobsRoute(await this.#getVersion()) ? "trigger_jobs" : "bridges";
-    const jobIds = new Set<number>();
+    const pipelineOf = new Map<number, number>();
     const listed = new Set<number>();
     for (const pending = [pipelineId]; pending.length > 0;) {
       const pipeline = pending.pop()!;
@@ -1890,22 +1972,24 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       listed.add(pipeline);
       const [jobs, triggers] = await Promise.all([
         this.#fetchAllPages((page, perPage) => this.#withApi(api =>
-          api.listPipelineJobs(projectPath, pipeline, page, perPage, { includeRetried: true })), MAX_CI_ROWS),
+          api.listPipelineJobs(projectPath, pipeline, page, perPage)), MAX_CI_ROWS),
         this.#fetchAllPages((page, perPage) => this.#withApi(api =>
-          api.listPipelineTriggerJobs(projectPath, pipeline, { route, page, perPage, includeRetried: true })), MAX_CI_ROWS),
+          api.listPipelineTriggerJobs(projectPath, pipeline, { route, page, perPage })), MAX_CI_ROWS),
       ]);
-      if (jobs.truncated || triggers.truncated) {
-        throw new Error(`Pipeline ${pipelineId} has too many jobs to tell which its test report came from. ` +
-          "Use getTestReport() for its totals, and the failing jobs' logs for details.");
-      }
       for (const job of jobs) {
-        if (job.artifacts?.some(artifact => artifact.file_type === "junit")) jobIds.add(job.id);
+        if (job.pipeline.iid !== undefined) pipelineOf.set(job.id, job.pipeline.iid);
       }
       for (const trigger of triggers) {
         if (trigger.downstream_pipeline?.project_id === projectId) pending.push(trigger.downstream_pipeline.id);
       }
     }
-    return [...jobIds];
+    return pipelineOf;
+  }
+
+  /** The artifacts of each job a test report summary holds reports of. */
+  #testReportSubresources(projectId: number, summary: GitLabTestReportSummaryResponse): string[] {
+    return [...new Set(summary.test_suites.flatMap(suite => suite.build_ids))]
+      .map(jobId => jobSubresourceId(projectId, "artifacts", jobId));
   }
 
   async jobDetails(jobId: number): Promise<GitLabJobDetails> {
@@ -2018,22 +2102,24 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Observer tracking: the "ACL check (single unit)" strategy. Every binding is scoped to one
-   * project, and issues/MRs inherit its permissions, so the project is the atomic ACL unit, and an
-   * observer must be able to read its repository (Reporter or above).
+   * project, and issues/MRs inherit its permissions, so the project is the atomic ACL unit: an
+   * observer must be shown the project (see GitLabVerifier.hasProjectAccess), and be able to read
+   * each of its features a read returned data from.
    *
-   * Every read reports the project by its id, and a CI-data read the jobs it disclosed (see
-   * authorizeRead), which the Workshop checks through verifyObserverAccess. This check stays for the
-   * reads made before they did, asking GitLab with the observer's own token, now, whether their
-   * membership reaches Reporter on the project the binding's path names, as releases that addressed
-   * it by path asked, and on the project the binding is pinned to, by its stored id, when it has
-   * one: those releases followed the path, so what they read may have come from a project that
-   * took it. A binding minted with reportsSubresources has no such reads, so it admits every
-   * observer without asking GitLab and records none (see addObserver). Admission never pins the
-   * project, which would ask with the binding owner's token, so a binding whose owner's grant has
-   * lapsed still admits observers on their own; no stored id means no data has been read by id
-   * (every read pins it first). The CI-data sets those reads marked (strategy C) once needed a role
-   * and now need the baseline alone (`CI_DATA_SETS`). Reads no longer mark sets, so the observers
-   * the tracker stores are never checked again by a read.
+   * Every read reports the project by its id, and beneath it the project features its data came
+   * from and the confidential issues, internal notes and jobs it disclosed (see authorizeRead),
+   * which the Workshop checks through verifyObserverAccess. This check stays for the reads made
+   * before they did, asking GitLab with the observer's own token, now, whether it shows them the
+   * project the binding's path names, as releases that addressed it by path asked, and the
+   * project the binding is pinned to, by its stored id, when it has one: those releases followed
+   * the path, so what they read may have come from a project that took it. A binding minted with
+   * reportsSubresources has no such reads, so it admits every observer without asking GitLab and
+   * records none (see addObserver). Admission never pins the project, which would ask with the
+   * binding owner's token, so a binding whose owner's grant has lapsed still admits observers on
+   * their own; no stored id means no data has been read by id (every read pins it first). The
+   * CI-data sets those reads marked (strategy C) once needed a role and now need the baseline
+   * alone (`CI_DATA_SETS`). Reads no longer mark sets, so the observers the tracker stores are
+   * never checked again by a read.
    */
   #observerStrategy: ObserverStrategy | undefined;
 
@@ -2078,8 +2164,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Checks the project subresources this binding's reads report (see authorizeRead), failing the
-   * whole call for any other ID. An observer is allowed when their own membership of each project
-   * reaches the role its ID names, or Reporter for none, as their UserAccount last learned (see
+   * whole call for any other ID. An observer is allowed when GitLab shows them each project, and
+   * their own account can read each project feature and each confidential issue, internal note or
+   * job an ID names beneath it, as their UserAccount last learned (see
    * UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
@@ -2092,12 +2179,27 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   // -- session-facing reads (in-process; sessions hold this object directly) --------------
 
-  async projectMetadata(): Promise<GitLabProjectMetadata> {
-    return await this.#getProjectMetadata();
+  /**
+   * `getMetadata()`'s read: the project's metadata, with the project features it holds data from
+   * (see authorizeRead). Its default branch is the repository's, which GitLab returns only to an
+   * account that may read the code, so the repository is named only when GitLab returned one.
+   */
+  async projectMetadata(): Promise<{ metadata: GitLabProjectMetadata; features: ProjectFeature[] }> {
+    const response = await this.#getProjectResponse();
+    return {
+      metadata: normalizeProjectMetadata(this.#instanceUrl(), response),
+      features: response.default_branch ? ["repository"] : [],
+    };
   }
 
   async openIssue(id: string): Promise<GitLabIssueDetails> {
     return await this.#getIssueDetails(id);
+  }
+
+  /** Issue `id`'s details, and the subresources they disclose: the issue, if it is confidential. */
+  async issueDetails(id: string): Promise<{ details: GitLabIssueDetails; subresources: string[] }> {
+    const [{ id: projectId }, details] = await Promise.all([this.#pinnedProject(), this.#getIssueDetails(id)]);
+    return { details, subresources: this.#issueSubresources(projectId, [details]) };
   }
 
   async openMergeRequest(id: string, gitCache?: RpcStub<GitCache>): Promise<GitLabMergeRequestDetails> {
@@ -2125,7 +2227,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return ci === undefined ? details : { ...details, ci };
   }
 
-  async issueDiscussion(kind: EntityKind, id: string, pageSize: number): Promise<Cursor<GitLabDiscussionEntry>> {
+  async issueDiscussion(kind: EntityKind, id: string, pageSize: number): Promise<GuardedListing<GitLabDiscussionEntry>> {
     return await this.#getDiscussion(kind, id, pageSize);
   }
 
@@ -2171,15 +2273,22 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return await this.#getMergeBaseCached(revision.baseSha, revision.headSha);
   }
 
-  async mergeRequestThreads(id: string, pageSize: number): Promise<Cursor<GitLabDiffThread>> {
-    return new ArrayCursor(await this.#overlaidDiffThreads(id), pageSize);
+  /** A merge request's diff threads; a page reports the internal notes in its threads. */
+  async mergeRequestThreads(id: string, pageSize: number): Promise<GuardedListing<GitLabDiffThread>> {
+    const [{ id: projectId }, threads] = await Promise.all([this.#pinnedProject(), this.#overlaidDiffThreads(id)]);
+    const realId = this.#realIdOf(id);
+    return {
+      cursor: new ArrayCursor(threads, pageSize),
+      subresources: items => realId === undefined ? [] : items.flatMap(thread =>
+        this.#noteSubresources(projectId, "mergeRequest", Number(realId), thread.comments)),
+    };
   }
 
-  async listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<Cursor<GitLabIssueSummary>> {
+  async listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<GuardedListing<GitLabIssueSummary>> {
     return await this.#listIssueSummaries(filter, undefined, pageSize);
   }
 
-  async searchIssues(query: GitLabIssueSearch, pageSize: number): Promise<Cursor<GitLabIssueSummary>> {
+  async searchIssues(query: GitLabIssueSearch, pageSize: number): Promise<GuardedListing<GitLabIssueSummary>> {
     const { text, ...filter } = query;
     return await this.#listIssueSummaries(filter, text, pageSize);
   }

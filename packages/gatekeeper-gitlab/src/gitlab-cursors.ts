@@ -14,6 +14,14 @@ export function mapPage<T, U>(page: GitLabPage<T>, map: (item: T) => U): GitLabP
   return { items: page.items.map(map), nextPage: page.nextPage };
 }
 
+/**
+ * A listing whose rows GitLab guards one by one, and the subresources a page of them discloses
+ * beyond the project (see GitLabGatekeeperImpl.authorizeRead): each confidential issue, each
+ * internal note. The function sees what the listing saw as it was built, such as whether the
+ * issue it reads the notes of was confidential then.
+ */
+export type GuardedListing<T> = { cursor: Cursor<T>; subresources: (items: readonly T[]) => string[] };
+
 /** What a `StreamingCursor` fetches and how it merges simulation in; all but the first two are optional. */
 export type StreamingCursorOptions<T> = {
   /**
@@ -144,11 +152,12 @@ export class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
 }
 
 /**
- * A listing's cursor that authorizes each page before returning it (see observedListing in
- * gitlab-sessions.ts), so that what a page discloses is checked against the audience of the moment
- * it leaves, however long after the listing began. Every answer is authorized, an empty page and a
- * walk's first `null` included, since "nothing here" is an answer from the project too; only a
- * `null` after an answered page is not. With `advertise`, the page's commit ids are then
+ * A listing's cursor that authorizes each page, given its rows, before returning it (see
+ * observedListing in gitlab-sessions.ts), so that what a page discloses -- the rows on it, a
+ * confidential issue or an internal note among them -- is checked against the audience of the
+ * moment it leaves, however long after the listing began. Every answer is authorized, an empty
+ * page and a walk's first `null` included, since "nothing here" is an answer from the project
+ * too; only a `null` after an answered page is not. With `advertise`, the page's commit ids are then
  * advertised, only once it is authorized; a page whose advertisement fails is held for the retry,
  * as SessionGitCache.wrap holds one.
  *
@@ -159,7 +168,7 @@ export class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
 @validateRpc()
 export class ObservedCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
   readonly #inner: Cursor<T>;
-  readonly #authorize: (page: number) => Promise<void>;
+  readonly #authorize: (page: number, items: readonly T[]) => Promise<void>;
   readonly #advertise: ((items: readonly T[]) => Promise<void>) | undefined;
   readonly #release: () => void;
   readonly #queue = new SerialTaskQueue();
@@ -170,8 +179,8 @@ export class ObservedCursor<T> extends RpcTarget implements Cursor<T>, Disposabl
   #disposed = false;
 
   constructor(inner: Cursor<T>, options: {
-    /** Authorizes the `page`th answer (1-based) before it is returned. */
-    authorize: (page: number) => Promise<void>;
+    /** Authorizes the `page`th answer (1-based), `items` (none for `null`), before it is returned. */
+    authorize: (page: number, items: readonly T[]) => Promise<void>;
     advertise?: (items: readonly T[]) => Promise<void>;
     /** Releases the stubs the hooks hold, when the cursor is disposed. */
     release: () => void;
@@ -191,7 +200,7 @@ export class ObservedCursor<T> extends RpcTarget implements Cursor<T>, Disposabl
         const items = await this.#inner.next();
         if (items === null && this.#answered > 0) return null;
         try {
-          await this.#authorize(this.#answered + 1);
+          await this.#authorize(this.#answered + 1, items ?? []);
         } catch (error) {
           this.#refusal = error;
           throw error;

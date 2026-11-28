@@ -105,6 +105,8 @@ export type GitLabIssueResponse = {
   updated_at: string;
   closed_at?: string | null;
   web_url: string;
+  /** Whether only its author, its assignees and Planners up may read it. */
+  confidential: boolean;
   references?: { short: string; relative: string; full: string };
 };
 
@@ -245,21 +247,22 @@ export type GitLabTestReportSummaryResponse = {
   test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number; build_ids: number[] }>;
 };
 
-/** `GET /projects/:id/pipelines/:pipeline_id/test_report`. */
-export type GitLabTestReportResponse = {
-  test_suites: Array<{
-    name: string;
-    test_cases: Array<{
-      status: string;
-      name: string;
-      classname?: string | null;
-      file?: string | null;
-      execution_time?: number | null;
-      system_output?: string | null;
-      stack_trace?: string | null;
-    }>;
-  }>;
+/** One test case of a report, in REST's spelling: GraphQL's `testSuite` is read into it. */
+export type GitLabTestCaseResponse = {
+  status: string;
+  name: string;
+  classname?: string | null;
+  file?: string | null;
+  execution_time?: number | null;
+  system_output?: string | null;
+  stack_trace?: string | null;
 };
+
+/** A test report's suites, each read whole from GraphQL's `pipeline.testSuite(buildIds:)`. */
+export type GitLabTestReportResponse = { test_suites: Array<{ name: string; test_cases: GitLabTestCaseResponse[] }> };
+
+/** One page of the test cases of a suite, as GraphQL's `pipeline.testSuite(buildIds:)` answers it. */
+export type GitLabTestSuitePage = { cases: GitLabTestCaseResponse[]; endCursor: string | null };
 
 /** One row of `GET …/merge_requests/:iid/versions`: a diff version, made when the head moved. */
 export type GitLabMergeRequestVersionResponse = {
@@ -304,6 +307,10 @@ export type GitLabNoteResponse = {
   resolved_by?: GitLabSimpleUser | null;
   /** Present on `DiffNote`s. */
   position?: GitLabPositionResponse | null;
+  /** Whether only Planners up may read it: an internal note. */
+  internal?: boolean;
+  /** `internal`'s deprecated name, the only one older instances send. */
+  confidential?: boolean;
 };
 
 /** A diff-note position. `line_range` is present for multi-line comments. */
@@ -990,11 +997,22 @@ export class GitLabApi {
   }
 
   /**
-   * A user's effective membership of a project -- direct, inherited through ancestor groups, or
-   * through a group the project is shared with -- or null when they have none. This, not the
-   * project's `permissions` object, is the source for "what can this user see": `permissions`
-   * reports only direct project membership on the instance this was checked against, reading
-   * `null` for the group-inherited access that most members hold. The list form with the
+   * Whether this account may GET `path`: a 2xx is true, a 403 or 404 false -- GitLab answers 404 for
+   * what it hides from the account, and 403 for a feature its role can't reach or that is disabled.
+   * The body is discarded unread. Any other status throws.
+   */
+  async isReadable(path: string, query?: Query): Promise<boolean> {
+    const response = await this.#send("GET", path, { query, okStatuses: [403, 404] });
+    await response.body?.cancel().catch(() => {});
+    return response.ok;
+  }
+
+  /**
+   * A user's effective membership of the project with id `projectId` -- direct, inherited through
+   * ancestor groups, or through a group the project is shared with -- or null when they have none.
+   * This, not the project's `permissions` object, is the source for the role a user holds:
+   * `permissions` reports only direct project membership on the instance this was checked against,
+   * reading `null` for the group-inherited access that most members hold. The list form with the
    * documented `user_ids` filter is used rather than `members/all/:user_id` because its
    * non-member answer is a documented, verified shape (`[]`), where the single-member form's
    * 404 is neither. GitLab answers one row per user (`MembersFinder#distinct_on`): the direct
@@ -1002,9 +1020,8 @@ export class GitLabApi {
    * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
    * The highest is taken anyway, should a version return several.
    */
-  async getProjectMember(project: number | string, userId: number): Promise<GitLabMemberResponse | null> {
-    const rows = await this.#get<GitLabMemberResponse[]>(
-      `/projects/${typeof project === "number" ? project : encodeProjectPath(project)}/members/all`,
+  async getProjectMember(projectId: number, userId: number): Promise<GitLabMemberResponse | null> {
+    const rows = await this.#get<GitLabMemberResponse[]>(`/projects/${projectId}/members/all`,
       { user_ids: [userId], per_page: 100 });
     let best: GitLabMemberResponse | null = null;
     for (const row of rows) {
@@ -1449,29 +1466,27 @@ export class GitLabApi {
   }
 
   /**
-   * One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only unless
-   * `includeRetried`.
+   * One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only.
    */
-  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number,
-                         options: { includeRetried?: true } = {}): Promise<GitLabPage<GitLabJobResponse>> {
+  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number):
+      Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(`/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`,
-      { include_retried: options.includeRetried }, page, perPage);
+      {}, page, perPage);
   }
 
   /**
-   * One page of a pipeline's trigger jobs, latest attempts only unless `includeRetried`. GitLab 19.2
-   * renamed the route from `bridges` to `trigger_jobs` and deprecated the old name; the caller picks
-   * by version (`supportsTriggerJobsRoute`).
+   * One page of a pipeline's trigger jobs, latest attempts only. GitLab 19.2 renamed the route from
+   * `bridges` to `trigger_jobs` and deprecated the old name; the caller picks by version
+   * (`supportsTriggerJobsRoute`).
    */
   async listPipelineTriggerJobs(projectPath: string, pipelineId: number, options: {
     route: "trigger_jobs" | "bridges";
     page: number;
     perPage: number;
-    includeRetried?: true;
   }): Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/${options.route}`,
-      { include_retried: options.includeRetried }, options.page, options.perPage);
+      {}, options.page, options.perPage);
   }
 
   /**
@@ -1519,35 +1534,72 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report_summary`);
   }
 
-  /** The whole test report in one body, held to the client's usual body cap (`MAX_BODY_BYTES`). */
-  async getPipelineTestReport(projectPath: string, pipelineId: number): Promise<GitLabTestReportResponse> {
-    return await this.#get<GitLabTestReportResponse>(
-      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report`);
-  }
-
   /**
-   * Whether this account may read job `jobId`'s artifacts, test reports included: GitLab's
-   * `read_job_artifacts`, which applies the job's `artifacts:access` and which REST does not
-   * report, so it is asked through GraphQL. `null` when there is nothing left to read: the job is
-   * erased or gone, or not in the project this account sees by `projectId`.
+   * One page of the test cases of the jobs `buildIds` in the pipeline numbered `pipelineIid` of the
+   * project with id `projectId`: GraphQL's `pipeline.testSuite(buildIds:)`, which reads only those
+   * of the ids that are the pipeline's own latest attempts (`latest_builds.id_in`) -- and from
+   * 19.1.4 only those whose test reports this account may read -- so whatever it returns came from
+   * `buildIds`. Null when none of them has a report here. Pipelines are named by `iid`, the only
+   * argument every supported version takes; GitLab pages connections at most 100 rows.
    */
-  async jobArtifactsReadable(projectId: number, jobId: number): Promise<boolean | null> {
+  async getPipelineTestSuitePage(projectId: number, pipelineIid: number, buildIds: number[], after: string | null):
+      Promise<GitLabTestSuitePage | null> {
+    type Case = {
+      status: string | null; name: string | null; classname: string | null; file: string | null;
+      executionTime: number | null; systemOutput: string | null; stackTrace: string | null;
+    };
     type Answer = {
-      data?: { projects?: { nodes: Array<{ job: { erasedAt: string | null; userPermissions: { readJobArtifacts: boolean } } | null }> } };
+      data?: { projects?: { nodes: Array<{ pipeline: { testSuite: {
+        testCases: { nodes: Case[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } | null;
+      } | null } | null }> } };
       errors?: Array<{ message?: string }>;
     };
     const { data } = await this.#request<Answer>("POST", "", {
       root: "/api/graphql",
       body: {
-        query: "query($project: [ID!], $job: JobID!) { projects(ids: $project) { nodes { " +
-          "job(id: $job) { erasedAt userPermissions { readJobArtifacts } } } } }",
-        variables: { project: [`gid://gitlab/Project/${projectId}`], job: `gid://gitlab/Ci::Build/${jobId}` },
+        query: "query($project: [ID!], $iid: ID!, $builds: [ID!]!, $after: String) { projects(ids: $project) { nodes { " +
+          "pipeline(iid: $iid) { testSuite(buildIds: $builds) { testCases(first: 100, after: $after) { " +
+          "nodes { status name classname file executionTime systemOutput stackTrace } pageInfo { hasNextPage endCursor } } } } } } }",
+        variables: {
+          project: [`gid://gitlab/Project/${projectId}`], iid: String(pipelineIid),
+          builds: buildIds.map(String), after,
+        },
       },
     });
     // GitLab's error text is a response body, kept out of errors that are logged and shown.
     if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
-    const job = data.data.projects.nodes[0]?.job;
-    return job == null || job.erasedAt !== null ? null : job.userPermissions.readJobArtifacts;
+    const testCases = data.data.projects.nodes[0]?.pipeline?.testSuite?.testCases;
+    if (!testCases) return null;
+    return {
+      cases: testCases.nodes.map(node => ({
+        status: node.status ?? "", name: node.name ?? "", classname: node.classname, file: node.file,
+        execution_time: node.executionTime, system_output: node.systemOutput, stack_trace: node.stackTrace,
+      })),
+      endCursor: testCases.pageInfo.hasNextPage ? testCases.pageInfo.endCursor : null,
+    };
+  }
+
+  /**
+   * Whether this account may read the issues of the project with id `projectId`: GraphQL's
+   * `issuesEnabled`, GitLab's `feature_available?(:issues, user)`. REST's issue listing can't tell:
+   * it answers `200 []` to an account the feature is closed to. `false` for a project this account
+   * can't see.
+   */
+  async issuesReadable(projectId: number): Promise<boolean> {
+    type Answer = {
+      data?: { projects?: { nodes: Array<{ issuesEnabled: boolean | null }> } };
+      errors?: Array<{ message?: string }>;
+    };
+    const { data } = await this.#request<Answer>("POST", "", {
+      root: "/api/graphql",
+      body: {
+        query: "query($project: [ID!]) { projects(ids: $project) { nodes { issuesEnabled } } }",
+        variables: { project: [`gid://gitlab/Project/${projectId}`] },
+      },
+    });
+    // GitLab's error text is a response body, kept out of errors that are logged and shown.
+    if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
+    return data.data.projects.nodes[0]?.issuesEnabled === true;
   }
 
   // -- git smart-HTTP

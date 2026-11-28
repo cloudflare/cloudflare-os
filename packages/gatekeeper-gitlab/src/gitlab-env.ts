@@ -5,7 +5,8 @@
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
-import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance, type PinnedProject } from "./gitlab-api";
+import { DEFAULT_INSTANCE_URL, encodeProjectPath, GitLabApi, GitLabApiError, type GitLabInstance, type PinnedProject } from "./gitlab-api";
+import type { ProjectFeature, ProjectItem } from "./project-subresources";
 
 /**
  * The Worker's environment. `PreviewOAuthEnv` adds the kit's three optional preview-relay
@@ -161,53 +162,118 @@ export async function withAccountApi<T>(
   }
 }
 
-/**
- * The lowest role that sees everything a binding can disclose: the repository, confidential
- * issues, and internal notes.
- */
-const REPORTER_ACCESS_LEVEL = 20;
 /** GitLab's Developer role, below which a member cannot read debug-trace job logs. */
 export const DEVELOPER_ACCESS_LEVEL = 30;
-/** GitLab's Maintainer role, the most `artifacts:access` can require short of `none`. */
-const MAINTAINER_ACCESS_LEVEL = 40;
+/** How many pages (100 jobs each) of a pipeline's jobs are searched for a retried job's latest attempt. */
+const LATEST_ATTEMPT_PAGES = 10;
 
-/** An account as the membership probe reaches it: its token, and the GitLab user behind it. */
+/**
+ * Where each project feature's data is listed (`per_page=1`), which GitLab refuses to an account
+ * that may not read it: the repository's branches, the merge requests, the pipelines. Issues are
+ * not among them: their listing answers `200 []` to such an account (see GitLabApi.issuesReadable).
+ */
+const FEATURE_PATHS: Record<Exclude<ProjectFeature, "issues">, string> = {
+  repository: "repository/branches",
+  mergeRequests: "merge_requests",
+  builds: "pipelines",
+};
+
+/** An account as the access probes reach it: its token, and the GitLab user behind it. */
 export type MemberAccount = AccountCredentials & {
   getUser(): Promise<{ id: number; generation: string }>;
 };
 
 /**
- * Whether `account`'s GitLab user holds an effective membership of at least `minAccessLevel`
- * (never below Reporter) on the project, named by its numeric id or its path. See
- * `projectMembershipLevel()`, and the verifier in `gitlab.ts` for why membership, not the
- * project's `permissions`.
+ * `fn`'s answer, asked with `account`'s own token, fenced to one connection: if a reconnect
+ * (possibly as another GitLab user) lands while it is asked, the answer may be another user's, so
+ * it reads false.
  */
-export async function hasProjectMembership(
-  env: Env, account: MemberAccount, project: number | string, minAccessLevel = REPORTER_ACCESS_LEVEL,
+async function askFenced(
+  env: Env, account: MemberAccount, fn: (api: GitLabApi) => Promise<boolean>,
 ): Promise<boolean> {
-  const level = await projectMembershipLevel(env, account, project);
-  return level !== null && level >= Math.max(REPORTER_ACCESS_LEVEL, minAccessLevel);
+  const { generation } = await account.getUser();
+  const answer = await withAccountApi(env, account, fn, { replayable: true });
+  return answer && (await account.getUser()).generation === generation;
 }
 
 /**
- * The access level of `account`'s GitLab user's effective membership of the project, named by its
- * numeric id or its path, read with the account's own token, or `null` when none is confirmed:
- * nothing (`[]`) for a non-member, 404 for a project the token cannot see at all (GitLab hides
- * existence) -- the same answer here. A path is first resolved to the project it names, following
- * a rename's or transfer's redirect from a path the project left (see GitLabApi's redirectTarget),
- * as the GitHub gatekeeper's name check does. `null` is not "below Reporter": an instance admin
- * who is no member reads as `null` and sees everything. The user id comes from the account, fenced
- * to the connection that answered it: if a reconnect (possibly as another GitLab user) lands
- * between the two reads, the membership row would be one user's and the token another's, so the
- * answer is discarded as `null`.
+ * Whether GitLab shows `account`'s GitLab user the project, named by its numeric id or its path --
+ * its name, path, description and visibility -- asked with the account's own token, member or not:
+ * `GET /projects/:id` answers 2xx. A 403 or 404 denies: GitLab answers 404 for a project the token
+ * cannot see. Anything else throws. A path follows a rename's or transfer's redirect from a path
+ * the project left (see GitLabApi's redirectTarget), as the GitHub gatekeeper's name check does.
+ * Fenced to one connection (see askFenced).
  */
-export async function projectMembershipLevel(
+export async function canSeeProject(
   env: Env, account: MemberAccount, project: number | string,
-): Promise<number | null> {
+): Promise<boolean> {
+  const path = typeof project === "number" ? `/projects/${project}` : `/projects/${encodeProjectPath(project)}`;
+  return await askFenced(env, account, async api => await api.isReadable(path));
+}
+
+/**
+ * Whether `account`'s GitLab user can read project feature `feature`'s data in the project with id
+ * `projectId`, asked with the account's own token, member or not: its listing (see FEATURE_PATHS)
+ * answers 2xx, or for issues GraphQL's `issuesEnabled` is true. A 403 or 404 denies: GitLab
+ * answers 403 for a feature turned off, restricted to members, or above the user's role (a Guest's
+ * repository), and 404 for a project the token cannot see. Anything else throws. What GitLab
+ * guards item by item -- a confidential issue, an internal note, a job's log or artifacts -- is
+ * asked about on its own (see canReadProjectItem, canReadJobData). Fenced to one connection (see
+ * askFenced).
+ */
+export async function canReadProjectFeature(
+  env: Env, account: MemberAccount, projectId: number, feature: ProjectFeature,
+): Promise<boolean> {
+  return await askFenced(env, account, async api => feature === "issues"
+    ? await api.issuesReadable(projectId)
+    : await api.isReadable(`/projects/${projectId}/${FEATURE_PATHS[feature]}`, { per_page: 1 }));
+}
+
+/**
+ * Whether `account`'s GitLab user can read a confidential issue (`GET /projects/:id/issues/:iid`)
+ * or an internal note (`GET /projects/:id/issues/:iid/notes/:note_id`, or `merge_requests`) in the
+ * project with id `projectId`, asked with the account's own token: a 2xx allows, a 403 or 404
+ * denies. GitLab answers 404 for one the user may not read (a note's `readable_by?`), for one that
+ * is gone, and for one it hides, which no role but an administrator's overrides (an issue or
+ * comment by a banned user, `IssuePolicy`'s `hidden & ~admin`). Those can't be told apart, so a
+ * deleted or hidden item denies everyone. The caller checks the project and the item's feature
+ * first (see canSeeProject, canReadProjectFeature). Fenced to one connection (see askFenced).
+ */
+export async function canReadProjectItem(
+  env: Env, account: MemberAccount, projectId: number, item: Extract<ProjectItem, { kind: "issue" | "note" }>,
+): Promise<boolean> {
+  const issuable = item.kind === "issue" || item.noteable === "issue" ? "issues" : "merge_requests";
+  const path = `/projects/${projectId}/${issuable}/${item.iid}${item.kind === "note" ? `/notes/${item.noteId}` : ""}`;
+  return await askFenced(env, account, async api => await api.isReadable(path));
+}
+
+/**
+ * Whether `account`'s GitLab user holds an effective membership of at least `minAccessLevel` on the
+ * project with id `projectId`: Developer, for a cached debug-trace log (see
+ * GitLabGatekeeperImpl.readJobLog). See projectMembershipLevel.
+ */
+export async function hasProjectMembership(
+  env: Env, account: MemberAccount, projectId: number, minAccessLevel: number,
+): Promise<boolean> {
+  const level = await projectMembershipLevel(env, account, projectId);
+  return level !== null && level >= minAccessLevel;
+}
+
+/**
+ * The access level of `account`'s GitLab user's effective membership of the project with id
+ * `projectId`, read with the account's own token from `members/all?user_ids[]=` (see
+ * GitLabApi.getProjectMember), or `null` when none is confirmed: nothing (`[]`) for a non-member,
+ * 404 for a project the token cannot see at all (GitLab hides existence) -- the same answer here.
+ * `null` is not "below Reporter": an instance admin who is no member reads as `null` and sees
+ * everything. The user id comes from the account, fenced to the connection that answered it: if a
+ * reconnect (possibly as another GitLab user) lands between the two reads, the membership row would
+ * be one user's and the token another's, so the answer is discarded as `null`.
+ */
+async function projectMembershipLevel(env: Env, account: MemberAccount, projectId: number): Promise<number | null> {
   try {
     const user = await account.getUser();
-    const member = await withAccountApi(env, account, async api => await api.getProjectMember(
-      typeof project === "number" ? project : (await api.getProject(project)).id, user.id), { replayable: true });
+    const member = await withAccountApi(env, account, async api => await api.getProjectMember(projectId, user.id),
+      { replayable: true });
     if ((await account.getUser()).generation !== user.generation) return null;
     return effectiveAccessLevel(member);
   } catch (error) {
@@ -217,38 +283,29 @@ export async function projectMembershipLevel(
   }
 }
 
-/** A job access answer, and whether the job was still running, which can change it. */
+/** A job log or test report access answer, and whether the job was still running, which can change it. */
 export type JobDataAccess = { readable: boolean; running: boolean };
 
 /**
- * Whether `account`'s GitLab user may read job `jobId`'s log (`trace`) or artifacts in the project
- * with id `projectId`, asked with the account's own token: a job's log is refused to a member below
- * Developer while it ran with a debug trace, and its artifacts as its `artifacts:access` says.
- * A job that is gone or erased holds nothing left to protect, so it is readable. The caller checks
- * membership of the project first: unlike membership, a public project's job may be readable to
- * anyone. Fenced to one connection as `projectMembershipLevel()` is, unreadable if it moved.
- *
- * GitLab answers `readJobArtifacts` from the job's archive, and a job with no archive reads as
- * public, though it may hold a test report (`junit`) its `artifacts:access` restricts; the report's
- * own access is exposed nowhere, so such a job needs Maintainer, the most it can require.
+ * Whether `account`'s GitLab user may read job `jobId`'s log in the project with id `projectId`,
+ * asked with the account's own token: GitLab refuses it (403) to a member below Developer while the
+ * job ran with a debug trace. A job that is gone or erased, or has no log, holds nothing left to
+ * protect, so it is readable -- as is a job the token cannot see at all, which GitLab answers 404
+ * too, so the caller checks the project and its CI/CD feature first (see canReadProjectFeature).
+ * Fenced to one connection (see askFenced), unreadable if it moved.
  *
  * A job still running (no `finished_at`) is `running`: its runner may yet mark its log a debug
- * trace, and it may yet upload a restricted archive, so an answer that allows it can go stale.
+ * trace, so an answer that allows it can go stale.
  */
-export async function canReadJobData(
-  env: Env, account: MemberAccount, projectId: number, data: "trace" | "artifacts", jobId: number,
+export async function canReadJobLog(
+  env: Env, account: MemberAccount, projectId: number, jobId: number,
 ): Promise<JobDataAccess> {
   const { generation } = await account.getUser();
   let running = false;
-  const answer = await withAccountApi(env, account, async api => {
+  const readable = await withAccountApi(env, account, async api => {
     const job = await api.getJob(String(projectId), jobId);
     if (job === null || job.erased_at) return true;
     running = !job.finished_at;
-    if (data === "artifacts") {
-      const types = new Set(job.artifacts?.map(artifact => artifact.file_type));
-      if (types.has("junit") && !types.has("archive")) return "maintainer";
-      return await api.jobArtifactsReadable(projectId, jobId) ?? true;
-    }
     try {
       await (await api.getJobTrace(String(projectId), jobId))?.cancel();
       return true;
@@ -257,10 +314,61 @@ export async function canReadJobData(
       throw error;
     }
   }, { replayable: true });
-  const readable = answer === "maintainer"
-    ? await hasProjectMembership(env, account, projectId, MAINTAINER_ACCESS_LEVEL)
-    : answer;
   return { readable: readable && (await account.getUser()).generation === generation, running };
+}
+
+/**
+ * Whether `account`'s GitLab user may read job `jobId`'s test reports in the project with id
+ * `projectId`, asked with the account's own token: GitLab, from 19.1.4, leaves a job out of a
+ * pipeline's test report and its summary unless the reader may read every test report artifact
+ * the job has (`artifacts:access`), so the job must be among the `build_ids` of the summary of
+ * its pipeline this account is shown; before 19.1.4 every job is, to whoever may read the jobs.
+ * A job that is gone or erased, or no longer has a test report (`junit`), holds nothing left to
+ * protect, so it is readable -- as is a job the token cannot see at all, which GitLab answers 404
+ * too, so the caller checks the project and its CI/CD feature first. Fenced to one connection,
+ * unreadable if it moved. A job still running is `running`: it may yet upload a restricted report.
+ *
+ * A summary lists only the latest attempts, and an earlier release named retried ones too, so a
+ * job missing from it that has since been retried is checked by the latest attempt of the same
+ * name in its pipeline instead: a retry runs the same job definition, `artifacts:access` included.
+ *
+ * `summaries` holds each pipeline's summary jobs, so one check asks of each pipeline once.
+ */
+export async function canReadJobTestReport(
+  env: Env, account: MemberAccount, projectId: number, jobId: number,
+  summaries: Map<number, Promise<Set<number>>>,
+): Promise<JobDataAccess> {
+  const { generation } = await account.getUser();
+  let running = false;
+  const readable = await withAccountApi(env, account, async api => {
+    const job = await api.getJob(String(projectId), jobId);
+    if (job === null || job.erased_at || !job.artifacts?.some(artifact => artifact.file_type === "junit")) return true;
+    running = !job.finished_at;
+    let jobs = summaries.get(job.pipeline.id);
+    if (jobs === undefined) {
+      jobs = api.getPipelineTestReportSummary(String(projectId), job.pipeline.id)
+        .then(summary => new Set(summary.test_suites.flatMap(suite => suite.build_ids)));
+      summaries.set(job.pipeline.id, jobs);
+      // A failed answer is not kept: a replay with a refreshed token asks again.
+      jobs.catch(() => summaries.delete(job.pipeline.id));
+    }
+    const summary = await jobs;
+    if (summary.has(jobId)) return true;
+    const latest = await latestAttemptOf(api, projectId, job.pipeline.id, job.name);
+    return latest !== undefined && latest !== jobId && summary.has(latest);
+  }, { replayable: true });
+  return { readable: readable && (await account.getUser()).generation === generation, running };
+}
+
+/** The id of the latest attempt of the job named `name` in pipeline `pipelineId`, if listed. */
+async function latestAttemptOf(api: GitLabApi, projectId: number, pipelineId: number, name: string): Promise<number | undefined> {
+  for (let page: number | null = 1; page !== null && page <= LATEST_ATTEMPT_PAGES;) {
+    const { items, nextPage } = await api.listPipelineJobs(String(projectId), pipelineId, page, 100);
+    const match = items.find(item => item.name === name);
+    if (match !== undefined) return match.id;
+    page = nextPage;
+  }
+  return undefined;
 }
 
 /**
@@ -270,7 +378,7 @@ export async function canReadJobData(
  * the date passed. The date is a day (`2026-09-18`), read as its UTC midnight; a date that does not
  * parse expires too.
  */
-function effectiveAccessLevel(
+export function effectiveAccessLevel(
   member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
 ): number | null {
   if (member === null || member.membership_state === "awaiting") return null;

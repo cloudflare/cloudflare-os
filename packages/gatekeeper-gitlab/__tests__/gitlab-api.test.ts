@@ -283,11 +283,30 @@ describe("members", () => {
       json([]),
       json([{ id: 8769, username: "dancarter", access_level: 10 }, { id: 8769, username: "dancarter", access_level: 40 }, { id: 7, username: "other", access_level: 50 }]),
     ]);
-    expect(await api().getProjectMember("g/p", 8769)).toMatchObject({ access_level: 30 });
-    expect(calls[0].url.pathname).toBe("/api/v4/projects/g%2Fp/members/all");
+    expect(await api().getProjectMember(42, 8769)).toMatchObject({ access_level: 30 });
+    expect(calls[0].url.pathname).toBe("/api/v4/projects/42/members/all");
     expect(calls[0].url.searchParams.getAll("user_ids[]")).toEqual(["8769"]);
-    expect(await api().getProjectMember("g/p", 8769)).toBeNull();
-    expect(await api().getProjectMember("g/p", 8769)).toMatchObject({ access_level: 40 });
+    expect(await api().getProjectMember(42, 8769)).toBeNull();
+    expect(await api().getProjectMember(42, 8769)).toMatchObject({ access_level: 40 });
+  });
+});
+
+describe("readability probes", () => {
+  it("answers 2xx as readable and 403 or 404 as not, and throws for anything else", async () => {
+    const calls = fakeFetch([
+      json([{ id: 1 }]),
+      json({ message: "403 Forbidden" }, { status: 403 }),
+      json({ message: "404 Project Not Found" }, { status: 404 }),
+      json({ message: "boom" }, { status: 500 }),
+    ]);
+    expect(await api().isReadable("/projects/42/issues", { per_page: 1 })).toBe(true);
+    expect(calls[0].url.pathname + calls[0].url.search).toBe("/api/v4/projects/42/issues?per_page=1");
+    expect(calls[0].init.method).toBe("GET");
+    expect(await api().isReadable("/projects/42/merge_requests")).toBe(false);
+    expect(await api().isReadable("/projects/42/pipelines")).toBe(false);
+    const error = await api().isReadable("/projects/42/repository/branches").catch(e => e);
+    expect(error).toBeInstanceOf(GitLabApiError);
+    expect(error.status).toBe(500);
   });
 });
 

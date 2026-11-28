@@ -1,7 +1,9 @@
 // Resource resolution and observer admission: the URL patterns are ordered most-specific first
 // (the project pattern also matches issue and merge request URLs, and resolution is first-match),
 // `getGatekeeperClassFor` parses nested namespaces via the `/-/` separator, stale stub-era props
-// fail closed, and the observer probe requires Reporter membership whatever the project's visibility.
+// fail closed, the observer probe requires GitLab to show the observer's own token the project,
+// member or not, a project feature requires their token to list its data, and the roles GitLab
+// checks by role are read from the effective membership.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -86,112 +88,97 @@ describe("stale bindings", () => {
 });
 
 describe("observer admission", () => {
-  // The probe reads the observer's *effective* membership from `members/all?user_ids[]=`, never
-  // the project's `permissions` object: on the instance this was checked against, `permissions`
-  // reported null/null for group-inherited Developer access on every project but the one with a
-  // direct membership -- and inherited access is what ~90% of members hold. The list form's
-  // answers were checked live: a non-member is `[]`, an inherited Developer one row at 30.
-  type Member = { access_level: number; membership_state?: string; expires_at?: string | null } | null;
-
   /** The bound project's numeric id, which a binding pins from its path and then reads it by. */
   const PROJECT_ID = 7;
+  const PROJECT_SUBRESOURCE = `project/${PROJECT_ID}`;
+  /**
+   * Each project feature an observer's token lists one row of to check it. Issues are asked through
+   * GraphQL's `issuesEnabled` instead, since their listing answers `200 []` to a token they are
+   * closed to.
+   */
+  const FEATURES = { repository: "repository/branches", mergeRequests: "merge_requests", builds: "pipelines" };
+  const LISTINGS = [...Object.values(FEATURES), "issues"];
+  const ALL_FEATURES = [...Object.keys(FEATURES), "issues"];
+  const userOf = (request: { headers: Headers }) => request.headers.get("authorization")!.replace("Bearer ", "");
 
   /**
    * A fake where the token names the user (`Bearer <username>`), `/user` answers with that
-   * user's id, the project answers its path with its id, and `members/all` answers each user's
-   * membership of it, addressed by path or by id -- 404 for a non-member, as for a project the
-   * token cannot see.
+   * user's id, the project answers its path and its id with itself, or with the status `hidden`
+   * gives it for that user, and each feature's listing answers 200, or the status `refused` gives
+   * it for that user. A refused `issues` listing answers `200 []`, as GitLab's does, and GraphQL's
+   * `issuesEnabled` false.
    */
-  function fakeMembers(members: Record<string, Member>, projectStatus = 200): FakeGitLab {
+  function fakeProject(options: { hidden?: Record<string, number>; refused?: Record<string, Record<string, number>> } = {}): FakeGitLab {
     const gitlab = new FakeGitLab();
-    const ids = Object.fromEntries(Object.keys(members).map((name, i) => [name, 100 + i]));
     gitlab.on("GET", /^\/api\/v4\/user$/, request => {
-      const name = request.headers.get("authorization")!.replace("Bearer ", "");
-      return json({ id: ids[name] ?? 999, username: name, name, web_url: `https://gitlab.example.com/${name}` });
+      const name = userOf(request);
+      return json({ id: name === "alice" ? 100 : 101, username: name, name, web_url: `https://gitlab.example.com/${name}` });
     });
-    gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:group%2Fsub%2Fproject|${PROJECT_ID})$`), () => json({
-      ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: "group/sub/project",
-      web_url: "https://gitlab.example.com/group/sub/project",
-    }));
-    gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:group%2Fsub%2Fproject|${PROJECT_ID})/members/all\\?`), request => {
-      if (projectStatus !== 200) return json({ message: `${projectStatus}` }, { status: projectStatus });
-      // The documented `user_ids[]` filter; a non-member is the documented empty list.
-      const id = Number(request.url.searchParams.get("user_ids[]"));
-      const name = Object.keys(ids).find(n => ids[n] === id);
-      const member = name === undefined ? null : members[name];
-      return json(member === null || member === undefined ? [] : [{ id, username: name, ...member }]);
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:group%2Fsub%2Fproject|${PROJECT_ID})$`), request => {
+      const status = options.hidden?.[userOf(request)];
+      return status === undefined
+        ? json({ ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: "group/sub/project",
+          web_url: "https://gitlab.example.com/group/sub/project" })
+        : json({ message: `${status}` }, { status });
+    });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${PROJECT_ID}/(${LISTINGS.join("|")})\\?`), request => {
+      const listing = request.url.pathname.replace(`/api/v4/projects/${PROJECT_ID}/`, "");
+      const status = options.refused?.[userOf(request)]?.[listing];
+      return status === undefined || listing === "issues" ? json([]) : json({ message: `${status}` }, { status });
+    });
+    gitlab.on("POST", /^\/api\/graphql$/, request => {
+      const user = userOf(request);
+      const visible = options.hidden?.[user] === undefined;
+      return json({ data: { projects: { nodes: visible ? [{ issuesEnabled: options.refused?.[user]?.issues === undefined }] : [] } } });
     });
     return gitlab;
   }
 
-  async function probe(member: Member, projectStatus = 200) {
-    fakeMembers({ observer: member }, projectStatus).install();
+  async function probe(hidden?: number) {
+    fakeProject({ hidden: hidden === undefined ? {} : { observer: hidden } }).install();
     const id = await seedAccount({ accessToken: "observer" });
     return await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"));
   }
 
-  it("admits Reporter and above, however the membership is held -- direct, inherited, or through a shared group", async () => {
-    // `members/all` already folds those into one effective level, so the probe never sees the
-    // distinction; what it must not do is read the project's `permissions`, which drops it.
-    expect(await probe({ access_level: 20 })).toBe(true);
-    expect(await probe({ access_level: 30 })).toBe(true);
-    expect(await probe({ access_level: 50 })).toBe(true);
+  it("admits whoever GitLab shows the project, member or not", async () => {
+    // Nothing here knows the observer's membership: an internal or public project's non-member,
+    // a custom role, or a Guest is admitted like a Reporter; what each read returned is checked
+    // feature by feature (see checkSubresourceAccess).
+    expect(await probe()).toBe(true);
   });
 
-  it("denies Guest and Planner: they cannot read the repository, and Guest cannot read confidential issues", async () => {
-    expect(await probe({ access_level: 10 })).toBe(false);
-    expect(await probe({ access_level: 15 })).toBe(false);
-  });
-
-  it("denies a non-member whatever the visibility: a public project can still hold confidential issues and internal notes", async () => {
-    expect(await probe(null)).toBe(false);
-  });
-
-  it("denies an invitation not yet accepted, and a project the token cannot see", async () => {
-    expect(await probe({ access_level: 30, membership_state: "awaiting" })).toBe(false);
-    expect(await probe({ access_level: 30 }, 404)).toBe(false);
-    expect(await probe({ access_level: 30 }, 403)).toBe(false);
-  });
-
-  it("denies a membership whose expires_at has arrived, even while GitLab still lists the row", async () => {
-    // GitLab: from that date on, the user can no longer access the project. The row lingers until
-    // the daily sweep removes it, so the date is checked here rather than trusting the listing.
-    const today = new Date().toISOString().slice(0, 10);
-    expect(await probe({ access_level: 30, expires_at: "2000-01-01" })).toBe(false);
-    expect(await probe({ access_level: 30, expires_at: today })).toBe(false);
-    expect(await probe({ access_level: 30, expires_at: "not a date" })).toBe(false);
-    expect(await probe({ access_level: 30, expires_at: "2999-01-01" })).toBe(true);
-    expect(await probe({ access_level: 30, expires_at: null })).toBe(true);
+  it("denies a project the token cannot see", async () => {
+    expect(await probe(404)).toBe(false);
+    expect(await probe(403)).toBe(false);
   });
 
   it("lets an upstream failure propagate rather than answering it as a denial or an admission", async () => {
-    await expect(probe({ access_level: 30 }, 502)).rejects.toThrow(/502/);
+    await expect(probe(502)).rejects.toThrow(/502/);
   });
 
-  it("never consults the project's permissions object, and learns the observer's id once per grant", async () => {
-    const gitlab = fakeMembers({ observer: { access_level: 30 } });
+  it("asks the project alone, by its path or its id, and learns the observer's id once per grant", async () => {
+    const gitlab = fakeProject();
     gitlab.install();
     const id = await seedAccount({ accessToken: "observer" });
     await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"));
-    expect(gitlab.requests.map(r => r.url.pathname + r.url.search)).toEqual([
-      "/api/v4/user",
-      "/api/v4/projects/group%2Fsub%2Fproject",
-      `/api/v4/projects/${PROJECT_ID}/members/all?user_ids%5B%5D=100&per_page=100`,
-    ]);
-    // Re-verification (every workspace open) costs the path's project read and the membership read.
+    expect(gitlab.requests.map(r => r.url.pathname + r.url.search))
+      .toEqual(["/api/v4/user", "/api/v4/projects/group%2Fsub%2Fproject"]);
+    // Re-verification (every workspace open) costs one project read, by path or by id.
     await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"));
+    await unwrap(await hooks().hasProjectAccess(id, PROJECT_ID));
     expect(gitlab.count("GET", /\/api\/v4\/user$/)).toBe(1);
-    expect(gitlab.count("GET", /members\/all/)).toBe(2);
+    expect(gitlab.count("GET", /\/api\/v4\/projects\/group%2Fsub%2Fproject$/)).toBe(2);
+    expect(gitlab.count("GET", new RegExp(`/api/v4/projects/${PROJECT_ID}$`))).toBe(1);
+    expect(gitlab.count("GET", new RegExp(`/api/v4/projects/${PROJECT_ID}/`))).toBe(0);
   });
 
-  it("does not admit a reconnected user on the previous user's membership", async () => {
-    // Reporter `alice` connects; while her /user read is in flight the account is reconnected as
-    // `bob`, a non-member. A probe that kept alice's id and used bob's token would look up alice's
-    // Reporter row and admit bob. Instead the id is fenced to the connection that answered it, and
-    // the probe re-reads under the new one -- and denies bob.
-    const gitlab = fakeMembers({ alice: { access_level: 20 }, bob: null });
+  it("does not admit a reconnected user on the previous user's answer", async () => {
+    // `alice` can see the project; while her /user read is in flight the account is reconnected
+    // as `bob`, who cannot. The answer is fenced to the connection that started it, so the probe
+    // re-reads under the new one -- and denies bob.
+    const gitlab = fakeProject({ hidden: { bob: 404 } });
     gitlab.on("GET", /^\/api\/v4\/user$/, async request => {
-      const name = request.headers.get("authorization")!.replace("Bearer ", "");
+      const name = userOf(request);
       if (name === "alice") {
         // The reconnect commits before alice's answer is sent. The handler runs in the object
         // making the probe, so the account stub is made here: one made in the test's own context
@@ -215,16 +202,65 @@ describe("observer admission", () => {
     expect(gitlab.count("GET", /\/api\/v4\/user$/)).toBe(2);
   });
 
-  it("is what addObserver enforces", async () => {
-    fakeMembers({ owner: { access_level: 50 }, reporter: { access_level: 20 }, guest: { access_level: 10 }, outsider: null }).install();
+  it("is what addObserver enforces: the project, not its features", async () => {
+    fakeProject({ hidden: { hidden: 404 }, refused: { restricted: { merge_requests: 403, pipelines: 403 } } }).install();
     const owner = await seedAccount({ accessToken: "owner" });
-    const reporter = await seedAccount({ accessToken: "reporter" });
-    const guest = await seedAccount({ accessToken: "guest" });
-    const outsider = await seedAccount({ accessToken: "outsider" });
-    await unwrap(await hooks().addObserver("observers", projectProps(owner), reporter));
-    for (const denied of [guest, outsider]) {
-      await expect(unwrap(await hooks().addObserver("observers", projectProps(owner), denied)))
-        .rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
-    }
+    const reader = await seedAccount({ accessToken: "reader" });
+    const restricted = await seedAccount({ accessToken: "restricted" });
+    const hidden = await seedAccount({ accessToken: "hidden" });
+    await unwrap(await hooks().addObserver("observers", projectProps(owner), reader));
+    // Releases before features were named reported the project alone, which is all it stands for.
+    await unwrap(await hooks().addObserver("observers", projectProps(owner), restricted));
+    await expect(unwrap(await hooks().addObserver("observers", projectProps(owner), hidden)))
+      .rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
+  });
+
+  it("allows a feature to whoever can list one row of its data, or for issues whom GraphQL lets read them, once GitLab shows them the project", async () => {
+    const gitlab = fakeProject();
+    gitlab.install();
+    const id = await seedAccount({ accessToken: "observer" });
+    const features = ALL_FEATURES.map(feature => `${PROJECT_SUBRESOURCE}/feature/${feature}`);
+    expect(await unwrap(await hooks().checkSubresourceAccess(id, features))).toEqual([true, true, true, true]);
+    const asked = gitlab.requests.map(r => r.url.pathname + r.url.search);
+    expect(asked.slice(0, 2)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}`]);
+    expect(asked.slice(2).toSorted()).toEqual([
+      ...Object.values(FEATURES).map(listing => `/api/v4/projects/${PROJECT_ID}/${listing}?per_page=1`), "/api/graphql",
+    ].toSorted());
+  });
+
+  it.each(Object.entries(FEATURES).flatMap(([feature, listing]) => [403, 404].map(status => [feature, listing, status] as const)))(
+    "denies %s to an observer whose %s answers %i, a feature disabled, restricted to members, or above their role, but not the project",
+    async (feature, listing, status) => {
+      const gitlab = fakeProject({ refused: { observer: { [listing]: status } } });
+      gitlab.install();
+      const id = await seedAccount({ accessToken: "observer" });
+      const others = ALL_FEATURES.filter(other => other !== feature).map(other => `${PROJECT_SUBRESOURCE}/feature/${other}`);
+      expect(await unwrap(await hooks().checkSubresourceAccess(id,
+        [PROJECT_SUBRESOURCE, `${PROJECT_SUBRESOURCE}/feature/${feature}`, ...others]))).toEqual([true, false, true, true, true]);
+    });
+
+  it("denies issues to an observer they are closed to, though GitLab's issue listing answers them 200 []", async () => {
+    const gitlab = fakeProject({ refused: { observer: { issues: 403 } } });
+    gitlab.install();
+    const id = await seedAccount({ accessToken: "observer" });
+    expect(await unwrap(await hooks().checkSubresourceAccess(id,
+      [PROJECT_SUBRESOURCE, `${PROJECT_SUBRESOURCE}/feature/issues`, `${PROJECT_SUBRESOURCE}/feature/repository`])))
+      .toEqual([true, false, true]);
+  });
+
+  it("denies every feature of a project the token cannot see, without listing any", async () => {
+    const gitlab = fakeProject({ hidden: { observer: 404 } });
+    gitlab.install();
+    const id = await seedAccount({ accessToken: "observer" });
+    expect(await unwrap(await hooks().checkSubresourceAccess(id,
+      [PROJECT_SUBRESOURCE, `${PROJECT_SUBRESOURCE}/feature/repository`]))).toEqual([false, false]);
+    expect(gitlab.count("GET", new RegExp(`/api/v4/projects/${PROJECT_ID}/`))).toBe(0);
+  });
+
+  it("lets a listing's upstream failure propagate rather than answering it as a denial", async () => {
+    fakeProject({ refused: { observer: { pipelines: 502 } } }).install();
+    const id = await seedAccount({ accessToken: "observer" });
+    await expect(unwrap(await hooks().checkSubresourceAccess(id, [`${PROJECT_SUBRESOURCE}/feature/builds`])))
+      .rejects.toThrow(/GitLab could not check access \(502\)/);
   });
 });

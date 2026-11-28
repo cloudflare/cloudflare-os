@@ -13,9 +13,10 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
+import type { GitLabTestCaseResponse } from "../../src/gitlab-api.js";
 import type { GitLabJobSummary, GitLabLogPage, GitLabPipelineSummary, GitLabTestCase } from "../../src/types.js";
 import * as fx from "../fixtures/gitlab-docs.js";
-import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap, type FakeRequest } from "./fake-gitlab.js";
 import type { ActionPresentation, GatekeeperProps, SessionStep } from "./worker.js";
 
 afterEach(() => {
@@ -47,7 +48,7 @@ function pipeline(id: number, overrides: Record<string, unknown> = {}) {
 
 function job(id: number, overrides: Record<string, unknown> = {}) {
   return { ...fx.jobResponse.data, id, web_url: `https://gitlab.example.com/${PROJECT}/-/jobs/${id}`,
-    pipeline: { ...fx.jobResponse.data.pipeline, id: 6, project_id: PROJECT_ID }, ...overrides };
+    pipeline: { ...fx.jobResponse.data.pipeline, id: 6, iid: 106, project_id: PROJECT_ID }, ...overrides };
 }
 
 function trigger(id: number, downstream: { id: number; project_id: number } | null, overrides: Record<string, unknown> = {}) {
@@ -132,6 +133,13 @@ class CiFake extends FakeGitLab {
       return json(this.pipelines.filter(row => sha === null || row.sha === sha));
     });
     this.on("GET", new RegExp(`^/api/v4/projects/${P}/events\\?(.*&)?action=pushed(&|$)`), () => json(this.pushEvents));
+    // An observer's check of a project feature, one row of its listing (the owner's own listings
+    // carry more of a query): readable to the owner and to members, hidden from others.
+    this.on("GET", new RegExp(`^/api/v4/projects/${P}/(repository/branches|issues|merge_requests|pipelines)\\?per_page=1$`), request => {
+      const name = request.headers.get("authorization")!.replace("Bearer ", "");
+      if (name === "test-token") return json(request.url.pathname.endsWith("/pipelines") ? this.pipelines : []);
+      return this.members.has(name) ? json([]) : json({ message: "404 Project Not Found" }, { status: 404 });
+    });
   }
 
   /** Requests that asked GitLab anything about CI. */
@@ -191,7 +199,6 @@ describe("a commit's CI", () => {
     const { props, name } = await setup(fake);
     const { details } = await unwrap(await hooks().getCommit(name, props, "main"));
     expect(details.ci).toMatchObject({ commitId: HEAD, phase: "active", pipeline: { id: "287", status: "running", phase: "active" } });
-    expect(details.ci!.pipeline!.project).toBeUndefined();
   });
 
   it("reads the pipeline afresh each time, reading the commit only once", async () => {
@@ -257,6 +264,25 @@ describe("a commit's CI", () => {
     const { details } = await unwrap(await hooks().getCommit(name, props, HEAD));
     expect(details.id).toBe(HEAD);
     expect(details).not.toHaveProperty("ci");
+  });
+
+  it("names CI/CD to observers beside the repository only when the read reports CI", async () => {
+    const fake = new CiFake();
+    fake.commits.set(HEAD, commit(HEAD));
+    fake.commits.set(BASE, commit(BASE, { parent_ids: [], last_pipeline: null }));
+    let pipelinesRefused = false;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines\\?`), () => pipelinesRefused
+      ? json({ message: "403 Forbidden" }, { status: 403 }) : json([]));
+    const { props, name } = await setup(fake);
+    expect(await session(name, props, { method: "getCommit", args: [HEAD] })).toHaveProperty("ci");
+    // CI/CD turned off, or above the account's role: the commit alone, which a project whose
+    // pipelines an observer cannot list still shows them.
+    pipelinesRefused = true;
+    expect(await session(name, props, { method: "getCommit", args: [HEAD] })).not.toHaveProperty("ci");
+    expect((await hooks().queueLog(name)).subresources).toEqual([
+      [`project/${P}`, `project/${P}/feature/builds`, `project/${P}/feature/repository`],
+      [`project/${P}`, `project/${P}/feature/repository`],
+    ]);
   });
 
   it("reads a queued push's commit as notStarted without asking GitLab about CI", async () => {
@@ -497,25 +523,36 @@ describe("a merge request's CI", () => {
     expect(mr).not.toHaveProperty("ci");
   });
 
-  it("shows a fork's pipeline as data that cannot be opened", async () => {
-    const fake = mrFake(pipeline(400, { project_id: FORK_ID }), { source_project_id: FORK_ID });
-    const { props, name } = await setup(fake);
-    expect((await details(name, props)).ci).toMatchObject({ pipeline: { id: "400", project: { path: "someone/fork" } } });
-    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline" }))
-      .rejects.toThrow(/ran in someone\/fork, another project, so it cannot be opened/);
+  it("names CI/CD to observers beside the merge request and repository only when the read reports CI", async () => {
+    const read = [{ method: "getMergeRequest", args: ["133"] }, { method: "getDetails" }];
+    const withCi = await setup(mrFake(pipeline(300, { status: "manual" })));
+    expect(await session(withCi.name, withCi.props, ...read)).toHaveProperty("ci");
+    const withoutCi = await setup(mrFake(undefined));
+    expect(await session(withoutCi.name, withoutCi.props, ...read)).not.toHaveProperty("ci");
+    const mergeRequest = [`project/${P}`, `project/${P}/feature/mergeRequests`, `project/${P}/feature/repository`];
+    expect((await hooks().queueLog(withCi.name)).subresources).toEqual([[...mergeRequest, `project/${P}/feature/builds`]]);
+    expect((await hooks().queueLog(withoutCi.name)).subresources).toEqual([mergeRequest]);
   });
 
-  it("looks a fork's project up once for a page of its pipelines", async () => {
-    // The merge request names its own project, so nothing before the listing looks the fork up.
-    const fake = mrFake(undefined);
+  it("shows no CI for a head pipeline that ran in a fork, which observers of this project may not see", async () => {
+    const fake = mrFake(pipeline(400, { project_id: FORK_ID }), { source_project_id: FORK_ID });
+    const { props, name } = await setup(fake);
+    expect((await details(name, props)).ci).toMatchObject({ pipeline: null });
+    await expect(session(name, props, { method: "getMergeRequest", args: ["133"] }, { method: "getPipeline", args: ["400"] }))
+      .rejects.toThrow(/is not one of merge request !133's pipelines in this project/);
+  });
+
+  it("lists only the pipelines that ran in this project, and never asks GitLab for a fork's path", async () => {
+    const fake = mrFake(undefined, { source_project_id: FORK_ID });
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/pipelines\\?`), () => json([
-      pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(401, { project_id: FORK_ID }), pipeline(6),
+      pipeline(403, { project_id: FORK_ID }), pipeline(402, { project_id: FORK_ID }), pipeline(6),
     ]));
     const { props, name } = await setup(fake);
+    expect((await details(name, props)).source.project).toMatchObject({ path: `project-${FORK_ID}` });
     const listed = await session<GitLabPipelineSummary[]>(name, props,
       { method: "getMergeRequest", args: ["133"] }, { method: "listPipelines", args: [], drain: true });
-    expect(listed.map(row => row.project?.path ?? null)).toEqual(["someone/fork", "someone/fork", "someone/fork", null]);
-    expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(1);
+    expect(listed.map(row => row.id)).toEqual(["6"]);
+    expect(fake.count("GET", new RegExp(`^/api/v4/projects/${FORK_ID}$`))).toBe(0);
   });
 
   it("reads a head a queued push moved as notStarted without asking GitLab about CI", async () => {
@@ -561,9 +598,10 @@ describe("what a binding may open", () => {
     const opened = await session<{ id: string }>(name, props, mr, { method: "getPipeline", args: ["6"] }, { method: "getDetails" });
     expect(opened.id).toBe("6");
     await expect(session(name, props, mr, { method: "getPipeline", args: ["9"] }))
-      .rejects.toThrow("Pipeline 9 is not one of merge request !133's pipelines.");
+      .rejects.toThrow("Pipeline 9 is not one of merge request !133's pipelines in this project.");
+    // One that ran in the source project (a fork) reads as not the merge request's.
     await expect(session(name, props, mr, { method: "getPipeline", args: ["50"] }))
-      .rejects.toThrow(/ran in another project/);
+      .rejects.toThrow("Pipeline 50 is not one of merge request !133's pipelines in this project.");
   });
 
   it("opens a job only through one of the merge request's pipelines", async () => {
@@ -759,49 +797,112 @@ describe("listJobs", () => {
   });
 });
 
-/** Pipeline 6's jobs as a whole-report read lists them: job 66004, with a test report, and no children. */
-function testReportJobs(fake: CiFake): void {
+/** Pipeline 6's jobs as the failed-tests read lists them: `jobIds`, each with a test report, and no children. */
+function testReportJobs(fake: CiFake, jobIds = [66004]): void {
   fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/jobs\\?`), request =>
-    json(request.url.searchParams.get("page") === "1" ? [job(66004, { artifacts: [{ file_type: "junit" }] })] : []));
+    json(request.url.searchParams.get("page") === "1" ? jobIds.map(id => job(id, { artifacts: [{ file_type: "junit" }] })) : []));
   fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), () => json([]));
 }
 
+type RestTestCase = GitLabTestCaseResponse;
+type TestSuiteVariables = { iid: string; builds: string[]; after: string | null };
+
+/** The variables of a `testSuite` query the gatekeeper sent. */
+function testSuiteVariables(request: FakeRequest): TestSuiteVariables {
+  // The gatekeeper's own request body, whose shape GitLabApi.getPipelineTestSuitePage fixes.
+  const body: { variables: TestSuiteVariables } = JSON.parse(request.body!);
+  return body.variables;
+}
+
+/**
+ * GraphQL's `pipeline.testSuite(buildIds:)` for pipeline 6 (iid 106): the cases of each asked-for
+ * job in `casesByJob`, `perPage` a page, or no suite when none of them has any.
+ */
+function testSuiteRoute(fake: CiFake, casesByJob: Record<number, RestTestCase[]>, perPage = 100): void {
+  fake.on("POST", /^\/api\/graphql$/, request => {
+    const variables = testSuiteVariables(request);
+    const asked = variables.builds.map(Number).filter(jobId => jobId in casesByJob);
+    if (variables.iid !== "106" || asked.length === 0) {
+      return json({ data: { projects: { nodes: [{ pipeline: { testSuite: null } }] } } });
+    }
+    const all = asked.flatMap(jobId => casesByJob[jobId]);
+    const start = Number(variables.after ?? 0);
+    const nodes = all.slice(start, start + perPage).map(testCase => ({
+      status: testCase.status, name: testCase.name, classname: testCase.classname, file: testCase.file,
+      executionTime: testCase.execution_time, systemOutput: testCase.system_output, stackTrace: testCase.stack_trace,
+    }));
+    return json({ data: { projects: { nodes: [{ pipeline: { testSuite: { testCases: {
+      nodes, pageInfo: { hasNextPage: start + perPage < all.length, endCursor: String(start + perPage) },
+    } } } }] } } });
+  });
+}
+
+/** A test report summary of `suites`, each one job's. */
+function summaryOf(suites: Array<{ name: string; jobId: number; total: number; failed: number; errored: number }>) {
+  return {
+    total: { ...fx.testReportSummaryResponse.data.total, count: suites.reduce((sum, suite) => sum + suite.total, 0),
+      failed: suites.reduce((sum, suite) => sum + suite.failed, 0), error: suites.reduce((sum, suite) => sum + suite.errored, 0) },
+    test_suites: suites.map(suite => ({ ...fx.testReportSummaryResponse.data.test_suites[0], name: suite.name,
+      total_count: suite.total, failed_count: suite.failed, error_count: suite.errored, build_ids: [suite.jobId] })),
+  };
+}
+
+const testCase = (status: string, testName: string, output: string | null = null): RestTestCase =>
+  ({ ...fx.testReportResponse.data.test_suites[0].test_cases[0], status, name: testName, system_output: output });
+
 describe("test reports", () => {
-  it("pages the failed and errored cases, their output cut short", async () => {
+  it("pages the failed and errored cases of the suites that have them, their output cut short", async () => {
     const fake = new CiFake();
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
-    const testCase = (status: string, testName: string, output: string | null = null) =>
-      ({ ...fx.testReportResponse.data.test_suites[0].test_cases[0], status, name: testName, system_output: output });
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => json({
-      ...fx.testReportResponse.data,
-      test_suites: [
-        { ...fx.testReportResponse.data.test_suites[0], name: "unit",
-          test_cases: [testCase("success", "ok"), testCase("failed", "a", "x".repeat(10_000)), testCase("failed", "b")] },
-        { ...fx.testReportResponse.data.test_suites[0], name: "e2e", test_cases: [testCase("error", "c"), testCase("skipped", "d")] },
-      ],
-    }));
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
-    testReportJobs(fake);
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(summaryOf([
+      { name: "unit", jobId: 101, total: 3, failed: 2, errored: 0 },
+      { name: "e2e", jobId: 102, total: 2, failed: 0, errored: 1 },
+      { name: "lint", jobId: 103, total: 1, failed: 0, errored: 0 },
+    ])));
+    testReportJobs(fake, [101, 102, 103]);
+    testSuiteRoute(fake, {
+      101: [testCase("success", "ok"), testCase("failed", "a", "x".repeat(10_000)), testCase("failed", "b")],
+      102: [testCase("error", "c"), testCase("skipped", "d")],
+      103: [testCase("success", "e")],
+    }, 2);
     const { props, name } = await setup(fake);
     const cases = await session<GitLabTestCase[]>(name, props,
       { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", args: [{ resultsPerPage: 2 }], drain: true });
     expect(cases.map(c => [c.suite, c.name, c.status])).toEqual([["unit", "a", "failed"], ["unit", "b", "failed"], ["e2e", "c", "error"]]);
     expect(cases[0].output!.length).toBeLessThan(4200);
-    expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" }))
-      .toEqual({ total: 3363, failed: 0, errored: 0, skipped: 12, suites: [{ name: "test", total: 3363, failed: 0, errored: 0 }] });
+    // Each failing suite is asked for by its own jobs, a page at a time; one with no failures is not read.
+    const asked = fake.requests.filter(request => request.url.pathname === "/api/graphql").map(testSuiteVariables);
+    expect(asked.map(({ builds, after }) => [builds, after])).toEqual([[["101"], null], [["101"], "2"], [["102"], null]]);
   });
 
-  it("points at the totals and the job logs when the whole report is too large to read", async () => {
+  it.each([
+    ["of more pages than it reads", 10_001, 1],
+    ["holding more failed cases than it keeps", 2001, 2001],
+  ])("points at the totals and the job logs when a suite is too large to read: one %s", async (_, total, failed) => {
     const fake = new CiFake();
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
-    // Larger than the client reads (10 MiB), produced a megabyte at a time until it is cut off.
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => new Response(new ReadableStream<Uint8Array>({
-      pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20)); },
-    }), { headers: { "content-type": "application/json" } }));
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () =>
+      json(summaryOf([{ name: "unit", jobId: 66004, total, failed: 1, errored: 0 }])));
+    testReportJobs(fake);
+    testSuiteRoute(fake, { 66004: Array.from({ length: total }, (_, i) => testCase(i < failed ? "failed" : "success", `t${i}`)) });
     const { props, name } = await setup(fake);
     await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" }))
       .rejects.toThrow(/too large to read here\. Use getTestReport\(\) for its totals, and the failing jobs' logs/);
+  });
+
+  it("reads a failing job the capped job listings leave out by looking it up", async () => {
+    const fake = new CiFake();
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () =>
+      json(summaryOf([{ name: "unit", jobId: 201, total: 1, failed: 1, errored: 0 }])));
+    // Past the listings' 1000 rows, as far as this read can tell.
+    testReportJobs(fake, []);
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/201$`), () => json(job(201)));
+    testSuiteRoute(fake, { 201: [testCase("failed", "a")] });
+    const { props, name } = await setup(fake);
+    expect((await session<GitLabTestCase[]>(name, props,
+      { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true })).map(c => c.name)).toEqual(["a"]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toContain(`project/${P}/jobArtifacts/201`);
   });
 });
 
@@ -925,8 +1026,10 @@ describe("job logs", () => {
 
 describe("what CI reads disclose to observers", () => {
   const PROJECT_SUBRESOURCE = `project/${P}`;
+  /** What every CI read reports: the project, its CI/CD, and the repository its commits are in. */
+  const CI_DATA = [PROJECT_SUBRESOURCE, `project/${P}/feature/builds`, `project/${P}/feature/repository`];
   const TRACE = `project/${P}/jobTrace/8`;
-  /** The job whose test report pipeline 6's reports come from. */
+  /** The job whose test report pipeline 6's reports come from, as its summary names it. */
   const ARTIFACTS = `project/${P}/jobArtifacts/66004`;
 
   function gateFake(): CiFake {
@@ -934,9 +1037,13 @@ describe("what CI reads disclose to observers", () => {
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8$`), () => json(job(8, { status: "success" })));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8/trace$`), () => new Response("hello\n"));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => json(fx.testReportResponse.data));
+    // One failed test, in job 66004's suite.
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json({
+      ...fx.testReportSummaryResponse.data,
+      test_suites: [{ ...fx.testReportSummaryResponse.data.test_suites[0], failed_count: 1 }],
+    }));
     testReportJobs(fake);
+    testSuiteRoute(fake, { 66004: [{ ...fx.testReportResponse.data.test_suites[0].test_cases[0], status: "failed" }] });
     return fake;
   }
 
@@ -949,8 +1056,7 @@ describe("what CI reads disclose to observers", () => {
     const before = (await hooks().queueLog(name)).subresources.length;
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" });
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    // The pipeline each open reads is reported by the project alone; the reports after it.
-    return (await hooks().queueLog(name)).subresources.slice(before).filter(ids => ids?.[0] !== PROJECT_SUBRESOURCE);
+    return (await hooks().queueLog(name)).subresources.slice(before);
   }
 
   it("reports a job log by its job, leaving the observers and the admission bar to the Workshop", async () => {
@@ -962,22 +1068,19 @@ describe("what CI reads disclose to observers", () => {
     await session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" });
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual(["Read pipeline #6", "Read log of job `rubocop` #8, lines 1–1"]);
-    expect(log.subresources).toEqual([[PROJECT_SUBRESOURCE], [TRACE]]);
+    expect(log.subresources).toEqual([CI_DATA, [...CI_DATA, TRACE]]);
     expect(log.excluded).toEqual([undefined, undefined]);
     await observer(name, props, "reporter2");
   });
 
-  it.each([["a Developer", 30, false], ["a Maintainer", 40, false], ["an administrator", 30, true]] as const)(
-    "reports a test report read by %s by the jobs it came from", async (_, access, admin) => {
-      const fake = gateFake();
-      fake.ownerAccess = access;
-      fake.ownerIsAdmin = admin;
-      const { props, name } = await setup(fake, { reporter: 20 });
-      const reported = await readTestReports(name, props);
-      expect(reported.length).toBeGreaterThanOrEqual(2);
-      expect(reported).toEqual(reported.map(() => [ARTIFACTS]));
-      await observer(name, props, "reporter");
-    });
+  it("reports a test report by the jobs its summary names, leaving their checks to the Workshop", async () => {
+    const { props, name } = await setup(gateFake(), { reporter: 20 });
+    const reported = await readTestReports(name, props);
+    // The summary, then the failed test and any empty page after it: each names the job read.
+    expect(reported).toEqual([[...CI_DATA, ARTIFACTS], [...CI_DATA, ARTIFACTS],
+      ...reported.slice(2).map(() => [PROJECT_SUBRESOURCE, ARTIFACTS])]);
+    await observer(name, props, "reporter");
+  });
 
   it("shares a binding with more collaborators than a read could once check", async () => {
     const names = Array.from({ length: 51 }, (_, i) => `member${i}`);
@@ -987,48 +1090,44 @@ describe("what CI reads disclose to observers", () => {
 
   describe("after CI data an earlier version marked", () => {
     // Those versions marked the binding when it read job logs or test reports, and held observers
-    // to a role for the marks; they now need only the baseline membership.
-    it.each(["ci-logs", "ci-test-reports"])("admits any member for %s", async set => {
+    // to a role for the marks; they now need only the baseline: GitLab showing them the project.
+    it.each(["ci-logs", "ci-test-reports"])("admits any reader of the project for %s", async set => {
       const { props, name } = await setup(gateFake(), { reporter: 20 });
       await hooks().startOnEarlierStorage(name, props, { [`observedSet:${set}`]: "observed" });
       await observer(name, props, "reporter");
     });
 
     it.each([["the pinned id", false], ["the project its path names now", true]] as const)(
-      "needs Reporter on %s as well", async (_, pathMoved) => {
+      "needs %s to be shown them as well", async (_, pathMoved) => {
         // The marked reads followed the path, which may since name another project than the one
-        // the binding has pinned since: a membership of either alone does not show the observer may
-        // see what was read.
+        // the binding has pinned since: seeing either alone does not show the observer may see
+        // what was read.
         const fake = gateFake();
         const { props, name } = await setup(fake, { reporter: 20 });
         await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed", projectId: PROJECT_ID });
-        const address = pathMoved ? String(PROJECT_ID + 1000) : P;
-        if (pathMoved) {
-          fake.on("GET", new RegExp(`^/api/v4/projects/${PATH}$`), () =>
-            json({ ...fx.projectResponse.data, id: Number(address), path_with_namespace: PROJECT }));
-        }
-        // Here the Reporter is no member.
-        fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), () => json([]));
+        // Here GitLab hides the project from the Reporter, by its path or by the pinned id.
+        fake.on("GET", new RegExp(`^/api/v4/projects/${pathMoved ? PATH : P}$`), () =>
+          json({ message: "404 Project Not Found" }, { status: 404 }));
         await expect(observer(name, props, "reporter")).rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
       });
   });
 
   it("serves job logs and test reports on a binding an earlier version created, reporting their jobs", async () => {
-    // That version stored no observers, and refused these reads on bindings it had made before; the
-    // jobs each read reports let the Workshop check whoever observes the binding instead.
+    // That version stored no observers, and refused these reads on bindings it had made before;
+    // what each read reports lets the Workshop check whoever observes the binding instead.
     const { props, name } = await setup(gateFake());
     await hooks().startOnEarlierStorage(name, props, { cachesByProjectId: null, observerRoster: "legacy", cacheGeneration: 1 });
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, TRACE]);
     expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).toMatchObject({ total: 3363 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, ARTIFACTS]);
     // And still after a restart.
     await hooks().restart(name);
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([...CI_DATA, TRACE]);
   });
 });

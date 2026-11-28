@@ -83,8 +83,8 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   larger pipeline has some left out, even under a status filter, and one with more than 1000 jobs
   or trigger jobs lists no external statuses), opens a same-project child
   pipeline, and reads its unit test report: totals, and the failed and errored cases with about
-  4 KiB of output each. Pipelines of a fork's source project and downstream pipelines in other
-  projects are data only.
+  4 KiB of output each. Pipelines that ran in a fork's source project are left out (its observers may
+  not see the fork), and downstream pipelines in other projects are data only.
 - **Job logs.** `readLog()` returns numbered lines, the last 200 by default (up to 2000 per
   page), from a line onwards or filtered by `search`, with terminal colours removed and section
   headers as `▶` lines. A log over 128 MiB is refused; a very long one keeps only its tail
@@ -92,15 +92,15 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   first, so an erased log is never served, and a cached log is served only while the connected
   account still holds Developer on the project; otherwise the log is read from GitLab, which
   decides.
-- **Sharing.** A collaborator who is a project member (Reporter or above) can observe a job log or
-  a test report the workspace read unless GitLab would withhold that job's data from them: a job
-  run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab
+- **Sharing.** A collaborator who can see the project and read its CI/CD and repository features can observe a job log or a test
+  report the workspace read unless GitLab would withhold that job's data from them: a job run
+  with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab
   shows only to Developers and above
-  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)), and a job can restrict
-  its artifacts, test reports included, to Developers or Maintainers
-  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)). Neither setting is
-  visible to the connected account, so each read names its jobs and the collaborator's own account
-  asks GitLab. See [Sharing with collaborators](#sharing-with-collaborators).
+  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)), and from GitLab
+  19.1.4 a pipeline's test report leaves out each job whose reports the reader's role falls short
+  of its [`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess). Neither is
+  visible to the connected account, so each read names its jobs and the collaborator's own
+  account asks GitLab. See [Sharing with collaborators](#sharing-with-collaborators).
 
 Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
 `blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
@@ -110,10 +110,13 @@ This gatekeeper registers no GitLab webhooks, so agents poll.
 ## Sharing with collaborators
 
 A binding is one project (or one of its issues or merge requests, which share its permissions),
-and the policy for a collaborator is that their own connected GitLab account holds an effective
-membership of that project at Reporter or above, whatever its visibility, since a public project
-can still hold confidential issues and internal notes; job logs and test reports need more (see
-[CI status](#ci-status)).
+and the policy for a collaborator is that their own connected GitLab account can see that
+project, member or not, so a non-member of an `internal` or `public` project qualifies, and can
+read each project feature (repository, issues, merge requests, CI/CD; Settings › General ›
+Visibility, project features, permissions) the workspace's reads drew data from; a disabled
+feature returns nothing, so it is never named and never blocks. What GitLab guards item by item needs
+more: each confidential issue, internal note and job log the workspace read is named
+on its own and asked about with the collaborator's token (see [CI status](#ci-status)).
 
 - **Identity.** A binding pins its project's numeric GitLab id on its first read (read once by
   path; GitLab answers a moved project's old path with a redirect to its id, which that read
@@ -133,38 +136,64 @@ can still hold confidential issues and internal notes; job logs and test reports
   including same-project source and target branches, and comment, diff-thread, queued-item and
   queued-commit links use the path the pinned project has now; the original binding path remains only the REST
   rewrite key and the legacy admission requirement.
-- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+- **Every read reports it.** Each read, each page of a listing as it is returned (an empty page
+  reports the project alone, no feature, since it discloses none of its data),
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
   subresource, which the Workshop checks collaborators against (see
-  [docs/observers.md](../../docs/observers.md) §10). A job log reports
-  `project/<projectId>/jobTrace/<jobId>` instead, and a test report
-  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports it holds (the project
-  alone if none), since checking a job ID checks the membership too: the summary names them
-  (`build_ids`), and the failed-tests read, whose report does not, lists the pipeline's jobs with
-  a `junit` report after reading it, retried attempts and same-project child pipelines included,
-  refusing the read if a listing is cut short. The
-  `project/<projectId>/role/developer` and `.../role/maintainer` IDs earlier releases reported
-  read as `project/<projectId>` alone.
-- **Checks.** A collaborator's account is asked `GET /projects/<id>/members/all?user_ids[]=` for
-  its own GitLab user, with its own token: a membership at Reporter or above allows; none, a lower
-  one, an invitation not yet accepted, an expired one, or a project GitLab hides from them denies;
-  anything else fails the check rather than deny. For a job's log, a member's account then reads
-  the job and its `/trace` (a 403 denies); for its artifacts, GraphQL's
-  `job.userPermissions.readJobArtifacts`. A job that is erased or gone allows, since it holds
-  nothing left to withhold. Their account reuses a grant for up to 15 minutes and a denial for up
-  to 15 seconds, so a removed membership can still admit them for 15 minutes; a grant for a job
-  still running is reused only 15 seconds, since its log may yet become a debug trace and its
-  artifacts restricted. It asks afresh after a reconnect, which may sign
+  [docs/observers.md](../../docs/observers.md) §10), plus
+  `project/<projectId>/feature/<repository|issues|mergeRequests|builds>` for each GitLab project
+  feature (Settings › General › Visibility, project features, permissions; API `*_access_level`)
+  its data came from -- a disabled feature returns nothing, so no read names it -- and beside them
+  what GitLab guards item by item
+  that the read returned: `project/<projectId>/issue/<iid>` for each confidential issue (an
+  issue's discussion, on every page, when the issue is confidential),
+  `project/<projectId>/issue/<iid>/note/<noteId>` or `.../mergeRequest/<iid>/note/<noteId>` for
+  each internal note, `project/<projectId>/jobTrace/<jobId>` for a job log, and
+  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports a test report read holds,
+  as the summary GitLab shows the connected account names them (`build_ids`). The failed-tests
+  read asks GraphQL's `testSuite(buildIds:)` for each failing suite by those jobs, and GitLab
+  answers only from the latest attempts among them, so the jobs named are the jobs read. A job
+  an earlier release named that has since been retried is checked by the latest attempt of its
+  name. The `project/<projectId>/role/developer` and `.../role/maintainer`
+  IDs earlier releases reported read as `project/<projectId>` alone.
+- **Checks.** For `project/<projectId>`, a collaborator's account reads `GET /projects/<id>` with
+  its own token: 2xx allows, 403 or 404 (a project GitLab hides from them) denies, anything else
+  fails the check rather than deny. Membership is not consulted. For
+  `project/<projectId>/feature/<feature>`, it needs the project and one row of that feature's
+  listing -- `repository/branches`, `merge_requests` or `pipelines` -- 2xx allowing and
+  403 or 404 (the feature restricted to members or above their role, such as a Guest's repository)
+  denying; for `issues`, GraphQL's `issuesEnabled` must be true instead, since
+  `GET /projects/<id>/issues` answers `200 []` to a user the feature is closed to. An item
+  needs its project and its feature (a job builds, an issue issues, a note issues
+  or mergeRequests), then: a confidential issue
+  (`GET /projects/<id>/issues/<iid>`) or internal note (`GET …/issues/<iid>/notes/<noteId>`, or
+  `merge_requests`) allows on 2xx and denies on 403 or 404; for a job's log, the account reads the
+  job and its `/trace` (a 403 denies); for its test reports, the job's pipeline's
+  `test_report_summary` must list the job in `build_ids`. A job that is erased or gone, or whose
+  log or test report is, holds nothing left to withhold, so any reader of the project's CI/CD may
+  see what was read of it. A
+  confidential issue or internal note GitLab refuses denies everyone, Planners included:
+  GitLab answers 404 both for one that is deleted and for one it hides, and it hides a banned
+  user's issues from every non-administrator, whatever their role. A feature turned off after a read named it denies
+  everyone. Their account reuses a grant for up to 15 minutes
+  and a denial for up to 15 seconds, so lost access can still admit them for 15 minutes; a grant
+  for a job still running is reused only 15 seconds, since its log may yet become a debug trace.
+  It asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
   grant dead: the check fails. Bindings created since subresource reporting (marked
   `reportsSubresources: true` in their immutable props) have no reads that predate it, so they
   admit every collaborator without asking GitLab, record none, and have no collaborator cap: the
   Workshop checks each read's report instead. Older bindings also ask each open, uncached and never
-  with the binding owner's token, for the stored project id when there is one, and for the project
-  their original path names now (read at the project's root first, following a moved project's
-  redirect from that path, as GitHub's name check does), since earlier path-addressed reads may
-  have disclosed a project that later took it. For those older bindings, no stored id means the path is all they are checked
-  by; recorded CI data needs nothing beyond that. Caches filled before conversion are
+  with the binding owner's token, whether the collaborator can see the project by
+  the stored id when there is one, and of the project their original path names now (read at the
+  project's root first, following a moved project's redirect from that path, as GitHub's name check
+  does), since earlier path-addressed reads may have disclosed a project that later took it. For
+  those older bindings, no stored id means the path is all they are checked by; recorded CI data
+  needs nothing beyond that. Reads they made before item IDs were reported, which may have
+  returned confidential issues or internal notes, are now checked by the project's visibility alone, as are records of bare
+  `project/<projectId>`, which older releases reported for all data: a collaborator who can see the
+  project but not a members-only feature or confidential item those reads returned is admitted.
+  Caches filled before conversion are
   discarded on upgrade. Their legacy history is not exported, so these checks remain.
 
 ## Setting up GitLab OAuth credentials
@@ -339,16 +368,21 @@ The same cause on the `.git/` paths: the Access application admits the service t
 
 ### "This collaborator does not have read access to the GitLab project …"
 
-Someone sharing a workspace is not a member of the project it is bound to at **Reporter** or
-above — or is a member only at Guest. Being able to open the project in GitLab is not enough,
-even on an `internal` or `public` one: a project can hold confidential issues and internal notes
-that only members at those roles see, and the workspace may have read them. The remedy is for a
-project maintainer to add the collaborator as a Reporter (inherited group membership counts).
+GitLab hides the bound project from the collaborator's own account, or refuses them a project
+feature the workspace read from -- its repository, issues, merge requests or CI/CD (restricted to
+project members under Settings › General › Visibility, project features, permissions, or above
+their role, as a Guest of a private project cannot read its repository). Membership is not
+required -- anyone signed in can qualify on an `internal` project -- and a feature the workspace
+never read from does not count. If the workspace read a feature that has since been turned off,
+it denies everyone. The remedy is for a project maintainer to open that feature to them, for
+instance by granting a role (inherited group membership counts).
 
-### "… cannot be allowed to observe" after the workspace read a job log or a test report
+### "… cannot be allowed to observe" after the workspace read a job log, a test report, a confidential issue or an internal note
 
-The collaborator is a project member, but GitLab withholds that job's log (it ran with a debug
-trace, which needs **Developer**) or its artifacts (`artifacts:access` restricts them to
-Developers or Maintainers) from them. A project maintainer can grant the role; otherwise share a
-workspace that has not read that job's data.
+The collaborator can read the project, but GitLab withholds that item from them: a job's log (it
+ran with a debug trace, which needs **Developer**) or its test reports (`artifacts:access` restricts
+them to Developers or Maintainers, which GitLab applies to test reports from 19.1.4), a confidential issue (its author, assignees and Planners up),
+or an internal note (Planners up). An issue or note deleted or hidden (a banned user's) since the
+workspace read it denies everyone, since GitLab answers 404 for both. A project maintainer can
+grant the role an item needs; otherwise share a workspace that has not read that data.
 

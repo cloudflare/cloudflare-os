@@ -304,8 +304,8 @@ export interface GitLabMergeRequest extends GitLabIssuable {
 
   /**
    * Lists the pipelines that ran for this merge request, for its current and earlier head
-   * commits, newest first. A pipeline with `project` set ran in another project (the source
-   * project of a merge request from a fork) and is data only.
+   * commits, newest first. Only pipelines that ran in this project are listed, not those of a
+   * fork's source project.
    *
    * Results are streamed through the returned cursor. Call `next()` repeatedly on that
    * same cursor until it returns `null`.
@@ -316,7 +316,7 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    * Opens one of this merge request's pipelines. Without `id`, the pipeline for the current head
    * commit (`getDetails().ci.pipeline`); this throws while there is none yet (read
    * `getDetails().ci` again shortly) and when `getDetails()` would leave `ci` out. With `id`, it
-   * must be one of `listPipelines()`. A pipeline that ran in another project cannot be opened.
+   * must be one of `listPipelines()`.
    */
   getPipeline(id?: string): Promise<GitLabPipeline>;
 
@@ -461,6 +461,11 @@ export type GitLabIssueSummary = GitLabIssuableSummary & {
   state: GitLabIssueState;
   /** Thumbs-up reactions; what `sort: "popularity"` orders by. */
   upvotes: number;
+  /**
+   * Whether the issue is confidential: GitLab shows it only to its author, its assignees, and
+   * project members with at least the Planner role.
+   */
+  confidential: boolean;
 }
 
 /** Full issue details returned by `GitLabIssue.getDetails()`. */
@@ -478,8 +483,11 @@ export type GitLabBranchRef = {
    * branch's head cannot be read.
    */
   sha: string | null;
-  /** The project the branch lives in: differs from the merge request's own project for a
-   *  merge request from a fork. */
+  /**
+   * The project the branch lives in: differs from the merge request's own project for a merge
+   * request from a fork. A fork is named by its numeric id alone, `project-<id>` as `path` and
+   * `name`, with no namespace, and `url` is the GitLab instance's home page, not the fork's.
+   */
   project: GitLabProjectRef;
 }
 
@@ -652,8 +660,6 @@ export type GitLabPipelineSummary = {
   url: string;
   createdAt: Date;
   updatedAt: Date;
-  /** Set when it ran in another project (the source project of a merge request from a fork): data only, it cannot be opened. */
-  project?: GitLabProjectRef;
 };
 
 /** Full pipeline details returned by `GitLabPipeline.getDetails()`. */
@@ -873,6 +879,8 @@ export type GitLabDiscussionEntry = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Planner role. */
+  internal: boolean;
 };
 
 /** The side of a merge request diff. */
@@ -952,6 +960,8 @@ export type GitLabDiffThreadComment = {
   createdAt: Date;
   updatedAt?: Date;
   url: string;
+  /** Whether the comment is an internal note: GitLab shows it only to project members with at least the Planner role. */
+  internal: boolean;
 }
 
 /** A diff thread attached to one diff location. */

@@ -1,7 +1,9 @@
 // The RPC sessions agents and gadgets talk to: one per bound resource kind, plus the pipeline and
 // job capabilities they open. Every read authorizes an observation through the gatekeeper, which
-// reports the subresource it depends on (see GitLabGatekeeperImpl.authorizeRead), a listing each
-// page as it leaves, and advertises the commit ids it returns to the workspace git cache; every
+// reports the project and each item GitLab guards one by one that the read disclosed -- a
+// confidential issue, an internal note, a job's log or artifacts (see
+// GitLabGatekeeperImpl.authorizeRead) -- a listing each page as it leaves, and advertises the
+// commit ids it returns to the workspace git cache; every
 // write submits an action for approval, and the reads that only prepare one record nothing. Mirrors
 // gatekeeper-github's session classes, including the carve-out that results served from the git
 // cache rather than from the provider are never advertised. CI reads advertise nothing: a
@@ -18,6 +20,7 @@ import type { EntityKind } from "./gitlab-action-types";
 import { ObservedCursor } from "./gitlab-cursors";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
 import { commitIdsOfMergeRequestSummary } from "./gitlab-normalize";
+import type { ProjectFeature } from "./project-subresources";
 import type {
   GitLabBranchFilter,
   GitLabBranchSummary,
@@ -76,19 +79,34 @@ function pageSize(options: GitLabPageOptions | undefined, fallback = 50): number
 }
 
 /**
+ * The project features each kind of read returns data from (see GitLabGatekeeperImpl.authorizeRead).
+ * A merge request's data and a pipeline's carry commit ids and branch names, which are the
+ * repository's, so they name it too; GitLab turns merge requests and CI/CD off with the
+ * repository, so that never requires more than the read itself did.
+ */
+const REPOSITORY_DATA: readonly ProjectFeature[] = ["repository"];
+const ISSUE_DATA: readonly ProjectFeature[] = ["issues"];
+const MERGE_REQUEST_DATA: readonly ProjectFeature[] = ["mergeRequests", "repository"];
+const CI_DATA: readonly ProjectFeature[] = ["builds", "repository"];
+
+/**
  * `cursor`, a listing the gatekeeper built, with each page authorized as `observation` describes
- * the listing (see GitLabGatekeeperImpl.authorizeRead and ObservedCursor), reporting
- * `subresources` when the listing named what it disclosed as it fetched its data, and then, with
+ * the listing (see GitLabGatekeeperImpl.authorizeRead and ObservedCursor), reporting the project
+ * `features` its rows come from when it has rows, what `subresources` names for the page's rows
+ * when the listing's rows are guarded one by one (see GuardedListing), and then, with
  * `advertising`, the commit ids on it advertised, withholding simulated ones as SessionGitCache
- * does. The cursor holds its own duplicates of the session's stubs, so it keeps working if the
- * session is disposed before it is drained.
+ * does. An empty page discloses no feature's data, so it reports the project alone: GitLab answers
+ * `200 []` for issues turned off, which would otherwise require a feature no one can read. The
+ * cursor holds its own duplicates of the session's stubs, so it keeps working if the session is
+ * disposed before it is drained.
  */
 async function observedListing<T>(
   gatekeeper: Pick<GitLabGatekeeperImpl, "authorizeRead" | "isSimulatedCommitId">,
   approvalQueue: RpcStub<ApprovalQueue>, cursor: Cursor<T>,
   observation: Omit<ObservationDescription, "subresources">,
+  features: readonly ProjectFeature[],
   options: {
-    subresources?: string[];
+    subresources?: (items: readonly T[]) => string[];
     advertising?: { gitCache: SessionGitCache; commitIds: (item: T) => readonly GitOid[] };
   } = {},
 ): Promise<Cursor<T>> {
@@ -96,9 +114,10 @@ async function observedListing<T>(
   const cache = advertising && (await advertising.gitCache.stub()).dup();
   const queue = approvalQueue.dup();
   return new ObservedCursor(cursor, {
-    authorize: page => gatekeeper.authorizeRead(queue, page === 1
+    authorize: (page, items) => gatekeeper.authorizeRead(queue, page === 1
       ? observation
-      : { ...observation, title: `${observation.title} (page ${page})` }, subresources),
+      : { ...observation, title: `${observation.title} (page ${page})` },
+      items.length === 0 ? [] : features, subresources?.(items) ?? []),
     advertise: cache && advertisePages(cache, advertising.commitIds,
       { withhold: id => gatekeeper.isSimulatedCommitId(id) }),
     release: () => {
@@ -129,11 +148,11 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
   }
 
   async getMetadata(): Promise<GitLabProjectMetadata> {
-    const metadata = await this.#gatekeeper.projectMetadata();
+    const { metadata, features } = await this.#gatekeeper.projectMetadata();
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read project metadata for ${metadata.path}`,
       description: `Read basic metadata for the GitLab project ${metadata.path}.`,
-    });
+    }, features, []);
     return metadata;
   }
 
@@ -170,19 +189,19 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
   }
 
   async listIssues(options?: GitLabIssueFilter): Promise<Cursor<GitLabIssueSummary>> {
-    return await observedListing(this.#gatekeeper, this.#approvalQueue,
-      await this.#gatekeeper.listIssues(options, pageSize(options)), {
-        title: `List issues`,
-        description: `List issues in the GitLab project.`,
-      });
+    const { cursor, subresources } = await this.#gatekeeper.listIssues(options, pageSize(options));
+    return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
+      title: `List issues`,
+      description: `List issues in the GitLab project.`,
+    }, ISSUE_DATA, { subresources });
   }
 
   async searchIssues(query: GitLabIssueSearch): Promise<Cursor<GitLabIssueSummary>> {
-    return await observedListing(this.#gatekeeper, this.#approvalQueue,
-      await this.#gatekeeper.searchIssues(query, pageSize(query)), {
-        title: `Search issues for "${query.text}"`,
-        description: `Search issues in the GitLab project for "${query.text}".`,
-      });
+    const { cursor, subresources } = await this.#gatekeeper.searchIssues(query, pageSize(query));
+    return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
+      title: `Search issues for "${query.text}"`,
+      description: `Search issues in the GitLab project for "${query.text}".`,
+    }, ISSUE_DATA, { subresources });
   }
 
   async listMergeRequests(options?: GitLabMergeRequestFilter): Promise<Cursor<GitLabMergeRequestSummary>> {
@@ -191,7 +210,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List merge requests`,
       description: `List merge requests in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfMergeRequestSummary } });
+    }, MERGE_REQUEST_DATA, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfMergeRequestSummary } });
   }
 
   async searchMergeRequests(query: GitLabMergeRequestSearch): Promise<Cursor<GitLabMergeRequestSummary>> {
@@ -200,7 +219,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `Search merge requests for "${query.text}"`,
       description: `Search merge requests in the GitLab project for "${query.text}".`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfMergeRequestSummary } });
+    }, MERGE_REQUEST_DATA, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfMergeRequestSummary } });
   }
 
   async listBranches(options?: GitLabBranchFilter): Promise<Cursor<GitLabBranchSummary>> {
@@ -208,7 +227,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List branches`,
       description: `List branches in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: branch => [branch.headCommit] } });
+    }, REPOSITORY_DATA, { advertising: { gitCache: this.#gitCache, commitIds: branch => [branch.headCommit] } });
   }
 
   async listTags(options?: GitLabPageOptions): Promise<Cursor<GitLabTagSummary>> {
@@ -216,7 +235,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List tags`,
       description: `List tags in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: tag => [tag.commit] } });
+    }, REPOSITORY_DATA, { advertising: { gitCache: this.#gitCache, commitIds: tag => [tag.commit] } });
   }
 
   async resolveRef(ref?: string): Promise<string> {
@@ -225,7 +244,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       title: `Resolve ${ref ?? "the default branch"} to a commit id`,
       description: `Resolve ${ref === undefined ? "the default branch" : `"${ref}"`}`
         + ` to commit ${id} in the GitLab project.`,
-    });
+    }, REPOSITORY_DATA, []);
     // A cache-served resolution is never advertised, for the same reasons as getCommit.
     if (!fromCache) {
       await this.#gitCache.advertise([id]);
@@ -240,7 +259,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       description: `Read commit ${details.id}`
         + `${ref === undefined ? " (head of the default branch)"
           : ref === details.id ? "" : ` (resolved from "${ref}")`} in the GitLab project.`,
-    });
+    }, details.ci === undefined ? REPOSITORY_DATA : CI_DATA, []);
     // A cache-served read is never advertised: either the commit was populated from this remote
     // in the first place (provenance already recorded) or it is part of a pending push (not on
     // the remote yet -- the hint would outlive a rejection).
@@ -272,7 +291,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cursor, {
       title: `List commit history`,
       description: `List commits in the GitLab project.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary } });
+    }, REPOSITORY_DATA, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary } });
   }
 
   async listPipelines(options?: GitLabPipelineFilter): Promise<Cursor<GitLabPipelineSummary>> {
@@ -280,7 +299,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       await this.#gatekeeper.listProjectPipelines(options, pageSize(options)), {
         title: `List pipelines`,
         description: `List CI pipelines in the GitLab project.`,
-      });
+      }, CI_DATA);
   }
 
   /** Opening is not an observation, as for `getIssue`: the stub's reads record theirs. */
@@ -376,11 +395,11 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
   }
 
   async readDiscussion(options?: GitLabPageOptions): Promise<Cursor<GitLabDiscussionEntry>> {
-    return await observedListing(this.gatekeeper, this.approvalQueue,
-      await this.gatekeeper.issueDiscussion(this.kind, this.logicalId, pageSize(options)), {
-        title: `Read discussion for ${this.#reference()}`,
-        description: `Read the discussion thread for ${this.#reference()}.`,
-      });
+    const { cursor, subresources } = await this.gatekeeper.issueDiscussion(this.kind, this.logicalId, pageSize(options));
+    return await observedListing(this.gatekeeper, this.approvalQueue, cursor, {
+      title: `Read discussion for ${this.#reference()}`,
+      description: `Read the discussion thread for ${this.#reference()}.`,
+    }, this.kind === "issue" ? ISSUE_DATA : MERGE_REQUEST_DATA, { subresources });
   }
 
   async postComment(bodyMarkdown: string): Promise<void> {
@@ -399,11 +418,11 @@ export class GitLabIssueImpl extends GitLabIssuableImpl implements GitLabIssue {
   }
 
   async getDetails(): Promise<GitLabIssueDetails> {
-    const details = await this.gatekeeper.openIssue(this.logicalId);
+    const { details, subresources } = await this.gatekeeper.issueDetails(this.logicalId);
     await this.gatekeeper.authorizeRead(this.approvalQueue, {
       title: `Read issue #${details.id}: ${details.title}`,
       description: `Read the full details of issue #${details.id} in ${details.project.path}.`,
-    });
+    }, ISSUE_DATA, subresources);
     return details;
   }
 }
@@ -427,7 +446,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     await this.gatekeeper.authorizeRead(this.approvalQueue, {
       title: `Read merge request !${details.id}: ${details.title}`,
       description: `Read the full details of merge request !${details.id} in ${details.project.path}.`,
-    });
+    }, details.ci === undefined ? MERGE_REQUEST_DATA : [...MERGE_REQUEST_DATA, "builds"], []);
     // A provisional merge request may carry no branch shas, or a simulated head (withheld).
     await this.#gitCache.advertise(commitIdsOfMergeRequestSummary(details));
     return details;
@@ -437,7 +456,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     await this.gatekeeper.authorizeRead(this.approvalQueue, {
       title: `Read diff for !${this.logicalId}`,
       description: `Read the diff for merge request !${this.logicalId}.`,
-    });
+    }, MERGE_REQUEST_DATA, []);
     const diff = await this.gatekeeper.mergeRequestDiff(
       this.logicalId, pageSize(options, 20), await this.#gitCache.stub());
     await this.#gitCache.advertise([diff.revision.baseSha, diff.revision.headSha, diff.revision.mergeBaseSha ?? ""]);
@@ -446,16 +465,16 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
       files: await observedListing(this.gatekeeper, this.approvalQueue, diff.files, {
         title: `Read changed files of !${this.logicalId}`,
         description: `Read the changed files and their patches in the diff of merge request !${this.logicalId}.`,
-      }),
+      }, MERGE_REQUEST_DATA),
     };
   }
 
   async readDiffThreads(options?: GitLabPageOptions): Promise<Cursor<GitLabDiffThread>> {
-    return await observedListing(this.gatekeeper, this.approvalQueue,
-      await this.gatekeeper.mergeRequestThreads(this.logicalId, pageSize(options, 20)), {
-        title: `Read diff threads for !${this.logicalId}`,
-        description: `Read diff discussion threads for merge request !${this.logicalId}.`,
-      });
+    const { cursor, subresources } = await this.gatekeeper.mergeRequestThreads(this.logicalId, pageSize(options, 20));
+    return await observedListing(this.gatekeeper, this.approvalQueue, cursor, {
+      title: `Read diff threads for !${this.logicalId}`,
+      description: `Read diff discussion threads for merge request !${this.logicalId}.`,
+    }, MERGE_REQUEST_DATA, { subresources });
   }
 
   async postReview(review: GitLabMergeRequestReviewDraft): Promise<void> {
@@ -503,14 +522,14 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     return await observedListing(this.gatekeeper, this.approvalQueue, cursor, {
       title: `List commits for !${this.logicalId}`,
       description: `List the commits of merge request !${this.logicalId}.`,
-    }, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary } });
+    }, MERGE_REQUEST_DATA, { advertising: { gitCache: this.#gitCache, commitIds: commitIdsOfSummary } });
   }
 
   async getMergeBase(): Promise<string> {
     await this.gatekeeper.authorizeRead(this.approvalQueue, {
       title: `Read merge base for !${this.logicalId}`,
       description: `Read the merge base commit of merge request !${this.logicalId}.`,
-    });
+    }, MERGE_REQUEST_DATA, []);
     const mergeBase = await this.gatekeeper.mergeRequestMergeBase(this.logicalId, await this.#gitCache.stub());
     // A merge base is always a commit GitLab itself knows.
     await this.#gitCache.advertise([mergeBase]);
@@ -530,7 +549,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
       await this.gatekeeper.mergeRequestPipelines(this.logicalId, pageSize(options)), {
         title: `List pipelines for !${this.logicalId}`,
         description: `List the CI pipelines of merge request !${this.logicalId}.`,
-      });
+      }, [...MERGE_REQUEST_DATA, "builds"]);
   }
 
   async getPipeline(id?: string): Promise<GitLabPipeline> {
@@ -571,7 +590,7 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read pipeline #${this.#pipelineId}`,
       description: `Read the details of CI pipeline #${this.#pipelineId} (${details.status}, on ${details.ref}).`,
-    });
+    }, CI_DATA, []);
     return details;
   }
 
@@ -581,7 +600,7 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
         title: `List jobs of pipeline #${this.#pipelineId}`,
         description: `List the jobs of CI pipeline #${this.#pipelineId}` +
           `${options?.status === undefined ? "" : ` with status ${options.status.join(", ")}`}.`,
-      });
+      }, CI_DATA);
   }
 
   async getDownstreamPipeline(id: string): Promise<GitLabPipeline> {
@@ -595,7 +614,7 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
       title: `Read test report of pipeline #${this.#pipelineId}`,
       description: `Read the unit test totals of CI pipeline #${this.#pipelineId}: ` +
         `${report.total} tests, ${report.failed} failed, ${report.errored} errored.`,
-    }, subresources);
+    }, CI_DATA, subresources);
     return report;
   }
 
@@ -604,13 +623,13 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cases, {
       title: `Read failed tests of pipeline #${this.#pipelineId}`,
       description: `Read the failed and errored test cases, with their output, from CI pipeline #${this.#pipelineId}'s test reports.`,
-    }, { subresources });
+    }, CI_DATA, { subresources: () => subresources });
   }
 }
 
 /**
  * A job run by a runner in the bound project, opened by a project or merge request session, over
- * its own duplicate of that session's approval queue. Its log reports the Developer role.
+ * its own duplicate of that session's approval queue. Its log reports the job's log.
  */
 @validateRpc()
 export class GitLabJobImpl extends RpcTarget implements GitLabJob {
@@ -634,7 +653,7 @@ export class GitLabJobImpl extends RpcTarget implements GitLabJob {
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read job \`${details.name}\` #${this.#jobId}`,
       description: `Read the details of CI job \`${details.name}\` #${this.#jobId} (${details.status}).`,
-    });
+    }, CI_DATA, []);
     return details;
   }
 
@@ -647,7 +666,7 @@ export class GitLabJobImpl extends RpcTarget implements GitLabJob {
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read log of job \`${jobName}\` #${this.#jobId}, ${range}`,
       description: `Read ${range}${search} of the log of CI job \`${jobName}\` #${this.#jobId} (${page.totalLines} lines in all).`,
-    }, subresources);
+    }, CI_DATA, subresources);
     return page;
   }
 }

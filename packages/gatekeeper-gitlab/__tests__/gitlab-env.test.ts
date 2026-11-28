@@ -2,7 +2,7 @@
 // misconfiguration fails -- by name, at the first request, rather than as a login redirect.
 
 import { describe, expect, it } from "vitest";
-import { gitlabInstance, instanceUrl } from "../src/gitlab-env";
+import { effectiveAccessLevel, gitlabInstance, instanceUrl } from "../src/gitlab-env";
 
 const env = (vars: Record<string, string | undefined>) => vars as never;
 
@@ -59,5 +59,30 @@ describe("gitlabInstance", () => {
     expect(() => instanceUrl(env({ GITLAB_URL: "https://example.com/?x=1" }))).toThrow(/must be an origin/);
     // A bare trailing slash is the same origin.
     expect(instanceUrl(env({ GITLAB_URL: "https://gitlab.example.com/" }))).toBe("https://gitlab.example.com");
+  });
+});
+
+// The role a membership row from `members/all?user_ids[]=` grants, which decides whether a cached
+// debug-trace log may be served. That endpoint already folds direct, inherited and shared-group
+// membership into one effective level; a non-member is the documented empty list (`null` here).
+describe("effectiveAccessLevel", () => {
+  it("grants the row's level, and none to a non-member", () => {
+    expect(effectiveAccessLevel({ access_level: 30 })).toBe(30);
+    expect(effectiveAccessLevel(null)).toBeNull();
+  });
+
+  it("grants nothing through an invitation not yet accepted", () => {
+    expect(effectiveAccessLevel({ access_level: 40, membership_state: "awaiting" })).toBeNull();
+  });
+
+  it("grants nothing once expires_at has arrived, even while GitLab still lists the row", () => {
+    // GitLab: from that date on, the user can no longer access the project. The row lingers until
+    // the daily sweep removes it, so the date is checked here rather than trusting the listing.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(effectiveAccessLevel({ access_level: 40, expires_at: "2000-01-01" })).toBeNull();
+    expect(effectiveAccessLevel({ access_level: 40, expires_at: today })).toBeNull();
+    expect(effectiveAccessLevel({ access_level: 40, expires_at: "not a date" })).toBeNull();
+    expect(effectiveAccessLevel({ access_level: 40, expires_at: "2999-01-01" })).toBe(40);
+    expect(effectiveAccessLevel({ access_level: 40, expires_at: null })).toBe(40);
   });
 });

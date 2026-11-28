@@ -121,24 +121,40 @@ describe("issues", () => {
     expect(fake.count("GET", /issues\/1\/notes/)).toBe(0);
   });
 
-  it("reads confidential issues and internal notes like any other: observers must be Reporters, who see them on GitLab too", async () => {
-    // Nothing here filters them, by design: the owner's token reads them, and the verifier admits
-    // an observer only at Reporter or above (see hasProjectMembership), the role GitLab shows
-    // them to. A change to either side has to be made with the other.
+  it("reports the confidential issues and internal notes a read returns by their ids, beside the project", async () => {
+    // GitLab shows them to fewer people than can read the project, so each is named, and the
+    // Workshop asks each observer's own account whether GitLab shows it to them.
     const fake = fakeProject();
     const confidential = { ...fx.issueResponse.data, confidential: true };
-    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), () => json([confidential]));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), () =>
+      json([confidential, { ...fx.issueResponse.data, id: 42, iid: 2 }]));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1\\?`), () => json(confidential));
+    // One internal note by its flag, one by the deprecated name older instances send alone.
+    const note = fx.issueNotesResponse.data[1];
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1/discussions`), () => json([
-      { id: "internal", individual_note: true, notes: [{ ...fx.issueNotesResponse.data[1], id: 2001, body: "internal note", internal: true }] },
+      { id: "a", individual_note: true, notes: [{ ...note, id: 2001, body: "internal note", internal: true, confidential: true }] },
+      { id: "b", individual_note: true, notes: [{ ...note, id: 2002, body: "older internal note", internal: undefined, confidential: true }] },
+      { id: "c", individual_note: true, notes: [{ ...note, id: 2003, body: "public note" }] },
     ]));
     fake.install();
     const id = await seedAccount();
     const props = projectProps(id, PROJECT);
-    expect((await unwrap(await hooks().listIssuesAll("confidential", props, 20))).map(i => i.id)).toEqual(["1"]);
-    expect((await unwrap(await hooks().openIssue("confidential", props, "1"))).id).toBe("1");
-    const discussion = await unwrap(await hooks().discussionAll("confidential", props, "issue", "1", 50));
-    expect(discussion.map(entry => entry.bodyMarkdown)).toEqual(["internal note"]);
+    const name = "confidential";
+
+    expect(await unwrap(await hooks().session(name, props, [{ method: "listIssues", drain: true }])))
+      .toMatchObject([{ id: "1", confidential: true }, { id: "2", confidential: false }]);
+    expect(await unwrap(await hooks().session(name, props, [{ method: "getIssue", args: ["1"] }, { method: "getDetails" }])))
+      .toMatchObject({ id: "1", confidential: true });
+    expect(await unwrap(await hooks().session(name, props,
+      [{ method: "getIssue", args: ["1"] }, { method: "readDiscussion", drain: true }])))
+      .toMatchObject([{ id: "2001", internal: true }, { id: "2002", internal: true }, { id: "2003", internal: false }]);
+    const project = `project/${P}`;
+    const issues = `${project}/feature/issues`;
+    expect((await hooks().queueLog(name)).subresources).toEqual([
+      [project, issues, `${project}/issue/1`],
+      [project, issues, `${project}/issue/1`],
+      [project, issues, `${project}/issue/1`, `${project}/issue/1/note/2001`, `${project}/issue/1/note/2002`],
+    ]);
   });
 
   it("follows GitLab's x-next-page rather than counting rows: a short page need not be the last", async () => {
@@ -147,6 +163,7 @@ describe("issues", () => {
     const fake = fakeProject();
     const issue2 = { ...fx.issueResponse.data, id: 2, iid: 2, created_at: "2016-01-04T15:31:51.081Z" };
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), twoPages(fx.issueResponse.data, issue2));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1\\?`), () => json(fx.issueResponse.data));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1/discussions`),
       twoPages(fx.issueDiscussionsResponse.data[0], fx.issueDiscussionsResponse.data[1]));
     fake.install();

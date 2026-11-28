@@ -74,15 +74,17 @@ function commitSummary(id: string, parents: string[]): GitLabCommitSummary {
   return { id, message: `commit ${id.slice(0, 7)}`, author: {}, committer: {}, parents, url: `${PROJECT.url}/-/commit/${id}` };
 }
 
-/** The subresource the fake gatekeepers report for a read that names none: the bound project. */
+/** The subresource the fake gatekeepers report for every read, as the real one does: the bound project. */
 const BOUND = "project/1";
 
 function fakeGatekeeper(methods: Partial<Record<string, unknown>>): GitLabGatekeeperImpl {
   return {
     isSimulatedCommitId: () => false,
-    // As GitLabGatekeeperImpl.authorizeRead: forward the observation with the subresource it depends on.
-    authorizeRead: async (queue: RpcStub<ApprovalQueue>, observation: object, subresource?: string) =>
-      await queue.authorizeObservation({ ...observation, subresources: [subresource ?? BOUND] } as never),
+    // As GitLabGatekeeperImpl.authorizeRead: forward the observation with the project, the features
+    // its data came from, and what else it depends on.
+    authorizeRead: async (queue: RpcStub<ApprovalQueue>, observation: object, features: string[], subresources: string[]) =>
+      await queue.authorizeObservation({ ...observation,
+        subresources: [BOUND, ...features.map(feature => `${BOUND}/feature/${feature}`), ...subresources] } as never),
     ...methods,
   } as unknown as GitLabGatekeeperImpl;
 }
@@ -118,7 +120,7 @@ describe("page size", () => {
     const queue = new TestApprovalQueue();
     const session = mrSession(queue, "7", {
       mergeRequestDiff: async (_id: string, pageSize: number) => { sizes.push(pageSize); return { revision: { baseSha: oid(1), headSha: oid(2) }, files: pagesCursor([]) }; },
-      mergeRequestThreads: async (_id: string, pageSize: number) => { sizes.push(pageSize); return pagesCursor([]); },
+      mergeRequestThreads: async (_id: string, pageSize: number) => { sizes.push(pageSize); return { cursor: pagesCursor([]), subresources: () => [] }; },
     });
     await session.readDiff();
     await session.readDiffThreads();
@@ -148,7 +150,7 @@ describe("GitLabProjectSessionImpl advertising", () => {
     expect(queue.cache.advertised.toSorted()).toEqual([oid(1), oid(2)]);
     expect(queue.events.slice(3)).toEqual(["authorize List merge requests (page 2)"]);
     expect(queue.observations).toEqual(["List merge requests", "List merge requests (page 2)"]);
-    expect(queue.subresources).toEqual([[BOUND], [BOUND]]);
+    expect(queue.subresources).toEqual([1, 2].map(() => [BOUND, `${BOUND}/feature/mergeRequests`, `${BOUND}/feature/repository`]));
   });
 
   it("advertises searchMergeRequests results the same way", async () => {
