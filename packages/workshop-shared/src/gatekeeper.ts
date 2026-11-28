@@ -77,7 +77,44 @@ export type VendorDescription = {
    * management UI (see AccountDescription.singleton / .providesUi).
    */
   autoProvisionsAccount?: boolean;
+
+  /**
+   * Deployment-wide settings of this vendor, which a deployment admin chooses in the admin panel.
+   * The Workshop stores each choice and hands the stored ones to this vendor's gatekeepers (see
+   * ApprovalQueue.getAdminSettings).
+   */
+  adminSettings?: GatekeeperAdminSetting[];
 }
+
+/**
+ * A deployment-wide setting of a gatekeeper vendor (see VendorDescription.adminSettings): one
+ * choice from a list.
+ */
+export type GatekeeperAdminSetting = {
+  /** Names the setting in ApprovalQueue.getAdminSettings(). */
+  id: string;
+
+  /** Label of the setting's select in the admin panel. */
+  label: string;
+
+  /** What the setting does, shown under the select. Plain text. */
+  help: string;
+
+  /** The values the setting takes, in the order shown, each with the label an admin sees. */
+  options: { value: string; label: string }[];
+
+  /**
+   * The option that applies while an admin has chosen no other. When an admin chooses it, the
+   * Workshop stores nothing.
+   */
+  defaultValue: string;
+
+  /**
+   * Set on a setting that applies only while another setting of this vendor has one value: the
+   * admin panel shows it only then. A setting that is not shown keeps its stored choice.
+   */
+  shownWhen?: { settingId: string; value: string };
+};
 
 /**
  * Presentation-only snapshot of a Workshop user. Carries no authority and
@@ -1671,6 +1708,15 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * Throws if the session has ended (see `requireLive()`).
    */
   getFetcher(): Promise<Fetcher>;
+
+  /**
+   * What the deployment's admin chose for the settings of this gatekeeper's vendor (see
+   * VendorDescription.adminSettings), by setting id. A setting left at its default is absent, so
+   * the gatekeeper applies its own defaults. A choice is kept even when the vendor no longer
+   * declares its value, so the gatekeeper must refuse a value it does not know. A change can
+   * take about a minute to show here. A setting is configuration, never a secret.
+   */
+  getAdminSettings(): Promise<Record<string, string>>;
 }
 
 /** What a gadget is about to read from an external service, for `authorizeObservation()`. */
@@ -1714,6 +1760,8 @@ export type ObservationDescription = {
    *   restricted data. An action whose description is not complete
    *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only
    *   git pushes are refused. The kernel does not restrict which connections may be acted on.
+   *   An agent's model is no longer offered its provider's own web search tool (see
+   *   `AiModelConfig.webSearch`), whose queries the provider would see.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
    *   actions whose visibility is limited to people verified to have access to the same data: an

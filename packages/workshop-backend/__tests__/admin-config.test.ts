@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS } from "@gadgets/workshop-shared/api";
-import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
+import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, gatekeeperSetting, gatekeeperSettings, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig, withGatekeeperSetting } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -198,6 +198,51 @@ describe("admin config gateway models", () => {
     expect(polluted.modelModes.a).toBeUndefined();
   });
 
+  it("keeps a vendor's stored choices as stored, and reads only what was stored", () => {
+    let config = parseAdminConfig(JSON.stringify({ gatekeeperSettings: {
+      WebSearch: { provider: "bing", fallback: "", limit: 5, constructor: "kept" },
+      context: "not settings",
+    } }));
+    // A value is kept whatever it is: only its vendor knows which values it takes.
+    expect(config.gatekeeperSettings)
+        .toStrictEqual({ websearch: { provider: "bing", fallback: "", constructor: "kept" } });
+    expect(parseAdminConfig(serializeAdminConfig(config)).gatekeeperSettings)
+        .toStrictEqual(config.gatekeeperSettings);
+
+    expect(gatekeeperSettings(config, "websearch"))
+        .toStrictEqual({ provider: "bing", fallback: "", constructor: "kept" });
+    expect(gatekeeperSetting(config, "websearch", "provider")).toBe("bing");
+    expect(gatekeeperSetting(config, "websearch", "fallback")).toBe("");
+    // Nothing stored, though Object.prototype has properties of these names.
+    expect(gatekeeperSetting(config, "websearch", "toString")).toBeUndefined();
+    expect(gatekeeperSetting(config, "constructor", "name")).toBeUndefined();
+    expect(gatekeeperSettings(config, "constructor")).toStrictEqual({});
+    expect(gatekeeperSettings(config, "context")).toStrictEqual({});
+    expect(parseAdminConfig("{}").gatekeeperSettings).toStrictEqual({});
+  });
+
+  it("stores a vendor's choice beside its others, and leaves no entry once none is stored", () => {
+    let config = withGatekeeperSetting(DEFAULT_ADMIN_CONFIG, "websearch", "provider", "exa");
+    config = withGatekeeperSetting(config, "websearch", "__proto__", "kept");
+    config = withGatekeeperSetting(config, "context", "depth", "deep");
+    config = withGatekeeperSetting(config, "websearch", "provider", "linkup");
+    expect(config.gatekeeperSettings).toStrictEqual({
+      context: { depth: "deep" },
+      websearch: Object.fromEntries([["__proto__", "kept"], ["provider", "linkup"]]),
+    });
+    expect(DEFAULT_ADMIN_CONFIG.gatekeeperSettings).toStrictEqual({});
+
+    config = withGatekeeperSetting(config, "websearch", "provider", undefined);
+    expect(gatekeeperSetting(config, "websearch", "provider")).toBeUndefined();
+    expect(gatekeeperSetting(config, "websearch", "__proto__")).toBe("kept");
+    config = withGatekeeperSetting(config, "websearch", "__proto__", undefined);
+    config = withGatekeeperSetting(config, "context", "depth", undefined);
+    // No entry, so storing nothing where nothing is stored is no change to record.
+    expect(diffAdminConfig(DEFAULT_ADMIN_CONFIG, config)).toEqual([]);
+    expect(diffAdminConfig(config, withGatekeeperSetting(config, "context", "x", undefined)))
+        .toEqual([]);
+  });
+
   it("drops malformed added models rather than the whole list", () => {
     let config = parseAdminConfig(JSON.stringify({
       addedModels: [
@@ -348,9 +393,10 @@ describe("admin config gateway models", () => {
         " anthropic/* ", "openai/gpt-6-luna", "anthropic/*", "claude opus", "a,b/c", 3,
       ],
     })).toStrictEqual({ allowedModels: ["anthropic/*", "openai/gpt-6-luna"] });
+    // No model has a web search setting.
     for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max",
         { allowedModels: [] }, { allowedModels: ["anthropic"] },
-        { allowedModels: "anthropic/*" }]) {
+        { allowedModels: "anthropic/*" }, { webSearch: true }]) {
       expect(sanitizeModelSettings(value)).toBeUndefined();
     }
   });
@@ -561,6 +607,9 @@ describe("ADMIN_CONFIG_SEED", () => {
     expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, signupsEnabled: false }))).toEqual({});
     expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelSetting: {} }))).toEqual({});
     expect(parseAdminConfigSeed(JSON.stringify({ ...SEED, modelsSaved: true }))).toEqual({});
+    // The Models tab's fields alone: where searches run is for an admin to choose.
+    expect(parseAdminConfigSeed(JSON.stringify(
+        { ...SEED, gatekeeperSettings: { websearch: { provider: "model" } } }))).toEqual({});
   });
 
   it("is ignored when it is not a JSON object", () => {

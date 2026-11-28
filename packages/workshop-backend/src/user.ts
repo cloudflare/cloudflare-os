@@ -1551,7 +1551,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
     // deployment's to set on its own models.
-    let {reasoning, compactionInputBudget, behavesLike, capabilities, ...own} = config;
+    let {reasoning, compactionInputBudget, webSearch, behavesLike, capabilities, ...own} = config;
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config: own});
@@ -1722,11 +1722,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Resolve a model ID the way chats do: a gateway model shadows a stored model with the same ID
    * whatever its mode, so a disabled one resolves to nothing rather than to the stored model. No
-   * stored model resolves on a gateway deployment whose users may not add their own.
+   * stored model resolves on a gateway deployment whose users may not add their own. A stored
+   * model resolves without `webSearch`, which only a deployment gives to its own models (see
+   * GatewayModels.runConfig): a record stored before #putModel() dropped the field can hold it.
    */
   #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
     if (models?.get(id)) return models.resolve(id);
-    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    let stored = models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    if (!stored) return undefined;
+    let {webSearch, ...config} = stored.config;
+    return {...stored, config};
   }
 
   async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {

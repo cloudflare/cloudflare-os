@@ -26,6 +26,17 @@ import AdminPage from './AdminPage'
 
 beforeEach(() => vi.clearAllMocks())
 
+// The admin settings, with the Gatekeepers tab showing `vendor` alone.
+const viewOf = (vendor: AdminResourceVendor): AdminSettingsView => ({
+  signupsEnabled: true, userSearchEnabled: false, snapshotSharingEnabled: true, siteName: '',
+  instanceInstructions: '',
+  announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
+  restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
+  adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
+  adminAuditRetentionDays: { effective: 30, chosen: 30, min: 30 },
+  resourceVendors: [vendor],
+})
+
 it.each([
   { outcome: 'succeeds', refreshFails: false },
   { outcome: 'fails', refreshFails: true },
@@ -42,15 +53,7 @@ it.each([
     autoProvisions: false, resources: [...current,
       { urlPattern: retired, title: 'Unavailable resource type', description: 'Old restriction', enabled: false }],
   } satisfies AdminResourceVendor
-  const settings: AdminSettingsView = {
-    signupsEnabled: true, userSearchEnabled: false, snapshotSharingEnabled: true, siteName: '',
-    instanceInstructions: '',
-    announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
-    restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
-    adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
-    adminAuditRetentionDays: { effective: 30, chosen: 30, min: 30 },
-    resourceVendors: [vendor],
-  }
+  const settings = viewOf(vendor)
   const getSettings = vi.fn<AdminApi['getSettings']>().mockResolvedValueOnce(settings).mockResolvedValue({ ...settings,
     resourceVendors: [{ ...vendor, resources: current.map(r => ({ ...r, enabled: true })) }],
   })
@@ -77,6 +80,66 @@ it.each([
     }]] : [])
     expect(getSettings).toHaveBeenCalledTimes(2)
   } finally {
+    await act(async () => { root.unmount() })
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})
+
+it.each([
+  { outcome: 'succeeds', refreshFails: false },
+  { outcome: 'fails', refreshFails: true },
+])('shows a gatekeeper setting an admin picks at once, and what is stored again when the save is refused and the refresh $outcome', async ({ refreshFails }) => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  const vendor = {
+    vendorId: 'websearch', displayName: 'Web Search', autoProvisions: true, ambientMode: 'optional',
+    settings: [
+      { id: 'provider', label: 'Search provider', help: 'Where web searches run.',
+        options: [{ value: 'ceramic', label: 'Ceramic' }, { value: 'model', label: 'The model’s provider' }],
+        defaultValue: 'ceramic', value: 'ceramic' },
+      { id: 'fallback', label: 'Fallback search provider', help: 'Runs the other searches.',
+        options: [{ value: 'none', label: 'None' }, { value: 'ceramic', label: 'Ceramic' }],
+        defaultValue: 'none', shownWhen: { settingId: 'provider', value: 'model' }, value: 'none' },
+    ],
+  } satisfies AdminResourceVendor
+  const getSettings = vi.fn<AdminApi['getSettings']>().mockResolvedValue(viewOf(vendor))
+  if (refreshFails) {
+    getSettings.mockResolvedValueOnce(viewOf(vendor)).mockRejectedValue(new Error('Settings unavailable'))
+  }
+  const save = Promise.withResolvers<void>()
+  const setGatekeeperSetting = vi.fn<AdminApi['setGatekeeperSetting']>(() => save.promise)
+  getAdminApi.mockResolvedValue({ getSettings, setGatekeeperSetting, getUpdateStatus: async () => null })
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const select = (label: string) =>
+    container.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label} for Web Search"]`)
+  // The option turns Enter into a click it builds as a PointerEvent, which jsdom lacks, so the
+  // window has a stand-in for as long as the choice takes.
+  const view: { PointerEvent?: typeof MouseEvent } = window
+  view.PointerEvent = MouseEvent
+  try {
+    await act(async () => { root.render(<AdminPage />) })
+    expect(select('Fallback search provider')).toBeNull()
+    await act(async () => { select('Search provider')?.click() })
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(element => element.textContent === 'The model’s provider')
+    await act(async () => { option?.focus() })
+    await act(async () => {
+      option?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+
+    expect(setGatekeeperSetting).toHaveBeenCalledExactlyOnceWith('websearch', 'provider', 'model')
+    expect(select('Search provider')?.textContent).toBe('The model’s provider')
+    expect(select('Fallback search provider')?.textContent).toBe('None')
+
+    await act(async () => { save.reject(new Error('The gatekeeper refused it.')) })
+    expect(addToast.mock.calls).toEqual([[{ title: 'The gatekeeper refused it.', variant: 'error' }]])
+    expect(select('Search provider')?.textContent).toBe('Ceramic')
+    expect(select('Fallback search provider')).toBeNull()
+    expect(getSettings).toHaveBeenCalledTimes(2)
+  } finally {
+    delete view.PointerEvent
     await act(async () => { root.unmount() })
     container.remove()
     vi.unstubAllGlobals()

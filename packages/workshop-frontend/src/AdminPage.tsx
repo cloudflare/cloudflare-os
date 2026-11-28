@@ -17,6 +17,7 @@ import { auditSettingsOf, type AuditSettings } from './features/admin-audit/audi
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
 import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
+import { GatekeeperSettings } from './features/gatekeeper-settings/GatekeeperSettings'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -261,18 +262,25 @@ export default function AdminPage() {
     }
   }
 
-  const handleGatekeeperToggle = async (vendorId: string, enabled: boolean) => {
+  // Shows a change to a gatekeeper at once and saves it. If the save fails, says why, puts back
+  // what was shown, and reads what is stored. The read can fail too, and the controls must not
+  // go on showing a change that was not saved.
+  const changeGatekeeper = async (
+    vendorId: string,
+    change: (vendor: AdminResourceVendor) => AdminResourceVendor,
+    save: (api: RpcStub<AdminApi>) => Promise<void>,
+  ) => {
     if (!admin) return
     const key = `gk\u0000${vendorId}`
+    const shown = resourceVendors.find((v) => v.vendorId === vendorId)
     setResourceBusy((prev) => new Set(prev).add(key))
-    setResourceVendors((prev) =>
-      prev.map((v) => (v.vendorId === vendorId && !v.autoProvisions ? { ...v, enabled } : v))
-    )
+    setResourceVendors((prev) => prev.map((v) => (v.vendorId === vendorId ? change(v) : v)))
     try {
-      await admin.api.setGatekeeperMode(vendorId, enabled ? 'enabled' : 'disabled')
+      await save(admin.api)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })
+      setResourceVendors((prev) => prev.map((v) => (v.vendorId === vendorId ? shown ?? v : v)))
       await reloadResources().catch(() => {})
     } finally {
       setResourceBusy((prev) => {
@@ -283,27 +291,29 @@ export default function AdminPage() {
     }
   }
 
-  const handleGatekeeperMode = async (vendorId: string, mode: AmbientGatekeeperMode) => {
-    if (!admin) return
-    const key = `gk\u0000${vendorId}`
-    setResourceBusy((prev) => new Set(prev).add(key))
-    setResourceVendors((prev) =>
-      prev.map((v) => (v.vendorId === vendorId && v.autoProvisions ? { ...v, ambientMode: mode } : v))
+  const handleGatekeeperToggle = (vendorId: string, enabled: boolean) =>
+    changeGatekeeper(
+      vendorId,
+      (v) => (v.autoProvisions ? v : { ...v, enabled }),
+      (api) => api.setGatekeeperMode(vendorId, enabled ? 'enabled' : 'disabled'),
     )
-    try {
-      await admin.api.setGatekeeperMode(vendorId, mode)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Update failed'
-      toasts.add({ title: message, variant: 'error' })
-      await reloadResources().catch(() => {})
-    } finally {
-      setResourceBusy((prev) => {
-        const next = new Set(prev)
-        next.delete(key)
-        return next
-      })
-    }
-  }
+
+  const handleGatekeeperMode = (vendorId: string, mode: AmbientGatekeeperMode) =>
+    changeGatekeeper(
+      vendorId,
+      (v) => (v.autoProvisions ? { ...v, ambientMode: mode } : v),
+      (api) => api.setGatekeeperMode(vendorId, mode),
+    )
+
+  const handleGatekeeperSetting = (vendorId: string, settingId: string, value: string) =>
+    changeGatekeeper(
+      vendorId,
+      (v) => ({
+        ...v,
+        settings: v.settings?.map((setting) => (setting.id === settingId ? { ...setting, value } : setting)),
+      }),
+      (api) => api.setGatekeeperSetting(vendorId, settingId, value),
+    )
 
   const handleSaveAnnouncement = async () => {
     if (!admin) return
@@ -1008,8 +1018,9 @@ export default function AdminPage() {
           <p className="text-sm text-kumo-subtle mb-5">
             Turn connectors and resource types on or off for each service. Auto-provisioned
             gatekeepers (like the Context Library) have three modes &mdash; disabled, optional, or
-            enabled for everyone. Changes are soft: they don&rsquo;t revoke access a gadget already
-            holds.
+            enabled for everyone. Those changes are soft: they don&rsquo;t revoke access a gadget
+            already holds. A gatekeeper&rsquo;s own settings apply within about a minute, to
+            gadgets and chats that are already open too.
           </p>
 
           {resourceVendors.length === 0 && (
@@ -1021,6 +1032,14 @@ export default function AdminPage() {
           <div className="space-y-6">
             {resourceVendors.map((vendor) => {
               const gkKey = `gk\u0000${vendor.vendorId}`
+              const settings = vendor.settings && (
+                <GatekeeperSettings
+                  vendorName={vendor.displayName}
+                  settings={vendor.settings}
+                  saving={resourceBusy.has(gkKey)}
+                  onChoose={(settingId, value) => handleGatekeeperSetting(vendor.vendorId, settingId, value)}
+                />
+              )
 
               // Auto-provisioned ("ambient") gatekeepers use a three-state mode and have no resources.
               if (vendor.autoProvisions) {
@@ -1065,6 +1084,7 @@ export default function AdminPage() {
                         </button>
                       ))}
                     </div>
+                    {settings}
                   </div>
                 )
               }
@@ -1112,6 +1132,7 @@ export default function AdminPage() {
                     />
                   </span>
                 </div>
+                {settings}
                 {/* Resources are hidden while the gatekeeper is disabled — they can't be used
                     until it's re-enabled. */}
                 {vendor.enabled ? (

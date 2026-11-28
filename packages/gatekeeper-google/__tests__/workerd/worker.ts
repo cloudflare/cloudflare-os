@@ -231,6 +231,10 @@ class TestApprovalQueue extends RpcTarget {
     return new TestGitCache();
   }
 
+  async getAdminSettings(): Promise<Record<string, string>> {
+    throw new Error("Admin settings are not used by these tests.");
+  }
+
   addObserver(id: string): void {
     this.#activeObservers.add(id);
   }

@@ -18,10 +18,10 @@
   <text x="300" y="117" font-size="14" fill="#334155" text-anchor="middle">Agent or gadget calls <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">env.WEB_SEARCH.search(q)</tspan></text>
   <line x1="300" y1="136" x2="300" y2="162" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-  <!-- Check: query bound -->
+  <!-- Check: a provider to search with, and the query's bounds -->
   <rect x="80" y="164" width="440" height="60" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.5"/>
   <text x="300" y="189" font-size="14" fill="#1E3A8A" text-anchor="middle"><tspan font-weight="600">Gatekeeper</tspan>  <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">search()</tspan></text>
-  <text x="300" y="209" font-size="13" fill="#334155" text-anchor="middle">Query not 1 to 1,024 characters?</text>
+  <text x="300" y="209" font-size="13" fill="#334155" text-anchor="middle">No provider to search with, or query not 1 to 1,024 characters?</text>
   <line x1="520" y1="194" x2="578" y2="194" stroke="#DC2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
   <text x="549" y="186" font-size="12" font-weight="600" fill="#DC2626" text-anchor="middle">Yes</text>
   <rect x="580" y="164" width="320" height="60" rx="10" fill="#FEF2F2" stroke="#DC2626" stroke-width="1.5"/>
@@ -50,19 +50,19 @@
   <!-- Workers AI binding call -->
   <rect x="80" y="368" width="440" height="64" rx="10" fill="#FFF7ED" stroke="#F6821F" stroke-width="1.5"/>
   <text x="300" y="395" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">env.AI.websearch({ gatewayId: env.CF_AI_GATEWAY,</text>
-  <text x="300" y="415" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">query, provider: "ceramic", limit: 10 })</text>
+  <text x="300" y="415" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">query, provider, limit: 10 })</text>
   <line x1="300" y1="432" x2="300" y2="454" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <!-- AI Gateway -->
   <rect x="80" y="456" width="440" height="56" rx="10" fill="#FFF7ED" stroke="#F6821F" stroke-width="1.5"/>
   <text x="300" y="479" font-size="14" font-weight="600" fill="#C2410C" text-anchor="middle">The deployment's AI Gateway</text>
-  <text x="300" y="499" font-size="13" fill="#334155" text-anchor="middle">Logs the query; bills credits, or uses a stored Ceramic key</text>
+  <text x="300" y="499" font-size="13" fill="#334155" text-anchor="middle">Logs the query; bills credits, or uses the provider's stored key</text>
   <line x1="300" y1="512" x2="300" y2="534" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-  <!-- Ceramic -->
+  <!-- The provider -->
   <rect x="80" y="536" width="440" height="56" rx="10" fill="#F5F3FF" stroke="#7C3AED" stroke-width="1.5"/>
-  <text x="300" y="559" font-size="14" font-weight="600" fill="#6D28D9" text-anchor="middle">Ceramic.ai</text>
-  <text x="300" y="579" font-size="13" fill="#334155" text-anchor="middle">Search index; zero data retention when billed to credits</text>
+  <text x="300" y="559" font-size="14" font-weight="600" fill="#6D28D9" text-anchor="middle">The provider an admin chose</text>
+  <text x="300" y="579" font-size="13" fill="#334155" text-anchor="middle">Ceramic by default, or Linkup or Exa</text>
   <line x1="300" y1="592" x2="300" y2="622" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
   <text x="310" y="612" font-size="12" fill="#64748B">Response</text>
 

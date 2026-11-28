@@ -38,6 +38,9 @@ import {
   type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
+import {
+  ANTHROPIC_WEB_SEARCH_TOOL, OPENAI_WEB_SEARCH_TOOL, declaresWebSearch,
+} from "./built-in-search.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import {
   estimateSharedHeadTokens, hasGpt56PromptCaching, splitSystemPrompt,
@@ -89,6 +92,19 @@ export type ModelStreamOptions = SimpleStreamOptions & {
    * quick, and none of them benefit from cross-step reasoning. Default: true.
    */
   thinking?: boolean;
+
+  /**
+   * When true, the request declares the provider's own web search tool, which the provider runs
+   * inside the request, if the handle's model has it on (see AiModelConfig.webSearch). Default:
+   * false.
+   */
+  webSearch?: boolean;
+
+  /**
+   * Called with the request as it is sent, after every rewrite the handle makes of it. pi's own
+   * `onPayload` sees the request before those rewrites.
+   */
+  onSent?: (payload: unknown) => void;
 };
 
 /**
@@ -534,6 +550,9 @@ type HandleArgs = {
   // (see reasoningOptions). No level gives the model its built-in request (see builtInReasoning).
   reasoning?: ReasoningLevel;
   formatId?: string;
+  // Whether a request that asks may declare the provider's web search tool (see
+  // ModelStreamOptions.webSearch): AiModelConfig.webSearch, on the deployment's own gateway.
+  webSearch?: boolean;
 };
 
 function makeHandle(args: HandleArgs): ModelHandle {
@@ -553,7 +572,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const handle: ModelHandle = {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
-    stream: (model, context, { thinking = true, ...options } = {}) => {
+    stream: (model, context, { thinking = true, webSearch = false, onSent, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata, or leave the
       // previous request to be resent in its place.
       handle.lastResponse = undefined;
@@ -621,18 +640,23 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
         // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
         // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
-        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey). A request
+        // that asks for the provider's web search tool declares it first (see withWebSearchTool).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
-          const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          const searching = args.webSearch && webSearch
+              ? withWebSearchTool(args.model, replaced ?? payload) ?? replaced : replaced;
+          const bridged = bridgePdfAttachments(args.model.api, searching ?? payload) ?? searching;
           const grouped = groupGeminiFunctionResponses(args.model, bridged ?? payload) ?? bridged;
           const signed = signGeminiFunctionCalls(args.model, grouped ?? payload) ?? grouped;
-          if (options.cacheRetention === "none") return signed;
-          const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
+          const caching = options.cacheRetention !== "none";
+          const split = caching
+              ? splitSystemPrompt(args.model, transcript, signed ?? payload) : undefined;
           const final = split === undefined
               ? signed
               : withoutPromptCacheKey(args.model, split) ?? split;
-          sent = { payload: final ?? payload, at: Date.now() };
+          if (caching) sent = { payload: final ?? payload, at: Date.now() };
+          onSent?.(final ?? payload);
           return final;
         },
       };
@@ -676,6 +700,50 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   const { prompt_cache_key, ...rest } = payload;
   return rest;
 }
+
+// The cap each provider is sent. Anthropic documents `max_uses` as counting across the requests
+// of a user's turn, which is not measured with the requests pi sends; OpenAI's `max_tool_calls`
+// counts within one response. Each search's results are billed as input again in every later
+// step of its response: five in a row billed 203,297 input tokens (run p3 in
+// plans/built-in-web-search.md).
+const WEB_SEARCH_LIMIT = 5;
+
+// `payload` with the provider's own web search tool, which the provider runs inside the request
+// (see built-in-search.ts), after the tools pi declared.
+// - anthropic-messages: this version of the tool only. Later ones run code at Anthropic, which is
+//   not eligible for zero data retention.
+// - openai-responses: limited to OpenAI's index, so a live page is read only under the
+//   workspace's fetch policy (see docs/unified-fetch.md). `web_search_preview` ignores that field.
+//   Undefined for a request whose `reasoning.effort` is "minimal", which OpenAI refuses with the
+//   tool: gpt-5 answered 400 "The following tools cannot be used with reasoning.effort
+//   'minimal': web_search." on 2026-11-25. The effort is read from the payload, because a
+//   reasoning level can be sent as another effort. Such a request goes as pi built it, and the
+//   chat searches as one with no tool does.
+// - Other APIs: undefined.
+function withWebSearchTool(model: Model<Api>, payload: unknown): object | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const tools: unknown[] = "tools" in payload && Array.isArray(payload.tools) ? payload.tools : [];
+  switch (model.api) {
+    case "anthropic-messages":
+      return {
+        ...payload,
+        tools: [...tools,
+            { type: ANTHROPIC_WEB_SEARCH_TOOL, name: "web_search", max_uses: WEB_SEARCH_LIMIT }],
+      };
+    case "openai-responses":
+      return hasMinimalEffort(payload) ? undefined : {
+        ...payload,
+        tools: [...tools, { type: OPENAI_WEB_SEARCH_TOOL, external_web_access: false }],
+        max_tool_calls: WEB_SEARCH_LIMIT,
+      };
+    default:
+      return undefined;
+  }
+}
+
+const hasMinimalEffort = (payload: object): boolean =>
+    "reasoning" in payload && typeof payload.reasoning === "object" && payload.reasoning !== null &&
+    "effort" in payload.reasoning && payload.reasoning.effort === "minimal";
 
 // The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
 // resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
@@ -723,7 +791,9 @@ function cachedRequest(
 //   streaming, which pi always uses, so 1 it is. An enabled thinking budget must stay below
 //   max_tokens, so such requests can't be resent; adaptive thinking takes any cap.
 // - openai-responses, GPT-5.6 and later: at least 30 minutes after the last write or reuse. 16
-//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too.
+//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too. A request
+//   that declares web search would start a search within that cap (4 of 4 resends), which
+//   `tool_choice: "none"` prevents (0 of 3) while the cache is still read.
 // - Other APIs: undefined.
 function cappedForResend(model: Model<Api>, payload: unknown)
     : { payload: object; responseCap: number; cacheLifetime: number } | undefined {
@@ -735,7 +805,11 @@ function cappedForResend(model: Model<Api>, payload: unknown)
       };
     case "openai-responses":
       return hasGpt56PromptCaching(model) ? {
-        payload: { ...payload, max_output_tokens: 16 }, responseCap: 16,
+        payload: {
+          ...payload, max_output_tokens: 16,
+          ...(declaresWebSearch(payload) ? { tool_choice: "none" } : {}),
+        },
+        responseCap: 16,
         cacheLifetime: 30 * 60_000,
       } : undefined;
     default:
@@ -997,6 +1071,11 @@ function getModelViaGateway(
     sessionAffinity: options.sessionAffinity,
     reasoning: config.reasoning,
     formatId: gatewayCatalogModel(config)?.id,
+    // Only the deployment's gateway carries the tool: a turn billed to a user's own gateway (see
+    // getModelViaUserGateway) never does. This gateway runs on credits too where it holds no key
+    // for the provider, and whether the tool is accepted there is not measured: the model's Test
+    // sends it, so that a refusal shows before a chat meets it.
+    webSearch: config.webSearch,
     aiGatewayLogRoute: logRoute(gateway),
   });
 }

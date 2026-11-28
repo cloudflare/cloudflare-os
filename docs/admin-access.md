@@ -702,8 +702,9 @@ chokepoint records `diffAdminConfig(current, next)` before `storage.adminConfig.
 
 - Strings are recorded as themselves, and other values as JSON with object keys sorted. Own
   properties only: model maps legitimately hold `__proto__` and `constructor` keys.
-- Maps (`banner`, `disabledResources`, `ambientGatekeeperModes`, `modelModes`, `modelSettings`,
-  `modelOrder`) are recorded per key. Formats (by blueprint id) and added models (by model id) are
+- Maps (`banner`, `disabledResources`, `ambientGatekeeperModes`, `gatekeeperSettings`, `modelModes`,
+  `modelSettings`, `modelOrder`) are recorded per key; a gatekeeper's settings are one key, the
+  vendor's, holding them all. Formats (by blueprint id) and added models (by model id) are
   recorded per entry, and a change to their order as one more change, without `key`, holding both
   lists of ids. `providerOrder` is recorded as one change, holding both lists.
 - A value is kept whole up to `MAX_ADMIN_AUDIT_VALUE_LENGTH` (10,000) characters, more than any

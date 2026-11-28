@@ -1,0 +1,123 @@
+event: message_start
+data: {"p": "76", "type":"message_start","message":{"model":"claude-haiku-5-5","id":"msg_011ChNEZzGfimUHrjnFCApgi","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":4,"cache_creation_input_tokens":124,"cache_read_input_tokens":2915,"cache_creation":{"ephemeral_5m_input_tokens":124,"ephemeral_1h_input_tokens":0},"output_tokens":6,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null}         }
+
+event: content_block_start
+data: {"p": "14dd2d76085ef4b6", "type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: ping
+data: {"p": "217a4df", "type": "ping"}
+
+event: content_block_delta
+data: {"p": "846385fab665ee", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I'm going"}        }
+
+event: content_block_delta
+data: {"p": "3f948d9f44e", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to iss"}         }
+
+event: content_block_delta
+data: {"p": "e4", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ue both calls together"}          }
+
+event: content_block_delta
+data: {"p": "881f", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" in a"}          }
+
+event: content_block_delta
+data: {"p": "7c5e", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" single block, since they"}             }
+
+event: content_block_delta
+data: {"p": "a30a77e8f2c59", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" don"}         }
+
+event: content_block_delta
+data: {"p": "9655c848959dd", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'t dep"}         }
+
+event: content_block_delta
+data: {"p": "7929b7", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"end on each other. Once"}       }
+
+event: content_block_delta
+data: {"p": "acc086", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the results come"}        }
+
+event: content_block_delta
+data: {"p": "afa29421dae0", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" back, I'll write"}          }
+
+event: content_block_delta
+data: {"p": "7cde091687", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the answer, and the citation"}          }
+
+event: content_block_delta
+data: {"p": "84f60", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" rules will"} }
+
+event: content_block_delta
+data: {"p": "fd5fc", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" govern how"}}
+
+event: content_block_delta
+data: {"p": "9", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I handle s"}          }
+
+event: content_block_delta
+data: {"p": "4b9f41fc16f7fd03", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ourced"}   }
+
+event: content_block_delta
+data: {"p": "23769854a2e6b3", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" claims there"}     }
+
+event: content_block_delta
+data: {"p": "f58c08ee64", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":", including the inst"}              }
+
+event: content_block_delta
+data: {"p": "66a", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ruction about"}           }
+
+event: content_block_delta
+data: {"p": "f", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" not"}           }
+
+event: content_block_delta
+data: {"p": "eeec59", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" copying phrasing."}          }
+
+event: content_block_delta
+data: {"p": "9", "type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}   }
+
+event: content_block_delta
+data: {"p": "cd9041129b", "type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS4wYKEAgUGAI4AUIIdGhpbmtpbmcSDEoCUk4K8QRU1u266hoMTPGx1QjWSEsX1vw5IjA51wVleeewf6yTaiCR7wdp5NPIE5csZQkxQD6v/5+olVSSPyzALTCHpPIxDGdjxEwqgAa8f4JbXvqq791vn9t84K3jSt3DvfQVKnsE+m8xtsw36BcEJgUkttwUdZDnuSB+ugzqPJy/VGWTXbP/6Lx7WZjAhji5BQT+JNrRLERfDoAL9M0+NhUw/OVLfayja1pSt/4y0lAkbVSwB5FtmaMbSKlrF7VSVca4WAw+Mf8t3rTm619G60HXDvb0NehttpW0YfPdQ5QnTfoT65yqAZCJL2MfQm3Sk3FrrGsfRb4Hgj+J4YFsJNpsfatAjcbZMs8/sWxRQbOBnKb5avV/roW+F/MgSrwho5DisPq9VToVzknSMhdlsNdl+1ZFh75PlW40ZALc1XyoE0sHsbkCxcahKqMmOQh0PwlD2f8g0rSvnYsXkP2pm4V61XEOhsZdpbahgroxLuDvI0/gvpVTMpiL7qOwI97Zsi4U4N++43YB9+re06ln2Xeijs/OsYahL/7NYk8kSRupkFrp5b0U08BoTwyN1XImHFmCJyzrappsYNmv9qMXOmOkq7ZID+Ba/YUUeEFe+3+v3YUevdu2V8z9kno5OBVwHP7lMKHEyx6R867tsQk2TB87SU7D+xgaJJwThuNHTkEOWTZkuBLTfqIJWaAOaZpnIWZAWQneJc90j8E8RLchQkKu0d1KTeb2OpFJJRvZOjoSYPHHgN7iZF8G4XZy/UoyB12nvnjESmaZKh4eAFKE93Q4urdUCD5tXbYwuNuU2HnR/2OVLQIDXWd85YKQFa7UYNaQvVLsH63oyDM1KqK+d5TsA/Xei5lT2MpJ4HgP+coE+A720G7BNKEHtd6YayMoYldLX1ph27JmD513msWUvcVzW31nOsetBcqT43SjF/cIHZcHya+KHZdz+bWHfEFgmBhuAcTmH/YFhnAOA8g867uPvF+fo3bxGrll+r0b2MsQzw3OgsAiawLNk4ZFjqsIJniZLerGnEqoEST0NEvjcKqm72zjZWhs/KiLw11+5JtVgURK3tWr6hXU1UPswXEgqEzMRC22xkjzKntpZtULge9dQQzNK4WQhyN7tuEYAQ=="}    }
+
+event: content_block_stop
+data: {"p": "c7", "type":"content_block_stop","index":0             }
+
+event: content_block_start
+data: {"p": "6", "type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01F92xX1apmFGCYe8dRGdYsJ","name":"listBlueprints","input":{},"caller":{"type":"direct"}}           }
+
+event: content_block_delta
+data: {"p": "76df5e5eafb", "type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}   }
+
+event: content_block_stop
+data: {"p": "77ad4f", "type":"content_block_stop","index":1 }
+
+event: content_block_start
+data: {"p": "f", "type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_01QcV7X5L8JR51LhJ95zmjgj","name":"web_search","input":{}}}
+
+event: content_block_delta
+data: {"p": "0296d1e392a1", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}              }
+
+event: content_block_delta
+data: {"p": "1ff5b0", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"query"}              }
+
+event: content_block_delta
+data: {"p": "1976dd7cf00c431", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\": \"clo"}       }
+
+event: content_block_delta
+data: {"p": "665c487", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"udflare"}          }
+
+event: content_block_delta
+data: {"p": "9372015cf", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" wrangl"}       }
+
+event: content_block_delta
+data: {"p": "25220", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"er late"}}
+
+event: content_block_delta
+data: {"p": "4fed", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"st rele"}      }
+
+event: content_block_delta
+data: {"p": "a85034", "type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ase\"}"}             }
+
+event: content_block_stop
+data: {"p": "6e395f18", "type":"content_block_stop","index":2   }
+
+event: message_delta
+data: {"p": "74614a3284d4", "type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":4,"cache_creation_input_tokens":124,"cache_read_input_tokens":2915,"output_tokens":156,"output_tokens_details":{"thinking_tokens":71}}   }
+
+event: message_stop
+data: {"p": "8d6dfc2bc", "type":"message_stop"     }
+

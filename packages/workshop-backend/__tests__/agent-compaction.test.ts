@@ -2,7 +2,8 @@ import {describe, expect, it} from "vitest";
 import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
-  buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
+  buildCompactionState, buildSummaryPrompt, estimateProjectionTokens, findCompactionBoundary,
+  findProtectedFromSequence,
   foldProposedChanges, getModelTokenLimits, isCompactionTurn,
   shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
@@ -227,6 +228,21 @@ describe("compaction trigger", () => {
       type: "connectionRequest", requestId: "1:1", vendorId: "v", vendorName: "V",
       reason: "Needed", state: "pending",
     }))).toBe(false);
+  });
+});
+
+describe("the estimate of an unmeasured chat", () => {
+  // What Anthropic sent for a web search is sent back in the message's place, at about a token
+  // for every 2 bytes: run a4 of plans/built-in-web-search.md held 34,954 bytes and added 14,624
+  // tokens, which 4 characters to a token would take for 8,739.
+  it("weighs the kept content of a response that searched at 2 bytes to a token", () => {
+    let reply = assistantMessage([{type: "text", text: "Wrangler 4.167.0 is the latest."}]);
+    let providerContent = JSON.stringify([{type: "web_search_tool_result", content: "é".repeat(17_477)}]);
+    expect(new TextEncoder().encode(providerContent).length).toBeGreaterThan(34_954);
+    let searched = estimateProjectionTokens([{message: {...reply, providerContent}}]);
+    expect(searched).toBeGreaterThan(14_624);
+    expect(searched).toBeLessThan(14_624 * 1.3);
+    expect(estimateProjectionTokens([{message: reply}])).toBeLessThan(200);
   });
 });
 

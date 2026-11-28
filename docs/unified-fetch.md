@@ -31,6 +31,14 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
 - `connect()` from a sandbox stays blocked, because `FetchLoopback` has no `connect` handler.
 - A gatekeeper's own calls to its vendor are not subject to this policy; they use the
   gatekeeper's own `fetch()`.
+- A model provider's own web search is not a fetch by the workspace. Where an admin chooses
+  **The model's provider** as Web Search's search provider, the provider runs each search inside
+  the model request, and the Workshop records what it did afterwards
+  ([`plans/built-in-web-search.md`](../plans/built-in-web-search.md)). No request built while the
+  workspace is restricted declares the tool. What a provider reads for a search is the provider's
+  to gather, so the rules below do not apply to it. OpenAI's tool runs with
+  `external_web_access: false`, so it reads OpenAI's index and no live page. Anthropic's takes a
+  query and no URL.
 
 ## What every request gets
 

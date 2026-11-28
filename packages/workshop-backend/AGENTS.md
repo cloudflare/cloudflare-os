@@ -40,6 +40,50 @@ belongs to the invocation that opened it, and once a Durable Object invocation h
 event the object receives ends its trace. So a turn keeps all its spans only while the request that
 started it (usually the browser session) stays open.
 
+## Built-in web search
+
+An admin chooses where web searches run with the Web Search gatekeeper's **Search provider**
+setting (see Admin settings below). Under **The model's provider** (`WEB_SEARCH_IN_MODEL`),
+`GatewayModels.runConfig()` sets `AiModelConfig.webSearch` on every Anthropic and OpenAI gateway
+model, and an agent's turn on such a model uses the provider's own web search tool. No model has
+a search setting. The provider runs each search inside the model request, so the agent has no
+tool for it: `ai-models.ts` adds the provider's tool to a request that asks for it
+(`ModelStreamOptions.webSearch`), and `src/built-in-search.ts` wraps the turn's stream.
+`plans/built-in-web-search.md` is the design record. Five rules are easy to undo by accident:
+
+- Web Search is the capability, for each chat. A request declares the tool only while
+  `AgentHooks.chatMaySearchInModel(bindings)` says so. The agent asks before each request, with
+  the bindings the chat holds then, the ones `executeCode` gets. The answer is yes only while
+  the workspace holds no restricted data, one binding is to the Web Search gatekeeper's ambient
+  record, that record is usable, and the Web Search Worker is installed. A workspace's record is
+  not enough: a gadget-spawned chat holds only the bindings its spawner gave it and those it
+  gained in its log, such as a resource a user pasted.
+- Only `GatewayModels` gives a model `AiModelConfig.webSearch`: a model from a user's storage
+  resolves without it, whatever its stored record holds (`#resolveModel()` in `user.ts`). A turn
+  on a user's own gateway does not declare the tool. Nor does a request that the provider
+  refuses with the tool: for OpenAI, one whose `reasoning.effort` is `minimal`.
+  `withWebSearchTool()` reads the effort from the request as sent, because a reasoning level can
+  be sent as another effort. Outside an agent's turn, two things send the tool. The admin's two
+  model Tests send it, of a model in the list and of a model before it is added. The cache-warm
+  resend repeats a turn's last request after the turn ends, with the tool that request declared,
+  and `cappedForResend()` keeps it from searching.
+- Each thing the provider's tool did is recorded as an observation when it arrives in the stream
+  (`recordProviderObservation()`). The provider ran it before the Workshop saw the query, so the
+  record cannot come first, as a gatekeeper's does. The wrapper records, charges and keeps a
+  search only from a response to a request that declared the tool, which it reads from the
+  request as sent (`ModelStreamOptions.onSent`, `declaresWebSearch()`): `offered()` alone does
+  not say so, and a user's own endpoint can send search events for a request with no tool.
+- pi drops Anthropic's search blocks, and Anthropic refuses the next request without them. So the
+  wrapper keeps the response's content whole (`StoredAssistantMessage.providerContent`) and sends
+  it back in place of pi's form, for the model that produced it. It never keeps a search that has
+  no result: Anthropic refuses one unless tool results and nothing else follow it. The wrapper
+  fails a response only for content it would send back wrong. So nothing the stream holds of a
+  search with no result fails the response, such as a query that the response cap cut off.
+- A response that searched reports more input tokens than the chat holds: Anthropic sums them
+  over the response's internal steps, and OpenAI counts the results it read. That is what the
+  provider bills, so `usage` keeps it, but it is not the chat's size: such a response counts as
+  unmeasured for compaction.
+
 ## Auto-provisioned gatekeepers
 
 A gatekeeper may declare `VendorDescription.autoProvisionsAccount`: it can mint a connected account
@@ -80,6 +124,15 @@ them:
   banners/theme, and which gatekeeper connectors/resources are offered (plus the three-state mode for
   auto-provisioning gatekeepers above). Connectors/resources default to enabled and the admin UI
   opts them *out*; auto-provisioning gatekeepers default to *optional*.
+- A gatekeeper may declare settings of its own for the Gatekeepers panel
+  (`VendorDescription.adminSettings`), each one choice from a list.
+  `AdminSettings.setGatekeeperSetting()` checks a choice against the options the vendor
+  declares. It then stores the choice in `AdminConfig.gatekeeperSettings`. A default is never
+  stored: choosing it removes the stored choice. A stored choice that the vendor no longer
+  declares is kept and shown as stored, never replaced by the default. A gatekeeper session
+  reads its own vendor's stored choices with `ApprovalQueue.getAdminSettings()`, from the KV
+  mirror, and applies its own defaults. The Workshop reads one of these choices itself: Web
+  Search's Search provider, by the names in `@gadgets/workshop-shared/web-search-gatekeeper`.
 - **Authentication/authorization config (sign-in providers via `AUTH_GATEKEEPERS`, password login
   via `DISABLE_PASSWORD_AUTH`) is deliberately NOT in `AdminConfig`** — it stays env-var driven
   (`auth/config.ts`) so it can't be changed by a compromised admin session.

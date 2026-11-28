@@ -82,6 +82,11 @@ export async function completeText(handle: ModelHandle, args: {
    */
   thinking?: boolean;
   /**
+   * When true, the request declares the provider's web search tool where an agent's turn on the
+   * handle would (see ModelStreamOptions.webSearch). Default: false.
+   */
+  webSearch?: boolean;
+  /**
    * When true, the provider may cache the prompt, for a caller that sends the same prompt prefix
    * again. Default: false, because caching a prompt that is sent once only adds the cost of the
    * cache write.
@@ -98,6 +103,7 @@ export async function completeText(handle: ModelHandle, args: {
     signal: args.signal,
     headers: args.headers,
     thinking: args.thinking ?? false,
+    webSearch: args.webSearch,
     ...(args.cache ? {} : { cacheRetention: "none" }),
   });
   const message = await stream.result();

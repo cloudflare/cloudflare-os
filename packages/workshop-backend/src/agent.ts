@@ -6,7 +6,7 @@ import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, MAX_INLINE_MESSAGE_BYTES, MAX_INLINE_REPLAY_BYTES } from './chat-attachment-validation';
-import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
+import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
 import {
@@ -48,6 +48,9 @@ import {
 import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
+import {
+  keptForModel, withBuiltInSearch, type SearchedResponse,
+} from "./built-in-search";
 import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { type LineSource } from "./line-window";
@@ -424,6 +427,8 @@ export interface AgentHooks {
    * the step: it sets the chat's token counts, and its catalog-priced `cost.total` is the cost
    * fallback. When both `aiGatewayLogId` and `aiGatewayLogRoute` are present, the authoritative
    * cost is fetched asynchronously from the AI Gateway log; otherwise the estimate is applied.
+   * `searched` is set for a step whose response ran a web search at the provider: its fee is
+   * added to the cost, and the chat's size counts as unmeasured (see BuiltInSearchStream).
    */
   commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
@@ -437,7 +442,7 @@ export interface AgentHooks {
         reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
-      aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
+      aiGatewayLogRoute?: AiGatewayLogRoute, searched?: SearchedResponse): Promise<boolean>;
 
   /**
    * The history one agent pass replays (see ChatHistory). Read fresh before each pass, since a
@@ -636,6 +641,27 @@ export interface AgentHooks {
    * falls back to reconstructing the message from the client-visible record.
    */
   getChatModelData(chatId: number, sequence: number): StoredAssistantMessage | undefined;
+
+  /**
+   * Record an observation that the agent's model provider made for the agent inside a model
+   * request (see built-in-search.ts). The workspace's own fetches record themselves (see
+   * getWebFetchEnv).
+   */
+  recordProviderObservation(
+      chatId: number,
+      resourceTitle: string,
+      resourceUrl: string | undefined,
+      description: ObservationDescription): void;
+
+  /**
+   * Whether a request of a chat that holds `bindings`, the entries of its executeCode env (see
+   * chatBindings in runAgentPass), may carry its model provider's own web search tool (see
+   * AiModelConfig.webSearch). True only while the workspace holds no restricted data and one of
+   * the bindings is a usable binding to the ambient record of the Web Search gatekeeper, which
+   * is installed. An observation, or a binding the chat gains, can change the answer in the
+   * middle of a turn.
+   */
+  chatMaySearchInModel(bindings: Iterable<ChatBindingEntry>): boolean;
 
   /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;
@@ -2511,6 +2537,9 @@ async function runAgentPass(
   }
   // The markers of the attachments and image reads past MAX_INLINE_REPLAY_BYTES.
   const unreadParts = new Set<TextContent | ImageContent>();
+  // Whether a stored reply of this pass holds what its provider sent for a web search, for this
+  // model or for another (see keptForModel).
+  let holdsKeptContent = false;
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2552,10 +2581,14 @@ async function runAgentPass(
         // snapshots existed). Fetched before the empty-message check below: a step whose only
         // model-visible content is reasoning (e.g. OpenAI encrypted reasoning with no text) has an
         // empty display record but must still be replayed. A degenerate empty snapshot is treated
-        // as absent so the check can still drop the message.
+        // as absent so the check can still drop the message. A response that only searched the
+        // web is empty to pi, but not to the model that is sent back what its provider sent.
         let storedModelData = msg.author.type === "agent"
             ? hooks.getChatModelData(chatId, msg.sequence) : undefined;
-        if (storedModelData && storedModelData.content.length === 0) {
+        holdsKeptContent ||= storedModelData?.providerContent !== undefined;
+        if (storedModelData) storedModelData = keptForModel(storedModelData, handle.model);
+        if (storedModelData && storedModelData.content.length === 0 &&
+            storedModelData.providerContent === undefined) {
           storedModelData = undefined;
         }
 
@@ -3664,12 +3697,19 @@ async function runAgentPass(
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
   }));
-  let lastMeasuredSequence = chatMessages.findLast(message =>
-    message.type === "message" && message.author.type === "agent")?.sequence;
+  let lastMeasured = chatMessages.findLast(message =>
+    message.type === "message" && message.author.type === "agent");
+  let lastMeasuredSequence = lastMeasured?.sequence;
+  // The content a provider sent for a web search goes back to the model that produced it and to
+  // no other (see keptForModel). So a size that another model's response measured is too small
+  // for this pass if this model is sent such content, and too large if that model was. It
+  // measures this pass's prompt only if no stored reply of the pass holds such content.
+  let measuredThisPrompt = lastMeasured?.author.id === author.id || !holdsKeptContent;
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined
+  let contextTokens =
+      measuredTokens > 0 && lastMeasuredSequence !== undefined && measuredThisPrompt
     ? measuredTokens + estimateProjectionTokens(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||
@@ -4619,7 +4659,7 @@ async function runAgentPass(
           let msg: AiChatMessageBodyWithModelData = {
             type: "message",
             message: message.content.filter(block => block.type === "text")
-                .map(block => block.text).join(""),
+                .map(block => block.text).join("") + (search.sources ?? ""),
           };
           if (Object.keys(embeds).length) msg.embeds = embeds;
           let reasoning = message.content
@@ -4714,7 +4754,8 @@ async function runAgentPass(
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
                worktreeCommits, blueprintMerges, reRoots},
-              message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
+              message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute,
+              search.searched)) {
             ++nextChangeId;
           }
         });
@@ -4741,6 +4782,11 @@ async function runAgentPass(
     ? withAnthropicCompactionBlock(
         handle.stream, checkpoint.anthropicCompactionBlock, priorConversation)
     : handle.stream;
+  // A model that has web search on (see AiModelConfig.webSearch) searches with its provider's
+  // own tool while the chat may. Each request asks, because an observation can restrict the
+  // workspace, and the chat can gain a binding, in the middle of the pass.
+  let search = withBuiltInSearch(stream, () => hooks.chatMaySearchInModel(chatBindings.values()),
+      (...record) => hooks.recordProviderObservation(chatId, ...record));
 
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
@@ -4781,7 +4827,7 @@ async function runAgentPass(
           let keptFrom = projection.findIndex(({sequence}) =>
             sequence !== undefined && sequence >= compactedTo);
           let {summary, block} = await requestAnthropicCompaction(
-              handle, stream,
+              handle, search.stream,
               {messages: [leadingSystemMessage, ...modelMessages.slice(0, keptFrom)]},
               COMPACTION_SYSTEM_PROMPT, {maxTokens: maxOutputTokens, signal: abortSignal});
           written = {summary, anthropicCompactionBlock: block};
@@ -4901,8 +4947,9 @@ async function runAgentPass(
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
       // The next request is this step's measured prompt plus the tool results just produced,
       // weighed as the model will see them (pi's `details` can carry a second copy of a large
-      // output). Without usage there is nothing to measure against.
-      let measured = message.usage.totalTokens;
+      // output). Without usage there is nothing to measure against, and the usage of a response
+      // that searched does not measure the prompt (see BuiltInSearchStream).
+      let measured = search.searched ? 0 : message.usage.totalTokens;
       nextRequestFits = measured > 0 && !shouldCompactChat(measured + estimateProjectionTokens(
           toolResults.map(({details: _, ...message}) => ({message}))), inputBudget);
       // Images the step's reads showed join what the next request carries inline (see the
@@ -4940,7 +4987,7 @@ async function runAgentPass(
         return {action: "end"};
       }
     },
-  }, emit, abortSignal, stream);
+  }, emit, abortSignal, search.stream);
 
   // (No end-of-turn flush: every completed step's effects were barrier-committed with its
   // message, and an abort simply drops the in-flight step's buffer -- nothing durable exists

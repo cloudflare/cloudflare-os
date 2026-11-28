@@ -1,0 +1,339 @@
+event: response.created
+data: {"p": "dc6b15229255af", "type":"response.created","response":{"id":"resp_0ff4d384b0cabda6016b05d2e1c04887d1a47c48aac98f8719","object":"response","created_at":1795543777,"status":"in_progress","access_programs":null,"background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"image":{"context_compression":"disabled"},"incomplete_details":null,"input_transformations":[],"instructions":null,"max_output_tokens":null,"max_tool_calls":5,"model":"gpt-6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"live-probe-chat","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":"detailed"},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"List the blueprints a gadget can be made from.","name":"listBlueprints","output_schema":null,"parameters":{"type":"object","properties":{}},"strict":false},{"type":"web_search","return_token_budget":"default","search_content_types":["text"],"search_context_size":"medium","user_location":{"type":"approximate","city":null,"country":"US","region":null,"timezone":null}}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"p": "17ecd93", "type":"response.in_progress","response":{"id":"resp_0ff4d384b0cabda6016b05d2e1c04887d1a47c48aac98f8719","object":"response","created_at":1795543777,"status":"in_progress","access_programs":null,"background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"image":{"context_compression":"disabled"},"incomplete_details":null,"input_transformations":[],"instructions":null,"max_output_tokens":null,"max_tool_calls":5,"model":"gpt-6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"live-probe-chat","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":"detailed"},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"List the blueprints a gadget can be made from.","name":"listBlueprints","output_schema":null,"parameters":{"type":"object","properties":{}},"strict":false},{"type":"web_search","return_token_budget":"default","search_content_types":["text"],"search_context_size":"medium","user_location":{"type":"approximate","city":null,"country":"US","region":null,"timezone":null}}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"p": "f4dce0", "type":"response.output_item.added","item":{"id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","type":"web_search_call","status":"in_progress"},"output_index":0,"sequence_number":2}
+
+event: response.web_search_call.in_progress
+data: {"p": "c679f3a3ae", "type":"response.web_search_call.in_progress","item_id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","output_index":0,"sequence_number":3}
+
+event: response.web_search_call.searching
+data: {"p": "46b01786c500", "type":"response.web_search_call.searching","item_id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","output_index":0,"sequence_number":4}
+
+event: response.web_search_call.completed
+data: {"p": "4ba8dcc72377e9c", "type":"response.web_search_call.completed","item_id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","output_index":0,"sequence_number":5}
+
+event: response.output_item.done
+data: {"p": "10d408d17f2c43c", "type":"response.output_item.done","item":{"id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","type":"web_search_call","status":"completed","action":{"type":"search","queries":["Cloudflare Wrangler CLI latest stable release npm wrangler","site:github.com/cloudflare/workers-sdk/releases Wrangler latest release"],"query":"Cloudflare Wrangler CLI latest stable release npm wrangler"}},"output_index":0,"sequence_number":6}
+
+event: response.output_item.added
+data: {"p": "ed5", "type":"response.output_item.added","item":{"id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","type":"reasoning","content":[],"encrypted_content":"gAAAAABrBdLkn29KlmDtid4d9ziOYxcjLhui_XP4AIq1LWd1wRFAZpXdQtj4-kdg-g3lhjADYidQnHdnBgjfq5EgOlViAZcSDtDd0NOYZda6g73OLGqED_FXQ32HaXp88pHTR_8r2Zlg1XLCRZLHI-lMYOAcLo8t-ySg6xYFTj3JXjfPgy1XdDFfNptBFjI3ieK1GsX2RzV6aLRjkps346Fvbi0vNSUSpfPJLAPGE0JN3WSmUBbfTEafqt32lP25CJSFf1GSAC9ptlJt_fpJpfqXj6FdMglR7lpBMPZvDAvcOBIxnqqIovU1aPtfJar-hCM8DrZwDatCsCwDQZ0PqouHSEr-Iwp0vJFlGoTIZlPxcffq6mBTUnPdVq9HcuojWBrzqtauXtUIVFCMsH-tybnalAOo_DAJ974gCZnHVcfgK-RbfnYLOsLPy_5KViWvC2HOYytXuEMBAgTBvRjHjMf7FL2oYbR26n9Ru56Ljlo7Njmg3_z8ftn_5bOZdxnjcrOgeVp4yjcHrIXVxw-c9kOIJYIv8AU5yHe1_w9Q85C69zHmCILwWgk54pR4WW2ykLYhmYFcNK5XJ03o3nhOoAZ1utQqZV_hZwTcLHqO6qUqOb1m6eLEQIeFr4w9Da0ZMhROfbhXnAyJa_Hq3b47OL4hiHMiDOkqOsnkbDs-jSp-SdPCw-2YefFUmjExhYewCH-frKvxEf_DnM4LjoaGcywBN3qaE52gfmfi_nKZe4W1d18QjwmHuRvVGbx9D47yo7cQ8YhXottjBXTc_LGqApwIiiluVtqMF46zAVDawOTUfaEJZrv8srKvK_eDQzv8VTTrkOkZdX7QPqwa7UPBZ2_F0DNsvrwT5WNubtQPa7nnlzlE-KArcp4rSDtbmQVsMKwI5TCokXbZtX1sYF07FJSQS8IbPIrvh0uLfd1YG4MIL2DmxPRBlZKujhMNOJIdRgZgBwIYBQgynBWXIyKGD2yTEKGYxIgkr1UvrZTbT31PC0kxHwujF4qgqKheuwLo_0FLNS1sAZyLAxktwMJ-nFF-ov4vmbJBRCxPg-D_QeSky_uUnY2OmbSE7YUTJ8HsKZttC8rBP8P7s7Wvd4Y0Rv9iRih8b36ILDcH5TQNBFlJH5bB49yD0PygT_NaZIOwefkYBSlgbO_9LGH3y1ufB1zPV-_A3_EC-tb32nuer6_VUxoLmVvPL2SQHfTcokwgX-NCYbcocM9b8odZL3whHA4r_1aVoiaxN9ZZ7NMCxC5Jp68ERi1XL7AMO1FYai4uIaJ0LNt_ENA4OgZSdODo7CnL4zz2zFzqldltZAYbO3FLVaNYMmoa9Hu2T_cRfzaMtLFgcP-PkUel_mqpUD4-JTe8i5CS6DOnqxDlq9vqGXfyFLMdH0FSunw=","summary":[]},"output_index":1,"sequence_number":7}
+
+event: response.reasoning_summary_part.added
+data: {"p": "96b66085d", "type":"response.reasoning_summary_part.added","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","output_index":1,"part":{"type":"summary_text","text":""},"sequence_number":8,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "b03c", "type":"response.reasoning_summary_text.delta","delta":"**Confirming latest npm version**\n\nI","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"T2ZrBtCA9438","output_index":1,"sequence_number":9,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "aa61582fef2e5f2", "type":"response.reasoning_summary_text.delta","delta":"’m","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"j0wKgbQjRUe3of","output_index":1,"sequence_number":10,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "3e6", "type":"response.reasoning_summary_text.delta","delta":" checking","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"yAB1bkp","output_index":1,"sequence_number":11,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "e979cea0", "type":"response.reasoning_summary_text.delta","delta":" the","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"4qXMG9jVAuH5","output_index":1,"sequence_number":12,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "3b", "type":"response.reasoning_summary_text.delta","delta":" latest","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"3jEMhCcrY","output_index":1,"sequence_number":13,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "18b", "type":"response.reasoning_summary_text.delta","delta":" npm","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"q3RtzvsIxVPH","output_index":1,"sequence_number":14,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "f657d2df35", "type":"response.reasoning_summary_text.delta","delta":" version","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"iWL2rdG2","output_index":1,"sequence_number":15,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "24c5", "type":"response.reasoning_summary_text.delta","delta":" because","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"WvLhp7Js","output_index":1,"sequence_number":16,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "2bf525c6", "type":"response.reasoning_summary_text.delta","delta":" search","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"fdfcMFsnm","output_index":1,"sequence_number":17,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "deb44a7c1e9e", "type":"response.reasoning_summary_text.delta","delta":" results","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"8J0udz8e","output_index":1,"sequence_number":18,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "bad", "type":"response.reasoning_summary_text.delta","delta":" show","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"vQOR58J4AI6","output_index":1,"sequence_number":19,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "2f5108", "type":"response.reasoning_summary_text.delta","delta":" that","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"IfPb7stfvRF","output_index":1,"sequence_number":20,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5d1", "type":"response.reasoning_summary_text.delta","delta":" version","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"9LLLfKEk","output_index":1,"sequence_number":21,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "8d6a054e70d98", "type":"response.reasoning_summary_text.delta","delta":" 4","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"vUvIwUwacXBejj","output_index":1,"sequence_number":22,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "0e6db", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"KDaA8KHOGyBOY1Q","output_index":1,"sequence_number":23,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "a78688bc98e4ea", "type":"response.reasoning_summary_text.delta","delta":"166","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"OVNppfEDwHzgf","output_index":1,"sequence_number":24,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "87", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"5KJrrNOC64Yvgse","output_index":1,"sequence_number":25,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "befce8", "type":"response.reasoning_summary_text.delta","delta":"0","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"ESqu9N2yLLsRLl6","output_index":1,"sequence_number":26,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "6fc29", "type":"response.reasoning_summary_text.delta","delta":" was","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"4PT8AM7B6sXr","output_index":1,"sequence_number":27,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "47117cec492", "type":"response.reasoning_summary_text.delta","delta":" tagged","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"dPpwOQzyb","output_index":1,"sequence_number":28,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "fb4cf0", "type":"response.reasoning_summary_text.delta","delta":" yesterday","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"LTejUb","output_index":1,"sequence_number":29,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "0c77598e2db1", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"UZ0s0vgi11eiDPN","output_index":1,"sequence_number":30,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "e5e2", "type":"response.reasoning_summary_text.delta","delta":" I","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"mXBcpU7p8gHWmm","output_index":1,"sequence_number":31,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "820c479be229a82", "type":"response.reasoning_summary_text.delta","delta":" want","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"9gsbGdstQ5T","output_index":1,"sequence_number":32,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "8bb22353c6b7", "type":"response.reasoning_summary_text.delta","delta":" to","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"zJKK7FMAqxZxP","output_index":1,"sequence_number":33,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "29b6417168", "type":"response.reasoning_summary_text.delta","delta":" confirm","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"S1TbSmNp","output_index":1,"sequence_number":34,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "236130d73d5da8de", "type":"response.reasoning_summary_text.delta","delta":" this","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"3GBRhhBhbvr","output_index":1,"sequence_number":35,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "d3193", "type":"response.reasoning_summary_text.delta","delta":" from","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"fDnSAJXZtXM","output_index":1,"sequence_number":36,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5d8635bb568f0bc", "type":"response.reasoning_summary_text.delta","delta":" official","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"3zK0LKA","output_index":1,"sequence_number":37,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "aedfb2a", "type":"response.reasoning_summary_text.delta","delta":" sources","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"yU1TJD2i","output_index":1,"sequence_number":38,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "44602a362b0f", "type":"response.reasoning_summary_text.delta","delta":",","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"oGeBJ2hpweC70xz","output_index":1,"sequence_number":39,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "c5b", "type":"response.reasoning_summary_text.delta","delta":" like","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"zJCa6EQHoAj","output_index":1,"sequence_number":40,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "94fc1bb33f1ea", "type":"response.reasoning_summary_text.delta","delta":" the","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"vu3pB184ViCx","output_index":1,"sequence_number":41,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "a", "type":"response.reasoning_summary_text.delta","delta":" npm","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"FMabOVrZJgRc","output_index":1,"sequence_number":42,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "c16", "type":"response.reasoning_summary_text.delta","delta":" registry","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"sSC37Q4","output_index":1,"sequence_number":43,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "3", "type":"response.reasoning_summary_text.delta","delta":" or","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"1SlXCwVVL2I7S","output_index":1,"sequence_number":44,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "28146c3c7bcb6c30", "type":"response.reasoning_summary_text.delta","delta":" Git","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"O4omQEZJAKJB","output_index":1,"sequence_number":45,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "3d6b9e76de083", "type":"response.reasoning_summary_text.delta","delta":"Hub","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"Sgygje8WUUtpe","output_index":1,"sequence_number":46,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "8d289f9e70", "type":"response.reasoning_summary_text.delta","delta":" releases","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"ulQS5IN","output_index":1,"sequence_number":47,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "bfc45cc89164", "type":"response.reasoning_summary_text.delta","delta":",","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"9wHMd6AF9nsSj2O","output_index":1,"sequence_number":48,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "a1ba1c0106", "type":"response.reasoning_summary_text.delta","delta":" to","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"RECZHH1mfDLFq","output_index":1,"sequence_number":49,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "e", "type":"response.reasoning_summary_text.delta","delta":" ensure","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"6LiHaYX2c","output_index":1,"sequence_number":50,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "58160253c35", "type":"response.reasoning_summary_text.delta","delta":" it's","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"PiBrybxawhI","output_index":1,"sequence_number":51,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "7f880fed1990", "type":"response.reasoning_summary_text.delta","delta":" stable","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"E45H9Iwq0","output_index":1,"sequence_number":52,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5e66d792f", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"0ioOXm9TTZXrTlW","output_index":1,"sequence_number":53,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "d5b46f7723b", "type":"response.reasoning_summary_text.delta","delta":" I","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"aipLxSvmO1oZGY","output_index":1,"sequence_number":54,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "865f7991", "type":"response.reasoning_summary_text.delta","delta":"’ll","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"NDZ9cJD7C59Vy","output_index":1,"sequence_number":55,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "96e30", "type":"response.reasoning_summary_text.delta","delta":" need","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"66DybaHtmVw","output_index":1,"sequence_number":56,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "f0d22607c91", "type":"response.reasoning_summary_text.delta","delta":" to","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"ycvqbMMGvkDXD","output_index":1,"sequence_number":57,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "d2f10352c71bc", "type":"response.reasoning_summary_text.delta","delta":" differentiate","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"gI","output_index":1,"sequence_number":58,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "6fc2d", "type":"response.reasoning_summary_text.delta","delta":" between","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"KjbJ9uGd","output_index":1,"sequence_number":59,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "47d54d", "type":"response.reasoning_summary_text.delta","delta":" the","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"UhwYgOAFIM3x","output_index":1,"sequence_number":60,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "51b85285", "type":"response.reasoning_summary_text.delta","delta":" stable","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"MkItjX5Uv","output_index":1,"sequence_number":61,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "37913", "type":"response.reasoning_summary_text.delta","delta":" release","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"oxE7NHEO","output_index":1,"sequence_number":62,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "b37014f8073014", "type":"response.reasoning_summary_text.delta","delta":" and","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"8cXXAad2cFQ4","output_index":1,"sequence_number":63,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "f", "type":"response.reasoning_summary_text.delta","delta":" the","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"106RvaPUXoqu","output_index":1,"sequence_number":64,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "f5c8f", "type":"response.reasoning_summary_text.delta","delta":" latest","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"1xTuud0ZM","output_index":1,"sequence_number":65,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "452a949d0b7520", "type":"response.reasoning_summary_text.delta","delta":" tag","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"kYwGXV1buFB5","output_index":1,"sequence_number":66,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "cdd02131ea", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"b28TfYgLabYeZvF","output_index":1,"sequence_number":67,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "c5ecc9d20f1660e3", "type":"response.reasoning_summary_text.delta","delta":" It","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"0RDR5eYiKj6KA","output_index":1,"sequence_number":68,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "794f", "type":"response.reasoning_summary_text.delta","delta":" might","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"MfWh0dDn2c","output_index":1,"sequence_number":69,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "91b1b3", "type":"response.reasoning_summary_text.delta","delta":" be","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"kPpV7x8vwbq4Z","output_index":1,"sequence_number":70,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "ee2e4", "type":"response.reasoning_summary_text.delta","delta":" best","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"j3Cwa4diVmT","output_index":1,"sequence_number":71,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "6e612b7203", "type":"response.reasoning_summary_text.delta","delta":" to","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"UmlmRs5kOCjqM","output_index":1,"sequence_number":72,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "29ce2bf17d321c", "type":"response.reasoning_summary_text.delta","delta":" query","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"ztFsRd1leH","output_index":1,"sequence_number":73,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "88", "type":"response.reasoning_summary_text.delta","delta":" npm","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"Qp3r91jsA9an","output_index":1,"sequence_number":74,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "60e258d1258e8f", "type":"response.reasoning_summary_text.delta","delta":" and","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"NU6rdhWsPH49","output_index":1,"sequence_number":75,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "ec27c1de0e2", "type":"response.reasoning_summary_text.delta","delta":" Git","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"TcE1ISfeocPb","output_index":1,"sequence_number":76,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5b4545422", "type":"response.reasoning_summary_text.delta","delta":"Hub","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"xb9F6fT2dS7Uk","output_index":1,"sequence_number":77,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "19d4d241c299d", "type":"response.reasoning_summary_text.delta","delta":" releases","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"T2pxgcm","output_index":1,"sequence_number":78,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "345bafe", "type":"response.reasoning_summary_text.delta","delta":" directly","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"r2FavbJ","output_index":1,"sequence_number":79,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "0b3ca3a0", "type":"response.reasoning_summary_text.delta","delta":" to","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"L4C4eh03kjqNh","output_index":1,"sequence_number":80,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5bb33", "type":"response.reasoning_summary_text.delta","delta":" verify","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"TBQIsKkFz","output_index":1,"sequence_number":81,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "79e4", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"gsUq9Kz7HXTV1hX","output_index":1,"sequence_number":82,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "a4819ccad1bfbe", "type":"response.reasoning_summary_text.delta","delta":" I","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"bCe1TEYg50fac8","output_index":1,"sequence_number":83,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "574b9d481", "type":"response.reasoning_summary_text.delta","delta":" noticed","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"lVD9lAk2","output_index":1,"sequence_number":84,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "d2242", "type":"response.reasoning_summary_text.delta","delta":" some","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"5GqfUrof4Wq","output_index":1,"sequence_number":85,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "e9e3a284f7cfdda", "type":"response.reasoning_summary_text.delta","delta":" unusual","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"mcPC03EC","output_index":1,"sequence_number":86,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "fc9200d44d567", "type":"response.reasoning_summary_text.delta","delta":" results","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"EWj5odjM","output_index":1,"sequence_number":87,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "d447e5824", "type":"response.reasoning_summary_text.delta","delta":" from","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"2hLHqQE0QrJ","output_index":1,"sequence_number":88,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "3af260e35d4", "type":"response.reasoning_summary_text.delta","delta":" Cloud","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"wck50iFvy4","output_index":1,"sequence_number":89,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "b1b57988", "type":"response.reasoning_summary_text.delta","delta":"flare","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"yKZSgnYDa8r","output_index":1,"sequence_number":90,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "cfce239e37c4", "type":"response.reasoning_summary_text.delta","delta":" releases","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"gYvsG5B","output_index":1,"sequence_number":91,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "5b863f5e43203a71", "type":"response.reasoning_summary_text.delta","delta":" too","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"YncL9YrtHY2F","output_index":1,"sequence_number":92,"summary_index":0}
+
+event: response.reasoning_summary_text.delta
+data: {"p": "c4e1649ecb64", "type":"response.reasoning_summary_text.delta","delta":".","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","obfuscation":"mUE6eKt1qpCFqqL","output_index":1,"sequence_number":93,"summary_index":0}
+
+event: response.reasoning_summary_text.done
+data: {"p": "dc6487207", "type":"response.reasoning_summary_text.done","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","output_index":1,"sequence_number":94,"summary_index":0,"text":"**Confirming latest npm version**\n\nI’m checking the latest npm version because search results show that version 4.166.0 was tagged yesterday. I want to confirm this from official sources, like the npm registry or GitHub releases, to ensure it's stable. I’ll need to differentiate between the stable release and the latest tag. It might be best to query npm and GitHub releases directly to verify. I noticed some unusual results from Cloudflare releases too."}
+
+event: response.reasoning_summary_part.done
+data: {"p": "d4", "type":"response.reasoning_summary_part.done","item_id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","output_index":1,"part":{"type":"summary_text","text":"**Confirming latest npm version**\n\nI’m checking the latest npm version because search results show that version 4.166.0 was tagged yesterday. I want to confirm this from official sources, like the npm registry or GitHub releases, to ensure it's stable. I’ll need to differentiate between the stable release and the latest tag. It might be best to query npm and GitHub releases directly to verify. I noticed some unusual results from Cloudflare releases too."},"sequence_number":95,"summary_index":0}
+
+event: response.output_item.done
+data: {"p": "2e", "type":"response.output_item.done","item":{"id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","type":"reasoning","content":[],"encrypted_content":"gAAAAABrBdLmUYBWI-Ss9EJF2dI9nFEToJb8KFWBjEGY4BvmhIOIN5HhLtYFamaW-mb6afKoZt3fWikvLIGiSpR6XGvnb45GEje5b6CPHan7eHX13H8svfCoFAimYlyjgXCgScswrB8TD-4vIlEDQcgsqArxZEI4-6fFh-O2mRqaJPJ3-0A7uruUy4hwn8VpcDtLH3PPUy03-5zOMKjmOc2jX3dTKwQlhMT4aWs-Uvv3VUAGwa5uvq3qWy33jZNVOuPtC-scfwiM2JvzHemMvkIJ5G3DRz4ZvivoSVIjG9v1vGOF0HFlwefAzvbQM7Bxg9LrAV5YZtU67iyDgydh2OaW3g8FyhOIr51VKFUI7ZJkcFRcZtXc4EJMGIgjzSaHoexiEECnOXObe62lbtqjnWeCj5Oc28U23jgEE_1ZxAPvb_ElVdzucX_mPS2EFfLp_5BE8OZhbTK2ZsOPatvH9vQOb2-tMiiyTg5wGNGacM2bn2c9RqPrbCULsW2swklPrQt5rm6Y9JjP513dcdHNHlqKgw0jgwRj_HaZb_-Ssr5N-IfRKzg7OrctG_nzYDT683G3p3Y_CVBVd1GKP3RCxd_q9CCRF9UZ9jHQ4jusZOXXUVMy2U4A4ML3G9TF53siRgXU2a7dcBO5Q3dJ_19vhSbvtiOp7-9E4HxMbyVTyTypoxxXom7qRzehmJT3neFgmCs4hqQhcVfc6ej-T5mtk64SAP4O_V3Fs4Lv6WFeslJZ7fNWGDV-t8d4KrZeR_TEZjGEjc7on_dF7sKwcckFjZd8o1ZJT2zbENYmktx87mn8POTX0WcCL0746WTAEc0SHU6AGDQQyEPhDOueniJGzfvEzdl-WZSAlKd65WrZOkHJ0etWaQHgk2BdZ0gXkXeu59Sl2Q1Sak__kI72sYTq421Tyg8kzUk2SgaNWR5OjDmSYozeUEd2XktmrQfCqh-D6KNqrC62LXFXKchwbBHfhESLpCc-GsQvZz8sZ8Qt3q3gBJTJLk8sWlPvXBHRgOJbfMU7kbv4dqKulHPXdPowBgQuM_RTf4w9RyzGPjZsnSaiff4o6kclRPGR7aZxMZLk77nnsd4jZRXqj5OAjuomVS3gAxiIWtObaizMfdVZH0ldHGa-Lz_diixMZGWdl9A5VY67aUWceb8gj9x2ZUVg0p7OwAo0QPkOY-eEH0pL3kOC0cfxslQMSpZaEgGsIiH8f6RZoKF3mk4Hd5MASEM1CEmiSR0S2oldhP160LTzKPP0Tk6ms0DdPccaWDkOBjyj8FwLWGvbGjXNMZ3ArSfTjuJa8EKxboa3w3PPB1lUQg2mNlYg2EpsDyusL7eX-a3ICyN42KdbOYQumZNtZq2WjsPFdN58pon2UikWBuZvZDqYIVMWavn5BVu9WRzRThvAQDkr968G7f5Z9Z_aPzCIYJI5unMSCWWNPgSHKc7rag_ZFBCBo8QFL8pK92P-RXdp2YSYbBZMuIGguxtHu2MgIDaG6OXyv5e-spAYQJvL5RYHedXD_VYy0uOxc92QFF9tuMUrzjkDmB649Vf6Pr4SPReu_e2x9uSWaMGegdlSjh1qducJTjrsKG-dCJh1qUhHZM8sPoyoW38lNOOwKNt9oVEVugx_jTZ_XcF-k8Kr7pmNO2pjg9hHdEhs58znz3PW26YiCTdAxz0xYNAK57DyhG95Y7gyAMnNZW9l3-cW9OzIIvbDZdEizelPWCE5nTVSNJhkh6aJc254C5oR0HZ8EByIrkIAiBuVQbzxVw5ar6YbdEOCAdGZXl_-W1FNuZgMmI2cgSyyQ0E9oyFc-WUmVoJiF5-XKi-I3nUgl0_1QouqRDoOPt8Plai6bf4y4lGHUgC3d7f8E5BdeJCEeg3peFAziBXI-RIvpvnaUvK8LN6ww7iyZPlf2kiK_s70gcVyFp5jCmTKk8A7JXGo7WyPZzvIsMyjAyJQKOySKEULo4B69xnDgbATz9nq0UGEuwTvLCgPJAmXEujA7p60wwugYaTKZ4SYXTQDSeL0GvxV2IDVTXLS6WlbJrsK9nsV6gaoru7aEHV_wF3Dhb_SAP0jpYzkoYlcelzJt9wUAR6HXNNr_UZPbvC5AAdDc8e5eEdrAs2smft73Yc9M0Jm3qlo1Lu5hjUqpaojuAKitDfSQ8xcefKLAWEPQ98J3ugR1Ufn8rRJUPTqiGmZvK3SUr-nyOQ3hAqLN4M_UhhZUMkEwhYzXHY5GAKtQzFCw1219GezMqX4-j90oPF0QpJtFZQ3WftYTgoAiZuVV19RH1oAi2BlDSFr5PwASpIMARyrX0Js9wnOMQqJnucI6Fs1rg_zcIsV2MyMUNNt8yaA2z05DoYNA3UgyZDdITcOQISxyWsZB8gxxF9RGldsWuai7xzxs-kfopps3nPYugFmgRXcfvaeqMXxoEmiBd-5gay8PJ6ZMvMHhciVQYjGts9p7cWWP816f_YSW7-E1jiFnjPi3a9THTo1_mbC-JbF2XNMO2f7gopPhoz-XM7HBSAKTfjKGASF5VMULpHPG0YHufSFciMdiYFd3QdyObJHLDt7tEaj7l3oLZvHBmVKlkegrplNhILJFcXPKPk3To_gDL_9pNAWtVLe6VRJmYtyMVs8P2waYm1hxQrARq1RROjzkF_rlunVREskDetPqcVDyMft3kAkmKJErv2W2j7prJUjorO7a22uILVfP4MRipN0z9ItbD7EezyctNc_2qRENYKqGSZ2aSOPhifWyWx4vQ8We5r-er1YsVfb2ci_QnGksX-ZPilXC7EQE006kDsVYdGjkBT-xi7dPsZlAyCNhWu1Jt9kBSG4V9nuE537z4PGKloh-WITPKv4A_yzCkyT_aWCRhRBZeZnEmxUC4em8A5nIPxRlLj-rawLm0Jo1cz7y71eDZb73aV5g6_gx8PDOqZoSxEWshpaPHSYp8Y1kIPxf4B7GZNbYsgjk2jw5hXE-pOrJjiYcXC6Y9ENfQ==","summary":[{"type":"summary_text","text":"**Confirming latest npm version**\n\nI’m checking the latest npm version because search results show that version 4.166.0 was tagged yesterday. I want to confirm this from official sources, like the npm registry or GitHub releases, to ensure it's stable. I’ll need to differentiate between the stable release and the latest tag. It might be best to query npm and GitHub releases directly to verify. I noticed some unusual results from Cloudflare releases too."}]},"output_index":1,"sequence_number":96}
+
+event: response.output_item.added
+data: {"p": "8d1a8", "type":"response.output_item.added","item":{"id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","type":"web_search_call","status":"in_progress"},"output_index":2,"sequence_number":97}
+
+event: response.web_search_call.in_progress
+data: {"p": "a3fa9", "type":"response.web_search_call.in_progress","item_id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","output_index":2,"sequence_number":98}
+
+event: response.web_search_call.searching
+data: {"p": "2c9", "type":"response.web_search_call.searching","item_id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","output_index":2,"sequence_number":99}
+
+event: response.web_search_call.completed
+data: {"p": "1ba71501", "type":"response.web_search_call.completed","item_id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","output_index":2,"sequence_number":100}
+
+event: response.output_item.done
+data: {"p": "2679b8981f74d4", "type":"response.output_item.done","item":{"id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://github.com/cloudflare/workers-sdk/releases"}},"output_index":2,"sequence_number":101}
+
+event: response.output_item.added
+data: {"p": "0d57b", "type":"response.output_item.added","item":{"id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":3,"sequence_number":102}
+
+event: response.content_part.added
+data: {"p": "8356167a", "type":"response.content_part.added","content_index":0,"item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","output_index":3,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":103}
+
+event: response.output_text.delta
+data: {"p": "2aa52ff5fedf5f", "type":"response.output_text.delta","content_index":0,"delta":"Cloudflare’s latest stable Wrangler CLI release is","item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","logprobs":[],"obfuscation":"jrJhrfelKXakrS","output_index":3,"sequence_number":104}
+
+event: response.output_text.delta
+data: {"p": "6", "type":"response.output_text.delta","content_index":0,"delta":" **4.168.0**, released","item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","logprobs":[],"obfuscation":"jO3qbRuSDC","output_index":3,"sequence_number":105}
+
+event: response.output_text.delta
+data: {"p": "63a5bfd", "type":"response.output_text.delta","content_index":0,"delta":" November 24, 2026. ","item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","logprobs":[],"obfuscation":"5lgSMJqhKcCG","output_index":3,"sequence_number":106}
+
+event: response.output_text.delta
+data: {"p": "0beb1", "type":"response.output_text.delta","content_index":0,"delta":"([github.com](https://github.com/cloudflare/workers-sdk/releases))","item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","logprobs":[],"obfuscation":"MRcnssaKG05u6t","output_index":3,"sequence_number":107}
+
+event: response.output_text.annotation.added
+data: {"p": "026becd43600904d", "type":"response.output_text.annotation.added","annotation":{"type":"url_citation","end_index":158,"start_index":92,"title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://github.com/cloudflare/workers-sdk/releases"},"annotation_index":0,"content_index":0,"item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","output_index":3,"sequence_number":108}
+
+event: response.output_text.done
+data: {"p": "2d021aaa1b7", "type":"response.output_text.done","content_index":0,"item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","logprobs":[],"output_index":3,"sequence_number":109,"text":"Cloudflare’s latest stable Wrangler CLI release is **4.168.0**, released November 24, 2026. ([github.com](https://github.com/cloudflare/workers-sdk/releases))"}
+
+event: response.content_part.done
+data: {"p": "f145d6678b9a92", "type":"response.content_part.done","content_index":0,"item_id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","output_index":3,"part":{"type":"output_text","annotations":[{"type":"url_citation","end_index":158,"start_index":92,"title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://github.com/cloudflare/workers-sdk/releases"}],"logprobs":[],"text":"Cloudflare’s latest stable Wrangler CLI release is **4.168.0**, released November 24, 2026. ([github.com](https://github.com/cloudflare/workers-sdk/releases))"},"sequence_number":110}
+
+event: response.output_item.done
+data: {"p": "ac647c65a8", "type":"response.output_item.done","item":{"id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","type":"message","status":"completed","content":[{"type":"output_text","annotations":[{"type":"url_citation","end_index":158,"start_index":92,"title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://github.com/cloudflare/workers-sdk/releases"}],"logprobs":[],"text":"Cloudflare’s latest stable Wrangler CLI release is **4.168.0**, released November 24, 2026. ([github.com](https://github.com/cloudflare/workers-sdk/releases))"}],"phase":"final_answer","role":"assistant"},"output_index":3,"sequence_number":111}
+
+event: response.completed
+data: {"p": "c04c65d", "type":"response.completed","response":{"id":"resp_0ff4d384b0cabda6016b05d2e1c04887d1a47c48aac98f8719","object":"response","created_at":1795543777,"status":"completed","access_programs":null,"background":false,"completed_at":1795543783,"error":null,"frequency_penalty":0.0,"image":{"context_compression":"disabled"},"incomplete_details":null,"input_transformations":[],"instructions":null,"max_output_tokens":null,"max_tool_calls":5,"model":"gpt-6-luna","moderation":null,"output":[{"id":"ws_0ff4d384b0cabda6016b05d2e2638087d1a9ffbe3c4099c256","type":"web_search_call","status":"completed","action":{"type":"search","queries":["Cloudflare Wrangler CLI latest stable release npm wrangler","site:github.com/cloudflare/workers-sdk/releases Wrangler latest release"],"query":"Cloudflare Wrangler CLI latest stable release npm wrangler"}},{"id":"rs_0ff4d384b0cabda6016b05d2e41eec87d19dee92de803ed261","type":"reasoning","content":[],"encrypted_content":"gAAAAABrBdLnIhA7K5wAvaQM-N13V-ieAEc_mc3gkyNXIFjWEp7z-BMQd1B8mGAYUQWuB1Yk-He7tLbjwIdLFIbI-o1CKPuHWAEapiU05-Y6ftryWjPqRumSkwrxbWU3_4PiuU8AhnxHUYn7w-YIPVL15to_gSKAqwCeGOzHEgod7eUmCfFPTYdaXvL2BoYo7vrUM05IvHz45jjqNQj312gHSa4ZMnIKj4HgEJoJwzOUWKtJnnZgCOa8-7VsUDMojLbR90m2WZ1_pPHiuC7l_8KQ1bIZuK-ZkPGdvH3VvAccrNJKyf7A_Eb6xiNiB5rgtwjtpZsoEHKVyTGF4pPqR2NXJCCvCCFI3dT7xCy-N1Dg5cf9lUQyMtTuOl_Cl4u9h9B56ysTP-yJcBJHTpl1Qu0SbLbHNe2EXQ5C1Dll3t5_wcdwAxmLEbA9g2shQ1cG3w7FKqydjBbrYyLPo1BNReP6Bbe03LSIG6EEEL4ctWRiVwZLLW3pcYZdiGgRkMj82tGXDVu0Gjty8tV4_RqHpdTbrCLWOnINnbzt7zANPWyLRVCZ8yOkKjfx7JRgeYql3Ogfl5zX69-B7ViKl6i7iI8qwiVYMTKnC9teOElF1HwnuoClK93GenTPCnoogqd6uT2txRi9HjoHHhxnSzo3gh3AZKTA7fiJ4uacCjRExyW42VwxLSLF2-ytu23yr3wg5fCzzs5NKFu8F4vYf5UdiGEdJsBUo4FUsK18fcN3XIM81PZ8eRU5WBI_DTfFtXQw0jUpbp8c6xq74DxFs8req4wAS5MMMVO3FT9fT-B0k6YRHnpKl3nJvy5R-_oiUHFGF0NHOgUOsB0wLztWWYw3UltuelnwiQa-dODJCOkniBCxrHJ_3de-4ySh8xlhpLo61pcZJrkP_CatfgdGFEfyGcD1HHV81dysAcyxRvtDRZ_iKKcAbnY2dMXcQNc_R_5LTljsp6ai9Mnxhwafo30rOWHeSs0CLQg6qDvfwMQ-0QVK8fIGFNqRWqdEFgbVWydQUHqLLssVKDxB5mKuIM6RahALzrSxDygZpv5f-HoAGssxLiOx3k0-xb1qxPSRhWBq7cop9iFel4dO9_H4fHyQfca40rGFvZV6lSHL8nMNaCtwtXhCDyqgqfF66vyjhstGo-Zzi31FLFHPzhOV1K4EWJl3o92IaOzXPQaWBJgk1BfPdIDYSMF3CwO9ceu580ta9x1Q1Zv3BJkzCewFEzU_KlFsWd95uCzD0kru75caKqH4lONjVrIYEDWTR69v_H0lKC-arAsztRPcnnzpmoAWrQJ2BaPCC_l-nwVgAC3gL2S5U-IJkJ6aJ4gQZM8FTC7pTa35u-1iosXVIuGSJnBpaIUV_Ln5D8VycvyYVnY0uNQ3qNq8h-T-UtvHE9gcfC2X2GL-v9-oS_35br7sMVn2nO2CofEPXgRAblVHHpzbLN7jle4dWc8MCQllRDrl5WVo8jYPoPRJwMSh_iwHMuCYHRrN2CtKOljB2SR8A2AEYqzdIie6HQ0W2C_JLyqe6EkJxWMxcSsvq1mVYOvdv65-1acfqclCZJHzAiVUdyQ9-31wrxiYsK6E7HR-O6kp_-hFW__-a7bnDY9Cg5oPkB6sQ1EjLMciFiCaAaVXREXeSXmaf2aqspW8nQ-jFCCg2uNQooS6CWom_1EETZfNw3W5z1wMB7x0k3HjnknLWDI5d6aeypqEKqyT8i18hPqY_ciXxp2ZSCNWwylvDY_mKtneo4_6eX7AXmx9N08MmH265PfJpHg2Jus_I3TRP0q_twRlhsl9EGJ10ym3GU-WEdBgrhJWAer4kwt2O1AH_KdS5qW3uHhHWOmtC_g5bgjOKDX_sd4_YyTvGhTahHPYWhJfhYwGTUNnm92GGqAut7Tk37XYtRdh4zuau3DPRMGK_Ez0nC8w4np91JO8agFF8Nc1AT1G4uzh-hq4OdJ_tMyf7rGJnUvET9Jvu61DYie1Uev5009LuRk_cdO2sL-d-o2vf7Ny2edobe8yPGUQb1XK-6oZI07zTDHL2E50oGdHJz0O3vZhw392pJCep9L7boMKD0XAQNeFLDvqLTp_nML-koi4AQ1ZpuH6SQlIxvX_tagzMdOgK-G5u6DQkSXVKQ-rkE3CAr1OQe9286PGf38yd0SS5y9GlJz6x16NXVuYG1QtPrjXIe5d8L5MAdJXQNw6S1CHeCNgPuvmvRQ2BXBefdhBWXR2Tyit2LugUIWh3s_QdhSIHB7a9Zb4UmIj54F3zqveivzy5vy_i1sUrMUHrBh41nBAXkPnAKWf4EEVYFuUQz8MtqPGVb1rfzFFOiwIvpypVX0ZUwXT7oL9ZtLJShpHUeXcjVjoww6n3NdYbMuIGYM3SHTs0HIQz0-gi5XZPuTJEmMqnc038X-M0baAEQpE-io0H7wUo9UFc_7qTGiV-oJk8Obbbb5UMctoyd2pFawxE9auUPqMQHjBN3_ryJp0igP3exEijWKoRrtHoBjc2uicyR-8pyWtunrfTbky0fvYF4XeOZ0c7Hzs9AFOcb3MT1d3qwlr2mpvIfOVoe9Oxi6PS5YZHo_w96YB4st_4d9FVTRbDUNUt1lE1rRjAj2c1At4NW3hyn9V1l7cOO-LCGHAwdhgb3nqFq-tiiURfUKcT6850Lel3PTb5-S4O2mfEhqIFOwBRGUcgC_LQUGgoDMcyZMQe4GrNg6E1sVWjlmDxBAxZ32F_gmnipOseJG6SNEfPUce1EP7nitrCsQ7VZ256tI-cGzSSsUv_chsLR9XDXXxD4aOjRBX4IVtjTwtOBGvAjO29cFks4t9_zpF7D8oRoThnygStVUT_lHpgrwdhcq9u2eDesWSQZXxmmPlmGU06zfF0l0eh1ZxgiX4p9dL_NsoJNzDDYfy55mywntyHRMbkpa1l6ljuyrz6xZ7cc7tmzgDf4HMRzTf3_ykQ4K95rbpA4VUpLyQKKyefX9vKnvj0xGGrA==","summary":[{"type":"summary_text","text":"**Confirming latest npm version**\n\nI’m checking the latest npm version because search results show that version 4.166.0 was tagged yesterday. I want to confirm this from official sources, like the npm registry or GitHub releases, to ensure it's stable. I’ll need to differentiate between the stable release and the latest tag. It might be best to query npm and GitHub releases directly to verify. I noticed some unusual results from Cloudflare releases too."}]},{"id":"ws_0ff4d384b0cabda6016b05d2e6f59487d1b74fb5f2024cfe6c","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://github.com/cloudflare/workers-sdk/releases"}},{"id":"msg_0ff4d384b0cabda6016b05d2e7176087d1be01a64d792592f2","type":"message","status":"completed","content":[{"type":"output_text","annotations":[{"type":"url_citation","end_index":158,"start_index":92,"title":"Releases · cloudflare/workers-sdk · GitHub","url":"https://github.com/cloudflare/workers-sdk/releases"}],"logprobs":[],"text":"Cloudflare’s latest stable Wrangler CLI release is **4.168.0**, released November 24, 2026. ([github.com](https://github.com/cloudflare/workers-sdk/releases))"}],"phase":"final_answer","role":"assistant"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"live-probe-chat","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":"detailed"},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":1}},"tools":[{"type":"function","description":"List the blueprints a gadget can be made from.","name":"listBlueprints","output_schema":null,"parameters":{"type":"object","properties":{}},"strict":false},{"type":"web_search","return_token_budget":"default","search_content_types":["text"],"search_context_size":"medium","user_location":{"type":"approximate","city":null,"country":"US","region":null,"timezone":null}}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":15039,"input_tokens_details":{"cache_write_tokens":4588,"cache_write_tokens_details":{"ttl_12h_tokens":0,"ttl_30m_tokens":4588},"cached_tokens":0},"output_tokens":237,"output_tokens_details":{"reasoning_tokens":193},"total_tokens":15276},"user":null,"metadata":{}},"sequence_number":112}
+

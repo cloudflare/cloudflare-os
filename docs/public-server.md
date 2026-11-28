@@ -113,14 +113,42 @@ An admin session can turn on any provider the Gateway serves.
 
 The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
 controls. Each search spends the deployment account's AI Gateway credits, or bills the operator's
-Ceramic account when the gateway holds a Ceramic key. That gateway is the one its Worker's
-`CF_AI_GATEWAY` names: the instance's gateway when the deploy service installs it, `default`
-otherwise, unless you set it on that Worker. The free daily allowance and top-up flow do not apply
-to it. Every new deploy
+account with Ceramic, Linkup or Exa when the gateway holds that provider's key. That gateway is the one its
+Worker's `CF_AI_GATEWAY` names: the instance's gateway when the deploy service installs it,
+`default` otherwise, unless you set it on that Worker. The free daily allowance and top-up flow do
+not apply to it. Every new deploy
 installs it, and under the default mode, **Optional**, onboarding offers it switched on to every
 new user. On a public server, set it to **Disabled** in the admin Gatekeepers panel unless you
-accept that spend. A change applies to each workspace when it next opens; uninstalling the Worker
-stops searches at once.
+accept that spend. That also stops searches in a model (below). A change applies to each
+workspace when it next opens; uninstalling the Worker stops searches at once.
+
+An admin chooses where searches run under Admin → Gatekeepers → Web Search → **Search provider**:
+Ceramic (the default, $0.25 per 1,000 searches), Linkup ($5), Exa ($7), or **The model's
+provider**. With the last, the agent's turns on every Anthropic and OpenAI model of the
+deployment use the provider's own search tool, in the workspaces that have Web Search:
+
+- **Cost.** The provider bills each search, $10 per 1,000 on 2026-11-24, and bills its results as
+  input tokens: about 13,000 for one search on Claude (measured on `claude-haiku-5-5`,
+  2026-11-24). A GPT request carries about 4,500 more input tokens whether it searches or not. The
+  free daily allowance counts turns, not spend, so a free user's searches cost the platform
+  whatever the model charges, five searches a request at most.
+- **Who does not get it.** A workspace whose owner pays through their own Cloudflare account, a
+  chat on Auto, Gemini, Workers AI or a user's own model, a gadget, and a workspace that holds
+  restricted data. Their searches go to the **Fallback search provider**, billed as the first
+  paragraph says. With None, which is the default, those searches fail.
+- **All or nothing.** A provider account that has web search off refuses every request that
+  carries the tool. Each chat that carries it then fails on every message, also when it does not
+  search. A model's Test in the Models tab sends the tool for that model alone, and reads the
+  saved choice at once. So test your Anthropic and OpenAI models right after you choose it, and
+  choose Ceramic, Linkup or Exa if a Test fails.
+- **When it applies.** A change reaches new turns within about a minute, on hidden models too. A
+  chat reads the choice from the KV copy of the admin settings. A turn that is running keeps what
+  it started with.
+- **Credits.** A gateway that holds no key for the provider runs the model on the account's
+  Cloudflare credits, unless the Gateway requires provider credentials. Whether a request on
+  credits may carry the tool is not measured; the Test shows that too.
+
+[`plans/built-in-web-search.md`](../plans/built-in-web-search.md) is the design record.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for

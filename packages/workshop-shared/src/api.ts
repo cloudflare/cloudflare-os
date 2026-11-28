@@ -26,7 +26,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { BytesRef, CodeChange } from "./code-change.js";
-import type { GitOid } from "./gatekeeper.js";
+import type { GatekeeperAdminSetting, GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -1454,6 +1454,11 @@ export type AdminResourceVendor = {
   vendorId: string;
   displayName: string;
   logo?: AvatarImage;
+  /**
+   * The settings the vendor declares (VendorDescription.adminSettings), each with the choice in
+   * effect: what an admin chose, or its default. Absent for a vendor that declares none.
+   */
+  settings?: (GatekeeperAdminSetting & { value: string })[];
 } & (
   | { autoProvisions: false; enabled: boolean; resources: AdminResource[] }
   | { autoProvisions: true; ambientMode: AmbientGatekeeperMode }
@@ -1940,7 +1945,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder", "setSnapshotSharingEnabled",
+  "setGatewayModelOrder", "setSnapshotSharingEnabled", "setGatekeeperSetting",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -2298,6 +2303,15 @@ export interface AdminApi {
   setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode): Promise<void>;
 
   /**
+   * Choose a value for one of a gatekeeper's own settings (see AdminResourceVendor.settings).
+   * Choosing the default stores nothing, so the gatekeeper's default applies from then on.
+   * Throws, and the setting keeps its choice, for a gatekeeper that is not installed, a setting
+   * it does not declare, or a value that is not one of the setting's options. Reaches the
+   * gatekeeper within about a minute, in sessions that are already open too.
+   */
+  setGatekeeperSetting(vendorId: string, settingId: string, value: string): Promise<void>;
+
+  /**
    * Set the top-bar notice (centered text in the top navigation bar). Pass "" to clear. Rejects over
    * MAX_ANNOUNCEMENT_LENGTH.
    */
@@ -2493,6 +2507,8 @@ export interface AdminApi {
    * describes), with the capabilities stated for it and the flags of the model it behaves like,
    * under a response cap of at most 2,048 tokens. A level that a model takes as a token budget
    * comes out of that cap, so it is cut to the room the cap leaves and is smaller than a chat's.
+   * It declares the provider's web search tool where the model's turns would (see
+   * AiModelConfig.webSearch), so that a provider that refuses the tool fails the test.
    * It works on a model in any mode, hidden and disabled included, and changes nothing. Throws
    * outside AI Gateway mode and for an ID that names no gateway model; a request that fails is a
    * result (see GatewayModelTest).
@@ -3730,6 +3746,17 @@ export type AiModelConfig = {
   compactionInputBudget?: number;
 
   /**
+   * Whether an agent's turns on the model may search the web with the provider's own search
+   * tool, which the provider runs inside the model request. Set only on a deployment's Anthropic
+   * and OpenAI AI Gateway models, while the deployment's admin has chosen the model's provider
+   * as the Web Search gatekeeper's search provider (see WEB_SEARCH_IN_MODEL). Each search is
+   * recorded as an observation and costs what the provider charges for it, on top of the model's
+   * tokens. A chat is offered the tool only while it holds the Web Search gatekeeper's binding
+   * and its workspace holds no restricted data.
+   */
+  webSearch?: boolean;
+
+  /**
    * The model whose runtime flags this one borrows (see GatewayModel.behavesLike). Set only on
    * the models a deployment's admin added to its AI Gateway.
    */
@@ -3759,8 +3786,8 @@ export type AutoRouterPool = { models: string[] } | { providers: AiModelProvider
  * the stored value. It has none of the fields that only a deployment sets on its own models.
  */
 export type RedactedAiModelConfig = Omit<AiModelConfig,
-    "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
-    "capabilities" | "autoRouterPool"> & {
+    "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "webSearch" |
+    "behavesLike" | "capabilities" | "autoRouterPool"> & {
   /**
    * `AiModelConfig.apiToken`, or null if withheld.
    *
@@ -5486,7 +5513,8 @@ export type AiChatMetadata = {
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
-   * changes what the next prompt will contain, until a step measures it again.
+   * changes what the next prompt will contain, and by a step whose response searched the web at
+   * the provider, whose usage does not measure the conversation, until a step measures it again.
    */
   totalTokens?: number;
 
