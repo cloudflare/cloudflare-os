@@ -12,6 +12,7 @@ import type {
   Cursor, DocSuggestion, DriveAccess, DriveComment, DriveCommentReply, DriveEntry,
   DriveFileBytes, DriveScope, GoogleDriveFolderSession, GoogleDriveSession,
 } from "../src/drive-types";
+import type { DriveFileReadOptions } from "../src/drive-read-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
 import { DocStore, runId, type DocCopyHead } from "../src/docs-store";
@@ -911,12 +912,13 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   /**
-   * Reads file `fileId` whole through a fresh Drive session, holding the read where it first
-   * authorizes what it reads to run `between`, and reports the text read or the error the read
-   * ended with.
+   * Reads file `fileId` through a fresh Drive session, with `options`, holding the read where it
+   * first authorizes what it reads to run `between`, and reports the text read or the error the
+   * read ended with.
    */
   async readDriveHeld(
     facetName: string, binding: DriveBinding, fileId: string, between: () => Promise<void>,
+    options: DriveFileReadOptions,
   ): Promise<{ text?: string; error?: string }> {
     let queue = new TestApprovalQueue();
     let { promise: reached, resolve: reach } = Promise.withResolvers<void>();
@@ -926,7 +928,7 @@ export class TestHooks extends DurableObject<Env> {
     using session = await this.#drive(facetName, binding).startSession(
       approvalQueue as unknown as ApprovalQueue,
     ) as GoogleDriveSession & Disposable;
-    let reading = Promise.resolve(session.readFile(fileId))
+    let reading = Promise.resolve(session.readFile(fileId, options))
       .then(async ({ content }) => ({ text: await new Response(content).text() }), failure);
     let held = await Promise.race([reached.then(() => true), reading.then(() => false)]);
     if (!held) throw new Error("readFile authorized no read before settling");

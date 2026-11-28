@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DriveBindingScope } from "../../src/drive-session";
 import type { DriveAccess, DriveEntry, GoogleDriveFolderSession } from "../../src/drive-types";
+import type { DriveFileReadOptions } from "../../src/drive-read-types";
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
@@ -918,9 +919,12 @@ function binding(
     /** Reads `fileId` whole, running `between` once the first of its bytes have arrived. */
     readAcross: (fileId: string, between: () => Promise<void>) =>
       hooks.readDriveAcross(facet, props, fileId, between),
-    /** Reads `fileId` whole, running `between` where the read first authorizes what it reads. */
-    readHeld: (fileId: string, between: () => Promise<void>) =>
-      hooks.readDriveHeld(facet, props, fileId, between),
+    /**
+     * Reads `fileId` with `options`, whole by default, running `between` where the read first
+     * authorizes what it reads.
+     */
+    readHeld: (fileId: string, between: () => Promise<void>, options: DriveFileReadOptions = {}) =>
+      hooks.readDriveHeld(facet, props, fileId, between, options),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
     waiting: () => hooks.driveQueued(facet, props),
@@ -3188,15 +3192,20 @@ describe("uploads", () => {
     expect(read).toEqual({ text: "kept" });
   });
 
-  it("refuses a read of an upload a rejection dropped after the read picked it, as for any file Drive does not have", async () => {
+  // A read of no bytes opens none, and must still find the upload gone.
+  it.each([
+    ["an upload", "kept", {}],
+    ["an empty upload", "", {}],
+    ["an upload at its end", "kept", { offset: 4 }],
+  ])("refuses a read of %s a rejection dropped after the read picked it, as for any file Drive does not have", async (_, text, options) => {
     let drive = binding();
-    let queued = await drive.queued("uploadFile", "notes.txt", "kept", { folderId: "elsewhere" });
+    let queued = await drive.queued("uploadFile", "notes.txt", text, { folderId: "elsewhere" });
 
     let read = await drive.readHeld("copy-1", async () => {
       await drive.reject(queued.actionId);
-    });
+    }, options);
 
-    let unknown = await drive.call("readFile", "copy-1");
+    let unknown = await drive.call("readFile", "copy-1", options);
     expect(unknown.error).toBeDefined();
     expect(read).toEqual({ error: unknown.error });
   });

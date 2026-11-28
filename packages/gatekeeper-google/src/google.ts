@@ -3189,14 +3189,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
     // A file Drive gives an ID only once it is made holds nothing to read until then.
     if (isPendingId(entry.id)) throw new Error(FILE_WAITING);
     if (content.kind === "upload") {
-      try {
-        return await this.#readUpload(named.waiting, content.file, options);
-      } catch (error) {
-        // An approval or a rejection may have deleted the bytes once they were picked, before the
-        // read opened them: the file is then read as Drive has it.
-        if (await this.#writes.waiting(async pending => pendingFile(entry.id, pending))) throw error;
-        return this.#readFile(entry.id, options);
-      }
+      return this.#readWaiting(
+        entry.id, options, () => this.#readUpload(named.waiting, content.file, options));
     }
     // As getEntry() shows it, which reports where it is before anything of the file is read or a
     // refusal names it: only in the folder it goes into, and on a folder binding only while its
@@ -3211,8 +3205,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   /**
    * Reads waiting file `fileId` with `read`, which reads what it would hold, then checks it still
-   * waits. An approval may have made it while `read` read, and what `read` read changed since, so
-   * that its bytes, or its failure, say nothing of the file made: then that file is read instead.
+   * waits. An approval may have made it while `read` read, and what `read` read changed since, or a
+   * decision may have dropped the bytes an upload holds, so that its bytes, or its failure, say
+   * nothing of the file: then it is read as Drive has it, which refuses it if it was never made.
    * The queue is read only once `read` is done, never across Drive's answer, which could keep every
    * approval waiting.
    */
