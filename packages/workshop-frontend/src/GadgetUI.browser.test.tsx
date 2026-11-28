@@ -4,7 +4,8 @@
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { RpcStub, RpcTarget } from 'capnweb'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from 'vitest'
+import { page, userEvent } from 'vitest/browser'
 import {
   MAX_FOCUS_ANCHOR_LENGTH,
   MAX_FOCUS_CONTEXT_LENGTH,
@@ -173,6 +174,7 @@ class FocusRecorder {
       latestAnchor: () => this.latest ? this.latest.anchor : anchor,
       onFocusChange: focus => this.events.push(`change ${JSON.stringify(focus)}`),
       onFocusReset: () => this.events.push('reset'),
+      onFocusEnter: () => this.events.push('enter'),
     }
   }
 
@@ -260,6 +262,31 @@ describe('focus', () => {
     expect(recorder.events).toEqual([
       'change {"anchor":"cell/B7","label":"Q3 › B7","context":"1,204"}',
     ])
+  })
+
+  it('tells of the user moving into the frame, and not of focus moving elsewhere on the page', async () => {
+    const input = document.body.appendChild(document.createElement('input'))
+    input.setAttribute('aria-label', 'Elsewhere')
+    onTestFinished(() => input.remove())
+    await show(focusGadget(), undefined)
+    await frame(0)
+    const iframe = page.getByTitle('Gadget UI')
+    const elsewhere = page.getByRole('textbox', { name: 'Elsewhere' })
+
+    await userEvent.click(elsewhere)
+    await settle()
+    expect(recorder.events).toEqual([])
+
+    await userEvent.click(iframe)
+    await expect.poll(() => recorder.events).toEqual(['enter'])
+    // Focus moving within the frame leaves the page's window blurred: nothing more to tell.
+    await userEvent.click(iframe)
+    await settle()
+    expect(recorder.events).toEqual(['enter'])
+
+    await userEvent.click(elsewhere)
+    await userEvent.click(iframe)
+    await expect.poll(() => recorder.events).toEqual(['enter', 'enter'])
   })
 
   it('navigates a registering frame to the anchor, resolving only once navigate has', async () => {

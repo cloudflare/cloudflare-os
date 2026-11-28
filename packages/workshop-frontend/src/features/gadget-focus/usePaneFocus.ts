@@ -16,9 +16,10 @@ export type PaneView = 'workpiece' | 'activity' | null
  * Returns the `GadgetUI` focus to give that frame, wrapping `uiFocus` (from `useFocusUrl`), and
  * the focus the pane offers a message: the gadget whenever the pane is showing it, with the spot
  * once the current frame has reported one, or once a sent message's chip has sent it there.
- * Each new focus signal is a new offer (see `FocusOffer`).
- * Call `onFocusOpened` with that chip's focus as it opens it, and `onWorkspaceChange` when the
- * editor moves to another workspace, whose pane has shown nothing yet.
+ * Each new focus signal, the user moving into the frame among them, is a new offer (see `FocusOffer`).
+ * Call `onFocusOpened` with that chip's focus as it opens it, `onWorkpieceSelected` as the user
+ * picks a workpiece (even the one already selected, which is still a return to it), and
+ * `onWorkspaceChange` when the editor moves to another workspace, whose pane has shown nothing yet.
  */
 export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
   uiFocus: GadgetUIFocus | undefined
@@ -35,6 +36,7 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
   uiFocus: GadgetUIFocus | undefined
   paneFocus: PaneFocus | undefined
   onFocusOpened: (focus: MessageFocus) => void
+  onWorkpieceSelected: () => void
   onWorkspaceChange: () => void
 } => {
   // The gadget the pane showed when last open in this workspace; null if it showed something else
@@ -68,6 +70,9 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
     const anchor = opened?.gadgetId === gadget?.id ? opened?.spot.anchor : undefined
     setOffer({ id: offer.id + 1, gadgetId: gadget?.id, anchor })
   }
+  // Picking another workpiece moves `gadget` along, which is a new offer anyway.
+  const onWorkpieceSelected = useCallback(
+    () => setOffer(current => ({ ...current, id: current.id + 1 })), [])
   const onFocusOpened = ({ gadgetId, spot }: MessageFocus) => {
     // A click that leaves `at` as it is sends the frame nowhere, so its report still stands.
     const opens = spot && !(gadgetId === gadget?.id && spot.anchor === uiFocus?.anchor) ? spot : undefined
@@ -76,7 +81,9 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
     setOffer(current => ({ ...current, id: current.id + 1, anchor: opens ? opens.anchor : current.anchor }))
     if (opens) setOpened({ gadgetId, spot: opens, shown: false })
   }
-  if (gadget === undefined) return { uiFocus, paneFocus: undefined, onFocusOpened, onWorkspaceChange }
+  if (gadget === undefined) {
+    return { uiFocus, paneFocus: undefined, onFocusOpened, onWorkpieceSelected, onWorkspaceChange }
+  }
   const gadgetId = gadget.id
   const spot = showsOpened ? opened.spot : reported?.gadgetId === gadgetId ? reported.spot : undefined
   return {
@@ -95,6 +102,8 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
       // it starts, and a frame sent elsewhere has left the spot it reported. The URL keeps the
       // anchor, which the frame is sent to.
       onFocusReset: () => setReported(null),
+      // The user's return to the gadget asks for its focus again, even one dismissed or already sent.
+      onFocusEnter: () => setOffer(current => current.gadgetId === gadgetId ? { ...current, id: current.id + 1 } : current),
     },
     paneFocus: showsGadget
       ? {
@@ -104,6 +113,7 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
         }
       : undefined,
     onFocusOpened,
+    onWorkpieceSelected,
     onWorkspaceChange,
   }
 }
