@@ -918,6 +918,9 @@ function binding(
     /** Reads `fileId` whole, running `between` once the first of its bytes have arrived. */
     readAcross: (fileId: string, between: () => Promise<void>) =>
       hooks.readDriveAcross(facet, props, fileId, between),
+    /** Reads `fileId` whole, running `between` where the read first authorizes what it reads. */
+    readHeld: (fileId: string, between: () => Promise<void>) =>
+      hooks.readDriveHeld(facet, props, fileId, between),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
     waiting: () => hooks.driveQueued(facet, props),
@@ -3169,6 +3172,33 @@ describe("uploads", () => {
 
     expect(await heldBytes(drive)).toEqual([held]);
     expect((await drive.call("readFile", "copy-1")).value).toMatchObject({ text: "kept" });
+  });
+
+  it("reads an upload an approval made after a read picked it, before the read opened its bytes, as Drive has it", async () => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", "kept", { folderId: "elsewhere" });
+    let applied: string | null | undefined;
+
+    let read = await drive.readHeld("copy-1", async () => {
+      applied = await drive.apply(queued.actionId);
+    });
+
+    expect(applied).toBeNull();
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
+    expect(read).toEqual({ text: "kept" });
+  });
+
+  it("refuses a read of an upload a rejection dropped after the read picked it, as for any file Drive does not have", async () => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", "kept", { folderId: "elsewhere" });
+
+    let read = await drive.readHeld("copy-1", async () => {
+      await drive.reject(queued.actionId);
+    });
+
+    let unknown = await drive.call("readFile", "copy-1");
+    expect(unknown.error).toBeDefined();
+    expect(read).toEqual({ error: unknown.error });
   });
 
   it("keeps the bytes a read of a waiting upload has begun until the read ends, though the upload is approved meanwhile", async () => {
