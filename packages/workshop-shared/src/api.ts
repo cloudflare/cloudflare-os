@@ -6700,7 +6700,8 @@ export type AiToolCall = {
   /**
    * Create a new external resource of a creatable type (see `SupportedResource.creatable`). Its
    * binding is usable at once: the gatekeeper simulates the resource until a user approves the
-   * creation action, choosing the account to create it in.
+   * creation action, choosing the account to create it in. A `simulatedOnly` type has no creation
+   * action: it stays simulated for good.
    */
   toolName: "createExternalResource";
   input: {
@@ -7437,6 +7438,11 @@ export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
+  /**
+   * Set when createExternalResource made a `simulatedOnly` type (see SupportedResource): the
+   * resource exists only as the gatekeeper's simulation, so it never gets a resourceUrl.
+   */
+  simulatedOnly?: true;
   /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
   resourceTypeId?: string;
   typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.

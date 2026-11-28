@@ -673,6 +673,13 @@ export interface AgentHooks {
   listConnectableResources(vendorId: string): Promise<string>;
 
   /**
+   * The creatable types that need no approval (SupportedResource.simulatedOnly), as formatted text
+   * for a spawned agent's system prompt, or "" if there are none. They are all a spawned agent can
+   * create, since no user is present to approve a creation.
+   */
+  describeSimulatedCreations(): Promise<string>;
+
+  /**
    * Record a pending connection request for the given chat. `message` is the tool output text; when
    * `requested` is true a request was created (captured and spliced into the chat as a
    * "connectionRequest" message by the agent loop, see consumeCapturedDecisionRequests) and the
@@ -1161,6 +1168,7 @@ let SPAWNED_AGENT_TOOLS = [
   "observeUserChanges",
   "describeBinding",
   "executeCode",
+  "createExternalResource",
 ] as const;
 
 // How the task reaches an agent spawned with spawn(): as the chat's first message.
@@ -1561,8 +1569,12 @@ Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitH
 For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
 
+let SPAWNED_CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
+Create a new resource of a type the system prompt lists as one you can create. It exists only in this workspace and needs no approval: it is immediately available as \`env.<bindingName>\` and your turn continues.
+`.trim();
+
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
-Create a new external resource (e.g. a new document), from the New resources section of listConnectableResources; requestConnection is only for the separately listed Existing resources. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
+Create a new external resource (e.g. a new document), from the New resources section of listConnectableResources; requestConnection is only for the separately listed Existing resources. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation. A type listed as needing no approval exists only in the workspace and is created at once.
 `.trim();
 
 // =======================================================================================
@@ -3525,6 +3537,7 @@ async function runAgentPass(
             : SPAWNED_TASK_PROMPT,
         systemPromptBindings,
         alwaysAvailableResourcesPrompt,
+        await hooks.describeSimulatedCreations(),
       ].filter(part => part !== "").join("\n\n"),
     ];
   } else {
@@ -4425,7 +4438,9 @@ async function runAgentPass(
     createExternalResource: defineTool({
       name: "createExternalResource",
       label: "Create external resource",
-      description: CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION,
+      description: agentContext.spawnerConfig
+          ? SPAWNED_CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION
+          : CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION,
       parameters: Type.Object({
         vendorId: Type.String({
           description: "Vendor id, as listed in the system prompt (e.g. 'google').",
@@ -4470,8 +4485,9 @@ async function runAgentPass(
   if (agentContext.spawnerConfig) {
     // Restrict sub-agents to a narrower set of tools. No user is present to approve changes, so
     // they get nothing that modifies gadgets or requests connections; they can inspect and call
-    // bindings, fetch the web, and work on worktrees (writes to gadgets are refused by
-    // assertMayModifyWorkpiece).
+    // bindings, fetch the web, work on worktrees (writes to gadgets are refused by
+    // assertMayModifyWorkpiece), and create resources that need no approval (others are refused
+    // by the overseer's createExternalResource).
     tools = Object.fromEntries(SPAWNED_AGENT_TOOLS.map(name => [name, tools[name]]));
   }
 

@@ -398,6 +398,17 @@ export type SupportedResource = {
   creationConfigurationDescription?: string;
 
   /**
+   * With `creatable`: a resource of this type exists only as the gatekeeper's simulation, with no
+   * account or provider behind it, such as a sandboxed environment. Since creating one reaches
+   * nothing outside the workspace, it needs no approval: createExternalResource makes it at once,
+   * GatekeeperVendor.createResource() returns no `action` for it, and applyCreation() is never
+   * called. Everything else works as for any connection, including approval of its actions. Like a
+   * resource whose creation is pending, it holds only what was written through the workspace, so
+   * its reads record no observer requirements. Not combined with `creationConfigurator`.
+   */
+  simulatedOnly?: boolean;
+
+  /**
    * With `creationConfigurator`: the content types (MIME) of files the user can save as a resource
    * of this type through GatekeeperUser.saveFile(), best first, e.g. a word processor's document
    * type lists the docx MIME type. The Workshop offers a save for a gadget export whose content
@@ -816,11 +827,13 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * ObservationDescription.subresources).
    * Present only on vendors with a `creatable` resource type. The `action` (the creation card) sets
    * `autoApprovable: false`: approving it means choosing the account to create the resource in.
+   * It is omitted exactly when the type is `simulatedOnly`, which is created with no approval, so
+   * the class is the resource for good.
    */
   createResource?(resourceTypeId: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
-    action: ActionDescription;
+    action?: ActionDescription;
   }>;
 
   /**

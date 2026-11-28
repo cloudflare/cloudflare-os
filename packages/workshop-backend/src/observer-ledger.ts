@@ -112,7 +112,7 @@ export interface ObserverLedgerHost {
   users: DurableObjectNamespace<UserDurableObject>;
   getSharingManager(): Promise<SharingManager>;
   getGatekeeperFacet(id: number): Promise<Fetcher<Gatekeeper<any>>>;
-  creationPending(id: WorkpieceId): boolean;
+  isSimulated(id: WorkpieceId): boolean;
 
   /** Wraps a user DO stub so a loop-limit rejection of a call through it restarts the workspace. */
   wrapUserDo(stub: DurableObjectStub<UserDurableObject>): DurableObjectStub<UserDurableObject>;
@@ -189,11 +189,13 @@ export class ObserverLedger {
   /**
    * The ledger half of Overseer.authorizeObservation(). Every observation through a removed
    * connection, or one held back pending a restart, is refused. One omitting `subresources`, or
-   * made while its resource's creation is pending (so simulated), is otherwise checked by nothing
-   * here: it commits with undefined, recording no requirement. Otherwise this attributes the read to
-   * its caller's context and checks the reported IDs for everyone that context reaches, then
-   * recomputes that audience after the awaits and, if it gained anyone (through sharing changes,
-   * newly published observers, or changed account choices), checks the whole audience again.
+   * made while its resource is simulated (its creation pending, or its type simulatedOnly), is
+   * otherwise checked by nothing here beyond the execution fence below: it commits with
+   * undefined, recording no requirement.
+   * Otherwise this attributes the read to its caller's context and checks the reported IDs for
+   * everyone that context reaches, then recomputes that audience after the awaits and, if it
+   * gained anyone (through sharing changes, newly published observers, or changed account
+   * choices), checks the whole audience again.
    * Calls `commit` synchronously with the validated IDs at the final decision, so no admission
    * can publish between the audience check and the audit write; resolving a promise first would
    * let one publish before the caller writes the requirement. The callback must not await.
@@ -203,7 +205,10 @@ export class ObserverLedger {
       caller: GatekeeperCaller, executionId: string | undefined,
       commit: (subresources: string[] | undefined) => undefined): Promise<void> {
     this.#assertUsable(gatekeeperId);
-    if (description.subresources === undefined || this.host.creationPending(gatekeeperId)) {
+    if (description.subresources === undefined) return commit(undefined);
+    if (this.host.isSimulated(gatekeeperId)) {
+      // Still fenced to the execution, as for any read reporting subresources.
+      this.#assertLive(gatekeeperId, caller, executionId);
       return commit(undefined);
     }
 

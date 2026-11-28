@@ -1,6 +1,6 @@
 // The tool surface of a spawned agent: no user is present to review its work, so it gets no tool
-// that modifies a gadget or requests a connection, but it can read gadgets and create, read and
-// edit worktrees. Drives the real runAgent against a real OverseerImpl, with pi's faux provider
+// that modifies a gadget or requests a connection, but it can read gadgets, create, read and
+// edit worktrees, and create resources that need no approval. Drives the real runAgent against a real OverseerImpl, with pi's faux provider
 // standing in for the model so each step's offered tools can be inspected and its tool calls
 // scripted.
 
@@ -103,7 +103,7 @@ function toolCalls(impl: any, chatId: number): AiToolCall[] {
 }
 
 describe("spawned agent tools", () => {
-  it("offers file and worktree tools, but nothing that modifies gadgets or requests connections",
+  it("offers file, worktree and creation tools, but nothing that modifies gadgets or requests connections",
       () => withImpl(async impl => {
     seedGadget(impl);
     let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: { GADGET: GADGET_ID } });
@@ -111,8 +111,8 @@ describe("spawned agent tools", () => {
     let offered = await runScriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Done."))]);
 
     expect(offered).toEqual([[
-      "createWorktree", "describeBinding", "editFile", "executeCode", "grep", "observeUserChanges",
-      "readFile", "webFetch", "writeFile",
+      "createExternalResource", "createWorktree", "describeBinding", "editFile", "executeCode",
+      "grep", "observeUserChanges", "readFile", "webFetch", "writeFile",
     ]]);
   }));
 
@@ -240,6 +240,48 @@ describe("spawned agent tools", () => {
     let [unread, missing] = toolCalls(impl, chatId).filter(call => call.toolName === "editFile");
     expect(unread.error).toMatch(/must read a file/);
     expect(missing.error).toMatch(/has no file named "REPO\/README\.md"/);
+  }));
+
+  it("creates only resources that need no approval, which its prompt lists",
+      () => withImpl(async impl => {
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+    impl.describeSimulatedCreations = async () => "* Sandbox — vendorId: sandbox; resourceTypeId: box";
+    let minted = (approval: boolean) => ({
+      class: impl.ctx.exports.AgentSpawnerGatekeeper({ props: { config: {}, creatorUserId: "x" } }),
+      typeUrlPattern: "sandbox://*",
+      ...(approval ? { action: { title: "Create", description: "Create", autoApprovable: false } } : {}),
+    });
+    impl.users.get = () => ({
+      getChatContext: async () => ({ profile: OWNER }),
+      createResourceGatekeeper: async (_vendor: string, type: string) => minted(type === "doc"),
+    });
+    let prompts: string[] = [];
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    faux.setResponses([
+      (context: TranscriptContext) => {
+        prompts.push(JSON.stringify(context.messages.filter(message => message.role === "system")));
+        return fauxAssistantMessage([
+          fauxToolCall("createExternalResource",
+              { vendorId: "sandbox", resourceTypeId: "box", title: "Box", bindingName: "BOX" }),
+          fauxToolCall("createExternalResource",
+              { vendorId: "sandbox", resourceTypeId: "doc", title: "Doc", bindingName: "DOC" }),
+        ], { stopReason: "toolUse" });
+      },
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, chatId,
+        { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, OWNER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
+
+    expect(prompts[0]).toContain("resourceTypeId: box");
+    let [box, doc] = toolCalls(impl, chatId);
+    expect(box.error).toBeUndefined();
+    expect(doc.error).toMatch(/only create resources that need no approval/);
+    let created = [...impl.storage.gatekeepers.list()]
+        .filter((record: any) => record.creationSpec?.type === "gatekeeper");
+    expect(created).toMatchObject([{ resourceTitle: "Box", creationSpec: { simulatedOnly: true } }]);
+    expect([...impl.storage.actions.list()].filter((record: any) => record.action === "create"))
+        .toEqual([]);
   }));
 
   it("refuses a new binding named GIT, which would shadow env.GIT",
