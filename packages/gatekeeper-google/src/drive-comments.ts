@@ -823,10 +823,10 @@ function unconfirmedSend(google: string, what: "comments" | "suggestions"): stri
 }
 
 /**
- * How a Docs send failed, as {@link sendOnce} reads a failure. A 401 is `unauthorized` here, where
- * Drive reads one on a write that cannot be repeated as `absent`: Docs refused it before acting, so
- * the write stays pending for an approval under the account's token as it is then, and sendOnce
- * drops its marker, so that approval sends it at once.
+ * How a Docs send failed, as {@link sendOnce} reads a failure. A 401 is `unauthorized`, as Drive
+ * reads one: Docs refused it before acting, so the write stays pending for an approval under the
+ * account's token as it is then, and sendOnce drops the marker of a write that cannot be repeated,
+ * so that approval sends it at once.
  */
 export function docsSendFailure(error: unknown): DriveWriteFailure {
   if (error instanceof GoogleApiError && error.providerStatus === "UNAUTHENTICATED") {

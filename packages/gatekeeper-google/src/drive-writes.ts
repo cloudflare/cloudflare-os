@@ -420,9 +420,8 @@ const RATE_LIMITED =
  * fails for good with nothing changed: at a check, by Google's refusal, or when the last send its
  * limit allows is also found to have made nothing. The marker of a send a look proves empty stays
  * until the next send's replaces it, which is what counts the sends. A write that cannot be
- * repeated loses its marker on a rate limit, on a missing scope and on a 401 (which only a Docs
- * send gives such a write), when no send of it is in doubt. A write that can be repeated keeps it
- * through all three, so that its next
+ * repeated loses its marker on a rate limit, on a missing scope and on a 401, when no send of it
+ * is in doubt. A write that can be repeated keeps it through all three, so that its next
  * approval looks first: a change such a send made all the same is then found and bound, where an
  * approval with no marker would take it for someone else's.
  * @returns What the send made, or what a look found an earlier send had made.
