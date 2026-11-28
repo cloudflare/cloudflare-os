@@ -15,10 +15,11 @@ import { RpcTarget } from "capnweb";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
   MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  type AdminAccessRecord, type AdminAutoApproval, type AdminChatState,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess,
   type AdminWorkspaceView, type AiChatAuthorInfo,
-  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type ShareLinkInfo,
+  type BlueprintGadgetSummary, type ChatAttachmentInfo, type ChatGadgetPin,
+  type ObserverBindingNeed, type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -180,7 +181,8 @@ async function seed(ws: Workspace): Promise<void> {
       whoami: async () => OWNER, getGadget: async () => null,
       // What the workspace tells its owner's account of members' activity, taken and dropped.
       messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
-      getWorkspace: async () => null, syncWorkspaceOutputs: async () => {},
+      getWorkspace: async () => null,
+      syncWorkspaceListing: () => {},
     }),
   };
   impl.ownerId = OWNER_USER_ID;
@@ -277,7 +279,7 @@ function seedSharing(ws: Workspace): void {
   });
   // Every field an observer's record stores, the ones no answer may carry included.
   storage.observers.put({
-    profileId: BOB.id, observerId: "observer-bob", accountChoices: { [GATEKEEPER_ID]: 7 },
+    profileId: BOB.id, observerId: "observer-bob", accountChoices: { [GATEKEEPER_ID]: { accountId: 7 } },
   });
 
   storage.shareKeys.put({
@@ -297,11 +299,13 @@ function seedSharing(ws: Workspace): void {
     enabledBy: OWNER,
   });
 
+  // Published with the gadget's bindings as they are, as publishing would, so it has none to release.
   storage.blueprints.put({
     id: BLUEPRINT_ID, gadgetId: ws.gadgetId, commitId: ws.commitId,
     metadata: {
       title: "Notes kit", description: "Keeps notes", author: OWNER, created: new Date(0),
-      version: 2, lastUpdated: new Date(5000), screenshot: true, bindings: {},
+      version: 2, lastUpdated: new Date(5000), screenshot: true,
+      bindings: ws.impl.collectBindingMetadata(ws.gadgetId),
     },
   });
 }
@@ -342,10 +346,10 @@ function seededAutoApprovals(): AdminAutoApproval[] {
 }
 
 // The seed's blueprint as a view lists it: its id is "" and it has no `screenshotUrl`.
-function seededBlueprint(): BlueprintGadgetSummary {
+function seededBlueprint(ws: { gadgetId: number }): BlueprintGadgetSummary {
   return {
     id: "", title: "Notes kit", description: "Keeps notes", version: 2,
-    codeVersionDate: new Date(1700000000_000), dirty: undefined,
+    codeVersionDate: new Date(1700000000_000), dirty: undefined, gadgetId: ws.gadgetId,
   };
 }
 
@@ -531,7 +535,7 @@ function seededChatState(ws: Workspace): AdminChatState {
 }
 
 // The seeded chat's attachments as a view lists them.
-function seededAttachments(ws: Workspace): AdminChatAttachment[] {
+function seededAttachments(ws: Workspace): ChatAttachmentInfo[] {
   let sequence = ws.attachmentSequence;
   return [
     {
@@ -861,7 +865,7 @@ describe("a metadata view", () => {
     expect(answers.listAutoApprovals).toStrictEqual(seededAutoApprovals());
     // A blueprint keeps its title, description, version and date, without the id that is a link
     // to its code, or the screenshot URL that holds it.
-    expect(answers.listBlueprints).toStrictEqual([seededBlueprint()]);
+    expect(answers.listBlueprints).toStrictEqual([seededBlueprint(ws)]);
 
     expect(answers.listFiles).toStrictEqual(
         [{ name: "notes.txt", kind: "file" }, { name: "todo.txt", kind: "file" }]);
@@ -1686,11 +1690,11 @@ describe("sharing reads", () => {
         { profileId: carol.id, observerId: "observer-carol", accountChoices: {} });
     storage.observers.put({
       profileId: dave.id, observerId: "observer-dave",
-      accountChoices: { 99: 9, [GATEKEEPER_ID]: 8 },
+      accountChoices: { 99: { accountId: 9 }, [GATEKEEPER_ID]: { accountId: 8 } },
     });
     storage.observers.put({
       profileId: STRANGER_ID, observerId: "observer-stranger",
-      accountChoices: { [AMBIENT_GATEKEEPER_ID]: 4 },
+      accountChoices: { [AMBIENT_GATEKEEPER_ID]: { accountId: 4 } },
     });
     // By profile id, each choice by connection id. An entry has its two fields and a choice its
     // three: never the record's observer id, and a removed connection's choice has no vendor.
@@ -1730,10 +1734,10 @@ describe("sharing reads", () => {
     // The workspace's members are listed the blueprint under its id, with the screenshot URL
     // that holds it. The view lists neither.
     expect(ws.impl.blueprintSummaries()).toStrictEqual([{
-      ...seededBlueprint(), id: BLUEPRINT_ID,
+      ...seededBlueprint(ws), id: BLUEPRINT_ID,
       screenshotUrl: `/blueprint-screenshot/${BLUEPRINT_ID}?v=5000`,
     }]);
-    expect(await view.listBlueprints()).toStrictEqual([seededBlueprint()]);
+    expect(await view.listBlueprints()).toStrictEqual([seededBlueprint(ws)]);
   }));
 
   it("list a rule that applies nothing, beside what says why", () => withWorkspace(async ws => {

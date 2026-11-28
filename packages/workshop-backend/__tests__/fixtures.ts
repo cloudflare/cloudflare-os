@@ -89,22 +89,25 @@ export async function openFakeOverseer(
       assertGatekeeperUsable: () => {},
       sessionWatchers: new SessionWatchers(),
       ensureAmbientCapsules: async () => {},
-      markOutputsDirty: () => {},
+      resyncListingTo: () => {},
+      seedOwnerListing: () => {},
       trackUnreadReader: () => {},
       syncDirectory: () => {},
       joinSession: () => () => {},
       joinPresence: () => () => {},
       joinOutputsFanout: () => () => {},
       ensureObserver: async () => {},
-      syncOutputsTo: async () => {},
       recordGadgetAnalytics: () => {},
-      outputsSnapshot: () => [],
       wrapUserDo: (stub: unknown) => stub,
       // What open() consults for a non-owner's access: the permission-graph lookup and (for
-      // "build") observer verification in one. The sharing manager is still reached, but only to
-      // redeem a share key, which these tests never pass.
+      // "build") observer verification in one. The sharing manager is reached to redeem a share
+      // key, which these tests never pass, and to re-read access before recording the open.
       authorizeCollaborator: async () => access,
-      getSharingManager: async () => ({}),
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      // What recording a non-owner's open consults before handing them chat state, which these
+      // tests never check: it admits no one.
+      chatStateReaders: () => ({}),
+      mayReadChatState: async () => false,
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
         idFromString: (id: string) => id,
@@ -117,6 +120,8 @@ export async function openFakeOverseer(
         deleting: { get: () => false },
         containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },
+        titleRev: { get: () => 0 },
+        listingRev: { get: () => 0 },
       }),
       ...opts.impl,
     },

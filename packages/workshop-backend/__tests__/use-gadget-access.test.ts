@@ -8,7 +8,7 @@
 // graph; a forged UseOverseerInterface (openFakeOverseer) delegates to it, and gatekeeper facets
 // and User DOs are the only fakes.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
@@ -16,7 +16,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
-import type { WorkspaceOutputEntry } from "../src/storage-schema/user-storage.js";
+import type { WorkspaceListing } from "../src/workspace-listing.js";
 import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -169,7 +169,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 101, { target: 2 });
     shareGadgets(impl, [100, 101]);
     impl.storage.observers.put(
-        { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } });
+        { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: { accountId: 10 }, 2: { accountId: 20 } } });
     let adds = legacyFacets(impl);
     let client = await openViewer(impl, { role: "use", gadgetIds: [100, 101] });
 
@@ -187,7 +187,7 @@ describe("UseOverseerInterface.getGadget", () => {
     seedGadget(impl, 100, { target: 1 });
     seedGadget(impl, 101, { target: 2 });
     shareGadgets(impl, [100, 101]);
-    let record = { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: 10, 2: 20 } };
+    let record = { profileId: VIEWER, observerId: "obs-v", accountChoices: { 1: { accountId: 10 }, 2: { accountId: 20 } } };
     impl.storage.observers.put(record);
     let adds = legacyFacets(impl, new Set([2]));
     let restarts: string[] = [];
@@ -239,40 +239,60 @@ describe("what a use session lists", () => {
     dispose(client);
   }));
 
-  it("open() syncs the viewer's Outputs index with only their gadgets", () =>
-      withImpl(async impl => {
+  it("open() pushes the viewer's Outputs index with only their gadgets", () => withImpl(async impl => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
-    let synced = Promise.withResolvers<WorkspaceOutputEntry[]>();
+    shareGadgets(impl, [101]);
+    impl.ownerId = "owner-user";
+    let pushed = Promise.withResolvers<WorkspaceListing>();
+    impl.users = {
+      idFromString: (id: string) => id,
+      idFromName: (name: string) => name === VIEWER ? VIEWER_USER : name,
+      get: (id: string) => ({
+        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+          // The first may come before the session joins the fan-out, with the title alone.
+          if (id === VIEWER_USER && listing.outputs) pushed.resolve(listing);
+        },
+      }),
+    } as unknown as ObserverImpl["users"];
     let client = await openViewer(impl, { role: "use", gadgetIds: [101] }, {
-      outputsSnapshot: (access?: CollaboratorAccess) => impl.outputsSnapshot(access),
-      syncOutputsTo: async (_user: unknown, snapshot: WorkspaceOutputEntry[]) => {
-        synced.resolve(snapshot);
-      },
+      joinOutputsFanout: (userId: string) => impl.joinOutputsFanout(userId),
+      resyncListingTo: (userId: string, profileId?: string) => impl.resyncListingTo(userId, profileId),
     });
 
-    expect((await synced.promise).map(entry => entry.workpieceId)).toEqual([101]);
+    let listing = await pushed.promise;
+    expect(listing.outputs?.map(entry => entry.workpieceId)).toEqual([101]);
+    // A "use" collaborator lists the workspace under its title, but is told nothing of what waits
+    // there or its hooks.
+    expect(listing.title).toBe(impl.storage.title.get());
+    expect(listing.attention).toBeUndefined();
+    expect(listing.hooks).toBeUndefined();
     dispose(client);
   }));
 
   it("the Outputs fan-out filters each watcher by their access", () => withImpl(async impl => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
+    shareGadgets(impl, [100]);
+    impl.storage.collaborators.put({ profile: { id: "other-user", name: "Other" }, addedBy: [{
+      type: "user", sharer: OWNER, created: new Date(0), role: "use", gadgetId: 101,
+    }] });
     impl.ownerId = "owner-user";
-    let pushes = new Map<string, PromiseWithResolvers<number[]>>(
+    let pushes = new Map<string, PromiseWithResolvers<number[] | undefined>>(
         ["owner-user", VIEWER_USER, "other-user"].map(id => [id, Promise.withResolvers()]));
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: (name: string) => name === VIEWER ? VIEWER_USER : name,
       get: (id: string) => ({
-        syncWorkspaceOutputs: async (_workspace: string, snapshot: WorkspaceOutputEntry[]) => {
-          pushes.get(id)!.resolve(snapshot.map(entry => entry.workpieceId));
+        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+          pushes.get(id)!.resolve(listing.outputs?.map(entry => entry.workpieceId));
         },
       }),
     } as unknown as ObserverImpl["users"];
-    let leaveViewer = impl.joinOutputsFanout(VIEWER_USER, { role: "use", gadgetIds: [100] });
-    let leaveOther = impl.joinOutputsFanout("other-user", { role: "use", gadgetIds: [101] });
+    let leaveViewer = impl.joinOutputsFanout(VIEWER_USER);
+    let leaveOther = impl.joinOutputsFanout("other-user");
 
-    impl.markOutputsDirty();
+    impl.markListingDirty("outputs");
 
     expect(await pushes.get("owner-user")!.promise).toEqual([100, 101]);
     expect(await pushes.get(VIEWER_USER)!.promise).toEqual([100]);
@@ -280,4 +300,136 @@ describe("what a use session lists", () => {
     leaveViewer();
     leaveOther();
   }));
+
+  it("sends a part until its recipient acknowledges its value, and every part on a resync", () =>
+      withImpl(async impl => {
+    seedGadget(impl, 100);
+    impl.ownerId = "owner-user";
+    let listings: WorkspaceListing[] = [];
+    let failing = false;
+    impl.users = {
+      idFromString: (id: string) => id,
+      get: () => ({
+        syncWorkspaceListing: async (_workspace: string, listing: WorkspaceListing) => {
+          listings.push(listing);
+          if (failing) throw new Error("User unavailable");
+        },
+      }),
+    } as unknown as ObserverImpl["users"];
+    let parts = () => listings.splice(0).map(listing =>
+        Object.keys(listing).filter(part => part !== "listingRev").toSorted());
+
+    impl.resyncListingTo("owner-user");
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["attention", "outputs", "title"]]);
+
+    // A commit that rebinds the gadget leaves the outputs as acknowledged.
+    seedGadget(impl, 100, { target: 7 });
+    await impl.deliverUserUpdates();
+    expect(parts()).toEqual([]);
+
+    // A new gadget, whose send fails.
+    failing = true;
+    seedGadget(impl, 101);
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["outputs"]]);
+    failing = false;
+
+    // Sent again by the alarm, though the next change leaves the outputs as the failed send had
+    // them.
+    seedGadget(impl, 100);
+    await impl.deliverUserUpdates();
+    expect(listings).toEqual([]);
+    await impl.runAlarmTasks();
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(listings.splice(0).map(listing => listing.outputs?.map(entry => entry.workpieceId)))
+        .toEqual([[100, 101]]);
+
+    impl.resyncListingTo("owner-user");
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["attention", "outputs", "title"]]);
+  }));
+});
+
+describe("recording a shared open", () => {
+  it("records nothing once the collaborator is removed while the owner's profile is fetched",
+      async () => {
+    let release = Promise.withResolvers<void>();
+    let asked = Promise.withResolvers<void>();
+    let record = vi.fn(async () => {});
+    let access: CollaboratorAccess | undefined = { role: "use", gadgetIds: [] };
+    let storage = {};
+    using _client = await openFakeOverseer(storage, { role: "use", access, impl: {
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => { asked.resolve(); await release.promise; return { type: "user", id: OWNER, name: "Owner" }; },
+        recordSharedWorkspaceOpen: record,
+      }) },
+    } }) as unknown as Disposable;
+    await asked.promise;
+
+    // Removed, then the workspace renamed, before whoami() resolves.
+    access = undefined;
+    Object.assign(storage, { title: { get: () => "Renamed" } });
+    release.resolve();
+    await scheduler.wait(10);
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  // The starting points carry chat heads, which a "use" collaborator never holds.
+  it("takes no starting points for a role narrowed to use while the owner's profile is fetched",
+      async () => {
+    let release = Promise.withResolvers<void>();
+    let asked = Promise.withResolvers<void>();
+    let record = vi.fn(async (..._args: unknown[]) => {});
+    let access: CollaboratorAccess = { role: "build" };
+    let meta = { id: 1, title: "Chat", started: new Date(1), lastActive: new Date(1) };
+    using _client = await openFakeOverseer({
+      chatMeta: { list: () => [meta] },
+      nextChatSequences: { get: () => ({ visibleThroughSequence: 3 }) },
+    }, { role: "build", access, userId: VIEWER_USER, impl: {
+      authorizeCollaborator: async () => access,
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      // Admits anyone, so the role alone must withhold them.
+      mayReadChatState: async () => true,
+      nextChatSequencePeek: () => 4,
+      chatHead: () => undefined,
+      chatParticipationDefault: () => true,
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => { asked.resolve(); await release.promise; return { type: "user", id: OWNER, name: "Owner" }; },
+        recordSharedWorkspaceOpen: record,
+      }) },
+    } }) as unknown as Disposable;
+    await asked.promise;
+
+    access = { role: "use", gadgetIds: [] };
+    release.resolve();
+    await vi.waitFor(() => expect(record).toHaveBeenCalledOnce());
+    let [, , , role, baselines] = record.mock.calls[0];
+    expect({ role, baselines }).toEqual({ role: "use", baselines: null });
+  });
+
+  // Their User DO ignored the removal queued before the listing existed, so it is queued again.
+  it("queues a removal that lands while the open is recorded, after the resync", async () => {
+    let recording = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    let access: CollaboratorAccess | undefined = { role: "use", gadgetIds: [] };
+    let calls: unknown[][] = [];
+    using _client = await openFakeOverseer({}, { role: "use", access, userId: VIEWER_USER, impl: {
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      resyncListingTo: (...args: unknown[]) => { calls.push(["resync", ...args]); },
+      queueCollaboratorRole: (...args: unknown[]) => { calls.push(["role", ...args]); },
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => ({ type: "user", id: OWNER, name: "Owner" }),
+        recordSharedWorkspaceOpen: async () => { recording.resolve(); await release.promise; },
+      }) },
+    } }) as unknown as Disposable;
+    await recording.promise;
+
+    access = undefined;
+    release.resolve();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map(([kind, , , role]) => [kind, role])).toEqual([["resync", undefined], ["role", null]]);
+  });
 });

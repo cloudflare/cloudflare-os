@@ -70,7 +70,7 @@ async function withImpl(
       },
     });
     impl.storage.observers.put(
-        { profileId: CAROL, observerId: OBSERVER_ID, accountChoices: { [GATEKEEPER_ID]: 10 } });
+        { profileId: CAROL, observerId: OBSERVER_ID, accountChoices: { [GATEKEEPER_ID]: { accountId: 10 } } });
 
     await fn(impl, removals);
   });
@@ -165,7 +165,7 @@ describe("excludeObservers against the observer's forward reach", () => {
     // of scope, so the observation is allowed and both removals go out; neither record is touched.
     seedGadget(impl, 100);
     impl.storage.observers.put(
-        { profileId: "dave", observerId: "obs-dave", accountChoices: { [GATEKEEPER_ID]: 11 } });
+        { profileId: "dave", observerId: "obs-dave", accountChoices: { [GATEKEEPER_ID]: { accountId: 11 } } });
     let sharing = fakeSharing({ [CAROL]: GADGET_100, dave: GADGET_100 });
     impl.getSharingManager = async () => sharing;
 

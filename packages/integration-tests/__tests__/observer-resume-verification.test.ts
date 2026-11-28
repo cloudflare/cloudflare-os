@@ -8,7 +8,9 @@
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
+import {
+  ACCESS_CONFIRMATION_ERROR_CODES, createAccessConfirmationError, type AuthenticatedApi,
+} from "@gadgets/workshop-shared/api";
 import { loadAllChatHistory } from "../src/agent-session.js";
 import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
@@ -95,9 +97,11 @@ it("a collaborator's resumed turn ends with an error when a new connection needs
   const ended = await waitFor("the resumed turn to end", async () =>
     (await history()).find(message => message.sequence > card.sequence && (message.type === "error" ||
         (message.type === "message" && message.author.type === "agent"))) ?? null);
+  // The resume could not ask him, so the denial is the not-asked access confirmation.
   expect(ended).toMatchObject({
     type: "error",
-    message: expect.stringMatching(/could not be resumed.*choose connected accounts/s),
+    message: `The agent could not be resumed: ${
+      createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.notAsked).message}`,
   });
   await waitForIdleChat(ws, chatId);
   expect(model.requests).toHaveLength(1);

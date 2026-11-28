@@ -6,8 +6,8 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, BlueprintUnpublishedChanges, BoundHookInfo,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, WorkspaceSummary, UserPreferences,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -103,8 +103,18 @@ export type BlueprintUserRecord = {
   id: string;
   metadata: BlueprintMetadata;
   gadgetId?: string;
+  /**
+   * The gadget in workspace `gadgetId` the blueprint is published from
+   * (BlueprintSource.gadgetId). Absent on records last pushed before it was sent.
+   */
+  workpieceId?: WorkpieceId;
   /** Source of truth for whether the blueprint is featured deployment-wide. */
   featured?: boolean;
+  /**
+   * Present while its gadget has something it has not released
+   * (BlueprintUserSummary.unpublishedChanges), as the workspace `gadgetId` names last pushed it.
+   */
+  unpublishedChanges?: BlueprintUnpublishedChanges;
 };
 
 type LibraryBlueprintRecord = {
@@ -117,6 +127,13 @@ type LibraryBlueprintRecord = {
 export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
+  /**
+   * Present on a shared listing recorded as "build" without the chat starting points
+   * (ChatAdmissionBaseline) its workspace withheld, or paused for chat access
+   * (WorkspaceMetadata.chatAccessRequired): the next open that brings them seeds them as a first
+   * admission would.
+   */
+  chatSeedPending?: true;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 };
@@ -178,8 +195,9 @@ export type ChatReadCursor = {
    */
   head?: ChatTimelineHead;
   /**
-   * The chat's `lastActive` time in the workspace when `head` was produced. Decides which of two
-   * heads with the same latest message (e.g. from before and after a rename) is newer.
+   * When the chat's head had last changed in the workspace as `head` was produced (see
+   * ChatMessageProgress.headUpdatedAt in user.ts). Decides which of two heads with the same latest
+   * message (e.g. from before and after a rename) is newer.
    */
   headUpdatedAt?: Date;
   /**
@@ -208,7 +226,7 @@ export type QueuedChatNotification = UserNotification & {
 
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
- * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
+ * (see `syncWorkspaceListing()`). Carries only what the workspace itself knows: its title,
  * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
  * go stale here.
  */
@@ -288,13 +306,34 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
       // Outputs of every workspace in `gadgets`, mirrored here by each workspace's Overseer so the
       // Outputs page is one cheap read of the user's own DO. Entries are meaningful only while the
-      // corresponding `gadgets` record exists; `syncWorkspaceOutputs()` and the `gadgets` deletion
+      // corresponding `gadgets` record exists; `syncWorkspaceListing()` and the `gadgets` deletion
       // paths keep the two in step.
       outputs: collection<OutputRecord>()({
         primaryKey: record => `${record.workspaceId}:${record.workpieceId}`,
         nonUniqueIndexes: {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
+      }),
+      // Each listed workspace's actions waiting, by gadget, and each hook bound there (see
+      // AuthenticatedApi.subscribeToWorkspaceSummaries(), whose summaries are assembled from them),
+      // pushed by its Overseer to the owner and to "build" collaborators. Kept only while the
+      // workspace is listed for building: the `gadgets` subscription drops them otherwise.
+      workspaceAttention: collection<Pick<WorkspaceSummary, "workspaceId" | "waiting">>()({
+        primaryKey: "workspaceId",
+      }),
+      workspaceHooks: collection<{workspaceId: string; hook: BoundHookInfo}>()({
+        primaryKey: record => `${record.workspaceId}:${record.hook.id}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: {workspaceId: string}) { return record.workspaceId; },
+        },
+      }),
+      // The newest listing revision taken from each listed workspace, owned or shared, or the floor
+      // its shared listing started from (see UserDurableObject.syncWorkspaceListing() and
+      // recordSharedWorkspaceOpen()). Kept only while the workspace is listed: the `gadgets`
+      // subscription drops it with the listing. New, so no version bump: a workspace listed before
+      // it existed takes the next listing sent, whatever its revision.
+      listingRevs: collection<{workspaceId: string; rev: number}>()({
+        primaryKey: "workspaceId",
       }),
     },
     singletons: {
@@ -332,6 +371,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
 
       nextAccountId: 0,
       pinnedBlueprints: <string[]>[],
+
+      // What the user last chose in the app (see AuthenticatedApi.subscribeToPreferences()).
+      preferences: <UserPreferences>{},
 
       // Per-user free-tier daily LLM-call counter (only used when ENABLE_CLOUDFLARE_LIMITS is on).
       // Stores the current UTC day and the calls made that day; a stale `day` implicitly resets the

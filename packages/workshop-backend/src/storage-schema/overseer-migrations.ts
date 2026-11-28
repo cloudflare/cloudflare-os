@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 7;
+export const OVERSEER_STORAGE_VERSION = 8;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -428,3 +428,59 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
     event: "storage.migration.gadget-grants.completed",
   });
 }
+
+/**
+ * Version 7 -> 8: backfill the chatMeta byListing index, which Overseer.listChats() pages, and
+ * the users each chat asked for a decision, and convert the observers' account choices, without
+ * reading any chat's transcript, since the migration blocks the workspace's start:
+ * - chatMeta's byListing is rebuilt, as migrateToActionIndexes rebuilds the action indexes;
+ * - each live chat's `nextChatSequences.askedUsers` gets the recipient of every
+ *   permissionRequested notification it holds, so its working or waiting changes reach them;
+ * - each ObserverRecord.accountChoices entry, a bare account id before, becomes
+ *   `{accountId}`: a choice with no `verifiedThroughActionId`, which the next background check
+ *   verifies from the first action.
+ * The backfills, the conversion and the stamp are one transaction, so a crash midway retries
+ * whole, and nothing can update a record before its index exists. Returns the chats that may
+ * wait on a decision (a pending action or a permissionRequested notification), whose head the
+ * caller records, since version 7 stored no `waiting`; empty when the version is already 8.
+ */
+export function migrateToChatIndexes(host: OverseerMigrationHost): number[] {
+  if (host.storage.version.get() !== 7) return [];
+  let {storage} = host;
+  let candidates = new Set<number>();
+  host.ctx.storage.transactionSync(() => {
+    storage.chatMeta.byListing.rebuild();
+    let asked = new Map<number, Set<string>>();
+    for (let event of storage.chatNotifications.list()) {
+      if (event.kind !== "permissionRequested") continue;
+      let users = asked.get(event.chatId) ?? new Set();
+      asked.set(event.chatId, users.add(event.userId));
+    }
+    for (let record of storage.actions.byHistoryFilter.get("pending")) {
+      if (record.caller.from !== "hook" && record.caller.chatId !== undefined) {
+        candidates.add(record.caller.chatId);
+      }
+    }
+    for (let [chatId, users] of asked) {
+      candidates.add(chatId);
+      let counter = storage.nextChatSequences.get(chatId);
+      if (!counter || !storage.chatMeta.get(chatId)) continue;
+      storage.nextChatSequences.put({...counter,
+        askedUsers: [...new Set([...counter.askedUsers ?? [], ...users])]});
+    }
+    for (let record of Array.from(storage.observers.list())) {
+      // Bare account ids at runtime, whatever the type says.
+      let stored = record.accountChoices as unknown as V7AccountChoices;
+      storage.observers.put({...record, accountChoices: Object.fromEntries(
+          Object.entries(stored).map(([id, accountId]) => [id, {accountId}]))});
+    }
+    storage.version.put(8);
+  });
+  host.logger.info("backfilled the chat indexes", {
+    event: "storage.migration.chat-indexes.completed",
+  });
+  return [...candidates].filter(chatId => storage.chatMeta.get(chatId));
+}
+
+/** ObserverRecord.accountChoices as stored before version 8: a bare account id per gatekeeper. */
+type V7AccountChoices = {[gatekeeperId: number]: number};

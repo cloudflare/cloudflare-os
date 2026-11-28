@@ -341,7 +341,7 @@ describe("withholding content", () => {
 function blueprintSummary(id: string): BlueprintGadgetSummary {
   return {
     id, title: "Kit", description: "A kit", version: 2, codeVersionDate: new Date(1700000000_000),
-    screenshotUrl: `/blueprint-screenshot/${id}?v=1`, dirty: true, unpublishedChanges: true,
+    screenshotUrl: `/blueprint-screenshot/${id}?v=1`, dirty: true, unpublishedChanges: {code: true}, gadgetId: 1,
   };
 }
 

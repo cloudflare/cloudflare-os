@@ -92,7 +92,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     impl.env = { ...impl.env, BLUEPRINTS };
     impl.ownerId = OWNER_USER_ID;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     let owner = {
       id: OWNER_USER_ID,
       whoami: async () => OWNER,
@@ -100,6 +100,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
           ({ profile: OWNER, ...(modelId ? { aiModel: AI_MODEL } : {}) }),
       listGatekeeperVendors: async () => [],  // asked at the start of every agent turn
       updateBlueprint: async () => false,  // not featured
+      syncWorkspaceListing: () => {},
       deleteBlueprint: async () => {},
       setWorkspaceLastActive: async () => {},
     };
@@ -313,9 +314,9 @@ function summaries(impl: any, role: "build" | "use"): WorkpieceSummary[] {
   return entries;
 }
 
-// Publishes V2 as the blueprint's second release, but for a failure that leaves the record dirty
-// and the first release published, as if the upload of the second's content had failed. Returns
-// that content, the key it belongs under, and the record.
+// Publishes V2 as the blueprint's second release, but for a failure at the owner's User DO that
+// leaves the record dirty, its metadata already in KV, and then its content gone, as if its
+// upload had failed. Returns that content, the key it belongs under, and the record.
 async function failUpdate(
     impl: any, client: Overseer, owner: Workspace["owner"], blueprintId: string)
     : Promise<{ key: string, sent: Uint8Array, record: any }> {
@@ -326,7 +327,7 @@ async function failUpdate(
       .rejects.toThrow("user DO unreachable");
   owner.updateBlueprint = updateBlueprint;
 
-  expect((await publishedMetadata(blueprintId))!.version).toBe(1);
+  expect((await publishedMetadata(blueprintId))!.version).toBe(2);
   let record = impl.storage.blueprints.get(blueprintId);
   expect(record).toMatchObject({ dirty: true, metadata: { version: 2 } });
   let key = `${blueprintId}/${record.metadata.commitId}`;
@@ -424,7 +425,7 @@ describe("publishing a blueprint", () => {
     expect(await unpublished()).toBeUndefined();
 
     await commitToGadget(impl, V2);
-    expect(await unpublished()).toBe(true);
+    expect(await unpublished()).toEqual({ code: true });
 
     await client.updateBlueprint(blueprint.id, { updateCode: true });
     expect(await unpublished()).toBeUndefined();
@@ -432,7 +433,7 @@ describe("publishing a blueprint", () => {
     // A head that has moved on to the files as they were published has nothing to publish, and
     // publishing it would mint nothing to say so.
     await commitToGadget(impl, V3);
-    expect(await unpublished()).toBe(true);
+    expect(await unpublished()).toEqual({ code: true });
     await commitToGadget(impl, V2);
     expect(await unpublished()).toBeUndefined();
 

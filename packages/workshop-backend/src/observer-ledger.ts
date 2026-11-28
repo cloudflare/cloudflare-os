@@ -6,7 +6,10 @@
 // - Requirements live only in the action log: an observation that kept `subresources` is one,
 //   attributed to a context by its caller (observerContextOf). A read must never commit without
 //   its record, nor a record land without its check.
-// - Every check fails closed, and no permission is cached between operations.
+// - Every check fails closed, and no permission is cached between operations, but for one:
+//   background reads (chat heads and unread previews) rely on each account choice's
+//   ObserverAccountChoice.verifiedThroughActionId, so only requirements recorded since are
+//   checked before one is published (requirementsSince(), OverseerImpl.mayReadChatState).
 // - Each decision is confirmed synchronously before its caller publishes it: an observation's
 //   audience before the audit record is written (authorizeObservation), and an admission's
 //   scope before its account choices are (OverseerImpl.ensureObserver, via observerScope()).
@@ -19,9 +22,9 @@ import type {
   Gatekeeper, GatekeeperUserVerifier, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  connectionVendorId, observerContextOf, observerRequirementPrefix, observerRequirementSubresource,
-  type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
-  type OverseerStorage,
+  connectionVendorId, observerContextOf, observerRequirementKey, observerRequirementPrefix,
+  observerRequirementSubresource, type GatekeeperCaller, type GatekeeperRecord,
+  type ObserverContext, type ObserverRecord, type OverseerStorage,
 } from "./storage-schema/overseer-storage";
 import { accessIncludesLiveGadget, type SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
@@ -48,6 +51,12 @@ const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
  * call asks of the gatekeeper.
  */
 const CHECK_OBSERVER_BATCH_SIZE = 10;
+
+/** How many action records requirementsSince() lists at a time. */
+const BACKGROUND_PAGE_SIZE = 500;
+
+/** How many pages of action records one requirementsSince() call reads at most. */
+const MAX_BACKGROUND_PAGES = 4;
 
 /**
  * How many times an admission or an observation re-runs its checks because what it must verify
@@ -140,8 +149,8 @@ export interface ObserverLedgerHost {
  * The verifier for `accountId` in `user`'s own User DO. Throws if the account is gone, with the
  * reason the user sees, or belongs to another vendor (getVerifier's own error).
  */
-export async function requireVerifier(user: DurableObjectStub<UserDurableObject>,
-                                      accountId: number, vendorId: string) {
+async function requireVerifier(user: DurableObjectStub<UserDurableObject>,
+                               accountId: number, vendorId: string) {
   let verifier = await user.getVerifier(accountId, vendorId);
   if (!verifier) throw new Error("This account is no longer connected.");
   return verifier;
@@ -307,7 +316,7 @@ export class ObserverLedger {
     for (let profileId of live) {
       let access = effective.get(profileId);
       let observer = this.#storage.observers.get(profileId);
-      let accountId = observer?.accountChoices[gatekeeperId];
+      let accountId = observer?.accountChoices[gatekeeperId]?.accountId;
       if (access === undefined || observer === undefined || accountId === undefined) continue;
       if (access.role !== "build") {
         // A collaborator with only snapshots opens nothing that sees new reads of any context.
@@ -390,19 +399,81 @@ export class ObserverLedger {
         .map(connection => connection.id);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // Background reads
+
   /**
-   * Check that the account `verifier` stands for can read `subresources` through `connection`,
-   * asking the connection about observer `observerId`. Throws, with a reason for the user, on any
-   * refusal: missing method, failed call, malformed result, or denial.
+   * The subresources recorded through `gatekeeperId` after action `verifiedThrough`, up to action
+   * `target`, that admission has not checked. With no watermark (-1, which checked nothing), every
+   * requirement recorded through it in any context, read from the `byObserverRequirement` keys
+   * alone as observerScope() does. Otherwise those of each observation with `subresources`
+   * through it, but for a requirement key also recorded at or before `verifiedThrough`, reading
+   * action records BACKGROUND_PAGE_SIZE at a time until it holds MAX_SUBRESOURCES or more (one
+   * observation can add up to as many again) or has read MAX_BACKGROUND_PAGES pages, returning in
+   * `through` the last id it read when that stops it short of `target`, to call again from there.
    */
-  async checkAccess(verifier: Fetcher<GatekeeperUserVerifier>, observerId: string,
-                    connection: GatekeeperRecord, subresources: string[]): Promise<void> {
+  requirementsSince(gatekeeperId: WorkpieceId, verifiedThrough: number, target: number)
+      : {subresources: string[], through: number} {
+    let index = this.#storage.actions.byObserverRequirement;
+    let subresources = new Set<string>();
+    if (verifiedThrough < 0) {
+      for (let context of ["workspace", "chat", "gadget"] as const) {
+        let prefix = observerRequirementPrefix(gatekeeperId, context);
+        for (let key of index.listKeys({prefix})) {
+          subresources.add(observerRequirementSubresource(key));
+        }
+      }
+      return {subresources: [...subresources], through: target};
+    }
+    // Requirement keys found recorded at or before the watermark, each looked up once.
+    let checked = new Set<string>();
+    let readThrough = verifiedThrough;
+    for (let pages = 0; readThrough < target; pages++) {
+      if (pages >= MAX_BACKGROUND_PAGES) return {subresources: [...subresources], through: readThrough};
+      // Keys listed up front, as each probe of the index would end the listing; records read one
+      // at a time, as one can hold up to 500,000 characters of IDs.
+      let page = Array.from(this.#storage.actions.listKeys(
+          {start: readThrough + 1, end: target + 1, limit: BACKGROUND_PAGE_SIZE}));
+      for (let key of page) {
+        // Stopped short before this record, which the next call reads first.
+        if (subresources.size >= MAX_SUBRESOURCES) {
+          return {subresources: [...subresources], through: readThrough};
+        }
+        // listKeys() gives the stored form, which get() takes for a numeric key (see Collection).
+        let record = this.#storage.actions.get(key as never);
+        if (!record) continue;
+        readThrough = record.id;
+        if (record.type !== "observation" || record.gatekeeperId !== gatekeeperId) continue;
+        let context = observerContextOf(record.caller);
+        if (!record.description.subresources || !context) continue;
+        for (let id of record.description.subresources) {
+          if (subresources.has(id)) continue;
+          let key = observerRequirementKey(gatekeeperId, context, id);
+          if (checked.has(key)) continue;
+          // The index's primary keys alone: reading the record could load 10,000 IDs per key.
+          let earlier = index.listPrimaryKeys(key, {end: verifiedThrough + 1, limit: 1});
+          if ([...earlier].length > 0) {
+            checked.add(key);
+            continue;
+          }
+          subresources.add(id);
+        }
+      }
+      if (page.length < BACKGROUND_PAGE_SIZE) readThrough = target;
+    }
+    return {subresources: [...subresources], through: target};
+  }
+
+  /**
+   * Whether the account `verifier` stands for can read `subresources` through `connection`, asking
+   * the connection about observer `observerId`. Throws, deciding nothing, if the connection fails
+   * to answer or answers malformed, or has no verifyObserverAccess().
+   */
+  async allowsAccess(verifier: Fetcher<GatekeeperUserVerifier>, observerId: string,
+                     connection: GatekeeperRecord, subresources: string[]): Promise<boolean> {
     let denied = await this.#deniedObservers(
         connection, [{id: observerId, verifier}], subresources);
-    if (denied.length > 0) {
-      throw new Error(
-          "Your account can't access some of the data read from this resource.");
-    }
+    return denied.length === 0;
   }
 
   // Asks the connection's verifyObserverAccess() about `subresources` for `observers`, one call at

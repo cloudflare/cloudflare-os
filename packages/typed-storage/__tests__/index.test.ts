@@ -618,6 +618,30 @@ describe("basic collections with function primary key", () => {
   });
 });
 
+describe("listKeys", () => {
+  it("lists stored primary keys in list() order, which get() and delete() accept", () => {
+    let storage = createTypedStorage(makeMockStorage(), {
+      collections: {
+        users: collection<User>()({
+          primaryKey: (user: User) => `${user.level}.${user.name.toUpperCase()}`
+        })
+      }
+    });
+    storage.users.put(ALICE);
+    storage.users.put(BOB);
+    storage.users.put(CAROL);
+
+    expect([...storage.users.listKeys()]).toStrictEqual(["4.BOB", "8.ALICE", "8.CAROL"]);
+    expect([...storage.users.listKeys({reverse: true, limit: 1})]).toStrictEqual(["8.CAROL"]);
+
+    for (let key of Array.from(storage.users.listKeys({prefix: "8."}))) {
+      expect(storage.users.get(key)?.level).toStrictEqual(8);
+      expect(storage.users.delete(key)).toStrictEqual(true);
+    }
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+  });
+});
+
 describe("deleteRecord", () => {
   it("deletes by a computed primary key without the caller deriving it", () => {
     let storage = createTypedStorage(makeMockStorage(), {
@@ -852,6 +876,13 @@ describe("non-unique index by number", () => {
     expect([...index.get(4)]).toStrictEqual([BOB]);
     expect([...index.get(1)]).toStrictEqual([DAVE]);
     expect([...index.get(3)]).toStrictEqual([]);
+  });
+
+  it("lists the primary keys get() visits, ranged over them", () => {
+    expect([...index.listPrimaryKeys(8)]).toStrictEqual([ALICE.name, CAROL.name]);
+    expect([...index.listPrimaryKeys(8, {end: CAROL.name})]).toStrictEqual([ALICE.name]);
+    expect([...index.listPrimaryKeys(8, {limit: 1, reverse: true})]).toStrictEqual([CAROL.name]);
+    expect([...index.listPrimaryKeys(3)]).toStrictEqual([]);
   });
 
   it("supports list", () => {

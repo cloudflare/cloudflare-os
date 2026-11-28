@@ -3,7 +3,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
+  AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
   ChatCodeBase, ChatGadgetPin, Overseer, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent, type FileChange }
@@ -57,7 +57,7 @@ async function withClient(fn: (impl: any, client: Overseer) => Promise<void>): P
     let ownerId = impl.users.newUniqueId().toString();
     impl.ownerId = ownerId;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     let client = await instance.open(
         ownerId, "owner-profile", new NativeRpcStub<() => void>(() => {}));
     await fn(impl, client);
@@ -886,6 +886,89 @@ describe("client delivery of worktree content", () => {
     let last = page.messages.findLast(msg => msg.type === "message")!;
     let alone = await client.getChatMessage(chatId, last.sequence);
     expect(alone?.type === "message" && alone.attachments?.every(a => a.content)).toBe(true);
+  }));
+
+  it("bounded history crosses checkpoints, stays within its chat, and pages sparse sequences without gaps",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    addChat(impl, 2);
+    for (let chatId of [1, 2]) {
+      for (let sequence of [0, 2, 5, 9, 10]) {
+        impl.storage.chats.put({chatId, sequence, type: "message", message: `message ${sequence}`,
+          author: USER, timestamp: new Date(chatId * 100 + sequence)});
+      }
+    }
+    let messages = chatMessages(impl, 1);
+    impl.storage.chatCompactions.put({
+      chatId: 1, compactedTo: 5, summary: "summary",
+      ...buildCompactionState(messages, 5, [], undefined),
+    });
+    impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, compactedTo: 5});
+
+    let latest = await client.getChatHistory(1, undefined, 2);
+    expect(latest.messages.map(m => [m.chatId, m.sequence])).toEqual([[1, 9], [1, 10]]);
+    expect(latest.nextBeforeSequence).toBe(9);
+    expect(latest.compacted).toBeUndefined();
+    let earlier = await client.getChatHistory(1, latest.nextBeforeSequence, 2);
+    expect(earlier.messages.map(m => m.sequence)).toEqual([2, 5]);
+    expect(earlier.nextBeforeSequence).toBe(2);
+    let first = await client.getChatHistory(1, earlier.nextBeforeSequence, 2);
+    expect(first.messages.map(m => m.sequence)).toEqual([0]);
+    expect(first.nextBeforeSequence).toBeUndefined();
+
+    // Existing consumers still get the checkpoint and its complete tail.
+    let legacy = await client.getChatHistory(1);
+    expect(legacy.messages.map(m => m.sequence)).toEqual([5, 9, 10]);
+    expect(legacy.compacted?.to).toBe(5);
+    expect((await client.getChatHistory(1, 5)).messages.map(m => m.sequence)).toEqual([0, 2]);
+    expect((await client.getChatHistory(1, 5, 2)).nextBeforeSequence).toBeUndefined();
+    expect((await client.getChatHistory(1, 0, 2)).messages).toEqual([]);
+    expect((await client.getChatHistory(999, undefined, 2)).messages).toEqual([]);
+  }));
+
+  it("bounded history stops a page once its code changes pass the inline budget, keeping one",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    // Seven changes of 1.5M characters each (3 MB as serialized): three pass the 8 MB budget.
+    let text = "x".repeat(1.5 * 1024 * 1024);
+    for (let sequence = 0; sequence < 7; sequence++) {
+      impl.storage.chats.put({chatId: 1, sequence, type: "changes", author: USER,
+        timestamp: new Date(sequence), change: {1: [["big.txt", {set: text}]]}} as never);
+    }
+    let latest = await client.getChatHistory(1, undefined, 200);
+    expect(latest.messages.map(m => m.sequence)).toEqual([4, 5, 6]);
+    expect(latest.nextBeforeSequence).toBe(4);
+    let middle = await client.getChatHistory(1, latest.nextBeforeSequence, 200);
+    expect(middle.messages.map(m => m.sequence)).toEqual([1, 2, 3]);
+    let rest = await client.getChatHistory(1, middle.nextBeforeSequence, 200);
+    expect(rest.messages.map(m => m.sequence)).toEqual([0]);
+    expect(rest.nextBeforeSequence).toBeUndefined();
+  }));
+
+  it("bounded history never inlines image bytes, which stay fetchable on demand",
+      () => withClient(async (impl, client) => {
+    addChat(impl, 1);
+    let id = crypto.randomUUID(), bytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
+    impl.storage.chatAttachmentContent.put({fileId: id, data: bytes, state: {type: "committed", chatId: 1}});
+    impl.storage.chats.put({chatId: 1, sequence: 0, type: "message", message: "look",
+      author: USER, timestamp: new Date(0),
+      attachments: [{id, mimeType: "image/png", size: bytes.byteLength}]});
+
+    let attachmentsOf = (page: AiChatHistoryPage) => {
+      let message = page.messages[0];
+      return message.type === "message" ? message.attachments : undefined;
+    };
+    expect(attachmentsOf(await client.getChatHistory(1, undefined, 10))).toEqual(
+        [{id, mimeType: "image/png", size: bytes.byteLength}]);
+    expect(new Uint8Array(await client.getChatAttachmentContent(1, id))).toEqual(bytes);
+    // Unbounded (checkpoint) pages still inline images.
+    expect(attachmentsOf(await client.getChatHistory(1))?.[0].content).toEqual(bytes);
+  }));
+
+  it("rejects invalid bounded history sizes", () => withClient(async (_impl, client) => {
+    for (let limit of [0, -1, 1.5, 201]) {
+      await expect(client.getChatHistory(1, undefined, limit)).rejects.toThrow("limit");
+    }
   }));
 
   it("a worktree is a proposed change once edited or committed, not merely created; not after accept",

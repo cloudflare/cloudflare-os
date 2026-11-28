@@ -40,6 +40,16 @@ belongs to the invocation that opened it, and once a Durable Object invocation h
 event the object receives ends its trace. So a turn keeps all its spans only while the request that
 started it (usually the browser session) stays open.
 
+## Agents and their runs
+
+A run is a chat an agent spawner started (`isAgentRun`). It records its spawner (`spawnerId`),
+which is its agent, and the gadget whose code started it (`spawnedByGadgetId`); a gadget's hook
+firing cannot be told from its UI, so no run names a hook. A legacy run may carry only its
+spawner's name (`spawnerName`), and a run not started by a gadget has no gadget id.
+`listChats()` pages by kind and by spawner off the chatMeta `byListing` index, and
+`listAgentSpawners()` lists each spawner with every gadget bound to it, leaving out bindings
+still provisional to any chat but the one asked about.
+
 ## Auto-provisioned gatekeepers
 
 A gatekeeper may declare `VendorDescription.autoProvisionsAccount`: it can mint a connected account
@@ -126,5 +136,7 @@ For private read horizons, source-to-user fanout and notification recovery, read
 [the unread-state design](../../docs/user-unread-state.md). All unread-related data flows from
 Workspace DO to User DO: individual read commands use an authorized open workspace session;
 bulk read actions and unread queries use only local User DO state. Never add a User DO callback
-to the workspace for unread state or metadata. The workspace checks existing observer admission
-locally before fanout, without re-enrolling observers or calling gatekeeper verifiers per message.
+to the workspace for unread state or metadata. The workspace checks observer admission locally
+before fanout, without re-enrolling observers or calling verifiers per message; a collaborator
+behind on what fanout publishes is caught up first (see "Background reads" in
+`docs/observers.md` §10).

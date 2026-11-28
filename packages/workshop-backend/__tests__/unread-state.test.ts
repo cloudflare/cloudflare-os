@@ -74,11 +74,12 @@ const notificationBaselines = (fixture: Fixture, user = fixture.user) => withImp
     return participants === undefined || participants.includes(userProfiles.get(user.id.toString())!.id);
   }).map(meta => ({chatId: meta.id,
     head: impl.chatHead(meta.id),
-    headUpdatedAt: meta.lastActive,
+    headUpdatedAt: impl.chatHeadUpdatedAt(meta),
     hasParticipated: impl.chatParticipationDefault(meta.id),
     notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1,
     readThroughVisibleSequence: impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0})));
-const addReader = async (fixture: Fixture, opened = true) => {
+// A "build" collaborator, listed with the chats' starting points unless the workspace `withheld` them.
+const addReader = async (fixture: Fixture, opened = true, withheld = false) => {
   const owner = await fixture.user.whoami();
   const profile = {type: "user" as const, id: `reader-${crypto.randomUUID()}`, name: "Reader"};
   const reader = env.TEST_USER.getByName(profile.id);
@@ -93,7 +94,8 @@ const addReader = async (fixture: Fixture, opened = true) => {
     impl.storage.collaborators.put({profile,
       addedBy: [{type: "user", sharer: owner.id, role: "build", created: new Date()}]});
   });
-  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture, reader));
+  await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build",
+    withheld ? null : await notificationBaselines(fixture, reader));
   return {reader, owner, profile};
 };
 
@@ -811,7 +813,7 @@ describe("chat notification preferences", () => {
     await evictDurableObject(fixture.workspace);
     await evictDurableObject(reader);
     await withImpl(fixture.workspace, async impl => {
-      expect(impl.storage.version.get()).toBe(7);
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toBeUndefined();
       expect([...impl.storage.dirtyChats.list()]).toEqual([]);
       using scan = vi.spyOn(impl.storage.chats, "list");
@@ -1140,7 +1142,8 @@ describe("local counts and explicit read boundaries", () => {
     await vi.waitFor(() => expect(deltas).toHaveLength(2));
     expect(await fixture.user.getUnreadThreads()).toEqual([
       {workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 1, notificationsEnabled: true,
-        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000)},
+        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000),
+        latestAuthor: {type: "agent", id: "test", name: "Test"}},
     ]);
     // A repeated ACK-lost packet doesn't rewrite the row or emit another invalidation.
     const head = (await cursor(fixture))!.head!;
@@ -1181,6 +1184,28 @@ describe("local counts and explicit read boundaries", () => {
     ]);
   });
 
+  it("reads sharing once per chat delivery for every recipient's admission", async () => {
+    const fixture = await setup();
+    await addReader(fixture);
+    await addReader(fixture);
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
+      using sharing = vi.spyOn(impl, "getSharingManager");
+      let original = impl.mayReadChatState.bind(impl);
+      let sharingReadsDuringAdmission = 0;
+      using admission = vi.spyOn(impl, "mayReadChatState").mockImplementation(async (...args) => {
+        let before = sharing.mock.calls.length;
+        try { return await original(...args); } finally { sharingReadsDuringAdmission += sharing.mock.calls.length - before; }
+      });
+      await impl.deliverDirtyChats();
+      // The rename's listing pass admits each reader to their summary too: count the fanout's.
+      let fanout = admission.mock.calls.find(([userId]) => userId === fixture.user.id.toString())![2];
+      expect(admission.mock.calls.filter(([, , readers]) => readers === fanout)).toHaveLength(3);
+      expect(sharingReadsDuringAdmission).toBe(0);
+    });
+  });
+
   it("repairs a rename skipped during admission denial when the collaborator reopens", async () => {
     const fixture = await setup();
     const {reader, owner} = await addReader(fixture);
@@ -1200,6 +1225,62 @@ describe("local counts and explicit read boundaries", () => {
     expect(await reader.getUnreadThreads()).toEqual([
       expect.objectContaining({chatTitle: "Renamed", latestSequence: 1, readThroughSequence: 0, unreadMessageCount: 1, notificationsEnabled: true}),
     ]);
+  });
+
+  it("seeds a listing recorded without its starting points at the next open that brings them, keeping chats tracked meanwhile", async () => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(2), lastActive: new Date(2)});
+      write(impl, 5, "Second thread", 2);
+      await impl.deliverDirtyChats();
+    });
+    await append(fixture, 0);
+    const {reader, owner} = await addReader(fixture, true, true);
+    const recent = async () => {
+      const updates = new UnreadUpdates();
+      using callback = new RpcStub(updates);
+      using _subscription = await reader.subscribeToUnreadState("recent", callback);
+      await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
+      return updates.snapshots[0].chats.toSorted((a, b) => a.chatId - b.chatId);
+    };
+    expect(await recent()).toEqual([]);
+
+    // Chat 1 is tracked from its next message, read through it, then outrun by another.
+    await append(fixture, 1);
+    await setRead({...fixture, user: reader}, 1);
+    await append(fixture, 2);
+    // A reset to its starting point would take the read horizon and the notification receipt to 2.
+    expect(await cursor({...fixture, user: reader}))
+      .toMatchObject({readThroughSequence: 1, notifiedThroughSequence: 0, unreadCount: 1});
+
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture, reader));
+    expect(await recent()).toEqual([
+      expect.objectContaining({chatId: 1, readThroughSequence: 1, unreadMessageCount: 1}),
+      expect.objectContaining({chatId: 2, chatTitle: "Second", readThroughSequence: 5, unreadMessageCount: 0}),
+    ]);
+    expect(await cursor({...fixture, user: reader})).toMatchObject({readThroughSequence: 1, notifiedThroughSequence: 0});
+  });
+
+  it("keeps the notification receipt a preference set before the seed that starts tracking its chat", async () => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(2), lastActive: new Date(2)});
+      write(impl, 5, "Second thread", 2);
+      await impl.deliverDirtyChats();
+    });
+    const {reader, owner} = await addReader(fixture, true, true);
+    const seed = await notificationBaselines(fixture, reader);
+    const chat2 = () => runInDurableObject(reader, (_instance, ctx) =>
+      makeUserStorage(ctx.storage).chatReadCursors.get(`${fixture.workspaceId}:2`));
+    // Muted after the seed was read, which consumed alerts through a later message.
+    await reader.setChatNotificationsEnabled(fixture.workspaceId, 2, false, {hasParticipated: false, notifiedThroughSequence: 7});
+    expect(await chat2()).toMatchObject({notificationsEnabled: false, notifiedThroughSequence: 7});
+    expect((await chat2())?.readThroughVisibleSequence).toBeUndefined();
+
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", seed);
+    expect(await chat2()).toMatchObject({notificationsEnabled: false, notifiedThroughSequence: 7,
+      readThroughSequence: 5, head: expect.objectContaining({chatTitle: "Second"})});
+    expect((await chat2())?.readThroughVisibleSequence).toBeDefined();
   });
 
   it("scopes statuses and rollups locally, retaining read rows but dropping deleted/revoked inbox entries", async () => {
@@ -1382,7 +1463,7 @@ describe("durable forward handoff", () => {
     await runInDurableObject(fixture.workspace, async instance => {
       const impl = instance.impl;
       using _ambient = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
-      using _outputs = vi.spyOn(impl, "markOutputsDirty").mockImplementation(() => {});
+      using _listing = vi.spyOn(impl, "markListingDirty").mockImplementation(() => {});
       using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
       using closed = new NativeRpcStub<() => void>(() => {});
       using client = await instance.open(fixture.user.id.toString(), "owner", closed);
@@ -1854,13 +1935,15 @@ describe("source authorization and removal", () => {
         impl.storage.collaborators.delete(profile.id);
         await impl.refreshAffectedCollaboratorListings([{profile, addedBy: [], oldAccess: {role: "build"}, newAccess: null}]);
         expect([...impl.storage.pendingUserUpdates.list()]).toHaveLength(1);
+        const recipients: string[] = [];
+        const delivery = interceptDelivery(impl, async (user, ...args) => {
+          recipients.push(user.id.toString()); await user.messageArrived(...args);
+        });
+        try { write(impl, 1); await impl.deliverDirtyChats(); } finally { delivery(); }
+        expect(recipients).not.toContain(reader.id.toString());
+        // Whatever pass the write started fails the cleanup again.
+        await impl.deliverUserUpdates();
       } finally { restore(); }
-      const recipients: string[] = [];
-      const delivery = interceptDelivery(impl, async (user, ...args) => {
-        recipients.push(user.id.toString()); await user.messageArrived(...args);
-      });
-      try { write(impl, 1); await impl.deliverDirtyChats(); } finally { delivery(); }
-      expect(recipients).not.toContain(reader.id.toString());
     });
     expect(await outbox(readerFixture)).toHaveLength(1);
     await evictDurableObject(fixture.workspace);
@@ -1887,7 +1970,8 @@ describe("source authorization and removal", () => {
         expect(impl.storage.dirtyChats.get(1)?.failedRecipients?.map(({userId}) => userId))
           .toEqual([fixture.user.id.toString()]);
       } finally { restore(); }
-      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(), accountChoices: {7: 1}});
+      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(),
+        accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
       const attempts: string[] = [];
       const retry = interceptDelivery(impl, async (user, ...args) => {
         attempts.push(user.id.toString()); await user.messageArrived(...args);
@@ -1946,7 +2030,8 @@ describe("source authorization and removal", () => {
     expect(await cursor(readerFixture)).toMatchObject({unreadCount: 0, readThroughSequence: 0});
     expect(await outbox(readerFixture)).toEqual([]);
     await withImpl(fixture.workspace, async impl => {
-      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(), accountChoices: {7: 1}});
+      impl.storage.observers.put({profileId: profile.id, observerId: crypto.randomUUID(),
+        accountChoices: {7: {accountId: 1, verifiedThroughActionId: impl.storage.nextActionId.get() - 1}}});
     });
     await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture, reader));
     expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(1);
@@ -2019,7 +2104,8 @@ describe("source authorization and removal", () => {
         await instance.messageArrived(fixture.workspaceId, 1, {...progress(5, 2), firstVisibleSequence: 2});
         release.resolve(); await pending;
         expect(await instance.getWorkspaceUnreadState(fixture.workspaceId))
-          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1, notificationsEnabled: true}]);
+          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1, notificationsEnabled: true,
+            participated: true}]);
       });
     } finally { release.resolve(); }
   });
@@ -2327,4 +2413,34 @@ describe("unread counts property", () => {
     await fc.assert(fc.asyncProperty(fc.array(step, {minLength: 1, maxLength: 24, size: "max"}), replay),
       {...PROPERTY_RUN_OPTIONS, numRuns: 60, examples});
   }, 120_000);
+});
+
+describe("recent chats", () => {
+  it("lists tracked chats read or unread with who last spoke and whether the user took part, and follows new messages", async () => {
+    const fixture = await setup(undefined, false);
+    const author = {type: "user" as const, id: fixture.profile.id, name: fixture.profile.name};
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Can you look at this?", 1, author);
+      await impl.deliverDirtyChats();
+    });
+    await setRead(fixture, 0);
+
+    const updates = new UnreadUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await fixture.user.subscribeToUnreadState("recent", callback);
+    await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
+    expect(updates.snapshots[0].chats).toEqual([expect.objectContaining({
+      workspaceId: fixture.workspaceId, chatId: 1, unreadMessageCount: 0, participated: true,
+      chatTitle: "Demo", latestMessagePreview: "Can you look at this?", latestAuthor: author,
+    })]);
+
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 1, "Done.");
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(updates.deltas.at(-1)).toEqual([fixture.workspaceId, 1, expect.objectContaining({
+      unreadMessageCount: 1, latestMessagePreview: "Done.",
+      latestAuthor: {type: "agent", id: "test", name: "Test"},
+    }), expect.anything()]));
+  });
 });

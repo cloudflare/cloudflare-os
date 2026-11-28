@@ -89,8 +89,13 @@ Each `chatReadCursors` row contains:
 - `hasParticipated`: participation default for new chats; absent on existing chats, which stay subscribed
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
-- `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
-- `headUpdatedAt`: the workspace metadata's existing monotonic `lastActive`, ordering titles at the same message position
+- `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time,
+  whether its agent is working, and what it waits on (an approval of its own action, or, with the
+  agent stopped, a connection or web-fetch request), for the `"recent"` scope
+- `headUpdatedAt`: the later of the workspace metadata's monotonic `lastActive` and the chat's
+  `headStateAt` (stamped on its sequence counter, always past `lastActive`, whenever its working
+  or waiting state changes), ordering heads at the same message position. What the chat waits on
+  is recorded on that counter when its state changes, so sending a head reads no history
 - `deleted`, only on a deleted thread's tombstone
 
 `notificationOutbox` contains the accepted alerts themselves: stable UUID, kind, bounded chat
@@ -102,8 +107,13 @@ denial flag, new timer or notification backfill process.
 Counts and queue headers hydrate from local storage once per User DO lifetime. Snapshot reads
 and subscriptions use that memory, never list threads on other DOs, and never write read rows.
 The existing source fanout carries inbox metadata with the count; title changes already dirty the
-same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
+same thread and use the same retry path, as do an agent starting or stopping, an action of the
+chat's becoming pending or no longer pending, a request's pending state changing, a decision
+boundary, and a decision that leaves the agent stopped. Metadata-only updates don't initialize a missing cursor or
 change read horizons, including on preference-only rows whose read tracking has not started.
+A user once asked for a decision in a chat (recorded on its sequence counter as the
+`permissionRequested` event is written) keeps receiving the head when its working or waiting state
+changes, though not enrolled, without its messages, so a head that stops waiting on them reaches them.
 Preference changes accept only the source default and alert receipt, leaving the read positions,
 count and paired inbox head to ordinary fanout. Queries and updates label preference-only and
 approval-only rows `readStatePending`; the timeline waits for enrollment catch-up before
@@ -112,7 +122,7 @@ one-off approval followed by Mark all read cannot make stale state ready for aut
 An enrolled snapshot or an explicit read command clears this flag, even if no counts changed;
 later one-off retries cannot restore it. Legacy cursors remain ready without a migration.
 The existing admission callback can repair metadata
-skipped during denied admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
+skipped during denied admission, using `headUpdatedAt` to reject older captured heads without a source read.
 Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
 first admission or an open-session read command. Tombstones and preference-only rows may omit a
 head. Bulk actions rely on this invariant; there is no metadata lookup fallback.
@@ -144,11 +154,12 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    shared alarm is armed before async dispatch. The marker retains the earliest pending raw event
    and first visible position, including through coalescing and resets.
 2. The workspace reads inbox metadata and pending eligibility records once per batch and checks current build
-   membership plus previously established observer admission locally. It sends authorized packets
-   to enrolled owners and collaborators (plus targeted approval recipients) in parallel; legacy
-   chats retain workspace-wide fanout. Independent threads also fan out in
-   parallel. Each User DO handoff has a two-second limit. It does not enroll observers or call
-   external gatekeeper verifiers per message.
+   membership plus observer admission locally: a collaborator behind on what the batch may reflect
+   is verified first, in one catch-up check, never once per message (see "Background reads" in
+   docs/observers.md §10). A failed check makes them a failed recipient, retried. It
+   sends authorized packets to enrolled owners and collaborators (plus targeted approval recipients)
+   in parallel; legacy chats retain workspace-wide fanout. Independent threads also fan out in
+   parallel. Each User DO handoff has a two-second limit. It does not enroll observers.
 3. A listed User DO synchronously commits the absolute head/count and any new queued alerts in
    one transaction. Queue insertion is deduplicated by event UUID and the completed-delivery
    receipt. It arms the existing alarm before ACK. Slow browser/provider delivery does not hold
@@ -243,6 +254,16 @@ batch does not fetch skipped alerts. Badge reads use last-known local access, no
 After a pass checkpoints, denied recipients are not retained for retry; another user's failure
 cannot revisit them after re-authorization. The exception is the accepted source-reset window
 before that checkpoint described above. No separate skip receipt or per-user denial flag is stored.
+
+A denial found by a background check (see "Background reads" in docs/observers.md §10) clears
+nothing that was handed over before it, which was verified when sent. The workspace listing's
+`chatAccess` part tells the User DO an open is required, naming each connection whose account
+choice is denied or missing; the User DO shows it as `WorkspaceMetadata.chatAccessRequired` and
+marks the listing `chatSeedPending`. Cursors, unread counts and queued alerts stay as they were,
+and nothing new reaches them until the next open that admits them, which merges current heads
+into the chats they track and seeds the chats begun meanwhile as a first admission would; the
+admission's write of the choice sends the part again, empty, which clears the flag. Alerts
+withheld meanwhile are not sent later.
 
 Once accepted, a queued alert is authorized durable delivery intent and retries locally. Existing
 revocation, downgrade, dismissal and workspace-removal callbacks clear the listing's cursors and

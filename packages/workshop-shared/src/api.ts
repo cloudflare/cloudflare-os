@@ -271,11 +271,18 @@ export type ChatReadState = {
    * or on older servers. A false override suppresses approval alerts as well as completion alerts.
    */
   notificationsEnabledOverride?: boolean;
+  /**
+   * Present once the user has sent a message or slash command in this chat (see
+   * `AiChatMetadata.notificationsRequireParticipation`). Absent before then, and on chats created
+   * before participation was tracked, whatever the user did in them.
+   */
+  participated?: true;
 };
 
 /**
- * What a chat's most recent visible message looks like, used to display the chat in a list such as
- * the unread inbox. It's the same for every user, regardless of what they've read.
+ * What a chat's most recent visible message looks like, and whether its agent is working or it
+ * waits on someone, used to display the chat in a list such as the unread inbox or the user's
+ * recent chats. It's the same for every user, regardless of what they've read.
  */
 export type ChatTimelineHead = {
   /** The chat's current title. */
@@ -293,6 +300,24 @@ export type ChatTimelineHead = {
    * the server is older than this field.
    */
   latestActivityAt?: Date;
+  /**
+   * Who sent the latest visible message. Absent if the chat has no visible messages, or when its
+   * head was recorded before this field was.
+   */
+  latestAuthor?: Pick<AiChatAuthorInfo, "type" | "id" | "name">;
+  /**
+   * Present while the chat's agent is working on a turn (as `AiChatMetadata.activeAgent` says).
+   * Absent when its head was recorded before this field was.
+   */
+  working?: true;
+  /**
+   * Present while the chat waits on someone: on an action of its own to be approved
+   * (`"approval"`), or, with its agent stopped, on another decision, such as a connection request
+   * (`"action"`). `ask` is what it asks, where that can be told: one of its pending actions for
+   * `"approval"`, else its pending request. Absent when its head was recorded before this field
+   * was.
+   */
+  waiting?: {kind: "approval" | "action"; ask?: WaitingAsk};
 };
 
 /**
@@ -343,15 +368,28 @@ export type UnreadSummaryUpdate = {
 };
 
 /**
+ * The most chats a `"recent"` scope's snapshot lists (see `UnreadStateScope`).
+ */
+export const RECENT_THREADS_LIMIT = 100;
+
+/**
  * Which chats an `AuthenticatedApi.subscribeToUnreadState()` subscription receives per-chat
  * updates for. Every scope receives the overall and per-workspace totals. The scope only controls
  * which chat rows are sent:
  * - `"summary"`: no chats, only totals (e.g. for badges).
  * - `"unread"`: chats with unread messages and notifications enabled (e.g. for the unread inbox).
+ * - `"recent"`: the user's tracked chats across all workspaces, read or unread, each with its
+ *   latest message (as `UnreadThread`), for a list of their recent chats. The snapshot lists the
+ *   RECENT_THREADS_LIMIT whose latest messages are newest; updates come for any tracked chat, so
+ *   the subscriber keeps those it lists. Tracked chats are those the user has opened, taken part
+ *   in or set a preference for (see docs/user-unread-state.md), so an agent's run nobody opened is
+ *   not among them, except that when a builder is first admitted to a shared workspace, cursor
+ *   heads are seeded for its existing chats, runs they never opened included, so those appear in
+ *   the snapshot.
  * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
  *   list).
  */
-export type UnreadStateScope = "summary" | "unread" | {
+export type UnreadStateScope = "summary" | "unread" | "recent" | {
   /** The workspace whose chats to send. */
   workspaceId: string;
 };
@@ -360,10 +398,11 @@ export type UnreadStateScope = "summary" | "unread" | {
 export interface UserUnreadState extends UserUnreadSummary {
   /**
    * The chats in the subscription's scope (see `UnreadStateScope`): none for `"summary"`, chats
-   * with unread messages for `"unread"`, or one workspace's chats for a workspace scope. Chats in
-   * that workspace that aren't listed have nothing unread.
+   * with unread messages for `"unread"`, the newest tracked chats for `"recent"`, each an
+   * `UnreadThread`, or one workspace's chats for a workspace scope. Chats in that workspace that
+   * aren't listed have nothing unread.
    */
-  chats: ChatReadState[];
+  chats: (ChatReadState | UnreadThread)[];
 }
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
@@ -382,10 +421,84 @@ export interface UnreadStateSubscriber extends RpcTarget {
   /**
    * One chat in this subscription's scope changed. Replace your row for it with `chat`, or remove
    * the row if `chat` is null (the chat was deleted, or, for the `"unread"` scope, it's now fully
-   * read). `summary` has the updated totals, just like `summaryUpdated()`.
+   * read). For the `"recent"` scope, `chat` is an `UnreadThread`. `summary` has the updated totals,
+   * just like `summaryUpdated()`.
    */
-  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | UnreadThread | null,
     summary: UnreadSummaryUpdate): Promise<void>;
+}
+
+/**
+ * What a chat waiting on the user asks of them (see `ChatTimelineHead.waiting`): to approve an
+ * action of its own (`action`, by its title), to connect a service (`connection`), or to approve
+ * fetching a URL that restricted mode refuses (`webFetch`). Each string is cut off at 240
+ * characters.
+ */
+export type WaitingAsk =
+    {type: "action"; title: string}
+  | {type: "connection"; vendorName: string; reason: string}
+  | {type: "webFetch"; url: string};
+
+/**
+ * One workspace, as summarized for `AuthenticatedApi.subscribeToWorkspaceSummaries()`: the
+ * actions waiting on the user there, by gadget, and the hooks it has bound, as the workspace last
+ * reported them. Which chats are working or waiting on someone is on their heads, in the
+ * `"recent"` unread scope (see `ChatTimelineHead`).
+ */
+export type WorkspaceSummary = {
+  /** The workspace summarized. */
+  workspaceId: string;
+
+  /**
+   * The gadgets with actions waiting on the user there for approval, and how many each: those its
+   * code or its hooks asked for outside any chat, and those of the runs it started. Each action
+   * counts for at most one gadget; gadgets with none are left out. A chat waiting on someone says
+   * so on its head instead (see `ChatTimelineHead.waiting`).
+   */
+  waiting: {gadgetId: WorkpieceId; actions: number}[];
+
+  /** Every hook bound there, as `Overseer.listHooks()` lists them. */
+  hooks: BoundHookInfo[];
+};
+
+/** Callback used by `AuthenticatedApi.subscribeToWorkspaceSummaries()`. */
+export interface WorkspaceSummarySubscriber extends RpcTarget {
+  /** Replace everything you have with these. Called once, right after subscribing. */
+  snapshot(summaries: WorkspaceSummary[]): Promise<void>;
+
+  /**
+   * One workspace's summary changed. Replace yours with `summary`, or drop it if `summary` is null
+   * (the workspace was deleted or left the user's list, or their access was narrowed).
+   */
+  updated(workspaceId: string, summary: WorkspaceSummary | null): Promise<void>;
+}
+
+/**
+ * The most UTF-16 code units a user's preferences may take in all, keys and values together
+ * (see `UserPreferences`).
+ */
+export const MAX_PREFERENCES_SIZE = 256 * 1024;
+
+/**
+ * What the user last chose in the app, kept in their account so that it follows them to any
+ * browser or device (see `AuthenticatedApi.subscribeToPreferences()`): each entry a string under a
+ * key, both the app's. The server keeps them as given, within MAX_PREFERENCES_SIZE; what they
+ * mean, and any bounds of their own, are the app's, which reads each defensively, since another
+ * version of the app may have written it. The key `__proto__` is not supported: Cap'n Web drops
+ * it when encoding objects.
+ */
+export type UserPreferences = Record<string, string>;
+
+/**
+ * A change to the user's preferences (see `AuthenticatedApi.updatePreferences()`): each key given
+ * a string is set to it, each given `null` is removed, and keys not given are left as they are.
+ */
+export type UserPreferencesUpdate = Record<string, string | null>;
+
+/** Callback used by `AuthenticatedApi.subscribeToPreferences()`. */
+export interface UserPreferencesSubscriber extends RpcTarget {
+  /** Replace yours with these. Called once right after subscribing, and after every change. */
+  updated(preferences: UserPreferences): Promise<void>;
 }
 
 /**
@@ -564,8 +677,10 @@ export type ObserverAccountChoice = {
  * for one or more gatekeeper bindings before they can observe what they are opening. In the common
  * case (owner, or an already-configured observer) this is never called and the open resolves
  * without an extra round trip. The overseer does not resolve the open until this returns. If the
- * user cannot or will not provide the needed accounts, the callback should reject, and the
- * overseer denies the open.
+ * user cannot or will not provide the needed accounts, the callback should reject with
+ * createAccessConfirmationError(): `cancelled` for a user who declined, `notAsked` for a client
+ * that chose not to ask. The overseer denies the open with that code, naming the workspace and
+ * any gadget it was for; any other rejection denies it as `disconnected`.
  *
  * `configure()` may be called a second time within one open, for the subset of bindings that failed
  * verification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --
@@ -617,6 +732,58 @@ export const createOpenWorkspaceError = openWorkspaceErrors.create;
 
 /** Reads the machine-readable code from an expected `openWorkspace()` error. */
 export const getOpenWorkspaceErrorCode = openWorkspaceErrors.getCode;
+
+/**
+ * Stable error codes attached to an open refused because the user's access to what it reads was
+ * not confirmed (see ObserverConfigCallback): `AuthenticatedApi.openWorkspace()`, or
+ * `Overseer.getGadget()` for a collaborator given individual gadgets. Asking again can put each
+ * right.
+ */
+export const ACCESS_CONFIRMATION_ERROR_CODES = {
+  /** The user was asked and declined: `configure()` rejected with this code. */
+  cancelled: "ACCESS_CONFIRMATION_CANCELLED",
+  /** The user was not asked: the open passed no ObserverConfigCallback, or `configure()` rejected
+   * with this code (e.g. for an open in the background). */
+  notAsked: "ACCESS_CONFIRMATION_NOT_ASKED",
+  /** `configure()` failed without either code, as when the client's connection is lost while it
+   * asks. */
+  disconnected: "ACCESS_CONFIRMATION_DISCONNECTED",
+} as const;
+
+/** An access-confirmation failure code. */
+export type AccessConfirmationErrorCode =
+    typeof ACCESS_CONFIRMATION_ERROR_CODES[keyof typeof ACCESS_CONFIRMATION_ERROR_CODES];
+
+/** What an open is refused with when the user's access to what it reads was not confirmed. */
+export type AccessConfirmationError = Error & {
+  /** Why it was refused (see ACCESS_CONFIRMATION_ERROR_CODES), as getAccessConfirmationErrorCode()
+   * reads it. */
+  code: AccessConfirmationErrorCode;
+  /** The workspace being opened. The overseer always sets it; a client's `configure()` rejection
+   * need not. */
+  workspaceId?: string;
+  /** The gadget being got (`Overseer.getGadget()`); absent when the workspace itself was opened. */
+  gadgetId?: WorkpieceId;
+};
+
+const accessConfirmationErrors = codedErrorFamily<AccessConfirmationErrorCode>({
+  [ACCESS_CONFIRMATION_ERROR_CODES.cancelled]:
+      "You didn't confirm your access, so it can't be opened.",
+  [ACCESS_CONFIRMATION_ERROR_CODES.notAsked]:
+      "To open this, you must confirm your access with connected accounts of your own, but you " +
+      "weren't asked to.",
+  [ACCESS_CONFIRMATION_ERROR_CODES.disconnected]:
+      "Your access couldn't be confirmed: the connection was lost while asking. Please try again.",
+});
+
+/** Creates an access-confirmation failure with a machine-readable code, naming the workspace and
+ * any gadget it is for. */
+export const createAccessConfirmationError = (code: AccessConfirmationErrorCode,
+    target?: { workspaceId: string; gadgetId?: WorkpieceId }): AccessConfirmationError =>
+  Object.assign(accessConfirmationErrors.create(code), target);
+
+/** Reads the machine-readable code from an access-confirmation failure. */
+export const getAccessConfirmationErrorCode = accessConfirmationErrors.getCode;
 
 /** Stable error codes attached to authentication failures. */
 export const AUTH_ERROR_CODES = {
@@ -1048,8 +1215,20 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]>;
 
-  /** Pin or unpin this workspace in the user's list. */
+  /** Pin (star) or unpin this workspace in the user's list. Seen by no one else. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+
+  /**
+   * Subscribe to the user's workspace list, as `listWorkspaces()` lists it: what a workspace is
+   * called, whose it is and the user's role in it, and the user's own pin and mute on it.
+   *
+   * Served from the user's own account. A workspace shared with the user is listed from the first
+   * time they open it; its owner's (or a builder's) renames are mirrored into it as they happen,
+   * and it leaves the list as the user dismisses it or loses access. The subscriber first gets
+   * every workspace through `snapshot()`, then one at a time through `updated()`. Dispose of the
+   * returned stub to unsubscribe. If the connection drops, subscribe again.
+   */
+  subscribeToWorkspaces(subscriber: RpcStub<WorkspacesSubscriber>): Promise<RpcStub<{}>>;
 
   /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
@@ -1063,6 +1242,51 @@ export interface AuthenticatedApi extends RpcTarget {
    * TODO: Pagination, sort options.
    */
   listOutputs(): Promise<ListOutputsResult>;
+
+  /**
+   * Subscribe to the user's output index, as `listOutputs()` lists it: the Library, search and the
+   * template store share it.
+   *
+   * The subscriber first gets everything through `snapshot()`, then each workspace's outputs
+   * through `updated()` as the workspace pushes them, as it is renamed or active, and as it leaves
+   * the user's list or their access is revoked. Workspaces predating the index are swept in by the
+   * subscription. Dispose of the returned stub to unsubscribe. If the connection drops, subscribe
+   * again.
+   */
+  subscribeToOutputs(subscriber: RpcStub<OutputsSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Subscribe to a summary of each of the user's workspaces that they build in: the actions waiting
+   * on them there, by gadget, and the hooks it has bound (see `WorkspaceSummary`), for the
+   * sidebar's and the Library's counts and the Automations page, without opening any workspace.
+   * Chats working or waiting on someone come through `subscribeToUnreadState()` instead, as head
+   * fields (see `ChatTimelineHead`).
+   *
+   * Served from the user's own account, which each workspace pushes each change to as it happens
+   * and everything once whenever the user opens it. A workspace shared with the user is included
+   * once they have opened it, and dropped if their access is revoked or narrowed to using its
+   * gadgets. A workspace with no summary yet is unknown, not empty.
+   *
+   * The subscriber first gets every summary through `snapshot()`, then one workspace at a time
+   * through `updated()`. Dispose of the returned stub to unsubscribe. If the connection drops,
+   * subscribe again.
+   */
+  subscribeToWorkspaceSummaries(subscriber: RpcStub<WorkspaceSummarySubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Set each of the user's preferences that `update` gives a string, remove each it gives `null`,
+   * and leave the rest as they are. Throws, changing nothing, if the result would exceed
+   * MAX_PREFERENCES_SIZE (measured after the update, so removing never counts against it). Every
+   * subscriber (`subscribeToPreferences()`) gets the result, the caller's own included.
+   */
+  updatePreferences(update: UserPreferencesUpdate): Promise<void>;
+
+  /**
+   * Subscribe to the user's preferences, so that a change made in one tab or device reaches the
+   * others. The subscriber gets them right away and after every change, through `updated()`.
+   * Dispose of the returned stub to unsubscribe. If the connection drops, subscribe again.
+   */
+  subscribeToPreferences(subscriber: RpcStub<UserPreferencesSubscriber>): Promise<RpcStub<{}>>;
 
   /**
    * The deployment's standard output formats, the built-in blueprints this instance ships with and
@@ -1221,6 +1445,18 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /** Return a blueprint created by the current user, or null if it is not owned by this user. */
   getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null>;
+
+  /**
+   * Subscribe to the blueprints the user created, as `listOwnBlueprints()` lists them: each
+   * changes as it is published again, edited, pinned or deleted, as its source changes title or
+   * goes, and as its unreleased changes come and go (`BlueprintUserSummary.unpublishedChanges`,
+   * which the source pushes to the user's account). So a template list needs open no workspace.
+   *
+   * The subscriber first gets every one through `snapshot()`, then one at a time through
+   * `updated()`. Dispose of the returned stub to unsubscribe. If the connection drops, subscribe
+   * again.
+   */
+  subscribeToOwnBlueprints(subscriber: RpcStub<OwnBlueprintsSubscriber>): Promise<RpcStub<{}>>;
 
   /**
    * List the blueprints currently in the user's library. This includes uploaded `.gadget`
@@ -2806,11 +3042,13 @@ export type AdminChatState = {
   pendingActionIds: number[];
 };
 
-/** One attachment of a chat message, as AdminWorkspaceView.listChatAttachments() lists it: the
- * message's ChatAttachmentRef without its bytes. Its `oid` is a hash of those bytes, so it tells
- * whether two attachments are the same file; like the name, the type and the size, it is
- * metadata. */
-export type AdminChatAttachment =
+/**
+ * A file sent in a chat, as Overseer.getChatAttachment() and
+ * AdminWorkspaceView.listChatAttachments() list it: the message's ChatAttachmentRef without its
+ * bytes. Its `oid` is a hash of those bytes, so it tells whether two attachments are the same
+ * file; like the name, the type and the size, it is metadata.
+ */
+export type ChatAttachmentInfo =
     Pick<ChatAttachmentRef, "id" | "oid" | "mimeType" | "name" | "size"> & {
   /** The sequence of the message it is attached to (AiChatMessage.sequence). */
   sequence: number;
@@ -2931,7 +3169,7 @@ export interface AdminWorkspaceView extends RpcTarget {
   /** The attachments of a chat's messages, oldest message first, without their bytes. Their
    * names, types, sizes and content hashes (`oid`) are metadata, as titles are. Empty for an id
    * that names no chat. */
-  listChatAttachments(chatId: number): Promise<AdminChatAttachment[]>;
+  listChatAttachments(chatId: number): Promise<ChatAttachmentInfo[]>;
 
   /**
    * One page of the workspace's action log, as Overseer.listActions() pages it. Admin access is
@@ -3314,6 +3552,15 @@ export type ServerConfig = {
    * locking everyone out.
    */
   passwordAuthEnabled: boolean;
+
+  /**
+   * How a browser signs in. `"cfAccess"` when the deployment is behind Cloudflare Access
+   * (CF_ACCESS_AUD is set): Access has signed the user in before the page loads, so the client
+   * calls `PublicApi.authenticateFromCfAccess()` and signs out through Access; password sign-in
+   * is closed. `"token"` otherwise: the client signs in with a password or an auth vendor and
+   * keeps the session token it is given.
+   */
+  authMode: "cfAccess" | "token";
 
   /**
    * Whether the optional Cloudflare free-tier limits + top-up flow is enabled. When false (the
@@ -4005,10 +4252,37 @@ export type WorkspaceMetadata = {
    */
   storageBytes?: number;
 
+  /**
+   * Set on a workspace shared with the user as "build" while their background view of its chats
+   * (previews, working and waiting state, unread counts, notifications) is paused, until they
+   * open the workspace and confirm an account for each connection listed: what they have stays as
+   * it was last sent, and nothing new arrives. Absent when nothing is required. Listings only
+   * (`listWorkspaces()`, `subscribeToWorkspaces()`); the Overseer's metadata never sets it.
+   */
+  chatAccessRequired?: ChatAccessRequirement[];
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
 }
+
+/**
+ * A connection in a shared workspace for which the user must confirm an account, by opening the
+ * workspace, before its chats update in their background view again (see
+ * `WorkspaceMetadata.chatAccessRequired`).
+ */
+export type ChatAccessRequirement = {
+  /** The connection's workpiece ID in that workspace. */
+  gatekeeperId: WorkpieceId;
+  /** The connection's vendor, as `listVendors()` names it, for the client to say which service. */
+  vendorId: string;
+  /**
+   * `"notChosen"`: the user has no account chosen for the connection, as when it was added after
+   * they last opened the workspace. `"denied"`: the account they chose is disconnected, or the
+   * service says it cannot see something read through the connection since.
+   */
+  reason: "notChosen" | "denied";
+};
 
 /**
  * WorkspaceMetadata extended with timestamps. These are available when listing workspaces from the
@@ -4017,6 +4291,18 @@ export type WorkspaceMetadata = {
 export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
+}
+
+/** Callback used by `AuthenticatedApi.subscribeToWorkspaces()`. */
+export interface WorkspacesSubscriber extends RpcTarget {
+  /** Replace everything you have with these. Called once, right after subscribing. */
+  snapshot(workspaces: WorkspaceMetadataWithTimestamps[]): Promise<void>;
+
+  /**
+   * One workspace was added or changed: replace yours with `workspace`, or drop it if `workspace`
+   * is null (it was deleted, or left the user's list).
+   */
+  updated(workspaceId: string, workspace: WorkspaceMetadataWithTimestamps | null): Promise<void>;
 }
 
 /**
@@ -4164,6 +4450,23 @@ export type OutputSummary = {
    * predates this field.
    */
   role?: CollaboratorRole;
+}
+
+/** Callback used by `AuthenticatedApi.subscribeToOutputs()`. */
+export interface OutputsSubscriber extends RpcTarget {
+  /**
+   * Replace everything you have with these. Called once right after subscribing, and again once
+   * the sweep ends. While `catchingUp` is true, workspaces reached by the subscription's sweep
+   * arrive through `updated()`. A sweep whose whole page fails ends there, and the next
+   * subscription resumes it.
+   */
+  snapshot(outputs: OutputSummary[], catchingUp: boolean): Promise<void>;
+
+  /**
+   * One workspace's outputs changed: replace all you have of `workspaceId` with `outputs`, which
+   * is empty once the workspace is deleted or left the user's list, or their access was revoked.
+   */
+  updated(workspaceId: string, outputs: OutputSummary[]): Promise<void>;
 }
 
 /**
@@ -4404,6 +4707,19 @@ export type ActionLogEntry = {
    */
   chatId?: number;
 
+  /**
+   * Who made the request: the agent in `chatId`, a gadget's code, a hook firing into a gadget, or
+   * a person (a slash command, say).
+   */
+  from: "agent" | "gadget" | "hook" | "user";
+
+  /**
+   * The gadget whose code made the request (`from: "gadget"`) or that the firing hook wakes
+   * (`from: "hook"`). Absent when it isn't known, as on records written before workspaces held
+   * several gadgets.
+   */
+  gadgetId?: WorkpieceId;
+
   resourceTitle: string;
   resourceUrl?: string;
 
@@ -4475,6 +4791,18 @@ export type BoundHookInfo = {
   /** The gadget whose code this hook wakes. */
   gadgetId: WorkpieceId;
 
+  /**
+   * The vendor whose gatekeeper delivers it (see GatekeeperVendorInfo.id), e.g. "scheduler" for
+   * a scheduled task. Absent when the connection names no vendor.
+   */
+  vendorId?: string;
+
+  /**
+   * The chat it was bound from, as the bindHook entry's ActionLogEntry.chatId says: the chat
+   * whose agent, slash command or gadget code bound it. Absent for one bound outside any chat.
+   */
+  chatId?: number;
+
   resourceTitle?: string;
   resourceUrl?: string;
   description: HookDescription;
@@ -4531,6 +4859,24 @@ export type AgentSpawnerConfig = {
  * it: vendor ids come from binding names, which have no hyphen.
  */
 export const AGENT_SPAWNER_CONNECTION_ID = "agent-spawner";
+
+/** One of a workspace's agent spawners, as Overseer.listAgentSpawners() lists them. */
+export type AgentSpawnerInfo = {
+  /** The spawner's id, which is its agent's: its runs name it as `AiChatMetadata.spawnerId`. */
+  id: WorkpieceId;
+
+  /** How it was created: its display name and model id (see AgentSpawnerConfig). */
+  config: Omit<AgentSpawnerConfig, "env">;
+
+  /** The name of its model, on the provider's API, as of its creation. Absent with no model. */
+  modelName?: string;
+
+  /**
+   * Every gadget binding it, each by the name its code knows it by. `chatId` is set on a binding
+   * still provisional to that chat, listed only when it was the chat asked about.
+   */
+  bindings: {gadgetId: WorkpieceId, name: string, chatId?: number}[];
+};
 
 /**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
@@ -4796,6 +5142,14 @@ export interface Overseer extends RpcTarget {
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
 
   /**
+   * List the workspace's agent spawners, each with what it is (its name and model) and every
+   * gadget bound to it (see AgentSpawnerInfo). With `chatId`, bindings
+   * still provisional to that chat are listed too, as GadgetClient.listBindings(chatId) lists
+   * them. Not available in use-only sessions.
+   */
+  listAgentSpawners(chatId?: number): Promise<AgentSpawnerInfo[]>;
+
+  /**
    * Fetch one page of action history, newest first by id (creation order). "all" (the default)
    * pages every record and a record type pages that type — pending records included, each at its
    * creation position; `filter: "pending"` pages only the currently-pending records — the query
@@ -4961,8 +5315,18 @@ export interface Overseer extends RpcTarget {
    */
   setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void>;
 
-  /** List past AI chats, with each one's id and title. */
-  listChats(): Promise<AiChatMetadata[]>;
+  /**
+   * List the workspace's chats, newest first (by id), each with its metadata: all of them, or
+   * those `options` asks for, a page at a time (see ChatListOptions). Read from an index, so a
+   * page of one agent's runs reads that page alone. Not available in use-only sessions.
+   */
+  listChats(options?: ChatListOptions): Promise<AiChatMetadata[]>;
+
+  /**
+   * Get one chat's metadata, as listChats() lists it. Undefined if no chat has that id, as after
+   * it was deleted. Not available in use-only sessions.
+   */
+  getChatMetadata(chatId: number): Promise<AiChatMetadata | undefined>;
 
   /**
    * List available language models; decision models are left out. The first listed model should
@@ -4974,6 +5338,13 @@ export interface Overseer extends RpcTarget {
    * Fetch one page of messages in the chat history for the given chat thread. If `beforeSequence`
    * is absent, fetch the current tail. Otherwise, fetch messages before that sequence.
    *
+   * With `limit` (an integer from 1 to 200), return at most that many messages, newest first when
+   * selecting the page but ascending in the response, independently of compaction boundaries.
+   * Use the response's `nextBeforeSequence` to page backwards. Bounded pages never inline
+   * attachment bytes (`ChatAttachmentRef.content` is absent); fetch them with
+   * `getChatAttachmentContent()`. Without `limit`, pages retain the checkpoint-delimited behavior
+   * and include their compaction summary.
+   *
    * Note that if you plan to subscribe to updates, you should initiate the subscription first,
    * before fetching history. Otherwise, you could theoretically miss a message that is sent
    * between when you fetch the history and when you subscribe.
@@ -4981,7 +5352,7 @@ export interface Overseer extends RpcTarget {
    * In typical usage, the client subscribes to all chat activity upfront, but only fetches
    * histories if and when the user opens a specific.
    */
-  getChatHistory(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage>;
+  getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage>;
 
   /** Fetch a single message from a chat thread. */
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
@@ -5033,10 +5404,10 @@ export interface Overseer extends RpcTarget {
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
-   * While it runs, plain text with no capsules, attachments or formats, though possibly a focus,
-   * steers it, on the running turn's model whatever `modelId` is, even null: it waits in
-   * `AiChatMetadata.queuedSteers` until the agent reads it. Anything else, or anything sent after
-   * `stopAgent()`, throws until the agent finishes.
+   * While it runs, plain text with no capsules, attachments or formats, though possibly a focus
+   * or a reply, steers it, on the running turn's model whatever `modelId` is, even null: it waits
+   * in `AiChatMetadata.queuedSteers` until the agent reads it. Anything else, or anything sent
+   * after `stopAgent()`, throws until the agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    *
@@ -5079,6 +5450,15 @@ export interface Overseer extends RpcTarget {
    * 16 MiB.
    */
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
+
+  /**
+   * Get the metadata of the file with id `id` (see ChatAttachmentRef.id) sent in chat `chatId`,
+   * without its bytes: what a link to it needs before its message is loaded. Reads the chat's
+   * messages to find it, which is acceptable for opening a file from a link alone. Throws if `id`
+   * is malformed; undefined if a well-formed `id` names no file the chat has. Not available in
+   * use-only sessions.
+   */
+  getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined>;
 
   /**
    * Update the title of a chat. Usually not needed as a title is generated automatically from
@@ -5400,9 +5780,11 @@ export interface Overseer extends RpcTarget {
    * Revoke a share link by its `linkId`, which revokes every secret ever minted for it. Users who
    * gained access through the link may transitively lose some or all of it. `keepUsers` lists
    * profile.ids of users who should keep the access they would lose, through fresh edges from the
-   * caller. Returns the list of users whose access actually narrowed.
+   * caller; `"everyone"` keeps all of them, as computed in the same step as the revocation, so that
+   * someone who joined through the link a moment before keeps their access too. Returns the list of
+   * users whose access actually narrowed.
    */
-  revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
+  revokeShareLink(linkId: string, keepUsers: string[] | "everyone"): Promise<AffectedCollaborator[]>;
 
   /**
    * Preview what would happen if a share link were revoked. Returns the list of users whose access
@@ -5443,13 +5825,14 @@ export type AiChatMetadata = {
    * Messages sent while the agent works that it has not read yet, oldest first (see
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
-   * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * it then prompts the next turn as an ordinary message. Either way the message keeps the
+   * steer's `replyToSequence`, absent when it replies to none. Stopping the agent drops them all
+   * (see `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
    * `steered` messages. Absent when none. A `focus` is as the message will carry it (see
    * AiChatMessageBody.focus).
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo,
-                  focus?: MessageFocus & {gadgetTitle: string}}[];
+                  focus?: MessageFocus & {gadgetTitle: string}, replyToSequence?: number}[];
 
   /**
    * True when notifications default off until each user's first participation. Absent on
@@ -5470,12 +5853,19 @@ export type AiChatMetadata = {
   spawnerName?: string;
 
   /**
-   * If this was started from an agent spawner, the spawner's id. `spawnerName` is the spawner's
-   * name when the chat started, so one spawner's runs can carry different names and two
-   * spawners' runs the same one; this tells them apart. Absent on chats spawned before it was
-   * recorded.
+   * If this was started from an agent spawner, the spawner's id, which is the agent it is a run
+   * of. `spawnerName` is the spawner's name when the chat started, so one spawner's runs can
+   * carry different names and two spawners' runs the same one; this tells them apart. Absent on
+   * chats spawned before it was recorded, which are of no agent that can be told.
    */
   spawnerId?: WorkpieceId;
+
+  /**
+   * If this was started from an agent spawner by a gadget's code (or a hook firing into a
+   * gadget), that gadget. Absent when an agent or person started it, and on chats spawned before
+   * it was recorded.
+   */
+  spawnedByGadgetId?: WorkpieceId;
 
   /**
    * Present while the agent's turn is stopped on a decision only a user can make: an action it
@@ -5485,10 +5875,28 @@ export type AiChatMetadata = {
   awaitingDecision?: true;
 
   /**
+   * Present when the chat's last agent turn ended on an error (a `type: "error"` message) other
+   * than the user stopping it: a failed model request, a turn that could not start or resume, or
+   * one the server lost. Cleared when the next turn starts. Derived server-side; never submitted
+   * by clients.
+   */
+  lastTurnFailed?: true;
+
+  /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
    * changes what the next prompt will contain, until a step measures it again.
    */
   totalTokens?: number;
+
+  /**
+   * What `totalTokens` was measured against: `tokens`, the prompt budget the agent sized the
+   * chat's context against on that step's model (what its window leaves after the room reserved
+   * for a response, or a smaller compaction budget where the model or deployment sets one; the
+   * chat compacts once its prompt reaches COMPACTION_TRIGGER_RATIO of it), and `model`, that
+   * model's `listModels()` id. Set and cleared with `totalTokens`; absent on chats whose last step
+   * predates it. Derived server-side; never submitted by clients.
+   */
+  contextBudget?: {tokens: number; model: string};
 
   /** Total cost of this conversation so far, in dollars, if known. */
   totalCost?: number;
@@ -5524,6 +5932,33 @@ export type AiChatMetadata = {
    * first submitCodeChange() simply passes `generation: 0, revision: 0`.
    */
   codeBase?: ChatCodeBase;
+};
+
+/**
+ * Whether a chat is an agent's run, started from an agent spawner, rather than one people have:
+ * what ChatListOptions.kind tells apart. Every run names its spawner (`spawnerName`, and since it
+ * was recorded `spawnerId`).
+ */
+export function isAgentRun(meta: Pick<AiChatMetadata, "spawnerId" | "spawnerName">): boolean {
+  return meta.spawnerId !== undefined || meta.spawnerName !== undefined;
+}
+
+/** Which chats Overseer.listChats() lists, and how many at a time. */
+export type ChatListOptions = {
+  /**
+   * Only agents' runs (`"runs"`) or only the chats people have (`"chats"`), as isAgentRun()
+   * tells them apart. Absent: both.
+   */
+  kind?: "runs" | "chats";
+
+  /** Only the runs this agent spawner started, whatever `kind` says. */
+  spawnerId?: WorkpieceId;
+
+  /** Only chats with ids below this one: the last id of the page before, for the next. */
+  beforeId?: number;
+
+  /** At most this many chats, a positive integer; a page with fewer is the last. Absent: all. */
+  limit?: number;
 };
 
 /**
@@ -5751,14 +6186,18 @@ export type MergeChangesResult = {
 };
 
 /**
- * One page of a chat's history, bounded below by a compaction checkpoint. Compaction doesn't delete
- * messages, so a long thread is read one checkpoint-delimited page at a time.
+ * One page of a chat's history. By default it is bounded below by a compaction checkpoint;
+ * `getChatHistory`'s optional limit instead selects a bounded number of messages. Compaction
+ * doesn't delete messages, so either mode can page all the way back to the thread's start.
  */
 export type AiChatHistoryPage = {
   /** The page's messages, ascending by sequence. */
   messages: AiChatMessage[];
 
-  /** The checkpoint bounding this page below, absent once the page reaches the thread's start. */
+  /** In bounded mode, the exclusive cursor for the next older page; absent when no history remains. */
+  nextBeforeSequence?: number;
+
+  /** In checkpoint mode, the checkpoint below this page; absent once it reaches the thread's start. */
   compacted?: {
     /** First sequence in this page. Pass as `getChatHistory`'s `beforeSequence` for the page before. */
     to: number;
@@ -5890,6 +6329,16 @@ export type AiChatMessageBody = {
    * presentation". See `MessageFormatRef`.
    */
   formats?: MessageFormatRef[];
+
+  /**
+   * The sequence of the earlier message in this chat that this one replies to, as its sender
+   * gave it (see `Overseer.sendChatMessage()`); `Overseer.getChatMessage()` reads that
+   * message. Display only: the agent reads `message` and is not shown the message replied to, so
+   * a sender that wants the agent to know what it answers says so in the text (a client might,
+   * for example, open a reply with a Markdown quote of it). Absent when the message replies to
+   * none, and on every message sent before replies were recorded, whatever its text quotes.
+   */
+  replyToSequence?: number;
 
   /**
    * If the AI produces any thinking/reasoning text, this is it. This should be hidden by default
@@ -6376,7 +6825,10 @@ export type ChatAttachmentRef = {
    */
   workspacePath?: string;
 
-  /** Inlined bytes for image attachments up to 4 MiB. Present only for those. */
+  /**
+   * Inlined bytes for image attachments up to 4 MiB. Present only for those, and never in bounded
+   * `getChatHistory()` pages (those with a `limit`); use `getChatAttachmentContent()` instead.
+   */
   content?: Uint8Array;
 };
 
@@ -6756,6 +7208,16 @@ export type ChatMessageOptions = {
    * is not added to the chat's env. A slash-command request cannot carry one.
    */
   focus?: MessageFocus;
+
+  /**
+   * The message this one replies to: the sequence of a `message` or `slashCommand` already in
+   * this chat, or the send throws. It is recorded as the new message's
+   * `AiChatMessageBody.replyToSequence` (for a slash command, the message it expands to; one that
+   * expands to none records no reply), and kept by a steer through
+   * `AiChatMetadata.queuedSteers`. Only `Overseer.sendChatMessage()` takes one; a new chat has
+   * nothing to reply to.
+   */
+  replyToSequence?: number;
 };
 
 /** What the user was focused on when they sent a chat message. */
@@ -7403,6 +7865,14 @@ export type GadgetBindingInfo = {
   vendorId?: string;
 
   /**
+   * What kind of connection the target is, as its creation spec says (see
+   * GatekeeperCreationSpec): a vendor's resource (`"gatekeeper"`), an AI model, an agent spawner
+   * (see Overseer.listAgentSpawners()) or an ambient singleton. Gadgets bind only connections.
+   * Absent when the target is gone, or is a connection made before creation specs were recorded.
+   */
+  kind?: GatekeeperCreationSpec["type"];
+
+  /**
    * If present, this binding is still provisional to the given chat (which is necessarily the
    * `chatId` passed to listBindings(); edges pending in other chats are never listed). It becomes
    * permanent when the user accepts that chat's changes through the message that recorded it, and
@@ -7632,7 +8102,7 @@ export type BlueprintMetadata = {
   bindings: Record<string, BlueprintBinding>;
 };
 
-/** Public view (returned by PublicApi.getBlueprint). */
+/** Public view (returned by PublicApi.getBlueprint and AuthenticatedApi.listFeaturedBlueprints). */
 export type BlueprintPublicInfo = {
   id: string;
   metadata: BlueprintMetadata;
@@ -7652,12 +8122,38 @@ export type BlueprintGadgetSummary = {
   dirty?: boolean;        // true if last publish failed and needs retry
 
   /**
-   * Present if the gadget the blueprint is published from has committed files other than the
-   * ones the blueprint last published: Overseer.updateBlueprint() with `updateCode` would
-   * publish them. It goes by the files alone, so a gadget whose history has moved on but whose
-   * files are back as they were published has none.
+   * The gadget the blueprint is published from. A blueprint published before workspaces held
+   * several gadgets is the workspace's default gadget's (WorkspaceMetadata.defaultGadgetId).
    */
-  unpublishedChanges?: true;
+  gadgetId: WorkpieceId;
+
+  /**
+   * Present if the gadget the blueprint is published from has something the blueprint has not
+   * released: files (`code`), which Overseer.updateBlueprint() with `updateCode` publishes, or
+   * bindings as the blueprint would describe them now (`bindings`), which `updateBindings`
+   * publishes alone and `updateCode` with the files.
+   */
+  unpublishedChanges?: BlueprintUnpublishedChanges;
+};
+
+/**
+ * What a gadget has that the blueprint published from it has not released, each present only if
+ * it has (see `BlueprintGadgetSummary.unpublishedChanges`). Never empty: no changes is no object.
+ */
+export type BlueprintUnpublishedChanges = {
+  /**
+   * The gadget has committed files other than the ones the blueprint last released. It goes by
+   * the files alone, so a gadget whose history has moved on but whose files are back as they
+   * were released has none.
+   */
+  code?: true;
+
+  /**
+   * The gadget's bindings, as the blueprint would describe them if released now
+   * (`BlueprintMetadata.bindings`), differ from the released ones: a binding renamed, rebound,
+   * added, removed, or given a new title, note or suggestion.
+   */
+  bindings?: true;
 };
 
 /**
@@ -7668,13 +8164,19 @@ export type BlueprintGadgetSummary = {
  */
 export type BlueprintSource =
     // Published from a workspace that still exists. `workspaceTitle` is its current title.
-    { type: "workspace"; workspaceId: string; workspaceTitle: string }
+    // `gadgetId` is the gadget in it the blueprint is published from; absent on a blueprint stored
+    // before that was recorded, until its owner next opens the workspace or releases it.
+    { type: "workspace"; workspaceId: string; workspaceTitle: string; gadgetId?: WorkpieceId }
     // Published from a workspace that has since been deleted.
   | { type: "deletedWorkspace" }
     // Added to the user's library rather than published from one of their workspaces.
   | { type: "imported" };
 
-/** User-side summary (returned by AuthenticatedApi.listOwnBlueprints and getOwnBlueprint). */
+/**
+ * User-side summary (returned by AuthenticatedApi.listOwnBlueprints, getOwnBlueprint and
+ * subscribeToOwnBlueprints): the blueprint's whole record, as its public one has it, with what
+ * only its publisher sees.
+ */
 export type BlueprintUserSummary = {
   id: string;
   title: string;
@@ -7684,7 +8186,32 @@ export type BlueprintUserSummary = {
   version: number;
   lastUpdated: Date;
   pinned?: boolean;
+
+  /**
+   * Its metadata, as `BlueprintPublicInfo.metadata`, of which `title`, `description`, `version`
+   * and `lastUpdated` are copies.
+   */
+  metadata: BlueprintMetadata;
+
+  /** If present, browser-loadable URL for the public screenshot. */
+  screenshotUrl?: string;
+
+  /**
+   * Present while the gadget it was published from has something it has not released, as
+   * `BlueprintGadgetSummary.unpublishedChanges` says, which that gadget's workspace pushes here
+   * as the gadget's head or bindings change and as it is released.
+   */
+  unpublishedChanges?: BlueprintUnpublishedChanges;
 };
+
+/** Callback used by `AuthenticatedApi.subscribeToOwnBlueprints()`. */
+export interface OwnBlueprintsSubscriber extends RpcTarget {
+  /** Replace everything you have with these. Called once, right after subscribing. */
+  snapshot(blueprints: BlueprintUserSummary[]): Promise<void>;
+
+  /** One blueprint changed. Replace yours with `blueprint`, or drop it if it is null (deleted). */
+  updated(blueprintId: string, blueprint: BlueprintUserSummary | null): Promise<void>;
+}
 
 /** User-side library summary (returned by AuthenticatedApi.listLibraryBlueprints). */
 export type BlueprintLibrarySummary = {
@@ -7865,6 +8392,16 @@ export interface GadgetClient extends WorkpieceClient {
    * does not exist or `newName` is reserved or already bound in this gadget.
    */
   renameBinding(oldName: string, newName: string): Promise<void>;
+
+  /**
+   * Point the binding `name` at another gatekeeper, `target`, in one step, keeping its name and
+   * blueprint annotation, as when a model binding is changed to another model. Throws, changing
+   * nothing, unless the binding is accepted (not proposed by a chat) and still points at
+   * `expectedTarget`, as read from listBindings(), so that a change made meanwhile is not
+   * overwritten; or if `target` could not be bound (see bind()). The old gatekeeper survives, as
+   * with unbind().
+   */
+  rebind(name: string, expectedTarget: WorkpieceId, target: WorkpieceId): Promise<void>;
 
   /**
    * Get the blueprint annotation for the named binding, if one has been set. Annotations live on

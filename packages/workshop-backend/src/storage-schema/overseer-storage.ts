@@ -20,11 +20,11 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
 import {
-  actionChangeTime,
+  actionChangeTime, isAgentRun,
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
-  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
+  type BlueprintOutput, type ChatGadgetPinRecord, type ChatTimelineHead, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -33,6 +33,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
+import type { ListingPart } from "../workspace-listing";
 
 // =======================================================================================
 // Workpieces
@@ -633,6 +634,11 @@ export function chatKeyPrefix(chatId: number, ...leading: number[]): string {
  */
 export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean};
 
+/** The key the chatMeta collection's byListing index lists an agent spawner's runs under. */
+export function chatListingSpawnerKey(spawnerId: WorkpieceId): string {
+  return `spawner:${spawnerId}`;
+}
+
 /**
  * A stored "changes" message. Those written before git-backed code storage carry the retired
  * Yjs (V2) `update` payload, which is gone from the wire type but kept on disk as rollback
@@ -1199,11 +1205,40 @@ export type ObserverRecord = {
   /**
    * The account the user chose to satisfy each in-scope gatekeeper binding, published once an
    * admission verified it and remembered so they are not asked again; empty on a reservation.
-   * Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a ConnectedAccountRecord
-   * in THIS user's own User DO. An entry records only that choice -- it asserts nothing about
-   * whether the gatekeeper still admits them, which every open re-checks.
+   * Keyed by gatekeeper id (GatekeeperRecord.id). An entry records that choice and what was
+   * checked against it -- it asserts nothing about whether the gatekeeper still admits them,
+   * which every open re-checks. Stored as a bare account id before version 8.
    */
-  accountChoices: { [gatekeeperId: number]: number };
+  accountChoices: { [gatekeeperId: number]: ObserverAccountChoice };
+};
+
+/** One gatekeeper's entry in ObserverRecord.accountChoices. */
+export type ObserverAccountChoice = {
+  /** A ConnectedAccountRecord in THIS user's own User DO. */
+  accountId: number;
+  /**
+   * The highest action id whose observer requirements were checked against `accountId`, so
+   * background reads (chat heads and unread previews; see OverseerImpl.mayReadChatState)
+   * check only what was recorded since. Missing means nothing has been checked yet: the next
+   * background check starts from the first action. A workspace admission stamps it with the
+   * latest action; the background check advances it page by page; another admission keeps it
+   * only while `accountId` is unchanged.
+   */
+  verifiedThroughActionId?: number;
+  /**
+   * Names the workspace admission that last stamped verifiedThroughActionId, having verified
+   * `accountId` against every requirement; the background check's progress keeps it. A refused
+   * admission marks the choice denied only while this is as the admission read it, so a newer
+   * admission's verification stands but incremental progress does not. Missing on choices no
+   * workspace admission has published since it was introduced.
+   */
+  admissionId?: string;
+  /**
+   * Set when a check refused `accountId` for a requirement recorded after
+   * verifiedThroughActionId: nothing that relies on this choice is admitted, and nothing asks
+   * again, until an admission replaces the choice or re-verifies it and clears this.
+   */
+  denied?: true;
 };
 
 /**
@@ -1320,6 +1355,19 @@ export type BlueprintGadgetRecord = {
   codeVersion?: number;
 
   /**
+   * What the public lookup (Workers KV) serves: the `commitId` and `metadata.bindings` the record
+   * had when its last propagation wrote KV, recorded right after that write. Unpublished-change
+   * flags compare the gadget against these, so they stay true to what is public while a later
+   * propagation has failed and left the record `dirty`. Absent on a record not propagated since
+   * this was recorded, until its next code or bindings update sets it from `commitId` and
+   * `metadata.bindings` first; until then those stand in.
+   */
+  published?: {
+    commitId?: string;
+    bindings: BlueprintMetadata["bindings"];
+  };
+
+  /**
    * Set true before propagating to User DO / KV; cleared on success.
    * If persistently true, the UI should show a retry indicator.
    */
@@ -1377,6 +1425,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
+      //   8 = the chatMeta collection's byListing index exists and is backfilled, and each
+      //       ObserverRecord.accountChoices entry is an ObserverAccountChoice (see
+      //       migrateToChatIndexes() in overseer-migrations.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1451,21 +1502,47 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
       // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
       directoryRev: -1,
+
+      // The parts of the workspace listing marked as possibly changed since the last delivery pass
+      // (OverseerImpl.markListingDirty()), written in the transaction of the change that marked
+      // them. The pass turns them into what each recipient owes (see pendingUserUpdates).
+      listingDirty: <ListingPart[]>[],
+
+      // The hooks added, changed or removed since the last delivery pass (see
+      // OverseerImpl.#queueDirtyListingParts()), marked like listingDirty: the pass turns them into
+      // what each recipient owes (PendingUserUpdate.hookIds).
+      listingDirtyHooks: <number[]>[],
+
+      // The last-active time last marked in the owner's listing (see
+      // OverseerImpl.bumpLastActive()), which the listing's `activity` sends. Absent until the
+      // workspace is next active.
+      lastActiveListed: <Date | undefined>undefined,
+
+      // The listing revision: bumped once by every delivery pass (OverseerImpl.deliverUserUpdates()),
+      // in the synchronous step that reads what the pass sends, and stamped on every listing it
+      // sends. Time-based, like titleRev. A User DO takes no part from a revision no newer than one
+      // it has taken, so a push that arrives late (one timed out but still in flight) cannot undo a
+      // newer one, and from none read before a collaborator's admission.
+      listingRev: 0,
+
+      // Whether the owner has been queued every part of the listing (see OverseerImpl.open()):
+      // once, since pendingUserUpdates delivers it, for workspaces from before the listing was
+      // sent. New, so no version bump: every workspace starts unseeded.
+      ownerListingSeeded: false,
     },
 
     collections: {
-      // Changes to a user's access to this workspace that still need to be sent to that user's
-      // User DO: a new role (e.g. downgraded to use-only), or removal (`role: null`), which also
-      // clears their unread state and queued notifications for this workspace. When the workspace
-      // is deleted, every user gets a removal. Retried from the alarm until each User DO confirms.
-      // Before each attempt, the user's current access is checked again (via `profileId`), so an
-      // outdated entry is updated or dropped. Deletion entries have no `profileId`.
-      pendingUserUpdates: collection<{
-        /** The recipient's User DO ID. */
-        userId: string;
-        profileId?: string;
-        role: CollaboratorRole | null;
-      }>()({primaryKey: "userId"}),
+      // What still needs to be sent to a user's User DO: a new role (e.g. downgraded to use-only),
+      // removal (`role: null`), which also clears their unread state and queued notifications for
+      // this workspace, and the parts of the workspace listing and the hooks they are owed (see
+      // markListingDirty() and resyncListingTo() in OverseerImpl). When the
+      // workspace is deleted, every user gets a removal, which drops whatever else they were owed.
+      // Retried from the alarm until each User DO confirms. Before each attempt, the user's current
+      // access is checked again (via `profileId`), so an outdated role is updated or dropped, and
+      // each owed part is read as it stands, scoped by that access. The owner's entries and deletion
+      // entries have no `profileId`. `parts`, `hookIds` and `seq` are optional fields
+      // added without a version bump: a row from before has none of them.
+      pendingUserUpdates: collection<PendingUserUpdate>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
       // reached enrolled owners/build collaborators, or a one-off approval recipient.
       // Written in the same transaction as the change itself, so the update isn't
@@ -1650,7 +1727,18 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         // Allow quick lookup of chats with active agents.
         uniqueIndexes: {
           byLastActive(meta: StoredChatMetadata) { return meta.lastActive.valueOf(); }
-        }
+        },
+
+        // Keyed by what Overseer.listChats() filters on (ChatListOptions): every chat by its kind,
+        // "runs" or "chats", and each run that names its spawner also by `spawner:<spawnerId>`,
+        // so each filter is one ranged read in id order. Backfilled by the version-8 migration.
+        nonUniqueIndexes: {
+          byListing(meta: StoredChatMetadata): string[] {
+            if (!isAgentRun(meta)) return ["chats"];
+            return meta.spawnerId === undefined
+                ? ["runs"] : ["runs", chatListingSpawnerKey(meta.spawnerId)];
+          },
+        },
       }),
 
       chatContext: collection<AiChatAgentContext>()({
@@ -1730,6 +1818,24 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
          * `visibleThroughSequence`; they count as read, and their notifications are never sent.
          */
         trackingStartSequence?: number;
+        /**
+         * When the chat's head last changed other than by a new message or `lastActive`: its
+         * agent starting or stopping, or what it waits on (see
+         * OverseerImpl.#headStateChanged()). Always later than the chat's `lastActive` when
+         * written, so a head sent after it outranks one sent before (see ChatTimelineHead).
+         */
+        headStateAt?: Date;
+        /**
+         * What the chat waits on (ChatTimelineHead.waiting), recorded when its head state changes
+         * so that sending a head reads no history. Absent while it waits on nothing.
+         */
+        waiting?: ChatTimelineHead["waiting"];
+        /**
+         * User DOs ever sent a permissionRequested notification in this chat, who are sent its
+         * working or waiting state changes though not enrolled (backfilled by the version-8
+         * migration). Absent on chats that asked nobody.
+         */
+        askedUsers?: string[];
       }>()({
         primaryKey: "chatId"
       }),
@@ -1805,6 +1911,26 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
   });
 }
 
+/** What a user's User DO is still owed of a workspace (see `pendingUserUpdates`). */
+export type PendingUserUpdate = {
+  /** The recipient's User DO ID. */
+  userId: string;
+  /** The recipient's profile ID, by which their access is checked again; absent for the owner and
+   * for deletion. */
+  profileId?: string;
+  /** Their new role to send, or `null` for removal. */
+  role?: CollaboratorRole | null;
+  /** The parts of the workspace listing they are owed, each sent as it stands when sent. */
+  parts?: ListingPart[];
+  /** The hooks they are owed (see WorkspaceListing.hooks), each sent as it stands when sent. */
+  hookIds?: number[];
+  /**
+   * Bumped by every write that queues something here, so that a delivery deletes the row only if
+   * nothing was queued during its send.
+   */
+  seq?: number;
+};
+
 /**
  * Where a chat's pending unread update starts: the earliest change that recipients haven't received
  * yet (see `dirtyChats`). It decides which notifications go with the update. For a user who has no
@@ -1823,6 +1949,11 @@ export type ChatFanoutStart = {
   participatingUsers?: string[];
   /** First enrollment skips earlier alerts while retaining the chat's numbered unread history. */
   notificationBaseline?: number;
+  /**
+   * The chat's working or waiting state changed (see OverseerImpl.#headStateChanged()), which also
+   * reaches users asked for a decision there who aren't enrolled.
+   */
+  headState?: true;
 };
 
 /** The Overseer's typed storage. See makeOverseerStorage. */

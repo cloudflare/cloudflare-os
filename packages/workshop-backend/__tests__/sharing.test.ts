@@ -827,6 +827,27 @@ describe("revokeShareLink", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
+  it("keeps everyone, including whoever joined since the preview, when asked to", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
+    let join = (profileId: string) =>
+        mgr.redeemShareKey({ rawKey: key, profileId, fetchProfile: async () => profile(profileId) });
+    await join("a");
+    seedCollaborator(storage, "c", [gadgetEdge(OWNER, 2)]);
+    expect(ids(mgr.previewRevokeShareLink(owner, linkId))).toEqual(["a"]);
+    // Between the preview and the revocation, someone else joins through the link.
+    await join("b");
+
+    expect(mgr.revokeShareLink(owner, linkId, "everyone")).toEqual([]);
+    for (let id of ["a", "b"]) {
+      expect(mgr.getEffectiveAccess(id)).toEqual(only(1));
+      expect(edgesOf(storage, id)).toContainEqual(
+          expect.objectContaining({ type: "user", sharer: OWNER, role: "use", gadgetId: 1 }));
+    }
+    // Nobody gains what they did not have through the link.
+    expect(mgr.getEffectiveAccess("c")).toEqual(only(2));
+  });
+
   it("forbids a non-owner from revoking a link they didn't create", () => {
     let { storage, mgr } = makeManager();
     seedLink(storage, "k1", OWNER);

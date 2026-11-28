@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
-import type {
-  AuthenticatedApi,
-  WorkspaceMetadata,
-  ObserverAccountChoice,
-  ObserverBindingNeed,
-  ObserverConfigCallback,
-  Overseer,
+import {
+  ACCESS_CONFIRMATION_ERROR_CODES,
+  createAccessConfirmationError,
+  getAccessConfirmationErrorCode,
+  type AuthenticatedApi,
+  type WorkspaceMetadata,
+  type ObserverAccountChoice,
+  type ObserverBindingNeed,
+  type ObserverConfigCallback,
+  type Overseer,
 } from '@gadgets/workshop-shared/api'
 import { reportIssue } from './errorReporting'
 import { classifyRpcError } from './rpcErrors'
@@ -17,7 +20,6 @@ import {
   type WorkspaceOpenFailureKind,
 } from './components/WorkspaceOpenErrorPage'
 
-const OBSERVER_CANCELLED = 'OBSERVER_CONFIG_CANCELLED'
 const REOPEN_BACKOFF_MS = 1_000
 const REOPEN_MAX_BACKOFF_MS = 60_000
 const REOPEN_RETRIES_BEFORE_REPORT = 2
@@ -53,7 +55,7 @@ class ObserverConfigTarget extends RpcTarget implements ObserverConfigCallback {
  */
 export function observerOpenFailureMessage(caught: unknown, subject: 'workspace' | 'gadget'): string | null {
   const message = caught instanceof Error ? caught.message : ''
-  if (message.includes(OBSERVER_CANCELLED)) {
+  if (getAccessConfirmationErrorCode(caught) === ACCESS_CONFIRMATION_ERROR_CODES.cancelled) {
     return `To open this ${subject}, you must choose connected accounts for the services it uses.`
   }
   if (message.includes('permitted to observe') ||
@@ -102,7 +104,7 @@ export function useWorkspaceOpen({
     new RpcStub<ObserverConfigCallback>(new ObserverConfigTarget(needs =>
       new Promise<ObserverAccountChoice[]>((resolve, reject) => {
         if (signal.aborted) {
-          reject(new Error('Cancelled'))
+          reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.notAsked))
           return
         }
         const settle = (finish: () => void) => {
@@ -119,9 +121,9 @@ export function useWorkspaceOpen({
           resolve: choices => settle(() => resolve(choices)),
           reject: observerError => settle(() => reject(observerError)),
         }
-        const onAbort = () => request.reject(new Error('Cancelled'))
+        const onAbort = () => request.reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.notAsked))
         signal.addEventListener('abort', onAbort)
-        pendingObserverRef.current?.reject(new Error('Cancelled'))
+        pendingObserverRef.current?.reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.notAsked))
         pendingObserverRef.current = request
         setObserverConfig(request)
       }))), [])
@@ -246,7 +248,7 @@ export function useWorkspaceOpen({
       setReloadNonce(value => value + 1)
     },
     cancelObserverConfig() {
-      observerConfig?.reject(new Error(OBSERVER_CANCELLED))
+      observerConfig?.reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.cancelled))
     },
     updateTitle(title: string) {
       setMetadata(previous => previous ? { ...previous, title } : null)

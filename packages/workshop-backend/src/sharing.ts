@@ -652,11 +652,13 @@ export class SharingManager {
    * since no edge ever names an alias. Users who relied solely on it become unreachable and
    * are denied at open() time.
    *
-   * `keepUsers` is optional re-root sugar, identical to removeCollaborator. Returns the
-   * collaborators whose access actually narrowed, excluding kept users.
+   * `keepUsers` is optional re-root sugar, identical to removeCollaborator; `"everyone"` keeps
+   * every collaborator whose access narrows, as of this synchronous step, so no one who joined
+   * since the caller last looked is missed. Returns the collaborators whose access actually
+   * narrowed, excluding kept users.
    */
-  revokeShareLink(
-      caller: SharingCaller, linkId: string, keepUsers: string[]): AffectedCollaborator[] {
+  revokeShareLink(caller: SharingCaller, linkId: string, keepUsers: string[] | "everyone")
+      : AffectedCollaborator[] {
     let link = this.#requireLink(linkId);
     this.#requireLinkManager(caller, link, "revoke");
 
@@ -668,7 +670,8 @@ export class SharingManager {
     // Revoking makes the copies useless, and nothing references them, so delete them.
     this.storage.shareKeys.byAlias.delete(link.id);
 
-    this.#reRootKeptUsers(caller, baseline, new Set(keepUsers));
+    this.#reRootKeptUsers(caller, baseline,
+        new Set(keepUsers === "everyone" ? baseline.keys() : keepUsers));
 
     return this.#computeAffected(baseline, this.computeEffectiveAccess());
   }

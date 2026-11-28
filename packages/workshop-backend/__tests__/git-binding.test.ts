@@ -30,6 +30,8 @@ async function withImpl(
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
     impl.ownerId = "owner-user-do";
+    // As an owner's open() caches it: the listing's delivery looks up no profile.
+    impl.ownerProfileId = ownerProfile.id;
     impl.users = {
       idFromString: (id: string) => id,
       idFromName: (name: string) => name,
@@ -402,7 +404,7 @@ describe("env.GIT presence", () => {
       let ownerId = impl.users.newUniqueId().toString();
       impl.ownerId = ownerId;
       impl.ensureAmbientCapsules = async () => {};
-      impl.markOutputsDirty = () => {};
+      impl.markListingDirty = () => {};
       let client = await instance.open(
           ownerId, "owner-profile", new RpcStub<() => void>(() => {}));
       seedGadget(impl, 100);

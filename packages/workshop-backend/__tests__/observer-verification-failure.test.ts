@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
+import type { GatekeeperRecord, ObserverRecord } from "../src/storage-schema/overseer-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -23,6 +23,12 @@ type ObserverConfigureCallback = NonNullable<Parameters<ObserverImpl["ensureObse
 
 // Tests replace the facet factory, so the stored class is never instantiated.
 const fakeGatekeeperClass = {} as unknown as GatekeeperRecord["class"];
+
+// The account each choice of `record` names.
+function accountIds(record: ObserverRecord | undefined): { [gatekeeperId: number]: number } {
+  return Object.fromEntries(
+      Object.entries(record?.accountChoices ?? {}).map(([id, choice]) => [id, choice.accountId]));
+}
 
 // Seed the owner profile id, so the sharing manager needs no User DO round trip.
 function seedOwner(impl: ObserverImpl): void {
@@ -80,7 +86,7 @@ describe("a binding that fails verification", () => {
       seedGatekeepers(impl);
       // Already-configured coverage for both gatekeepers, as a previous successful open left it.
       impl.storage.observers.put(
-          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10, 2: 20 } });
+          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: { accountId: 10 }, 2: { accountId: 20 } } });
 
       let removed: number[] = [];
       setObserverFacets(impl, { removeObserver: async id => { removed.push(id); } });
@@ -126,7 +132,7 @@ describe("a binding that fails verification", () => {
       // Alice's previous open covered gatekeeper 1 only; gatekeeper 2 is a binding added since,
       // which she has never been verified against.
       impl.storage.observers.put(
-          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: { accountId: 10 } } });
 
       let removed: number[] = [];
       setObserverFacets(impl, {
@@ -159,7 +165,7 @@ describe("a binding that fails verification", () => {
       // opens must register her with both under one observerId they share.
       if (kind === "returning") {
         impl.storage.observers.put(
-            { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+            { profileId: "alice", observerId: "obs-1", accountChoices: { 1: { accountId: 10 } } });
       }
 
       let removed: number[] = [];
@@ -199,7 +205,7 @@ describe("a binding that fails verification", () => {
       // Call B -- the same observer opening concurrently -- verifies everything and publishes the
       // choices asserting all three registrations.
       await impl.ensureObserver("alice", fakeClientUser, "workspace", configureAll);
-      expect(impl.storage.observers.get("alice")?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      expect(accountIds(impl.storage.observers.get("alice"))).toEqual({ 1: 10, 2: 20, 3: 30 });
 
       // Now connection 3 refuses call A terminally.
       releaseVerifier();
@@ -211,7 +217,7 @@ describe("a binding that fails verification", () => {
       // future exclusion that names her.
       expect(removed).toEqual([]);
       let record = impl.storage.observers.get("alice");
-      expect(record?.accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+      expect(accountIds(record)).toEqual({ 1: 10, 2: 20, 3: 30 });
       expect(registered).toEqual(new Set([record?.observerId]));
     });
   });
@@ -254,7 +260,7 @@ describe("a binding that fails verification", () => {
       } as unknown as ObserverConfigureCallback);
       await promptOpen;
       impl.storage.observers.delete("alice");
-      let replacement = { profileId: "alice", observerId: "obs-new", accountChoices: { 1: 99 } };
+      let replacement = { profileId: "alice", observerId: "obs-new", accountChoices: { 1: { accountId: 99 } } };
       if (mode === "replaced") impl.storage.observers.put(replacement);
       release();
 

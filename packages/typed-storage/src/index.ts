@@ -79,6 +79,13 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
    * list(), where it counts index keys.
    */
   get(key: Key, options?: ListOptions<PK>): Iterable<T>;
+
+  /**
+   * List the primary keys of the records matching `key`, in the order `get()` visits them, without
+   * reading the records: each in its stored string form (see `Collection.listKeys()`). `options`
+   * ranges and pages over them as for `get()`.
+   */
+  listPrimaryKeys(key: Key, options?: ListOptions<PK>): Iterable<string>;
   list(options?: ListOptions<Key>): Iterable<T>;
 
   /**
@@ -134,6 +141,15 @@ export interface Subscriber<T> {
 export interface Collection<T extends object, PrimaryKey = string> {
   get(key: PrimaryKey): T | undefined;
   list(options?: ListOptions<PrimaryKey>): Iterable<T>;
+
+  /**
+   * List the primary keys `list()` would visit, in the same order, without reading the records.
+   * Each key is in its stored string form (see `keyString()`), which `get()` and `delete()`
+   * accept; for a collection with numeric primary keys they do so at runtime, but the key needs a
+   * cast to type-check. Lets a caller buffer a page of keys cheaply when its loop body would
+   * invalidate an open cursor (e.g. deleting records that non-unique indexes cover).
+   */
+  listKeys(options?: ListOptions<PrimaryKey>): Iterable<string>;
   delete(key: PrimaryKey): boolean;
 
   /**
@@ -450,6 +466,9 @@ function createCollection<
     list(options: ListOptions<Key>): Iterable<T> {
       return mainKv.list(options);
     },
+    listKeys(options: ListOptions<Key>): Iterable<string> {
+      return mainKv.listKeys(options);
+    },
     delete(key: Key): boolean {
       if (subscribers.size == 0) {
         return mainKv.delete(key);
@@ -669,6 +688,10 @@ function createCollection<
         for (let pk of child.listKeys(options)) {
           yield collection.get(pk)!;
         }
+      },
+      listPrimaryKeys(key: Key, options?: ListOptions<Key>): Iterable<string> {
+        let id = idxKv.get(key);
+        return id === undefined ? [] : Array.from(idxKv.getChild(id.toString()).listKeys(options));
       },
       *list(options: ListOptions<Key> = {}): Generator<T, void> {
         if (options.dedupe) {

@@ -1,7 +1,8 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  ADMIN_ACCESS_ERROR_CODES, getAdminAccessErrorCode, getOpenWorkspaceErrorCode,
+  ACCESS_CONFIRMATION_ERROR_CODES, ADMIN_ACCESS_ERROR_CODES, getAccessConfirmationErrorCode,
+  getAdminAccessErrorCode, getOpenWorkspaceErrorCode,
   MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_DIRECTORY_TEXT_LENGTH, OPEN_WORKSPACE_ERROR_CODES,
   type ActionLogEntry, type ActionsSubscriber, type AdminAccessErrorCode, type AdminAccessRecord,
   type AdminApi, type AdminAuditQuery, type AdminAuditRecord, type AdminWorkspaceAccess,
@@ -847,7 +848,8 @@ it("lists who holds an observer record, with what was verified for each", async 
   stack.use(await admitted.openWorkspace(id, undefined, stack.use(stubFor(answers))));
   expect(answers.calls).toEqual([[expect.objectContaining({ gatekeeperId })]]);
   // The second has no test account and no way to be asked for one, so their open is refused.
-  await expect(refused.openWorkspace(id)).rejects.toThrow("no configuration channel was provided");
+  const refusal = await refused.openWorkspace(id).then(() => null, (error: unknown) => error);
+  expect(getAccessConfirmationErrorCode(refusal)).toBe(ACCESS_CONFIRMATION_ERROR_CODES.notAsked);
 
   using view = await admin.inspectWorkspace(id, REASON);
   const metadataRead = async (method: string) =>
