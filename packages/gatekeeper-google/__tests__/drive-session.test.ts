@@ -9,7 +9,7 @@ import {
   readFolderLocation, readFolderRoot, type FolderLocation,
 } from "../src/drive-folder-scope";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, type DriveCorpus,
+  DriveApiRequestError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, type DriveApi, type DriveCorpus,
   type DriveCommentList, type DriveCommentRecord, type DriveFile, type DriveListFilesOptions,
   type DriveScopeNode,
 } from "../src/drive-api";
@@ -49,6 +49,7 @@ function core(overrides: {
   canShare?: (id: string) => Promise<boolean>;
   listComments?: (id: string, options?: { pageToken?: string }) => Promise<DriveCommentList>;
   authorize?: (description: ObservationDescription) => Promise<void>;
+  findNamed?: DriveApi["findNamed"];
 } = {}) {
   let listFiles = vi.fn(overrides.listFiles ?? (async () => ({ files: overrides.files ?? [file()] })));
   let getFile = vi.fn(overrides.getFile ?? (async (id: string) => file({ id })));
@@ -61,7 +62,10 @@ function core(overrides: {
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
-    api: { listFiles, getFile, getScopeNodes, findShortcut, canComment, canShare, listComments },
+    api: {
+      listFiles, getFile, getScopeNodes, findShortcut, canComment, canShare, listComments,
+      findNamed: overrides.findNamed ?? (async () => []),
+    },
     scope: overrides.scope ?? { kind: "account" },
     access: overrides.access ?? "read",
     authorize: async (description: ObservationDescription) => {
@@ -681,6 +685,7 @@ describe("positioned Drive folder session", () => {
         refused?: (
           fileId: string, file: DriveScopeNode | undefined, path: readonly DriveScopeNode[],
         ) => Promise<void>;
+        findNamed?: DriveApi["findNamed"];
       } = {},
   ) {
     const provider = tree(nodes, overrides.abilities);
@@ -714,6 +719,7 @@ describe("positioned Drive folder session", () => {
         canComment: overrides.canComment ?? (async () => true),
         canShare: overrides.canShare ?? (async () => true),
         listComments: overrides.listComments ?? (async () => ({ comments: [] })),
+        findNamed: overrides.findNamed ?? (async () => []),
       },
       location,
       access: overrides.access ?? "read",
@@ -929,6 +935,7 @@ describe("positioned Drive folder session", () => {
         canComment: async () => true,
         canShare: async () => true,
         listComments: async () => ({ comments: [] }),
+        findNamed: async () => [],
       },
       location: { folderIds: ["R"] },
       access: "read",
@@ -1844,6 +1851,56 @@ describe("positioned Drive folder session", () => {
       });
     });
   });
+
+  describe("uploads", () => {
+    const UPLOAD_CHECK = "Check Google Drive upload";
+    const UPLOAD_DESTINATION =
+      "That is not a folder this binding can upload into: the destination is the positioned " +
+      "folder, a direct child folder of it, or getScope().parentFolderId. A folder further away " +
+      "inside the connected folder is reached from a session opened at it or next to it; one " +
+      "outside it takes a binding to a folder that holds it, or to all of Drive.";
+
+    // A folder binding connected to the top level of My Drive opens its first child folders from
+    // it. Its contents are searched for the name, which a listing of it reports.
+    it("reports the account's own My Drive root, searched for the name, as a folder", async () => {
+      const top = folder("A1", { parents: [MY_ROOT] });
+      const findNamed = vi.fn<DriveApi["findNamed"]>(async () => [child("N1", MY_ROOT)]);
+      const { session, authorizations } = positioned(
+        [folder(MY_ROOT), top], { folderIds: [MY_ROOT, "A1"] }, undefined,
+        { abilities: { [MY_ROOT]: accepting }, findNamed });
+
+      await expect(session.uploadTarget(MY_ROOT, "N1")).resolves
+        .toMatchObject({ toFolderId: MY_ROOT, toMyDrive: true });
+      expect(findNamed).toHaveBeenCalledWith(MY_ROOT, "N1", { kind: "user" });
+      expect(reports(authorizations)).toEqual(
+        [[UPLOAD_CHECK, ["drive/folder/A1", "drive/folder/my-root", "drive/file/N1"]]]);
+    });
+
+    it("searches a child folder in its shared drive, and proves it a child again after", async () => {
+      const sharedRoot = folder("R", { parents: ["drive-1"], driveId: "drive-1" });
+      const inner = folder("A", { parents: ["R"], driveId: "drive-1" });
+      const found = child("N1", "A", { driveId: "drive-1" });
+      const findNamed = vi.fn<DriveApi["findNamed"]>(async () => [found]);
+      const kept = positioned([sharedRoot, inner], { folderIds: ["R"] }, undefined,
+        { abilities: { A: accepting }, findNamed });
+
+      await expect(kept.session.uploadTarget("A", "N1")).resolves.toMatchObject({ toFolderId: "A" });
+      expect(findNamed).toHaveBeenCalledWith("A", "N1", { kind: "drive", driveId: "drive-1" });
+
+      // The folder is moved out of the connected one while its contents are searched.
+      let moveOut = () => {};
+      const moved = positioned([sharedRoot, inner], { folderIds: ["R"] }, undefined, {
+        abilities: { A: accepting },
+        findNamed: async () => {
+          moveOut();
+          return [found];
+        },
+      });
+      moveOut = () => { moved.provider.byId.set("A", { ...inner, parents: ["elsewhere"] }); };
+      await expect(moved.session.uploadTarget("A", "N1")).rejects.toThrow(new Error(UPLOAD_DESTINATION));
+      expect(moved.authorizations).toEqual([]);
+    });
+  });
 });
 
 describe("Drive comment listing", () => {
@@ -2518,5 +2575,42 @@ describe("Drive move targets", () => {
 
     await expect(session.moveTarget("F", "T")).rejects.toBe(failure);
     expect(authorizations).toEqual([]);
+  });
+});
+
+describe("Drive upload targets", () => {
+  const UPLOAD_CHECK = "Check Google Drive upload";
+  const myRoot = folder(MY_ROOT, { name: "My Drive" });
+  const shared = folder("S", { parents: ["drive-1"], driveId: "drive-1" });
+
+  /** An account core over `myRoot` and `shared`, whose search for a name finds `N1` in the folder. */
+  function uploading() {
+    let provider = tree([myRoot, shared], { [MY_ROOT]: accepting, S: accepting });
+    let findNamed = vi.fn<DriveApi["findNamed"]>(async folderId => [child("N1", folderId)]);
+    return {
+      findNamed,
+      ...core({ getFile: provider.getFile, getScopeNodes: provider.getScopeNodes, findNamed }),
+    };
+  }
+
+  // No other account can see the top level of My Drive, yet a search of its contents tells what is
+  // there, as a listing of it does, which reports it as a folder.
+  it("reports the account's own My Drive root, searched for the name, as a folder", async () => {
+    let { session, findNamed, authorizations } = uploading();
+
+    await expect(session.uploadTarget("root", "N1")).resolves
+      .toMatchObject({ toFolderId: MY_ROOT, toMyDrive: true });
+    expect(findNamed).toHaveBeenCalledWith(MY_ROOT, "N1", { kind: "user" });
+    expect(reports(authorizations)).toEqual(
+      [[UPLOAD_CHECK, ["drive/folder/my-root", "drive/file/N1"]]]);
+  });
+
+  it("searches a folder in a shared drive in that drive", async () => {
+    let { session, findNamed, authorizations } = uploading();
+
+    await expect(session.uploadTarget("S", "N1")).resolves.toMatchObject({ toFolderId: "S" });
+    expect(findNamed).toHaveBeenCalledWith("S", "N1", { kind: "drive", driveId: "drive-1" });
+    expect(reports(authorizations)).toEqual(
+      [[UPLOAD_CHECK, ["drive/file/S", "drive/folder/S", "drive/file/N1"]]]);
   });
 });

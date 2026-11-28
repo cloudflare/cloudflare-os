@@ -96,6 +96,8 @@ describe("saveFile", () => {
     let { open, chunks } = uploaded(calls);
     expect([open.method, open.url.pathname]).toEqual(["POST", "/upload/drive/v3/files"]);
     expect(Object.fromEntries(open.url.searchParams)).toMatchObject({ uploadType: "resumable", supportsAllDrives: "true" });
+    // A save is the user's, as a file they make in Drive is: the domain's default visibility holds.
+    expect(open.url.searchParams.has("ignoreDefaultVisibility")).toBe(false);
     expect(open.headers.get("X-Upload-Content-Type")).toBe(resource.savableFrom![0]);
     expect(JSON.parse(open.body)).toEqual(
       { name: "Plan", mimeType: native, parents: ["plans-1"], appProperties: { gadgetsSaved: "1" } });

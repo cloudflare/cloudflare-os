@@ -12,6 +12,7 @@ import type {
   Cursor, DocSuggestion, DriveAccess, DriveComment, DriveCommentReply, DriveEntry,
   DriveFileBytes, DriveScope, GoogleDriveFolderSession, GoogleDriveSession,
 } from "../src/drive-types";
+import type { DriveFileReadOptions } from "../src/drive-read-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
 import { DocStore, runId, type DocCopyHead } from "../src/docs-store";
@@ -882,6 +883,61 @@ export class TestHooks extends DurableObject<Env> {
       ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations,
       reports: queue.reports,
     };
+  }
+
+  /**
+   * Reads file `fileId` whole through a fresh Drive session, running `between` once its first
+   * chunk has arrived, and reports how many bytes had arrived then and the text read, or the error
+   * the read ended with.
+   */
+  async readDriveAcross(
+    facetName: string, binding: DriveBinding, fileId: string, between: () => Promise<void>,
+  ): Promise<{ before: number; text?: string; error?: string }> {
+    using approvalQueue = new RpcStub<ApprovalQueue>(new TestApprovalQueue());
+    using session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDriveSession & Disposable;
+    let reader = (await session.readFile(fileId)).content.getReader();
+    let chunks: Uint8Array[] = [];
+    let first = await reader.read();
+    if (!first.done) chunks.push(first.value);
+    let before = chunks[0]?.byteLength ?? 0;
+    await between();
+    try {
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) chunks.push(chunk.value);
+    } catch (error) {
+      return { before, ...failure(error) };
+    }
+    return { before, text: await new Blob(chunks).text() };
+  }
+
+  /**
+   * Reads file `fileId` through a fresh Drive session, with `options`, holding the read where it
+   * first authorizes what it reads to run `between`, and reports the text read or the error the
+   * read ended with.
+   */
+  async readDriveHeld(
+    facetName: string, binding: DriveBinding, fileId: string, between: () => Promise<void>,
+    options: DriveFileReadOptions,
+  ): Promise<{ text?: string; error?: string }> {
+    let queue = new TestApprovalQueue();
+    let { promise: reached, resolve: reach } = Promise.withResolvers<void>();
+    let { promise: released, resolve: release } = Promise.withResolvers<void>();
+    queue.holdObservation = { reach, released };
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDriveSession & Disposable;
+    let reading = Promise.resolve(session.readFile(fileId, options))
+      .then(async ({ content }) => ({ text: await new Response(content).text() }), failure);
+    let held = await Promise.race([reached.then(() => true), reading.then(() => false)]);
+    if (!held) throw new Error("readFile authorized no read before settling");
+    try {
+      await between();
+    } finally {
+      release();
+    }
+    return reading;
   }
 
   /**

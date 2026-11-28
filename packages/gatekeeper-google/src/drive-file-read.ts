@@ -20,6 +20,9 @@ export const FILE_READ_IDLE_MS = 60_000;
 const FILE_READ_IDLE =
   "The Drive file's content went unread, or Drive stopped sending it, for a minute; read it again.";
 
+/** What ends a stream whose source stopped sending. */
+const SOURCE_IDLE = "Google Drive stopped sending the file's content for a minute.";
+
 /** Every Google-native type starts with this; none has content of its own to download. */
 export const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
 
@@ -74,36 +77,81 @@ export function exactRange(
 }
 
 /**
+ * `content` from byte `offset` on, read only as the result is: what comes before is read and
+ * dropped. Cancelling the result cancels `content`.
+ */
+export function fromByte(content: ReadableStream<Uint8Array>, offset: number): ReadableStream<Uint8Array> {
+  let reader = content.getReader();
+  let skip = offset;
+  return new ReadableStream<Uint8Array>({
+    pull: async controller => {
+      for (;;) {
+        let read = await reader.read();
+        if (read.done) return controller.close();
+        let bytes = read.value;
+        if (bytes.byteLength <= skip) {
+          skip -= bytes.byteLength;
+          continue;
+        }
+        controller.enqueue(skip ? bytes.subarray(skip) : bytes);
+        skip = 0;
+        return;
+      }
+    },
+    cancel: reason => reader.cancel(reason),
+  }, { highWaterMark: 0 });
+}
+
+/**
  * `content`, of a length not known ahead, read only as the result is, so none of it is held here,
  * and ended with an error after {@link FILE_READ_IDLE_MS} with no bytes moving, counted from now.
  * However the stream ends, the download is let go.
  */
 export function idleTimed(content: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
-  return paced(content, (chunk, controller) => {
-    if (chunk === undefined) {
-      controller.close();
-      return true;
-    }
-    controller.enqueue(chunk);
-    return false;
-  });
+  return paced(content, passOn);
+}
+
+/**
+ * `content`, read only as the result is, so none of it is held here, and ended with an error once
+ * one read of it has waited {@link FILE_READ_IDLE_MS} for bytes. Only those waits count, not the
+ * time the reader takes between reads, as an upload does sending what it read. However the stream
+ * ends, `content` is let go.
+ */
+export function readTimed(content: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  return paced(content, passOn, { waitsOnly: true, idle: SOURCE_IDLE });
+}
+
+/** Hands each chunk of `content` on as it is, and closes at its end. */
+function passOn(
+  chunk: Uint8Array | undefined, controller: ReadableStreamDefaultController<Uint8Array>,
+): boolean {
+  if (chunk === undefined) {
+    controller.close();
+    return true;
+  }
+  controller.enqueue(chunk);
+  return false;
 }
 
 /**
  * A stream that reads `content` only as it is read, ending once `step`, handed each chunk read and
  * `undefined` at the end of `content`, says it has, or after {@link FILE_READ_IDLE_MS} with no
- * bytes moving. However it ends, `content` is let go.
+ * bytes moving, when it errors with `idle`. With `waitsOnly`, only the time a read of `content`
+ * waits counts. However it ends, `content` is let go.
  */
 function paced(
   content: ReadableStream<Uint8Array>,
   step: (
     chunk: Uint8Array | undefined, controller: ReadableStreamDefaultController<Uint8Array>,
   ) => boolean,
+  { waitsOnly = false, idle = FILE_READ_IDLE }: { waitsOnly?: boolean; idle?: string } = {},
 ): ReadableStream<Uint8Array> {
   let reader = content.getReader();
   let ended = false;
   /** When bytes last moved: asked of Drive, or handed to the reader. */
   let moved = Date.now();
+  /** Whether a read of `content` is waiting for its answer. */
+  let waiting = false;
   let timer!: ReturnType<typeof setTimeout>;
   let end = async (reason?: unknown) => {
     if (ended) return;
@@ -117,21 +165,23 @@ function paced(
       // look at the clock rather than a timer of its own.
       let check = () => {
         let left = moved + FILE_READ_IDLE_MS - Date.now();
-        if (left > 0) {
-          timer = setTimeout(check, left);
+        if (left > 0 || (waitsOnly && !waiting)) {
+          timer = setTimeout(check, left > 0 ? left : FILE_READ_IDLE_MS);
           return;
         }
-        controller.error(new Error(FILE_READ_IDLE));
+        controller.error(new Error(idle));
         void end();
       };
       timer = setTimeout(check, FILE_READ_IDLE_MS);
     },
     async pull(controller) {
       moved = Date.now();
+      waiting = true;
       let chunk = await reader.read().catch(async (error: unknown) => {
         await end();
         throw error;
       });
+      waiting = false;
       // Idled out or cancelled while Drive was being waited on.
       if (ended) return;
       let over = step(chunk.done ? undefined : chunk.value, controller);
@@ -174,7 +224,7 @@ export function downloadableFile(
  * restricted downloading it, or one Drive does not say it may, since only a stated leave counts,
  * as it does when a read is authorized.
  */
-function requireDownloadable(file: DriveFile): void {
+function requireDownloadable(file: Pick<DriveFile, "capabilities">): void {
   let canDownload = file.capabilities?.canDownload;
   if (canDownload === true) return;
   throw new Error(canDownload === false
@@ -220,7 +270,7 @@ const EXPORT_FORMATS: Record<string, { name: string; formats: Partial<Record<Dri
  * export to `format`.
  */
 export function exportMimeType(
-  file: DriveFile, format: DriveExportFormat,
+  file: Pick<DriveFile, "mimeType" | "capabilities">, format: DriveExportFormat,
 ): { nativeMimeType: string; mimeType: string } {
   let nativeMimeType = file.mimeType;
   if (!nativeMimeType) throw new Error("Google Drive omitted required file mimeType");

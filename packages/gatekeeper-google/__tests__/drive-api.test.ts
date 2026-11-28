@@ -4,7 +4,7 @@ import {
   DriveApiRequestError, FOLDER_MIME_TYPE, MAX_COMMENT_BYTES, SHORTCUT_MIME_TYPE, MAX_QUERY_PARENTS, MY_DRIVE_ROOT,
   buildDriveQuery, conversionError, driveWriteFailure, escapeDriveQueryLiteral, isDriveCommentId,
   isDriveFileId, isDrivePermissionId, isFileInvisible, isInsufficientScope, lacksFileContentAccess,
-  type DriveConversionSource, type DriveGivableRole,
+  type DriveConversionSource, type DriveGivableRole, COPY_TOKEN_PROPERTY,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -687,9 +687,9 @@ describe("bulk access verification", () => {
 });
 
 /** The one mask a scope proof and an observer check read a file through. */
-const SCOPE_MASK = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
-  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canCopy,canEdit)";
+const SCOPE_MASK = "id,name,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
+  "capabilities(canListChildren,canDownload,canComment,canShare,canAddChildren," +
+  "canMoveItemWithinDrive,canCopy,canEdit,canModifyContent)";
 
 describe("folder scope nodes", () => {
   const node = (id: string, extra: Record<string, unknown> = {}) =>
@@ -698,16 +698,16 @@ describe("folder scope nodes", () => {
   it("parses ancestry facts and asks only for the fields a proof decides from", async () => {
     let calls = stubFetch([batchResponse([
       { status: 200, body: node("one", {
-        driveId: "drive-1", capabilities: { canListChildren: true },
+        name: "Plans", driveId: "drive-1",
+        capabilities: { canListChildren: true, canModifyContent: false },
       }) },
     ])]);
 
     await expect(api().getScopeNodes(["one"])).resolves.toEqual([{
-      id: "one", mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false,
-      driveId: "drive-1", canListChildren: true,
+      id: "one", name: "Plans", mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false,
+      driveId: "drive-1", canListChildren: true, canModifyContent: false,
     }]);
     expect(calls[0].body).toContain(`fields=${encodeURIComponent(SCOPE_MASK)}`);
-    expect(calls[0].body).not.toContain("name");
   });
 
   it("places nodes by Content-ID rather than positional order", async () => {
@@ -2807,7 +2807,7 @@ describe("swapParent", () => {
   });
 });
 
-describe("copyFile and findCopy", () => {
+describe("copyFile and findByToken", () => {
   const COPY_URL = "https://www.googleapis.com/drive/v3/files/F/copy" +
     "?supportsAllDrives=true&ignoreDefaultVisibility=true&fields=id%2CmimeType";
 
@@ -2860,9 +2860,10 @@ describe("copyFile and findCopy", () => {
       jsonResponse({ files: [] }),
     ]);
 
-    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
+    await expect(api().findByToken(COPY_TOKEN_PROPERTY, "t0k3n", { kind: "drive", driveId: "D1" }))
       .resolves.toStrictEqual({ id: "N", mimeType: "application/vnd.google-apps.document" });
-    await expect(api().findCopy("t0k3n", { kind: "user" })).resolves.toBeUndefined();
+    await expect(api().findByToken(COPY_TOKEN_PROPERTY, "t0k3n", { kind: "user" }))
+      .resolves.toBeUndefined();
 
     expect(calls.map(({ url }) => url.searchParams.get("pageToken"))).toEqual([null, "p2", null]);
     let params = calls[0].url.searchParams;
@@ -2885,7 +2886,7 @@ describe("copyFile and findCopy", () => {
   // account that is not the drive's member, which Drive refuses the drive's corpus.
   it("searches every file the account has reached for a copy its folder's shared drive does not show", async () => {
     let calls = stubFetch([jsonResponse({ files: [] }), jsonResponse({ files: [MADE] })]);
-    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
+    await expect(api().findByToken(COPY_TOKEN_PROPERTY, "t0k3n", { kind: "drive", driveId: "D1" }))
       .resolves.toStrictEqual({ id: "N" });
     expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
 
@@ -2894,13 +2895,197 @@ describe("copyFile and findCopy", () => {
         { status: 403 }),
       jsonResponse({ files: [MADE] }),
     ]);
-    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" }))
+    await expect(api().findByToken(COPY_TOKEN_PROPERTY, "t0k3n", { kind: "drive", driveId: "D1" }))
       .resolves.toStrictEqual({ id: "N" });
     expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
 
     calls = stubFetch([jsonResponse({ files: [] }), jsonResponse({ files: [] })]);
-    await expect(api().findCopy("t0k3n", { kind: "drive", driveId: "D1" })).resolves.toBeUndefined();
+    await expect(api().findByToken(COPY_TOKEN_PROPERTY, "t0k3n", { kind: "drive", driveId: "D1" }))
+      .resolves.toBeUndefined();
     expect(corpora(calls)).toEqual([["drive", "D1", "true"], ["user", null, "true"]]);
+  });
+});
+
+describe("upload", () => {
+  const SESSION = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=S";
+  const opened = () => new Response(null, { status: 200, headers: { Location: SESSION } });
+  const stream = (text: string) => new Response(text).body!;
+
+  it("makes a file under the ID reserved for it, through an upload session", async () => {
+    let calls = stubFetch([opened(), jsonResponse({ id: "U", mimeType: "text/plain" })]);
+    let create = { id: "U", name: "notes.txt", parents: ["B"] as [string], mimeType: "text/plain" };
+    await expect(api().upload(stream("hi"), "text/plain", { create }))
+      .resolves.toStrictEqual({ id: "U", mimeType: "text/plain" });
+
+    let [open, put] = calls;
+    expect(open.method).toBe("POST");
+    expect(open.url.origin + open.url.pathname).toBe("https://www.googleapis.com/upload/drive/v3/files");
+    // A domain's default visibility for uploads would share the file beyond its folder.
+    expect(Object.fromEntries(open.url.searchParams)).toMatchObject(
+      { uploadType: "resumable", supportsAllDrives: "true", ignoreDefaultVisibility: "true" });
+    expect(open.headers.get("X-Upload-Content-Type")).toBe("text/plain");
+    expect(JSON.parse(open.body ?? "")).toEqual(create);
+    expect([put.method, put.url.href, put.headers.get("Content-Range")])
+      .toEqual(["PUT", SESSION, "bytes 0-1/2"]);
+  });
+
+  it("replaces a file's content in place, sending no metadata", async () => {
+    let calls = stubFetch([opened(), jsonResponse({ id: "F" })]);
+    await expect(api().upload(stream("new"), "text/plain", { replace: "F" }))
+      .resolves.toStrictEqual({ id: "F" });
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].url.pathname).toBe("/upload/drive/v3/files/F");
+    expect(JSON.parse(calls[0].body ?? "")).toEqual({});
+    // The file keeps its own sharing, which no default visibility touches.
+    expect(calls[0].url.searchParams.has("ignoreDefaultVisibility")).toBe(false);
+  });
+
+  it("reads a 409 for a reserved ID as an earlier upload's file, at the open or the last chunk", async () => {
+    let create = { id: "U", name: "notes.txt", parents: ["B"] as [string] };
+    stubFetch([new Response("{}", { status: 409 })]);
+    await expect(api().upload(stream("hi"), "text/plain", { create })).resolves.toBeUndefined();
+
+    let calls = stubFetch([opened(), new Response("{}", { status: 409 }), new Response(null)]);
+    await expect(api().upload(stream("hi"), "text/plain", { create })).resolves.toBeUndefined();
+    // The session it opened is abandoned.
+    expect(calls[2]).toMatchObject({ method: "DELETE" });
+    expect(calls[2].url.href).toBe(SESSION);
+
+    // Without a reserved ID, a 409 is Drive's refusal like any other.
+    stubFetch([new Response("{}", { status: 409 })]);
+    await expect(api().upload(stream("hi"), "text/plain", { create: { name: "x", parents: ["B"] } }))
+      .rejects.toMatchObject({ status: 409 });
+  });
+
+  it("refuses an answer that names another file than the one asked for", async () => {
+    stubFetch([opened(), jsonResponse({ id: "D" }), new Response(null)]);
+    await expect(api().upload(stream("hi"), "text/plain", { replace: "F" }))
+      .rejects.toThrow("Google Drive answered an upload with another file than the one asked for");
+  });
+
+  it("runs the check before each request that can complete the file, and before no other", async () => {
+    vi.useFakeTimers();
+    const CHUNK = 8 * 1024 * 1024;
+    let steps: string[] = [];
+    let held = (bytes: number) => new Response(null, { status: 308, headers: { Range: `bytes=0-${bytes - 1}` } });
+    let answers: (() => Response)[] = [
+      opened, () => held(CHUNK),
+      // The last chunk's answer is lost, and the session says it holds only the first.
+      () => { throw new TypeError("network connection lost"); }, () => held(CHUNK),
+      () => jsonResponse({ id: "U" }),
+    ];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      steps.push(`${init.method} ${new Headers(init.headers).get("Content-Range") ?? ""}`.trim());
+      return answers.shift()!();
+    });
+    let uploaded = api().upload(new Response(new Uint8Array(CHUNK + 2)).body!, "text/plain",
+      { create: { id: "U", name: "notes.txt", parents: ["B"] } }, async () => { steps.push("checked"); });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(uploaded).resolves.toStrictEqual({ id: "U" });
+    expect(steps).toEqual([
+      "POST", `PUT bytes 0-${CHUNK - 1}/*`,
+      "checked", `PUT bytes ${CHUNK}-${CHUNK + 1}/${CHUNK + 2}`,
+      `PUT bytes */${CHUNK + 2}`,
+      "checked", `PUT bytes ${CHUNK}-${CHUNK + 1}/${CHUNK + 2}`,
+    ]);
+  });
+
+  it("sends nothing more once the check refuses, abandoning the session", async () => {
+    let calls = stubFetch([opened(), new Response(null)]);
+    let refusal = new Error("no longer in scope");
+    await expect(api().upload(stream("hi"), "text/plain", { replace: "F" }, async () => { throw refusal; }))
+      .rejects.toBe(refusal);
+    expect(calls.map(({ method }) => method)).toEqual(["PATCH", "DELETE"]);
+  });
+
+  it("sends an empty file's content with no Content-Range, which would ask what the session holds", async () => {
+    let sent: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      let range = new Headers(init.headers).get("Content-Range");
+      sent.push(`${init.method}${range === null ? "" : ` ${range}`}`);
+      if (init.method === "POST") return opened();
+      // `bytes */0` asks what the session holds, which is nothing yet.
+      if (range !== null) return new Response(null, { status: 308 });
+      return jsonResponse({ id: "U", mimeType: "text/plain" });
+    });
+    await expect(api().upload(stream(""), "text/plain", { create: { id: "U", name: "empty.txt", parents: ["B"] } }))
+      .resolves.toStrictEqual({ id: "U", mimeType: "text/plain" });
+    expect(sent).toEqual(["POST", "PUT"]);
+  });
+});
+
+describe("findNamed, getContentVersion and keepRevision", () => {
+  it("finds the live files named exactly so in a folder, in its corpus, whatever Drive's search matched", async () => {
+    let calls = stubFetch([jsonResponse({ files: [
+      { id: "A", name: "notes.txt", mimeType: "text/plain" },
+      { id: "B", name: "Notes.txt", mimeType: "text/plain" },
+    ] })]);
+    expect((await api().findNamed("P", "notes.txt", { kind: "drive", driveId: "D" })).map(file => file.id))
+      .toEqual(["A"]);
+    let params = calls[0].url.searchParams;
+    expect(params.get("q")).toContain("'P' in parents");
+    expect(params.get("q")).toContain("name = 'notes.txt'");
+    // Not every drive: Drive may leave a search of all of them incomplete, which is refused.
+    expect([params.get("corpora"), params.get("driveId")]).toEqual(["drive", "D"]);
+  });
+
+  // Drive may answer a short or an empty page before a listing ends.
+  it("reads every page of the search, short and empty ones too", async () => {
+    let calls = stubFetch([
+      jsonResponse({ files: [], nextPageToken: "p2" }),
+      jsonResponse({ files: [{ id: "A", name: "notes.txt" }], nextPageToken: "p3" }),
+      jsonResponse({ files: [{ id: "B", name: "notes.txt" }] }),
+    ]);
+    expect((await api().findNamed("P", "notes.txt", { kind: "user" })).map(file => file.id)).toEqual(["A", "B"]);
+    expect(calls.map(({ url }) => url.searchParams.get("pageToken"))).toEqual([null, "p2", "p3"]);
+  });
+
+  it("reads which version of its content a file holds, and whether the account may change it", async () => {
+    let calls = stubFetch([jsonResponse({
+      id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3",
+      capabilities: { canEdit: true, canModifyContent: false },
+    })]);
+    await expect(api().getContentVersion("F")).resolves.toStrictEqual(
+      { id: "F", headRevisionId: "r2", sha256Checksum: "ab", size: "3", canModifyContent: false });
+    expect(calls[0].url.searchParams.get("fields")).toContain("sha256Checksum");
+  });
+
+  it("keeps a revision for good", async () => {
+    let calls = stubFetch([jsonResponse({ id: "r2" })]);
+    await api().keepRevision("F", "r2");
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/F/revisions/r2");
+    expect(JSON.parse(calls[0].body ?? "")).toEqual({ keepForever: true });
+  });
+
+  it("sends a pin only once, leaving a failure Drive could retry to the approval that sent it", async () => {
+    let calls = stubFetch([
+      new Response(JSON.stringify({ error: { code: 503, errors: [{ reason: "backendError" }] } }),
+        { status: 503 }),
+      jsonResponse({ id: "r2" }),
+    ]);
+    await expect(api().keepRevision("F", "r2")).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("gives up on a pin Drive does not answer, at the write deadline", async () => {
+    vi.useFakeTimers();
+    // Timed on the faked clock, as Workers' own timeout is on its real one.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      let timer = new AbortController();
+      setTimeout(() => timer.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+      return timer.signal;
+    });
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      let { promise, reject } = Promise.withResolvers<Response>();
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      return promise;
+    });
+    let pinned = api().keepRevision("F", "r2").catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(await Promise.race([pinned, "still waiting"])).toMatchObject({ name: "TimeoutError" });
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(COMMENT_WRITE_MAX_MS / 3);
   });
 });
 

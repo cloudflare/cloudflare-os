@@ -16,7 +16,11 @@ import { serveFakes, SlidesProvider, type ProviderFake } from "../slides-provide
 const ROOT = "folder-root";
 const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
 const COMMENTS = { tag: "driveComments", label: "Drive comments" };
-const COPIES = { tag: "driveCopies", label: "Drive copies" };
+const FILE_KINDS = [
+  { tag: "driveCopies", label: "Drive copies" },
+  { tag: "driveExportCopies", label: "Drive exported copies" },
+  { tag: "driveUploads", label: "Drive uploads" },
+];
 
 const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
 const IN_TRASH = "That file is in the trash, so it cannot be changed.";
@@ -338,9 +342,9 @@ describe("Slides edits through a read and write Drive binding", () => {
 
   it("lists the presentations' kinds where the binding can edit them", async () => {
     expect(await connection(ACCOUNT).autoApprovable())
-      .toEqual([COMMENTS, COPIES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, ...FILE_KINDS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
     expect(await connection(FOLDER).autoApprovable())
-      .toEqual([COMMENTS, COPIES, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+      .toEqual([COMMENTS, ...FILE_KINDS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
 
     // An exact-file binding lists its own file's editor alone, once it has described the file.
     let doc = connection(fileBinding("doc-1"));

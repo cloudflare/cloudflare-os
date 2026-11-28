@@ -3,7 +3,9 @@
 
 import type { AccessTokenProvider } from "./auth-retry";
 import { newFileTitle } from "./creation";
-import { DriveApi, DriveApiRequestError, isFileInvisible, megabytes } from "./drive-api";
+import {
+  DriveApi, DriveApiRequestError, isFileInvisible, megabytes, SAVED_PROPERTY,
+} from "./drive-api";
 import { obsContext } from "./observability";
 import { OFFICE_KINDS, type OfficeKind } from "./office-conversion";
 import { CREATED_FILES_GRANT, nativeFileUrl, parseResourceUrl, RESOURCE_BY_KIND } from "./resources";
@@ -12,9 +14,6 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.save", ve
 
 /** Read when Drive does not say what it imports: the most it converts into any type. */
 const MAX_IMPORT_BYTES = 100 * 1024 * 1024;
-
-/** Marks a file a save made: only such a file is replaced, whatever else the account may edit. */
-const SAVED_PROPERTY = "gadgetsSaved";
 
 const GONE = "Google Drive can't find the file this was saved to before, or this app can no longer " +
   "change it. Save a new copy.";
@@ -94,7 +93,13 @@ export async function saveFile(
       }
     }
     let content = upTo(file, await drive.getMaxImportSize(nativeMimeType).catch(() => undefined) ?? MAX_IMPORT_BYTES);
-    let fileId = await drive.uploadConverted(content, contentType, nativeMimeType, into);
+    let made = await drive.upload(content, contentType, typeof into === "string"
+      ? { replace: into }
+      : { create: { ...into, mimeType: nativeMimeType }, domainDefaultVisibility: true });
+    if (made?.mimeType !== nativeMimeType) {
+      throw new Error("Google Drive did not convert the uploaded file into the type asked for");
+    }
+    let fileId = made.id;
     logger.info("saved a file to Drive", {
       event: "google.save.saved", conversionKind: kind, fileId, method: replacing ? "replace" : "create",
     });

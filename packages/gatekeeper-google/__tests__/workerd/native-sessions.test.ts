@@ -381,7 +381,13 @@ const NO_COMMENTS: DriveQueue = {
   undecided: read => read([]),
   waiting: read => read([]),
   queued: () => [],
-  madeCopy: () => undefined,
+  madeFile: () => undefined,
+  uploads: {
+    capture: async () => { throw new Error("Unexpected upload"); },
+    captureStream: async () => { throw new Error("Unexpected upload"); },
+    readStream: async () => { throw new Error("Unexpected upload"); },
+    delete: () => {},
+  },
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -1837,7 +1843,7 @@ describe("Drive file reads", () => {
       access: "write",
       waiting: read => approval.then(() => read([])),
       undecided: read => approval.then(() => read([])),
-      madeCopy: actionId => actionId === 5 ? "sheet-1" : undefined,
+      madeFile: actionId => actionId === 5 ? "sheet-1" : undefined,
     });
     using owned = session;
 
@@ -3105,6 +3111,8 @@ describe("Drive comment actions", () => {
   it("declares one auto-approvable kind for every comment write, beside the copies' and the edits' kinds", async () => {
     expect(await binding().autoApprovable()).toEqual([
       { tag: "driveComments", label: "Drive comments" }, { tag: "driveCopies", label: "Drive copies" },
+      { tag: "driveExportCopies", label: "Drive exported copies" },
+      { tag: "driveUploads", label: "Drive uploads" },
       ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
     ]);
   });
@@ -3213,7 +3221,7 @@ describe("Drive comment actions", () => {
             "read native Google Docs, Sheets and Slides and export them with exportFile(), read " +
             "PDFs' text with readPdf() and any " +
             "other file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files, " +
-            "read and queue comments, change who files are shared with, and move and copy files",
+            "read and queue comments, change who files are shared with, and move, copy and upload files",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveSession",
         },
@@ -3238,7 +3246,7 @@ describe("Drive comment actions", () => {
             "text with readPdf() and any other " +
             "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
             "direct children, read and queue comments on direct children, change who they and the " +
-            "folder are shared with, and move and copy them within Drive folder \"folder-root\"",
+            "folder are shared with, move and copy them, and upload files within Drive folder \"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
           tsType: "GoogleDriveFolderSession",
         },

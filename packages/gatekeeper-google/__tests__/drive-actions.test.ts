@@ -18,6 +18,8 @@ const COMMENTS: ActionKind = { tag: "driveComments", label: "Drive comments" };
 const SHARING: ActionKind = { tag: "driveSharing", label: "Drive sharing" };
 const MOVES: ActionKind = { tag: "driveMoves", label: "Drive moves" };
 const COPIES: ActionKind = { tag: "driveCopies", label: "Drive copies" };
+const EXPORT_COPIES: ActionKind = { tag: "driveExportCopies", label: "Drive exported copies" };
+const UPLOADS: ActionKind = { tag: "driveUploads", label: "Drive uploads" };
 
 /** The writes of the Drive API itself, apart from the edits of native files. */
 type DriveWrite =
@@ -35,18 +37,24 @@ const DECLARED: Record<DriveWrite, { actionKind: ActionKind; autoApprovable: boo
   moveFile: { actionKind: MOVES, autoApprovable: false },
   copyFile: { actionKind: COPIES, autoApprovable: true },
   copyNative: { actionKind: COPIES, autoApprovable: true },
+  exportCopy: { actionKind: EXPORT_COPIES, autoApprovable: true },
+  uploadFile: { actionKind: UPLOADS, autoApprovable: true },
+  uploadConverted: { actionKind: UPLOADS, autoApprovable: true },
+  replaceFile: { actionKind: UPLOADS, autoApprovable: false },
 };
 
-/** The names the ten definitions' records are stored under. */
+/** The names the fourteen definitions' records are stored under. */
 const NAMES = [
   "createComment", "createReply", "resolveComment", "suggestEdit", "createPermission",
   "updatePermission",
-  "deletePermission", "moveFile", "copyFile", "copyNative",
+  "deletePermission", "moveFile", "copyFile", "copyNative", "exportCopy", "uploadFile",
+  "uploadConverted", "replaceFile",
 ] as const satisfies readonly DriveWrite[];
 
 /** The kinds made as one Google account, which are staged and applied under a fence. */
 const FENCED: ReadonlySet<keyof DriveActions> = new Set([
   "createPermission", "updatePermission", "deletePermission", "moveFile", "copyFile", "copyNative",
+  "exportCopy", "uploadFile", "uploadConverted", "replaceFile",
 ]);
 
 const REPLACED =
@@ -95,6 +103,22 @@ const COPY: DriveActions["copyFile"] = { ...COPY_TO, copyId: "C" };
 const NATIVE_COPY: DriveActions["copyNative"] = {
   ...COPY_TO, name: "Copy of Notes", mimeType: "application/vnd.google-apps.document",
   token: "t0k3n",
+};
+const EXPORT_COPY: DriveActions["exportCopy"] = {
+  ...COPY_TO, name: "Notes.pdf", copyId: "E", format: "pdf",
+};
+const UPLOAD_TO = {
+  name: "notes.txt", contentType: "text/plain", toFolderId: "B",
+  file: { handle: "00000000-0000-4000-8000-000000000000", size: 2, digest: "ab".repeat(32) },
+  queuedAt: "2026-10-20T10:00:00.000Z",
+};
+const UPLOAD: DriveActions["uploadFile"] = { ...UPLOAD_TO, fileId: "U" };
+const CONVERTED_UPLOAD: DriveActions["uploadConverted"] = {
+  ...UPLOAD_TO, name: "Plan", contentType: "application/msword", convertTo: "document",
+  token: "t0k3n",
+};
+const REPLACEMENT: DriveActions["replaceFile"] = {
+  ...UPLOAD_TO, fileId: "F", replaced: { headRevisionId: "r1", sha256Checksum: "cd".repeat(32) },
 };
 
 /** A person's permission given on the file itself, as Drive lists one. */
@@ -194,9 +218,14 @@ function harness() {
       return { id: fileId, parents: [addParent] };
     }),
     copyFile: vi.fn<DriveApi["copyFile"]>(unexpected),
-    findCopy: vi.fn<DriveApi["findCopy"]>(unexpected),
+    findByToken: vi.fn<DriveApi["findByToken"]>(unexpected),
     getConversionSource: vi.fn<DriveApi["getConversionSource"]>(unexpected),
     getMaxImportSize: vi.fn<DriveApi["getMaxImportSize"]>(unexpected),
+    openExport: vi.fn<DriveApi["openExport"]>(unexpected),
+    upload: vi.fn<DriveApi["upload"]>(unexpected),
+    findNamed: vi.fn<DriveApi["findNamed"]>(unexpected),
+    getContentVersion: vi.fn<DriveApi["getContentVersion"]>(unexpected),
+    keepRevision: vi.fn<DriveApi["keepRevision"]>(unexpected),
   };
   let attempts = new Map<number, WriteAttempt>();
   let host: DriveHost = {
@@ -215,7 +244,8 @@ function harness() {
       put: (id, attempt) => { attempts.set(id, attempt); },
       delete: id => { attempts.delete(id); },
     },
-    madeCopies: { put: () => { throw new Error("No copy is made here."); } },
+    madeFiles: { put: () => { throw new Error("No native copy is made here."); } },
+    uploads: { readStream: unexpected },
   };
   let journal = new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" });
   let actions = DRIVE_ACTIONS.bind(journal, host);
@@ -250,7 +280,7 @@ function harness() {
 }
 
 describe("Drive actions", () => {
-  it("declares the ten Drive writes under four kinds, none of which can be reverted", async () => {
+  it("declares the fourteen Drive writes under six kinds, none of which can be reverted", async () => {
     let { actions, journal, described, submit } = harness();
     let ids: Record<DriveWrite, number> = {
       createComment: await submit("createComment", COMMENT),
@@ -263,6 +293,10 @@ describe("Drive actions", () => {
       moveFile: await submit("moveFile", MOVE),
       copyFile: await submit("copyFile", COPY),
       copyNative: await submit("copyNative", NATIVE_COPY),
+      exportCopy: await submit("exportCopy", EXPORT_COPY),
+      uploadFile: await submit("uploadFile", UPLOAD),
+      uploadConverted: await submit("uploadConverted", CONVERTED_UPLOAD),
+      replaceFile: await submit("replaceFile", REPLACEMENT),
     };
     // A queued write resolves its definition by the name its record is stored under.
     expect(journal.listUndecided().map(entry => entry.action.kind)).toEqual(NAMES);
@@ -271,8 +305,9 @@ describe("Drive actions", () => {
     for (let name of NAMES) {
       let card = described.get(ids[name]);
       expect(card, name).toMatchObject({ ...DECLARED[name], implementsRevert: false });
-      // Only a move and a native copy wait for their decision: every other write is shown as if made.
-      if (name === "moveFile" || name === "copyNative") {
+      // Only a move, a write Drive gives an ID once made, and a replacement wait for their decision:
+      // every other write is shown as if made.
+      if (["moveFile", "copyNative", "uploadConverted", "replaceFile"].includes(name)) {
         expect(card, name).toHaveProperty("awaitDecision", true);
       } else {
         expect(card, name).not.toHaveProperty("awaitDecision");
@@ -280,7 +315,8 @@ describe("Drive actions", () => {
     }
 
     // Then the kinds of the native files' edits (drive-editors.test.ts).
-    expect(actions.autoApprovableKinds().slice(0, 2)).toEqual([COMMENTS, COPIES]);
+    expect(actions.autoApprovableKinds().slice(0, 4))
+      .toEqual([COMMENTS, COPIES, EXPORT_COPIES, UPLOADS]);
     expect(actions.autoApprovableKinds()).not.toContainEqual(SHARING);
     expect(actions.autoApprovableKinds()).not.toContainEqual(MOVES);
     expect(actions.retainsApplied).toBe(false);

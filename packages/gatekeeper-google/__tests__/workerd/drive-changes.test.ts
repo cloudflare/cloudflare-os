@@ -2,10 +2,13 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DriveBindingScope } from "../../src/drive-session";
 import type { DriveAccess, DriveEntry, GoogleDriveFolderSession } from "../../src/drive-types";
+import type { DriveFileReadOptions } from "../../src/drive-read-types";
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
 import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
+import { presentation, shape, slide, text } from "../slides-fixture";
+import { SlidesProvider } from "../slides-provider";
 
 // Sharing changes and moves through the Drive gatekeeper itself: queued by a session, then applied,
 // rejected or reverted by the gatekeeper, against a Drive that answers as Google was seen to.
@@ -14,6 +17,7 @@ const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
+const SLIDES_MIME = "application/vnd.google-apps.presentation";
 
 const ROOT = "folder-root";
 const MY_ROOT = "my-root";
@@ -151,12 +155,12 @@ const MOVE_ACCESS =
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
 const COPIES = { tag: "driveCopies", label: "Drive copies" };
 const COPY_WAITING =
-  "That file is a copy still waiting to be made, so this cannot be done with it yet. It is made " +
-  "once it is approved, which an auto-approval rule may do in moments: call getEntry() with this " +
-  "ID later to see whether it has been made.";
+  "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+  "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+  "getEntry() with this ID later to see whether it has been made.";
 const NAMES_NO_COPY =
-  "That pending ID names no copy that was made: the copy was rejected or failed, or the ID is " +
-  "not a copy's.";
+  "That pending ID names no copy or upload that was made: it was rejected or failed, or the ID " +
+  "is not a copy's or an upload's.";
 const COPY_SINGLE_FILE =
   "A single-file Drive binding cannot copy its file. Copying takes a folder binding or an " +
   "all-of-Drive binding, with read and write access.";
@@ -186,11 +190,14 @@ type FakeFile = {
   name: string; mimeType: string; modifiedTime: string; parents: string[]; driveId?: string;
   trashed: boolean; canListChildren: boolean; canComment: boolean; canShare: boolean;
   canAddChildren: boolean; canMoveItemWithinDrive: boolean; canCopy: boolean;
-  canDownload: boolean;
+  canEdit: boolean; canModifyContent: boolean; canDownload: boolean;
   /** Set on a shortcut: the file or folder it points to. */
   shortcutTargetId?: string;
   /** A file's bytes, as text: what a download answers, and its size. */
   content?: string;
+  /** The revision of its content Drive holds now, and the content's SHA-256: a binary file's. */
+  headRevisionId?: string;
+  sha256Checksum?: string;
   /** Its app properties, which a copy keeps unless the request sets or clears them. */
   appProperties?: Record<string, string>;
 };
@@ -227,7 +234,8 @@ function file(mimeType: string, parents: string[], overrides: Partial<FakeFile> 
   return {
     name: "", mimeType, modifiedTime: "2026-10-20T09:00:00Z", parents, trashed: false,
     canListChildren: folder, canComment: !folder, canShare: true, canAddChildren: folder,
-    canMoveItemWithinDrive: true, canCopy: !folder, canDownload: true, ...overrides,
+    canMoveItemWithinDrive: true, canCopy: !folder, canEdit: true, canModifyContent: true,
+    canDownload: true, ...overrides,
   };
 }
 
@@ -272,6 +280,30 @@ class DriveProvider {
   /** How many IDs `generateIds` has given, and how many copies Drive gave IDs of its own. */
   #generated = 0;
   #native = 0;
+  /** Every upload Drive finished: the file it made or replaced, and the bytes it took, as text. */
+  readonly uploads: {
+    fileId: string; metadata: Record<string, unknown>; contentType: string; content: string;
+  }[] = [];
+  /**
+   * How the next upload's last chunk answers: `lost` finishes the upload, then answers as a
+   * session Drive has ended, which leaves the gatekeeper not knowing whether it was made.
+   */
+  nextUpload?: "lost";
+  /** The revisions kept for good, as `<fileId>@<revisionId>`. */
+  readonly kept: string[] = [];
+  /** How the next request to keep a revision for good answers, having kept nothing. */
+  nextKeep?: Answer;
+  /** Every revision of a file's content Drive made, as `<fileId>@<revisionId>`. */
+  readonly #revisions = new Set<string>();
+  /** IDs files were made under, which Drive never gives a new file again. */
+  readonly #used = new Set<string>();
+  /** The open upload sessions, by their ID. */
+  readonly #sessions = new Map<string, {
+    replace?: string; metadata: Record<string, unknown>; contentType: string; received: Uint8Array[];
+  }>();
+  /** How many upload sessions were opened, and how many revisions uploads made. */
+  #opened = 0;
+  #made = 0;
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
@@ -432,7 +464,11 @@ class DriveProvider {
     return found;
   }
 
-  #fileJson(id: string, held: FakeFile) {
+  /**
+   * `held` as Drive answers a request whose field mask is `fields`. Drive answers only what a mask
+   * names, so `canDownload`, which reads and exports are refused without, is left out unless asked.
+   */
+  #fileJson(id: string, held: FakeFile, fields: string | null = null) {
     return {
       id, name: held.name || id, mimeType: held.mimeType, modifiedTime: held.modifiedTime,
       ...(held.parents.length ? { parents: held.parents } : {}),
@@ -440,26 +476,31 @@ class DriveProvider {
       ...(held.shortcutTargetId ? { shortcutDetails: { targetId: held.shortcutTargetId } } : {}),
       ...(held.content === undefined ? {} : { size: String(held.content.length) }),
       ...(held.appProperties ? { appProperties: held.appProperties } : {}),
+      ...(held.headRevisionId ? { headRevisionId: held.headRevisionId } : {}),
+      ...(held.sha256Checksum ? { sha256Checksum: held.sha256Checksum } : {}),
       trashed: held.trashed,
       capabilities: {
         canListChildren: held.canListChildren, canComment: held.canComment,
         canShare: held.canShare, canAddChildren: held.canAddChildren,
         canMoveItemWithinDrive: held.canMoveItemWithinDrive, canCopy: held.canCopy,
-        canDownload: held.canDownload,
+        canEdit: held.canEdit, canModifyContent: held.canModifyContent,
+        ...(fields === null || fields.includes("canDownload") ? { canDownload: held.canDownload } : {}),
       },
     };
   }
 
   #batch(body: string): Response {
     let boundary = "changes_batch";
-    let ids = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?/g)]
-      .map(match => decodeURIComponent(match[1]));
-    let parts = ids.map((id, index) => {
+    let asked = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?(\S*)/g)]
+      .map(match => ({
+        id: decodeURIComponent(match[1]), fields: new URLSearchParams(match[2]).get("fields"),
+      }));
+    let parts = asked.map(({ id, fields }, index) => {
       let held = this.files.get(id);
       return [
         `--${boundary}`, "Content-Type: application/http", `Content-ID: <response-item-${index}>`,
         "", held ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found", "Content-Type: application/json",
-        "", held ? JSON.stringify(this.#fileJson(id, held)) : "{}",
+        "", held ? JSON.stringify(this.#fileJson(id, held, fields)) : "{}",
       ].join("\r\n");
     });
     return new Response(`${parts.join("\r\n")}\r\n--${boundary}--\r\n`, {
@@ -471,6 +512,7 @@ class DriveProvider {
     let url = new URL(request.url);
     let token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
     let call = `${request.method} ${url.pathname}`;
+    let fields = url.searchParams.get("fields");
     this.requests.push({ call, token });
     if (this.rejected.has(token)) return driveError({ status: 401, reason: "authError" });
     if (url.pathname === "/batch/drive/v3") {
@@ -489,6 +531,7 @@ class DriveProvider {
     if (call === "GET /drive/v3/files/generateIds") {
       return Response.json({ ids: [`copy-${++this.#generated}`] });
     }
+    if (url.pathname.startsWith("/upload/drive/v3/files")) return this.#upload(request, url);
     // A folder binding's lookup of a shortcut to a file that is not its child: the folder's
     // untrashed shortcuts.
     let query = url.searchParams.get("q") ?? "";
@@ -496,32 +539,37 @@ class DriveProvider {
       let parent = /'([^']+)' in parents/.exec(query)?.[1];
       let files = [...this.files].filter(([, held]) => held.mimeType === SHORTCUT_MIME &&
         !held.trashed && parent !== undefined && held.parents.includes(parent));
-      return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
+      return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held, fields)) });
     }
-    // A copy looked for by the token it carries, in the shared drive a drive corpus names, or a
-    // folder's live children. Files in the trash match only a query that does not leave them out.
-    let copyToken = /appProperties has \{ key='gadgetsCopyToken' and value='([^']+)' \}/.exec(query)?.[1];
+    // A file looked for by the token it carries, in the shared drive a drive corpus names, or a
+    // folder's live children, those of one name when the query names it. Files in the trash match
+    // only a query that does not leave them out.
+    let byToken =
+      /appProperties has \{ key='(gadgetsCopyToken|gadgetsUploadToken)' and value='([^']+)' \}/.exec(query);
     let parent = /'([^']+)' in parents/.exec(query)?.[1];
+    let named = /name = '((?:[^'\\]|\\.)*)'/.exec(query)?.[1].replace(/\\(.)/g, "$1");
     let live = query.includes("trashed = false");
     let inDrive = url.searchParams.get("corpora") === "drive" ? url.searchParams.get("driveId") : undefined;
-    if (call === "GET /drive/v3/files" && (copyToken !== undefined || parent !== undefined)) {
-      let files = [...this.files].filter(([, held]) => !(live && held.trashed) && (copyToken === undefined
-        ? held.parents.includes(parent ?? "")
-        : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
+    if (call === "GET /drive/v3/files" && (byToken !== null || parent !== undefined)) {
+      let files = [...this.files].filter(([id, held]) => !(live && held.trashed) && (byToken === null
+        ? held.parents.includes(parent ?? "") && (named === undefined || (held.name || id) === named)
+        : !this.searchLags && held.appProperties?.[byToken[1]] === byToken[2] &&
           (inDrive === undefined || held.driveId === inDrive)));
-      if (copyToken !== undefined) {
-        return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
+      if (byToken !== null) {
+        // Drive promises no order without `orderBy`: this one answers a search by token newest first.
+        return Response.json({ files: files.toReversed().map(([id, held]) => this.#fileJson(id, held, fields)) });
       }
       await this.#stalled("listing");
       let start = Number(url.searchParams.get("pageToken") ?? 0);
       let end = start + (this.listingPageSize ?? files.length);
       return Response.json({
-        files: files.slice(start, end).map(([id, held]) => this.#fileJson(id, held)),
+        files: files.slice(start, end).map(([id, held]) => this.#fileJson(id, held, fields)),
         ...(end < files.length ? { nextPageToken: String(end) } : {}),
       });
     }
-    let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
-      .exec(url.pathname);
+    let match =
+      /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy|revisions|export)(?:\/([^/]+))?)?$/
+        .exec(url.pathname);
     if (!match) throw new Error(`Unexpected provider request: ${call}`);
     let [, rawFileId, collection, rawItemId] = match;
     let asked = decodeURIComponent(rawFileId);
@@ -535,7 +583,7 @@ class DriveProvider {
         await this.#stalled("download");
         return this.#download(held, request.headers.get("Range"));
       }
-      if (request.method === "GET") return Response.json(this.#fileJson(fileId, held));
+      if (request.method === "GET") return Response.json(this.#fileJson(fileId, held, fields));
       if (request.method !== "PATCH") throw new Error(`Unexpected provider request: ${call}`);
       let add = url.searchParams.get("addParents");
       let remove = url.searchParams.get("removeParents");
@@ -551,6 +599,23 @@ class DriveProvider {
     if (collection === "copy") {
       let body = await request.json() as Record<string, unknown>;
       return this.#write(call, url, token, body, () => this.#copy(held, body));
+    }
+
+    if (collection === "export") {
+      return new Response(`${held.name || fileId} exported as ${url.searchParams.get("mimeType")}`);
+    }
+
+    if (collection === "revisions") {
+      let revision = decodeURIComponent(rawItemId ?? "");
+      let body = await request.json() as Record<string, unknown>;
+      let refused = this.nextKeep;
+      this.nextKeep = undefined;
+      if (refused) return driveError(refused);
+      if (revision !== held.headRevisionId && !this.#revisions.has(`${fileId}@${revision}`)) {
+        return driveError({ status: 404, reason: "notFound" });
+      }
+      if (body.keepForever === true) this.kept.push(`${fileId}@${revision}`);
+      return Response.json({ id: revision });
     }
 
     if (collection === "comments") {
@@ -629,6 +694,91 @@ class DriveProvider {
     });
     this.give(id, { ...this.#person("me@example.com"), role: "owner" });
     return Response.json({ id, mimeType });
+  }
+
+  /**
+   * Drive's resumable uploads: a `POST` opens a session for a new file, a `PATCH` one for new
+   * content of a file, and each `PUT` to the session gives it bytes. Nothing is made or changed
+   * until the last byte arrives. A new file asked for under an ID already used is refused with 409
+   * and makes nothing. One Drive converts into a native type holds no bytes of its own.
+   */
+  async #upload(request: Request, url: URL): Promise<Response> {
+    let sessionId = url.searchParams.get("upload_id");
+    if (sessionId === null) {
+      let path = /^\/upload\/drive\/v3\/files(?:\/([^/]+))?$/.exec(url.pathname);
+      if (!path) throw new Error(`Unexpected provider request: ${request.method} ${url.pathname}`);
+      let replace = path[1] === undefined ? undefined : decodeURIComponent(path[1]);
+      let metadata = await request.json() as Record<string, unknown>;
+      if (replace !== undefined && !this.files.has(replace)) {
+        return driveError({ status: 404, reason: "notFound" });
+      }
+      let id = metadata.id;
+      if (typeof id === "string" && (this.files.has(id) || this.#used.has(id))) {
+        return driveError({ status: 409 });
+      }
+      let opened = String(++this.#opened);
+      this.#sessions.set(opened, {
+        ...(replace === undefined ? {} : { replace }), metadata,
+        contentType: request.headers.get("X-Upload-Content-Type") ?? "", received: [],
+      });
+      return new Response(null, { headers: {
+        Location: `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=${opened}`,
+      } });
+    }
+    let session = this.#sessions.get(sessionId);
+    if (request.method === "DELETE") {
+      this.#sessions.delete(sessionId);
+      return new Response(null, { status: 204 });
+    }
+    if (!session) return new Response(null, { status: 404 });
+    let range = /^bytes (?:\*|\d+-\d+)\/(\*|\d+)$/.exec(request.headers.get("Content-Range") ?? "");
+    if (request.method !== "PUT" || !range) throw new Error(`Unexpected upload request: ${request.method}`);
+    session.received.push(new Uint8Array(await request.arrayBuffer()));
+    let bytes = new Uint8Array(await new Blob(session.received).arrayBuffer());
+    if (range[1] === "*" || bytes.length < Number(range[1])) {
+      return new Response(null, {
+        status: 308, headers: bytes.length ? { Range: `bytes=0-${bytes.length - 1}` } : {},
+      });
+    }
+    this.#sessions.delete(sessionId);
+    let { replace, metadata, contentType } = session;
+    let asked = typeof metadata.id === "string" ? metadata.id : undefined;
+    if (asked !== undefined && (this.files.has(asked) || this.#used.has(asked))) {
+      return driveError({ status: 409 });
+    }
+    let content = new TextDecoder().decode(bytes);
+    let revision = `rev-${++this.#made}`;
+    let binary = {
+      content, headRevisionId: revision,
+      sha256Checksum: [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+        .map(byte => byte.toString(16).padStart(2, "0")).join(""),
+    };
+    let fileId = replace ?? asked ?? `upload-${this.#made}`;
+    let made = this.files.get(fileId);
+    if (made) {
+      Object.assign(made, binary, { modifiedTime: new Date().toISOString() });
+    } else {
+      let mimeType = typeof metadata.mimeType === "string" ? metadata.mimeType : contentType;
+      let converted = mimeType.startsWith("application/vnd.google-apps.");
+      let parents = metadata.parents as string[];
+      // The file is in the drive of the folder it goes into, as a copy is.
+      let driveId = this.files.get(parents[0] ?? "")?.driveId;
+      this.files.set(fileId, file(mimeType, parents, {
+        name: String(metadata.name), modifiedTime: new Date().toISOString(),
+        ...(driveId ? { driveId } : {}),
+        ...(converted ? {} : binary),
+        ...(metadata.appProperties
+          ? { appProperties: metadata.appProperties as Record<string, string> } : {}),
+      }));
+      this.give(fileId, { ...this.#person("me@example.com"), role: "owner" });
+    }
+    this.#used.add(fileId);
+    this.#revisions.add(`${fileId}@${revision}`);
+    this.uploads.push({ fileId, metadata, contentType, content });
+    let lost = this.nextUpload === "lost";
+    this.nextUpload = undefined;
+    if (lost) return new Response(null, { status: 404 });
+    return Response.json({ id: fileId, mimeType: this.files.get(fileId)?.mimeType });
   }
 
   /** A download of `held`, whole or of the byte range asked for. */
@@ -766,6 +916,15 @@ function binding(
     },
     apply: (actionId: number) => hooks.applyDrive(facet, props, actionId),
     reject: (actionId: number) => hooks.rejectDrive(facet, props, actionId),
+    /** Reads `fileId` whole, running `between` once the first of its bytes have arrived. */
+    readAcross: (fileId: string, between: () => Promise<void>) =>
+      hooks.readDriveAcross(facet, props, fileId, between),
+    /**
+     * Reads `fileId` with `options`, whole by default, running `between` where the read first
+     * authorizes what it reads.
+     */
+    readHeld: (fileId: string, between: () => Promise<void>, options: DriveFileReadOptions = {}) =>
+      hooks.readDriveHeld(facet, props, fileId, between, options),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
     waiting: () => hooks.driveQueued(facet, props),
@@ -775,6 +934,12 @@ function binding(
     orphan: (actionId: number) => hooks.orphanDriveClaim(facet, props, actionId),
     restart: () => hooks.restartDrive(facet),
     attempts: () => hooks.driveAttempts(facet, props),
+    /** The keys the binding stores under `prefix`, in key order. */
+    storedKeys: (prefix: string) => hooks.driveStoredKeys(facet, props, prefix),
+    /** What the binding stores under `key`, as JSON, or `null`. */
+    stored: (key: string) => hooks.driveStored(facet, props, key),
+    /** Stores `json` under `key`, as a write behind the binding's back does. */
+    store: (key: string, json: string) => hooks.writeDriveStored(facet, props, key, json),
   };
 }
 
@@ -882,9 +1047,11 @@ describe("access level", () => {
       expect(await readWrite.types(), name).toContain(name);
       expect(await readOnly.types(), name).not.toContain(name);
     }
-    // Neither sharing nor moves is offered for auto-approval; copies are.
+    // Neither sharing nor moves is offered for auto-approval; copies, exports and uploads are.
     expect(await readWrite.autoApprovable()).toEqual([
-      { tag: "driveComments", label: "Drive comments" }, COPIES, ...DRIVE_SLIDES_KINDS,
+      { tag: "driveComments", label: "Drive comments" }, COPIES,
+      { tag: "driveExportCopies", label: "Drive exported copies" },
+      { tag: "driveUploads", label: "Drive uploads" }, ...DRIVE_SLIDES_KINDS,
       ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS,
     ]);
     expect(await readOnly.autoApprovable()).toEqual([]);
@@ -2363,7 +2530,8 @@ describe("copies", () => {
       name: "Copy of doc-1", parents: ["elsewhere"],
       appProperties: {
         gadgetsCopyToken: expect.stringMatching(/^[0-9a-f]{32}$/),
-        gadgetsConvertedFrom: null, gadgetsSourceModified: null,
+        gadgetsConvertedFrom: null, gadgetsSourceModified: null, gadgetsUploadToken: null,
+        gadgetsSaved: null,
       },
     }]);
     expect(parentsOf("native-1")).toEqual(["elsewhere"]);
@@ -2582,11 +2750,12 @@ describe("copies", () => {
     expect(await drive.waiting()).toEqual([queued.actionId]);
   });
 
-  it("makes a native copy without the markers that offer a conversion for reuse", async () => {
+  it("makes a native copy without the markers and tokens this app set on the file", async () => {
     let doc = provider.files.get("doc-1");
     if (!doc) throw new Error("no doc-1");
     doc.appProperties = {
-      gadgetsConvertedFrom: "office", gadgetsSourceModified: "2024-01-01T00:00:00.000Z", kept: "yes",
+      gadgetsConvertedFrom: "office", gadgetsSourceModified: "2024-01-01T00:00:00.000Z",
+      gadgetsUploadToken: "0123456789abcdef0123456789abcdef", gadgetsSaved: "1", kept: "yes",
     };
     let drive = binding();
 
@@ -2671,6 +2840,687 @@ describe("copies", () => {
   it("offers a single-file binding no copies for auto-approval", async () => {
     expect(await binding(DOC_FILE).autoApprovable()).not.toContainEqual(COPIES);
     expect(await binding(FOLDER).autoApprovable()).toContainEqual(COPIES);
+  });
+});
+
+describe("uploads", () => {
+  const UPLOADS = { tag: "driveUploads", label: "Drive uploads" };
+  const EXPORT_COPIES = { tag: "driveExportCopies", label: "Drive exported copies" };
+  const UPLOAD_OF = (...subresources: string[]) =>
+    ({ title: "Check Google Drive upload", subresources });
+  const READ = (...subresources: string[]) => ({ title: "Read Google Drive metadata", subresources });
+  const READ_FILE = (...subresources: string[]) => ({ title: "Read file from Google Drive", subresources });
+  const UPLOAD_SHARING =
+    "The file takes the sharing of the folder it goes into: everyone with access to that folder " +
+    "can open it.";
+  const NAME_TAKEN =
+    "A file of that name is already in that folder. Choose another name, or pass overwrite: true " +
+    "to replace that file's content.";
+  const NAME_WAITING =
+    "A copy or an upload of that name is already waiting for approval to go into that folder, " +
+    "and overwrite replaces only a file that is there. Choose another name, or upload it once " +
+    "that one is decided.";
+  const NAME_TAKEN_SINCE =
+    "A file of that name has since appeared in that folder, so nothing was uploaded. Upload it " +
+    "again under another name, or with overwrite: true to replace that file.";
+  const UNCONFIRMED_UPLOAD =
+    "Google Drive did not confirm whether this file was uploaded, and it may have been. " +
+    "Approving it again first checks for it, so it is not uploaded twice; rejecting it leaves " +
+    "any file that was made.";
+  const UNCONFIRMED_CONVERTED =
+    "Google Drive did not confirm whether this file was uploaded, and it may have been: Google " +
+    "Drive can take a while to show a new file. It won't be sent again. Approving it again looks " +
+    "for the file once more; rejecting it leaves any file that was made.";
+  const UNCONFIRMED_REPLACE =
+    "Google Drive did not confirm whether the file's content was replaced, and it may have " +
+    "been. Approving it again first reads the file's content checksum, so it is not replaced " +
+    "twice.";
+  const CHANGED_SINCE_QUEUED =
+    "That file changed since this was queued, so it was not replaced: approving it would have " +
+    "discarded that change from the file's current content. Upload it again to replace the file " +
+    "as it is now.";
+  const PIN_REFUSED =
+    "Google Drive refused to keep the file's current version for good, so it was not replaced. " +
+    "Drive keeps at most 200 versions of a file for good: in the file's version history, stop " +
+    "keeping one, then upload it again.";
+  const NO_CHECKSUM =
+    "Google Drive reports no content checksum for the file of that name in that folder, so its " +
+    "content cannot be replaced here. Upload it under another name.";
+  const FILE_WAITING =
+    "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+    "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+    "getEntry() with this ID later to see whether it has been made.";
+  const EMPTY_CONVERSION =
+    "An empty file cannot be converted. Leave out convertTo, or upload content.";
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const ALLOCATIONS = "driveUploads:allocation:";
+  const TOTAL = `${ALLOCATIONS}totalBytes`;
+  /** The entries of every page a listing yielded. */
+  const listed = (value: unknown) => (value as DriveEntry[][]).flat().map(entry => entry.id);
+  /** The uploads Drive finished into a file, as the bytes it took. */
+  const uploadedTo = (fileId: string) =>
+    provider.uploads.filter(upload => upload.fileId === fileId).map(({ content }) => content);
+  /** The upload sessions the gatekeeper opened. */
+  const sessions = () => provider.calls().filter(call => call.startsWith("POST /upload/") ||
+    call.startsWith("PATCH /upload/"));
+
+  async function sha256(text: string): Promise<string> {
+    let digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  /** A stream giving `pieces`, one at a time. */
+  function streamOf(...pieces: string[]): ReadableStream<Uint8Array> {
+    let encoder = new TextEncoder();
+    return new ReadableStream({
+      pull(controller) {
+        let piece = pieces.shift();
+        if (piece === undefined) controller.close();
+        else controller.enqueue(encoder.encode(piece));
+      },
+    });
+  }
+
+  /** What a test reads and writes of a binding's storage. */
+  type Storage = {
+    storedKeys(prefix: string): Promise<string[]>;
+    stored(key: string): Promise<string | null>;
+    store(key: string, json: string): Promise<void>;
+  };
+
+  /** The handles of the uploads' bytes `drive` holds, in key order. */
+  async function heldBytes(drive: Storage): Promise<string[]> {
+    return (await drive.storedKeys(ALLOCATIONS)).filter(key => key !== TOTAL)
+      .map(key => key.slice(ALLOCATIONS.length));
+  }
+
+  /** Dates the allocation of the bytes under `handle` to the epoch, long past any grace. */
+  async function age(drive: Storage, handle: string): Promise<void> {
+    let key = `${ALLOCATIONS}${handle}`;
+    let stored = await drive.stored(key);
+    if (stored === null) throw new Error(`no allocation ${handle}`);
+    await drive.store(key, JSON.stringify({ ...JSON.parse(stored), createdAt: 0 }));
+  }
+
+  /** Stores an allocation old enough for a sweep that no upload holds, as a failed capture leaves. */
+  async function orphan(drive: Storage): Promise<void> {
+    await drive.store(`${ALLOCATIONS}${crypto.randomUUID()}`,
+      JSON.stringify({ version: 1, size: 0, chunks: 0, createdAt: 0 }));
+  }
+
+  /** A binary file of `content` in folder `elsewhere`, at revision `rev-old`. */
+  async function binary(name: string, content: string, overrides: Partial<FakeFile> = {}) {
+    return file("text/plain", ["elsewhere"], {
+      name, content, headRevisionId: "rev-old", sha256Checksum: await sha256(content), ...overrides,
+    });
+  }
+
+  it("uploads a file under the ID it reserved once approved, from the bytes it kept, then lets them go", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("uploadFile", "notes.txt", "hello upload", { folderId: "elsewhere" });
+
+    let pending = {
+      id: "copy-1", name: "notes.txt", mimeType: "text/plain", isFolder: false,
+      modifiedTime: expect.any(Date), size: 12, parentId: "elsewhere", pending: true,
+    };
+    expect(queued.value).toEqual(pending);
+    expect(queued.action).toMatchObject({
+      title: "Upload a file to Google Drive",
+      description: "Upload a file into Google Drive folder `elsewhere`, as the connected " +
+        `account.\n\n${UPLOAD_SHARING}`,
+      actionKind: UPLOADS, autoApprovable: true, implementsRevert: false,
+    });
+    expect(queued.action).not.toHaveProperty("awaitDecision");
+    // The bytes are the workspace's own, which the approver sees only as the file.
+    expect(queued.action).not.toHaveProperty("descriptionIsComplete");
+    expect(queued.action.fields).toContainEqual({
+      label: "File", kind: "file", name: "notes.txt", mediaType: "text/plain", size: 12,
+      sha256: await sha256("hello upload"), origin: "agent",
+    });
+    expect(queued.reports).toEqual([UPLOAD_OF("drive/file/elsewhere", "drive/folder/elsewhere")]);
+    // Shown where it goes, while Google has nothing of it.
+    expect((await drive.call("getEntry", "copy-1")).value).toEqual(pending);
+    expect(listed((await drive.call("list", { directParentId: "elsewhere" })).value))
+      .toContain("copy-1");
+    expect((await drive.call("listComments", "copy-1")).error).toBe(FILE_WAITING);
+    expect(provider.uploads).toEqual([]);
+    expect(await heldBytes(drive)).toHaveLength(1);
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(provider.uploads).toEqual([{
+      fileId: "copy-1", metadata: { id: "copy-1", name: "notes.txt", parents: ["elsewhere"] },
+      contentType: "text/plain", content: "hello upload",
+    }]);
+    expect(await heldBytes(drive)).toEqual([]);
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
+    expect(await drive.stored(TOTAL)).toBe("0");
+    let made = await drive.call("getEntry", "copy-1");
+    expect(made.value).toMatchObject({ id: "copy-1", parentId: "elsewhere", size: 12 });
+    expect(made.value).not.toHaveProperty("pending");
+  });
+
+  it("keeps a stream's and a Uint8Array's bytes as given, and reads a range of them while the upload waits", async () => {
+    let drive = binding();
+
+    let streamed = await drive.queued("uploadFile", "log.md", streamOf("# Log\n", "line one\n", "line two\n"),
+      { folderId: "elsewhere" });
+    expect(streamed.value).toMatchObject({ id: "copy-1", mimeType: "text/markdown", size: 24 });
+    let bytes = await drive.queued("uploadFile", "blob", new TextEncoder().encode("0123456789abcdef"),
+      { folderId: "root" });
+    expect(bytes.value).toMatchObject(
+      { id: "copy-2", mimeType: "application/octet-stream", size: 16, parentId: MY_ROOT });
+
+    let read = await drive.call("readFile", "copy-1", { offset: 6, length: 8 });
+    expect(read.value).toEqual({
+      mimeType: "text/markdown", size: 24, modifiedTime: expect.any(Date), offset: 6, length: 8,
+      text: "line one",
+    });
+    // The bytes are the workspace's own: only the folder the view places them in is reported.
+    expect(read.reports).toEqual([READ_FILE("drive/folder/elsewhere")]);
+    expect((await drive.call("readFile", "copy-2", { offset: 10 })).value)
+      .toMatchObject({ offset: 10, length: 6, text: "abcdef" });
+    expect((await drive.call("readFile", "copy-2", { offset: 10 })).reports)
+      .toEqual([READ_FILE("drive/folder/my-root")]);
+    expect((await drive.call("readFile", "copy-2", { offset: 17 })).error)
+      .toBe("offset 17 is past the end of the Drive file, which is 16 bytes long.");
+
+    expect(await drive.apply(streamed.actionId)).toBeNull();
+    expect(await drive.apply(bytes.actionId)).toBeNull();
+    expect(uploadedTo("copy-1")).toEqual(["# Log\nline one\nline two\n"]);
+    expect(uploadedTo("copy-2")).toEqual(["0123456789abcdef"]);
+    expect(parentsOf("copy-2")).toEqual([MY_ROOT]);
+  });
+
+  it("shows an upload on a folder binding only in the session of the folder it goes into", async () => {
+    let drive = binding(FOLDER);
+
+    let here = await drive.queued("uploadFile", "here.txt", "in the folder");
+    expect(here.value).toMatchObject({ id: "copy-1", parentId: ROOT, pending: true });
+    expect(here.reports).toEqual([UPLOAD_OF("drive/folder/folder-root")]);
+    let inner = await drive.queued("uploadFile", "inner.txt", "in a child", { folderId: "inner" });
+    expect(inner.reports).toEqual(
+      [UPLOAD_OF("drive/folder/folder-root", "drive/file/inner", "drive/folder/inner")]);
+
+    let read = await drive.call("readFile", "copy-1");
+    expect(read.value).toMatchObject({ text: "in the folder" });
+    expect(read.reports).toEqual([READ_FILE("drive/folder/folder-root")]);
+    expect(listed((await drive.call("list")).value)).toContain("copy-1");
+    expect((await drive.call("getEntry", "copy-2")).error).toBe(OUTSIDE);
+    // Nor does a range past its end, whose refusal would tell its size.
+    expect((await drive.call("readFile", "copy-2", { offset: 999 })).error).toBe(OUTSIDE);
+    let shown = await drive.callIn(["inner"], "getEntry", "copy-2");
+    expect(shown.value).toMatchObject({ id: "copy-2", parentId: "inner", pending: true });
+    expect(shown.reports.at(-1)).toEqual(READ("drive/folder/inner"));
+    expect(listed((await drive.callIn(["inner"], "list")).value)).toEqual(["nested-doc", "copy-2"]);
+  });
+
+  it("refuses a name a file in the folder or a waiting upload has, and checks again when approved", async () => {
+    provider.files.set("taken", await binary("taken.txt", "already here"));
+    provider.files.set("binned", await binary("binned.txt", "in the trash", { trashed: true }));
+    let drive = binding();
+
+    let taken = await drive.call("uploadFile", "taken.txt", "new", { folderId: "elsewhere" });
+    expect(taken.error).toBe(NAME_TAKEN);
+    expect(taken.actionId).toBeUndefined();
+    // A file in the trash takes no name.
+    expect((await drive.call("uploadFile", "binned.txt", "new", { folderId: "elsewhere" })).error)
+      .toBeUndefined();
+    let first = await drive.queued("uploadFile", "late.txt", "mine", { folderId: "elsewhere" });
+    for (let overwrite of [false, true]) {
+      expect((await drive.call("uploadFile", "late.txt", "again", { folderId: "elsewhere", overwrite }))
+        .error).toBe(NAME_WAITING);
+    }
+    // Another folder takes the same name.
+    expect((await drive.call("uploadFile", "late.txt", "again", { folderId: "root" })).error)
+      .toBeUndefined();
+
+    // Someone makes a file of that name before the upload is approved.
+    provider.files.set("someone", await binary("late.txt", "theirs"));
+    expect(await drive.apply(first.actionId)).toBe(NAME_TAKEN_SINCE);
+    expect(uploadedTo("copy-2")).toEqual([]);
+    expect(await drive.waiting()).not.toContain(first.actionId);
+    expect(await heldBytes(drive)).toHaveLength(2);
+  });
+
+  it("refuses a name a call queued while this one's stream was being read", async () => {
+    let drive = binding();
+    let pulled = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    let content = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        pulled.resolve();
+        await release.promise;
+        controller.enqueue(new TextEncoder().encode("first"));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+
+    let first = drive.call("uploadFile", "same.txt", content, { folderId: "elsewhere" });
+    await pulled.promise;
+    let second = await drive.queued("uploadFile", "same.txt", "second", { folderId: "elsewhere" });
+    release.resolve();
+
+    expect((await first).error).toBe(NAME_WAITING);
+    expect(await drive.waiting()).toEqual([second.actionId]);
+    expect(await heldBytes(drive)).toHaveLength(1);
+  });
+
+  it("queues one of two calls that upload the same name at once", async () => {
+    let drive = binding();
+    let answered = globalThis.fetch;
+    let bothReserving = Promise.withResolvers<void>();
+    let reservations = 0;
+    // Each call reserves its ID before it is queued; the first waits until the second reserves.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new Request(input, init).url.endsWith("/drive/v3/files/generateIds")) {
+        if (++reservations === 1) await bothReserving.promise;
+        else bothReserving.resolve();
+      }
+      return answered(input, init);
+    });
+
+    let calls = await Promise.all([1, 2].map(n =>
+      drive.call("uploadFile", "same.txt", `upload ${n}`, { folderId: "elsewhere" })));
+
+    expect(calls.map(({ error }) => error ?? "queued").toSorted()).toEqual([NAME_WAITING, "queued"]);
+    expect(await drive.waiting()).toHaveLength(1);
+    expect(await heldBytes(drive)).toHaveLength(1);
+  });
+
+  it("keeps nothing of an upload refused after its bytes were kept", async () => {
+    provider.maxImportSizes[DOC_MIME] = "4";
+    let drive = binding();
+
+    let large = await drive.call("uploadFile", "plan.docx", "more than four bytes",
+      { folderId: "elsewhere", convertTo: "document" });
+    expect(large.error).toBe(
+      "That file is 1 MB, larger than the 1 MB Google Drive converts into this format.");
+    let empty = await drive.call("uploadFile", "plan.docx", streamOf(),
+      { folderId: "elsewhere", convertTo: "document" });
+    expect(empty.error).toBe(EMPTY_CONVERSION);
+
+    expect([large.actionId, empty.actionId]).toEqual([undefined, undefined]);
+    expect(await heldBytes(drive)).toEqual([]);
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
+    expect(await drive.stored(TOTAL)).toBe("0");
+  });
+
+  it("lets a rejected upload's bytes go, and a sweep then keeps those of uploads still waiting", async () => {
+    let drive = binding();
+    let rejected = await drive.queued("uploadFile", "a.txt", "first", { folderId: "elsewhere" });
+    let [first] = await heldBytes(drive);
+    let waiting = await drive.queued("uploadFile", "b.txt", "second", { folderId: "elsewhere" });
+    let [second] = (await heldBytes(drive)).filter(handle => handle !== first);
+    await orphan(drive);
+    // All of them old enough for a sweep.
+    for (let handle of [first, second]) await age(drive, handle);
+
+    expect(await drive.reject(rejected.actionId)).toBeNull();
+
+    expect(await heldBytes(drive)).toEqual([second]);
+    expect(await drive.apply(waiting.actionId)).toBeNull();
+    expect(uploadedTo("copy-2")).toEqual(["second"]);
+    expect(uploadedTo("copy-1")).toEqual([]);
+    expect(await heldBytes(drive)).toEqual([]);
+  });
+
+  it("sweeps, as a session starts, bytes no waiting upload holds", async () => {
+    let drive = binding();
+    await drive.queued("uploadFile", "a.txt", "kept", { folderId: "elsewhere" });
+    let [held] = await heldBytes(drive);
+    await age(drive, held);
+    await orphan(drive);
+
+    await drive.call("getScope");
+
+    expect(await heldBytes(drive)).toEqual([held]);
+    expect((await drive.call("readFile", "copy-1")).value).toMatchObject({ text: "kept" });
+  });
+
+  it("reads an upload an approval made after a read picked it, before the read opened its bytes, as Drive has it", async () => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", "kept", { folderId: "elsewhere" });
+    let applied: string | null | undefined;
+
+    let read = await drive.readHeld("copy-1", async () => {
+      applied = await drive.apply(queued.actionId);
+    });
+
+    expect(applied).toBeNull();
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
+    expect(read).toEqual({ text: "kept" });
+  });
+
+  // A read of no bytes opens none, and must still find the upload gone.
+  it.each([
+    ["an upload", "kept", {}],
+    ["an empty upload", "", {}],
+    ["an upload at its end", "kept", { offset: 4 }],
+  ])("refuses a read of %s a rejection dropped after the read picked it, as for any file Drive does not have", async (_, text, options) => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", text, { folderId: "elsewhere" });
+
+    let read = await drive.readHeld("copy-1", async () => {
+      await drive.reject(queued.actionId);
+    }, options);
+
+    let unknown = await drive.call("readFile", "copy-1", options);
+    expect(unknown.error).toBeDefined();
+    expect(read).toEqual({ error: unknown.error });
+  });
+
+  it("keeps the bytes a read of a waiting upload has begun until the read ends, though the upload is approved meanwhile", async () => {
+    let drive = binding();
+    // Four of the 1 MB chunks the bytes are kept in, and a fifth, read one at a time.
+    let content = "0123456789abcdef".repeat(1 << 18) + "end";
+    let queued = await drive.queued("uploadFile", "big.txt", content, { folderId: "elsewhere" });
+    let applied: string | null | undefined;
+
+    let read = await drive.readAcross("copy-1", async () => {
+      applied = await drive.apply(queued.actionId);
+    });
+
+    expect(applied).toBeNull();
+    expect(read.before).toBeGreaterThan(0);
+    expect(read.before).toBeLessThan(content.length);
+    expect(read.error).toBeUndefined();
+    expect(read.text === content).toBe(true);
+    expect(uploadedTo("copy-1").map(text => text === content)).toEqual([true]);
+    expect(await heldBytes(drive)).toEqual([]);
+    expect(await drive.storedKeys("driveUploads:file:")).toEqual([]);
+  });
+
+  it("finds a file a lost reply made under its reserved ID, and never uploads it twice", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("uploadFile", "notes.txt", "hello", { folderId: "elsewhere" });
+    provider.nextUpload = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_UPLOAD);
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+    // Still held, so that the next approval can send them should the look find nothing.
+    expect(await heldBytes(drive)).toHaveLength(1);
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(sessions()).toHaveLength(1);
+    expect(uploadedTo("copy-1")).toEqual(["hello"]);
+    expect(await heldBytes(drive)).toEqual([]);
+
+    // Deleted for good once made, the file is gone; Drive still refuses its ID to a new one.
+    let again = await drive.queued("uploadFile", "gone.txt", "briefly", { folderId: "elsewhere" });
+    provider.nextUpload = "lost";
+    expect(await drive.apply(again.actionId)).toBe(UNCONFIRMED_UPLOAD);
+    provider.files.delete("copy-2");
+    expect(await drive.apply(again.actionId)).toBeNull();
+    expect(uploadedTo("copy-2")).toEqual(["briefly"]);
+    expect(provider.files.has("copy-2")).toBe(false);
+    expect(await drive.waiting()).toEqual([]);
+  });
+
+  it("lists a file an upload made under its reserved ID while the action waits once, as Drive's", async () => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", "hello", { folderId: "elsewhere" });
+    // Drive makes the file and loses the answer, so the action still waits.
+    provider.nextUpload = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_UPLOAD);
+    provider.files.set("later", file(DOC_MIME, ["elsewhere"]));
+    // The file is on the first page, and the uploads that wait show on the last.
+    provider.listingPageSize = 1;
+
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+
+    expect(listed(listing.value)).toEqual(["copy-1", "later"]);
+    expect(listing.value).toEqual([[expect.not.objectContaining({ pending: true })], expect.anything()]);
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+  });
+
+  it("replaces a file's content once approved, having kept its current version for good", async () => {
+    provider.files.set("report", await binary("report.txt", "old"));
+    let drive = binding();
+
+    let queued = await drive.queued("uploadFile", "report.txt", "new content",
+      { folderId: "elsewhere", overwrite: true });
+
+    expect(queued.value).toEqual({
+      id: "report", name: "report.txt", mimeType: "text/plain", isFolder: false,
+      modifiedTime: expect.any(Date), size: 11, parentId: "elsewhere", pending: true,
+    });
+    expect(queued.action).toMatchObject({
+      title: "Replace a Google Drive file's content", actionKind: UPLOADS, autoApprovable: false,
+      awaitDecision: true,
+    });
+    expect(field(queued.action, "Replaces")).toBe("report");
+    expect(queued.reports).toEqual(
+      [UPLOAD_OF("drive/file/elsewhere", "drive/folder/elsewhere", "drive/file/report")]);
+    // Until it is approved, the file reads as it is.
+    let before = await drive.call("readFile", "report");
+    expect(before.value).toMatchObject({ size: 3, text: "old" });
+    expect((await drive.call("getEntry", "report")).value).not.toHaveProperty("pending");
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    let calls = provider.calls();
+    let pinned = calls.indexOf("PATCH /drive/v3/files/report/revisions/rev-old");
+    expect(pinned).toBeGreaterThan(-1);
+    expect(pinned).toBeLessThan(calls.indexOf("PATCH /upload/drive/v3/files/report"));
+    expect(provider.kept).toEqual(["report@rev-old"]);
+    expect(uploadedTo("report")).toEqual(["new content"]);
+    expect(provider.files.get("report")).toMatchObject(
+      { name: "report.txt", parents: ["elsewhere"], content: "new content" });
+    expect(await heldBytes(drive)).toEqual([]);
+  });
+
+  it("refuses a replacement of a file that changed since, or whose version Drive will not keep", async () => {
+    provider.files.set("report", await binary("report.txt", "old"));
+    let drive = binding();
+    let replace = () => drive.queued("uploadFile", "report.txt", "new",
+      { folderId: "elsewhere", overwrite: true });
+
+    let changed = await replace();
+    change("report", { content: "edited", headRevisionId: "rev-edited", sha256Checksum: await sha256("edited") });
+    expect(await drive.apply(changed.actionId)).toBe(CHANGED_SINCE_QUEUED);
+
+    let refused = await replace();
+    provider.nextKeep = { status: 403, reason: "keepForeverLimitReached" };
+    expect(await drive.apply(refused.actionId))
+      .toBe(`${PIN_REFUSED} [http=403 reason=keepForeverLimitReached]`);
+
+    expect(provider.kept).toEqual([]);
+    expect(provider.uploads).toEqual([]);
+    expect(provider.files.get("report")?.content).toBe("edited");
+    expect(await drive.waiting()).toEqual([]);
+
+    // Drive gives no checksum for a file it cannot tell the content of.
+    change("report", { sha256Checksum: undefined });
+    expect((await drive.call("uploadFile", "report.txt", "new", { folderId: "elsewhere", overwrite: true }))
+      .error).toBe(NO_CHECKSUM);
+  });
+
+  it("tells by the content's checksum whether a replacement whose reply was lost was made", async () => {
+    provider.files.set("report", await binary("report.txt", "old"));
+    let drive = binding();
+
+    let queued = await drive.queued("uploadFile", "report.txt", "new",
+      { folderId: "elsewhere", overwrite: true });
+    provider.nextUpload = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_REPLACE);
+    expect(await drive.apply(queued.actionId)).toBeNull();
+
+    expect(uploadedTo("report")).toEqual(["new"]);
+    expect(sessions()).toEqual(["PATCH /upload/drive/v3/files/report"]);
+  });
+
+  it("returns a converted upload as pending:<n>, which names the file once it is made", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "elsewhere", convertTo: "document" });
+
+    let id = `pending:${queued.actionId}`;
+    expect(queued.value).toEqual({
+      id, name: "plan", mimeType: DOC_MIME, isFolder: false, modifiedTime: expect.any(Date),
+      parentId: "elsewhere", pending: true,
+    });
+    expect(queued.action).toMatchObject({ actionKind: UPLOADS, autoApprovable: true, awaitDecision: true });
+    let shown = await drive.call("getEntry", id);
+    expect(shown.value).toEqual(queued.value);
+    expect(shown.reports).toEqual([READ("drive/folder/elsewhere")]);
+    expect((await drive.call("readFile", id)).error).toBe(FILE_WAITING);
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(provider.uploads).toEqual([{
+      fileId: "upload-1", contentType: DOCX, content: "docx bytes",
+      metadata: {
+        name: "plan", parents: ["elsewhere"], mimeType: DOC_MIME,
+        appProperties: { gadgetsUploadToken: expect.stringMatching(/^[0-9a-f]{32}$/) },
+      },
+    }]);
+
+    await drive.restart();
+    let again = binding(ACCOUNT, "write", drive.facet);
+    let made = await again.call("getEntry", id);
+    expect(made.value).toMatchObject({ id: "upload-1", mimeType: DOC_MIME, parentId: "elsewhere" });
+    expect(made.value).not.toHaveProperty("pending");
+  });
+
+  it("sends a converted upload again when the gatekeeper restarted before its last chunk went", async () => {
+    let drive = binding();
+    let upload = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "elsewhere", convertTo: "document" });
+    let answered = globalThis.fetch;
+    let opening = false;
+    // Drive opens no session: the approval waits there until the gatekeeper restarts.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let request = new Request(input, init);
+      if (request.method !== "POST" || !new URL(request.url).pathname.startsWith("/upload/")) {
+        return answered(input, init);
+      }
+      opening = true;
+      return new Promise<Response>(() => {});
+    });
+    let applying = drive.apply(upload.actionId);
+    // Polled from the test's own context: a promise the gatekeeper resolved would carry the test
+    // into the gatekeeper's context, which the restart ends.
+    await vi.waitFor(() => expect(opening).toBe(true));
+    expect(await drive.attempts()).toEqual({});
+    await drive.restart();
+    expect(await applying).not.toBeNull();
+
+    vi.stubGlobal("fetch", answered);
+    expect(await drive.apply(upload.actionId)).toBeNull();
+    expect(provider.uploads.map(({ fileId }) => fileId)).toEqual(["upload-1"]);
+    expect((await drive.call("getEntry", `pending:${upload.actionId}`)).value)
+      .toMatchObject({ id: "upload-1" });
+  });
+
+  it("finds a converted upload whose reply was lost in the shared drive its folder moved to", async () => {
+    provider.files.set("shared", file(FOLDER_MIME, ["drive-a"], { driveId: "drive-a" }));
+    let drive = binding();
+    let upload = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "shared", convertTo: "document" });
+
+    // A manager moves the folder to another shared drive before the upload is approved.
+    let folder = provider.files.get("shared");
+    if (!folder) throw new Error("no folder");
+    folder.driveId = "drive-b";
+    provider.nextUpload = "lost";
+    expect(await drive.apply(upload.actionId)).toBe(UNCONFIRMED_CONVERTED);
+    expect(provider.files.get("upload-1")?.driveId).toBe("drive-b");
+
+    // Not in the drive the folder was in when it was queued, but among the account's own files.
+    expect(await drive.apply(upload.actionId)).toBeNull();
+    expect(sessions()).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${upload.actionId}`)).value)
+      .toMatchObject({ id: "upload-1", parentId: "shared" });
+  });
+
+  it("settles a converted upload whose reply was lost by its token, not by a copy of the file that carries it", async () => {
+    let drive = binding();
+    let upload = await drive.queued("uploadFile", "plan.docx", "docx bytes",
+      { folderId: "elsewhere", convertTo: "document" });
+    provider.nextUpload = "lost";
+    expect(await drive.apply(upload.actionId)).toBe(UNCONFIRMED_CONVERTED);
+
+    // The made file is in Drive, where the agent finds it and copies it.
+    let copy = await drive.queued("copyFile", "upload-1", { folderId: "elsewhere" });
+    expect(await drive.apply(copy.actionId)).toBeNull();
+
+    expect(await drive.apply(upload.actionId)).toBeNull();
+    expect(sessions()).toHaveLength(1);
+    expect((await drive.call("getEntry", `pending:${upload.actionId}`)).value)
+      .toMatchObject({ id: "upload-1" });
+    expect((await drive.call("getEntry", `pending:${copy.actionId}`)).value)
+      .toMatchObject({ id: "native-1" });
+  });
+
+  it("uploads an exported copy's export under the ID it reserved, and reads none of it while it waits", async () => {
+    let drive = binding();
+
+    let queued = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere", convertTo: "pdf" });
+
+    expect(queued.value).toEqual({
+      id: "copy-1", name: "doc-1.pdf", mimeType: "application/pdf", isFolder: false,
+      modifiedTime: expect.any(Date), parentId: "elsewhere", pending: true,
+    });
+    expect(queued.action).toMatchObject(
+      { actionKind: EXPORT_COPIES, autoApprovable: true, descriptionIsComplete: true });
+    expect(queued.action).not.toHaveProperty("awaitDecision");
+    expect((await drive.call("getEntry", "copy-1")).reports)
+      .toEqual([READ("drive/file/doc-1", "drive/folder/elsewhere")]);
+    // The refusal names the file it exports, so it is said only once the read is reported.
+    let refused = await drive.call("readFile", "copy-1");
+    expect(refused.error).toBe(
+      "That file is an exported copy still waiting for approval: Google exports the file only " +
+      'when the copy is approved. Read the export of the file as it is now with exportFile("doc-1", "pdf").');
+    expect(refused.reports).toEqual([READ("drive/file/doc-1", "drive/folder/elsewhere")]);
+    expect(provider.calls()).not.toContain("GET /drive/v3/files/doc-1/export");
+
+    expect(await drive.apply(queued.actionId)).toBeNull();
+    expect(provider.uploads).toEqual([{
+      fileId: "copy-1", metadata: { id: "copy-1", name: "doc-1.pdf", parents: ["elsewhere"] },
+      contentType: "application/pdf", content: "doc-1 exported as application/pdf",
+    }]);
+    expect((await drive.call("readFile", "copy-1")).value)
+      .toMatchObject({ text: "doc-1 exported as application/pdf" });
+  });
+
+  // The edit is queued before the copy, so Google's export at approval would leave it out.
+  it("refuses an exported copy of a file an edit was queued to while the copy reserved its ID", async () => {
+    let drive = binding();
+    provider.files.set("deck-1", file(SLIDES_MIME, [ROOT], { name: "Deck" }));
+    let slides = new SlidesProvider(presentation([
+      slide("s1", [shape("t1", text(["Q3 review"]), { placeholder: "TITLE" })]),
+    ]), "deck-1");
+    let answered = globalThis.fetch;
+    let reserving = Promise.withResolvers<void>();
+    let reserved = Promise.withResolvers<void>();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let request = new Request(input, init);
+      if (new URL(request.url).pathname === "/drive/v3/files/generateIds") {
+        reserving.resolve();
+        await reserved.promise;
+      }
+      return await slides.handle(request) ?? answered(input, init);
+    });
+
+    let copying = drive.call("copyFile", "deck-1", { convertTo: "pdf" });
+    await reserving.promise;
+    let edit = await env.TEST_HOOKS.getByName(drive.facet).callDriveNative(
+      drive.facet, { scope: ACCOUNT, access: "write" }, "openGoogleSlides", "deck-1",
+      "setSlidesSkipped", [["s1"], true]);
+    reserved.resolve();
+
+    expect((await copying).error).toBe(
+      "That file has changes waiting for approval, which a copy would leave out: Google Drive " +
+      "copies the file as it is on Drive. Copy it once they are decided.");
+    // Through stubs of its own: the test runs on in the gatekeeper's context, which answered the
+    // reservation, and a stub made before it cannot be used from there.
+    expect(await binding(ACCOUNT, "write", drive.facet).waiting()).toEqual([edit.actionId]);
+  });
+
+  it("offers a single-file binding neither uploads nor exported copies for auto-approval", async () => {
+    let kinds = await binding(DOC_FILE).autoApprovable();
+    expect(kinds).not.toContainEqual(UPLOADS);
+    expect(kinds).not.toContainEqual(EXPORT_COPIES);
+    expect(await binding(FOLDER).autoApprovable()).toEqual(expect.arrayContaining([UPLOADS, EXPORT_COPIES]));
   });
 });
 

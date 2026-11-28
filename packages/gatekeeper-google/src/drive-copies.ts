@@ -10,8 +10,12 @@
  * a conversion of an Office file into one, makes. Such a copy carries a random token in an app
  * property instead, which a look searches for; Drive's search lags, so not finding it proves
  * nothing, and the copy is never sent twice. It is not simulated: its result is shown as
- * `pending:<n>` until it is made, and that ID names the copy afterwards through the made-copy
+ * `pending:<n>` until it is made, and that ID names the copy afterwards through the made-file
  * record kept here.
+ *
+ * An exported copy is a Google Docs, Sheets or Slides file exported into another format, as
+ * exportFile() reads it, and uploaded as a new file under a reserved ID. The export streams from
+ * Drive into the upload, so it too passes through here only a chunk at a time.
  */
 
 import {
@@ -21,19 +25,19 @@ import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-descr
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   APPROVAL_READ_MAX_MS, CONVERTED_FROM_PROPERTY, COPY_TOKEN_PROPERTY, DriveApiRequestError,
-  FOLDER_MIME_TYPE, isListableFolderNode, megabytes, SOURCE_MODIFIED_PROPERTY, type DriveApi,
-  type DriveMadeCopy, type DriveScopeNode,
+  FOLDER_MIME_TYPE, isListableFolderNode, megabytes, SAVED_PROPERTY, SOURCE_MODIFIED_PROPERTY,
+  UPLOAD_TOKEN_PROPERTY, type DriveApi, type DriveMadeFile, type DriveScopeNode,
 } from "./drive-api";
-import { GOOGLE_NATIVE_PREFIX } from "./drive-file-read";
+import { exportMimeType, GOOGLE_NATIVE_PREFIX, readTimed } from "./drive-file-read";
 import { isDirectChild } from "./drive-folder-scope";
 import {
   corpusOf, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE,
   type SimulatedEntry,
 } from "./drive-session";
-import type { DriveNativeType } from "./drive-types";
+import type { DriveExportFormat, DriveNativeType } from "./drive-types";
 import {
-  driveRefusal, isPendingId, PENDING_PREFIX, pendingId, provePath, requireWritable, sendOnce,
-  type DriveWritesHost, type QueuedWrite, type RefusalRow,
+  driveRefusal, isPendingId, lookForToken, PENDING_PREFIX, pendingId, provePath, requireWritable,
+  sendOnce, type DriveWritesHost, type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { nativeCopyName, officeLabel, type OfficeKind } from "./office-conversion";
 import { obsContext } from "./observability";
@@ -50,7 +54,7 @@ type DriveCopyPayload = {
   fileName?: string;
   /** The copy's name, whole: the approval shows all of it. */
   name: string;
-  /** The copy's MIME type: the file's own, or the native type it is converted to. */
+  /** The copy's MIME type: the file's own, or the type it is converted or exported to. */
   mimeType: string;
   /** The folder the copy goes into, by its own ID. */
   toFolderId: string;
@@ -84,13 +88,29 @@ export type DriveCopyActions = {
     /** Set for a conversion: the native type the Office file becomes. */
     convertTo?: DriveNativeType;
   };
+  /**
+   * A Google Docs, Sheets or Slides file exported into `format` and uploaded as a new file, under
+   * an ID reserved when it was queued.
+   */
+  exportCopy: DriveCopyPayload & {
+    copyId: string;
+    format: DriveExportFormat;
+  };
 };
 
 /** One queued Drive copy. */
 export type DriveCopyAction = TaggedAction<DriveCopyActions>;
 
-/** The one kind every Drive copy is queued as. Every copy is auto-approvable. */
+/** The kind every Drive copy made by Drive's own copy is queued as. Each is auto-approvable. */
 export const DRIVE_COPIES: ActionKind = { tag: "driveCopies", label: "Drive copies" };
+
+/**
+ * The kind an exported copy is queued as. Its own kind, since an auto-approvable action joins no
+ * kind that already holds one: approving `driveCopies` automatically never covered exports.
+ */
+export const DRIVE_EXPORT_COPIES: ActionKind = {
+  tag: "driveExportCopies", label: "Drive exported copies",
+};
 
 /** What each native type is, as Drive and the Office conversion name it, and as a card says it. */
 export const NATIVE_TYPES: Record<DriveNativeType, {
@@ -103,56 +123,66 @@ export const NATIVE_TYPES: Record<DriveNativeType, {
   },
 };
 
+/** Whether `value` names a native type a file can be converted into. */
+function isNativeType(value: string): value is DriveNativeType {
+  return Object.hasOwn(NATIVE_TYPES, value);
+}
+
 /** What applying a Drive copy needs of its gatekeeper beyond what every write does. */
 export type DriveCopiesHost = DriveWritesHost & {
-  api: Pick<DriveApi, "copyFile" | "findCopy" | "getConversionSource" | "getMaxImportSize">;
-  /** Where the file a native copy made is recorded, under its action's ID. */
-  madeCopies: Pick<MadeCopies, "put">;
+  api: Pick<DriveApi,
+    "copyFile" | "findByToken" | "getConversionSource" | "getMaxImportSize" | "openExport" | "upload">;
+  /** Where the file a native copy or a converted upload made is recorded, under its action's ID. */
+  madeFiles: Pick<MadeFiles, "put">;
 };
 
-/** The files native copies made, by the ID of the action that made each. */
-export type MadeCopies = {
-  /** The file action `id` made, if it was a native copy that was made. */
+/** The files native copies and converted uploads made, by the ID of the action that made each. */
+export type MadeFiles = {
+  /** The file action `id` made, if it was a native copy or a converted upload that was made. */
   get(id: number): string | undefined;
   /** Records that action `id` made file `fileId`. */
   put(id: number, fileId: string): void;
 };
 
 /**
- * Where the file each native copy made is kept, by action ID. Never swept: `pending:<n>` names
- * that file for as long as anything holds the ID, and action IDs are never reused.
+ * Where the file each native copy or converted upload made is kept, by action ID: the prefix
+ * native copies were kept under before uploads existed, which their `pending:<n>` IDs still need.
+ * Never swept: `pending:<n>` names that file for as long as anything holds the ID, and action IDs
+ * are never reused.
  */
-const MADE_COPY_PREFIX = "driveCopies:made:";
+const MADE_FILE_PREFIX = "driveCopies:made:";
 
-/** The made-copy records of one Drive binding, kept in its Durable Object's storage. */
-export function madeCopies(kv: DurableObjectStorage["kv"]): MadeCopies {
+/** The made-file records of one Drive binding, kept in its Durable Object's storage. */
+export function madeFiles(kv: Pick<DurableObjectStorage["kv"], "get" | "put">): MadeFiles {
   return {
-    get: id => kv.get<string>(`${MADE_COPY_PREFIX}${id}`),
-    put: (id, fileId) => kv.put(`${MADE_COPY_PREFIX}${id}`, fileId),
+    get: id => kv.get<string>(`${MADE_FILE_PREFIX}${id}`),
+    put: (id, fileId) => kv.put(`${MADE_FILE_PREFIX}${id}`, fileId),
   };
 }
 
 /**
- * The refusal of a call given the ID of a copy that still waits. An auto-approval rule may make
- * the copy moments later, with no one to approve it, so this asks for a look later rather than
- * for an approval.
+ * The refusal of a call given the ID of a copy or an upload that still waits. An auto-approval
+ * rule may make the file moments later, with no one to approve it, so this asks for a look later
+ * rather than for an approval.
  */
-export const COPY_WAITING =
-  "That file is a copy still waiting to be made, so this cannot be done with it yet. It is made " +
-  "once it is approved, which an auto-approval rule may do in moments: call getEntry() with this " +
-  "ID later to see whether it has been made.";
+export const FILE_WAITING =
+  "That file is a copy or an upload still waiting to be made, so this cannot be done with it " +
+  "yet. It is made once it is approved, which an auto-approval rule may do in moments: call " +
+  "getEntry() with this ID later to see whether it has been made.";
 
-/** The refusal of a `pending:<n>` ID that names no copy. */
-export const NAMES_NO_COPY =
-  "That pending ID names no copy that was made: the copy was rejected or failed, or the ID is " +
-  "not a copy's.";
+/** The refusal of a `pending:<n>` ID that names no copy or upload. */
+export const NAMES_NO_FILE =
+  "That pending ID names no copy or upload that was made: it was rejected or failed, or the ID " +
+  "is not a copy's or an upload's.";
 
 const NO_LONGER_IN_SCOPE = "That file is no longer in this connection's scope.";
 const FILE_IN_TRASH = "That file is in the trash, so it was not copied.";
 const DESTINATION_IN_TRASH = "That folder is in the trash, so nothing was copied into it.";
 const CANNOT_COPY = "The connected account can no longer copy that file into that folder.";
+const CANNOT_DOWNLOAD =
+  "The connected account can no longer download that file, so it was not exported.";
 
-/** Said when Drive leaves open whether a send made an ordinary copy. */
+/** Said when Drive leaves open whether a send made an ordinary or an exported copy. */
 const UNCONFIRMED_COPY =
   "Google Drive did not confirm whether this copy was made, and it may have been. Approving it " +
   "again first checks for it, so it is not made twice; rejecting it leaves any copy that was made.";
@@ -193,21 +223,33 @@ const COPY_REFUSALS: readonly RefusalRow[] = [
   },
 ];
 
+/** What Drive refuses an exported copy for: its export, or the upload of it. */
+const EXPORT_COPY_REFUSALS: readonly RefusalRow[] = [
+  ...COPY_REFUSALS,
+  {
+    status: 403, reason: "exportSizeLimitExceeded",
+    message: "Google Drive exports at most 10 MB, and that file is larger in that format, so " +
+      "nothing was copied.",
+  },
+  { status: 403, reason: "cannotDownloadFile", message: CANNOT_DOWNLOAD },
+];
+
 /** Whether `entry` is a copy: one queued under a copy definition's name. */
-function isCopyEntry(entry: QueuedWrite): entry is JournalEntry<DriveCopyAction> {
+export function isCopyEntry(entry: QueuedWrite): entry is JournalEntry<DriveCopyAction> {
   return Object.hasOwn(DRIVE_COPY_DEFINITIONS, entry.action.kind);
 }
 
 /**
- * What copy `id` shows while it waits, and the file it reports: the one it is a copy of, with a
- * folder binding's path to the folder that held it. An ordinary copy goes by the ID reserved for
- * it, any other by `pending:<id>`.
+ * What copy `id` shows while it waits, and what showing it reports: the file it is a copy or an
+ * export of, with a folder binding's path to the folder that held it. A copy made under a reserved
+ * ID goes by that ID, a native copy by `pending:<id>`. An exported copy has no size until Google
+ * exports it.
  */
 export function simulatedCopy({ id, action }: { id: number; action: DriveCopyAction }): SimulatedEntry {
   let { payload } = action;
   return {
     entry: {
-      id: action.kind === "copyFile" ? action.payload.copyId : pendingId(id),
+      id: action.kind === "copyNative" ? pendingId(id) : action.payload.copyId,
       name: payload.name,
       mimeType: payload.mimeType,
       isFolder: false,
@@ -218,36 +260,16 @@ export function simulatedCopy({ id, action }: { id: number; action: DriveCopyAct
       ...(payload.driveId ? { driveId: payload.driveId } : {}),
       pending: true,
     },
-    sourceId: payload.fileId,
-    ...(payload.folderIds ? { sourceFolderIds: payload.folderIds } : {}),
+    content: action.kind === "exportCopy"
+      ? {
+        kind: "export", sourceId: payload.fileId, format: action.payload.format,
+        ...(payload.folderIds ? { folderIds: payload.folderIds } : {}),
+      }
+      : {
+        kind: "copy", sourceId: payload.fileId,
+        ...(payload.folderIds ? { folderIds: payload.folderIds } : {}),
+      },
   };
-}
-
-/** The ordinary copy `fileId` names while an approval can still make it, if it is one. */
-export function pendingCopy(
-  fileId: string, pending: readonly QueuedWrite[],
-): SimulatedEntry | undefined {
-  let found = pending.filter(isCopyEntry).find(entry =>
-    entry.action.kind === "copyFile" && entry.action.payload.copyId === fileId);
-  return found && simulatedCopy(found);
-}
-
-/** The ordinary copies into folder `folderId` an approval can still make, as a listing shows them. */
-export function pendingCopiesInto(
-  folderId: string, pending: readonly QueuedWrite[],
-): SimulatedEntry[] {
-  return pending.filter(isCopyEntry)
-    .filter(entry => entry.action.kind === "copyFile" && entry.action.payload.toFolderId === folderId)
-    .map(entry => simulatedCopy(entry));
-}
-
-/** Native copy `actionId`, while an approval can still make it. */
-export function waitingNativeCopy(
-  actionId: number, pending: readonly QueuedWrite[],
-): SimulatedEntry | undefined {
-  let found = pending.find(entry => entry.id === actionId);
-  return found && isCopyEntry(found) && found.action.kind === "copyNative"
-    ? simulatedCopy(found) : undefined;
 }
 
 /** The action a `pending:<n>` ID names, or `undefined` for an ID of any other shape. */
@@ -258,36 +280,36 @@ export function pendingActionId(fileId: string): number | undefined {
 }
 
 /** A copy as `planCopy` decides it: which definition, of what type, under which name. */
-type CopyPlan = {
-  kind: keyof DriveCopyActions;
-  mimeType: string;
-  name: string;
-  convertTo?: DriveNativeType;
-};
+type CopyPlan = { mimeType: string; name: string } & (
+  | { kind: "copyFile" }
+  | { kind: "copyNative"; convertTo?: DriveNativeType }
+  | { kind: "exportCopy"; format: DriveExportFormat }
+);
 
 /**
  * How a file of `source` is copied with `options`: an ordinary copy, a copy of a Google Docs,
- * Sheets or Slides file, or an Office file's conversion. Refuses a `convertTo` the file does not
- * convert to, any other Google-native file, and an empty name. A folder or a shortcut is the
- * scope proof's to refuse, before this.
+ * Sheets or Slides file, an Office file's conversion, or a native file's export. Refuses a
+ * `convertTo` the file does not convert or export to, an export of a file the connected account
+ * may not download, any other Google-native file, and an empty name. A folder or a shortcut is
+ * the scope proof's to refuse, before this.
  */
 export function planCopy(
-  source: { name: string; mimeType: string },
-  options: { name?: string; convertTo?: DriveNativeType },
+  source: { name: string; mimeType: string; canDownload?: true },
+  options: { name?: string; convertTo?: DriveNativeType | DriveExportFormat },
 ): CopyPlan {
   let { convertTo } = options;
   if (options.name !== undefined && !options.name.trim()) throw new Error("name is empty.");
+  if (convertTo !== undefined && !isNativeType(convertTo)) {
+    let { mimeType } = exportMimeType(
+      { mimeType: source.mimeType, capabilities: { canDownload: source.canDownload === true } },
+      convertTo);
+    return {
+      kind: "exportCopy", mimeType, name: options.name ?? exportName(source.name, convertTo),
+      format: convertTo,
+    };
+  }
   if (convertTo !== undefined) {
-    if (!Object.hasOwn(NATIVE_TYPES, convertTo)) {
-      throw new Error('convertTo is "document", "spreadsheet" or "presentation".');
-    }
-    let { mimeType, kind, noun } = NATIVE_TYPES[convertTo];
-    if (source.mimeType === mimeType) {
-      throw new Error(`That file is already a ${noun}. Leave out convertTo to copy it as it is.`);
-    }
-    if (officeLabel(kind, source.mimeType) === undefined) {
-      throw new Error(`Only ${OFFICE_TYPES[convertTo]} converts to a ${noun}.`);
-    }
+    let { mimeType, kind } = nativeConversion(source.mimeType, convertTo);
     return {
       kind: "copyNative", mimeType, name: options.name ?? nativeCopyName(kind, source.name),
       convertTo,
@@ -304,6 +326,28 @@ export function planCopy(
   return { kind: "copyFile", mimeType: source.mimeType, name };
 }
 
+/**
+ * The native type a file of `mimeType` becomes as `convertTo`, or the refusal of a conversion it
+ * does not take: only the Office types {@link OFFICE_TYPES} names convert.
+ */
+export function nativeConversion(
+  mimeType: string, convertTo: DriveNativeType,
+): { mimeType: string; kind: OfficeKind; noun: string } {
+  let native = NATIVE_TYPES[convertTo];
+  if (mimeType === native.mimeType) {
+    throw new Error(`That file is already a ${native.noun}. Leave out convertTo to copy it as it is.`);
+  }
+  if (officeLabel(native.kind, mimeType) === undefined) {
+    throw new Error(`Only ${OFFICE_TYPES[convertTo]} converts to a ${native.noun}.`);
+  }
+  return native;
+}
+
+/** An exported copy's default name: the file's, ending in `format` as an extension. */
+function exportName(name: string, format: DriveExportFormat): string {
+  return name.toLowerCase().endsWith(`.${format}`) ? name : `${name}.${format}`;
+}
+
 /** What each native type converts from, as a refusal names it. */
 const OFFICE_TYPES: Record<DriveNativeType, string> = {
   document: "a .docx, .doc, .odt or .rtf file",
@@ -312,18 +356,19 @@ const OFFICE_TYPES: Record<DriveNativeType, string> = {
 };
 
 /**
- * The refusal of a conversion of a file of `size` bytes into native `mimeType` when it is larger
- * than Google Drive converts, if it is. When Drive's limit cannot be read, or is not read before
- * `signal` aborts, nothing is refused, and Drive decides when the copy is sent.
+ * The refusal of a conversion of `size` bytes into native `mimeType` when it is larger than Google
+ * Drive converts, if it is. When Drive's limit cannot be read, or is not read before `signal`
+ * aborts, nothing is refused, and Drive decides when the copy or upload is sent. `fileId` names
+ * the file converted, when there is one, in logs.
  */
 export async function importLimitRefusal(
-  api: Pick<DriveApi, "getMaxImportSize">, fileId: string, size: number | undefined,
-  mimeType: string, signal?: AbortSignal,
+  api: Pick<DriveApi, "getMaxImportSize">, size: number | undefined, mimeType: string,
+  fileId?: string, signal?: AbortSignal,
 ): Promise<string | undefined> {
   if (size === undefined || !Number.isFinite(size)) return undefined;
   let max = await api.getMaxImportSize(mimeType, signal).catch((error: unknown) => {
-    logger.warn("could not read Drive's import size limit; copying without the check", {
-      event: "drive.copies.import-size.unavailable", fileId,
+    logger.warn("could not read Drive's import size limit; converting without the check", {
+      event: "drive.copies.import-size.unavailable", ...(fileId === undefined ? {} : { fileId }),
       ...(error instanceof DriveApiRequestError ? {
         httpStatus: error.status, ...(error.reason ? { providerReasons: [error.reason] } : {}),
       } : { error }),
@@ -336,35 +381,54 @@ export async function importLimitRefusal(
 }
 
 /**
- * The file of a copy and the folder it goes into, as the binding's scope reaches them now, or
- * `undefined` when either is out of scope or invisible. An account binding reads both in one
- * batch. A folder binding re-proves its saved path in the same batch, then that the file is a live
- * direct child of the positioned folder and that the destination is a folder a copy may go into
- * from there: the positioned folder itself, a live listable direct child folder of it, or the
- * folder it was opened from. Whether either is in the trash, and what the account may do, is the
- * caller's to require of the nodes.
+ * The folder a copy or an upload goes into, as the binding's scope reaches it now, with the nodes
+ * of `ids` read in the same batch, or `undefined` when the folder is out of scope or invisible.
+ * A folder binding re-proves its saved path in the same batch, then that the destination is a
+ * folder a write may go into from there: the positioned folder itself, a live listable direct
+ * child folder of it, or the folder it was opened from; `positioned` is the positioned folder.
+ * Whether the folder is in the trash, and what the account may do, is the caller's to require.
  */
-async function proveCopy(
-  host: Pick<DriveWritesHost, "api" | "scope">, payload: DriveCopyPayload,
-): Promise<{ source: DriveScopeNode; destination: DriveScopeNode } | undefined> {
-  let { fileId, toFolderId, folderIds } = payload;
+export async function proveDestination(
+  host: Pick<DriveWritesHost, "api" | "scope">,
+  payload: { toFolderId: string; folderIds?: string[] }, ids: readonly string[],
+): Promise<{
+  destination: DriveScopeNode; positioned?: DriveScopeNode; nodes: (DriveScopeNode | undefined)[];
+} | undefined> {
+  let { toFolderId, folderIds } = payload;
   let scope = host.scope();
-  // A single-file binding holds no folder to copy its file into.
+  // A single-file binding holds no folder to write into.
   if (scope.kind === "file") return undefined;
   if (scope.kind === "account") {
-    let [source, destination] = await host.api.getScopeNodes([fileId, toFolderId]);
-    return source && destination ? { source, destination } : undefined;
+    let read = await host.api.getScopeNodes([...ids, toFolderId]);
+    let destination = read.pop();
+    return destination && { destination, nodes: read };
   }
-  let proved = await provePath(host, folderIds, [fileId, toFolderId]);
+  let proved = await provePath(host, folderIds, [...ids, toFolderId]);
   if (!proved) return undefined;
-  let { path, extras: [source, child] } = proved;
+  let { path, extras } = proved;
+  let child = extras.pop();
   let positioned = path.at(-1);
-  if (!source || !positioned || !isDirectChild(source, positioned)) return undefined;
+  if (!positioned) return undefined;
   let destination = toFolderId === positioned.id ? positioned
     : folderIds?.at(-2) === toFolderId ? path.at(-2)
     : child && isListableFolderNode(child) && isDirectChild(child, positioned) ? child
     : undefined;
-  return destination && { source, destination };
+  return destination && { destination, positioned, nodes: extras };
+}
+
+/**
+ * The file of a copy and the folder it goes into, as {@link proveDestination} reaches them, or
+ * `undefined` when either is out of scope or invisible. On a folder binding the file must be a
+ * live direct child of the positioned folder.
+ */
+async function proveCopy(
+  host: Pick<DriveWritesHost, "api" | "scope">, payload: DriveCopyPayload,
+): Promise<{ source: DriveScopeNode; destination: DriveScopeNode } | undefined> {
+  let proved = await proveDestination(host, payload, [payload.fileId]);
+  let source = proved?.nodes[0];
+  if (!proved || !source) return undefined;
+  if (proved.positioned && !isDirectChild(source, proved.positioned)) return undefined;
+  return { source, destination: proved.destination };
 }
 
 /**
@@ -380,8 +444,8 @@ async function conversionRefusal(
     .catch((error: unknown) => {
       throw deadline.aborted ? new Error(DRIVE_DID_NOT_ANSWER, { cause: error }) : error;
     });
-  return importLimitRefusal(host.api, payload.fileId,
-    size === undefined ? undefined : Number(size), payload.mimeType, deadline);
+  return importLimitRefusal(host.api, size === undefined ? undefined : Number(size),
+    payload.mimeType, payload.fileId, deadline);
 }
 
 /**
@@ -394,7 +458,8 @@ async function conversionRefusal(
  * does not convert (https://developers.google.com/workspace/drive/api/reference/rest/v3/files#File).
  */
 async function requireStillCopyable(
-  host: DriveCopiesHost, payload: DriveCopyPayload & { convertTo?: DriveNativeType },
+  host: DriveCopiesHost,
+  payload: DriveCopyPayload & { convertTo?: DriveNativeType; format?: DriveExportFormat },
 ): Promise<void> {
   let { convertTo } = payload;
   await requireWritable(host);
@@ -416,28 +481,34 @@ async function requireStillCopyable(
     throw new ActionApplyError(
       `That file is no longer ${OFFICE_TYPES[convertTo]}, so it was not converted.`);
   }
+  if (payload.format !== undefined && source.canDownload !== true) {
+    throw new ActionApplyError(CANNOT_DOWNLOAD);
+  }
   let refused = await converting;
   if (refused !== undefined) throw new ActionApplyError(refused);
 }
 
 /**
- * Makes one approved ordinary copy under its reserved ID. A look reads that ID, with the folder
- * the copy goes into: found, the copy was made; not found while the account can list that
- * folder's contents, it was not, since a copy made there takes the folder's access, and a send
- * under the same ID could make no second one anyway. Drive answers 404 for a file the account
- * cannot read as for one that does not exist
+ * Makes one approved copy under its reserved ID: an ordinary copy, or an exported one. A look
+ * reads that ID, with the folder the copy goes into: found, the copy was made; not found while the
+ * account can list that folder's contents, it was not, since a copy made there takes the folder's
+ * access, and a send under the same ID could make no second one anyway. Drive answers 404 for a
+ * file the account cannot read as for one that does not exist
  * (https://developers.google.com/workspace/drive/api/guides/handle-errors#notFound), and answers a
  * folder whose contents the account's access no longer reaches with `canListChildren` false
  * (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access#list-children-of-a-folder-with-limited-access),
  * so while the folder is not seen, or seen without its contents, the copy may be there out of the
  * account's sight, and the look proves nothing.
  */
-function copyOrdinary(
-  host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyFile"],
+function copyUnderId(
+  host: DriveCopiesHost, id: number,
+  payload: DriveCopyActions["copyFile"] | DriveCopyActions["exportCopy"],
+  make: (commit: () => void) => Promise<unknown>,
 ): Promise<string> {
-  let { fileId, copyId, name, toFolderId } = payload;
+  let { fileId, copyId, toFolderId } = payload;
+  let exported = "format" in payload;
   return sendOnce<string>(host, id, {
-    log: logger.with({ actionId: id, actionKind: "copyFile", fileId }),
+    log: logger.with({ actionId: id, actionKind: exported ? "exportCopy" : "copyFile", fileId }),
     events: "drive.copies",
     look: async () => {
       let [made, destination] = await host.api.getScopeNodes([copyId, toFolderId]);
@@ -448,13 +519,17 @@ function copyOrdinary(
       await requireStillCopyable(host, payload);
       return {};
     },
-    send: async () => {
-      // `undefined`: Drive refused the ID as used, so an earlier send made the copy.
-      await host.api.copyFile(fileId, { id: copyId, name, parents: [toFolderId] });
+    send: async commit => {
+      // An `undefined` result: Drive refused the ID as used, so an earlier send made the copy.
+      await make(commit);
       return copyId;
     },
+    // An exported copy is an upload, which makes nothing until its last chunk.
+    markAtCommit: exported,
     repeatable: true,
-    refusal: error => driveRefusal(error, COPY_REFUSALS, "Google Drive refused this copy."),
+    refusal: error => exported
+      ? driveRefusal(error, EXPORT_COPY_REFUSALS, "Google Drive refused this exported copy.")
+      : driveRefusal(error, COPY_REFUSALS, "Google Drive refused this copy."),
     unconfirmed: UNCONFIRMED_COPY,
     logFields: made => ({ copyFileId: made }),
   });
@@ -463,25 +538,20 @@ function copyOrdinary(
 /**
  * Makes one approved native copy, with its token, and records the file it made. A look searches
  * for the token in the corpus of the folder the copy goes into as it was queued, then in every
- * file the account has reached (see DriveApi.findCopy), for {@link APPROVAL_READ_MAX_MS} at most;
- * not finding it by then leaves the copy unconfirmed and is never followed by a send. A copy
- * Drive made of another type than asked for is not the one queued, so it fails the copy rather
- * than being recorded.
+ * file the account has reached (see DriveApi.findByToken), for {@link APPROVAL_READ_MAX_MS} at
+ * most (see lookForToken); not finding it by then leaves the copy unconfirmed and is never
+ * followed by a send. A copy Drive made of another type than asked for is not the one queued, so
+ * it fails the copy rather than being recorded.
  */
 async function copyNative(
   host: DriveCopiesHost, id: number, payload: DriveCopyActions["copyNative"],
 ): Promise<void> {
   let { fileId, token, name, toFolderId, mimeType, convertTo, driveId } = payload;
-  let made = await sendOnce<DriveMadeCopy>(host, id, {
+  let made = await sendOnce<DriveMadeFile>(host, id, {
     log: logger.with({ actionId: id, actionKind: "copyNative", fileId }),
     events: "drive.copies",
     look: async () => {
-      let deadline = AbortSignal.timeout(APPROVAL_READ_MAX_MS);
-      let found = await host.api.findCopy(token, corpusOf(driveId), deadline)
-        .catch((error: unknown) => {
-          if (deadline.aborted) return undefined;
-          throw error;
-        });
+      let found = await lookForToken(host.api, COPY_TOKEN_PROPERTY, token, corpusOf(driveId));
       return found ? { found } : { conclusive: false };
     },
     check: async () => {
@@ -491,11 +561,13 @@ async function copyNative(
     send: async () => {
       let copy = await host.api.copyFile(fileId, {
         name, parents: [toFolderId], ...(convertTo === undefined ? {} : { mimeType }),
-        // Drive keeps the file's own app properties unless cleared, and a conversion's markers
-        // would have openGoogleDoc() offer this copy for reuse as that conversion.
+        // Drive keeps the file's own app properties unless cleared. A conversion's markers would
+        // have openGoogleDoc() offer this copy for reuse as that conversion, a converted upload's
+        // token would have that upload's look find the copy, and a save's marker would let a save
+        // replace the copy's content.
         appProperties: {
           [COPY_TOKEN_PROPERTY]: token, [CONVERTED_FROM_PROPERTY]: null,
-          [SOURCE_MODIFIED_PROPERTY]: null,
+          [SOURCE_MODIFIED_PROPERTY]: null, [UPLOAD_TOKEN_PROPERTY]: null, [SAVED_PROPERTY]: null,
         },
       });
       // Not Drive's error class, so the outcome is read as open: the next approval looks.
@@ -517,15 +589,21 @@ async function copyNative(
     throw new ActionApplyError(DIFFERENT_TYPE);
   }
   // Before the action set retires the record, so that `pending:<n>` never names nothing between.
-  host.madeCopies.put(id, made.id);
+  host.madeFiles.put(id, made.id);
 }
 
 /** The approval card of any copy. */
-function describeCopy(payload: DriveCopyPayload & { convertTo?: DriveNativeType }) {
+function describeCopy(
+  payload: DriveCopyPayload & { convertTo?: DriveNativeType; format?: DriveExportFormat },
+) {
   let builder = buildDescription(`Copy Google Drive file ${codeSpan(payload.fileId)} into folder ${
     codeSpan(payload.toFolderId)}, as the connected account.`);
   if (payload.convertTo !== undefined) {
     builder.prose(`The copy is converted to a ${NATIVE_TYPES[payload.convertTo].noun}.`);
+  }
+  if (payload.format !== undefined) {
+    builder.prose(`The copy is the file exported to ${payload.format}: Google's own conversion ` +
+      "of the file as it is when this is approved.");
   }
   // No other account can see that folder, so the card names it in words of its own.
   if (payload.toMyDrive) {
@@ -542,6 +620,7 @@ function describeCopy(payload: DriveCopyPayload & { convertTo?: DriveNativeType 
   if (payload.convertTo !== undefined) {
     builder.inline("Converted to", NATIVE_TYPES[payload.convertTo].noun);
   }
+  if (payload.format !== undefined) builder.inline("Exported to", payload.format);
   return { title: "Copy a Google Drive file", ...builder.finish(), implementsRevert: false };
 }
 
@@ -549,6 +628,7 @@ function describeCopy(payload: DriveCopyPayload & { convertTo?: DriveNativeType 
 export const DRIVE_COPY_DEFINITIONS: {
   copyFile: ActionDefinition<DriveCopyActions["copyFile"], DriveCopiesHost>;
   copyNative: ActionDefinition<DriveCopyActions["copyNative"], DriveCopiesHost>;
+  exportCopy: ActionDefinition<DriveCopyActions["exportCopy"], DriveCopiesHost>;
 } = {
   copyFile: {
     kind: DRIVE_COPIES,
@@ -558,7 +638,9 @@ export const DRIVE_COPY_DEFINITIONS: {
     claimBeforeApply: true,
     describe: describeCopy,
     apply: async (payload, host, ctx) => {
-      await copyOrdinary(host, ctx.id, payload);
+      let { fileId, copyId, name, toFolderId } = payload;
+      await copyUnderId(host, ctx.id, payload,
+        () => host.api.copyFile(fileId, { id: copyId, name, parents: [toFolderId] }));
     },
   },
   copyNative: {
@@ -570,6 +652,28 @@ export const DRIVE_COPY_DEFINITIONS: {
     describe: describeCopy,
     apply: async (payload, host, ctx) => {
       await copyNative(host, ctx.id, payload);
+    },
+  },
+  exportCopy: {
+    kind: DRIVE_EXPORT_COPIES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: describeCopy,
+    apply: async (payload, host, ctx) => {
+      let { fileId, copyId, name, toFolderId, mimeType } = payload;
+      await copyUnderId(host, ctx.id, payload, async commit => {
+        let exported = await host.api.openExport(fileId, mimeType);
+        // The export is read only as the upload sends it, which the binding's decisions wait on,
+        // so a wait for bytes Drive stops sending must end. Google exports the file as it is when
+        // it answers, which may be after the file left the binding, so the copy's checks are made
+        // again before the request that makes the copy, once all of the export is read.
+        return host.api.upload(readTimed(exported), mimeType,
+          { create: { id: copyId, name, parents: [toFolderId] } }, async () => {
+            await requireStillCopyable(host, payload);
+            commit();
+          });
+      });
     },
   },
 };

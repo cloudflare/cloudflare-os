@@ -14,9 +14,9 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import type { Logger } from "@gadgets/observability/logger";
 import {
-  DriveApiDisabledError, DriveApiRequestError, driveWriteFailure, isInsufficientScope,
-  type DriveWriteFailure,
-  type DriveApi, type DriveScopeNode,
+  APPROVAL_READ_MAX_MS, DriveApiDisabledError, DriveApiRequestError, driveWriteFailure,
+  isInsufficientScope, UploadIncompleteError, type DriveWriteFailure, type DriveApi,
+  type DriveCorpus, type DriveMadeFile, type DriveScopeNode, type TokenProperty,
 } from "./drive-api";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
@@ -247,9 +247,16 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    * credentials the account holds at that moment.
    */
   actor(): Promise<DriveActor>;
-  /** Queues one write through `queue`, under `fence` when its definition is fenced. */
+  /**
+   * Queues one write through `queue`, under `fence` when its definition is fenced. Given `refuse`,
+   * the write is refused with its answer for the writes still waiting, asked while no other write
+   * can be queued through this queue, so none is queued through it between the answer and this
+   * write. A Doc, Sheet or Slides edit is queued apart, so one can still be.
+   */
   submit<K extends keyof M>(
-    queue: ActionSubmitter, kind: K, payload: M[K], fence?: ActionFence): Promise<number>;
+    queue: ActionSubmitter, kind: K, payload: M[K], fence?: ActionFence,
+    refuse?: (pending: readonly JournalEntry<TaggedAction<M>>[]) => string | undefined,
+  ): Promise<number>;
   /**
    * Runs `read` with the writes awaiting a decision, of every kind, while none is being applied
    * or rejected. These are what a read shows as if made.
@@ -273,10 +280,10 @@ export type DriveWriteQueue<M extends Record<string, unknown>> = {
    */
   queued(): readonly JournalEntry<TaggedAction<M>>[];
   /**
-   * The file native copy `actionId` made, once an approval has made it, read where the copy
-   * recorded it: what `pending:<n>` names from then on.
+   * The file native copy or converted upload `actionId` made, once an approval has made it, read
+   * where it was recorded: what `pending:<n>` names from then on.
    */
-  madeCopy(actionId: number): string | undefined;
+  madeFile(actionId: number): string | undefined;
 };
 
 /**
@@ -343,6 +350,22 @@ export async function requireWritable(host: Pick<DriveWritesHost, "writeRefusal"
   throw isLiftable(refused) ? new Error(refused) : new ActionApplyError(refused);
 }
 
+/**
+ * The file made with `token` in app property `property`, as an approval's look searches `corpus`
+ * for it (see DriveApi.findByToken): for {@link APPROVAL_READ_MAX_MS} at most, every corpus and
+ * page told, since the approval holds the binding's decisions while it waits. A search Drive does
+ * not finish by then finds nothing, which, as when it finishes without finding it, proves nothing.
+ */
+export async function lookForToken(
+  api: Pick<DriveApi, "findByToken">, property: TokenProperty, token: string, corpus: DriveCorpus,
+): Promise<DriveMadeFile | undefined> {
+  let deadline = AbortSignal.timeout(APPROVAL_READ_MAX_MS);
+  return api.findByToken(property, token, corpus, deadline).catch((error: unknown) => {
+    if (deadline.aborted) return undefined;
+    throw error;
+  });
+}
+
 /** One kind of write, as {@link sendOnce} drives it. */
 export type WriteStep<Sent> = {
   /** Logs `<events>.applied`, `<events>.reconciled` and `<events>.send.failed`. */
@@ -365,8 +388,20 @@ export type WriteStep<Sent> = {
    * error to leave it pending. Resolves with what the marker should note of what is already there.
    */
   check(): Promise<{ existing?: string[] }>;
-  /** Makes the change at Drive, resolving with what it made. */
-  send(): Promise<Sent>;
+  /**
+   * Makes the change at Drive, resolving with what it made. Throws ActionApplyError only before it
+   * has sent anything, to fail the write for good as a check does. With `markAtCommit`, it calls
+   * `commit` immediately before each request that can make the change.
+   */
+  send(commit: () => void): Promise<Sent>;
+  /**
+   * Whether the marker is written only once the send calls `commit`, rather than before it starts:
+   * for an upload, which Drive makes only once its last chunk arrives
+   * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable). A send
+   * that fails, or a gatekeeper that restarts, before then has made nothing, so it leaves no
+   * marker and the write is sent again when approved again.
+   */
+  markAtCommit?: boolean;
   /** Whether Google can be sent this write twice without a second effect. */
   repeatable: boolean;
   /**
@@ -411,19 +446,28 @@ export const CREDENTIALS_NOT_ACCEPTED =
 const RATE_LIMITED =
   "Google Drive is limiting requests from this account. Approve it again in a minute.";
 
+/** Said of an upload that failed before it sent anything that could make its file. */
+const NOT_SENT =
+  "Google Drive did not take the upload, and nothing was made or changed by it. Approve it again " +
+  "to send it once more.";
+
 /**
  * Makes one approved write, looking first for what an earlier send of it may have made.
  *
- * A marker is written before the send and is never dropped here for a send that worked, that a
- * look found, or that a look could not judge: the gatekeeper drops it once the action's record is
- * settled, and until then a retry must find it and look, never send. It is dropped once the write
- * fails for good with nothing changed: at a check, by Google's refusal, or when the last send its
+ * A marker is written before the send, or for a step with `markAtCommit` as the send commits, and
+ * is never dropped here for a send that worked, that a look found, or that a look could not judge:
+ * the gatekeeper drops it once the action's record is settled, and until then a retry must find it
+ * and look, never send. It is dropped once the write fails for good with nothing changed: at a
+ * check, at the send before it sends anything, by Google's refusal, or when the last send its
  * limit allows is also found to have made nothing. The marker of a send a look proves empty stays
  * until the next send's replaces it, which is what counts the sends. A write that cannot be
  * repeated loses its marker on a rate limit, on a missing scope and on a 401, when no send of it
- * is in doubt. A write that can be repeated keeps it through all three, so that its next
- * approval looks first: a change such a send made all the same is then found and bound, where an
- * approval with no marker would take it for someone else's.
+ * is in doubt. A write that can be repeated keeps it through all three, so that its next approval
+ * looks first: a change such a send made all the same is then found and bound, where an approval
+ * with no marker would take it for someone else's. A send with `markAtCommit` that fails before it
+ * commits has no marker, however it failed, nor does an upload Drive said never arrived whole
+ * (UploadIncompleteError), and one whose outcome Google left open is then sent again when approved
+ * again.
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
@@ -459,16 +503,28 @@ export async function sendOnce<Sent>(
     if (error instanceof ActionApplyError) host.attempts.delete(id);
     throw error;
   }
-  host.attempts.put(id, {
-    at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
-    // Counted only for a write with a limit: a repeatable one is sent again as often as approved.
-    ...(step.exhausted && failedSends ? { failedSends } : {}),
-  });
+  let marked = false;
+  /** Writes the marker, once. */
+  let mark = () => {
+    if (marked) return;
+    marked = true;
+    host.attempts.put(id, {
+      at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
+      // Counted only for a write with a limit: a repeatable one is sent again as often as approved.
+      ...(step.exhausted && failedSends ? { failedSends } : {}),
+    });
+  };
+  if (!step.markAtCommit) mark();
 
   let sent: Sent;
   try {
-    sent = await step.send();
+    sent = await step.send(mark);
   } catch (error) {
+    // Nothing was made by a send that failed before it committed, or that Drive said never
+    // arrived whole. A marker a look proved empty goes too: nothing is left to look for.
+    let unsent = !marked || error instanceof UploadIncompleteError;
+    if (unsent || error instanceof ActionApplyError) host.attempts.delete(id);
+    if (error instanceof ActionApplyError) throw error;
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
       event: `${events}.send.failed`, outcome: failure, error,
@@ -477,7 +533,9 @@ export async function sendOnce<Sent>(
         : error instanceof GoogleApiError && error.providerReasons.length
           ? { providerReasons: [...error.providerReasons] } : {}),
     });
-    if (failure === "unknown") throw new Error(step.unconfirmed, { cause: error });
+    if (failure === "unknown") {
+      throw new Error(unsent ? NOT_SENT : step.unconfirmed, { cause: error });
+    }
     // The approval's one token was not accepted, which the next approval's, loaded afresh, may be.
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
     let later = failure === "unauthorized" ? CREDENTIALS_NOT_ACCEPTED

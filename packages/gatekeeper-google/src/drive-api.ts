@@ -104,18 +104,22 @@ export type DriveFile = {
  * asked about and must never see, so it fetches only what membership is decided from, plus what
  * this account may do, which a write is checked against in the same read. Each capability is what
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
- * `canAddChildren` a move's or a copy's destination, `canMoveItemWithinDrive` a move's file,
- * `canCopy` a copy's file, `canEdit` an edit of a Doc, Sheet or Slides file. One a part does not
- * carry is absent here, which reads as "cannot".
+ * `canAddChildren` the destination of a move, a copy or an upload, `canMoveItemWithinDrive` a
+ * move's file, `canCopy` a copy's file, `canDownload` an exported copy's file, `canEdit` an edit of
+ * a Doc, Sheet or Slides file, `canModifyContent` a replacement of a file's content: an editor of
+ * a file whose content is locked may change all of it but its content
+ * (https://developers.google.com/workspace/drive/api/guides/content-restrictions). One a part does
+ * not carry is absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
+  /** What a replacement is checked against: the file it replaces keeps the name it was asked for. */
+  name?: string;
   mimeType?: string;
   parents?: string[];
   driveId?: string;
   trashed?: boolean;
   canListChildren?: boolean;
-  /** Present only when asked for, as observer checks do; a scope proof never needs it. */
   canDownload?: boolean;
   canComment?: boolean;
   canShare?: boolean;
@@ -123,14 +127,15 @@ export type DriveScopeNode = {
   canMoveItemWithinDrive?: boolean;
   canCopy?: boolean;
   canEdit?: boolean;
+  canModifyContent?: boolean;
   /** A shortcut's target, which a folder binding's reads follow from the folder it sits in. */
   shortcutTargetId?: string;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
-const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
-  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
-  "canCopy,canEdit)";
+const DRIVE_SCOPE_NODE_FIELDS = "id,name,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
+  "capabilities(canListChildren,canDownload,canComment,canShare,canAddChildren," +
+  "canMoveItemWithinDrive,canCopy,canEdit,canModifyContent)";
 
 /** Field mask for {@link DriveApi.findShortcut}: what proves a shortcut a folder's child. */
 const SHORTCUT_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)";
@@ -222,12 +227,64 @@ export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
  * that a send whose answer was lost can find what it made.
  */
 export const COPY_TOKEN_PROPERTY = "gadgetsCopyToken";
+/** The app property a queued upload Drive gives an ID of its own carries, as a copy carries {@link COPY_TOKEN_PROPERTY}. */
+export const UPLOAD_TOKEN_PROPERTY = "gadgetsUploadToken";
+/** An app property a queued write's file is found by, holding that write's random token. */
+export type TokenProperty = typeof COPY_TOKEN_PROPERTY | typeof UPLOAD_TOKEN_PROPERTY;
+/**
+ * The app property marking a file a save made: only such a file is saved over, whatever else the
+ * account may edit.
+ */
+export const SAVED_PROPERTY = "gadgetsSaved";
 
-/** What Drive made of a copy: its ID and type. */
-export type DriveMadeCopy = { id: string; mimeType?: string };
+/** What Drive made of a copy or an upload: its ID and type. */
+export type DriveMadeFile = { id: string; mimeType?: string };
 
-/** Field mask for {@link DriveMadeCopy}. */
-const MADE_COPY_FIELDS = "id,mimeType";
+/** Field mask for {@link DriveMadeFile}. */
+const MADE_FILE_FIELDS = "id,mimeType";
+
+/** A {@link DriveMadeFile} from Drive's answer, whose `id` the caller has checked. */
+function madeFile(id: string, mimeType: unknown): DriveMadeFile {
+  let type = optionalString(mimeType, "file mimeType");
+  return { id, ...(type === undefined ? {} : { mimeType: type }) };
+}
+
+/** What {@link DriveApi.upload} makes: a new file with this metadata, or new content for a file. */
+export type DriveUploadTarget =
+  | {
+    create: {
+      /** An ID from generateFileId(), which makes the upload safe to send again. */
+      id?: string;
+      name: string;
+      parents: string[];
+      /** The file's type; a Google-native one has Drive convert the upload into it. */
+      mimeType?: string;
+      appProperties?: Record<string, string>;
+    };
+    /**
+     * Lets the domain's default visibility for new files apply, as it does to a file the user
+     * makes in Drive: a save is the user's. Left out, the file takes only its folder's sharing.
+     */
+    domainDefaultVisibility?: true;
+  }
+  | { replace: string };
+
+/** Which version of its content a file holds: what a replacement records when queued and checks when approved. */
+export type DriveContentVersion = {
+  id: string;
+  headRevisionId?: string;
+  /** Hex SHA-256 of the content; Drive gives none for a Google-native file. */
+  sha256Checksum?: string;
+  /** Bytes, as a decimal string. */
+  size?: string;
+  modifiedTime?: string;
+  /** Whether the connected account may change the content, which a lock on it refuses an editor. */
+  canModifyContent?: boolean;
+};
+
+/** Field mask for {@link DriveContentVersion}. */
+const CONTENT_VERSION_FIELDS =
+  "id,headRevisionId,sha256Checksum,size,modifiedTime,capabilities(canModifyContent)";
 
 /** Where a native copy landed: in the source's folder, or in My Drive when that could not take it. */
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
@@ -248,6 +305,8 @@ export type DriveFileQuery = {
   mimeTypes?: string[];
   /** Name prefix; Drive spells its prefix-only operator `contains`. */
   namePrefix?: string;
+  /** This name exactly. */
+  name?: string;
   fullTextContains?: string;
   modifiedAfter?: string;
   modifiedBefore?: string;
@@ -428,21 +487,41 @@ const isThrottle = (error: Error) => error instanceof DriveApiRequestError && er
   (error.reason === "rateLimitExceeded" || error.reason === "userRateLimitExceeded");
 
 /**
+ * An upload Drive said it still lacks bytes of when the sends of a chunk ran out: a 308 means the
+ * upload must continue, and one whose `Range` leaves bytes out says they never arrived
+ * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload). Drive
+ * makes the file only once it has them all, so nothing was made or changed.
+ */
+export class UploadIncompleteError extends Error {}
+
+/**
  * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
  * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
  * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
  * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
  * session holds, and sends only the rest, so nothing Drive finished is sent again.
+ * `beforeCommit` is awaited before each request that sends the last chunk, the only requests
+ * that can complete the file, and throws to send none. Sends of a chunk that run out on a 308
+ * leaving bytes of it out throw UploadIncompleteError.
  */
 async function putUploadChunk(
   session: string, bytes: Uint8Array, start: number, total?: number,
+  beforeCommit?: () => Promise<unknown>,
 ): Promise<string | undefined> {
   let ask = false;
+  // Whether Drive's last answer was a 308 that leaves bytes of this chunk out.
+  let incomplete = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
+    incomplete = false;
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
+    if (total !== undefined && !ask) await beforeCommit?.();
+    // An empty file's content goes with no range, as Google's Python client sends it
+    // (googleapiclient/http.py, `next_chunk`): `bytes */0` asks what the session holds
+    // (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload).
+    let headers = total === 0 && !ask ? undefined : { "Content-Range": `bytes ${range}/${total ?? "*"}` };
     let response = await fetch(session, {
       // Drive asks for more with a 308, which is not a redirect to follow.
-      method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
+      method: "PUT", headers, redirect: "manual",
       body: ask ? undefined : bytes,
       signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
     }).catch(() => undefined);
@@ -458,6 +537,7 @@ async function putUploadChunk(
       // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing.
       let held = Number(/-(\d+)$/.exec(response.headers.get("Range") ?? "")?.[1] ?? -1) + 1;
       if (held < start || held > start + bytes.length) break;
+      incomplete = held < start + bytes.length;
       if (held === start && !ask) failures++;
       bytes = bytes.subarray(held - start);
       start = held;
@@ -470,7 +550,14 @@ async function putUploadChunk(
           throw new Error("Google Drive ended the upload before the file was sent. Save it again.");
         }
         let refusal = await driveError(response);
-        if (!isThrottle(refusal)) throw refusal;
+        // A refusal to say what the session holds once a request of the last chunk went
+        // unanswered leaves open whether that request made the file: only a 200 or 201, a 308 or
+        // a 404 tells (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload).
+        if (!isThrottle(refusal)) {
+          throw ask && total !== undefined
+            ? new Error("Google Drive did not say whether the upload was made", { cause: refusal })
+            : refusal;
+        }
       } else {
         void response?.body?.cancel();
       }
@@ -478,7 +565,8 @@ async function putUploadChunk(
       ask = true;
     }
   }
-  throw new Error("Google Drive did not take the upload");
+  let message = "Google Drive did not take the upload";
+  throw incomplete ? new UploadIncompleteError(message) : new Error(message);
 }
 
 /** `bytes` in whole megabytes, rounded up, for a size limit's message. */
@@ -709,6 +797,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
   let canCopy = optionalCapability(value.capabilities, "canCopy");
   let canEdit = optionalCapability(value.capabilities, "canEdit");
+  let canModifyContent = optionalCapability(value.capabilities, "canModifyContent");
   let shortcutTargetId: string | undefined;
   if (value.shortcutDetails !== undefined) {
     if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
@@ -716,7 +805,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   }
   return {
     id: fileId,
-    ...optionalFields(value, ["mimeType", "driveId"]),
+    ...optionalFields(value, ["name", "mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
@@ -727,6 +816,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
     ...(canCopy === undefined ? {} : { canCopy }),
     ...(canEdit === undefined ? {} : { canEdit }),
+    ...(canModifyContent === undefined ? {} : { canModifyContent }),
     ...(shortcutTargetId === undefined ? {} : { shortcutTargetId }),
   };
 }
@@ -752,6 +842,7 @@ export function buildDriveQuery(query: DriveFileQuery, internal: InternalDriveQu
   }
   let name = query.namePrefix?.trim();
   if (name) clauses.push(literalClause("name", "contains", name));
+  if (query.name !== undefined) clauses.push(literalClause("name", "=", query.name));
   let fullText = query.fullTextContains?.trim();
   if (fullText) clauses.push(literalClause("fullText", "contains", fullText));
   let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
@@ -1554,28 +1645,47 @@ export class DriveApi {
   }
 
   /**
-   * Uploads `file`, of the Office type `contentType`, for Drive to convert into native `mimeType`:
-   * as a new file with the name, folder and app properties `target` gives, or, when `target` is a
-   * file's ID, as that native file's new content, which keeps its name. Returns the file's ID.
+   * Uploads `file`, of type `contentType`: as a new file with the metadata `target.create` gives
+   * (a Google-native `mimeType` has Drive convert it into that type), or as the new content of file
+   * `target.replace`, which keeps its ID, name, sharing and version history. Returns the file Drive
+   * made or replaced. With `create.id`, from generateFileId(), the file is made under that ID:
+   * Drive answers a create under an ID already used with 409 and makes nothing, so `undefined`
+   * means an earlier upload made it.
+   *
+   * A new file is made with `ignoreDefaultVisibility` unless `target.domainDefaultVisibility` is
+   * set, so that it takes only the sharing of the folder it goes into: "Domain administrators can
+   * choose to make all uploaded files visible to the domain by default; this parameter bypasses
+   * that behavior for the request. Permissions are still inherited from parent folders."
+   * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create)
    *
    * It goes through an upload session, a chunk at a time, so only a chunk is held in memory and a
    * lost reply is recovered by asking the session what it holds: sending again never makes a second
-   * file. Nothing is made or changed until the last chunk arrives; any failure cancels `file` and
-   * abandons the session.
+   * file. Nothing is made or changed until the last chunk arrives: opening a session makes no file,
+   * which exists once all its content is uploaded
+   * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resumable). So
+   * `beforeCommit` is awaited immediately before each request that can complete the file, the
+   * last chunk and any resend of it, and a check of what the upload may reach made there holds
+   * when the file is made. Any failure, its own too, cancels `file` and abandons the session.
    */
-  async uploadConverted(
-    file: ReadableStream<Uint8Array>, contentType: string, mimeType: string,
-    target: string | { name: string; parents: string[]; appProperties?: Record<string, string> },
-  ): Promise<string> {
-    let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: "id,mimeType" });
-    let path = typeof target === "string" ? `/files/${encodeURIComponent(target)}` : "/files";
+  async upload(
+    file: ReadableStream<Uint8Array>, contentType: string, target: DriveUploadTarget,
+    beforeCommit?: () => Promise<unknown>,
+  ): Promise<DriveMadeFile | undefined> {
+    let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: MADE_FILE_FIELDS });
+    let replace = "replace" in target ? target.replace : undefined;
+    let create = "create" in target ? target.create : undefined;
+    if ("create" in target && !target.domainDefaultVisibility) params.set("ignoreDefaultVisibility", "true");
+    let asked = replace ?? create?.id;
     let session: string | undefined;
     try {
+      if (asked !== undefined) requireDriveFileId(asked);
+      for (let parent of create?.parents ?? []) requireDriveFileId(parent);
+      let path = replace === undefined ? "/files" : `/files/${encodeURIComponent(replace)}`;
       // Opening a session makes no file, so it is safe to send again.
       let opened = await fetchWithAuthRetry(`${DRIVE_UPLOAD_BASE}${path}?${params}`, {
-        method: typeof target === "string" ? "PATCH" : "POST",
+        method: replace === undefined ? "POST" : "PATCH",
         headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": contentType },
-        body: JSON.stringify(typeof target === "string" ? {} : { ...target, mimeType }),
+        body: JSON.stringify(create ?? {}),
       }, this.getAccessToken, { idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS });
       if (!opened.ok) throw await driveError(opened);
       let location = opened.headers.get("Location");
@@ -1599,16 +1709,19 @@ export class DriveApi {
           offset += taken.length;
         }
       }
-      let made = parseDriveJson(
-        (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!, "response");
-      if (!isRecord(made) || typeof made.id !== "string" || made.mimeType !== mimeType) {
-        throw new Error("Google Drive did not convert the uploaded file into the type asked for");
+      let made = parseDriveJson((await putUploadChunk(
+        session, chunk.subarray(0, filled), sent, sent + filled, beforeCommit))!, "response");
+      if (!isRecord(made) || typeof made.id !== "string" || (asked !== undefined && made.id !== asked)) {
+        throw new Error("Google Drive answered an upload with another file than the one asked for");
       }
-      return made.id;
+      return madeFile(made.id, made.mimeType);
     } catch (error) {
       // Stops the file being produced, and the session, which is awaited so that it is sent at all.
       void file.cancel(error).catch(() => {});
       if (session) await fetch(session, { method: "DELETE", signal: AbortSignal.timeout(5_000) }).catch(() => {});
+      if (create?.id !== undefined && error instanceof DriveApiRequestError && error.status === 409) {
+        return undefined;
+      }
       throw error;
     }
   }
@@ -1699,11 +1812,11 @@ export class DriveApi {
    * Drive answers a copy under an ID already used with 409 and makes nothing, so a request whose
    * answer was lost can be sent again, and `undefined` means an earlier request made it. Drive takes
    * no such ID for a copy that is or becomes a Google Docs, Sheets or Slides file; its
-   * `appProperties` are how {@link findCopy} finds a copy a lost answer may still have made. Drive
-   * patches those over the file's own: a property left out is kept from the file, and one set to
-   * `null` is cleared. Each request has a write's timeout, so a stalled copy releases the approval
-   * that sent it, and is sent once: a copy is sent again only by a later approval, after it proves
-   * again that the folder is still the binding's, which a resend here would skip.
+   * `appProperties` are how {@link findByToken} finds a copy a lost answer may still have made.
+   * Drive patches those over the file's own: a property left out is kept from the file, and one set
+   * to `null` is cleared. Each request has a write's timeout, so a stalled copy releases the
+   * approval that sent it, and is sent once: a copy is sent again only by a later approval, after
+   * it proves again that the folder is still the binding's, which a resend here would skip.
    *
    * Sent with `ignoreDefaultVisibility`, so that a domain's default of making new files visible to
    * the domain is not applied, and the copy has only the access it inherits from its folder:
@@ -1715,12 +1828,12 @@ export class DriveApi {
     id?: string;
     mimeType?: string;
     appProperties?: Record<string, string | null>;
-  }): Promise<DriveMadeCopy | undefined> {
+  }): Promise<DriveMadeFile | undefined> {
     requireDriveFileId(fileId);
     requireDriveFileId(copy.parents[0]);
     if (copy.id !== undefined) requireDriveFileId(copy.id);
     let params = new URLSearchParams({
-      supportsAllDrives: "true", ignoreDefaultVisibility: "true", fields: MADE_COPY_FIELDS,
+      supportsAllDrives: "true", ignoreDefaultVisibility: "true", fields: MADE_FILE_FIELDS,
     });
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy?${params}`,
@@ -1748,17 +1861,17 @@ export class DriveApi {
         (copy.id !== undefined && made.id !== copy.id)) {
       throw new Error("Google Drive answered a copy with another file than the one asked for");
     }
-    let mimeType = optionalString(made.mimeType, "file mimeType");
-    return { id: made.id, ...(mimeType === undefined ? {} : { mimeType }) };
+    return madeFile(made.id, made.mimeType);
   }
 
   /**
-   * The file whose {@link COPY_TOKEN_PROPERTY} is `token`, searched for in `corpus`, the corpus of
-   * the folder the copy went into when it was queued, or `undefined` when Drive shows none. App
-   * properties are private to the client that set them, and the token is random, so only the copy
-   * made with it can match, wherever it is found. A copy in the trash is found too: it proves the
-   * copy was made. Drive's search is updated some time after a file is made, so not finding it
-   * proves nothing. Every page is read: Drive may answer one short, or empty, before the last
+   * The file whose app property `property` holds `token`, searched for in `corpus`, the corpus of
+   * the folder the copy or upload went into when it was queued, or `undefined` when Drive shows
+   * none. App properties are private to the client that set them, and the token is random, so only
+   * the copy or upload made with it can match, wherever it is found. A file in the trash is found
+   * too: it proves the file was made. Drive's search is updated some time after a file is made, so
+   * not finding it proves nothing. Every page is read: Drive may answer one short, or empty, before
+   * the last
    * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list).
    *
    * A shared drive's corpus that misses it, or that Drive refuses because the account is not the
@@ -1770,11 +1883,11 @@ export class DriveApi {
    * (https://support.google.com/a/users/answer/12380484?hl=en#moves), or be shared with an account
    * that is not the drive's member. The whole search is given up on when `signal` aborts.
    */
-  async findCopy(
-    token: string, corpus: DriveCorpus, signal?: AbortSignal,
-  ): Promise<DriveMadeCopy | undefined> {
+  async findByToken(
+    property: TokenProperty, token: string, corpus: DriveCorpus, signal?: AbortSignal,
+  ): Promise<DriveMadeFile | undefined> {
     if (corpus.kind === "drive") {
-      let found = await this.#findCopyIn(token, corpus, signal).catch((error: unknown) => {
+      let found = await this.#findByTokenIn(property, token, corpus, signal).catch((error: unknown) => {
         if (error instanceof DriveApiRequestError && error.status === 403 &&
             error.reason === "teamDriveMembershipRequired") {
           return undefined;
@@ -1783,20 +1896,20 @@ export class DriveApi {
       });
       if (found) return found;
     }
-    return this.#findCopyIn(token, corpus.kind === "drive" ? { kind: "user" } : corpus, signal);
+    return this.#findByTokenIn(
+      property, token, corpus.kind === "drive" ? { kind: "user" } : corpus, signal);
   }
 
-  /** {@link findCopy}'s search of one corpus. */
-  async #findCopyIn(
-    token: string, corpus: DriveCorpus, signal: AbortSignal | undefined,
-  ): Promise<DriveMadeCopy | undefined> {
+  /** {@link findByToken}'s search of one corpus. */
+  async #findByTokenIn(
+    property: TokenProperty, token: string, corpus: DriveCorpus, signal: AbortSignal | undefined,
+  ): Promise<DriveMadeFile | undefined> {
     let pageToken: string | undefined;
     do {
       let params = new URLSearchParams({
-        q: `appProperties has { key='${COPY_TOKEN_PROPERTY}' and value='${
-          escapeDriveQueryLiteral(token)}' }`,
+        q: `appProperties has { key='${property}' and value='${escapeDriveQueryLiteral(token)}' }`,
         pageSize: "2",
-        fields: `nextPageToken,files(${MADE_COPY_FIELDS},appProperties)`,
+        fields: `nextPageToken,files(${MADE_FILE_FIELDS},appProperties)`,
         spaces: "drive",
         corpora: corpus.kind,
         supportsAllDrives: "true",
@@ -1813,13 +1926,75 @@ export class DriveApi {
         if (!isRecord(file) || typeof file.id !== "string") {
           throw new Error("Invalid Google Drive file-list response");
         }
-        if (optionalAppProperties(file.appProperties)?.[COPY_TOKEN_PROPERTY] !== token) continue;
-        let mimeType = optionalString(file.mimeType, "file mimeType");
-        return { id: file.id, ...(mimeType === undefined ? {} : { mimeType }) };
+        if (optionalAppProperties(file.appProperties)?.[property] !== token) continue;
+        return madeFile(file.id, file.mimeType);
       }
       pageToken = optionalString(body.nextPageToken, "nextPageToken");
     } while (pageToken);
     return undefined;
+  }
+
+  /**
+   * The live files named exactly `name` directly in folder `folderId`, searched in `corpus`, the
+   * one the folder is listed in, from every page of the search, since Drive may answer a short or
+   * an empty page before the end. Not every drive: Drive may leave a search of all drives
+   * incomplete, which {@link listFiles} refuses
+   * (https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list). Drive's
+   * search is updated some time after a file is made or renamed, so one made a moment ago may be
+   * missing.
+   */
+  async findNamed(folderId: string, name: string, corpus: DriveCorpus): Promise<DriveFile[]> {
+    requireDriveFileId(folderId);
+    let named: DriveFile[] = [];
+    let pageToken: string | undefined;
+    do {
+      let page = await this.listFiles({
+        directParentIds: [folderId], name, pageSize: 10, orderBy: null, corpus,
+        ...(pageToken === undefined ? {} : { pageToken }),
+      });
+      named.push(...page.files.filter(file => file.name === name));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return named;
+  }
+
+  /** Which version of its content file `fileId` holds now, as a replacement records and checks it. */
+  async getContentVersion(fileId: string): Promise<DriveContentVersion> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({ fields: CONTENT_VERSION_FIELDS, supportsAllDrives: "true" });
+    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
+    if (!isRecord(body) || typeof body.id !== "string") throw new Error("Invalid Google Drive file response");
+    let version: DriveContentVersion = { id: body.id };
+    for (let field of ["headRevisionId", "sha256Checksum", "size", "modifiedTime"] as const) {
+      let value = optionalString(body[field], `file ${field}`);
+      if (value !== undefined) version[field] = value;
+    }
+    let canModifyContent = optionalCapability(body.capabilities, "canModifyContent");
+    if (canModifyContent !== undefined) version.canModifyContent = canModifyContent;
+    return version;
+  }
+
+  /**
+   * Keeps revision `revisionId` of file `fileId` in its version history for good, which Drive would
+   * otherwise drop in time. Drive keeps at most 200 revisions of a file this way. It is sent once:
+   * setting it again changes nothing, but a resend would skip the proof of the file that comes
+   * before it, so a failure is left to the next approval, which proves the file again first. The
+   * request has the write deadline: an approval holds the binding's decisions while it waits.
+   */
+  async keepRevision(fileId: string, revisionId: string): Promise<void> {
+    requireDriveFileId(fileId);
+    requireDriveFileId(revisionId);
+    let params = new URLSearchParams({ fields: "id" });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/revisions/${encodeURIComponent(revisionId)}?${params}`,
+      {
+        method: "PATCH",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ keepForever: true }),
+      },
+      this.getAccessToken, { retries: 1, timeoutMs: WRITE_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    await response.body?.cancel();
   }
 
   /** Whether the connected account may comment on a file, as Drive reports it. */
