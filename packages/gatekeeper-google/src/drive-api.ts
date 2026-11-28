@@ -485,20 +485,32 @@ const isThrottle = (error: Error) => error instanceof DriveApiRequestError && er
   (error.reason === "rateLimitExceeded" || error.reason === "userRateLimitExceeded");
 
 /**
+ * An upload Drive said it still lacks bytes of when the sends of a chunk ran out: a 308 means the
+ * upload must continue, and one whose `Range` leaves bytes out says they never arrived
+ * (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload). Drive
+ * makes the file only once it has them all, so nothing was made or changed.
+ */
+export class UploadIncompleteError extends Error {}
+
+/**
  * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
  * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
  * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
  * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
  * session holds, and sends only the rest, so nothing Drive finished is sent again.
  * `beforeCommit` is awaited before each request that sends the last chunk, the only requests
- * that can complete the file, and throws to send none.
+ * that can complete the file, and throws to send none. Sends of a chunk that run out on a 308
+ * leaving bytes of it out throw UploadIncompleteError.
  */
 async function putUploadChunk(
   session: string, bytes: Uint8Array, start: number, total?: number,
   beforeCommit?: () => Promise<unknown>,
 ): Promise<string | undefined> {
   let ask = false;
+  // Whether Drive's last answer was a 308 that leaves bytes of this chunk out.
+  let incomplete = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
+    incomplete = false;
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
     if (total !== undefined && !ask) await beforeCommit?.();
     let response = await fetch(session, {
@@ -519,6 +531,7 @@ async function putUploadChunk(
       // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing.
       let held = Number(/-(\d+)$/.exec(response.headers.get("Range") ?? "")?.[1] ?? -1) + 1;
       if (held < start || held > start + bytes.length) break;
+      incomplete = held < start + bytes.length;
       if (held === start && !ask) failures++;
       bytes = bytes.subarray(held - start);
       start = held;
@@ -546,7 +559,8 @@ async function putUploadChunk(
       ask = true;
     }
   }
-  throw new Error("Google Drive did not take the upload");
+  let message = "Google Drive did not take the upload";
+  throw incomplete ? new UploadIncompleteError(message) : new Error(message);
 }
 
 /** `bytes` in whole megabytes, rounded up, for a size limit's message. */

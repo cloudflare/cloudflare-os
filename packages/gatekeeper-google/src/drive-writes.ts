@@ -15,8 +15,8 @@ import {
 import type { Logger } from "@gadgets/observability/logger";
 import {
   APPROVAL_READ_MAX_MS, DriveApiDisabledError, DriveApiRequestError, driveWriteFailure,
-  isInsufficientScope, type DriveWriteFailure, type DriveApi, type DriveCorpus, type DriveMadeFile,
-  type DriveScopeNode, type TokenProperty,
+  isInsufficientScope, UploadIncompleteError, type DriveWriteFailure, type DriveApi,
+  type DriveCorpus, type DriveMadeFile, type DriveScopeNode, type TokenProperty,
 } from "./drive-api";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
@@ -465,8 +465,9 @@ const NOT_SENT =
  * is in doubt. A write that can be repeated keeps it through all three, so that its next approval
  * looks first: a change such a send made all the same is then found and bound, where an approval
  * with no marker would take it for someone else's. A send with `markAtCommit` that fails before it
- * commits has no marker, however it failed, and one whose outcome Google left open is then sent
- * again when approved again.
+ * commits has no marker, however it failed, nor does an upload Drive said never arrived whole
+ * (UploadIncompleteError), and one whose outcome Google left open is then sent again when approved
+ * again.
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
@@ -519,8 +520,10 @@ export async function sendOnce<Sent>(
   try {
     sent = await step.send(mark);
   } catch (error) {
-    // A marker a look proved empty goes too: nothing is left for a later approval to look for.
-    if (!marked || error instanceof ActionApplyError) host.attempts.delete(id);
+    // Nothing was made by a send that failed before it committed, or that Drive said never
+    // arrived whole. A marker a look proved empty goes too: nothing is left to look for.
+    let unsent = !marked || error instanceof UploadIncompleteError;
+    if (unsent || error instanceof ActionApplyError) host.attempts.delete(id);
     if (error instanceof ActionApplyError) throw error;
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
@@ -531,7 +534,7 @@ export async function sendOnce<Sent>(
           ? { providerReasons: [...error.providerReasons] } : {}),
     });
     if (failure === "unknown") {
-      throw new Error(marked ? step.unconfirmed : NOT_SENT, { cause: error });
+      throw new Error(unsent ? NOT_SENT : step.unconfirmed, { cause: error });
     }
     // The approval's one token was not accepted, which the next approval's, loaded afresh, may be.
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.

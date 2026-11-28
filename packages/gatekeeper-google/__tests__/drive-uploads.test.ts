@@ -733,6 +733,26 @@ describe("Drive converted upload sends", () => {
     expect(api.findByToken).not.toHaveBeenCalled();
     expect(made.get(id)).toBe("N1");
   });
+
+  it("leaves a converted upload to send again when Drive says its last chunk never arrived", async () => {
+    let { api, attempts, journal, made, submit, apply, converted } = harness();
+    let incomplete = true;
+    // A 308 with no `Range`: the session holds none of the file, which Drive makes only once it
+    // has all of it.
+    let requests = throughDrive(api, (method, range) => method === "PUT" && incomplete
+      ? new Response(null, { status: 308 }) : session("N1")(method, range));
+    let id = await submit("uploadConverted", await converted("docx"));
+    expect(await apply(id)).toBe(NOT_SENT);
+    expect(requests).toEqual(["POST", "PUT bytes 0-3/4", "PUT bytes 0-3/4", "PUT bytes 0-3/4", "DELETE"]);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
+
+    incomplete = false;
+    expect(await apply(id)).toBeNull();
+    expect(requests.slice(5)).toEqual(["POST", "PUT bytes 0-3/4"]);
+    expect(api.findByToken).not.toHaveBeenCalled();
+    expect(made.get(id)).toBe("N1");
+  });
 });
 
 describe("Drive replacement sends", () => {
