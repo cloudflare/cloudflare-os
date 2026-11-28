@@ -90,6 +90,7 @@ const COPY_ACTIONS = defineActions<DriveCopiesHost, DriveCopyActions>(
   DRIVE_COPY_DEFINITIONS, { fence: "none", vendorId: "google" });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -383,6 +384,39 @@ describe("Drive copy sends", () => {
     expect(await apply(id)).toBe(UNCONFIRMED_NATIVE_COPY);
     expect(api.findCopy).toHaveBeenCalledTimes(1);
     expect(api.copyFile).toHaveBeenCalledTimes(1);
+  });
+
+  // A send again in the same approval would skip the proof that the folder is still in the
+  // binding's scope, and could make the copy in a folder that left it.
+  it.each([
+    ["Drive answers 503", false],
+    ["Drive's write deadline passes", true],
+  ])("sends an ordinary copy once when %s, proving its folder before sending it again", async (_, timesOut) => {
+    let { api, attempts, nodes, submit, apply } = harness(AT_R);
+    let id = await submit("copyFile", intoB({ folderIds: ["R", "A"] }));
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timesOut
+      ? AbortSignal.abort(new DOMException("The operation timed out.", "TimeoutError"))
+      : new AbortController().signal);
+    let posts = 0;
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      posts++;
+      if (init.signal?.aborted) throw init.signal.reason;
+      return Response.json({ error: { code: 503, errors: [{ reason: "backendError" }] } }, { status: 503 });
+    });
+    let drive = new DriveApi(async () => "token");
+    api.copyFile.mockImplementation((fileId, copy) => drive.copyFile(fileId, copy));
+    // Any pause before a resend passes at once.
+    vi.useFakeTimers();
+
+    let outcome = apply(id);
+    await vi.runAllTimersAsync();
+    expect(await outcome).toBe(UNCONFIRMED_COPY);
+    expect(posts).toBe(1);
+    expect(attempts.has(id)).toBe(true);
+
+    nodes.B = folder("B", "X");
+    expect(await apply(id)).toBe(OUT_OF_SCOPE);
+    expect(posts).toBe(1);
   });
 });
 

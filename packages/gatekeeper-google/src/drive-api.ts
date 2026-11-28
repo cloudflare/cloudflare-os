@@ -1683,13 +1683,14 @@ export class DriveApi {
   /**
    * Copies `fileId` into the one folder `copy.parents` names, named `copy.name`; with `mimeType`,
    * converted to that native type. With `id`, from generateFileId(), the copy is made under that ID:
-   * Drive answers a copy under an ID already used with 409 and makes nothing, so the request is
-   * replayed after a lost answer, and `undefined` means an earlier request made it. Drive takes no
-   * such ID for a copy that is or becomes a Google Docs, Sheets or Slides file; one sent without
-   * is never replayed, since a lost answer may still have made a copy, and its `appProperties`
-   * are how {@link findCopy} finds that copy. Drive patches those over the file's own: a property
-   * left out is kept from the file, and one set to `null` is cleared. Each request has a write's
-   * timeout, so a stalled copy releases the approval that sent it.
+   * Drive answers a copy under an ID already used with 409 and makes nothing, so a request whose
+   * answer was lost can be sent again, and `undefined` means an earlier request made it. Drive takes
+   * no such ID for a copy that is or becomes a Google Docs, Sheets or Slides file; its
+   * `appProperties` are how {@link findCopy} finds a copy a lost answer may still have made. Drive
+   * patches those over the file's own: a property left out is kept from the file, and one set to
+   * `null` is cleared. Each request has a write's timeout, so a stalled copy releases the approval
+   * that sent it, and is sent once: a copy is sent again only by a later approval, after it proves
+   * again that the folder is still the binding's, which a resend here would skip.
    *
    * Sent with `ignoreDefaultVisibility`, so that a domain's default of making new files visible to
    * the domain is not applied, and the copy has only the access it inherits from its folder:
@@ -1721,7 +1722,7 @@ export class DriveApi {
           ...(copy.appProperties === undefined ? {} : { appProperties: copy.appProperties }),
         }),
       },
-      this.getAccessToken, { idempotent: copy.id !== undefined, timeoutMs: WRITE_TIMEOUT_MS });
+      this.getAccessToken, { retries: 1, timeoutMs: WRITE_TIMEOUT_MS });
     if (copy.id !== undefined && response.status === 409) {
       await response.body?.cancel();
       return undefined;
