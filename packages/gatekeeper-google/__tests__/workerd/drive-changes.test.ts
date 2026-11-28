@@ -166,6 +166,9 @@ const COPY_FOLDER_DESTINATION =
   "connected folder is reached from a session opened at it or next to it; one outside it takes a " +
   "binding to a folder that holds both, or to all of Drive.";
 const COPY_FOLDER = "A folder cannot be copied. Copy the files in it one at a time.";
+const UNCONFIRMED_COPY =
+  "Google Drive did not confirm whether this copy was made, and it may have been. Approving it " +
+  "again first checks for it, so it is not made twice; rejecting it leaves any copy that was made.";
 const UNCONFIRMED_NATIVE_COPY =
   "Google Drive did not confirm whether this copy was made, and it may have been: Google Drive " +
   "can take a while to show a new file. It won't be sent again. Approving it again looks for the " +
@@ -2385,16 +2388,16 @@ describe("copies", () => {
       .toMatchObject({ id: "native-1", parentId: "elsewhere" });
   });
 
-  it("sends a lost ordinary copy again under its ID, and never sends a native one twice", async () => {
+  it("finds a lost ordinary copy by its ID at the next approval, and never sends a native one twice", async () => {
     provider.files.set("report", report());
     let drive = binding();
 
-    // The resend under the reserved ID is refused as used, which says the first one made it.
+    // An approval sends a copy once; the next one finds it made under the reserved ID.
     let ordinary = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
     provider.nextWrite = "lost";
+    expect(await drive.apply(ordinary.actionId)).toBe(UNCONFIRMED_COPY);
     expect(await drive.apply(ordinary.actionId)).toBeNull();
-    expect(sent("POST /drive/v3/files/report/copy").map(({ body }) => body.id))
-      .toEqual(["copy-1", "copy-1"]);
+    expect(sent("POST /drive/v3/files/report/copy").map(({ body }) => body.id)).toEqual(["copy-1"]);
     expect([...provider.files.keys()].filter(id => id.startsWith("copy-"))).toEqual(["copy-1"]);
 
     let native = await drive.queued("copyFile", "doc-1", { folderId: "elsewhere" });
