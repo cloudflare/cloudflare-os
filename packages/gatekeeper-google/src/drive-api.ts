@@ -515,9 +515,13 @@ async function putUploadChunk(
     incomplete = false;
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
     if (total !== undefined && !ask) await beforeCommit?.();
+    // An empty file's content goes with no range, as Google's Python client sends it
+    // (googleapiclient/http.py, `next_chunk`): `bytes */0` asks what the session holds
+    // (https://developers.google.com/workspace/drive/api/guides/manage-uploads#resume-upload).
+    let headers = total === 0 && !ask ? undefined : { "Content-Range": `bytes ${range}/${total ?? "*"}` };
     let response = await fetch(session, {
       // Drive asks for more with a 308, which is not a redirect to follow.
-      method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
+      method: "PUT", headers, redirect: "manual",
       body: ask ? undefined : bytes,
       signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
     }).catch(() => undefined);

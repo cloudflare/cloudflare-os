@@ -2998,6 +2998,21 @@ describe("upload", () => {
       .rejects.toBe(refusal);
     expect(calls.map(({ method }) => method)).toEqual(["PATCH", "DELETE"]);
   });
+
+  it("sends an empty file's content with no Content-Range, which would ask what the session holds", async () => {
+    let sent: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      let range = new Headers(init.headers).get("Content-Range");
+      sent.push(`${init.method}${range === null ? "" : ` ${range}`}`);
+      if (init.method === "POST") return opened();
+      // `bytes */0` asks what the session holds, which is nothing yet.
+      if (range !== null) return new Response(null, { status: 308 });
+      return jsonResponse({ id: "U", mimeType: "text/plain" });
+    });
+    await expect(api().upload(stream(""), "text/plain", { create: { id: "U", name: "empty.txt", parents: ["B"] } }))
+      .resolves.toStrictEqual({ id: "U", mimeType: "text/plain" });
+    expect(sent).toEqual(["POST", "PUT"]);
+  });
 });
 
 describe("findNamed, getContentVersion and keepRevision", () => {
