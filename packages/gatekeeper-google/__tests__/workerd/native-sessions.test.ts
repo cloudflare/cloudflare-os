@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
 import type { DriveQueue } from "../../src/drive-actions";
+import type { DriveDocEdits, DriveEdit } from "../../src/drive-editors";
 import { FILE_READ_IDLE_MS } from "../../src/drive-file-read";
 import type { DriveBindingScope } from "../../src/drive-session";
 import {
@@ -379,6 +380,7 @@ const NO_COMMENTS: DriveQueue = {
   submit: async () => { throw new Error("Unexpected comment submission"); },
   undecided: read => read([]),
   waiting: read => read([]),
+  queued: () => [],
 };
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
@@ -416,6 +418,7 @@ const PENDING_DECIDED = "That pending ID names no comment waiting for approval. 
 
 function newSession(
   convertPdf?: PdfConverter, scope: DriveBindingScope = { kind: "account" },
+  writes: DriveQueue = NO_COMMENTS,
 ) {
   const queue = new TestApprovalQueue();
   const queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
@@ -429,7 +432,7 @@ function newSession(
       convertPdf,
       scope,
       queueStub,
-      NO_COMMENTS,
+      writes,
       undefined,
     )),
   };
@@ -1268,10 +1271,15 @@ describe("Drive file reads", () => {
   const FILE_ACCESS_MISSING =
     "This Google account was connected before Drive bindings could read file content. Reconnect " +
     "it in Workshop to read Drive files.";
+  const UNSTATED_DOWNLOAD = "Google Drive did not say whether the connected account may download " +
+    "this file, so its content is not read.";
 
   /** The size of a file too large to be worth holding, served only as a stream a test supplies. */
   const BIG = 64 * 1024 * 1024;
-  type ProviderFile = { mimeType: string; content?: Uint8Array; size?: number; canDownload?: boolean };
+  /** A file Drive answers for; `canDownload: null` is one whose answer omits the capability. */
+  type ProviderFile = {
+    mimeType: string; content?: Uint8Array; size?: number; canDownload?: boolean | null;
+  };
   const FILES: Record<string, ProviderFile> = {
     "csv-1": { mimeType: "text/csv", content: CSV_BYTES },
     "empty-1": { mimeType: "text/plain", content: new Uint8Array() },
@@ -1281,6 +1289,9 @@ describe("Drive file reads", () => {
     "doc-1": { mimeType: DOC_MIME },
     "sheet-1": { mimeType: SHEET_MIME },
     "deck-1": { mimeType: SLIDES_MIME },
+    "locked-doc-1": { mimeType: DOC_MIME, canDownload: false },
+    "unflagged-1": { mimeType: "text/csv", content: CSV_BYTES, canDownload: null },
+    "unflagged-doc-1": { mimeType: DOC_MIME, canDownload: null },
     "folder-1": { mimeType: FOLDER_MIME },
     "shortcut-1": { mimeType: "application/vnd.google-apps.shortcut" },
     "form-1": { mimeType: "application/vnd.google-apps.form" },
@@ -1290,21 +1301,34 @@ describe("Drive file reads", () => {
   let downloads: (string | null)[];
   /** Replaces the honoured range a download answers with, when a test sets it. */
   let answerDownload: (() => Response) | undefined;
+  /** The file and MIME type of each export, in order. */
+  let exports: { fileId: string; mimeType: string | null }[];
+  /** What an export answers, when a test sets it; by default the file's ID and the MIME type. */
+  let answerExport: (() => Response) | undefined;
 
-  /** Serves {@link FILES}: metadata, and each download's requested range as a 206. */
+  /** Serves {@link FILES}: metadata, each download's requested range as a 206, and exports. */
   function installFileProvider(): string[] {
     const urls: string[] = [];
     downloads = [];
     answerDownload = undefined;
+    exports = [];
+    answerExport = undefined;
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       urls.push(url.toString());
       if (url.hostname !== "www.googleapis.com" || !url.pathname.startsWith("/drive/v3/files/")) {
         throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
       }
-      const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
+      const segments = url.pathname.split("/");
+      const exported = segments.at(-1) === "export";
+      const id = decodeURIComponent(segments.at(exported ? -2 : -1)!);
       const file = FILES[id];
       if (!file) return Response.json({ error: { code: 404, errors: [{ reason: "notFound" }] } }, { status: 404 });
+      if (exported) {
+        const mimeType = url.searchParams.get("mimeType");
+        exports.push({ fileId: id, mimeType });
+        return answerExport?.() ?? new Response(`${id} as ${mimeType}`);
+      }
       if (isDownload(url.toString())) {
         const range = new Headers(init?.headers).get("Range");
         downloads.push(range);
@@ -1324,7 +1348,7 @@ describe("Drive file reads", () => {
         modifiedTime: "2026-08-20T12:00:00Z",
         ...file.content ? { size: String(file.content.byteLength) } : {},
         ...file.size === undefined ? {} : { size: String(file.size) },
-        ...file.canDownload === undefined ? {} : { capabilities: { canDownload: file.canDownload } },
+        ...file.canDownload === null ? {} : { capabilities: { canDownload: file.canDownload ?? true } },
       });
     }));
     return urls;
@@ -1463,9 +1487,12 @@ describe("Drive file reads", () => {
   });
 
   it.each([
-    ["doc-1", "The requested Drive file is a Google Doc; open it with openGoogleDoc()."],
-    ["sheet-1", "The requested Drive file is a Google Sheet; open it with openGoogleSheet()."],
-    ["deck-1", "The requested Drive file is a Google Slides presentation; open it with openGoogleSlides()."],
+    ["doc-1", "The requested Drive file is a Google Doc; open it with openGoogleDoc(), or export " +
+      "it with exportFile()."],
+    ["sheet-1", "The requested Drive file is a Google Sheet; open it with openGoogleSheet(), or " +
+      "export it with exportFile()."],
+    ["deck-1", "The requested Drive file is a Google Slides presentation; open it with " +
+      "openGoogleSlides(), or export it with exportFile()."],
     ["folder-1", "The requested Drive item is a folder, which has no content to read."],
     ["shortcut-1", "The requested Drive item is a shortcut, which is not followed; read its target instead."],
     ["form-1", "The requested Drive file is a Google-native file (application/vnd.google-apps.form) " +
@@ -1485,6 +1512,14 @@ describe("Drive file reads", () => {
     await expect(Promise.resolve(session.readFile("locked-1"))).rejects.toThrow(
       "Google Drive does not let the connected account download this file; its owner or " +
       "administrator has restricted downloading it.");
+    expect(downloads).toEqual([]);
+  });
+
+  // Drive's answer always holds the capabilities asked for, so one without it is not taken as leave.
+  it("refuses a file whose download leave Drive does not state, without downloading", async () => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.readFile("unflagged-1"))).rejects.toThrow(UNSTATED_DOWNLOAD);
     expect(downloads).toEqual([]);
   });
 
@@ -1644,6 +1679,186 @@ describe("Drive file reads", () => {
     expect(providerUrls).toEqual([]);
     expect(queue.observations).toEqual([]);
   });
+
+  it("exports a native file, authorizing the export as a read of its content", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+
+    const exported = await owned.exportFile("doc-1", "md");
+
+    expect(exported).toEqual({
+      mimeType: "text/markdown",
+      modifiedTime: new Date("2026-08-20T12:00:00Z"),
+      content: expect.any(ReadableStream),
+    });
+    expect(await new Response(exported.content).text()).toBe("doc-1 as text/markdown");
+    expect(exports).toEqual([{ fileId: "doc-1", mimeType: "text/markdown" }]);
+    expect(queue.observations.map(({ title, description, subresources }) =>
+      ({ title, description, subresources }))).toEqual([
+      {
+        title: "Open file from Google Drive",
+        description: "Check current metadata for Drive file doc-1 and open it as a file.",
+        subresources: ["drive/file/doc-1"],
+      },
+      // An export is the file's content, which a collaborator needs leave to download to see.
+      {
+        title: "Export file from Google Drive",
+        description: "Export Drive file doc-1 as md.",
+        subresources: ["drive/content/doc-1"],
+      },
+    ]);
+  });
+
+  it.each([
+    ["sheet-1", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["sheet-1", "ods", "application/vnd.oasis.opendocument.spreadsheet"],
+    ["sheet-1", "csv", "text/csv"],
+    ["deck-1", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    ["deck-1", "pdf", "application/pdf"],
+  ] as const)("exports %s as %s", async (fileId, format, mimeType) => {
+    using session = newSession().session;
+
+    expect((await session.exportFile(fileId, format)).mimeType).toBe(mimeType);
+    expect(exports).toEqual([{ fileId, mimeType }]);
+  });
+
+  it.each([
+    ["doc-1", "xlsx", "A Google Doc does not export to xlsx; it exports to docx, odt, rtf, pdf, " +
+      "txt, html, epub, md."],
+    ["sheet-1", "md", "A Google Sheet does not export to md; it exports to xlsx, ods, pdf, csv, tsv."],
+    ["csv-1", "pdf", "Only Google Docs, Sheets and Slides files are exported. The requested Drive " +
+      "item is a file with content of its own; read it with readFile()."],
+    ["folder-1", "pdf", "Only Google Docs, Sheets and Slides files are exported. The requested " +
+      "Drive item is a folder."],
+    ["locked-doc-1", "pdf", "Google Drive does not let the connected account download this file; " +
+      "its owner or administrator has restricted downloading it."],
+    ["unflagged-doc-1", "pdf", UNSTATED_DOWNLOAD],
+  ] as const)("refuses to export %s as %s without asking Drive to", async (fileId, format, message) => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.exportFile(fileId, format))).rejects.toThrow(message);
+    expect(exports).toEqual([]);
+  });
+
+  it("says what to do when the export is over Google's 10 MB", async () => {
+    answerExport = () => Response.json(
+      { error: { code: 403, errors: [{ reason: "exportSizeLimitExceeded" }] } }, { status: 403 });
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.exportFile("doc-1", "pdf"))).rejects.toThrow(
+      "Google Drive exports at most 10 MB, and this file is larger in that format.");
+  });
+
+  // Its size in that format is a fact about the file's content, which this read was refused.
+  it("withholds Google's size refusal from an export whose read is not authorized", async () => {
+    answerExport = () => Response.json(
+      { error: { code: 403, errors: [{ reason: "exportSizeLimitExceeded" }] } }, { status: 403 });
+    const { queue, session } = newSession();
+    using owned = session;
+    queue.refuse.add("Export file from Google Drive");
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf")))
+      .rejects.toThrow("Observation refused");
+  });
+
+  it("asks an account connected before content access to reconnect to export", async () => {
+    answerExport = () => Response.json(NOT_AUTHORIZED_TO_FILE, { status: 403 });
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.exportFile("doc-1", "pdf")))
+      .rejects.toThrow(FILE_ACCESS_MISSING);
+  });
+
+  it("withholds an export whose read is not authorized, ending it", async () => {
+    let cancelled = false;
+    answerExport = () => new Response(new ReadableStream<Uint8Array>({
+      pull: controller => controller.enqueue(new Uint8Array(65_536)),
+      cancel: () => { cancelled = true; },
+    }, { highWaterMark: 0 }));
+    const { queue, session } = newSession();
+    using owned = session;
+    queue.refuse.add("Export file from Google Drive");
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf")))
+      .rejects.toThrow("Observation refused");
+    expect(exports).toHaveLength(1);
+    expect(cancelled).toBe(true);
+  });
+
+  // Drive exports the file as Google has it, so an export with edits still waiting would look like
+  // one of the file as the binding's own reads show it, edits and all, and would not be.
+  it("refuses to export a file with edits waiting, and exports the others", async () => {
+    const edit: DriveEdit<DriveDocEdits["appendText"]> = {
+      target: { fileId: "doc-1" },
+      change: { type: "appendText", markdown: "More", submittedAt: 0 },
+    };
+    const { queue, session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      access: "write",
+      queued: () => [{ id: 7, action: { kind: "appendText", payload: edit } }],
+    });
+    using owned = session;
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf"))).rejects.toThrow(
+      "That file has changes waiting for approval, which an export would leave out");
+    expect(await bytesOf(await owned.exportFile("sheet-1", "csv"))).toEqual(
+      new TextEncoder().encode("sheet-1 as text/csv"));
+    expect(exports).toEqual([{ fileId: "sheet-1", mimeType: "text/csv" }]);
+    expect(queue.observations.map(o => o.title)).toEqual([
+      "Open file from Google Drive", "Open file from Google Drive", "Export file from Google Drive",
+    ]);
+  });
+
+  // The queue is read as it stands: an approval that is running holds reads that replay the queue,
+  // and one of another file, stalled on Google, would otherwise hold the export with it.
+  it("exports a file while an approval is running, without waiting for it to end", async () => {
+    let endApproval!: () => void;
+    const approval = new Promise<void>(resolve => { endApproval = resolve; });
+    const { session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      access: "write",
+      waiting: read => approval.then(() => read([])),
+      undecided: read => approval.then(() => read([])),
+    });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("sheet-1", "csv"))).toEqual(
+      new TextEncoder().encode("sheet-1 as text/csv"));
+    endApproval();
+  });
+
+  // A read-only binding's native sessions replay no queued edit, so the file they read is the one
+  // Google has, and so is its export, even with edits queued before the deployment kept Drive
+  // read-only: those wait until writes are allowed again or the edits are rejected.
+  it("exports a file with edits queued before the binding became read-only", async () => {
+    const edit: DriveEdit<DriveDocEdits["appendText"]> = {
+      target: { fileId: "doc-1" },
+      change: { type: "appendText", markdown: "More", submittedAt: 0 },
+    };
+    const { session } = newSession(undefined, undefined, {
+      ...NO_COMMENTS,
+      waiting: read => read([{ id: 7, action: { kind: "appendText", payload: edit } }]),
+      queued: () => [{ id: 7, action: { kind: "appendText", payload: edit } }],
+    });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("doc-1", "txt"))).toEqual(
+      new TextEncoder().encode("doc-1 as text/plain"));
+  });
+
+  it("exports only the bound file of an exact-file binding", async () => {
+    const { queue, session } = newSession(undefined, { kind: "file", fileId: "doc-1" });
+    using owned = session;
+
+    expect(await bytesOf(await owned.exportFile("doc-1", "txt"))).toEqual(
+      new TextEncoder().encode("doc-1 as text/plain"));
+    await expect(Promise.resolve(owned.exportFile("sheet-1", "csv")))
+      .rejects.toThrow("The requested file is outside this Drive binding.");
+    expect(exports).toEqual([{ fileId: "doc-1", mimeType: "text/plain" }]);
+    expect(queue.observations.map(o => o.title)).toEqual([
+      "Open file from Google Drive", "Export file from Google Drive",
+    ]);
+  });
 });
 
 describe("Drive Doc tab selection", () => {
@@ -1790,7 +2005,7 @@ describe("folder-scoped native sessions", () => {
     /** Bytes of content, for a file that has its own. */
     size?: string;
     modifiedTime?: string;
-    capabilities?: { canListChildren: boolean };
+    capabilities?: { canListChildren?: boolean; canDownload?: boolean };
   };
 
   /** The subtree the provider answers from. Tests move files by rewriting `parents` here. */
@@ -1870,6 +2085,13 @@ describe("folder-scoped native sessions", () => {
           files: files.map(node => ({ ...node, name: node.id, modifiedTime: "2026-08-20T12:00:00Z" })),
         });
       }
+      if (url.pathname.endsWith("/export")) {
+        nativeCalls.push(`export ${url.searchParams.get("mimeType")}`);
+        onNativeRead?.();
+        return new Response("exported", {
+          headers: { "Content-Type": url.searchParams.get("mimeType")! },
+        });
+      }
       if (url.pathname.includes("/drive/v3/files/")) {
         const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
         const node = nodes.get(id);
@@ -1909,7 +2131,9 @@ describe("folder-scoped native sessions", () => {
     return nativeCalls;
   }
 
-  function folderSession(nodes: Map<string, Node>, convertPdf?: PdfConverter) {
+  function folderSession(
+    nodes: Map<string, Node>, convertPdf?: PdfConverter, writes: DriveQueue = NO_COMMENTS,
+  ) {
     const queue = new TestApprovalQueue();
     return {
       queue,
@@ -1921,7 +2145,7 @@ describe("folder-scoped native sessions", () => {
         convertPdf,
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
-        NO_COMMENTS,
+        writes,
         undefined,
       )),
     };
@@ -2299,7 +2523,7 @@ describe("folder-scoped native sessions", () => {
   function dataNode(parent: string) {
     return {
       id: "data-1", mimeType: "application/octet-stream", parents: [parent], trashed: false,
-      size: String(PDF_BYTES.byteLength),
+      size: String(PDF_BYTES.byteLength), capabilities: { canDownload: true },
     };
   }
 
@@ -2384,6 +2608,77 @@ describe("folder-scoped native sessions", () => {
     using child = await session.openFolder("nested");
 
     expect(await bytesOf(await child.readFile("data-1"))).toEqual(PDF_BYTES);
+  });
+
+  it("exports a direct child native file, checking its place around the export", async () => {
+    const nodes = subtree();
+    nodes.set("doc-1", {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    });
+    const nativeCalls = installFolderProvider(nodes);
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    const exported = await owned.exportFile("doc-1", "pdf");
+
+    expect(await new Response(exported.content).text()).toBe("exported");
+    expect(nativeCalls).toEqual(["export application/pdf"]);
+    expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
+      ["Open file from Google Drive", [`drive/folder/${ROOT}`, "drive/file/doc-1"]],
+      ["Export file from Google Drive",
+        [`drive/folder/${ROOT}`, "drive/file/doc-1", "drive/content/doc-1"]],
+    ]);
+  });
+
+  it("refuses an export of a file moved out of the folder before Drive answered", async () => {
+    const nodes = subtree();
+    const doc = {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    };
+    nodes.set("doc-1", doc);
+    installFolderProvider(nodes, () => nodes.set("doc-1", { ...doc, parents: ["elsewhere"] }));
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf"))).rejects.toThrow(OUTSIDE);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  // The folder is proved again with Drive requests before the export is asked for, in which time
+  // another call can queue an edit to the file that the export would leave out.
+  it("refuses an export of a file an edit was queued to while the folder was proved again", async () => {
+    const nodes = subtree();
+    nodes.set("doc-1", {
+      id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canDownload: true },
+    });
+    const nativeCalls = installFolderProvider(nodes);
+    const edit: DriveEdit<DriveDocEdits["appendText"]> = {
+      target: { fileId: "doc-1" },
+      change: { type: "appendText", markdown: "More", submittedAt: 0 },
+    };
+    let checked = false;
+    let queued = false;
+    const answered = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      if (checked && new Request(input, init).url.includes("/batch/")) queued = true;
+      return answered(input, init);
+    });
+    const { session } = folderSession(nodes, undefined, {
+      ...NO_COMMENTS,
+      access: "write",
+      queued: () => {
+        checked = true;
+        return queued ? [{ id: 7, action: { kind: "appendText", payload: edit } }] : [];
+      },
+    });
+    using owned = session;
+
+    await expect(Promise.resolve(owned.exportFile("doc-1", "pdf"))).rejects.toThrow(
+      "That file has changes waiting for approval, which an export would leave out");
+    expect(nativeCalls).toEqual([]);
   });
 });
 
@@ -2884,7 +3179,8 @@ describe("Drive comment actions", () => {
           url: "https://drive.google.com/drive/my-drive",
           title: "Google Drive Account",
           snippet: "Read-only: find files anywhere this Google account can read in Drive, read " +
-            "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
+            "native Google Docs, Sheets and Slides and export them with exportFile(), read PDFs' " +
+            "text with readPdf() and any other " +
             "file's bytes with readFile(), and read comments",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveReadSession",
@@ -2893,7 +3189,8 @@ describe("Drive comment actions", () => {
           url: "https://drive.google.com/drive/my-drive",
           title: "Google Drive Account (read and write)",
           snippet: "Read and write: find files anywhere this Google account can read in Drive, " +
-            "read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any " +
+            "read native Google Docs, Sheets and Slides and export them with exportFile(), read " +
+            "PDFs' text with readPdf() and any " +
             "other file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files, " +
             "read and queue comments, change who files are shared with, and move files",
           suggestedBindingName: "GOOGLE_DRIVE",
@@ -2904,7 +3201,8 @@ describe("Drive comment actions", () => {
           title: "folder-root",
           snippet: "Read-only: list and search direct children, navigate child folders, follow shortcuts " +
             "among them to files and folders elsewhere in Drive for reading, read " +
-            "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
+            "native Google Docs, Sheets and Slides and export them with exportFile(), read PDFs' " +
+            "text with readPdf() and any other " +
             "file's bytes with readFile(), and read comments on direct children in Drive folder " +
             "\"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
@@ -2915,7 +3213,8 @@ describe("Drive comment actions", () => {
           title: "folder-root (read and write)",
           snippet: "Read and write: list and search direct children, navigate child folders, follow shortcuts " +
             "among them to files and folders elsewhere in Drive for reading, read " +
-            "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
+            "native Google Docs, Sheets and Slides and export them with exportFile(), read PDFs' " +
+            "text with readPdf() and any other " +
             "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
             "direct children, read and queue comments on direct children, change who they and the " +
             "folder are shared with, and move them within Drive folder \"folder-root\"",
@@ -2926,7 +3225,8 @@ describe("Drive comment actions", () => {
           url: FILE_URL,
           title: "doc-1",
           snippet: "Read-only: read metadata and, when native, Google Doc, Sheet or Slides " +
-            "content, with readPdf() a PDF's text, or with readFile() the bytes of any other " +
+            "content or with exportFile() an export of it, with readPdf() a PDF's text, or with " +
+            "readFile() the bytes of any other " +
             "file, and comments, from Drive file \"doc-1\"",
           suggestedBindingName: "GOOGLE_DRIVE_FILE",
           tsType: "GoogleDriveReadSession",
@@ -2935,7 +3235,8 @@ describe("Drive comment actions", () => {
           url: FILE_URL,
           title: "doc-1 (read and write)",
           snippet: "Read and write: read metadata and, when native, Google Doc, Sheet or Slides " +
-            "content, with readPdf() a PDF's text, or with readFile() the bytes of any other " +
+            "content or with exportFile() an export of it, with readPdf() a PDF's text, or with " +
+            "readFile() the bytes of any other " +
             "file, from Drive file \"doc-1\", queue edits to it when it is a Google Docs, Sheets or " +
             "Slides file, read and queue comments on it, and change who it is shared with",
           suggestedBindingName: "GOOGLE_DRIVE_FILE",

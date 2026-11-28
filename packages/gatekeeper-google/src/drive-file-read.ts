@@ -1,11 +1,11 @@
-// What a Drive file read may return: which files have content of their own to download, and the
-// range of one a read streams.
+// What a Drive file read may return: which files have content of their own to download, which
+// formats a native file exports to, and the streams a read hands over.
 
 import { FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, type DriveFile } from "./drive-api";
 import {
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, driveModifiedTime,
 } from "./drive-session";
-import type { DriveFileReadOptions } from "./drive-types";
+import type { DriveExportFormat, DriveFileReadOptions } from "./drive-types";
 
 /** The refusal for bytes read from another revision than the one whose size was read. */
 export const FILE_CHANGED = "The Drive file changed while it was being read; read it again.";
@@ -25,9 +25,11 @@ const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
 
 /** The native types a Drive session opens, and what a read of one is told to use instead. */
 const NATIVE_OPENERS: Record<string, string> = {
-  [GOOGLE_DOC_MIME_TYPE]: "a Google Doc; open it with openGoogleDoc()",
-  [GOOGLE_SHEET_MIME_TYPE]: "a Google Sheet; open it with openGoogleSheet()",
-  [GOOGLE_SLIDES_MIME_TYPE]: "a Google Slides presentation; open it with openGoogleSlides()",
+  [GOOGLE_DOC_MIME_TYPE]: "a Google Doc; open it with openGoogleDoc(), or export it with exportFile()",
+  [GOOGLE_SHEET_MIME_TYPE]:
+    "a Google Sheet; open it with openGoogleSheet(), or export it with exportFile()",
+  [GOOGLE_SLIDES_MIME_TYPE]:
+    "a Google Slides presentation; open it with openGoogleSlides(), or export it with exportFile()",
 };
 
 /**
@@ -56,8 +58,49 @@ export function fileReadRange(options: DriveFileReadOptions): { offset: number; 
 export function exactRange(
   content: ReadableStream<Uint8Array>, length: number,
 ): ReadableStream<Uint8Array> {
-  let reader = content.getReader();
   let remaining = length;
+  return paced(content, (chunk, controller) => {
+    if (chunk === undefined) {
+      controller.error(new Error(FILE_CHANGED));
+      return true;
+    }
+    let bytes = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+    remaining -= bytes.byteLength;
+    controller.enqueue(bytes);
+    if (remaining > 0) return false;
+    controller.close();
+    return true;
+  });
+}
+
+/**
+ * `content`, of a length not known ahead, read only as the result is, so none of it is held here,
+ * and ended with an error after {@link FILE_READ_IDLE_MS} with no bytes moving, counted from now.
+ * However the stream ends, the download is let go.
+ */
+export function idleTimed(content: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  return paced(content, (chunk, controller) => {
+    if (chunk === undefined) {
+      controller.close();
+      return true;
+    }
+    controller.enqueue(chunk);
+    return false;
+  });
+}
+
+/**
+ * A stream that reads `content` only as it is read, ending once `step`, handed each chunk read and
+ * `undefined` at the end of `content`, says it has, or after {@link FILE_READ_IDLE_MS} with no
+ * bytes moving. However it ends, `content` is let go.
+ */
+function paced(
+  content: ReadableStream<Uint8Array>,
+  step: (
+    chunk: Uint8Array | undefined, controller: ReadableStreamDefaultController<Uint8Array>,
+  ) => boolean,
+): ReadableStream<Uint8Array> {
+  let reader = content.getReader();
   let ended = false;
   /** When bytes last moved: asked of Drive, or handed to the reader. */
   let moved = Date.now();
@@ -91,18 +134,9 @@ export function exactRange(
       });
       // Idled out or cancelled while Drive was being waited on.
       if (ended) return;
-      if (chunk.done) {
-        controller.error(new Error(FILE_CHANGED));
-        return end();
-      }
-      let bytes = chunk.value.byteLength > remaining
-        ? chunk.value.subarray(0, remaining) : chunk.value;
-      remaining -= bytes.byteLength;
-      controller.enqueue(bytes);
+      let over = step(chunk.done ? undefined : chunk.value, controller);
       moved = Date.now();
-      if (remaining > 0) return;
-      controller.close();
-      await end();
+      if (over) await end();
     },
     cancel: end,
   }, { highWaterMark: 0 });
@@ -127,13 +161,83 @@ export function downloadableFile(
     throw new Error(
       `The requested Drive file is a Google-native file (${mimeType}) with no content to download.`);
   }
-  if (file.capabilities?.canDownload === false) {
-    throw new Error("Google Drive does not let the connected account download this file; its " +
-      "owner or administrator has restricted downloading it.");
-  }
+  requireDownloadable(file);
   let size = Number(file.size);
   if (file.size === undefined || !Number.isSafeInteger(size) || size < 0) {
     throw new Error("Google Drive did not report the file's size.");
   }
   return { mimeType, size, modifiedTime: driveModifiedTime(file) };
+}
+
+/**
+ * Refuses a file the connected account may not download: one whose owner or administrator has
+ * restricted downloading it, or one Drive does not say it may, since only a stated leave counts,
+ * as it does when a read is authorized.
+ */
+function requireDownloadable(file: DriveFile): void {
+  let canDownload = file.capabilities?.canDownload;
+  if (canDownload === true) return;
+  throw new Error(canDownload === false
+    ? "Google Drive does not let the connected account download this file; its owner or " +
+      "administrator has restricted downloading it."
+    : "Google Drive did not say whether the connected account may download this file, so its " +
+      "content is not read.");
+}
+
+const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/** What each native type exports to, by format, as the MIME type Drive is asked for. */
+const EXPORT_FORMATS: Record<string, { name: string; formats: Partial<Record<DriveExportFormat, string>> }> = {
+  [GOOGLE_DOC_MIME_TYPE]: {
+    name: "Google Doc",
+    formats: {
+      docx: DOCX, odt: "application/vnd.oasis.opendocument.text", rtf: "application/rtf",
+      pdf: "application/pdf", txt: "text/plain", html: "text/html",
+      epub: "application/epub+zip", md: "text/markdown",
+    },
+  },
+  [GOOGLE_SHEET_MIME_TYPE]: {
+    name: "Google Sheet",
+    formats: {
+      xlsx: XLSX, ods: "application/vnd.oasis.opendocument.spreadsheet",
+      pdf: "application/pdf", csv: "text/csv", tsv: "text/tab-separated-values",
+    },
+  },
+  [GOOGLE_SLIDES_MIME_TYPE]: {
+    name: "Google Slides presentation",
+    formats: {
+      pptx: PPTX, odp: "application/vnd.oasis.opendocument.presentation",
+      pdf: "application/pdf", txt: "text/plain",
+    },
+  },
+};
+
+/**
+ * The MIME type `file` is exported to as `format`, with the native type it is exported from, or
+ * the refusal for a file that is not a Google Doc, Sheet or Slides presentation, or that does not
+ * export to `format`.
+ */
+export function exportMimeType(
+  file: DriveFile, format: DriveExportFormat,
+): { nativeMimeType: string; mimeType: string } {
+  let nativeMimeType = file.mimeType;
+  if (!nativeMimeType) throw new Error("Google Drive omitted required file mimeType");
+  let native = EXPORT_FORMATS[nativeMimeType];
+  if (!native) {
+    let what = nativeMimeType === FOLDER_MIME_TYPE ? "a folder"
+      : nativeMimeType === SHORTCUT_MIME_TYPE ? "a shortcut; export its target instead"
+      : nativeMimeType.startsWith(GOOGLE_NATIVE_PREFIX) ? `a Google-native file (${nativeMimeType})`
+      : "a file with content of its own; read it with readFile()";
+    throw new Error(
+      `Only Google Docs, Sheets and Slides files are exported. The requested Drive item is ${what}.`);
+  }
+  let mimeType = native.formats[format];
+  if (mimeType === undefined) {
+    throw new Error(`A ${native.name} does not export to ${format}; it exports to ${
+      Object.keys(native.formats).join(", ")}.`);
+  }
+  requireDownloadable(file);
+  return { nativeMimeType, mimeType };
 }

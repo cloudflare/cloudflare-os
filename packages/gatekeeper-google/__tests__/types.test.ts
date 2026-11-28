@@ -1042,4 +1042,25 @@ const held: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new 
 `), account).toEqual([]);
     }
   });
+
+  it("exports a native file from both Drive sessions, to the formats it names", () => {
+    for (const [bundle, account, folder] of [
+      [driveReadBundle, "GoogleDriveReadSession", "GoogleDriveFolderReadSession"],
+      [driveWriteBundle, "GoogleDriveSession", "GoogleDriveFolderSession"],
+    ] as const) {
+      expect(compileAgentTypes(bundle() + `
+declare const drive: ${account};
+declare const folder: ${folder};
+declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
+async function save(): Promise<string> {
+  const doc = await drive.exportFile("doc-1", "docx");
+  await worktree.writeBytes("report.docx", doc.content);
+  const sheet = await folder.exportFile("sheet-1", "csv");
+  return sheet.mimeType + sheet.modifiedTime.toISOString() + await new Response(sheet.content).text();
+}
+// @ts-expect-error Only the formats Google exports to are named.
+void drive.exportFile("doc-1", "doc");
+`), account).toEqual([]);
+    }
+  });
 });
