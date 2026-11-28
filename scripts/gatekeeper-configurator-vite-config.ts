@@ -1,4 +1,4 @@
-import { withVitestTask, type GlobWithBase } from "./vitest-task-vite-config.ts";
+import { vitestTask, withVitestTask, type GlobWithBase } from "./vitest-task-vite-config.ts";
 
 /**
  * Shared Vite+ settings for every gatekeeper package with a `src/configurator/` UI, re-exported by
@@ -91,3 +91,22 @@ export default gatekeeperConfiguratorConfig;
  * being discovered go green with zero tests run.
  */
 export const withTests = withVitestTask(gatekeeperConfiguratorConfig, "vitest run");
+
+/**
+ * The default plus a two-pass `test` task, for the gatekeepers with a workerd suite: pure logic
+ * in Node, then Durable Object and RPC behaviour in workerd (`vitest.worker.config.ts`). The
+ * passes stay separate commands so one can replay from the task cache when only the other's
+ * inputs moved. The workerd suite imports the generated configurator module, so `test` generates
+ * it first rather than rely on an earlier build having left it.
+ */
+export const withWorkerdTests = {
+  run: {
+    tasks: {
+      ...gatekeeperConfiguratorConfig.run.tasks,
+      test: {
+        ...vitestTask(["vitest run", "vitest run -c vitest.worker.config.ts"]),
+        dependsOn: ["build:configurator"],
+      },
+    },
+  },
+};

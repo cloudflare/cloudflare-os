@@ -55,6 +55,16 @@ Study the service's API docs. Identify:
 - Which operations are observations (read-only) vs. actions (side effects)
 - For each action, its kind (the group a user would enable together, labelled like "Edit labels") and its auto-approval verdict (see the [opt-out policy](#action-kinds-and-auto-approval))
 
+An OpenAPI description, where the service publishes one, gives paths, parameters and request bodies. It does not answer the following. Find each answer in the service's documentation and confirm it with the operator before designing the Session types; do not guess it from the description:
+
+- **Which server.** A region, a data-residency host or a self-hosted URL, and whether the account or the deployment picks it.
+- **Which security scheme**, when the description lists several, and which scopes each operation needs. A description lists an operation's scopes without saying whether it needs all of them or any one.
+- **Which operation identifies the caller**, for the account's stable identity and label.
+- **How a rate limit and a rejected credential answer.** Many services rate-limit with a 403, and some answer an expired token with a 403 or a 404.
+- **Whether a 404 hides a denial**, so that "not found" can mean "not yours".
+- **How the last page is marked**: a missing link, a flag, an empty page or a missing cursor, and whether in the body or in a header.
+- **Which path parameters a connection fixes**, such as an organization or an account. The binding supplies those and a caller never does.
+
 ### Step 2: Design the Session types
 
 Create `src/types.d.ts` defining the Session interface (and Hook interface if the service pushes events — see [Hooks](#hooks-push-notifications)).
@@ -90,21 +100,74 @@ Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesd
 
 ### Step 4: Implement
 
-See [SKELETON.md](SKELETON.md) for a complete implementation template.
+Start the package with `pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks <app|subscription>] --display "<Provider Name>"`, adding `--openapi <description.json> --operations <ids>` when the provider publishes an OpenAPI description, so that the package starts with its typed schema generated (the kit's [README](../../../packages/gatekeeper-kit/README.md#schema-generation) documents the generator). It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's Node tests fail until no mark is left, while its workerd suite, one read against a fake of the invented provider, passes as written. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and how its hooks work. Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
 
-Package structure:
+Package structure, as the command writes it:
 ```
 packages/gatekeeper-<name>/
 ├── src/
-│   ├── configurator/         # Optional resource-picker UI modules and UI-facing types
-│   ├── <name>.ts              # Vendor, UserAccount, UserImpl, GatekeeperImpl, SessionImpl
-│   ├── types.d.ts             # Session/Hook types (compile-time)
-│   ├── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
-│   └── <name>-api.ts          # (optional) Helper wrapping the service's HTTP API
-├── cloudflare.config.ts      # wrangler.jsonc is generated from it
+│   ├── configurator/            # Resource-picker UI module and its UI-facing types
+│   ├── <name>.ts                # HTTP entrypoint, Vendor, UserImpl, Verifier (the main module)
+│   ├── <name>-account.ts        # UserAccount Durable Object and the connect flow's routes
+│   ├── <name>-auth.ts           # How a user connects: endpoints, scopes, client
+│   ├── <name>-credentials.ts    # Identity, the verifier's interface
+│   ├── <name>-env.ts            # Env, origins
+│   ├── <name>-resources.ts      # Resource types and URL patterns, subresource IDs
+│   ├── <name>-urls.ts           # Resource link parsing
+│   ├── <name>-api.ts            # The only module that talks HTTP to the provider
+│   ├── <name>-gatekeeper.ts     # GatekeeperImpl, the per-binding Durable Object
+│   ├── <name>-session.ts        # SessionImpl, the capability a gadget holds
+│   ├── <name>-actions.ts        # Actions, declared with the kit's defineActions
+│   ├── <name>-hooks.ts          # With --hooks: a hook's delivery, and reading a webhook delivery
+│   ├── <name>-hook-driver.ts    # With --hooks: webhook route, driver, controller
+│   ├── types.d.ts               # Session/Hook types (compile-time)
+│   └── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
+├── __tests__/                   # Node tests; workerd/ holds the test worker, the provider's fake and a reads test
+├── action-table.json            # The committed action table
+├── cloudflare.config.ts         # wrangler.jsonc is generated from it
+├── deploy-inputs.json
 ├── package.json
-└── tsconfig.json
+├── tsconfig.json
+└── vitest.worker.config.ts      # The workerd suite; vitest.config.ts is the Node one
 ```
+
+#### Calling the provider's API
+
+When the service publishes an OpenAPI description, call it through the kit's typed client (`createOpenAPIClient`, `@gadgets/gatekeeper-kit/http`) with request types generated from the description, instead of writing a `fetch` call per endpoint. A package started with `--openapi` is set up for it: `src/<name>-api.ts` makes the client, `openapi-operations.jsonl` lists the operations it is typed for, and the `generate:openapi` script writes `src/openapi/` again. The kit's [README](../../../packages/gatekeeper-kit/README.md#schema-generation) documents the generator's flags.
+
+- **List the operations.** `openapi-operations.jsonl` has one JSON object per line. Choose the lines from `pnpm exec gatekeeper-openapi-schema <description> --list`, which prints one for every operation with its `operationId`, `method`, `path`, `tag` and `summary`, and not by reading the description, which can run to megabytes. Keep a line whole: the generator fails when its method or path is no longer the description's. Add one when the design needs it and regenerate; do not hand-write a call for an operation the description has. The generator fails for a listed operation it cannot put in the schema (a body that is not JSON, for example) and says why: take that one out of the list, write its call by hand, and say beside that call why it is not generated.
+- **Check an operation's scopes when you add it.** Its comment in the generated schema names the scopes the description declares, where it declares any (pass `--scopes-extension` for a description that keeps them in an extension). Compare them with the scopes the gatekeeper requests at connect; a missing one compiles and fails as a 403. Read the line, do not copy it: some descriptions list alternatives as if each were needed, and the weakest that serves is the one to request.
+- **Make one client for the API.** The generator writes one schema; create one client from its `Api`, so the transport, a scope and the refusal to write are each applied once. A provider's tags arrange its documentation; they are not where a gatekeeper's authority divides.
+- **Pin the description.** The `generate:openapi` script names it with its hash in `--sha256`, which the generator requires for a URL and checks; give a URL that names a commit. A regeneration then changes only what you changed. Commit the generated `src/openapi/` files and never edit them.
+- **Correct the description in a patch** where it disagrees with the API: a JSON Patch file the script passes with `--patch`. The generator refuses an entry without a `reason`; say in it what the description gets wrong and what shows it.
+- **Trust the request side more than the response side.** A description is often looser than the API: a field the API always sends can be optional, and one that can be null can lack `null`. A call resolves to the reply's `data`, `status` and `headers`. Map `data` to your own type, checking the fields you depend on. Never return or spread a reply or its `data`, and never log its `headers`: all of it is the provider's own. Where a description leaves nearly every reply field optional, keep your own reply types.
+- **Session code cannot write.** `createApi(token)`, as the command writes it, refuses every method but `GET`, and only the code that applies an approved action makes `createApi(token, "write")`. Typing a session's client as `Client<Pick<Api, "get">>` also catches a mistake at compile time; that is a convention, not a boundary. Two exceptions need the service's documentation:
+  - A `POST` that only reads (a search or a query): let it through the refusal for that path alone, and where the body decides whether the call changes anything, narrow the body type to the reading form (`body: Query & { dry: true }`).
+  - A `GET` that changes something or returns a secret: refuse it as a write is refused, or leave it out of the list where no action needs it.
+- **Fix what the binding fixes.** Give a session bound to one organization or project a client made with the kit's `scopeTo`, from its own pinned identifiers:
+
+  ```ts
+  const project = scopeTo(api, { "/orgs/{org}/projects/{project}": { org, project } });
+  const { data } = await project.get("/orgs/{org}/projects/{project}/issues/{id}", { path: { id } });
+  ```
+
+  The result refuses a path outside its prefixes and another value for a fixed parameter, so no call can name another organization. Type a field that holds it as `ScopedClient<Api, "/orgs/{org}/projects/{project}">`. List every prefix the binding reaches, each with its own values, where a service spreads one organization over several roots. `scopeTo` covers paths only: where an operation selects the organization or project in its query or body, the session passes its pinned identifier there and never takes it from the caller.
+- **Send the credential last.** Set it in the client's `fetch` option, after the request's own headers, so no operation's header can replace it, and set a timeout there too: the client has none. `createApi` does both as written.
+
+**Failures.** The client throws `HttpError` with the status and no provider text. Classify it in one place, from what the service documents:
+
+- A status is not enough. Decide a rate limit, a rejected credential and a denial from the service's documented headers and error codes where its statuses overlap. `HttpError` carries neither: read them from a failed response in the client's `fetch` option, and throw your own error from there.
+- Only a definite denial means "no access" (see [the verifier pattern](#the-verifier-non-standard-method-pattern)). The kit's `isNoAccessError` and `probeAccess` take any 401, 403 or 404 for one, so use them alone only where the service's statuses mean exactly that.
+- Only a rejected credential is an auth error for `CredentialSource`. A 403 or 404 for one resource is not.
+- The provider's error text and body never go into an error an agent can read, or into a log. They can hold another user's data. Write your own message per kind of failure.
+- A 2xx can report a failure in its body, and a 2xx body can lack what its type promises. Check before you map.
+
+**Paging.** Wrap the provider's paging in one of the kit's cursors (`@gadgets/gatekeeper-kit/cursors`) and [authorize every page](../../../packages/gatekeeper-kit/USAGE.md#a-cursor-authorizes-everything-it-hands-out).
+
+- A page shorter than the requested limit is not the last page. A service can cap a page below what a call asks for, so end the walk on the service's own marker.
+- Stop at the largest offset or page count the service documents, and bound how many pages one call reads.
+- A provider's cursor, link or offset stays inside the gatekeeper's cursor object. If a continuation value must cross to the caller and come back, it is the caller's input when it returns: validate its shape, and never let it choose the host, the path or the binding's fixed parameters.
+- Where the service marks the next page in a header (`Link`, `x-next-page`), read it from the reply's `headers`. Take the `rel="next"` entry and not the whole header. End the walk on the service's own marker on that entry: some services send a `next` link on the last page too, and flag it (`results="false"`). Take the continuation value from that link's query and send it as the operation's own parameter; never fetch the URL a header names, which would let it choose the host the credential goes to.
 
 #### Authorizing observations
 
@@ -155,7 +218,7 @@ If you use this:
 - `resourceUrl()` returns the selected resource URL.
 - A module that can return several types reads `acceptedResourceUrlPatterns` from the context every callback receives (`render`, `isReady`, `resourceUrl`, `initialValuesFromResourceUrl`): the types Workshop will take, which leave out a grouped type the account hasn't granted and anything a blueprint binding doesn't want. Show other types if that helps the user find their way, but don't let them be chosen, and keep `isReady` false while one is. It is `undefined` from an older Workshop, which takes any type. The list is read when the frame starts, and Workshop restarts the frame when it changes.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
-- Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step.
+- Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step (`__tests__/configurator-url.test.ts`, as the command writes it).
 - The frame's content security policy allows exactly the scripts the build wrote (by hash) and no network access; anything the UI needs goes through `ui`.
 - `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`, using the runtime and build in `packages/configurator-ui` (`src/runtime/`, `build/`).
 - Nothing invokes `build-gatekeeper-configurator.ts` by hand. `vite.config.ts` re-exports the
@@ -199,7 +262,13 @@ Go through all the API methods and decide where to insert `submitAction()` calls
 
 - Any operation which has visible side effects on the world must call submitAction(), and must not actually apply the action until approved.
 
+- An action's payload is a type you design for the agent, not the provider's request type. The apply handler builds the request from the payload. A stored payload outlives a regeneration that changes the request type.
+- Only the code that applies an approved action creates a client that can write (see [Calling the provider's API](#calling-the-providers-api)). A read made to build an action's description goes through the session's read client.
+- A write is made again only where twice is as good as once. After the provider was reached, a timeout leaves the outcome unknown: throw the kit's `ActionOutcomeUnknownError`, on a definition with `claimBeforeApply`, and `ActionApplyError` only when the effect is known to be absent.
+
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+
+Once the definitions exist, commit what they declare. A package from `create-gatekeeper` has a test that compares each definition's name, tag, verdict, delivery, claim and fence with a committed `action-table.json`, so a later change to one fails the test and shows in review as a changed line. Regenerating the file accepts any change: read its diff, and give a reason for each line.
 
 #### Action kinds and auto-approval
 
@@ -381,7 +450,7 @@ Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAcce
 
 1. **Report every dependency on every read that returns information to its caller**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. There is no blanket requirement to retain every consulted source for an empty result; report requirements for information actually disclosed.
 2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
-3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
+3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }`; the `new-gatekeeper-observer-contract` lint rule also refuses an `authorizeObservation({...})` that names no `subresources`. New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
 6. **Implement the remaining required members**: `getHistoricalSubresources()` returning `[]`, and no-op `addObserver` / `removeObserver`, for new gatekeepers. No observer roster, observed-set log, `excludeObservers`, or new legacy tracker is needed.
@@ -431,7 +500,7 @@ Some services can push events to the Gadget (inbound email, webhooks, chat messa
 3. **Deliver.** When the event occurs, call `initiator.startHook()`. This returns `{callback, approvalQueue}` bound to a fresh session. Await observation authorization with explicit `subresources` for the event's complete access dependencies (register actions too if the callback's return value triggers side effects), then invoke the `callback`. Use the same typed read helper as ordinary reads; a hook is not exempt from observer checks.
 4. **Disable / delete.** The overseer calls `controller.disable()`. Forget the stored `initiator` and clean up all related state — `disable()` may never be called again, though the overseer may later call `enable()` afresh.
 
-Because the callback is a persistent stub tied to a session, the gatekeeper never stores it directly; the overseer hands it back (re-bound to a new session) each time you call `startHook()`. See the SKELETON for the full code shape.
+Because the callback is a persistent stub tied to a session, the gatekeeper never stores it directly; the overseer hands it back (re-bound to a new session) each time you call `startHook()`. See [SKELETON.md](SKELETON.md#hooks) for the full code shape.
 
 ### Documentation
 
@@ -473,6 +542,12 @@ Reviews tend to stop at general correctness. The most important review is of the
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
   - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
+- **Provider calls.** Check [Calling the provider's API](#calling-the-providers-api) in both directions:
+  - Session code holds no client that can write, and no session method takes a path parameter the binding fixes.
+  - No error message, log line or action description carries provider error text.
+  - Every status-based decision (denial, rejected credential, rate limit) cites what the service documents, and an indeterminate failure is never a denial.
+  - No walk ends on a short page, and nothing a caller hands back is sent to the provider unchecked.
+  - Every patch entry's reason says what shows the description is wrong, and every call written by hand says why it is not generated. The generator itself checks that each entry has a reason, that the description matches its pinned hash, and that every listed operation is in the schema.
 - **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 - **Hosted code.** A gatekeeper that runs untrusted code sends that code's egress through a `getFetcher()` `Fetcher`, takes a new one for each agent execution it runs code for, and keeps each environment to one workspace (see [Hosting untrusted code](#hosting-untrusted-code-the-callers-fetch-policy)).
 
@@ -491,7 +566,7 @@ Reviews tend to stop at general correctness. The most important review is of the
 
 ## Reference implementations
 
-Start with [SKELETON.md](SKELETON.md) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
+Start with `pnpm create-gatekeeper` ([SKELETON.md](SKELETON.md)) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
 
 - `packages/gatekeeper-google/` — the kit's [worked Google migration patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations) cover Calendar's event/free-busy permission split, BigQuery source-dataset reporting, Gmail's mailbox identity across filters, Chat's account/conversation split, and Drive/Docs/Sheets/Slides file and folder reporting. These combine A–D per disclosure; the guide notes incomplete oracles and missing history exports. Copy the reporting/helper patterns, not retained legacy admission or tracking.
 - `packages/gatekeeper-github/` — every read, each page of a listing and each hook delivery included, authorizes through `GitHubGatekeeperImpl.authorizeRead`, which reports the bound repository as `repo/<repoId>`, GitHub's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a name a deleted or renamed repository freed can't retarget them). `verifyObserverAccess()` refuses any other ID; for the pinned repository it allows every observer when the binding owner's token finds it public (`#reportsPublicRepo`, reused for 15 minutes, an unanswered check counting as not public), and otherwise asks `observerAccessVerifier` over `GitHubVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` asks, live and with the observer's token alone, for reads made before conversion, `hasRepoNameAccess` of the binding's name, which is what those reads followed, and `GitHubVerifier.hasRepoAccess` of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade. Its admission checks are legacy migration protection, not a new-authoring pattern.
