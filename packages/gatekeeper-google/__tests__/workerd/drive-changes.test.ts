@@ -3256,6 +3256,23 @@ describe("uploads", () => {
     expect(await drive.waiting()).toEqual([]);
   });
 
+  it("lists a file an upload made under its reserved ID while the action waits once, as Drive's", async () => {
+    let drive = binding();
+    let queued = await drive.queued("uploadFile", "notes.txt", "hello", { folderId: "elsewhere" });
+    // Drive makes the file and loses the answer, so the action still waits.
+    provider.nextUpload = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_UPLOAD);
+    provider.files.set("later", file(DOC_MIME, ["elsewhere"]));
+    // The file is on the first page, and the uploads that wait show on the last.
+    provider.listingPageSize = 1;
+
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+
+    expect(listed(listing.value)).toEqual(["copy-1", "later"]);
+    expect(listing.value).toEqual([[expect.not.objectContaining({ pending: true })], expect.anything()]);
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+  });
+
   it("replaces a file's content once approved, having kept its current version for good", async () => {
     provider.files.set("report", await binary("report.txt", "old"));
     let drive = binding();
