@@ -9,6 +9,7 @@ import {
   parseLegacyGmailDraft, parseMimeMessage, gmailAttachmentBytes,
   type GmailAttachmentSnapshot, type GmailPayloadPart,
 } from "../src/google-api";
+import {timeoutsOnFakeClock} from "./fake-timeouts";
 import {containsBytes} from "./gmail-test-utils";
 
 const json = (value: unknown, status = 200) =>
@@ -46,7 +47,11 @@ function stubFetch(responses: Response[]) {
 
 const api = () => new GmailApi("me@example.com", async () => "token");
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 // The decoded body of the first base64 MIME part whose Content-Type starts with `contentType`.
 function mimePartText(encodedRaw: string, contentType: string): string {
@@ -2274,5 +2279,63 @@ describe("Gmail API request shapes", () => {
     const refused = await api().listMessages(20).catch(value => value);
     expect(refused.message).toBe("Gmail API messages.list failed [http=403 reason=forbidden]");
     vi.restoreAllMocks();
+  });
+
+  // A hook's delivery reads each new message's metadata, so it must not hang on Gmail. Timeouts
+  // run on the fake clock whichever way they are made.
+  it("abandons each attempt at a metadata read Gmail never begins answering after 10 seconds", async () => {
+    vi.useFakeTimers();
+    timeoutsOnFakeClock();
+    let requests = 0;
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      requests++;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+    });
+
+    const read = expect(api().getMessageMetadata("m1")).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(requests).toBe(1);
+    // Its three attempts, and at most 1.5 s of backoff between them.
+    await vi.advanceTimersByTimeAsync(20_001 + 1_500);
+    await read;
+    expect(requests).toBe(3);
+  });
+
+  it("abandons a metadata read whose body Gmail hasn't finished after 10 seconds", async () => {
+    vi.useFakeTimers();
+    timeoutsOnFakeClock();
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const signal = init.signal!;
+      return new Response(new ReadableStream({
+        async pull() {
+          // As fetch does, failing the body once the request's signal aborts.
+          const { promise, reject } = Promise.withResolvers<never>();
+          signal.addEventListener("abort", () => reject(signal.reason));
+          await promise;
+        },
+      }));
+    });
+
+    const read = expect(api().getMessageMetadata("m1")).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(10_000);
+    await read;
+  });
+
+  it("waits out Gmail's rate limiting on a metadata read, which its timeout doesn't count", async () => {
+    vi.useFakeTimers();
+    timeoutsOnFakeClock();
+    const metadata = {id: "m1", threadId: "t1", internalDate: "1"};
+    const answers = [429, 429, 200];
+    // As fetch does, refusing a request whose signal has aborted.
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      init.signal?.throwIfAborted();
+      return answers.shift() === 429 ? new Response(null, {status: 429, headers: {"Retry-After": "6"}}) : json(metadata);
+    });
+
+    const read = api().getMessageMetadata("m1");
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await read).toEqual(metadata);
   });
 });
