@@ -5,12 +5,13 @@
     "lib": ["ESNext"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "types": ["@cloudflare/workers-types/experimental"],
     "paths": {
       "@gadgets/observability/*": ["../observability/src/*"],
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  "include": ["src", "__tests__"],
+  "include": ["src", "__tests__", "bin", "forge"],
   "exclude": ["dist", "node_modules"]
 }
