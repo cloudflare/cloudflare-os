@@ -14,6 +14,8 @@ import {
   GitBranch,
   Pulse,
   UserPlus,
+  FileText,
+  ArrowSquareOut,
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -85,6 +87,10 @@ import { WorkspaceStorageBanner } from './features/workspace-storage/WorkspaceSt
 import { WorkspaceStorageIndicator } from './features/workspace-storage/WorkspaceStorageIndicator'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
+import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
+import { previewOffers, type ConnectionPreview } from './features/connection-preview/connectionPreview'
+import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
+import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -226,12 +232,15 @@ const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
 // props go to its element, so that a gadget's label can open the gadget's menu.
 function PaneLabel({
   icon: LabelIcon,
+  iconUrl,
   workpiece,
   title,
   badge,
   ...props
 }: Omit<ComponentProps<'div'>, 'title'> & {
   icon?: Icon
+  /** An image shown in place of `icon`. */
+  iconUrl?: string
   workpiece?: WorkpieceSummary
   title: string
   badge?: string
@@ -242,7 +251,9 @@ function PaneLabel({
       title={title}
       className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
-      {LabelIcon
+      {iconUrl
+        ? <img src={iconUrl} alt="" className="size-3.5 flex-shrink-0" />
+        : LabelIcon
         ? <LabelIcon size={14} weight="bold" className="flex-shrink-0" />
         : workpiece && <WorkpieceGlyph summary={workpiece} className="flex-shrink-0" />}
       <span className="truncate">{title}</span>
@@ -551,6 +562,8 @@ export default function GadgetEditor() {
   const activityReturnViewRef = useRef<WorkspaceView | null>(null)
   const [activityView, setActivityView] = useState<ActivityView>('history')
   const [activityClosing, setActivityClosing] = useState(false)
+  // A connection preview shows in the Activity pane's place and shares its open and close handling.
+  const [connectionPreview, setConnectionPreview] = useState<ConnectionPreview | null>(null)
   const [shareModalOpen, setShareModalOpen] = useState(false)
   // The gadget the share dialog shares, or null when it invites people to the whole workspace.
   const [sharedGadgetId, setSharedGadgetId] = useState<WorkpieceId | null>(null)
@@ -921,6 +934,7 @@ export default function GadgetEditor() {
   )
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
+  const panePreview = paneShowsActivity ? connectionPreview : null
   useEffect(() => {
     if (!activityClosing) return
     const timeout = window.setTimeout(() => setActivityClosing(false), WORKSPACE_TRANSITION_MS)
@@ -1062,14 +1076,40 @@ export default function GadgetEditor() {
     setActivityClosing(false)
     if (workspaceView?.mode !== 'activity') activityReturnViewRef.current = workspaceView
     setActivityView(initialView)
+    setConnectionPreview(null)
     setWorkspaceView({ mode: 'activity', appId: selectedWorkpieceIdRef.current ?? undefined })
   }, [workspaceView])
 
+  const openConnectionPreview = useCallback((preview: ConnectionPreview) => {
+    openActivity(activityView)
+    setConnectionPreview(preview)
+  }, [openActivity, activityView])
+
+  // One asking for each stay in a workspace, where a connection's number means one connection.
+  const offersPreview = useMemo(
+    () => previewOffers(() => authenticatedApi.listGatekeeperVendors()), [authenticatedApi, id])
+  const dismissConnectionPreview = useAutoOpenConnectionPreview(overseerStub, id, preview => {
+    // With one pane, opening the preview would take the chat away from someone typing in it.
+    if (!isSinglePaneLayout()) openConnectionPreview(preview)
+  }, offersPreview, discarded => {
+    // Its connection went with the draft: its preview closes, in the pane or behind the chat.
+    if (connectionPreview?.gatekeeperId !== discarded) return
+    if (showingActivity) closeWorkspacePane()
+    setConnectionPreview(null)
+  })
+
+  // A preview that is closed while its connection has changes waiting can be opened again.
+  const shownPreviewId = showingActivity ? connectionPreview?.gatekeeperId : undefined
+  const closedPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
+    .filter(preview => preview.gatekeeperId !== shownPreviewId)
+
   const closeWorkspacePane = useCallback(() => {
-    if (workspaceView?.mode !== 'activity') {
+    if (!showingActivity) {
       setWorkspaceVisibility('closed')
       return
     }
+    // Only a preview being shown is closed: one left behind for an app is not dismissed with it.
+    if (connectionPreview) dismissConnectionPreview(connectionPreview.gatekeeperId)
     setWorkspaceTransitionEnabled(true)
     const returnView = activityReturnViewRef.current
     const returnShowsPane = hasVisibleWorkpieces && (returnView?.mode === 'app'
@@ -1077,7 +1117,8 @@ export default function GadgetEditor() {
     setActivityClosing(!returnShowsPane)
     setWorkspaceView(returnView)
     activityReturnViewRef.current = null
-  }, [workspaceView, setWorkspaceVisibility, hasVisibleWorkpieces, simpleMode])
+  }, [showingActivity, setWorkspaceVisibility, hasVisibleWorkpieces, simpleMode, connectionPreview,
+    dismissConnectionPreview])
 
   // Ignore the initial listing, then open apps created by the active chat.
   useEffect(() => {
@@ -1210,6 +1251,7 @@ export default function GadgetEditor() {
     setSelectedChatProposedWorkpieces([])
     setWorkspaceView(getStoredWorkspaceView(id))
     selectedWorkpieceIdRef.current = null
+    setConnectionPreview(null)
     openedWorkpieceParamRef.current = null
     activityReturnViewRef.current = null
     setActivityClosing(false)
@@ -1973,6 +2015,19 @@ export default function GadgetEditor() {
             restricted={metadata?.containsRestrictedData === true}
           />
 
+          {closedPreviews.map(preview => (
+            <WorkshopIconButton
+              key={preview.gatekeeperId}
+              onClick={() => openConnectionPreview(preview)}
+              title={`Preview ${preview.title}`}
+              aria-label={`Preview ${preview.title}`}
+            >
+              {preview.iconUrl
+                ? <img src={preview.iconUrl} alt="" className="size-[15px]" />
+                : <FileText size={15} />}
+            </WorkshopIconButton>
+          ))}
+
           {showReconnecting && <ReconnectingChip />}
 
           <WorkshopIconButton
@@ -2321,7 +2376,9 @@ export default function GadgetEditor() {
             style={{ height: TABBAR_H }}
           >
             <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-              {paneShowsActivity ? (
+              {panePreview ? (
+                <PaneLabel icon={FileText} iconUrl={panePreview.iconUrl} title={panePreview.title} />
+              ) : paneShowsActivity ? (
                 <PaneLabel icon={Pulse} title="Activity" />
               ) : visibleWorkpieces.length > 1 ? (
                 <PaneWorkpieceTabs
@@ -2350,7 +2407,18 @@ export default function GadgetEditor() {
             </div>
 
             <div className="flex flex-shrink-0 items-center gap-1.5">
-              <div className="flex items-center rounded-lg border border-kumo-line p-0.5">
+              {panePreview?.url && (
+                <a
+                  href={panePreview.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[13px] font-medium text-kumo-default hover:bg-kumo-tint"
+                >
+                  Open original
+                  <ArrowSquareOut size={14} />
+                </a>
+              )}
+              <div className={panePreview ? 'hidden' : 'flex items-center rounded-lg border border-kumo-line p-0.5'}>
                 {paneShowsActivity
                   ? ACTIVITY_TABS.map(tab => (
                     <PaneTab
@@ -2407,7 +2475,7 @@ export default function GadgetEditor() {
 
               <WorkshopIconButton
                 aria-label={paneShowsActivity
-                  ? 'Close activity'
+                  ? panePreview ? 'Close preview' : 'Close activity'
                   : selectedWorkpieceSummary?.type === 'worktree' ? 'Close worktree pane' : 'Close gadget pane'}
                 title="Close"
                 onClick={closeWorkspacePane}
@@ -2418,7 +2486,7 @@ export default function GadgetEditor() {
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            {paneShowsActivity && (
+            {paneShowsActivity && !panePreview && (
               <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-kumo-line px-2 md:hidden">
                 {ACTIVITY_TABS.map(tab => (
                   <PaneTab
@@ -2431,7 +2499,18 @@ export default function GadgetEditor() {
                 ))}
               </div>
             )}
-            {paneShowsActivity && (
+            {panePreview && overseer && (
+              <div className="min-h-0 flex-1">
+                <ConnectionPreviewPane
+                  key={`${panePreview.gatekeeperId} ${panePreview.url}`}
+                  overseer={overseer.stub}
+                  preview={panePreview}
+                  onCreated={setConnectionPreview}
+                  restricted={metadata?.containsRestrictedData === true}
+                />
+              </div>
+            )}
+            {paneShowsActivity && !panePreview && (
               <div className="min-h-0 flex-1">
                 <Activity
                   overseer={overseer.stub}

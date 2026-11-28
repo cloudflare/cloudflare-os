@@ -43,7 +43,8 @@ type Store = {
   // paged. Every change a settled session missed has change time ≥ its disconnect time ≥ this
   // max, so an inclusive startAfter replay from it covers the gap.
   lastChanged: Date | undefined
-  resumed: boolean
+  // The watermark this session subscribed with startAfter, if it resumed one.
+  resumedFrom: Date | undefined
 }
 
 const EMPTY_STATE: ActionsState = {
@@ -73,8 +74,20 @@ export function linkActionLog(overseer: RpcStub<Overseer>, key: string): void {
  * gap from the last good one.
  */
 export function actionLogResumed(overseer: RpcStub<Overseer> | null): boolean {
-  return (overseer && stores.get(overseer)?.resumed) ?? false
+  return resumedFrom(overseer) !== undefined
 }
+
+/**
+ * Whether `record` is the end of what the stub's last store received, delivered again because the
+ * replay of the gap is inclusive: not a change made since.
+ */
+export function actionLogReplayed(overseer: RpcStub<Overseer> | null, record: ActionLogEntry): boolean {
+  const from = resumedFrom(overseer)
+  return from !== undefined && actionChangeTime(record) <= from
+}
+
+const resumedFrom = (overseer: RpcStub<Overseer> | null) =>
+  overseer ? stores.get(overseer)?.resumedFrom : undefined
 
 function getStore(overseer: RpcStub<Overseer>): Store {
   let store = stores.get(overseer)
@@ -90,7 +103,7 @@ function getStore(overseer: RpcStub<Overseer>): Store {
       generation: 0,
       notifyScheduled: false,
       lastChanged: undefined,
-      resumed: false,
+      resumedFrom: undefined,
     }
     stores.set(overseer, store)
   }
@@ -124,7 +137,7 @@ function resetSession(store: Store): number {
   store.stagedEntries = new Map()
   store.snapshot = EMPTY_STATE
   store.lastChanged = undefined
-  store.resumed = false
+  store.resumedFrom = undefined
   return store.generation
 }
 
@@ -137,7 +150,7 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const generation = resetSession(store)
   const key = storeKeys.get(overseer)
   const startAfter = key === undefined ? undefined : watermarks.get(key)
-  store.resumed = startAfter !== undefined
+  store.resumedFrom = startAfter
 
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {

@@ -571,4 +571,59 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
+
+  /**
+   * Return the pending changes of tab `tabId`, oldest first. A change made here may reach
+   * Google Docs later; until it does it is pending, and `getContent()` already shows it.
+   */
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return the declarations of the reads that these types leave out, as TypeScript: what it
+   * takes to render a tab as Google Docs draws it, with its pages, headers, footers and wrapped
+   * images, and with its pending changes in place. Call it before writing or changing code that
+   * renders the document.
+   */
+  getRenderingTypes(): Promise<string>;
+}
+
+/**
+ * One change that Google Docs has not saved yet: the method that made it and, for a change of
+ * text, the arguments it was given.
+ */
+export type GoogleDocPendingChange = {
+  /** Identifies this change among the document's pending changes. */
+  id: number;
+
+  /**
+   * Set when the document has changed so that this change no longer fits. A stale change is left
+   * out of `getContent()` and will not be saved.
+   */
+  stale?: true;
+} & ({
+  type: "replaceText";
+  oldMarkdown: string;
+  newMarkdown: string;
+
+  /** Set when the text replaced is in a table's cells. */
+  inTable?: true;
+} | {
+  type: "appendText";
+  markdown: string;
+} | {
+  type: "insertTable" | "insertTableRows" | "insertTableColumns" | "deleteTableRows"
+    | "deleteTableColumns" | "deleteTable" | "setTableCellStyle" | "setTableColumnWidths"
+    | "setTableRowHeights" | "mergeTableCells" | "unmergeTableCells";
+});
+
+/** One tab's pending changes. */
+export type GoogleDocPendingChanges = {
+  /**
+   * The ID `listTabs()` gives the tab: not the one asked for, where that was the provisional ID
+   * of a tab Google Docs has since been given.
+   */
+  tabId: string;
+
+  /** The tab's pending changes, oldest first. */
+  changes: GoogleDocPendingChange[];
 }

@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  HookDescription, ObservationDescription, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { tableCounts } from "./doc-store-scenarios";
 import { TestGitCache } from "./test-git-cache";
@@ -15,6 +15,7 @@ import type {
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
 import { DocStore, runId, type DocCopyHead } from "../src/docs-store";
+import type { GoogleDocRenderingReads } from "../src/docs-rendering-types";
 import type { DocMetadata, GoogleDocSession, GoogleDocTab, NewDocTable } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
@@ -433,6 +434,10 @@ export class TestHooks extends DurableObject<Env> {
       : this.#gatekeeper(facetName).describe();
   }
 
+  previewUi(facetName: string): Promise<UiFile[]> {
+    return this.#gatekeeper(facetName).getGadgetUi();
+  }
+
   async #withReadSession<Session, T>(
     facetName: string, body: (session: Session) => Promise<T>,
   ): Promise<T | { error: string }> {
@@ -634,6 +639,32 @@ export class TestHooks extends DurableObject<Env> {
 
   async listTabs(facetName: string): Promise<GoogleDocTab[]> {
     return this.#withSession(facetName, session => session.listTabs());
+  }
+
+  /**
+   * In one session: reads the tab's drawing and calls `drawn`, where one is given, then reads
+   * each of `imageIds`.
+   */
+  async readImages(
+    facetName: string, tabId: string, imageIds: string[], drawn?: () => void,
+  ): Promise<({ mimeType: string; text: string } | { error: string })[]> {
+    return this.#withSession(facetName, async session => {
+      let reads = session as unknown as GoogleDocRenderingReads;
+      if (drawn) {
+        await reads.readDrawing(tabId);
+        await drawn();
+      }
+      let read = [];
+      for (let id of imageIds) {
+        try {
+          let { mimeType, content } = await reads.readImage(id, tabId);
+          read.push({ mimeType, text: await new Response(content).text() });
+        } catch (error) {
+          read.push({ error: (error as Error).message });
+        }
+      }
+      return read;
+    });
   }
 
   async applyStorage(facetName: string, operations: StorageOperation[]): Promise<void> {

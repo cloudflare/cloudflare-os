@@ -308,6 +308,164 @@ export type TextStyle = {
   link?: GoogleDocsLink;
 }
 
+// ---------------------------------------------------------------------------
+// A tab as Google Docs draws it: what a drawing reads of `documents.get` beside what the types
+// above name. The copy keeps none of it; `getDrawnTab` reads it.
+// ---------------------------------------------------------------------------
+
+/** A line at an edge of a paragraph or an object. */
+export type Border = TableCellBorder & {
+  /** The space between a paragraph's border and its text. */
+  padding?: Dimension;
+};
+
+export type DrawnTextStyle = TextStyle & {
+  underline?: boolean;
+  smallCaps?: boolean;
+  /** `SUPERSCRIPT` or `SUBSCRIPT`. */
+  baselineOffset?: string;
+  fontSize?: Dimension;
+  weightedFontFamily?: { fontFamily?: string; weight?: number };
+  foregroundColor?: OptionalColor;
+  /** The highlight behind the text. */
+  backgroundColor?: OptionalColor;
+};
+
+/** What a paragraph or a named style sets: a paragraph takes the rest from its named style. */
+export type DrawnParagraphStyle = Partial<ParagraphStyle> & {
+  /** `START`, `CENTER`, `END` or `JUSTIFIED`. */
+  alignment?: string;
+  /** Percent of single spacing. */
+  lineSpacing?: number;
+  shading?: { backgroundColor?: OptionalColor };
+  spaceAbove?: Dimension;
+  spaceBelow?: Dimension;
+  /** `COLLAPSE_LISTS` leaves out the space between this paragraph and an item of its list beside it. */
+  spacingMode?: string;
+  /** `RIGHT_TO_LEFT` for a paragraph that starts at the right. */
+  direction?: string;
+  indentStart?: Dimension;
+  indentEnd?: Dimension;
+  indentFirstLine?: Dimension;
+  keepLinesTogether?: boolean;
+  keepWithNext?: boolean;
+  avoidWidowAndOrphan?: boolean;
+  pageBreakBefore?: boolean;
+  borderTop?: Border;
+  borderBottom?: Border;
+  borderLeft?: Border;
+  borderRight?: Border;
+  borderBetween?: Border;
+  tabStops?: { offset?: Dimension; alignment?: string }[];
+};
+
+export type DrawnNestingLevel = NestingLevel & {
+  /** The marker's text, with `%0` to `%8` standing for the number at each level. */
+  glyphFormat?: string;
+  /** `START`, `CENTER` or `END`: how the marker sits in the space before the text. */
+  bulletAlignment?: string;
+  indentFirstLine?: Dimension;
+  indentStart?: Dimension;
+  textStyle?: DrawnTextStyle;
+};
+
+/** What a section sets: a document's style holds the same fields for its sections to fall back on. */
+export type SectionStyle = {
+  marginTop?: Dimension;
+  marginBottom?: Dimension;
+  marginRight?: Dimension;
+  marginLeft?: Dimension;
+  marginHeader?: Dimension;
+  marginFooter?: Dimension;
+  defaultHeaderId?: string;
+  defaultFooterId?: string;
+  firstPageHeaderId?: string;
+  firstPageFooterId?: string;
+  evenPageHeaderId?: string;
+  evenPageFooterId?: string;
+  useFirstPageHeaderFooter?: boolean;
+  pageNumberStart?: number;
+  flipPageOrientation?: boolean;
+  /** `CONTINUOUS` or `NEXT_PAGE`. */
+  sectionType?: string;
+  columnProperties?: { width?: Dimension; paddingEnd?: Dimension }[];
+  /** `BETWEEN_EACH_COLUMN` draws a line between columns. */
+  columnSeparatorStyle?: string;
+  /** `RIGHT_TO_LEFT` fills the columns from the right. */
+  contentDirection?: string;
+};
+
+/** An image, drawing or chart embedded in a tab. */
+export type EmbeddedObject = {
+  /** Alt text. */
+  description?: string;
+  title?: string;
+  size?: { width?: Dimension; height?: Dimension };
+  marginTop?: Dimension;
+  marginRight?: Dimension;
+  marginBottom?: Dimension;
+  marginLeft?: Dimension;
+  embeddedObjectBorder?: Border & { propertyState?: string };
+  /** Present only for an image, whose `contentUri` serves its bytes for a short while. */
+  imageProperties?: {
+    contentUri?: string;
+    /** Each a fraction of the image's own size cut from that edge. */
+    cropProperties?: {
+      offsetLeft?: number; offsetRight?: number; offsetTop?: number; offsetBottom?: number;
+    };
+    /** Clockwise, in radians. */
+    angle?: number;
+    transparency?: number;
+  };
+};
+
+/** Where a positioned object sits against the paragraph it is tethered to, and how text meets it. */
+export type Positioning = {
+  /** `WRAP_TEXT`, `BREAK_LEFT`, `BREAK_RIGHT`, `BREAK_LEFT_RIGHT`, `IN_FRONT_OF_TEXT` or `BEHIND_TEXT`. */
+  layout?: string;
+  leftOffset?: Dimension;
+  topOffset?: Dimension;
+};
+
+/** A structural element with what a drawing reads of a section break and a table of contents. */
+export type DrawnElement = StructuralElement & {
+  sectionBreak?: { sectionStyle?: SectionStyle };
+  tableOfContents?: { content?: StructuralElement[] };
+};
+
+/** One tab's `documentTab` with every part a drawing reads, each as Google sends it. */
+export type DrawnDocumentTab = {
+  body?: { content?: DrawnElement[] };
+  lists?: Record<string, { listProperties?: { nestingLevels?: DrawnNestingLevel[] } }>;
+  namedStyles?: {
+    styles?: { namedStyleType?: string; textStyle?: DrawnTextStyle; paragraphStyle?: DrawnParagraphStyle }[];
+  };
+  /** The tab's page, and what its sections take where they set nothing of their own. */
+  documentStyle?: SectionStyle & {
+    pageSize?: { width?: Dimension; height?: Dimension };
+    background?: { color?: OptionalColor };
+    /** Whether even pages take the `evenPage` header and footer. */
+    useEvenPageHeaderFooter?: boolean;
+    useCustomHeaderFooterMargins?: boolean;
+    /** `PAGELESS` for a document that is one sheet as long as its content. */
+    documentFormat?: { documentMode?: string };
+  };
+  /** What the top and the foot of a page repeat, by the ID a document or section style names. */
+  headers?: Record<string, { content?: DrawnElement[] }>;
+  footers?: Record<string, { content?: DrawnElement[] }>;
+  /** Each footnote's text, by the ID a `footnoteReference` names. */
+  footnotes?: Record<string, { content?: DrawnElement[] }>;
+  /** Objects placed in the text, by the ID an `inlineObjectElement` names. */
+  inlineObjects?: Record<string, { inlineObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+  /** Objects tethered to a paragraph, by the ID its `positionedObjectIds` names. */
+  positionedObjects?: Record<string, {
+    positionedObjectProperties?: { embeddedObject?: EmbeddedObject; positioning?: Positioning };
+  }>;
+};
+
+/** One tab as `getDrawnTab` answers it, with the revision of the document it was read in. */
+export type DrawnTabAnswer = { revisionId?: string; tab?: DrawnDocumentTab };
+
 type GoogleDocsResponse = Pick<
   GoogleDocsDocument, "documentId" | "title" | "revisionId"
 > & { tabs?: unknown };
@@ -385,6 +543,16 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
 
   visit(tabs, undefined, 0);
   return normalized;
+}
+
+/** The `documentTab` of tab `tabId` in Google's tree of `tabs`, however deep it is nested. */
+function documentTabOf(tabs: unknown, tabId: string): unknown {
+  if (!Array.isArray(tabs)) return undefined;
+  for (let tab of tabs as ({ tabProperties?: { tabId?: unknown }; documentTab?: unknown; childTabs?: unknown } | null)[]) {
+    let found = tab?.tabProperties?.tabId === tabId ? tab.documentTab : documentTabOf(tab?.childTabs, tabId);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +690,18 @@ const FIELD_MASK_HEADER = "X-Goog-FieldMask";
 const TAB_IDS_FIELDS = "documentId,tabs(tabProperties(tabId))";
 
 /**
+ * What `getDrawnTab` asks for of each tab, every part whole: what Google Docs draws of it, which
+ * the copy's fields (`DOC_TAB_FIELDS`) leave out. With `objectsOnly`, the parts that hold a tab's
+ * objects, and with them the addresses its images are served at.
+ */
+function drawnFields(objectsOnly: boolean, levels = MASKED_TAB_LEVELS): string {
+  let parts = objectsOnly ? "inlineObjects,positionedObjects"
+    : "body,documentStyle,namedStyles,lists,headers,footers,footnotes,inlineObjects,positionedObjects";
+  return `tabProperties(tabId),documentTab(${parts}),` +
+    (levels > 1 ? `childTabs(${drawnFields(objectsOnly, levels - 1)})` : "childTabs");
+}
+
+/**
  * Whether Google refused a read for the fields it was asked for: any 400 but the one whose status
  * is `FAILED_PRECONDITION`, which is how it refuses a file that is not a Google Doc whatever is
  * asked of it.
@@ -609,6 +789,41 @@ export class GoogleDocsApi {
       throw new Error("Google Docs returned a different document");
     }
     return { documentId: id, title, revisionId, tabs: normalizeDocumentTabs(tabs) };
+  }
+
+  /**
+   * Tab `tabId` as Google Docs draws it, and the document's revision: a read of its own, whose
+   * answer is never the copy's. It is asked of the same view of the document as `getDocument`,
+   * so its indexes are the copy's wherever both read one revision. `tab` is absent where the
+   * document holds no such tab. With `objectsOnly`, the tab's objects alone. A field mask Google
+   * refuses is dropped as `getDocument` drops it.
+   */
+  async getDrawnTab(documentId: string, tabId: string, objectsOnly = false): Promise<DrawnTabAnswer> {
+    let url =
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&prettyPrint=false`;
+    let fields = `documentId,revisionId,tabs(${drawnFields(objectsOnly)})`;
+    let answer: GoogleDocsResponse;
+    try {
+      answer = await this.#request<GoogleDocsResponse>(
+        url, { headers: { [FIELD_MASK_HEADER]: fields } }, "get drawn tab",
+      );
+    } catch (error) {
+      if (!fieldsRefused(error)) throw error;
+      let { providerStatus } = error;
+      logger.error("Google Docs refused the fields asked of a document", {
+        event: "google.doc.read.fields-refused", operation: "get drawn tab", fallback: "unmasked",
+        httpStatus: 400, ...providerStatus === undefined ? {} : { providerStatus }, error,
+      });
+      answer = await this.#request<GoogleDocsResponse>(url, {}, "get drawn tab");
+    }
+    if (answer.documentId !== documentId) {
+      throw new Error("Google Docs returned a different document");
+    }
+    let tab = documentTabOf(answer.tabs, tabId);
+    return {
+      revisionId: answer.revisionId,
+      ...tab === undefined ? {} : { tab: tabCollection<DrawnDocumentTab>(tab) },
+    };
   }
 
   /**
@@ -1055,7 +1270,7 @@ function parseCommentThread(value: unknown): DocsCommentRecord {
 
 /** The reads a Google Doc session makes. */
 export type GoogleDocReader = Pick<GoogleDocsApi,
-  "getDocument" | "getDocumentMetadata" | "getRevisionId" | "getCommentThreads">;
+  "getDocument" | "getDrawnTab" | "getDocumentMetadata" | "getRevisionId" | "getCommentThreads">;
 
 /** The tab ID Google gives a new document's only tab, and so the blank stand-in's. */
 export const BLANK_DOC_TAB_ID = "t.0";
@@ -1110,6 +1325,16 @@ export function blankDocsTab(tabId: string, title: string): GoogleDocsTab {
   };
 }
 
+/**
+ * A blank tab as a drawing reads it: without `blankDocsTab`'s named styles, which hold only what
+ * the copy keeps of Google's and would set every style as plain text. A drawing that names no
+ * style leaves each to its reader.
+ */
+export function blankDrawnTab(tabId: string, title: string): DrawnDocumentTab {
+  let { namedStyles: _, ...tab } = blankDocsTab(tabId, title);
+  return tab;
+}
+
 /** A document not yet created, read as Google returns a new one: one blank tab. Makes no request. */
 export class BlankGoogleDoc implements GoogleDocReader {
   constructor(private title: string) {}
@@ -1118,6 +1343,14 @@ export class BlankGoogleDoc implements GoogleDocReader {
     return {
       documentId, title: this.title, revisionId: BLANK_DOC_REVISION,
       tabs: [blankDocsTab(BLANK_DOC_TAB_ID, "Tab 1")],
+    };
+  }
+
+  /** The blank tab, which holds nothing a drawing reads beyond it. */
+  async getDrawnTab(_documentId: string, tabId: string): Promise<DrawnTabAnswer> {
+    return {
+      revisionId: BLANK_DOC_REVISION,
+      ...tabId === BLANK_DOC_TAB_ID ? { tab: blankDrawnTab(tabId, "Tab 1") } : {},
     };
   }
 
