@@ -335,6 +335,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
+  #appDiscovery = new Map<number, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -2323,13 +2324,49 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
+   * `refreshApps` refreshes management-app metadata for auto-provisioned accounts and filters disabled
+   * apps. Concurrent callers await the same pending refresh. `vendorId` scopes refresh calls for
+   * direct app opens; ordinary agent reads use the saved descriptions.
    */
-  async listProvidedAccounts(): Promise<ProvidedAccountInfo[]> {
+  async listProvidedAccounts(refreshApps = false, vendorId?: string): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
     let config = await readAdminConfig(this.env);
+    if (refreshApps) {
+      await Promise.all(Array.from(this.#connectedAccountRecords(), async rec => {
+        if (!rec.autoProvisioned || (vendorId !== undefined && rec.vendorId !== vendorId) ||
+            config.disabledGatekeepers.includes(rec.vendorId) ||
+            ambientGatekeeperMode(config, rec.vendorId) === "disabled") return;
+        let refresh = this.#appDiscovery.get(rec.id);
+        if (!refresh) {
+          refresh = (async () => {
+            try {
+              let description = await rec.account.describe();
+              if (JSON.stringify(description.providesUi) === JSON.stringify(rec.description.providesUi)) return;
+              let current = this.storage.connectedAccounts.get(rec.id);
+              // A disconnect may run while describe yields. Preserve other current metadata.
+              if (current) {
+                this.storage.connectedAccounts.put({ ...current,
+                  description: { ...current.description, providesUi: description.providesUi } });
+              }
+            } catch {
+              // Provider error messages may contain response bodies or credentials.
+              logger.warn("failed to refresh an account description for app discovery", {
+                event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id,
+              });
+            }
+          })().finally(() => { this.#appDiscovery.delete(rec.id); });
+          this.#appDiscovery.set(rec.id, refresh);
+        }
+        await refresh;
+      }));
+      // Discovery yields to admin changes; use current availability for the returned list.
+      config = await readAdminConfig(this.env);
+    }
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
       if (!rec.description.singleton && !rec.description.providesUi) continue;
+      // App availability must not remove accounts from the cached singleton reconciliation list.
+      if (refreshApps && config.disabledGatekeepers.includes(rec.vendorId)) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
       if (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled") continue;
@@ -2355,13 +2392,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
-   * fresh by the caller so admin-gated features reflect the user's current status.
+   * fresh by the caller so admin-gated features reflect the user's current status. Return null if
+   * the app is no longer available when it is opened.
    */
   async startAccountAppUi(
       accountId: number, options: Pick<AppUiContext, "isAdmin">,
-  ): Promise<GatekeeperUiFrame> {
-    let record = this.storage.connectedAccounts.get(accountId);
-    if (!record?.description.providesUi) throw new Error("No such app.");
+  ): Promise<GatekeeperUiFrame | null> {
+    let record = await this.#uiAccountRecord(accountId);
+    if (!record) return null;
     let userSelectionExchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
       props: { selectorUserId: this.ctx.id.toString(), appAccountId: accountId },
     });
@@ -2374,9 +2412,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // offers (the same test listProvidedAccounts applies, since a "disabled"
   // ambient gatekeeper's account stays dormant).
   async #uiAccountRecord(accountId: number): Promise<ConnectedAccountRecord | undefined> {
+    let config = await readAdminConfig(this.env);
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record?.description.providesUi) return undefined;
-    let config = await readAdminConfig(this.env);
     if (config.disabledGatekeepers.includes(record.vendorId)) return undefined;
     if (record.autoProvisioned) {
       if (ambientGatekeeperMode(config, record.vendorId) === "disabled") return undefined;

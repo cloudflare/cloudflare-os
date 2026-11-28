@@ -86,6 +86,7 @@ export class FakeGatekeeperVerifier
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
+const pausedDescriptions = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
 
 /** A ticket a FakeGatekeeperAccount redeems when its UI is next opened, by account name. */
 const stashedTickets = new Map<string, string>();
@@ -97,6 +98,7 @@ const stashedTickets = new Map<string, string>();
  */
 export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
   name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+  description?: AccountDescription;
 }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
@@ -106,8 +108,10 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
 
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
-    if (this.ctx.props.failDescribe) throw new Error("describe failed");
-    return {
+    const paused = pausedDescriptions.get(this.ctx.props.name);
+    if (paused) await paused.promise;
+    if (this.ctx.props.failDescribe) throw new Error("private provider response body");
+    return this.ctx.props.description ?? {
       displayName: this.ctx.props.name,
       uniqueName: this.ctx.props.name,
       ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
@@ -169,6 +173,14 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
   }
+
+  async pauseDescriptions(paused: boolean): Promise<void> {
+    if (paused) pausedDescriptions.set(this.ctx.props.name, Promise.withResolvers<void>());
+    else {
+      pausedDescriptions.get(this.ctx.props.name)?.resolve();
+      pausedDescriptions.delete(this.ctx.props.name);
+    }
+  }
 }
 
 /** Test-only bridge to Workshop entrypoints that are otherwise reached through authenticated RPC. */
@@ -185,11 +197,11 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async addAccount(
       userId: string, vendorId: string, accountName: string,
-      options: { expired?: boolean; providesUi?: boolean } = {},
+      options: { expired?: boolean; providesUi?: boolean; description?: AccountDescription } = {},
   ): Promise<number> {
     const user = this.ctx.exports.UserDurableObject.getByName(userId);
     const account = this.ctx.exports.FakeGatekeeperAccount({
-      props: { name: accountName, providesUi: options.providesUi },
+      props: { name: accountName, providesUi: options.providesUi, description: options.description },
     });
     const accountId = await user.linkConnectedAccountFromLogin(account, vendorId);
     if (options.expired) await user.markCredentialsExpired(accountId);
@@ -243,11 +255,12 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
    */
   async openAppUi(
       viewerId: string, accountId: number, accountName: string, ticket: string,
-  ): Promise<{ error: string } | undefined> {
+  ): Promise<{ error: string } | null | undefined> {
     stashedTickets.set(accountName, ticket);
     try {
       const frame = await this.ctx.exports.UserDurableObject.getByName(viewerId)
         .startAccountAppUi(accountId, { isAdmin: false });
+      if (!frame) return null;
       frame.ui[Symbol.dispose]();
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
@@ -256,6 +269,10 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async accountCalls(accountName: string): Promise<string[]> {
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+
+  async pauseAccountDescriptions(accountName: string, paused: boolean): Promise<void> {
+    await this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).pauseDescriptions(paused);
   }
 }
 

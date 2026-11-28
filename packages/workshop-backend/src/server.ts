@@ -672,7 +672,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async listGatekeeperApps(): Promise<GatekeeperAppInfo[]> {
     // listProvidedAccounts provisions auto-provisioned accounts first (idempotent), so their apps
     // appear in the nav even before the user opens a gadget — in a single round trip.
-    let accounts = await this.#user.listProvidedAccounts();
+    let accounts = await this.#user.listProvidedAccounts(true);
     return accounts
         .filter((account: (typeof accounts)[number]) => account.description.providesUi)
         .map((account: (typeof accounts)[number]) => ({
@@ -686,7 +686,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
     let user = this.#user;  // one stub for both calls
-    let accounts = await user.listProvidedAccounts();
+    let accounts = await user.listProvidedAccounts(true, vendorId);
     let app = accounts.find(account => account.vendorId === vendorId && account.description.providesUi);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
