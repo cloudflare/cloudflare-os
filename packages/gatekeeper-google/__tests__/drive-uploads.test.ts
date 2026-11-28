@@ -4,8 +4,8 @@ import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-k
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vitest";
 import {
-  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY, type DriveContentVersion,
-  type DriveFile, type DriveScopeNode,
+  APPROVAL_READ_MAX_MS, DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, UPLOAD_TOKEN_PROPERTY,
+  type DriveContentVersion, type DriveFile, type DriveScopeNode,
 } from "../src/drive-api";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope } from "../src/drive-session";
 import {
@@ -668,6 +668,37 @@ describe("Drive converted upload sends", () => {
     expect(lost.api.upload).toHaveBeenCalledTimes(1);
     expect(lost.journal.get(again)?.state).toBe("pending");
     expect(lost.made.size).toBe(0);
+  });
+
+  // An approval holds the binding's decisions until it settles, so none of its reads waits on
+  // Drive for longer than its deadline, whatever the reads add up to.
+  it("gives up on a lost converted upload's search at the approval's read deadline, sending nothing", async () => {
+    let { api, attempts, journal, submit, apply, converted, lastChunkLost } = harness();
+    lastChunkLost(unconfirmed());
+    let id = await submit("uploadConverted", await converted("docx"));
+    expect(await apply(id)).toBe(UNCONFIRMED_CONVERTED);
+    let deadline = new AbortController();
+    let timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    // Drive answers the search's first page, and never its second.
+    let asked = 0;
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+      if (++asked === 1) return Promise.resolve(Response.json({ files: [], nextPageToken: "p2" }));
+      let { promise, reject } = Promise.withResolvers<never>();
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      return promise;
+    });
+    let drive = new DriveApi(async () => "tok");
+    api.findByToken.mockImplementation((...args) => drive.findByToken(...args));
+
+    let outcome: string | null | undefined;
+    void apply(id).then(message => { outcome = message; });
+    await vi.waitFor(() => expect(asked).toBe(2));
+    expect(timeout.mock.calls).toEqual([[APPROVAL_READ_MAX_MS]]);
+    deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    await vi.waitFor(() => expect(outcome).toBe(UNCONFIRMED_CONVERTED));
+    expect(attempts.has(id)).toBe(true);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(api.upload).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a converted upload to look for when Drive refuses to say what the session holds after its last chunk", async () => {
