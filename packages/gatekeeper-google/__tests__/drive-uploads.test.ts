@@ -390,12 +390,10 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
   let nodes: Record<string, DriveScopeNode | undefined> = {
     B: folder("B", "A"),
     R: {
-      id: "R", mimeType: "text/plain", parents: ["B"], trashed: false, canEdit: true,
-      canModifyContent: true,
+      id: "R", name: "report.txt", mimeType: "text/plain", parents: ["B"], trashed: false,
+      canEdit: true, canModifyContent: true,
     },
   };
-  /** The name of each file in `nodes` a search by name finds. */
-  let names: Record<string, string> = { R: "report.txt" };
   let version: DriveContentVersion = {
     id: "R", headRevisionId: "rev-1", sha256Checksum: sha256("old"), size: "3", canModifyContent: true,
   };
@@ -436,9 +434,9 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     deletePermission: vi.fn<DriveApi["deletePermission"]>(unexpected),
     swapParent: vi.fn<DriveApi["swapParent"]>(unexpected),
     findByToken: vi.fn<DriveApi["findByToken"]>(async () => undefined),
-    findNamed: vi.fn<DriveApi["findNamed"]>(async (folderId, name) => Object.entries(names)
-      .filter(([id, named]) => named === name && nodes[id]?.parents?.includes(folderId))
-      .map(([id]) => ({ id, name, mimeType: nodes[id]?.mimeType }))),
+    findNamed: vi.fn<DriveApi["findNamed"]>(async (folderId, name) => Object.values(nodes)
+      .filter(node => node?.name === name && node.parents?.includes(folderId))
+      .map(node => ({ id: node!.id, name, mimeType: node!.mimeType }))),
     getContentVersion: vi.fn<DriveApi["getContentVersion"]>(async () => ({ ...version })),
     keepRevision: vi.fn<DriveApi["keepRevision"]>(async () => {}),
     upload: vi.fn<DriveApi["upload"]>(upload),
@@ -472,7 +470,7 @@ function harness(scope: DriveBindingScope = ACCOUNT) {
     toFolderId: "B", toName: "Archive", queuedAt: "2026-05-01T10:00:00.000Z",
   });
   return {
-    api, journal, actions, attempts, made, names, nodes, store, uploaded, submit, upload,
+    api, journal, actions, attempts, made, nodes, store, uploaded, submit, upload,
     /** Points the file Drive holds as `R` at another version. */
     change(changes: Partial<DriveContentVersion>): void {
       version = { ...version, ...changes };
@@ -790,18 +788,17 @@ describe("Drive replacement sends", () => {
   });
 
   it("refuses a file no longer the only one of its name in the folder, keeping and replacing nothing", async () => {
-    type Since = { names: Record<string, string>; nodes: Record<string, DriveScopeNode | undefined> };
-    let cases: [string, (since: Since) => void][] = [
-      ["renamed", ({ names }) => { names.R = "archive.txt"; }],
-      ["another of the name", ({ names, nodes }) => {
-        nodes.X = { id: "X", mimeType: "text/plain", parents: ["B"], trashed: false };
-        names.X = "report.txt";
+    type Nodes = Record<string, DriveScopeNode | undefined>;
+    let cases: [string, (nodes: Nodes) => void][] = [
+      ["renamed", nodes => { nodes.R = { ...nodes.R!, name: "archive.txt" }; }],
+      ["another of the name", nodes => {
+        nodes.X = { id: "X", name: "report.txt", mimeType: "text/plain", parents: ["B"], trashed: false };
       }],
     ];
     for (let [what, change] of cases) {
-      let { api, journal, names, nodes, submit, apply, replacement } = harness();
+      let { api, journal, nodes, submit, apply, replacement } = harness();
       let id = await submit("replaceFile", await replacement("new"));
-      change({ names, nodes });
+      change(nodes);
       expect(await apply(id), what).toBe(NOT_THE_NAMED_FILE);
       expect(journal.get(id)?.state, what).toBe("failed");
       expect(api.keepRevision, what).not.toHaveBeenCalled();
@@ -823,6 +820,24 @@ describe("Drive replacement sends", () => {
     expect(journal.get(id)?.state).toBe("failed");
     expect(api.keepRevision).not.toHaveBeenCalled();
     expect(api.upload).not.toHaveBeenCalled();
+  });
+
+  it("proves the file still has its name before keeping its version and before replacing its content", async () => {
+    for (let renaming of ["getContentVersion", "keepRevision"]) {
+      let { api, attempts, journal, nodes, uploaded, submit, apply, replacement } = harness();
+      // Renamed while Drive answers, which a search by name made before cannot see.
+      let rename = () => { nodes.R = { ...nodes.R!, name: "archive.txt" }; };
+      let read = api.getContentVersion.getMockImplementation()!;
+      if (renaming === "keepRevision") api.keepRevision.mockImplementationOnce(async () => rename());
+      else api.getContentVersion.mockImplementationOnce(async fileId => (rename(), read(fileId)));
+      let id = await submit("replaceFile", await replacement("new"));
+      expect(await apply(id), renaming).toBe(NOT_THE_NAMED_FILE);
+      expect(journal.get(id)?.state, renaming).toBe("failed");
+      expect(api.keepRevision, renaming).toHaveBeenCalledTimes(renaming === "keepRevision" ? 1 : 0);
+      // Proved again before the request that sends the content, which never goes.
+      expect(uploaded, renaming).toEqual([]);
+      expect(attempts.has(id), renaming).toBe(false);
+    }
   });
 
   it("refuses for good when Drive will not keep the version, and waits out a rate limit or a pin it did not answer", async () => {

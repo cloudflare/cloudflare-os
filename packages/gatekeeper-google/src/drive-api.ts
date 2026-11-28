@@ -113,6 +113,8 @@ export type DriveFile = {
  */
 export type DriveScopeNode = {
   id: string;
+  /** What a replacement is checked against: the file it replaces keeps the name it was asked for. */
+  name?: string;
   mimeType?: string;
   parents?: string[];
   driveId?: string;
@@ -131,7 +133,7 @@ export type DriveScopeNode = {
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
-const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
+const DRIVE_SCOPE_NODE_FIELDS = "id,name,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canDownload,canComment,canShare,canAddChildren," +
   "canMoveItemWithinDrive,canCopy,canEdit,canModifyContent)";
 
@@ -799,7 +801,7 @@ function scopeNodeFrom(value: Record<string, unknown>, fileId: string): DriveSco
   }
   return {
     id: fileId,
-    ...optionalFields(value, ["mimeType", "driveId"]),
+    ...optionalFields(value, ["name", "mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),

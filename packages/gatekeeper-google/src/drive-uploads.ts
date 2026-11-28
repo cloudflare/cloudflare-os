@@ -539,8 +539,9 @@ async function storedBytes(
 /**
  * Refuses for good an upload whose folder the binding no longer reaches as a live folder the
  * account may add to, having made nothing. With `replacing`, also the file replaced, which must
- * still be a live direct child of that folder whose content the account may change. Made at the
- * check and again before the request that makes the file, which can come long after it.
+ * still be a live direct child of that folder whose content the account may change, under the
+ * name the upload was asked for: a search by name made earlier cannot see it renamed since. Made
+ * at the check and again before the request that makes the file, which can come long after it.
  * @returns The folder, as read now.
  */
 async function requireUploadScope(
@@ -558,6 +559,7 @@ async function requireUploadScope(
       replaced.parents[0] !== destination.id) {
     throw new ActionApplyError(NO_REPLACED_FILE);
   }
+  if (replaced.name !== payload.name) throw new ActionApplyError(NOT_THE_NAMED_FILE);
   if (replaced.canModifyContent !== true) throw new ActionApplyError(CANNOT_REPLACE);
   return destination;
 }
