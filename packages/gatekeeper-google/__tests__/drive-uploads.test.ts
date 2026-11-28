@@ -10,8 +10,8 @@ import {
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope } from "../src/drive-session";
 import {
   captureUpload, DRIVE_UPLOAD_DEFINITIONS, DRIVE_UPLOADS, MAX_UPLOADS_WAITING_BYTES,
-  replacedFile, replacedVersion, UPLOAD_FILE_STORE, uploadBytes, uploadContentType, uploadConversion,
-  type DriveUploadAction, type DriveUploadActions, type DriveUploadsHost,
+  ReadHeldUploads, replacedFile, replacedVersion, UPLOAD_FILE_STORE, uploadBytes, uploadContentType,
+  uploadConversion, type DriveUploadAction, type DriveUploadActions, type DriveUploadsHost,
 } from "../src/drive-uploads";
 import type { WriteAttempt } from "../src/drive-writes";
 import { FakeKv } from "./fake-kv";
@@ -215,6 +215,33 @@ describe("keeping an upload's bytes", () => {
     expect(kv.get(TOTAL)).toBe(MAX_UPLOADS_WAITING_BYTES - 4);
 
     expect(await captureUpload(store, uploadBytes("1234"))).toMatchObject({ size: 4 });
+  });
+
+  it("keeps bytes deleted while a read opens them until the read ends", async () => {
+    let { store, kv } = uploadFiles();
+    let held = new ReadHeldUploads(store);
+    let file = await captureUpload(store, uploadBytes("kept"));
+
+    let opening = held.readStream(file);
+    // An approval or a rejection lets the bytes go before the read has them open.
+    held.delete(file);
+    let content = await opening;
+    expect(keptKeys(kv)).not.toEqual([]);
+    expect(await new Response(content).text()).toBe("kept");
+    expect(keptKeys(kv)).toEqual([]);
+  });
+
+  it("holds no bytes for a read that could not open them", async () => {
+    let { store, kv } = uploadFiles();
+    let held = new ReadHeldUploads(store);
+    let file = await captureUpload(store, uploadBytes("kept"));
+    // A chunk past the file's last, which the store refuses to open.
+    let last = keptKeys(kv).find(key => key.endsWith(":chunk:0000"))!;
+    kv.put(last.replace(/0000$/, "0001"), new Uint8Array(1));
+
+    await expect(held.readStream(file)).rejects.toThrow("incomplete or corrupted");
+    held.delete(file);
+    expect(keptKeys(kv)).toEqual([]);
   });
 });
 

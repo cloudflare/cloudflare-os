@@ -89,9 +89,11 @@ export class ReadHeldUploads implements DriveUploadFiles {
     return this.#files.captureStream(content);
   }
 
-  /** `file`'s bytes, which are kept until the stream ends. */
+  /**
+   * `file`'s bytes, which are kept until the stream ends. They are held before the store opens
+   * them, so that a delete while it does waits for the read too.
+   */
   async readStream(file: ActionFileReference): Promise<ReadableStream<Uint8Array>> {
-    let content = (await this.#files.readStream(file)).getReader();
     let reads = this.#reads.get(file.handle) ?? { open: 0, deleted: false };
     this.#reads.set(file.handle, reads);
     reads.open++;
@@ -103,6 +105,13 @@ export class ReadHeldUploads implements DriveUploadFiles {
       this.#reads.delete(file.handle);
       if (reads.deleted) this.#files.delete(file);
     };
+    let content: ReadableStreamDefaultReader<Uint8Array>;
+    try {
+      content = (await this.#files.readStream(file)).getReader();
+    } catch (error) {
+      end();
+      throw error;
+    }
     return new ReadableStream<Uint8Array>({
       async pull(controller) {
         let chunk = await content.read().catch((error: unknown) => {
