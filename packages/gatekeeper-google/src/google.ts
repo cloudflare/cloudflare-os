@@ -2898,9 +2898,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async list(options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
-    // Only a binding that can write has queued copies to show. The queue is read in a read of its
+    // Only a session that can write has queued copies to show. The queue is read in a read of its
     // own, never across Drive's answer, which could keep every approval waiting.
-    let copiesInto: SimulatedListing | undefined = this.#writes.access === "write"
+    let copiesInto: SimulatedListing | undefined = this.#showsQueued
       ? async (folderId, fetch) => {
         // Most folders have no copy waiting to go into them, and their pages read no queue.
         if (pendingCopiesInto(folderId, this.#writes.queued()).length === 0) {
@@ -3479,7 +3479,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
    * What `fileId` names among the copies this binding queued: one an approval can still make,
    * with what it shows; the file a native copy made, which `pending:<n>` names from then on; or,
    * for any other ID, that ID. A `pending:` ID that names no copy is refused, as is one of a copy
-   * that waits on a session that cannot write.
+   * that waits on a session that cannot write ({@link #showsQueued}).
    */
   async #named(fileId: string): Promise<{ waiting: SimulatedEntry } | { fileId: string }> {
     if (isPendingId(fileId)) {
@@ -3490,7 +3490,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       if (made !== undefined) return { fileId: made };
       // A session that cannot write shows nothing queued as if made, even what was queued before
       // the deployment kept Drive read-only.
-      if (this.#writes.access !== "write") throw new Error(NAMES_NO_COPY);
+      if (!this.#showsQueued) throw new Error(NAMES_NO_COPY);
       return this.#writes.waiting(async pending => {
         let made = this.#writes.madeCopy(actionId);
         if (made !== undefined) return { fileId: made };
@@ -3500,12 +3500,22 @@ export class GoogleDriveSessionImpl extends RpcTarget
       });
     }
     // Nor does it show a waiting ordinary copy, so it reads no queue.
-    if (this.#writes.access !== "write") return { fileId };
+    if (!this.#showsQueued) return { fileId };
     // Most IDs are no queued copy's, and need not wait for an approval that is running, which may
     // be of any other file. One that is waits for it, so as to show the copy made if it makes it.
     if (pendingCopy(fileId, this.#writes.queued()) === undefined) return { fileId };
     let waiting = await this.#writes.waiting(async pending => pendingCopy(fileId, pending));
     return waiting ? { waiting } : { fileId };
+  }
+
+  /**
+   * Whether this session shows what the binding queued as if made: only one that can write, which
+   * one the deployment keeps read-only, a read-only binding, and a folder opened through a
+   * shortcut cannot. The binding can no longer make a copy into a folder that left its tree,
+   * which a shortcut may still reach.
+   */
+  get #showsQueued(): boolean {
+    return this.#writes.access === "write" && !this.#location?.shortcuts;
   }
 
   /** The Drive file `fileId` names, refused while it is a copy that still waits. */

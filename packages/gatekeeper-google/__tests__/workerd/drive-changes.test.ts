@@ -2556,6 +2556,32 @@ describe("copies", () => {
     expect(listed((await drive.call("list")).value)).toContain("copy-2");
   });
 
+  // The binding can no longer make the copy in a folder that left its tree, which a shortcut in it
+  // still reaches: that session is read-only, and shows the folder as Drive does.
+  it("shows no waiting copy in a folder reached through a shortcut, and reads its ID from Drive", async () => {
+    provider.files.set("report", report());
+    let drive = binding(FOLDER);
+    let queued = await drive.queued("copyFile", "report", { folderId: "inner" });
+    let inner = provider.files.get("inner")!;
+    provider.files.set("to-inner", file(SHORTCUT_MIME, [ROOT], { shortcutTargetId: "inner" }));
+    inner.parents = ["elsewhere"];
+
+    expect((await drive.callIn(["inner"], "getScope")).value)
+      .toMatchObject({ folderId: "inner", access: "read" });
+    expect(listed((await drive.callIn(["inner"], "list")).value)).toEqual(["nested-doc"]);
+    expect((await drive.callIn(["inner"], "getEntry", "copy-1")).error).toBe(OUTSIDE);
+
+    // Drive makes the copy while the folder is in the tree, and loses the answer.
+    inner.parents = [ROOT];
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_COPY);
+    inner.parents = ["elsewhere"];
+    let made = await drive.callIn(["inner"], "getEntry", "copy-1");
+    expect(made.value).toMatchObject({ id: "copy-1", parentId: "inner" });
+    expect(made.value).not.toHaveProperty("pending");
+    expect(await drive.waiting()).toEqual([queued.actionId]);
+  });
+
   it("makes a native copy without the markers that offer a conversion for reuse", async () => {
     let doc = provider.files.get("doc-1");
     if (!doc) throw new Error("no doc-1");
