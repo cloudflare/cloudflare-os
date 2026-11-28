@@ -3841,6 +3841,25 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
+  // The document numbers a list itself, so its Markdown writes every item `1.`: that is no change to what was asked.
+  it("shows a list an append numbers from one as it was asked for, and one numbered otherwise as it will read", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().submitAppend("numbered-append", "1. one\n2. two");
+    expect(await hooks().lastActionFields).toEqual([markdownField("Content", "1. one\n2. two")]);
+
+    await hooks().submitAppend("numbered-append", "3. three\n4. four");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Requested", "3. three\n4. four"), markdownField("Resulting", "1. three\n1. four"),
+    ]);
+
+    // A bulleted list between two numbered items ends the first one's list, so the second starts another.
+    await hooks().submitAppend("numbered-append", "1. one\n\n- apart\n\n2. two");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Requested", "1. one\n\n- apart\n\n2. two"), markdownField("Resulting", "1. one\n\n- apart\n\n1. two"),
+    ]);
+  });
+
   it("shows literal Markdown escapes in the append approval", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -5548,6 +5567,16 @@ describe("Google Doc drawing", () => {
     expect(value).toContain("readPendingDrawing(tabId: string): Promise<GoogleDocPendingDrawing>;");
     expect(value).toContain("readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;");
     expect(observations).toEqual([]);
+  });
+
+  // Only a family the drawing names is fetched, so a session cannot be made to ask Google Fonts for another.
+  it("reads no font of a family the tab's drawing does not name", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    docs.install();
+
+    expect(await hooks().readFont("drawing-font", MAIN_TAB, "Open Sans"))
+      .toContain('no drawing read names a font "Open Sans"');
   });
 
   it("names another version for a change the copy does not keep, and has the copy asked after", async () => {

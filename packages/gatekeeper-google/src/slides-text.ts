@@ -173,8 +173,22 @@ export function spliceText(rich: RichText, start: number, end: number, text: str
       "each paragraph's text on its own");
   }
   let piece: TextSegment = { text, width: text.length, ...(style ? { style } : {}) };
+  // More items or fewer, and Google numbers the list anew from where it started: its entry keeps
+  // the first two glyphs it had at each level, since the glyphs its items carry no longer count
+  // them.
+  let listId = paragraphs[merged].bullet?.listId;
+  let list = rich.lists?.[listId ?? ""] as { recount?: Record<number, string[]> } | undefined;
+  let firsts: Record<number, string[]> = {};
+  for (let { bullet } of paragraphs) {
+    if (!bullet?.glyph || bullet.listId !== listId) continue;
+    let seen = firsts[bullet.nestingLevel ?? 0] ??= [];
+    if (seen.length < 2 && !seen.includes(bullet.glyph)) seen.push(bullet.glyph);
+  }
+  let lists = listId === undefined || inserted === merged - paragraph ? rich.lists
+    : { ...rich.lists, [listId]: { ...list, recount: list?.recount ?? firsts } };
   return {
     ...rich,
+    ...(lists ? { lists } : {}),
     segments: [
       ...before,
       // Google sets no link on a newline, so one the new text takes ends at each.

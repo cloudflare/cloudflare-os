@@ -1,5 +1,5 @@
 import type {
-  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat,
+  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat, SpreadsheetSheetInfo,
 } from "./sheets-read-types";
 export type * from "./sheets-read-types";
 
@@ -235,6 +235,78 @@ export type SheetChange =
       columns?: number;
     };
 
+/** One `updateSpreadsheet()` batch that Google Sheets has not saved yet. */
+export type SpreadsheetPendingChange = {
+  /** Names the change among those pending. */
+  id: number;
+  /**
+   * Set when the spreadsheet no longer fits the change, as `queuedChangeConflict` says of the
+   * first such: it cannot be saved, and no read shows it.
+   */
+  stale?: true;
+  type: "updateSpreadsheet";
+  /**
+   * The batch's changes to the sheet asked about, in order, as `updateSpreadsheet()` takes them.
+   * Each names its sheet by the title it had when the batch was made, and holds its formulas as
+   * Google tidies them.
+   */
+  changes: SheetChange[];
+};
+
+/** Cells of a sheet that a pending change touches, placed as the pending changes leave them. */
+export type SpreadsheetChangedArea = {
+  /** The `id` of the pending change. */
+  change: number;
+  /** What the change does there. */
+  op: "writeCells" | "clearRange" | "formatCells" | "mergeCells" | "unmergeCells" | "insertRows"
+    | "insertColumns" | "deleteRows" | "deleteColumns" | "resizeRows" | "resizeColumns" | "freeze";
+  /**
+   * The cells written, cleared, formatted, merged or unmerged, or the rows or columns inserted or
+   * resized, in A1 notation with no sheet, such as `B3:D9`. Of deleted rows or columns, the row or
+   * column now standing where they stood. Of a freeze, the leading rows or the columns that the
+   * pending changes bring into those kept in view, or let go of.
+   */
+  range: string;
+  /** How many rows or columns were deleted there. */
+  count?: number;
+  /** Set when the rows or columns deleted were the sheet's last, so they stood after `range`. */
+  after?: true;
+  /** The height the rows of `range` are resized to, or the width its columns are, in pixels. */
+  size?: number;
+  /**
+   * Of a freeze: how many leading rows or columns of the sheet as the pending changes leave it
+   * are kept in view. `after` is how many are, the sheet's `frozenRowCount` or `frozenColumnCount`
+   * among `sheets.pending`, where the freeze line stands. `before` is how many there would be had
+   * no pending change frozen or unfrozen any, never every one the sheet has; for a sheet a pending
+   * change copies, had none since it was copied, whatever was frozen on its original by then.
+   * `range` holds the lines between the two. The rows have one such area at most and the columns
+   * one, on the last change that changed how many are kept in view: an earlier one has none.
+   */
+  frozen?: { axis: "rows" | "columns"; before: number; after: number };
+};
+
+/** What `getPendingChanges()` returns for one sheet. */
+export type SpreadsheetPendingChanges = {
+  /** The pending changes that touch the sheet, oldest first: the order they are saved in. */
+  changes: SpreadsheetPendingChange[];
+  /**
+   * Where on the sheet those changes show, oldest first. A change that no longer shows anywhere,
+   * such as one to rows a later change deletes, has none; neither has one that changes nothing
+   * to see, such as a freeze of the rows already frozen, nor a stale one.
+   */
+  areas: SpreadsheetChangedArea[];
+  /**
+   * The spreadsheet's sheets as Google Sheets has them saved, and as `getSpreadsheet()` lists
+   * them. A sheet in both has the same `id` in both. `readDrawing()` adds the leading rows and
+   * columns a sheet of `pending` keeps in view to a range, and `touched` is set on each one a
+   * pending change that is not stale touches.
+   */
+  sheets: {
+    saved: SpreadsheetSheetInfo[];
+    pending: (SpreadsheetSheetInfo & { touched?: true })[];
+  };
+};
+
 /**
  * Read/write access to one Google spreadsheet: one bound directly, or one a Google Drive binding
  * with read and write access opened.
@@ -301,4 +373,20 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * meantime.
    */
   updateSpreadsheet(changes: SheetChange[]): Promise<void>;
+
+  /**
+   * Return the changes made here that Google Sheets has not saved yet and that touch `sheet`,
+   * with where on it they show, and the spreadsheet's sheets as saved and as those changes leave
+   * them. `sheet` is a sheet's title as `getSpreadsheet()` lists it, or that of a saved sheet a
+   * pending change deletes. A change is pending until Google Sheets has saved it, and reads
+   * already show it.
+   */
+  getPendingChanges(sheet: string): Promise<SpreadsheetPendingChanges>;
+
+  /**
+   * Return the declarations of the reads that these types leave out, as TypeScript: those that
+   * give what it takes to render the spreadsheet as Google draws it, `readDrawing()`.
+   * Call it before writing or changing code that renders the spreadsheet.
+   */
+  getRenderingTypes(): Promise<string>;
 }

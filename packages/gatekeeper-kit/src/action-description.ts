@@ -67,6 +67,9 @@ const EMOJI_INVISIBLES = new RegExp([
     "(?:\\u{E0065}\\u{E006E}\\u{E0067}|\\u{E0073}\\u{E0063}\\u{E0074}|\\u{E0077}\\u{E006C}\\u{E0073})" +
     "\\u{E007F}",
 ].join("|"), "gu");
+// The characters that set which way text runs, and so could reorder the prose around a name.
+// Not every invisible one: Persian and Indic words are spelled with joiners.
+const BIDI_CONTROLS = /\p{Bidi_Control}/gu;
 
 function hasUndisplayable(text: string): boolean {
   return INVISIBLE.test(text.replace(EMOJI_INVISIBLES, ""));
@@ -376,11 +379,11 @@ export function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
 }
 
 /**
- * Renders untrusted text as inline prose, removing characters that could forge Markdown structure.
- * Lossy, like `codeSpan`.
+ * Renders untrusted text as inline prose, removing characters that could forge Markdown structure
+ * or, being bidi controls, reorder the prose around it. Lossy, like `codeSpan`.
  */
 export function plainInline(text: string, max = MAX_INLINE_TEXT): string {
-  const cleaned = text.replace(/[`*_[\]()#>|]/g, "").replace(/\s+/g, " ").trim();
+  const cleaned = text.replace(/[`*_[\]()#>|]/g, "").replace(BIDI_CONTROLS, "").replace(/\s+/g, " ").trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
   return clipped || "(unnamed)";
 }

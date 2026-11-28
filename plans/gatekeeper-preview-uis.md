@@ -333,21 +333,22 @@ Everything specific to one vendor is in this section and in `packages/gatekeeper
 ### Session reads
 
 On `GoogleDocSession`, implemented in `docs.ts`. Two are declared in `docs-types.d.ts`, which is
-what every agent given a Doc is sent; the three that only render are declared apart, in
+what every agent given a Doc is sent; those that only render are declared apart, in
 `docs-rendering-types.d.ts` (`GoogleDocRenderingReads`), and the session has them as it has the
-others. Each
+others. Each but `readFont()`
 reads one tab and takes a required `tabId`: `getContent()` lets it be omitted for a one-tab
 document only because callers older than tabs exist, and these reads are new.
 
 ```ts
 // docs-types.d.ts
 getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;  // { tabId, changes }
-getRenderingTypes(): Promise<string>;                    // the declarations of the three below
+getRenderingTypes(): Promise<string>;                    // the declarations of those below
 
 // docs-rendering-types.d.ts
 readDrawing(tabId: string): Promise<GoogleDocDrawing>;   // the saved tab as Google Docs lays it out
 readPendingDrawing(tabId: string): Promise<GoogleDocPendingDrawing>;  // what the changes make of it
 readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at most 10 MB
+readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;  // a family the drawing named
 ```
 
 - `getPendingChanges()` follows section 2 as far as the gatekeeper keeps a call: `replaceText`
@@ -406,7 +407,7 @@ readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at 
   tab, with no `version`, no named style and without asking Google, and `readPendingDrawing()`
   one edit at 0, of all the tab holds. A Doc not created yet is drawn from the same blank tab
   (`blankDrawnTab()`), under the one revision the gatekeeper gives such a Doc.
-- The three reads' types are apart, and `getRenderingTypes()` returns them:
+- The rendering reads' types are apart, and `getRenderingTypes()` returns them:
   they would double the session's declarations, and an agent that only reads and edits a
   Doc never needs them. An agent editing a forked preview is told by `getRenderingTypes()`'s
   comment to fetch them first. A preview of Sheets or Slides keeps its reads that only render
@@ -432,6 +433,10 @@ readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at 
   reaches the UI frame from capnweb 0.13.0.) Images in headers and footers, and positioned
   ones, are read the same way. `listImages()` and `getStyles()`, which earlier drafts had, are
   gone: the drawing names every object and holds every look.
+- Fonts come through the session as they do for Sheets and Slides: `readFont()` reads a family
+  the drawing of a tab already read names, and no other, from Google Fonts. A family Google
+  Fonts does not serve is drawn in the browser's nearest. The session keeps the families its
+  drawings named, in memory, as it keeps the image addresses.
 
 #### What the Docs API withholds
 
@@ -456,8 +461,8 @@ Found against real documents, and each is drawn as near as the API allows:
   it line by line. The client (`draw.js`, `pages.js`) follows these rules:
   - *Every font is set alike.* A line of text is 1.18 times its size tall, times the
     paragraph's line spacing, with the baseline 0.96 of the size under the line's top and the
-    rest under the text. A font's own ascent and descent play no part. A line of mixed sizes
-    takes the largest.
+    rest under the text. A font's own ascent and descent play no part, so each font read for
+    the document is given those two as overrides. A line of mixed sizes takes the largest.
   - *Each line is rounded up to a whole pixel*, after the paragraph's space above is added to
     its first line and its space below to its last. A paragraph of one line is rounded once,
     with both.
@@ -613,14 +618,15 @@ opening on the first:
 - *As saved*: the tab as Google Docs has it now, paged, with what the changes remove tinted
   and the same marks where they add.
 
-A document needs all three because a reader checking an edit wants to
+Slides has two of these; a document needs the third because a reader checking an edit wants to
 see the words that went, and a reader checking layout must not have them take up room. The
 tint of a change follows the lines of its text, not the paragraph's box, so it goes around a
 wrapped image rather than across it.
 
 **Stepping through pages.** A navigator at the foot of the frame, right, the twin of the change
 navigator at its head: "Page", the page read of how many ("3 / 21"), and an arrow each way
-(`stepper()` in `chrome.js` builds both, and `partNavigator()` there is this one).
+(`stepper()` in `chrome.js` builds both, and `partNavigator()` there is this one, which Slides
+shares).
 It steps to the top of the next or the previous sheet,
 counts steps made while one is still under way, dims the arrow there is nothing past, and names
 the page read ("Page 3 of 21") to assistive technology. It is hidden where there is one sheet: a one-page tab, a
@@ -640,7 +646,9 @@ already drawn stays as it is, to be tried again.
 `getPendingChanges()` is read only for whether changes wait and how many are stale. A refresh
 that finds the drawing and the pending drawing as they were, as when a change is made to
 another tab, leaves what is drawn alone. The client opens on the first tab with changes
-waiting.
+waiting. Once a tab is drawn its fonts are read (`readFont()`), and it is set again in each
+that arrives; bold and italic faces are read beyond the saved looks' only where a pending
+change writes them.
 
 **Failing.** There is no second way to draw a tab. A tab that cannot be read on opening is an
 error with a retry; one already drawn stays, with the failure said under it.
@@ -684,18 +692,20 @@ a document's colors are chosen against its paper.
   kept until the edits name another version and the edits asked for again when they name
   another than the drawing's, and a tab that cannot be read again kept as drawn.
 - Against Google Docs itself. A harness draws a captured drawing beside a screenshot of the
-  same document in the editor at 100%, and the baselines of matching lines are compared. A
-  brochure (first-page header and footer, positioned and wrapped images) is within 2px down
-  its first page; class notes in Roboto Slab with inline images are exact on the second page
-  and within 5px at the foot of the first, where each inline image sits about 1.7px lower in
-  Google Docs than here, for a reason not found. A 21-page A4 design document paginates
-  without overflow and was not compared line by line.
+  same document, and the editor's own drawing calls are recorded in a browser tab (the text,
+  font and baseline of every line and the rectangle of every image), then compared with the
+  client's lines. A 20-page A4 design document in Droid Sans and Consolas makes the same 20
+  pages, with each of its 450 lines holding the same words within half a pixel of where the
+  editor puts it. Class notes in Roboto Slab with inline images match line for line, images
+  included. A brochure (first-page header and footer, positioned and wrapped images) is
+  within a pixel down its first page; its second starts 22px high, because the Docs API does
+  not return the header Google draws there (see above).
 - Two documents that are mostly table, each one page in the editor and one here. A form
   brought in from Word (merged cells, shaded cells, no stated padding) has its table's columns
-  on the editor's pixels and its text where the editor has it in every row that wraps as the
-  editor's does. It is set in Cambria, which the browser stood another serif in for, so 34 of
-  its 79 lines end at another word and the table is seven lines shorter; with a font as wide
-  as Cambria in its place, every line between two rows was on the editor's pixel. A rubric
+  on the editor's pixels, each of its 79 lines ending at the editor's word and within half a
+  pixel of where the editor draws it, and every line between two rows on the editor's pixel.
+  It is set in Cambria, read from Google Fonts; in the serif a browser without Cambria draws
+  instead, 34 of the 79 lines ended at another word and the table was seven lines shorter. A rubric
   made in Google Docs has its rows within a pixel: its table is centered in the editor and
   starts 2px further left here, and its first and last rows are a pixel taller here.
 - Both comparisons were made of the client as it was before it merged by index range. What
@@ -793,8 +803,14 @@ a document's colors are chosen against its paper.
   are each a pixel shorter in the editor than 1.18 times the size rounded up makes them, where
   20pt and 21pt Roboto are not: the factor differs between fonts in its third digit, which
   shows only where a line comes within a tenth of a pixel of a whole one.
-- **Cambria and Calibri** are in no browser without Office, so a document brought in from
-  Word wraps as whatever serif or sans the browser has.
+- **Fonts that are not Google's.** Google Fonts serves the families an editor offers that are
+  Microsoft's or Apple's (Cambria, Calibri, Consolas, Georgia, Times New Roman, Verdana,
+  Trebuchet MS, Courier New, Tahoma, Helvetica and others) in the files the editor draws with,
+  though its catalog does not list them, and they are read as any other family is, also where
+  the browser has its own. It refuses Arial, which is left to the browser, and weights a
+  family lacks (Calibri Light). Most are under 150KB a face; Times New Roman and Tahoma are
+  600KB to 800KB. A family made to stand in for one is not as wide: Caladea sets a line about
+  5% narrower than Cambria.
 - **Text wraps an image on one side.** Google Docs runs text down both sides of an image set in
   the middle of a column; here it keeps to the wider side.
 - **Tab stops** are drawn at the default spacing, not at the stops a paragraph sets.
@@ -802,6 +818,261 @@ a document's colors are chosen against its paper.
   run's content and decodes it, and reads list definitions, so each document folds its pending
   edits once more from its stored copy after the deploy, and fetches nothing. No version of
   the copy's format or of the Markdown rendering moved.
+
+## Next previews: Google Sheets and Google Slides
+
+Both use the framework as it stands: session reads and a client each, no kernel or Workshop
+change. One pull request, stacked on the Google Docs one.
+
+### Shared by the three previews
+
+- **One folder per preview**, each with its own `client.js`: `previews/docs/`, `previews/sheets/`,
+  `previews/slides/`. The gatekeeper returns each preview's files with the modules it shares.
+- **Shared modules** (`previews/shared/`), taken out of the Docs client before the other two are
+  written: the theme tokens, the outline sheet, the change navigator, the part navigator, the
+  stale banner, the loading, updating and error states, `make()` and `lineIcon()`, and the
+  refresh handling. The three previews then look and behave as one product.
+- **One dot for a change, in three colors.** The outline marks what holds a change with a dot
+  (`touch()` in `chrome.js`): green where every change in it adds, red where every one removes,
+  and purple (`--edit`, `--edit-ink`) where they edit, or both add and remove. The title of what
+  it marks says the same in words ("has pending additions", "deletions", "edits"), as the outline
+  names everything else. Docs takes each heading's section from its rows: a paragraph added or
+  removed whole is that, an edited one is what its changed words are, and one written over
+  another or restyled with its words left alone is an edit; a section folded away adds its
+  changes to the heading it is folded under. Sheets has only what its listing says of a sheet:
+  added, deleted, or touched, which is an edit (a sheet's renamed and moved chips are purple
+  too). Slides rings the thumbnail instead (below).
+- **What each keeps to itself:** how it reads and draws its resource.
+- **Every read is authorized**, a picture's as for Docs images and each window of a sheet: a
+  listing or drawing tells of a picture, not its bytes, and skipping the check would also skip a
+  Drive folder connection's proof that the file is still in the folder. A picture of a slide
+  already drawn asks Google for nothing but the picture.
+- **Bytes travel as a stream**, which the frame reads whole into a `data:` URL or a font face: a
+  picture as Google sends it, and a font, which the isolate keeps, in pieces of 64 KiB, so that
+  no one message holds up what else the Workshop's connection carries.
+- **Reads that only render are declared apart.** A spreadsheet's `readDrawing()` and a
+  presentation's drawings, pictures and fonts serve nothing but rendering, and their shapes were
+  most of what a preview added to the types every agent given the connection is sent. They are
+  declared in `sheets-rendering-types.d.ts` and `slides-rendering-types.d.ts`, which no agent is
+  sent. The session's `getRenderingTypes()`, which is in the agent's types, returns them to one
+  that asks, as an agent editing a forked preview would; it reads nothing of the resource and
+  reports no read. The pending-changes reads and a Doc's image reads serve more than rendering
+  and stay where they were. Whether agents call it when they should is unmeasured.
+
+### Google Sheets
+
+Scope of the first version, which is what can be drawn as Google draws it from what the Sheets
+API returns:
+
+- **Drawn:** each cell's displayed value, its effective format (conditional formatting included),
+  font, number format, alignment, wrap, borders and text turned on its side (text turned by less
+  is drawn level); merges; row heights and column widths; hidden
+  and frozen rows and columns; hidden gridlines; the sheet tabs, with added, renamed, moved and
+  deleted sheets marked.
+- **Changes:** a cell a queued change enters a value in or formats is marked and names its
+  change; its saved value is kept beside it for a before and after. Inserted rows and columns are
+  drawn as bands, deleted ones where they stood. A queued formula shows its text with a pending
+  look, since only Google can work out its result.
+- **Named, and drawn as far as the API tells:** `readDrawing()` says where a filter is set, which
+  cells hold a checkbox, a dropdown or a note, how a cell's text is formatted in parts, and each
+  chart's title, place and size. A chart is a titled box where it stands: the API gives its
+  specification and no picture.
+- **Not in the first version, wanted later:** a chart's picture, images, a dropdown's choices, a
+  note's text, banding and table styles. Each is left a placeholder where it has a place on the
+  grid, so adding one later is a new read and a new drawing, not a redesign. To check before
+  promising any: images placed over the grid may not come from the API at all.
+
+Session reads, on `GoogleSpreadsheetSession`:
+
+```ts
+getPendingChanges(sheet: string): Promise<SpreadsheetPendingChanges>;  // { changes, areas, sheets }
+// One window of one sheet.
+readDrawing(range: string, unfrozen?: ("rows" | "columns")[]): Promise<SpreadsheetDrawing>;
+readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
+```
+
+- A sheet is too large to return whole, so `getPendingChanges()` returns, beside `changes`, the
+  areas the changes touch and the sheet list as saved and as it will be; the cells come from
+  `readDrawing()`. This is the convention of section 2 with the two copies read by window.
+- `readDrawing()` returns a window's cells as they will be, each with its saved value when a
+  change touches it, plus the sizes, merges, frozen and hidden lines the window needs. A sheet's
+  frozen rows and columns come with every window and count toward its cells, but those of an
+  axis the caller names in `unfrozen`: a caller that does not keep them in view draws them as
+  lines that scroll, and reads them as it reads the rest. The caller decides, so the session
+  and it cannot differ about which lines a drawing holds. A merge that starts
+  outside the window comes with its first cell, up to 20 a window.
+- A fill a conditional rule gives a cell is kept under a fill a queued change sets, as Google
+  draws the rule's over the cell's own. The rule is not worked out again: one that a queued value
+  would switch on or off is drawn as it stands now.
+- Google reports a row nobody has resized at the default height, though it draws the row as tall
+  as its text. The drawing gives such a row the height of its tallest cell, counting the lines of
+  wrapped text by an average letter width, since Google's own measure of the text is not read. A
+  header that wraps can so be a line taller or shorter than Google draws it.
+- Fonts come through the session as they do for Slides, without a listing: `readFont()` reads a
+  family that the saved cells of a drawing already read are set in, and no other, so a font only
+  a pending change sets is not fetched until the change is saved.
+- An area a change touches names its change and what it does; rows and columns a change deletes
+  are a seam with their count where they stood, not their saved contents.
+- A merge, an unmerge, a resize of rows, one of columns and a freeze are each an area with an
+  `op` of its own. A merge's and an unmerge's are their cells. A resize's are its rows or columns,
+  with the `size` it gives them. A freeze's are the leading rows, and the leading columns, that
+  the pending changes bring into those kept in view or let go of, as the pending sheet numbers
+  them, with how many would be kept in view without the freezes (`before`) and how many are
+  (`after`, where the freeze line stands). `before` is never every line the sheet has, and a
+  sheet a pending change copies counts it from the lines it was copied with, whatever was frozen
+  on its original by then. Each is one stretch, since the lines kept in view lead the sheet, and
+  it is on the last change that changed how many are kept in view: an earlier one has no area,
+  and neither has a change that leaves nothing to see. The bound on `before` can leave a freeze
+  none: with 3 of 5 rows saved frozen, a freeze of 2 and then a delete of rows 4 and 5 make
+  `before` 2, which is `after`.
+- The drawing has the sizes, merges and frozen lines the pending changes leave. The merges of a
+  sheet a pending change adds or copies, or whose merges one consults, are the replay's; any
+  other sheet's are those the drawing's own read finds among its cells.
+- A drawing is read by grid range with `spreadsheets:getByDataFilter`, which Google refuses a
+  grant that may only read (403, whatever reason it gives). It is then read by A1 range with
+  `spreadsheets.get`, each sheet named by the title Google holds, in as many requests as keep
+  each URL within 15,000 characters, since Google refuses one of some 16,500. Their answers are
+  put together, and where a range is not answered by the sheet it was asked of, as when a sheet
+  was renamed meanwhile, the read fails saying the spreadsheet changed. The theme alone is always
+  read with `spreadsheets.get`.
+- A read that fails once a sheet is drawn leaves the drawing in place and offers to try again.
+  A window Google or the session finds too large is asked for again with half the room, and
+  half again while that asks for the same window, down to some 300 cells. The room stays that
+  small for the windows after it, each refusal being a fetch of Google; a view scrolled past
+  what is drawn is asked for with twice the room, so a sheet heavy in one place is read in
+  full windows again a few views on, and one heavy throughout costs a refused read at each.
+  A window refused is not asked of Google again until the sheet is read anew, or its reader
+  asks to try again.
+- **Limits:** 10,000 cells drawn at once (what one format read may fetch). A sheet of up to 200
+  rows by 26 columns is drawn whole from A1; a larger one opens on the areas its changes touch,
+  with a few rows and columns around each, and reads further windows as the person scrolls.
+- **Frozen lines the client lets scroll.** It keeps a sheet's frozen rows, and its frozen
+  columns, in view only while they take no more than half of what the frame shows past the
+  headers, and while a drawing that holds them has room for 100 rows and 26 columns more (the
+  more numerous go first where it has not; fewer more in a window made smaller, and no more
+  than the sheet has). Their size counts only once a drawing has read it: lines taken for
+  wider than they are would be let go of for nothing. Otherwise it says so over the sheet,
+  draws them as lines that scroll and reads its windows without them, so a change anywhere in
+  the sheet is drawn. The half is a choice, not Google Sheets' rule, which was not looked up:
+  frozen lines that fill a narrow pane would leave nothing of the sheet to scroll.
+- **The window read.** The view is what scrolls past the frozen lines kept in view, as far as
+  the last line that shows: lines read to be hidden after it are not in view, even where the
+  sheet ends. A window is the view and lines around it, up to three times its columns and five
+  times its rows, the columns first; the frozen lines the session draws before it count among
+  its cells. Where no drawing holds the view, as where a filter hides more rows than one holds,
+  the window is the view's lines the shorter way and all there is room for the longer way,
+  from where the view starts. Where nothing shows after the view, at the sheet's end, it is
+  read back from where the view ends instead: there the view grows backwards.
+- **Reading on.** A view grows as the lines read of it turn out hidden, or smaller than the
+  usual size they were taken for. It is read again with all the room the way it was left
+  short, until a read would bring nothing new, and at most four times on end until the person
+  moves the view: by scrolling, also while a window is being read, by resizing it, or by
+  opening the outline beside it. What is in view stays where it is as a window arrives, and is
+  scrolled back there only where the lines before it changed size, so a smooth step of the
+  navigator is not stopped by a window read on its way. A step to a change past what is drawn
+  is made at once, and again once the window there is drawn and its lines have their sizes,
+  unless the view was moved meanwhile, by scrolling or by a resize. A change that runs the
+  sheet's whole length one way (columns inserted, rows resized, a freeze) is stepped to the other
+  way only: the place its reader is at along it is as much of it as any.
+- **Accepted limit: a view left blank.** A run of hidden lines longer than those reads hold
+  leaves the view blank until the person scrolls, in the middle of a sheet and at its end
+  alike: some 4,000 rows where 8 columns are in view, and under 2,000 where 20 are. A view of more
+  lines than one read holds, as of very small rows in a wide pane, is drawn as far as a read
+  goes. Either says "Not read this far yet. Scroll to read on." over the sheet.
+- The sizes of the lines, the view, the window and what is read next are
+  `previews/sheets/window.js`, which touches no page: the client reads, draws and scrolls as
+  it says. Its test holds the windows to what the session draws, over many sheets and views,
+  and runs the rules as the client does, over a page it makes up, as lines turn out other
+  sizes, the reader scrolls between and during reads, and reads are refused.
+
+### Google Slides
+
+Slides are drawn from the presentation's own model, not from Google's thumbnails: a thumbnail
+shows only what is saved, and a pending change has to be drawn.
+
+- **Outlines the model lacks come from Google's PowerPoint export.** The Slides API gives a
+  freeform shape no outline and a preset shape none of its dragged handles (how far a corner is
+  rounded, where an arc ends). The export has both. The gatekeeper starts fetching it through the
+  Drive API inside the read of the slides, at most once a minute and only for a presentation that
+  has such a shape, and that read waits five seconds for it. A slower fetch finishes after the
+  read, whatever became of the read, and what it finds is kept for the next, as the masters and
+  layouts a read fetched are: nothing kept is returned but inside a later read, authorized as
+  any is. The gatekeeper keeps the outlines and not the file, and matches its shapes to the
+  model's by
+  slide order, document order, kind and placement. A shape it cannot match for certain, and
+  every such shape of an account with no Drive read access, is drawn as a hatched box; a preset
+  is drawn at its defaults. The export is the saved presentation's content, so it adds no
+  observation. A slide whose outlines are still on their way says so, and the client reads it
+  again, three times at most.
+
+- **Resolved as Google resolves it for display.** A placeholder takes its place, fill, outline
+  and text styles from its layout's placeholder, and that from its master's; a slide shows its
+  master's and layout's other elements behind its own; theme colours become the master's.
+- **Drawn:** shapes with their geometry, fill, outline and shadow; text with each paragraph's and
+  run's full style, bullets and autofit scale as Google last reported it; pictures with crop and
+  transparency; tables; lines and arrows; groups; backgrounds.
+- **Not drawn as Google draws them:** how Google re-fits text a pending change lengthens, bent
+  and curved connectors (drawn straight or with a default bend), gradients, a picture's
+  recolouring or mask, video, charts beyond their last picture, and the handles of some presets
+  (braces, curved and bent arrows, ribbons, waves).
+- **Changes:** the slide is shown as it will be, with each changed element outlined and naming
+  its change, in green where it is added, red where it is deleted and purple where it is
+  edited. A toggle shows the slide as saved. A filmstrip lists the slides with added, changed,
+  moved, skipped and deleted ones marked: in place of the dot, the thumbnail is ringed green for
+  a new slide, red for a deleted one, and purple for one changed, moved, skipped or shown again,
+  with its tag in the same color, there and over the slide. The slide being read keeps its
+  blue ring, whatever is to happen to it, and is the only thumbnail with a glow.
+- **Stepping through slides.** The page navigator of Docs, as "Slide" ("4 / 27"), steps from
+  card to card and follows the slide the filmstrip marks as read, with the same lift above the
+  Workshop's card. It counts and numbers the slides there will be, as the filmstrip does, and
+  steps to a slide to be deleted too, which reads "– / 27" and is named "Deleted slide, after
+  slide 7 of 27". Speaker notes are diffed as text.
+- **Checked against Google's own rendering.** `getSlideThumbnail()` is the reference for a saved
+  slide: a slide drawn as saved is compared with its thumbnail.
+
+Session reads, on `GooglePresentationSession`:
+
+```ts
+getPendingChanges(): Promise<PresentationPendingChanges>;        // { changes, savedPresentation, presentation }
+readSlideDrawings(slideIds: string[]): Promise<SlideDrawings>;   // { slides, shared }: resolved, pending and saved
+readPicture(pictureId: string, slideId: string): Promise<SlidePictureBytes>;
+listFonts(): Promise<SlideFont[]>;                               // the families and weights the deck uses
+readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
+```
+
+- The scope of `getPendingChanges()` is the presentation, since a change can move, add or delete
+  slides; each change names the slides it touches.
+- **Fonts come through the session.** The frame has no network, so the gatekeeper fetches each
+  font the saved deck uses from Google Fonts and returns its bytes, and the client registers them with
+  `FontFace`. A family Google Fonts does not serve falls back to a system font of the same kind.
+  The frame's content policy has no `font-src`, and `FontFace` takes bytes under it all the same
+  (checked in Chromium). A font only a pending change names is not fetched until the change is
+  saved, and is drawn in the fallback till then: the fetch is not reported as a read, so it is
+  kept to names that are the presentation's and not their author's choice.
+- **Limits:** 50 slides drawn, read 10 at a time, those the changes touch first, then their neighbours, then the
+  rest in order; any other is listed by its title alone. 75 pictures, each fetched only as large
+  as it is drawn. A slide's pictures come named in its drawing, so there is no listing of them.
+
+### Test files and verification
+
+- A spreadsheet and a presentation with real complexity, connected in the test workspace with
+  edit access: both sessions refuse to queue a change to a file their account cannot edit, so a
+  public file is used through a copy the test account owns. Edits are queued through the API and
+  denied, never approved.
+- Each preview: a worker suite for its reads, the client in a same-origin frame in real
+  Chromium, and a live pass against the real file. Slides adds the thumbnail comparison.
+- Checked once against Google, on a scratch spreadsheet and deck: a token that may only read is
+  refused the read by grid range (403) and answered the one by A1 range with the same bytes, for
+  one window, frozen lines beside a window, titles that need quoting, a window past the cells
+  used and the theme alone; Google leaves out a zero `startRow` or `startColumn`, trailing empty
+  rows and cells and an empty range's `rowData`, and tells of merges, conditional rules and
+  banding only where they meet the ranges asked; frozen lines follow inserts and deletes as the
+  plan moves them; every Slides field mask is accepted, and `drive.file` gets the export.
+- Not reproduced: an account with every scope that may only view the file. Whether Google
+  refuses it the read by grid range with the same 403 is unknown.
+- A wrapped row's height is the gatekeeper's own estimate: Google reported 21 for a row of 115
+  wrapped characters that the drawing made 181 tall, and neither was compared with what Google
+  Sheets shows.
 
 ## Pull requests
 
@@ -816,9 +1087,8 @@ a document's colors are chosen against its paper.
 
 ## Punted / future work
 
-- **More previews.** Sheets and Slides are wanted next and not designed. Each brings its own
-  session reads and client; neither should need a kernel or Workshop change. If one does, the
-  framework is wrong, not the preview.
+- **More previews.** Each brings its own session reads and client, and should need no kernel or
+  Workshop change. If one does, the framework is wrong, not the preview.
 - **Cancel from the preview.** Sketch: `cancelPendingChange(id)` on the session, and
   `ApprovalQueue.withdrawAction(action)` so the kernel runs its existing reject path (which calls
   the gatekeeper's `rejectAction()`), keeping one reject path. Open: who may withdraw (any holder

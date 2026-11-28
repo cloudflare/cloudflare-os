@@ -303,6 +303,11 @@ change. Every session that does uses one shape (reference: `GoogleDocSession.get
 Cancelling a change and subscribing to changes are not part of this shape yet; do not add either to
 one gatekeeper alone.
 
+A read that serves only to render the resource (a drawing, a font) is declared in its own `.d.ts`
+and left out of `types.d.ts`, which every agent given the binding is sent. Declare
+`getRenderingTypes(): Promise<string>` in `types.d.ts` instead, returning that file's text with its
+imports stripped and reporting no read (reference: `GooglePresentationSession`).
+
 ### Observer verification
 
 This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks, through `verifyObserverAccess()`, which observers can access them. Which collaborators it asks about, and when, is the Workshop's policy (`docs/observers.md` §10), not part of the gatekeeper's contract: answer correctly for whichever observers a call names.

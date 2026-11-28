@@ -27,12 +27,14 @@ export type ThemeLabel = { name?: string; master?: string };
 
 /**
  * An `updateSlides()` batch. `slides` labels each slide a change is on, and `themes` each master
- * or layout, by ID; `themes` may be absent when there are none.
+ * or layout, by ID; `themes` may be absent when there are none. `elements` holds the start of the
+ * text of each element a change names, by ID, for those that had any when the batch was queued.
  */
 export type DesignBatch = {
   changes: DesignChange[];
   slides: Record<string, SlideLabel>;
   themes?: Record<string, ThemeLabel>;
+  elements?: Record<string, string>;
 };
 
 /**

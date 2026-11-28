@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RestPageElement, RestPresentation, RestSlide } from "../src/slides-api";
 import { designDeck } from "../src/slides-design";
 import { prepareChanges } from "../src/slides-design-input";
+import { drawSlide } from "../src/slides-drawing";
 import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import type { ShapeElement, TableElement } from "../src/slides-read-types";
 import type { Deck } from "../src/slides-simulation";
@@ -135,8 +136,8 @@ describe("Slides design changes", () => {
   });
 
   it("makes paragraphs list items nested by their leading tabs, which it removes", () => {
-    let page = slide("s1", [shape("box", text(["Plan"], ["\tShip"], ["\t\tTest"]))]);
-    let { read, requests } = run([page], [
+    let page = slide("s1", [{ ...turned("box", 100, 100, 200, 100), ...shape("box", text(["Plan"], ["\tShip"], ["\t\tTest"])) }]);
+    let { read, requests, deck } = run([page], [
       { op: "formatParagraphs", slideId: "s1", elementId: "box", alignment: "center", bullets: "numbered" },
     ]);
     expect(read().elements[0]).toMatchObject({
@@ -153,6 +154,50 @@ describe("Slides design changes", () => {
       { updateParagraphStyle: { objectId: "box", style: { alignment: "CENTER" }, fields: "alignment", textRange: range } },
       { createParagraphBullets: { objectId: "box", textRange: range, bulletPreset: "NUMBERED_DIGIT_ALPHA_ROMAN" } },
     ]);
+    // Each is marked as Google will mark it, which only Google says once the list is made.
+    let drawn = drawSlide(deck, "s1")!.slide.elements[0]!;
+    expect(drawn.kind === "shape" && drawn.text!.map(paragraph => paragraph.bullet!.glyph)).toEqual(["1.", "a.", "i."]);
+  });
+
+  it("numbers the items of a list it makes by where the text edits after it leave them", () => {
+    let glyphs = (find: string, replace: string) => {
+      let page = slide("s1", [{ ...turned("box", 100, 100, 200, 100), ...shape("box", text(["Plan now"], ["Ship"], ["Rest"])) }]);
+      let { deck } = run([page], [
+        { op: "formatParagraphs", slideId: "s1", elementId: "box", bullets: "numbered" },
+        { op: "editText", slideId: "s1", elementId: "box", find, replace },
+      ]);
+      let drawn = drawSlide(deck, "s1")!.slide.elements[0]!;
+      return drawn.kind === "shape" && drawn.text!.map(paragraph => paragraph.bullet!.glyph);
+    };
+    expect(glyphs("Plan now", "Plan\nTest")).toEqual(["1.", "2.", "3.", "4."]);
+    expect(glyphs("Plan now\nShip", "Plan and ship")).toEqual(["1.", "2."]);
+  });
+
+  it("numbers a saved list anew when a text edit adds items to it or takes them from it", () => {
+    let item = (content: string, glyph: string) => ({ runs: [content], marker: { bullet: { listId: "l", glyph } } });
+    let glyphs = (find: string, replace: string, marks = ["1.", "2.", "3."]) => {
+      let listed = text(item("Plan now", marks[0]), item("Ship", marks[1]), item("Rest", marks[2]));
+      let page = slide("s1", [{ ...turned("box", 100, 100, 200, 100), ...shape("box", listed) }]);
+      let { deck } = run([page], [{ op: "editText", slideId: "s1", elementId: "box", find, replace }]);
+      let drawn = drawSlide(deck, "s1")!.slide.elements[0]!;
+      return drawn.kind === "shape" && drawn.text!.map(paragraph => paragraph.bullet!.glyph);
+    };
+    expect(glyphs("Plan now", "Plan\nTest")).toEqual(["1.", "2.", "3.", "4."]);
+    expect(glyphs("Plan now\nShip", "Plan and ship")).toEqual(["1.", "2."]);
+    expect(glyphs("Ship", "Ship\nTest", ["A)", "B)", "C)"])).toEqual(["A)", "B)", "C)", "D)"]);
+    expect(glyphs("Ship", "Ship\nTest", ["i.", "ii.", "iii."])).toEqual(["i.", "ii.", "iii.", "iv."]);
+    // From where it started, whichever of its items the edit leaves.
+    expect(glyphs("Plan now", "Plan\nTest", ["5.", "6.", "7."])).toEqual(["5.", "6.", "7.", "8."]);
+    expect(glyphs("Plan now\nShip", "Ship", ["5.", "6.", "7."])).toEqual(["5.", "6."]);
+    expect(glyphs("Ship", "Ship\nTest", ["C)", "D)", "E)"])).toEqual(["C)", "D)", "E)", "F)"]);
+    expect(glyphs("Ship", "Ship\nTest", ["IX.", "X.", "XI."])).toEqual(["IX.", "X.", "XI.", "XII."]);
+    // A letter that is a numeral too counts as the glyph after it does.
+    expect(glyphs("Ship", "Ship\nTest", ["I.", "J.", "K."])).toEqual(["I.", "J.", "K.", "L."]);
+    expect(glyphs("Ship", "Ship\nTest", ["v)", "w)", "x)"])).toEqual(["v)", "w)", "x)", "y)"]);
+    expect(glyphs("Ship", "Ship\nTest", ["I.", "II.", "III."])).toEqual(["I.", "II.", "III.", "IV."]);
+    // One that is not numbered keeps each item's own glyph, as does one whose length stays.
+    expect(glyphs("Ship", "Ship\nTest", ["●", "●", "●"])).toEqual(["●", "●", "●", "●"]);
+    expect(glyphs("Ship", "Sail")).toEqual(["1.", "2.", "3."]);
   });
 
   it("refuses bullets after a list item, which Google may join to its list", () => {
@@ -230,6 +275,7 @@ describe("Slides design changes", () => {
       id: refs.badge, kind: "shape", shapeType: "ROUND_RECTANGLE",
       bounds: { x: 10, y: 20, width: 100, height: 40 },
       text: "New", formats: [{ start: 0, end: 3, bold: true, fontSize: 18 }], fill: "#ff8800",
+      outline: { color: "DARK2", weight: 0.75 },
     });
     expect(requests.map(request => Object.keys(request)[0])).toEqual([
       "createShape", "insertText", "updateTextStyle", "updateTextStyle", "updateShapeProperties", "updateTextStyle",
@@ -239,6 +285,27 @@ describe("Slides design changes", () => {
       propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 136 / 255 } }, alpha: 1 },
     });
     expect(requests.every(request => Object.values(request)[0].objectId === refs.badge)).toBe(true);
+  });
+
+  it("gives a new shape the look Google gives one that says nothing of its own, and a text box none", () => {
+    let bounds = { x: 10, y: 20, width: 100, height: 40 };
+    let { deck, read } = run([slide("s1", [])], [
+      { op: "createShape", slideId: "s1", ref: "plain", shapeType: "RECTANGLE", bounds },
+      { op: "createShape", slideId: "s1", ref: "thick", shapeType: "ELLIPSE", bounds, outline: { weight: 3 } },
+      { op: "createShape", slideId: "s1", ref: "bare", shapeType: "RECTANGLE", bounds, fill: "none", outline: "none" },
+      { op: "createShape", slideId: "s1", ref: "words", shapeType: "TEXT_BOX", bounds },
+    ]);
+    expect(read().elements.map(({ fill, outline }: any) => ({ fill, outline }))).toEqual([
+      { fill: "LIGHT2", outline: { color: "DARK2", weight: 0.75 } },
+      { fill: "LIGHT2", outline: { color: "DARK2", weight: 3 } },
+      { fill: "none", outline: "none" },
+      {},
+    ]);
+    // Drawn in the theme's colours.
+    expect(drawSlide(deck, "s1")!.slide.elements.slice(0, 2)).toMatchObject([
+      { fill: { color: SIMPLE_LIGHT.LIGHT2 }, outline: { color: SIMPLE_LIGHT.DARK2, weight: 0.75 } },
+      { fill: { color: SIMPLE_LIGHT.LIGHT2 }, outline: { color: SIMPLE_LIGHT.DARK2, weight: 3 } },
+    ]);
   });
 
   it("moves an element by translating it alone, and resizes a rotated one about its new box", () => {

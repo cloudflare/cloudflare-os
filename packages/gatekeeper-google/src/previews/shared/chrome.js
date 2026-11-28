@@ -220,6 +220,67 @@ export const dataUrl = async (content, type) => {
   });
 };
 
+/**
+ * Families Google Fonts does not serve, which every browser has or has a match for. It does serve
+ * the others an editor offers that are not its own, Cambria and Times New Roman among them, in
+ * the files the editor draws with.
+ */
+export const SYSTEM_FONT = /^(arial|sans)$/i;
+
+// How long a font that could not be read is left alone: the failure may be a busy server's. And
+// how long a read may take, past which it has failed: one that never settles would keep its place.
+const FONT_RETRY_MS = 60_000;
+const FONT_READ_MS = 30_000;
+
+/**
+ * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(),
+ * which streams each: at most `most` of them, each asked for once. One that could not be read,
+ * or took too long, counts for nothing, and is asked for again by the first `read()` to name
+ * it after a while.
+ * `measures(bytes, family)` gives what a face sets over its file's own measures. `asked(...font)`
+ * says whether a font was asked for, and `read(fonts)` reads those of `[family, weight, italic]`
+ * that were not, and says whether any arrived.
+ */
+export function fontReader(read, most, measures = () => ({})) {
+  // Each font asked for: whether it arrived. Only one that does, or may yet, counts against the limit.
+  const faces = new Map();
+  let held = 0;
+  const key = font => font.join('\u0000');
+  const face = (family, weight, italic) => {
+    const font = key([family, weight, italic]);
+    if (faces.has(font)) return faces.get(font);
+    if (held >= most) return Promise.resolve(false);
+    held++;
+    // A read that takes too long is given up: its stream is cancelled, so no more of it arrives.
+    const late = new AbortController();
+    const timer = setTimeout(() => late.abort(), FONT_READ_MS);
+    const lapsed = new Promise((_resolve, reject) => late.signal.addEventListener('abort', reject));
+    const sent = Promise.resolve().then(() => read(family, weight, italic))
+      .then(content => new Response(content.pipeThrough(new TransformStream(), { signal: late.signal })).arrayBuffer());
+    const arrived = Promise.race([sent, lapsed]).finally(() => clearTimeout(timer)).then(async content => {
+      const bytes = new Uint8Array(content);
+      const loaded = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal', ...measures(bytes, family) });
+      await loaded.load();
+      document.fonts.add(loaded);
+      return true;
+    }).catch(() => {
+      held--;
+      setTimeout(() => faces.delete(font), FONT_RETRY_MS);
+      // Without the weight the browser makes one from the family's regular, when that is there.
+      return (weight !== 400 || italic) && face(family, 400, false);
+    });
+    faces.set(font, arrived);
+    return arrived;
+  };
+  return {
+    asked: (...font) => faces.has(key(font)),
+    read: async fonts => {
+      const fresh = new Map(fonts.filter(font => font[0] && !SYSTEM_FONT.test(font[0]) && !faces.has(key(font))).map(font => [key(font), font]));
+      return (await Promise.all([...fresh.values()].map(font => face(...font)))).some(Boolean);
+    },
+  };
+}
+
 export const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
 
 /** Restarts an element's glow, which an animation already run would not play again. */

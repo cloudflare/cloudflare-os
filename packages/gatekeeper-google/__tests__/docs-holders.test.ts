@@ -104,11 +104,13 @@ describe("what is kept between two requests, by the source's own text", () => {
     }));
   });
 
-  it("a Doc session keeps its dependencies and, of what it read, where its images are served", () => {
+  it("a Doc session keeps its dependencies and, of what it read, where its images are served and its font families", () => {
     expect(fieldsOf("docs.ts", "GoogleDocSessionImpl")).toEqual([
       "#docsApi", "#driveApi", "#documentId", "#approvalQueue", "#read", "#changes", "#source",
       // An address is a bearer of its image for minutes: kept here so that it is stored nowhere.
       "#comments", "#imageUris",
+      // The names of the families a drawing was set in, which are all readFont() may fetch.
+      "#fonts",
     ]);
     expect(fieldsOf("docs.ts", "GoogleDocReadSessionImpl")).toEqual(["#session"]);
     expect(fieldsOf("docs.ts", "GoogleDocEditSessionImpl")).toEqual(["#session"]);
