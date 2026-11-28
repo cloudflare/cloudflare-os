@@ -781,9 +781,11 @@ abstract class DriveCoreBase {
 
   /**
    * A listing that shows, on its last page, the simulated entries `simulated` reads with that
-   * page. `listPage` fetches one page; `entries` turns its files into the entries the caller
-   * sees; `authorize` reports a page with the units given, where each simulated entry stands for
-   * the units `simulatedUnits` gives it rather than for itself.
+   * page, but for one whose ID Drive returned on this page or an earlier one: a write whose answer
+   * was lost may have made its file under the ID its simulation shows, and Drive's file wins, its
+   * units and all. `listPage` fetches one page; `entries` turns its files into the entries the
+   * caller sees; `authorize` reports a page with the units given, where each simulated entry stands
+   * for the units `simulatedUnits` gives it rather than for itself.
    */
   protected listingPager(options: {
     listPage: (pageToken: string | undefined) => Promise<DriveFileList>;
@@ -795,13 +797,16 @@ abstract class DriveCoreBase {
     // The cursor builds and authorizes each page right after fetching it, so this is always the
     // simulated part of the page it is working on.
     let shown: SimulatedEntry[] = [];
+    // Every ID Drive returned so far, whatever `entries` makes of its file.
+    let returned = new Set<string>();
     return new CursorPager<DriveFile, DriveEntry>({
       provider: "Google Drive",
       fetchPage: async pageToken => {
         let fetch = () => options.listPage(pageToken);
         let read = options.simulated ? await options.simulated(fetch) : {page: await fetch(), shown: []};
-        shown = read.shown;
         let {files, nextPageToken} = read.page;
+        for (let {id} of files) returned.add(id);
+        shown = read.shown.filter(({entry}) => !returned.has(entry.id));
         return {items: files, ...(nextPageToken ? {nextPageToken} : {})};
       },
       buildEntries: async files => [

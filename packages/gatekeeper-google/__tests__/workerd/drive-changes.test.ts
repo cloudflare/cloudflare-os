@@ -276,6 +276,8 @@ class DriveProvider {
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
+  /** How many files a folder listing answers on a page, when a test sets it: by default all. */
+  listingPageSize?: number;
   /** The request held before it answers, once, and whether it was reached and released. */
   #stall?: { request: "listing" | "download"; reached: boolean; released: boolean };
   #people = new Map<string, string>([
@@ -507,8 +509,16 @@ class DriveProvider {
         ? held.parents.includes(parent ?? "")
         : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
           (inDrive === undefined || held.driveId === inDrive)));
-      if (copyToken === undefined) await this.#stalled("listing");
-      return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
+      if (copyToken !== undefined) {
+        return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
+      }
+      await this.#stalled("listing");
+      let start = Number(url.searchParams.get("pageToken") ?? 0);
+      let end = start + (this.listingPageSize ?? files.length);
+      return Response.json({
+        files: files.slice(start, end).map(([id, held]) => this.#fileJson(id, held)),
+        ...(end < files.length ? { nextPageToken: String(end) } : {}),
+      });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
       .exec(url.pathname);
@@ -2484,6 +2494,24 @@ describe("copies", () => {
     let shown = (await listing).value;
     expect(listed(shown)).toEqual(["copy-1"]);
     expect(shown).toEqual([[expect.not.objectContaining({ pending: true })]]);
+  });
+
+  it("lists a copy Drive made under its reserved ID while the action waits once, as Drive's", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    // Drive makes the copy and loses the answer, so the action still waits.
+    provider.nextWrite = "lost";
+    expect(await drive.apply(queued.actionId)).toBe(UNCONFIRMED_COPY);
+    provider.files.set("later", file(DOC_MIME, ["elsewhere"]));
+    // The copy is on the first page, and the copies that wait show on the last.
+    provider.listingPageSize = 1;
+
+    let listing = await drive.call("list", { directParentId: "elsewhere" });
+
+    expect(listed(listing.value)).toEqual(["copy-1", "later"]);
+    expect(listing.value).toEqual([[expect.not.objectContaining({ pending: true })], expect.anything()]);
+    expect(await drive.waiting()).toEqual([queued.actionId]);
   });
 
   // Changed or shortened once copied, the file no longer holds what the copy holds: a shortened
