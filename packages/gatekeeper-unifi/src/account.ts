@@ -1,0 +1,876 @@
+/**
+ * One connected UniFi account: its credentials, its connect and reconnect flows, and the only
+ * place requests to UniFi leave from. Bindings, pickers, and verifiers all send through
+ * `request()`, so the API key never leaves this object, and every request to a console is paced
+ * against that console's budget. Data, though not images, is briefly cached for the bindings that
+ * share it.
+ *
+ * Not decorated with `@validateRpc()`: only this Worker's own code reaches it, through
+ * `ctx.exports`.
+ */
+
+import { DurableObject } from "cloudflare:workers";
+import type { ConnectHandoff, GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  CONNECT_TIMEOUT_MS, constantTimeEqual, INITIATION_NONCE_LIFETIME_MS, isLiveNonce, type TimedNonce,
+} from "@gadgets/gatekeeper-kit/connect-nonce";
+import { isConnectAttempted, markConnectAttempted, NONCE_KEY } from "@gadgets/gatekeeper-kit/connect-handshake";
+import {
+  commitStagedCredentials, discardStagedCredentials, stageCredentials,
+} from "@gadgets/gatekeeper-kit/credential-stage";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { wifiPutBody } from "./actions";
+import { UnifiApi } from "./api";
+import type { ConnectInput, ConnectPageMode } from "./connect-form";
+import {
+  cloudConsoleSummary, listSiteManagerConsoles, networkIdentity, probeDirectConsole, protectIdentity, sameConsole,
+  type ConsoleSummary, type ObserveTarget, type UnifiSend,
+} from "./consoles";
+import { UnifiError, type UnifiFailure } from "./errors";
+import {
+  CLOUD_CONSOLE_BUDGET, DIRECT_CONSOLE_BUDGET, MAX_QUEUE_WAIT_MS, ResponseCache, SITE_MANAGER_BUDGET,
+  TokenBucket, type Budget,
+} from "./egress";
+import { logger, VENDOR_ID, type UnifiEnv } from "./env";
+import { sendUnifiRequest, type UnifiApp, type UnifiCredentials, type UnifiRequest, type UnifiResponse } from "./transport";
+import type { UnifiWifiNetworkChanges } from "./network-types";
+import { probeConfirms, probeFor, type UnifiRequirement } from "./subresources";
+import { isUsableMac } from "./parse";
+
+/** Who a connection belongs to, recorded when it connects. */
+export type UnifiIdentity =
+  | {
+    mode: "cloud";
+    email: string | null;
+    fullName: string | null;
+    /** Host IDs of the consoles the key reached when it connected. */
+    consoleIds: string[];
+  }
+  | {
+    mode: "direct";
+    /** The ID resource URLs use for this console, generated when it connected. */
+    consoleId: string;
+    consoleName: string;
+    /** The console's MAC addresses, which identify it across reconnects and connections. */
+    macs: string[];
+    /** The MACs each application identified the console by (`DirectConsoleFacts.appMacs`). */
+    appMacs: { network: string[]; protect: string[] };
+    /** Each site's gateways (`DirectConsoleFacts.siteGateways`). */
+    siteGateways: Record<string, string[]>;
+    apps: { network: boolean; protect: boolean };
+  };
+
+/** A live connection: credentials plus the identity they were proven to have. */
+type StoredConnection = { credentials: UnifiCredentials; identity: UnifiIdentity };
+
+/** The connect link's nonce, claimed while its submission is being checked. */
+type FormNonce = TimedNonce & { stage: "initiation"; reconnect?: true; claimed?: true };
+
+/** The outcome of a form submission. */
+export type ConnectOutcome =
+  | { kind: "invalid" }
+  | { kind: "retry"; mode: "cloud" | "direct"; message: string }
+  | { kind: "done"; handoff: ConnectHandoff };
+
+/** How an account describes itself to the Workshop. */
+export type AccountSummary = {
+  mode: "cloud" | "direct";
+  displayName: string;
+  /**
+   * What tells this account apart from every other, which the Workshop treats two accounts sharing
+   * as one: the account's email, or the console's URL. Left out when UniFi didn't report an email.
+   */
+  uniqueName?: string;
+};
+
+const CONNECTION_KEY = "connection";
+const APPS = ["network", "protect"] as const;
+const CALLBACK_KEY = "callback";
+const CONSOLES_TTL_MS = 60_000;
+const GET_TTL_MS = 5_000;
+/** What the cached answers may add up to, in characters: well inside a Worker isolate's memory. */
+const CACHE_BYTES = 8 * 1024 * 1024;
+
+/** One UniFi connection. */
+export class UnifiAccount extends DurableObject<UnifiEnv> {
+  readonly #buckets = new Map<string, TokenBucket>();
+  readonly #cache = new ResponseCache<UnifiResponse>(Date.now, 500, {
+    maxBytes: CACHE_BYTES, sizeOf: response => (response.ok && "json" in response ? response.size : 0),
+  });
+
+  // -------------------------------------------------------------------------
+  // Connect and reconnect
+
+  /** Starts a connect flow: remembers the Workshop's callback and the link's nonce. */
+  async setCallback(callback: Fetcher<GatekeeperConnectCallback>, nonce: string): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    if (!isConnectAttempted(kv)) await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
+    kv.put(CALLBACK_KEY, callback);
+    kv.put<FormNonce>(NONCE_KEY, { value: nonce, expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS, stage: "initiation" });
+  }
+
+  /** Starts a reconnect flow, whose result is staged until the Workshop commits it. */
+  async prepareReconnect(nonce: string): Promise<void> {
+    this.ctx.storage.kv.put<FormNonce>(NONCE_KEY, {
+      value: nonce, expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS, stage: "initiation", reconnect: true,
+    });
+  }
+
+  /** Which form a connect link should show, without consuming its nonce. */
+  async connectPage(nonce: string): Promise<ConnectPageMode | null> {
+    const stored = this.#liveNonce(nonce);
+    if (!stored) return null;
+    if (!stored.reconnect) return { kind: "connect" };
+    const connection = this.#connection();
+    if (!connection) return null;
+    return connection.credentials.mode === "cloud"
+      ? { kind: "reconnect", mode: "cloud" }
+      : { kind: "reconnect", mode: "direct", baseUrl: connection.credentials.baseUrl };
+  }
+
+  /**
+   * Checks a submitted form's credentials with UniFi, then connects, or stages a reconnect.
+   * @param nonce The link's nonce.
+   * @param input What the user submitted, already parsed.
+   * @returns What to show next.
+   */
+  async submitConnectForm(nonce: string, input: ConnectInput): Promise<ConnectOutcome> {
+    const kv = this.ctx.storage.kv;
+    const stored = this.#liveNonce(nonce);
+    if (!stored || stored.claimed) return { kind: "invalid" };
+    const existing = this.#connection();
+    if (stored.reconnect && (!existing || existing.credentials.mode !== input.mode)) return { kind: "invalid" };
+
+    // Claimed before the first await: the input gate doesn't cover the outbound check, so a second
+    // submission could otherwise pass the nonce check too.
+    kv.put<FormNonce>(NONCE_KEY, { ...stored, claimed: true });
+
+    let connection: StoredConnection;
+    try {
+      connection = await this.#check(input, stored.reconnect ? existing : undefined);
+    } catch (error) {
+      this.#releaseClaim(nonce);
+      return { kind: "retry", mode: input.mode, message: connectErrorMessage(error, input) };
+    }
+
+    // The claim may have been replaced (a newer link) or wiped (revoke) during the check.
+    const current = kv.get<FormNonce>(NONCE_KEY);
+    if (!current?.claimed || !constantTimeEqual(current.value, nonce)) return { kind: "invalid" };
+    kv.delete(NONCE_KEY);
+    const callback = kv.get<Fetcher<GatekeeperConnectCallback>>(CALLBACK_KEY);
+    if (!callback) return { kind: "invalid" };
+
+    if (!stored.reconnect) {
+      if (isConnectAttempted(kv)) return { kind: "invalid" };
+      // Live before complete(): the Workshop describes the account during it.
+      kv.put(CONNECTION_KEY, connection);
+      clearCredentialExpiryLatch(kv);
+      markConnectAttempted(kv);
+      let handoff: ConnectHandoff;
+      try {
+        handoff = await callback.complete(this.ctx.exports.UnifiUser({ props: { accountId: this.ctx.id.toString() } }));
+      } catch (error) {
+        // Nothing in the Workshop records this account yet, so nothing would ever remove the key:
+        // drop it, keep the attempt marked, and let the alarm collect the rest.
+        kv.delete(CONNECTION_KEY);
+        throw error;
+      }
+      await this.ctx.storage.deleteAlarm();
+      logger.info("connected", { event: "connect.completed", mode: connection.credentials.mode });
+      return { kind: "done", handoff };
+    }
+    const stageId = stageCredentials<StoredConnection>(kv, connection, Date.now());
+    return { kind: "done", handoff: await callback.reconnectComplete(stageId) };
+  }
+
+  /** Makes a staged reconnect live; see `GatekeeperUser.commitReconnect`. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const staged = commitStagedCredentials<StoredConnection>(kv, Date.now(), stageId);
+    if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    kv.put(CONNECTION_KEY, staged);
+    clearCredentialExpiryLatch(kv);
+    this.#cache.clear();
+    this.#buckets.clear();
+  }
+
+  /** Forgets the connection. A UniFi API key can only be deleted where it was created. */
+  async revoke(): Promise<void> {
+    discardStagedCredentials(this.ctx.storage.kv);
+    this.#cache.clear();
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+  }
+
+  /** Deletes an account whose connect flow was never completed. */
+  override async alarm(): Promise<void> {
+    if (!this.#connection()) await this.ctx.storage.deleteAll();
+  }
+
+  // -------------------------------------------------------------------------
+  // What the connection is
+
+  /** The account's identity, as recorded when it connected. */
+  async identity(): Promise<UnifiIdentity | null> {
+    return this.#connection()?.identity ?? null;
+  }
+
+  /** How the account describes itself. Served from storage, so it works during `complete()`. */
+  async summary(): Promise<AccountSummary | null> {
+    const connection = this.#connection();
+    if (!connection) return null;
+    const { identity, credentials } = connection;
+    if (identity.mode === "cloud") {
+      return {
+        mode: "cloud",
+        displayName: identity.fullName ?? identity.email ?? "UniFi account",
+        ...(identity.email !== null && { uniqueName: identity.email }),
+      };
+    }
+    return {
+      mode: "direct", displayName: identity.consoleName,
+      ...(credentials.mode === "direct" && { uniqueName: credentials.baseUrl }),
+    };
+  }
+
+  /**
+   * The consoles this connection reaches. A cloud connection's list comes from Site Manager and is
+   * cached for a minute; a direct connection's is its one console.
+   */
+  async listConsoles(): Promise<ConsoleSummary[]> {
+    const connection = this.#connection();
+    if (!connection) throw new UnifiError({ kind: "auth", message: "This UniFi connection has been removed." });
+    const { identity } = connection;
+    if (identity.mode === "direct") {
+      return [{
+        id: identity.consoleId, name: identity.consoleName, apps: identity.apps, appsKnown: true,
+        permissions: identity.apps, reachable: true, macs: identity.macs,
+      }];
+    }
+    const send: UnifiSend = request => this.#send(request, CONSOLES_TTL_MS);
+    return (await listSiteManagerConsoles(send)).map(cloudConsoleSummary);
+  }
+
+  /**
+   * What a collaborator must be able to see to observe a binding to `app` on one of this
+   * connection's consoles, or null if the connection doesn't reach it.
+   */
+  async observeTarget(consoleId: string, app: UnifiApp): Promise<ObserveTarget | null> {
+    const connection = this.#connection();
+    const bound = connection && (await this.listConsoles()).find(c => c.id === consoleId);
+    if (!connection || !bound) return null;
+    const { credentials, identity } = connection;
+    return {
+      app, consoleId, macs: bound.macs,
+      ...(credentials.mode === "direct" && { baseUrl: credentials.baseUrl }),
+      ...(identity.mode === "direct" && {
+        appMacs: identity.appMacs[app], ...(app === "network" && { siteGateways: identity.siteGateways }),
+      }),
+    };
+  }
+
+  /**
+   * Whether this connection's account can read each requirement within an application on a
+   * console, for observer verification.
+   *
+   * It calls the endpoint each requirement's read calls (`probeFor`) with its own key, so whatever
+   * its role is refused there -- another site, a camera it isn't allowed, a WiFi password -- is
+   * refused here. A direct connection knows only what answered at the URL its owner chose, so it
+   * vouches for a binding read through that same URL alone. A cloud connection finds the console
+   * in Site Manager, which can't be forged, by host ID or MAC address, and calls it through the
+   * Cloud Connector, which reaches only consoles the account owns. On a console it only
+   * administers, nothing can show what its role may read, so it passes nothing.
+   * @returns One answer per requirement, false for no access; throws for a failure that proves
+   * nothing either way.
+   */
+  async canObserve(target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
+    const connection = this.#connection();
+    if (!connection) return requirements.map(() => false);
+    const answers = await this.#observe(connection, target, requirements);
+    // Every answer came from one key. One a reconnect replaced meanwhile answers for no one now.
+    if (!sameCredentials(connection.credentials, this.#connection()?.credentials)) {
+      throw new Error("This UniFi connection was reconnected during the check. Try again.");
+    }
+    return answers;
+  }
+
+  /**
+   * Whether a connection's own site list includes a site, read as far as it takes: the list shows a
+   * key only the sites its role covers, and a console can have more than one page of them.
+   */
+  async #listsSite(consoleId: string, siteId: string, connection: StoredConnection): Promise<boolean> {
+    try {
+      await new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId).getSite(siteId);
+      return true;
+    } catch (error) {
+      if (error instanceof UnifiError && ["notFound", "forbidden", "redirect"].includes(error.kind)) return false;
+      throw error;
+    }
+  }
+
+  /**
+   * Whether a connection can read a device as a read does: its details, and its row in the device
+   * list, which alone says what it does.
+   */
+  async #opensDevice(consoleId: string, siteId: string, deviceId: string, connection: StoredConnection): Promise<boolean> {
+    try {
+      await new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId).getDevice(siteId, deviceId);
+      return true;
+    } catch (error) {
+      if (error instanceof UnifiError && ["notFound", "forbidden", "redirect"].includes(error.kind)) return false;
+      throw error;
+    }
+  }
+
+  /** `canObserve`'s answers, every request sent with `connection`'s credentials. */
+  async #observe(connection: StoredConnection, target: ObserveTarget, requirements: UnifiRequirement[]): Promise<boolean[]> {
+    const none = requirements.map(() => false);
+    const { credentials, identity } = connection;
+    /** The console to call with this connection's key, or null when it can't be called. */
+    let consoleId: string | null;
+    if (identity.mode === "direct") {
+      if (credentials.mode !== "direct" || target.baseUrl !== credentials.baseUrl) return none;
+      // The same URL can serve another console after a replacement: where both connections know
+      // their console's hardware, it must be the same.
+      // By the application's own identity: a gateway in common doesn't make a different NVR the same one.
+      const theirs = target.appMacs ?? [];
+      const ours = identity.appMacs[target.app];
+      if (theirs.some(isUsableMac) && ours.some(isUsableMac) && !sameConsole(theirs, ours)) return none;
+      consoleId = identity.consoleId;
+    } else {
+      let consoles: ConsoleSummary[];
+      try {
+        consoles = (await listSiteManagerConsoles(request => this.#send(request, CONSOLES_TTL_MS, connection)))
+          .map(cloudConsoleSummary);
+      } catch (error) {
+        // A refused key is expired or revoked, which says nothing about access: that propagates.
+        if (error instanceof UnifiError && error.kind === "forbidden") return none;
+        throw error;
+      }
+      // A cloud owner's console by its host ID alone. A direct owner's by the hardware the bound
+      // application identified, not every MAC the console has: a gateway in common doesn't make a
+      // different NVR the same, and with none pinned there's nothing to match.
+      const pinned = target.appMacs ?? [];
+      const match = target.baseUrl === undefined
+        ? consoles.find(c => c.id === target.consoleId)
+        : pinned.some(isUsableMac) ? consoles.find(c => sameConsole(c.macs, pinned)) : undefined;
+      if (!match?.permissions[target.app]) return none;
+      consoleId = match.reachable ? match.id : null;
+    }
+    if (consoleId === null) return none;
+    // A site's data came from whatever served that site, which the owner's direct connection pinned
+    // by the site's gateway: the console this connection calls must have the same one there, or its
+    // probes could reach another site of that ID in its place. A direct collaborator pinned its own;
+    // a cloud one reads it through the Cloud Connector, and is refused where it can't.
+    const sites = new Map<string, boolean>();
+    for (const requirement of requirements) {
+      if (!("siteId" in requirement)) continue;
+      const site = requirement.siteId.toLowerCase();
+      const theirs = target.siteGateways?.[site] ?? [];
+      if (sites.has(site) || target.siteGateways === undefined) continue;
+      // A direct owner's site it never pinned was never confirmed, so nothing vouches for what it read.
+      if (!theirs.some(isUsableMac)) {
+        sites.set(site, false);
+        continue;
+      }
+      const ours = identity.mode === "direct"
+        ? identity.siteGateways[site] ?? []
+        : await this.#gatewaysAt(consoleId, requirement.siteId, connection);
+      sites.set(site, sameConsole(theirs, ours));
+    }
+    const sameSite = (requirement: UnifiRequirement): boolean =>
+      !("siteId" in requirement) || sites.get(requirement.siteId.toLowerCase()) !== false;
+    const codes = await this.#voucherCodes(consoleId, requirements.filter(sameSite), connection);
+    const answers: boolean[] = [];
+    // A few at a time: each is a request on this connection's own budget for the console.
+    for (let start = 0; start < requirements.length; start += 6) {
+      answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
+        if (!sameSite(requirement)) return false;
+        if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
+        if (requirement.kind === "device") return await this.#opensDevice(consoleId, requirement.siteId, requirement.deviceId, connection);
+        if (requirement.kind === "voucherCode") return codes.has(`${requirement.siteId}/${requirement.voucherId}`.toLowerCase());
+        const probe = await this.#send(
+          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
+        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : probe.bytes, target.app);
+        // A refused key (auth) is expired or revoked, which says nothing about access: it throws.
+        if (["forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
+        throw new Error(probe.failure.message);
+      })));
+    }
+    return answers;
+  }
+
+  /**
+   * The gateways a connection's key finds on a site, read as `networkIdentity` reads them: none
+   * where it may not read the site's devices. A failure that proves nothing either way throws.
+   */
+  async #gatewaysAt(consoleId: string, siteId: string, connection: StoredConnection): Promise<string[]> {
+    const send: UnifiSend = async request => {
+      const response = await this.#send(
+        request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId } } : request, GET_TTL_MS, connection);
+      if (!response.ok && !["forbidden", "notFound", "redirect"].includes(response.failure.kind)) throw new UnifiError(response.failure);
+      return response;
+    };
+    return (await networkIdentity(send, siteId)).bySite[siteId.toLowerCase()] ?? [];
+  }
+
+  /**
+   * The vouchers, of those `requirements` name codes of, that this connection finds with their
+   * codes: one lookup by ID per site, so a code passes only for a key that can read that voucher's.
+   * @returns `<siteId>/<voucherId>`, lowercase.
+   */
+  async #voucherCodes(consoleId: string, requirements: readonly UnifiRequirement[], connection: StoredConnection): Promise<Set<string>> {
+    const bySite = new Map<string, string[]>();
+    for (const requirement of requirements) {
+      if (requirement.kind === "voucherCode") bySite.set(requirement.siteId, [...bySite.get(requirement.siteId) ?? [], requirement.voucherId]);
+    }
+    const readable = new Set<string>();
+    const api = new UnifiApi(request => this.#send(request, GET_TTL_MS, connection), consoleId);
+    for (const [siteId, ids] of bySite) {
+      let found;
+      try {
+        found = await api.findVouchers(siteId, ids);
+      } catch (error) {
+        if (error instanceof UnifiError && ["forbidden", "notFound", "redirect"].includes(error.kind)) continue;
+        throw error;
+      }
+      for (const voucher of found) if (voucher.code) readable.add(`${siteId}/${voucher.id}`.toLowerCase());
+    }
+    return readable;
+  }
+
+  /** Where a console's web UI lives: under unifi.ui.com for a cloud connection, else its own URL. */
+  async consoleWebUrl(consoleId: string): Promise<string> {
+    const connection = this.#connection();
+    if (connection?.credentials.mode === "direct") return connection.credentials.baseUrl;
+    return `https://unifi.ui.com/consoles/${consoleId}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Egress
+
+  /**
+   * Sends a request to UniFi with this connection's credentials. Failures come back as values,
+   * since an error's class doesn't survive RPC.
+   */
+  async request(request: UnifiRequest): Promise<UnifiResponse> {
+    return this.#send(request, GET_TTL_MS);
+  }
+
+  /**
+   * Changes a WiFi network's settings. UniFi takes only the whole settings object, so this reads it
+   * fresh, merges the change and writes it back, one change per network at a time. Every binding
+   * to the console applies WiFi changes here, so a change approved through one can't write back
+   * settings, such as a password, that another has just replaced.
+   * @returns The failure, or null once the change is written.
+   */
+  async updateWifi(
+    consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
+  ): Promise<UnifiFailure | null> {
+    // Queued in the network's lane, which every connection in the deployment shares (wifi-lane.ts).
+    // The IDs are UUIDs, whose hex digits may be written in either case: lowercase names one lane.
+    const lanes = this.ctx.exports.UnifiWifiLane;
+    const lane = lanes.get(lanes.idFromName(JSON.stringify([siteId.toLowerCase(), wifiNetworkId.toLowerCase()])));
+    return await lane.write(this.ctx.id.toString(), consoleId, siteId, wifiNetworkId, changes);
+  }
+
+  /**
+   * `updateWifi`'s read, merge and write, run when the network's lane reaches it. Both go out with
+   * the credentials stored when it starts: settings one key read must not be written with another,
+   * so a reconnect in between refuses the write, and a retry reads afresh with the new key.
+   */
+  async writeWifi(
+    consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
+  ): Promise<UnifiFailure | null> {
+    const connection = this.#connection();
+    const api = new UnifiApi(request => this.#send(request, null, connection), consoleId);
+    try {
+      const raw = await api.getWifiRaw(siteId, wifiNetworkId);
+      await api.putWifi(siteId, wifiNetworkId, wifiPutBody(raw, changes));
+      return null;
+    } catch (error) {
+      if (error instanceof UnifiError) return error.toFailure();
+      throw error;
+    }
+  }
+
+  /**
+   * Restarts a device under the rule for devices other than the gateway, which is auto-approvable
+   * because their restart leaves the network up. UniFi is asked what the device does once the
+   * restart's turn comes, with the same key, and one it then calls the gateway, or doesn't
+   * classify, isn't restarted: its role can change while the restart waits for its decision or
+   * its turn.
+   * @returns The failure, or null once the restart is sent.
+   */
+  async restartDevice(consoleId: string, siteId: string, deviceId: string): Promise<UnifiFailure | null> {
+    const connection = this.#connection();
+    const api = new UnifiApi(request => this.#send(request, null, connection), consoleId);
+    const notGateway = async (): Promise<UnifiResponse | null> => {
+      let gateway: boolean | null;
+      try {
+        gateway = await api.isGateway(siteId, deviceId);
+      } catch (error) {
+        if (!(error instanceof UnifiError)) throw error;
+        // A device that's gone can't be restarted; any other failure proves nothing either way.
+        return failure(error.kind === "notFound" ? error.toFailure() : {
+          kind: "unconfirmed", message: "Couldn't check what this device does, so it wasn't restarted. Try again in a moment.",
+        });
+      }
+      if (gateway === false) return null;
+      return failure({
+        kind: "badRequest",
+        message: gateway
+          ? "UniFi now says this device is the site's gateway, whose restart takes the network down, so it wasn't " +
+            "restarted. Submit the restart again to ask for it as a gateway restart."
+          : "UniFi no longer says what this device does, so it can't be told apart from the gateway, and it wasn't " +
+            "restarted. Restart it in UniFi instead.",
+      });
+    };
+    const restart = new UnifiApi(request => this.#send(request, null, connection, { precondition: notGateway }), consoleId);
+    try {
+      await restart.restartDevice(siteId, deviceId);
+      return null;
+    } catch (error) {
+      if (error instanceof UnifiError) return error.toFailure();
+      throw error;
+    }
+  }
+
+  /**
+   * Sends a request; a GET may be answered from the cache unless `ttlMs` is null.
+   * @param connection The credentials to send with, if not the ones stored now.
+   * @param options.skipIdentity Whether to send without `#confirmServing`, for its own probes.
+   * @param options.precondition What else must hold once the request's turn comes, checked after
+   * `#confirmServing`: the refusal, or null to send it.
+   */
+  async #send(
+    request: UnifiRequest, ttlMs: number | null, connection = this.#connection(),
+    options: { skipIdentity?: boolean; precondition?: () => Promise<UnifiResponse | null> } = {},
+  ): Promise<UnifiResponse> {
+    if (!connection) return failure({ kind: "auth", message: "This UniFi connection has been removed." });
+    // A send pinned to credentials a reconnect has since replaced must not reach the cache, which
+    // the new credentials share: an answer it loaded there would be served as theirs.
+    if (!sameCredentials(connection.credentials, this.#connection()?.credentials)) {
+      return failure({ kind: "auth", message: "This UniFi connection was reconnected. Try again." });
+    }
+    const { credentials, identity } = connection;
+    if (request.target.kind === "app" && identity.mode === "direct" && request.target.consoleId !== identity.consoleId) {
+      return failure({ kind: "notFound", message: "This UniFi connection doesn't reach that console." });
+    }
+    const group = request.target.kind === "siteManager" ? "siteManager" : `console:${request.target.consoleId}`;
+    const { target } = request;
+    // Every request that reaches the console, but not an answer already cached, which was checked
+    // when it was fetched.
+    const serving = !options.skipIdentity && target.kind === "app" && identity.mode === "direct"
+      ? () => this.#confirmServing(target.app, siteOf(request.path), connection)
+      : undefined;
+    const { precondition } = options;
+    const confirm = serving || precondition
+      ? async () => (await serving?.()) ?? (await precondition?.()) ?? null
+      : undefined;
+    const load = () => this.#dispatch(credentials, request, group, confirm);
+    if (request.method !== "GET") {
+      this.#cache.invalidate(group);
+      try {
+        return await load();
+      } finally {
+        // Answers cached while the write was in flight may predate it.
+        this.#cache.invalidate(group);
+      }
+    }
+    if (ttlMs === null) return await load();
+    const key = JSON.stringify([group, request.target, request.path, request.query ?? {}, request.accept ?? "json"]);
+    // Images aren't kept: they're large, and a snapshot is asked for to see the camera now.
+    // Concurrent requests for one still share a single load.
+    return this.#cache.get(group, key, ttlMs, load, response => response.ok && "json" in response);
+  }
+
+  /**
+   * Before a request goes to a console reached directly, whether the application answering there
+   * still runs on the hardware it identified when the connection was made: a tunnel or proxy
+   * repointed at a replacement that takes the same key would otherwise serve this connection's
+   * bindings, and its collaborator checks, as if it were this console. Network is checked by one
+   * site's gateway: the request's site where it had one, since another site's says nothing about
+   * it, and otherwise any site that did. A replacement found drops every cached answer from it.
+   * @returns The refusal, or null when it matches.
+   */
+  async #confirmServing(app: UnifiApp, siteId: string | null, connection: StoredConnection): Promise<UnifiResponse | null> {
+    const { identity } = connection;
+    if (identity.mode !== "direct") return null;
+    const send: UnifiSend = request => this.#send(
+      request.target.kind === "app" ? { ...request, target: { ...request.target, consoleId: identity.consoleId } } : request,
+      null, connection, { skipIdentity: true });
+    const unconfirmed = failure({
+      kind: "unconfirmed",
+      message: "Couldn't confirm the console at this address is the one this connection was made to, so nothing was " +
+        "sent. Try again in a moment.",
+    });
+    let pinned: string[];
+    let serving: string[];
+    try {
+      if (app === "protect") {
+        pinned = identity.appMacs.protect;
+        serving = (await protectIdentity(send)).macs;
+      } else {
+        const hasGateway = (site: string) => (identity.siteGateways[site] ?? []).some(isUsableMac);
+        // A request to a site is checked by that site's own gateway, which another site's says
+        // nothing about; only one to the whole application may be checked by any site's.
+        if (siteId !== null && !hasGateway(siteId)) {
+          return failure({
+            kind: "unconfirmed",
+            message: "This connection didn't learn which gateway serves that site when it was made, so it can't confirm " +
+              "the console still serves it, and nothing was sent. Reconnect the console, then try again.",
+          });
+        }
+        const site = siteId ?? Object.keys(identity.siteGateways).find(hasGateway);
+        if (site === undefined) return unconfirmed;
+        pinned = identity.siteGateways[site]!;
+        serving = (await networkIdentity(send, site)).bySite[site] ?? [];
+      }
+    } catch (error) {
+      // An answer that isn't what the endpoint returns proves nothing, and nothing was sent.
+      if (error instanceof UnifiError) return unconfirmed;
+      throw error;
+    }
+    if (!pinned.some(isUsableMac) || serving.length === 0) return unconfirmed;
+    if (!sameConsole(pinned, serving)) {
+      this.#cache.invalidate(`console:${identity.consoleId}`);
+      return failure({
+        kind: "forbidden",
+        message: "The console at this address isn't the one this connection was made to, so nothing was sent. " +
+          "Reconnect the console.",
+      });
+    }
+    return null;
+  }
+
+  /**
+   * Sends a request once the console's budget allows it.
+   * @param confirm Checks what serves the console (`#confirmServing`), and anything else the
+   * request needs, after the wait rather than before it, since either can change while a request
+   * waits its turn.
+   */
+  async #dispatch(
+    credentials: UnifiCredentials, request: UnifiRequest, group: string, confirm?: () => Promise<UnifiResponse | null>,
+  ): Promise<UnifiResponse> {
+    const permits = this.#permits(group, credentials);
+    const wait = await permits.take();
+    if (wait > 0) {
+      return failure({
+        kind: "rateLimited", retryAfterMs: wait,
+        message: `The UniFi console is getting too many requests; retry in ${Math.ceil(wait / 1000)} seconds.`,
+      });
+    }
+    const unconfirmed = await confirm?.();
+    if (unconfirmed) return unconfirmed;
+    // The connection may have been removed or reconnected while this waited its turn, and UniFi
+    // doesn't revoke a key: it must not go out under credentials that are no longer this connection's.
+    if (!sameCredentials(credentials, this.#connection()?.credentials)) {
+      return failure({ kind: "auth", message: "This UniFi connection was removed or reconnected. Try again." });
+    }
+    const response = await sendUnifiRequest(credentials, request);
+    if (response.ok) return response;
+    const refusal = response.failure;
+    if (refusal.kind === "rateLimited") await permits.block(Date.now() + (refusal.retryAfterMs ?? 10_000));
+    // A refused change proves nothing about the key, which may only be allowed to read. Only a
+    // refused read shows it stopped working.
+    if (request.method !== "GET" && (refusal.kind === "auth" || refusal.kind === "forbidden")) {
+      return failure({ ...refusal, kind: "forbidden", message: changeRefusedMessage(credentials.mode) });
+    }
+    // A refusal of a key a reconnect has since replaced says nothing about the key in use now.
+    if (refusal.kind === "auth" && sameCredentials(credentials, this.#connection()?.credentials)) {
+      logger.warn("UniFi rejected the API key", { event: "credentials.rejected", mode: credentials.mode });
+      await notifyCredentialsExpiredOnce(
+        this.ctx.storage.kv, this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(CALLBACK_KEY), VENDOR_ID);
+    }
+    return response;
+  }
+
+  /**
+   * Where a request's permit comes from: for a console reached through the Cloud Connector, the
+   * budget every connection to it shares (console-budget.ts); otherwise this connection's own.
+   */
+  #permits(group: string, credentials: UnifiCredentials): { take(): Promise<number>; block(until: number): Promise<void> } {
+    if (credentials.mode === "cloud" && group.startsWith("console:")) {
+      const budgets = this.ctx.exports.UnifiConsoleBudget;
+      const budget = budgets.get(budgets.idFromName(group.slice("console:".length)));
+      return { take: () => budget.take(MAX_QUEUE_WAIT_MS), block: until => budget.block(until) };
+    }
+    const bucket = this.#bucket(group, credentials);
+    return {
+      take: () => bucket.take(MAX_QUEUE_WAIT_MS, ms => new Promise(resolve => setTimeout(resolve, ms))),
+      block: async until => bucket.block(until),
+    };
+  }
+
+  #bucket(group: string, credentials: UnifiCredentials): TokenBucket {
+    let bucket = this.#buckets.get(group);
+    if (!bucket) {
+      const budget: Budget = group === "siteManager" ? SITE_MANAGER_BUDGET
+        : credentials.mode === "cloud" ? CLOUD_CONSOLE_BUDGET : DIRECT_CONSOLE_BUDGET;
+      this.#buckets.set(group, bucket = new TokenBucket(budget));
+    }
+    return bucket;
+  }
+
+  // -------------------------------------------------------------------------
+  // Internals
+
+  #connection(): StoredConnection | undefined {
+    return this.ctx.storage.kv.get<StoredConnection>(CONNECTION_KEY);
+  }
+
+  #liveNonce(nonce: string): FormNonce | null {
+    const stored = this.ctx.storage.kv.get<FormNonce>(NONCE_KEY);
+    return stored?.stage === "initiation" && isLiveNonce(stored, nonce, Date.now()) ? stored : null;
+  }
+
+  // Only the claim this submission took is released: a newer link, or a revoke, wins.
+  #releaseClaim(nonce: string): void {
+    const kv = this.ctx.storage.kv;
+    const current = kv.get<FormNonce>(NONCE_KEY);
+    if (current?.claimed && constantTimeEqual(current.value, nonce)) {
+      const { claimed: _claimed, ...released } = current;
+      kv.put<FormNonce>(NONCE_KEY, released);
+    }
+  }
+
+  /**
+   * Proves submitted credentials work and learns whose they are. A reconnect must reach the same
+   * account (cloud) or the same console (direct) as before; a direct reconnect keeps its URL.
+   */
+  async #check(input: ConnectInput, existing: StoredConnection | undefined): Promise<StoredConnection> {
+    if (input.mode === "cloud") {
+      const credentials: UnifiCredentials = { mode: "cloud", apiKey: input.apiKey };
+      const consoles = await listSiteManagerConsoles(request => sendUnifiRequest(credentials, request));
+      if (consoles.length === 0) throw new ConnectRefusal("This UniFi account has no consoles to connect.");
+      const email = consoles.find(c => c.email)?.email ?? null;
+      const identity: UnifiIdentity = {
+        mode: "cloud", email, fullName: consoles.find(c => c.fullName)?.fullName ?? null,
+        consoleIds: consoles.map(c => c.id),
+      };
+      if (existing?.identity.mode === "cloud") {
+        // Only the account's email identifies it: Site Manager also lists consoles an account
+        // merely administers, so a console in common could be anyone's.
+        const before = existing.identity;
+        if (before.email === null || email === null) {
+          throw new ConnectRefusal("UniFi didn't say which account that key belongs to, so it can't replace this " +
+            "connection's key. Remove the connection and connect again.");
+        }
+        if (before.email !== email) {
+          throw new ConnectRefusal("That key belongs to a different UniFi account. Reconnect with a key from the same account.");
+        }
+      }
+      return { credentials, identity };
+    }
+
+    const baseUrl = existing?.credentials.mode === "direct" ? existing.credentials.baseUrl : input.baseUrl;
+    if (!baseUrl) throw new ConnectRefusal("Enter the console's address.");
+    const credentials: UnifiCredentials = {
+      mode: "direct", baseUrl, apiKey: input.apiKey, ...(input.access && { access: input.access }),
+    };
+    const facts = await probeDirectConsole(request => sendUnifiRequest(credentials, request));
+    if (existing?.identity.mode === "direct") {
+      const before = existing.identity;
+      // Bindings keep the console's ID across a reconnect, so it must prove it's the same console,
+      // or they'd follow whatever now answers at the URL: every application that identified itself
+      // before, by the same hardware as before -- the NVR for Protect, the gateway for Network,
+      // since one in common doesn't make the other the same. One that doesn't answer now proves
+      // nothing, and its pin must not be lost. One that never said who it was when it connected
+      // has nothing to compare against.
+      const pinned = APPS.filter(app => before.appMacs[app].length > 0);
+      if (pinned.length === 0) {
+        throw new ConnectRefusal("This connection never confirmed which console it reaches, so it can't be " +
+          "reconnected in place. Remove it and connect the console again.");
+      }
+      for (const app of pinned) {
+        if (facts.appMacs[app].length === 0) {
+          throw new ConnectRefusal("Couldn't confirm that the address still reaches the same console. Try again in a moment.");
+        }
+        if (!sameConsole(before.appMacs[app], facts.appMacs[app])) {
+          throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
+        }
+      }
+      // And each site by its own gateway, since requests to a site are checked by it: a gateway
+      // in common on another site doesn't make this one the same. A site not read now keeps its
+      // pin, so its requests stay refused unless its own gateway answers again.
+      for (const [site, macs] of Object.entries(before.siteGateways)) {
+        const now = facts.siteGateways[site];
+        if (now !== undefined && macs.some(isUsableMac) && !sameConsole(macs, now)) {
+          throw new ConnectRefusal("That address now reaches a different console. Reconnect to the original console.");
+        }
+      }
+      return {
+        credentials,
+        identity: {
+          ...before, consoleName: facts.name, apps: facts.apps, macs: facts.macs, appMacs: facts.appMacs,
+          siteGateways: { ...before.siteGateways, ...facts.siteGateways },
+        },
+      };
+    }
+    return {
+      credentials,
+      identity: {
+        mode: "direct", consoleId: `local-${randomHex(8)}`, consoleName: facts.name,
+        macs: facts.macs, appMacs: facts.appMacs, siteGateways: facts.siteGateways, apps: facts.apps,
+      },
+    };
+  }
+}
+
+/** A refusal whose message is written for the person connecting. */
+class ConnectRefusal extends Error {}
+
+/** The site a Network request is to, by lowercase ID, or null for one to the whole application. */
+function siteOf(path: string): string | null {
+  const site = /^\/v1\/sites\/([^/]+)\//.exec(path)?.[1];
+  return site === undefined ? null : decodeURIComponent(site).toLowerCase();
+}
+
+/** Whether `b` is the same key as `a`: what a request was sent with is still what's stored. */
+function sameCredentials(a: UnifiCredentials, b: UnifiCredentials | undefined): boolean {
+  return b !== undefined && JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** What to tell someone whose submission failed. Never quotes the key. */
+export function connectErrorMessage(error: unknown, input: ConnectInput): string {
+  if (error instanceof ConnectRefusal) return error.message;
+  if (error instanceof UnifiError) {
+    switch (error.kind) {
+      case "auth":
+        return input.mode === "cloud"
+          ? "UniFi didn't accept that API key. Copy the whole key from unifi.ui.com → Settings → API Keys."
+          : "The console didn't accept that API key. Create one on the console under Integrations.";
+      case "forbidden":
+        return "That API key can't use the console's applications. Create it as an administrator.";
+      case "notFound":
+        return input.mode === "direct"
+          ? "No UniFi console answered at that address. Check it, and that the console runs UniFi Network or Protect."
+          : "UniFi couldn't find this account's consoles.";
+      case "unreachable": case "timeout":
+        return input.mode === "direct"
+          ? "Couldn't reach the console at that address from this server. It must be reachable from here: on the same network for a self-hosted Workshop, or through a tunnel."
+          : "Couldn't reach UniFi. Try again in a moment.";
+      default:
+        return error.message;
+    }
+  }
+  logger.error("connect check failed unexpectedly", { event: "connect.check.failed", error });
+  return "Something went wrong checking those details. Try again.";
+}
+
+/** What to say when UniFi won't let a connection's key make a change it asked for. */
+function changeRefusedMessage(mode: UnifiCredentials["mode"]): string {
+  return mode === "cloud"
+    ? "UniFi didn't let this API key make the change. Site Manager API keys can be read-only: if reads " +
+      "still work, reconnect with a key that can make changes, or connect to the console directly."
+    : "The console didn't let this API key make the change.";
+}
+
+function failure(f: UnifiFailure): UnifiResponse {
+  return { ok: false, failure: f };
+}
+
+function randomHex(bytes: number): string {
+  return [...crypto.getRandomValues(new Uint8Array(bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+}

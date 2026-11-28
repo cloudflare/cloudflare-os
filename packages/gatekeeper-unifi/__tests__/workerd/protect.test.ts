@@ -1,0 +1,467 @@
+// The Protect bindings, driven the way the overseer drives them: every read is authorized before it
+// returns, every change is submitted for approval (and shown in later reads while it waits), and
+// approving it sends what Protect documents.
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
+import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
+import { FakeConsole, HOME, homeConsole, SNAPSHOT_BYTES } from "../fake-unifi.js";
+import { NetworkSiteSession } from "../../src/network-session.js";
+import { ProtectSession } from "../../src/protect-session.js";
+import { SessionContext, type SessionShared } from "../../src/session-context.js";
+import type { Step } from "../worker.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/**
+ * Lets `method` requests take effect at the console but loses their answers, as a connection
+ * dropped mid-request would.
+ * @returns Puts the console back.
+ */
+function loseAnswersTo(console: FakeConsole, method: string): () => void {
+  const handle = console.handle.bind(console);
+  console.handle = (app, m, path, query, body) => {
+    const answer = handle(app, m, path, query, body);
+    if (m !== method) return answer;
+    return new Response(JSON.stringify({ code: "DeviceTimeout", message: "Device connection timeout" }),
+      { status: 408, headers: { "Content-Type": "application/json" } });
+  };
+  return () => { console.handle = handle; };
+}
+
+function lastSubmitted(queue: { submitted: { actionId: number; description: ActionDescription }[] }) {
+  const entry = queue.submitted.at(-1);
+  if (!entry) throw new Error("nothing was submitted");
+  return entry;
+}
+
+describe("every read is authorized before it returns", () => {
+  const PROTECT = `console/${encodeURIComponent(HOME.hostId)}/app/protect`;
+  // What each read reports: every Protect device it disclosed, or else the application.
+  const reads: [string, Step, string[]][] = [
+    ["describe", { call: "describe" }, [`${PROTECT}/nvr/${HOME.nvrId}`, PROTECT]],
+    ["listCameras", { call: "listCameras" },
+      [`${PROTECT}/list/cameras`, `${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
+    ["listSensors", { call: "listSensors" }, [`${PROTECT}/list/sensors`, `${PROTECT}/sensor/${HOME.sensorId}`]],
+    ["listLights", { call: "listLights" }, [`${PROTECT}/list/lights`, `${PROTECT}/light/${HOME.lightId}`]],
+    ["camera.describe", { via: [["getCamera", HOME.doorbellId]], call: "describe" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
+    ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" },
+      [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/snapshot/${HOME.doorbellId}`]],
+    ["camera.getSnapshot(packageCamera)", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot", args: [{ packageCamera: true }] },
+      [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/packageSnapshot/${HOME.doorbellId}`]],
+    ["sensor.describe", { via: [["getSensor", HOME.sensorId]], call: "describe" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
+    ["light.describe", { via: [["getLight", HOME.lightId]], call: "describe" }, [`${PROTECT}/light/${HOME.lightId}`]],
+  ];
+
+  it.each(reads)("%s records exactly one observation, of what it disclosed", async (_name, step, subresources) => {
+    installFake();
+    const protect = binding(await connectCloud(), RESOURCES.protect);
+    const [result] = await hooks().run(protect.name, protect.props, [step]);
+    expect(result).toHaveProperty("ok");
+    const { observations, submitted } = await protect.queue();
+    expect(observations).toHaveLength(1);
+    expect(observations[0]!.title).toMatch(/UniFi/);
+    expect(observations[0]!.subresources).toEqual(subresources);
+    expect(submitted).toEqual([]);
+  });
+});
+
+describe("Protect on a console", () => {
+  it("describes itself, with the alarm's state", async () => {
+    installFake();
+    const protect = binding(await connectCloud(), RESOURCES.protect);
+    expect(await protect.call("describe")).toMatchObject({
+      consoleId: HOME.hostId, consoleName: "Dream Machine Pro", protectVersion: "7.3.70", alarm: { status: "disabled" },
+    });
+  });
+
+  it("lists cameras, sensors, and floodlights", async () => {
+    installFake();
+    const protect = binding(await connectCloud(), RESOURCES.protect);
+    expect((await protect.call<{ name: string }[]>("listCameras")).map(c => c.name)).toEqual(["Front Door", "Driveway"]);
+    expect(await protect.call("listSensors")).toMatchObject([{ name: "Garage Door", isOpen: false, temperatureC: 21.5, batteryPercent: 87 }]);
+    expect(await protect.call("listLights")).toMatchObject([{ name: "Backyard Floodlight", mode: "motion", pairedCameraId: HOME.ptzId }]);
+  });
+
+  it("shows a change made through one camera in the console-wide list while it waits", async () => {
+    installFake();
+    const protect = binding(await connectCloud(), RESOURCES.protect);
+    await protect.callVia([["getCamera", HOME.doorbellId]], "setName", "Porch");
+    expect((await protect.call<{ name: string }[]>("listCameras")).map(c => c.name)).toEqual(["Porch", "Driveway"]);
+  });
+
+  it("offers to auto-approve only the Protect kinds", async () => {
+    installFake();
+    const protect = binding(await connectCloud(), RESOURCES.protect);
+    const kinds = (await hooks().autoApprovable(protect.name, protect.props)) as { ok: { tag: string }[] };
+    expect(kinds.ok.map(k => k.tag).toSorted()).toEqual(["unifi.cameraPtz", "unifi.cameraSettings", "unifi.lightSettings"]);
+  });
+});
+
+describe("a camera", () => {
+  it("captures a snapshot as JPEG bytes, from the package camera when asked", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    const snapshot = await doorbell.call<{ mimeType: string; content: ArrayBuffer; capturedAt: Date }>(
+      "getSnapshot", { highQuality: true, packageCamera: true });
+    expect(snapshot.mimeType).toBe("image/jpeg");
+    expect(new Uint8Array(snapshot.content)).toEqual(SNAPSHOT_BYTES);
+    expect(snapshot.capturedAt).toBeInstanceOf(Date);
+    expect(console.calls.at(-1)).toMatchObject({ path: `/v1/cameras/${HOME.doorbellId}/snapshot`, query: { highQuality: "true", channel: "package" } });
+    expect((await doorbell.queue()).observations).toEqual([{
+      title: "Capture a UniFi camera snapshot", description: "Captured a still image from the package camera of UniFi camera Front Door.",
+      subresources: [
+        `console/${encodeURIComponent(HOME.hostId)}/app/protect/camera/${HOME.doorbellId}`,
+        `console/${encodeURIComponent(HOME.hostId)}/app/protect/packageSnapshot/${HOME.doorbellId}`,
+      ],
+    }]);
+  });
+
+  it("captures a new image every time, never a recent one again", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("getSnapshot");
+    await doorbell.call("getSnapshot");
+    expect(console.calls.filter(call => call.path.endsWith("/snapshot"))).toHaveLength(2);
+  });
+
+  it("refuses the package camera of a camera without one, and records no read", async () => {
+    installFake();
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    expect(await driveway.failure("getSnapshot", { packageCamera: true })).toBe("Driveway has no package camera.");
+    expect((await driveway.queue()).observations).toEqual([]);
+  });
+
+  it("renames itself once approved, showing the new name before then", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setName", "  Porch  ");
+    const { actionId, description } = lastSubmitted(await doorbell.queue());
+    expect(description).toMatchObject({
+      title: "Rename camera “Front Door”", autoApprovable: true, actionKind: { tag: "unifi.cameraSettings" },
+    });
+    expect(await doorbell.call("describe")).toMatchObject({ name: "Porch" });
+    expect(console.writes()).toEqual([]);
+    await doorbell.apply(actionId);
+    expect(console.writes().map(w => [w.method, w.path, w.body])).toEqual([["PATCH", `/v1/cameras/${HOME.doorbellId}`, { name: "Porch" }]]);
+  });
+
+  it("refuses a status light it doesn't have, before submitting anything", async () => {
+    installFake();
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    expect(await driveway.failure("setStatusLight", false)).toBe("Driveway has no status light.");
+    expect((await driveway.queue()).submitted).toEqual([]);
+  });
+
+  it("doesn't make a change on a different console now answering at a direct connection's address", async () => {
+    // A tunnel repointed at a replacement that takes the same key.
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await doorbell.applyOutcome(lastSubmitted(await doorbell.queue()).actionId))
+      .toMatchObject({ error: expect.stringMatching(/isn't the one this connection was made to/) });
+    expect(replacement.writes()).toEqual([]);
+  });
+
+  it("doesn't read from a different console now answering at a direct connection's address", async () => {
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+  });
+
+  it("refuses a malformed child ID before taking a stub for it, which nothing would then dispose", () => {
+    let dups = 0;
+    const queue = { dup: () => { dups++; return queue; } } as unknown as ConstructorParameters<typeof SessionContext>[1];
+    const ctx = () => new SessionContext({} as SessionShared, queue);
+    const protect = new ProtectSession(ctx());
+    expect(() => protect.getCamera("../nvrs")).toThrow(/isn't a valid camera ID/);
+    expect(() => protect.getSensor("../nvrs")).toThrow(/isn't a valid sensor ID/);
+    expect(() => protect.getLight("../nvrs")).toThrow(/isn't a valid floodlight ID/);
+    const site = new NetworkSiteSession(ctx(), HOME.siteId);
+    expect(() => site.getDevice("../x")).toThrow(/isn't a valid device ID/);
+    expect(() => site.getWifiNetwork("../x")).toThrow(/isn't a valid WiFi network ID/);
+    expect(dups).toBe(0);
+  });
+
+  it("checks the console before every read it sends, not trusting one it just checked", async () => {
+    // The application's information is read, and the console confirmed, just before the swap.
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    await protect.call("describe");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+    expect(replacement.calls.some(call => call.path === "/v1/cameras")).toBe(false);
+  });
+
+  it("checks the console when a change's turn comes, not before it waits for one", async () => {
+    // A read the console turns away makes the budget wait. The console is swapped during the
+    // change's wait, but only after a check made before the wait would have passed.
+    const { unifi, console } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    const handle = console.handle.bind(console);
+    let limited = false;
+    console.handle = (app, method, path, query, body) => {
+      if (!limited) {
+        limited = true;
+        return new Response("{}", { status: 429, headers: { "Retry-After": "1", "Content-Type": "application/json" } });
+      }
+      if (path === "/v1/nvrs") setTimeout(() => unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY), 50);
+      return handle(app, method, path, query, body);
+    };
+    expect(await protect.failure("listSensors")).toMatch(/Couldn't confirm/);
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
+    expect(replacement.writes()).toEqual([]);
+  });
+
+  it("drops what it cached from a console once a check finds a replacement there", async () => {
+    const { unifi } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const protect = binding(accountId, { kind: "protect", consoleId: identity.consoleId });
+    await protect.call("listCameras");
+    const replacement = homeConsole();
+    replacement.protect!.nvr.mac = "001122334455";
+    unifi.addDirectConsole(CONSOLE_URL, replacement, LOCAL_KEY);
+    expect(await protect.failure("listSensors")).toMatch(/isn't the one this connection was made to/);
+    // The camera list was read from the original moments ago, but it's no longer served as current.
+    expect(await protect.failure("listCameras")).toMatch(/isn't the one this connection was made to/);
+  });
+
+  it("keeps a change pending when the console's identity can't be read, to apply once it can", async () => {
+    const { console } = installFake();
+    const accountId = await connectDirect();
+    const identity = await account(accountId).identity() as { consoleId: string };
+    const doorbell = binding(accountId, { kind: "camera", consoleId: identity.consoleId, cameraId: HOME.doorbellId });
+    await doorbell.call("setName", "Porch");
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const handle = console.handle.bind(console);
+    console.handle = (app, method, path, query, body) => path === "/v1/nvrs"
+      ? new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })
+      : handle(app, method, path, query, body);
+    expect(await doorbell.applyOutcome(actionId)).toMatchObject({ error: expect.stringMatching(/Couldn't confirm/) });
+    expect(console.writes()).toEqual([]);
+    console.handle = handle;
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
+  });
+
+  it("names a camera in approvals as UniFi has it, not as an earlier pending rename would", async () => {
+    // Each change applies on its own, so the rename may be declined while this one is approved.
+    installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setName", "Porch");
+    await doorbell.call("setStatusLight", false);
+    const { description } = lastSubmitted(await doorbell.queue());
+    expect(description.title).toBe("Turn off the status light on “Front Door”");
+    expect(JSON.stringify(description.fields)).toContain(HOME.doorbellId);
+  });
+
+  it("shows a doorbell message until the doorbell's default timeout, not forever", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setDoorbellMessage", { kind: "text", text: " Back in 10 minutes " });
+    const { actionId, description } = lastSubmitted(await doorbell.queue());
+    expect(description.title).toBe("Change the message on doorbell “Front Door”");
+    // Shown to whoever comes to the door, so it never applies without a decision.
+    expect(description).toMatchObject({ autoApprovable: false, actionKind: { tag: "unifi.doorbellMessage" } });
+    expect(JSON.stringify(description.fields)).toContain("the doorbell's default timeout");
+    expect(await doorbell.call("describe")).toMatchObject({ doorbellDisplay: { kind: "text", text: "Back in 10 minutes", until: null } });
+
+    await doorbell.apply(actionId);
+    expect(console.writes()[0]!.body).toEqual({ lcdMessage: { type: "CUSTOM_MESSAGE", text: "Back in 10 minutes" } });
+    const { doorbellDisplay } = await doorbell.call<{ doorbellDisplay: { until: Date | null } }>("describe");
+    expect(doorbellDisplay.until).toBeInstanceOf(Date);
+  });
+
+  it("sends a doorbell message's end time when one is given", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    const until = new Date(Date.now() + 3_600_000);
+    await doorbell.call("setDoorbellMessage", { kind: "doNotDisturb" }, { until });
+    await doorbell.apply(lastSubmitted(await doorbell.queue()).actionId);
+    expect(console.writes()[0]!.body).toEqual({ lcdMessage: { type: "DO_NOT_DISTURB", resetAt: until.valueOf() } });
+  });
+
+  it("never sends a doorbell message on the default timeout twice, since each send restarts the timeout", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setDoorbellMessage", { kind: "doNotDisturb" });
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const restore = loseAnswersTo(console, "PATCH");
+    expect(await doorbell.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    expect(await doorbell.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toHaveLength(1);
+  });
+
+  it("sends a doorbell message with its own end time again after a lost answer", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setDoorbellMessage", { kind: "doNotDisturb" }, { until: new Date(Date.now() + 3_600_000) });
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const restore = loseAnswersTo(console, "PATCH");
+    expect(await doorbell.applyOutcome(actionId)).not.toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    await doorbell.apply(actionId);
+    expect(console.writes()).toHaveLength(2);
+  });
+
+  it("refuses doorbell messages Protect would refuse", async () => {
+    installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    expect(await doorbell.failure("setDoorbellMessage", { kind: "text", text: "x".repeat(65) })).toMatch(/1 to 64 characters/);
+    expect(await doorbell.failure("setDoorbellMessage", { kind: "text", text: "   " })).toMatch(/1 to 64 characters/);
+    expect(await doorbell.failure("setDoorbellMessage", { kind: "doNotDisturb" }, { until: new Date(Date.now() - 1000) }))
+      .toBe("`until` must be in the future.");
+    expect((await doorbell.queue()).submitted).toEqual([]);
+  });
+
+  it("changes the microphone volume only with a person's approval", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    expect(await doorbell.failure("setMicVolume", 0)).toMatch(/whole number from 1 to 100/);
+    await doorbell.call("setMicVolume", 40);
+    const { actionId, description } = lastSubmitted(await doorbell.queue());
+    expect(description).toMatchObject({ title: "Set the microphone volume of “Front Door” to 40", autoApprovable: false });
+    expect(await doorbell.call("describe")).toMatchObject({ micVolume: 40 });
+    await doorbell.apply(actionId);
+    expect(console.writes()[0]!.body).toEqual({ micVolume: 40 });
+  });
+
+  it("refuses a microphone volume for a camera without a microphone", async () => {
+    const { console } = installFake();
+    (console.protect!.cameras[1]!.featureFlags as Record<string, unknown>).hasMic = false;
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    expect(await driveway.failure("setMicVolume", 40)).toBe("Driveway has no microphone.");
+  });
+
+  it("turns a PTZ camera once approved, waiting for the decision", async () => {
+    const { console } = installFake();
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    await driveway.call("goToPreset", -1);
+    await driveway.call("startPatrol", 1);
+    await driveway.call("stopPatrol");
+    const { submitted } = await driveway.queue();
+    expect(submitted.map(s => s.description.title)).toEqual([
+      "Turn “Driveway” to its home position", "Start patrol 1 on “Driveway”", "Stop the patrol on “Driveway”",
+    ]);
+    expect(submitted.every(s => s.description.awaitDecision === true && s.description.autoApprovable === true)).toBe(true);
+    for (const { actionId } of submitted) await driveway.apply(actionId);
+    expect(console.writes().map(w => w.path)).toEqual([
+      `/v1/cameras/${HOME.ptzId}/ptz/goto/-1`, `/v1/cameras/${HOME.ptzId}/ptz/patrol/start/1`, `/v1/cameras/${HOME.ptzId}/ptz/patrol/stop`,
+    ]);
+    expect(await driveway.failure("startPatrol", 5)).toMatch(/whole number from 0 to 4/);
+  });
+
+  it("never sends a patrol stop twice, since it stops whichever patrol is running", async () => {
+    // The first stop lands but its answer is lost; a patrol started since mustn't be stopped by a retry.
+    const { console } = installFake();
+    const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
+    await driveway.call("stopPatrol");
+    const { actionId } = lastSubmitted(await driveway.queue());
+    const restore = loseAnswersTo(console, "POST");
+    expect(await driveway.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    restore();
+    expect(await driveway.applyOutcome(actionId)).toEqual({ error: APPLY_OUTCOME_UNKNOWN_MESSAGE });
+    expect(console.writes()).toHaveLength(1);
+  });
+
+  it("reports Protect's refusal when a camera can't pan, and doesn't send it again", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("goToPreset", 2);
+    const { actionId } = lastSubmitted(await doorbell.queue());
+    const refusal = { error: "UniFi rejected the request: the device may not support it, or a value is out of range." };
+    expect(await doorbell.applyOutcome(actionId)).toEqual(refusal);
+    expect(await doorbell.applyOutcome(actionId)).toEqual(refusal);
+    expect(console.writes()).toHaveLength(1);
+  });
+
+  it("presents itself with the camera's name and a link into Protect", async () => {
+    installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    expect(await doorbell.describe()).toMatchObject({
+      title: "Front Door", tsType: "UnifiCamera", suggestedBindingName: "UNIFI_CAMERA",
+      url: `https://unifi.ui.com/consoles/${HOME.hostId}/protect/dashboard`,
+    });
+  });
+
+  it("explains a camera that's gone", async () => {
+    const { console } = installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    console.protect!.cameras.splice(0, 1);
+    expect(await doorbell.failure("describe")).toMatch(/^Not found/);
+    expect(await doorbell.describe()).toMatchObject({ title: "UniFi camera" });
+  });
+});
+
+describe("a sensor", () => {
+  it("reads its readings, and has nothing to approve", async () => {
+    installFake();
+    const sensor = binding(await connectCloud(), RESOURCES.sensor);
+    expect(await sensor.call("describe")).toMatchObject({
+      name: "Garage Door", mountType: "door", isOpen: false, humidityPercent: 45, lightLux: 120, batteryLow: false,
+    });
+    expect(await hooks().autoApprovable(sensor.name, sensor.props)).toEqual({ ok: [] });
+  });
+});
+
+describe("a floodlight", () => {
+  it("is forced on once approved, showing it on before then", async () => {
+    const { console } = installFake();
+    const light = binding(await connectCloud(), RESOURCES.light);
+    await light.call("setForcedOn", true);
+    const { actionId, description } = lastSubmitted(await light.queue());
+    expect(description).toMatchObject({ title: "Turn on floodlight “Backyard Floodlight”", autoApprovable: true });
+    expect(await light.call("describe")).toMatchObject({ forcedOn: true, isOn: true });
+    await light.apply(actionId);
+    expect(console.writes()[0]!.body).toEqual({ isLightForceEnabled: true });
+    expect(await light.call("describe")).toMatchObject({ forcedOn: true, isOn: true });
+  });
+
+  it("changes its mode and brightness", async () => {
+    const { console } = installFake();
+    const light = binding(await connectCloud(), RESOURCES.light);
+    await light.call("setMode", "always");
+    await light.call("setBrightness", 5);
+    expect(await light.failure("setBrightness", 7)).toMatch(/whole number from 1 to 6/);
+    expect(await light.failure("setMode", "sometimes")).toBeTruthy();
+    // An unstated time of day keeps the one it has.
+    expect(await light.call("describe")).toMatchObject({ mode: "always", activeWhen: "dark", brightness: 5 });
+    for (const { actionId } of (await light.queue()).submitted) await light.apply(actionId);
+    expect(console.writes().map(w => w.body)).toEqual([
+      { lightModeSettings: { mode: "always", enableAt: "dark" } }, { lightDeviceSettings: { ledLevel: 5 } },
+    ]);
+  });
+
+  it("offers to auto-approve only floodlight changes", async () => {
+    installFake();
+    const light = binding(await connectCloud(), RESOURCES.light);
+    expect(await hooks().autoApprovable(light.name, light.props)).toEqual({ ok: [expect.objectContaining({ tag: "unifi.lightSettings" })] });
+  });
+});

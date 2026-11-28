@@ -1,0 +1,258 @@
+// The typed API client against the fake console: what each call requests, what it returns, how it
+// pages, and how it refuses IDs that could escape their place.
+
+import { describe, expect, it } from "vitest";
+import { MAX_LIST_ITEMS, UnifiApi } from "../src/api";
+import { cameraPatch, guestLimitsBody, wifiPutBody } from "../src/actions";
+import { sendUnifiRequest, type UnifiCredentials } from "../src/transport";
+import { FakeUnifi, HOME, homeConsole, rawClient, rawVoucher, SNAPSHOT_BYTES } from "./fake-unifi";
+
+const CLOUD: UnifiCredentials = { mode: "cloud", apiKey: "cloud-key-0123456789abcdef" };
+
+function setup() {
+  const unifi = new FakeUnifi();
+  const console = homeConsole();
+  unifi.addCloudKey(CLOUD.apiKey, { email: "dan@example.com", fullName: "Dan", owned: [console] });
+  const api = new UnifiApi(request => sendUnifiRequest(CLOUD, request, unifi.fetch), HOME.hostId);
+  return { unifi, console, api };
+}
+
+describe("reads", () => {
+  it("reads a site's devices, clients, networks, WiFi, and vouchers", async () => {
+    const { api } = setup();
+    expect((await api.listSites()).map(s => s.name)).toEqual(["Default"]);
+    expect((await api.listDevices(HOME.siteId)).map(d => d.name)).toEqual(["UDM Pro", "Garage Switch", "Living Room AP"]);
+    expect((await api.listClients(HOME.siteId)).map(c => c.name)).toEqual(["Work Laptop", "Dan's iPhone", "Visitor Pixel"]);
+    expect((await api.listLanNetworks(HOME.siteId)).map(n => n.vlanId)).toEqual([1, 20]);
+    expect((await api.listWifiNetworks(HOME.siteId)).map(w => w.name)).toEqual(["Home", "Guest", "Things"]);
+    expect((await api.listVouchers(HOME.siteId)).map(v => v.code)).toEqual(["1234567890"]);
+    expect((await api.getDevice(HOME.siteId, HOME.switchId)).ports).toHaveLength(4);
+    expect((await api.getDeviceStatistics(HOME.siteId, HOME.apId)).cpuPercent).toBe(12.5);
+  });
+
+  it("says a gateway is one, which only the device list reports", async () => {
+    const { api, console } = setup();
+    const gateway = console.network!.sites[0]!.devices[0]!;
+    expect(Object.keys(gateway.details.features as object)).not.toContain("gateway");
+    expect((await api.getDevice(HOME.siteId, HOME.gatewayId)).roles).toEqual(["gateway", "switch"]);
+    expect((await api.getDevice(HOME.siteId, HOME.apId)).roles).toEqual(["accessPoint"]);
+  });
+
+  it("treats a device missing from the site's device list as not there", async () => {
+    const { api, console } = setup();
+    const site = console.network!.sites[0]!;
+    // Its details still answer, as a device being removed might, but the list no longer has it.
+    const handle = console.handle.bind(console);
+    console.handle = (app, method, path, query, body) => {
+      if (!path.endsWith("/devices")) return handle(app, method, path, query, body);
+      const all = site.devices;
+      site.devices = all.filter(device => device.overview.id !== HOME.apId);
+      try {
+        return handle(app, method, path, query, body);
+      } finally {
+        site.devices = all;
+      }
+    };
+    await expect(api.getDevice(HOME.siteId, HOME.apId)).rejects.toMatchObject({ kind: "notFound" });
+  });
+
+  it("narrows clients with a filter", async () => {
+    const { api, console } = setup();
+    expect((await api.listClients(HOME.siteId, "access.type.eq('GUEST')")).map(c => c.name)).toEqual(["Visitor Pixel"]);
+    expect(console.calls.at(-1)!.query.filter).toBe("access.type.eq('GUEST')");
+  });
+
+  it("pages through long lists, and stops at the documented bound", async () => {
+    const { api, console } = setup();
+    const site = console.network!.sites[0]!;
+    site.clients = Array.from({ length: 1300 }, (_, i) =>
+      rawClient({ id: `c-${i}`, name: `Client ${i}`, type: "WIRED", mac: "aa:bb:cc:00:00:00", ip: "10.0.0.1", uplinkDeviceId: HOME.switchId }));
+    const clients = await api.listClients(HOME.siteId);
+    expect(clients).toHaveLength(MAX_LIST_ITEMS);
+    expect(console.calls.filter(c => c.path.endsWith("/clients")).map(c => c.query.offset)).toEqual(["0", "200", "400", "600", "800"]);
+  });
+
+  it("reads Protect cameras, sensors, floodlights, the NVR, and a snapshot", async () => {
+    const { api } = setup();
+    expect((await api.listCameras()).map(c => c.name)).toEqual(["Front Door", "Driveway"]);
+    expect((await api.listSensors()).map(s => s.isOpen)).toEqual([false]);
+    expect((await api.listLights()).map(l => l.mode)).toEqual(["motion"]);
+    expect((await api.getNvr()).alarm.status).toBe("disabled");
+    const snapshot = await api.snapshot(HOME.doorbellId, { highQuality: true, packageCamera: true });
+    expect(new Uint8Array(snapshot.bytes)).toEqual(SNAPSHOT_BYTES);
+  });
+
+  it("explains an offline camera's snapshot failure", async () => {
+    const { api, console } = setup();
+    console.protect!.cameras[0]!.state = "DISCONNECTED";
+    await expect(api.snapshot(HOME.doorbellId, { highQuality: false, packageCamera: false }))
+      .rejects.toThrow("The camera is offline or not reachable.");
+  });
+
+  it("refuses IDs that aren't IDs before anything is requested", async () => {
+    const { api, unifi } = setup();
+    await expect(api.getDevice(HOME.siteId, "..")).rejects.toMatchObject({ kind: "badRequest" });
+    await expect(api.getCamera("a/b")).rejects.toMatchObject({ kind: "badRequest" });
+    await expect(api.getSite("-")).rejects.toMatchObject({ kind: "badRequest" });
+    expect(unifi.calls).toHaveLength(0);
+  });
+});
+
+describe("request bodies", () => {
+  it("names guest limits as the Network API does", () => {
+    expect(guestLimitsBody({ durationMinutes: 60, dataLimitMB: 100, downloadLimitKbps: 2000, uploadLimitKbps: 500 }))
+      .toEqual({ timeLimitMinutes: 60, dataUsageLimitMBytes: 100, rxRateLimitKbps: 2000, txRateLimitKbps: 500 });
+    expect(guestLimitsBody({})).toEqual({});
+  });
+
+  it("builds a WiFi update from the full settings, without the read-only fields", () => {
+    const raw = homeConsole().network!.sites[0]!.wifi[1]!;
+    const body = wifiPutBody(raw, { name: "Visitors", enabled: false, hidden: true, passphrase: "brand-new-pass" });
+    expect(body).not.toHaveProperty("id");
+    expect(body).not.toHaveProperty("metadata");
+    expect(body).toMatchObject({ name: "Visitors", enabled: false, hideName: true, clientIsolationEnabled: true });
+    expect(body.securityConfiguration).toMatchObject({ type: "WPA2_PERSONAL", passphrase: "brand-new-pass", pmfMode: "OPTIONAL" });
+  });
+
+  it("refuses a password for a network that has none", () => {
+    const raw = { ...homeConsole().network!.sites[0]!.wifi[1]!, securityConfiguration: { type: "WPA2_ENTERPRISE" } };
+    expect(() => wifiPutBody(raw, { passphrase: "brand-new-pass" })).toThrow(/WPA2 or WPA3 Personal/);
+  });
+
+  it("leaves a doorbell message's reset time out unless one was given, since null means forever", () => {
+    expect(cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until: null }))
+      .toEqual({ lcdMessage: { type: "DO_NOT_DISTURB" } });
+    expect(cameraPatch({ doorbellMessage: { kind: "text", text: "Back soon" }, until: 1_900_000_000_000 }))
+      .toEqual({ lcdMessage: { type: "CUSTOM_MESSAGE", text: "Back soon", resetAt: 1_900_000_000_000 } });
+  });
+});
+
+/** An API whose console answers every request with `json`. */
+const receipt = (json: unknown) => new UnifiApi(async () => ({ ok: true, status: 201, json, size: 0 }), HOME.hostId);
+
+describe("creating vouchers", () => {
+  const body = { count: 2, name: "Party", timeLimitMinutes: 240 };
+
+  it("returns the vouchers the console issued", async () => {
+    const { api } = setup();
+    expect((await api.createVouchers(HOME.siteId, body)).map(v => v.note)).toEqual(["Party", "Party"]);
+  });
+
+  it("refuses a receipt that doesn't list every voucher, which may still have been issued", async () => {
+    await expect(receipt({}).createVouchers(HOME.siteId, body)).rejects.toMatchObject({ kind: "protocol" });
+    // Two entries, but the same voucher: one was issued, not two.
+    const voucher = rawVoucher(HOME.voucherId, "Party", "1234567890", "2026-10-01T12:00:00Z");
+    await expect(receipt({ vouchers: [voucher, voucher] }).createVouchers(HOME.siteId, body)).rejects.toMatchObject({ kind: "protocol" });
+    expect(await receipt({ vouchers: [voucher] }).createVouchers(HOME.siteId, { ...body, count: 1 })).toHaveLength(1);
+  });
+});
+
+describe("an item's details", () => {
+  it("must be the item asked for, in either case", async () => {
+    const { api, console } = setup();
+    const guest = console.network!.sites[0]!.wifi.find(w => w.id === HOME.guestWifiId)!;
+    expect((await api.getWifi(HOME.siteId, HOME.guestWifiId.toUpperCase())).id).toBe(HOME.guestWifiId);
+    // A misrouted answer about another network isn't read, or changed, as this one.
+    const misrouted = new UnifiApi(async () => ({ ok: true, status: 200, json: guest, size: 0 }), HOME.hostId);
+    await expect(misrouted.getWifiRaw(HOME.siteId, HOME.homeWifiId)).rejects.toMatchObject({ kind: "protocol" });
+  });
+
+  it("counts a WiFi change as made only when UniFi answers with the updated network", async () => {
+    const { api } = setup();
+    const raw = await api.getWifiRaw(HOME.siteId, HOME.guestWifiId);
+    await api.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }));
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }))).rejects.toMatchObject({ kind: "protocol" });
+    // The right network, but with the old settings: the change wasn't made.
+    const stale = new UnifiApi(async () => ({ ok: true, status: 200, json: raw, size: 0 }), HOME.hostId);
+    await expect(stale.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { hidden: true }))).rejects.toMatchObject({ kind: "protocol" });
+    const rotation = stale.putWifi(HOME.siteId, HOME.guestWifiId, wifiPutBody(raw, { passphrase: "brand-new-pass" }));
+    await expect(rotation).rejects.toMatchObject({ kind: "protocol" });
+    await expect(rotation.catch((error: Error) => error.message)).resolves.not.toMatch(/brand-new-pass|welcome-guests/);
+  });
+
+  it("counts a camera or floodlight change as made only when Protect answers with it changed", async () => {
+    const { api, console } = setup();
+    const [doorbell, ptz] = structuredClone(console.protect!.cameras);
+    const light = structuredClone(console.protect!.lights[0]!);
+    await api.patchCamera(HOME.doorbellId, { name: "Porch" });
+    // A doorbell message's expiry is compared when one was sent, and left to Protect otherwise.
+    const until = Date.now() + 60_000;
+    const doNotDisturb = cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until });
+    await api.patchCamera(HOME.doorbellId, doNotDisturb);
+    await api.patchCamera(HOME.doorbellId, cameraPatch({ doorbellMessage: { kind: "doNotDisturb" }, until: null }));
+    const forever = { ...doorbell, lcdMessage: { type: "DO_NOT_DISTURB", resetAt: null } };
+    await expect(receipt(forever).patchCamera(HOME.doorbellId, doNotDisturb)).rejects.toMatchObject({ kind: "protocol" });
+    await api.patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
+    // A bare success, an answer with the old settings, or another camera's, doesn't show the change.
+    for (const json of [undefined, {}, doorbell, ptz]) {
+      await expect(receipt(json).patchCamera(HOME.doorbellId, { name: "Porch" })).rejects.toMatchObject({ kind: "protocol" });
+    }
+    for (const json of [undefined, light]) {
+      await expect(receipt(json).patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } })).rejects.toMatchObject({ kind: "protocol" });
+    }
+    // A setting the answer leaves out is no contradiction.
+    await receipt({ ...light, lightDeviceSettings: {} }).patchLight(HOME.lightId, { lightDeviceSettings: { ledLevel: 6 } });
+  });
+
+  it("counts a PTZ command as carried out only when Protect answers 204", async () => {
+    const { api } = setup();
+    await api.ptzGoTo(HOME.ptzId, -1);
+    await api.ptzStartPatrol(HOME.ptzId, 1);
+    await api.ptzStopPatrol(HOME.ptzId);
+    // A proxy's empty 200, or any other success, doesn't show the camera took it.
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.ptzStopPatrol(HOME.ptzId)).rejects.toMatchObject({ kind: "protocol" });
+    await expect(receipt({}).ptzGoTo(HOME.ptzId, 1)).rejects.toMatchObject({ kind: "protocol" });
+  });
+
+  it("finds a device listed under its ID in another case", async () => {
+    const { api } = setup();
+    expect((await api.getDevice(HOME.siteId, HOME.apId.toUpperCase())).id).toBe(HOME.apId);
+    expect(await api.isGateway(HOME.siteId, HOME.gatewayId.toUpperCase())).toBe(true);
+  });
+});
+
+describe("deleting a voucher", () => {
+  it("is done when UniFi reports it deleted, or it can't be found any more", async () => {
+    const { api, console } = setup();
+    await api.deleteVoucher(HOME.siteId, HOME.voucherId);
+    expect(console.network!.sites[0]!.vouchers).toEqual([]);
+    // Already gone: a 404, and no voucher to find.
+    await api.deleteVoucher(HOME.siteId, HOME.voucherId);
+  });
+
+  it("isn't done when the receipt shows no deletion and the voucher is still there", async () => {
+    const { unifi, console } = setup();
+    for (const [status, json] of [[200, { vouchersDeleted: 0 }], [404, { message: "no route" }]] as const) {
+      const refusal = () => new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
+      const api = new UnifiApi(request => sendUnifiRequest(CLOUD, request, async (input, init) =>
+        init?.method === "DELETE" ? refusal() : unifi.fetch(input, init)), HOME.hostId);
+      await expect(api.deleteVoucher(HOME.siteId, HOME.voucherId)).rejects.toMatchObject({ kind: "protocol" });
+      expect(console.network!.sites[0]!.vouchers).toHaveLength(1);
+    }
+  });
+});
+
+describe("letting a guest on", () => {
+  it("is done only when UniFi answers with the grant it made", async () => {
+    const { api } = setup();
+    await api.authorizeGuest(HOME.siteId, HOME.guestId, { timeLimitMinutes: 60 });
+    // A bare success, from a proxy say, doesn't show the guest was let on.
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+    const empty = new UnifiApi(async () => ({ ok: true, status: 200, json: { action: "AUTHORIZE_GUEST_ACCESS" }, size: 0 }), HOME.hostId);
+    await expect(empty.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+    // A grant without the method, start and expiry the API always gives proves nothing either.
+    const partial = new UnifiApi(async () => ({ ok: true, status: 200, json: { grantedAuthorization: {} }, size: 0 }), HOME.hostId);
+    await expect(partial.authorizeGuest(HOME.siteId, HOME.guestId, {})).rejects.toMatchObject({ kind: "protocol" });
+  });
+
+  it("ends a guest's access only when UniFi answers with the access it ended", async () => {
+    const { api } = setup();
+    await api.authorizeGuest(HOME.siteId, HOME.guestId, { timeLimitMinutes: 60 });
+    await api.revokeGuest(HOME.siteId, HOME.guestId);
+    const bare = new UnifiApi(async () => ({ ok: true, status: 200, json: undefined, size: 0 }), HOME.hostId);
+    await expect(bare.revokeGuest(HOME.siteId, HOME.guestId)).rejects.toMatchObject({ kind: "protocol" });
+  });
+});
