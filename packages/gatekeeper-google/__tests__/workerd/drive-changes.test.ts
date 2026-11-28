@@ -273,8 +273,8 @@ class DriveProvider {
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
-  /** Waited on once the next folder listing has read the folder's files, before it answers. */
-  beforeListingAnswers?: () => Promise<void>;
+  /** The request held before it answers, once, and whether it was reached and released. */
+  #stall?: { request: "listing" | "download"; reached: boolean; released: boolean };
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -294,6 +294,25 @@ class DriveProvider {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       this.#handle(new Request(input, init))));
     return this;
+  }
+
+  /**
+   * Holds the next `request` before it answers until the test releases it: a folder listing once
+   * it has read the folder's files, or a download before it reads the file. Flags rather than
+   * promises: workerd refuses to resume a promise another Durable Object resolved.
+   */
+  stallNext(request: "listing" | "download"): { reached: boolean; released: boolean } {
+    let stall = { request, reached: false, released: false };
+    this.#stall = stall;
+    return stall;
+  }
+
+  async #stalled(request: "listing" | "download"): Promise<void> {
+    let stall = this.#stall;
+    if (stall?.request !== request) return;
+    this.#stall = undefined;
+    stall.reached = true;
+    await vi.waitFor(() => expect(stall.released).toBe(true), { timeout: 10_000 });
   }
 
   /** Forgets the requests and writes seen so far. */
@@ -485,11 +504,7 @@ class DriveProvider {
         ? held.parents.includes(parent ?? "")
         : !this.searchLags && held.appProperties?.gadgetsCopyToken === copyToken &&
           (inDrive === undefined || held.driveId === inDrive)));
-      let pause = copyToken === undefined ? this.beforeListingAnswers : undefined;
-      if (pause) {
-        this.beforeListingAnswers = undefined;
-        await pause();
-      }
+      if (copyToken === undefined) await this.#stalled("listing");
       return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments|copy)(?:\/([^/]+))?)?$/
@@ -504,6 +519,7 @@ class DriveProvider {
 
     if (collection === undefined) {
       if (request.method === "GET" && url.searchParams.get("alt") === "media") {
+        await this.#stalled("download");
         return this.#download(held, request.headers.get("Range"));
       }
       if (request.method === "GET") return Response.json(this.#fileJson(fileId, held));
@@ -735,9 +751,7 @@ function binding(
       if (outcome.error !== undefined) throw new Error(outcome.error);
       return outcome.value as DriveAccess[];
     },
-    /** Applies a write, calling `entered` once the gatekeeper has started applying it. */
-    apply: (actionId: number, entered?: () => void) =>
-      hooks.applyDrive(facet, props, actionId, entered),
+    apply: (actionId: number) => hooks.applyDrive(facet, props, actionId),
     reject: (actionId: number) => hooks.rejectDrive(facet, props, actionId),
     revert: (actionId: number) => hooks.revertDrive(facet, props, actionId),
     /** The IDs of the writes still to be applied. */
@@ -2425,33 +2439,65 @@ describe("copies", () => {
     expect(read.reports[0]).toEqual(READ("drive/file/report", "drive/folder/elsewhere"));
   });
 
-  // An approval that ran between the page and the copies it shows would leave the copy out of
-  // both: the page fetched before it was made, and no longer waiting once the copies are read.
-  it("takes a listing's last page and the copies it shows at one moment, which an approval waits out", async () => {
+  /**
+   * Runs `during` once `stall` holds its request, and releases it once `during` has settled:
+   * failing if `during` cannot settle while Drive has not answered.
+   */
+  async function settlesWhile<T>(stall: { reached: boolean; released: boolean }, during: () => Promise<T>) {
+    await vi.waitFor(() => expect(stall.reached).toBe(true));
+    let settled = false;
+    let running = during();
+    running.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(settled).toBe(true));
+    } finally {
+      stall.released = true;
+    }
+    return running;
+  }
+
+  it("approves a change while a listing of a folder no copy goes into waits on Drive", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "root" });
+    let stall = provider.stallNext("listing");
+
+    let listing = drive.call("list", { directParentId: "elsewhere" });
+
+    expect(await settlesWhile(stall, () => drive.apply(queued.actionId))).toBeNull();
+    expect(listed((await listing).value)).toEqual([]);
+  });
+
+  it("shows a copy approved while its folder's page is fetched once, as made", async () => {
     provider.files.set("report", report());
     let drive = binding();
     let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
-    // Flags rather than promises: workerd refuses to resume a promise another Durable Object
-    // resolved.
-    let pause = { reached: false, released: false };
-    provider.beforeListingAnswers = async () => {
-      pause.reached = true;
-      await vi.waitFor(() => expect(pause.released).toBe(true), { timeout: 10_000 });
-    };
+    let stall = provider.stallNext("listing");
 
+    // Drive has read the folder's files, so the page it answers holds no copy.
     let listing = drive.call("list", { directParentId: "elsewhere" });
-    await vi.waitFor(() => expect(pause.reached).toBe(true));
-    let sentWhileListing: number | undefined;
-    let applying = drive.apply(queued.actionId, () => {
-      sentWhileListing = sent("POST /drive/v3/files/report/copy").length;
-      pause.released = true;
-    });
-    expect((await listing).value).toEqual([[expect.objectContaining({ id: "copy-1", pending: true })]]);
-    expect(await applying).toBeNull();
-    expect(sentWhileListing).toBe(0);
-    let after = await drive.call("list", { directParentId: "elsewhere" });
-    expect(after.value).toEqual([[expect.not.objectContaining({ pending: true })]]);
-    expect(listed(after.value)).toEqual(["copy-1"]);
+
+    expect(await settlesWhile(stall, () => drive.apply(queued.actionId))).toBeNull();
+    let shown = (await listing).value;
+    expect(listed(shown)).toEqual(["copy-1"]);
+    expect(shown).toEqual([[expect.not.objectContaining({ pending: true })]]);
+  });
+
+  it("reads a copy approved while the file it copies opens from the copy made", async () => {
+    provider.files.set("report", report());
+    let drive = binding();
+    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+    let stall = provider.stallNext("download");
+
+    let reading = drive.call("readFile", "copy-1");
+
+    expect(await settlesWhile(stall, async () => {
+      let outcome = await drive.apply(queued.actionId);
+      // The file changes once copied, so what it then holds is not what the copy holds.
+      provider.files.get("report")!.content = "edited rpt";
+      return outcome;
+    })).toBeNull();
+    expect((await reading).value).toMatchObject({ text: "hello copy" });
   });
 
   it("stops showing a waiting copy on a folder binding once the file it copies leaves", async () => {

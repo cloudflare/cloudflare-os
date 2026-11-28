@@ -1,6 +1,5 @@
 import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
-import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { PdfRendering } from "@gadgets/pdf-renderer/api";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
@@ -9,7 +8,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
-import type { DriveAction, DriveQueue } from "../../src/drive-actions";
+import type { DriveQueue } from "../../src/drive-actions";
 import type { DriveDocEdits, DriveEdit } from "../../src/drive-editors";
 import { FILE_READ_IDLE_MS } from "../../src/drive-file-read";
 import type { DriveBindingScope } from "../../src/drive-session";
@@ -25,7 +24,6 @@ import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
 import type { PngLayout } from "../../src/pdf-images";
-import { ReadGate } from "../../src/read-gate";
 import { pngFromDeflated, pngFromSamples } from "../../src/pdf-png";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
@@ -385,9 +383,6 @@ const NO_COMMENTS: DriveQueue = {
   queued: () => [],
   madeCopy: () => undefined,
 };
-
-/** Lets every callback already due run, as an approval no read holds out does. */
-const settle = () => vi.advanceTimersByTimeAsync(0);
 
 /** The refusal of a write on a read-only folder or file binding, which ends with the URL to request. */
 const READ_ONLY = (url: string) =>
@@ -1306,7 +1301,7 @@ describe("Drive file reads", () => {
   /** The `Range` of each download, in order. */
   let downloads: (string | null)[];
   /** Replaces the honoured range a download answers with, when a test sets it. */
-  let answerDownload: (() => Response | Promise<Response>) | undefined;
+  let answerDownload: (() => Response) | undefined;
   /** The file and MIME type of each export, in order. */
   let exports: { fileId: string; mimeType: string | null }[];
   /** What an export answers, when a test sets it; by default the file's ID and the MIME type. */
@@ -1394,44 +1389,6 @@ describe("Drive file reads", () => {
         subresources: ["drive/content/csv-1"],
       },
     ]);
-  });
-
-  // An approval that made the copy between picking it and opening the file it copies could see
-  // that file change after Drive copied it, and the read return bytes the copy never had.
-  it("holds an approval out from picking a waiting copy until the file it copies is open", async () => {
-    const gate = new ReadGate();
-    let pending: JournalEntry<DriveAction>[] = [{ id: 7, action: { kind: "copyFile", payload: {
-      fileId: "csv-1", copyId: "copy-1", name: "Copy of csv-1", mimeType: "text/csv",
-      toFolderId: "folder-1", queuedAt: "2026-08-21T12:00:00Z",
-    } } }];
-    const asked = Promise.withResolvers<void>();
-    const answer = Promise.withResolvers<Response>();
-    answerDownload = () => {
-      asked.resolve();
-      return answer.promise;
-    };
-    using session = newSession(undefined, undefined, {
-      ...NO_COMMENTS, access: "write", queued: () => pending,
-      waiting: read => gate.read(() => read(pending)),
-    }).session;
-
-    const reading = session.readFile("copy-1");
-    await asked.promise;
-    vi.useFakeTimers();
-    let approved = false;
-    const approval = gate.resolve(async () => {
-      approved = true;
-      pending = [];
-    });
-    await settle();
-    expect(approved).toBe(false);
-
-    answer.resolve(new Response(CSV_BYTES, {
-      status: 206, headers: { "Content-Range": `bytes 0-${CSV_BYTES.byteLength - 1}/${CSV_BYTES.byteLength}` },
-    }));
-    expect(await new Response((await reading).content).text()).toBe("region,amount\nEMEA,120\nAPAC,95\n");
-    await approval;
-    expect(approved).toBe(true);
   });
 
   it("reads a range of a file, clamping one that runs past its end", async () => {

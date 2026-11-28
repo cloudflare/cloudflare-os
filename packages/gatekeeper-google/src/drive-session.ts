@@ -370,8 +370,8 @@ function simulatedUnits({entry, sourceId}: SimulatedEntry): DriveObservation[] {
 type ShownPage = { page: DriveFileList; shown: SimulatedEntry[] };
 
 /**
- * A page of a listing, fetched with `fetch`, and the simulated entries it shows, read with it
- * while no change is applied or rejected, so that no approval lands between the two.
+ * A page of a listing, fetched with `fetch`, and the simulated entries it shows. It may fetch the
+ * page again, when an approval may have changed both while it was fetched.
  */
 type SimulatedPage = (fetch: () => Promise<DriveFileList>) => Promise<ShownPage>;
 
@@ -1300,7 +1300,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   ): Promise<Pager<DriveEntry>> {
     rejectDirectParent(options);
     let folderId = this.#currentFolderId();
-    // The files a waiting copy copies are proved after the page, which reads nothing more queued.
+    // The files a waiting copy copies are proved once the page and its copies are read.
     return this.#cursor({orderBy: orderBy(options.order)}, undefined, simulated && (async fetch => {
       let {page, shown} = await simulated(folderId, fetch);
       return {page, shown: await this.#withSources(shown)};
