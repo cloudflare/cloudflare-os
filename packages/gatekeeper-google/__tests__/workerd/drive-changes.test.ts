@@ -2486,22 +2486,25 @@ describe("copies", () => {
     expect(shown).toEqual([[expect.not.objectContaining({ pending: true })]]);
   });
 
-  it("reads a copy approved while the file it copies opens from the copy made", async () => {
-    provider.files.set("report", report());
-    let drive = binding();
-    let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
-    let stall = provider.stallNext("download");
+  // Changed or shortened once copied, the file no longer holds what the copy holds: a shortened
+  // one fails its own read, which says nothing of the copy.
+  it.each([["changed", "edited rpt"], ["shortened", "short"]])(
+    "reads a copy approved while the file it copies opens, then %s, from the copy made",
+    async (_, content) => {
+      provider.files.set("report", report());
+      let drive = binding();
+      let queued = await drive.queued("copyFile", "report", { folderId: "elsewhere" });
+      let stall = provider.stallNext("download");
 
-    let reading = drive.call("readFile", "copy-1");
+      let reading = drive.call("readFile", "copy-1");
 
-    expect(await settlesWhile(stall, async () => {
-      let outcome = await drive.apply(queued.actionId);
-      // The file changes once copied, so what it then holds is not what the copy holds.
-      provider.files.get("report")!.content = "edited rpt";
-      return outcome;
-    })).toBeNull();
-    expect((await reading).value).toMatchObject({ text: "hello copy" });
-  });
+      expect(await settlesWhile(stall, async () => {
+        let outcome = await drive.apply(queued.actionId);
+        provider.files.get("report")!.content = content;
+        return outcome;
+      })).toBeNull();
+      expect((await reading).value).toMatchObject({ text: "hello copy" });
+    });
 
   it("stops showing a waiting copy on a folder binding once the file it copies leaves", async () => {
     provider.files.set("report", report());

@@ -3110,13 +3110,26 @@ export class GoogleDriveSessionImpl extends RpcTarget
     // As getEntry() shows it, which reports where it is before anything of the file is read: only
     // in the folder it goes into, and on a folder binding only while its file is still there.
     await this.#core.simulatedEntry(named.waiting);
-    let read = await this.#readFile(sourceId, options, entry.id);
-    // An approval may have made the copy while the file opened, and the file changed since: the
-    // copy holds what it held then. The queue is read only once the file is open, never across
-    // Drive's answer, which could keep every approval waiting.
-    if (await this.#writes.waiting(async pending => pendingCopy(entry.id, pending))) return read;
-    await read.content.cancel();
-    return this.#readFile(entry.id, options);
+    return this.#readWaiting(entry.id, options, () => this.#readFile(sourceId, options, entry.id));
+  }
+
+  /**
+   * Reads waiting file `fileId` with `read`, which reads what it would hold, then checks it still
+   * waits. An approval may have made it while `read` read, and what `read` read changed since, so
+   * that its bytes, or its failure, say nothing of the file made: then that file is read instead.
+   * The queue is read only once `read` is done, never across Drive's answer, which could keep every
+   * approval waiting.
+   */
+  async #readWaiting(
+    fileId: string, options: DriveFileReadOptions, read: () => Promise<DriveFileBytes>,
+  ): Promise<DriveFileBytes> {
+    let [outcome] = await Promise.allSettled([read()]);
+    if (await this.#writes.waiting(async pending => pendingCopy(fileId, pending))) {
+      if (outcome.status === "rejected") throw outcome.reason;
+      return outcome.value;
+    }
+    if (outcome.status === "fulfilled") await outcome.value.content.cancel();
+    return this.#readFile(fileId, options);
   }
 
   /** Reads Drive file `fileId`, or, given `copyId`, the bytes the copy it is waiting for would hold. */
