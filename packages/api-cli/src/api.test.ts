@@ -259,6 +259,73 @@ test("a byte value goes to --out decoded, or to stdout for -; a null writes noth
   assert.equal(readFileSync(join(real.root, "avatar.png"), "utf8"), "avatar of alice");
 });
 
+test("a byte stream inside a JSON result goes to --out <file>, the JSON printed as without it; a result with none makes no file", async (t) => {
+  const h = harness(t);
+  assert.equal(await h.api("export-note", "n1", "--out", "note.bin"), 0);
+  assert.deepEqual(h.json, [{ kind: "stream", byteLength: 26, content: { $stream: true } }]);
+  assert.equal(readFileSync(join(h.root, "note.bin"), "utf8"), "export of n1\nsecond chunk\n");
+  assert.equal(h.stderr(), `Wrote ${join(h.root, "note.bin")}.`);
+  assert.equal(h.stdout(), "");
+  // An array holding one stream among its values has it written the same.
+  assert.equal(await h.api("export-notes", '["text-a", "n2"]', "--out", "notes.bin"), 0);
+  assert.deepEqual(h.json[1], [{ kind: "text", text: "text of text-a" }, { kind: "stream", byteLength: 26, content: { $stream: true } }]);
+  assert.equal(readFileSync(join(h.root, "notes.bin"), "utf8"), "export of n2\nsecond chunk\n");
+
+  // The answer was the arm with no stream: nothing to write, and stderr says so.
+  const text = harness(t);
+  assert.equal(await text.api("export-note", "text-1", "--out", "text.bin"), 0);
+  assert.deepEqual(text.json, [{ kind: "text", text: "text of text-1" }]);
+  assert.equal(existsSync(join(text.root, "text.bin")), false);
+  assert.equal(text.stderr(), `The result holds no byte stream: nothing was written to ${join(text.root, "text.bin")}.`);
+
+  // A dry run checks where the file would go, and connects to nothing.
+  const dry = harness(t);
+  assert.equal(await dry.api("--dry-run", "export-note", "n1", "--out", "note.bin"), 0);
+  assert.deepEqual((dry.json[0] as { chain: unknown }).chain, [{ method: "exportNote", args: ["n1"] }]);
+  await usageError(dry.api("--dry-run", "export-note", "n1", "--out", "missing/note.bin"),
+    `--out ${join(dry.root, "missing/note.bin")}: its directory ${join(dry.root, "missing")} does not exist.`);
+  await usageError(dry.api("export-note", "n1", "--out", "-"),
+    "export-note --out -: the result is printed on stdout, so its bytes need a file (--out <file>).");
+  assert.equal(dry.server.opened, 0);
+  assert.equal(existsSync(join(dry.root, "note.bin")), false);
+});
+
+test("stdout's reader going away stops nothing of a file --out is still writing, which is written whole", async (t) => {
+  const h = harness(t);
+  const running = h.api("export-note", "slow-1", "--out", "slow.bin");
+  await eventually(() => h.json.length === 1, "the JSON");
+  h.stdoutStream.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+  assert.equal(await running, 0);
+  assert.equal(readFileSync(join(h.root, "slow.bin"), "utf8"), "export of slow-1\nsecond chunk\n");
+
+  // Ctrl-C still stops such a file after stdout closed: an `open-` note's stream never ends.
+  const held = harness(t);
+  const holding = held.api("export-note", "open-1", "--out", "open.bin");
+  await eventually(() => held.json.length === 1, "the JSON");
+  held.stdoutStream.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+  held.interrupt();
+  assert.equal(await holding, 130);
+});
+
+test("a byte stream inside a result that is not written is cancelled: without --out, and each of several, which --out refuses", async (t) => {
+  // An `open-` note's stream never ends by itself, so only a cancel stops the server reading it.
+  const h = harness(t);
+  assert.equal(await h.api("export-note", "open-1"), 0);
+  assert.deepEqual(h.json, [{ kind: "stream", byteLength: 30, content: { $stream: true } }]);
+  await eventually(() => callsOf(h.log, "exportCancelled").length === 1, "the cancel");
+  assert.deepEqual(callsOf(h.log, "exportCancelled"), [["open-1"]]);
+  assert.equal(h.stderr(), "");
+
+  const two = harness(t);
+  assert.equal(await two.api("export-notes", '["open-a", "open-b"]', "--out", "notes.bin"), 1);
+  assert.equal(two.json.length, 1);
+  assert.equal(two.stderr(), `The result holds 2 byte streams, and --out writes one: nothing was written to ${join(two.root, "notes.bin")}.`);
+  assert.equal(existsSync(join(two.root, "notes.bin")), false);
+  await eventually(() => callsOf(two.log, "exportCancelled").length === 2, "both cancels");
+  assert.deepEqual(callsOf(two.log, "exportCancelled").flat().toSorted(), ["open-a", "open-b"]);
+  await eventually(() => ["authed", "root"].every((name) => two.log.disposed.includes(name)), "disposal");
+});
+
 test("--out given with a result that is not bytes is refused before connecting, in a dry run too", async (t) => {
   const h = harness(t);
   await usageError(h.api("find-notes", "q", "--out", "x.bin"),
@@ -898,4 +965,46 @@ test("--dry-run of JSON nested too deep fails as a usage error, not a stack over
   writeFileSync(join(h.root, "deep.json"), `{"x": ${"[".repeat(3000)}${"]".repeat(3000)}}`);
   await usageError(h.api("--dry-run", "open-notebook", "n", "connect", "call", "echo", "@deep.json"),
     "call echo argument 1 is nested more than 128 levels deep, more than cf-os api sends.");
+});
+
+/** The chain a dry run of `tokens` prints. */
+async function chainOf(h: ReturnType<typeof harness>, ...tokens: string[]): Promise<unknown[]> {
+  assert.equal(await h.api("--dry-run", ...tokens), 0);
+  return (h.json.at(-1) as { chain: unknown[] }).chain;
+}
+
+test("--dry-run decodes an admin's content reads on a view opened for content, and the request for a second admin's approval", async (t) => {
+  const real = harness(t, { table: realTable });
+  const view = ["get-admin-api", "inspect-workspace", "w1", "The owner asked for help", "--options", '{"access": "content"}'];
+  const opened = [
+    { method: "getAdminApi", args: [] },
+    { method: "inspectWorkspace", args: ["w1", "The owner asked for help", { access: "content" }] },
+  ];
+  assert.deepEqual(await chainOf(real, ...view, "get-chat", "1"), [...opened, { method: "getChat", args: [1] }]);
+  // The page before a sequence is an optional parameter, so an option: a second positional has no place.
+  assert.deepEqual(await chainOf(real, ...view, "get-chat", "1", "--before-sequence", "5"), [...opened, { method: "getChat", args: [1, 5] }]);
+  await usageError(real.api("--dry-run", ...view, "get-chat", "1", "5"),
+    'get-chat returns a value, which ends the chain: nothing can follow it, but "5" does.');
+  // "full" is no level a view is opened at.
+  await usageError(real.api("--dry-run", "get-admin-api", "inspect-workspace", "w1", "why", "--options", '{"access": "full"}', "get-chat", "1"),
+    '--options.access must be AdminViewAccess; got "full".');
+
+  // A file's answer is JSON that may hold the file's bytes as a stream: --out names the file they go to.
+  assert.deepEqual(await chainOf(real, ...view, "read-file", "1", "src/index.ts", "--out", "index.ts"),
+    [...opened, { method: "readFile", args: [1, "src/index.ts"] }]);
+  assert.equal(existsSync(join(real.root, "index.ts")), false);
+  await usageError(real.api("--dry-run", ...view, "read-file", "1", "src/index.ts", "--out", "-"),
+    "read-file --out -: the result is printed on stdout, so its bytes need a file (--out <file>).");
+  // An attachment's answer is the stream itself, which stdout may take.
+  assert.deepEqual(await chainOf(real, ...view, "read-chat-attachment", "1", "a1", "--out", "-"),
+    [...opened, { method: "readChatAttachment", args: [1, "a1"] }]);
+
+  // A request to read a workspace's content takes the workspace and the reason, and nothing else.
+  assert.deepEqual(await chainOf(real, "get-admin-api", "request-content-access", "w1", "The owner is away"), [
+    { method: "getAdminApi", args: [] },
+    { method: "requestContentAccess", args: ["w1", "The owner is away"] },
+  ]);
+  await usageError(real.api("--dry-run", "get-admin-api", "request-content-access", "w1"),
+    "request-content-access needs <reason>. Run `cf-os api get-admin-api request-content-access w1 --help` for its arguments.");
+  assert.equal(real.server.opened, 0);
 });

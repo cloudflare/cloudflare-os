@@ -14,13 +14,17 @@ import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
   ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
-  type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
-  type AdminWorkspaceAccess, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec,
+  type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
+  type AdminContentRequest, type AdminGrantRecord, type AdminSettingChange,
+  type AdminSettingRecord, type AdminVia, type AdminViewAccess,
+  type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AiChatAuthorInfo,
+  type AiChatHistoryPage, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
+  type CommitInfo, type GatekeeperCreationSpec, type NamedUser, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -36,27 +40,32 @@ const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
 const reportedInvalidWrites = new Set<unknown>();
 
+// Never String(raw) of a value that is neither a string nor a number: that throws for a JSON
+// binding whose toString is not a function.
 function isBlank(raw: unknown): boolean {
-  return raw === undefined || raw === null || String(raw).trim() === "";
+  return raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "");
 }
 
-/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off" or "metadata", in any
- * case and trimmed; "metadata" while it is unset or blank. Any other value misconfigures a
- * security bound, so it fails closed to "off" and is logged as an error (once per isolate per
+/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off", "metadata" or "content",
+ * a string in any case and trimmed; "metadata" while it is unset or a blank string, so content is
+ * allowed only where the variable says so. Anything else, a JSON binding included, misconfigures
+ * a security bound, so it fails closed to "off" and is logged as an error (once per isolate per
  * value, never the value itself). */
 export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAccess {
   let raw: unknown = env.ADMIN_WORKSPACE_ACCESS_MAX;
-  if (isBlank(raw)) return "metadata";
-  let level = String(raw).trim().toLowerCase();
-  if (isAdminWorkspaceAccess(level)) return level;
+  if (raw === undefined || raw === null) return "metadata";
+  // Never String(raw): that reads a JSON binding of ["content"] as "content" and of [] as blank.
+  let level = typeof raw === "string" ? raw.trim().toLowerCase() : undefined;
+  if (level === "") return "metadata";
+  if (level !== undefined && isAdminWorkspaceAccess(level)) return level;
 
   // This bounds a security setting, so a value meant to turn inspection off ("none", "false", a
   // typo of "off") must fail closed, never grant the default.
   if (!reportedInvalidAccessMax.has(raw)) {
     reportedInvalidAccessMax.add(raw);
     logger.error(
-        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces and " +
-            "users is off",
+        "ADMIN_WORKSPACE_ACCESS_MAX is not off, metadata or content, so admin access to " +
+            "workspaces and users is off",
         { event: "admin.access.config.invalid" });
   }
   return "off";
@@ -69,7 +78,7 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
 export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
   let raw: unknown = env.ADMIN_AUDIT_RETENTION_MIN_DAYS;
   if (isBlank(raw)) return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
-  let days = Number(String(raw).trim());
+  let days = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
   if (Number.isSafeInteger(days) && days >= 1) {
     return Math.min(days, MAX_ADMIN_AUDIT_RETENTION_DAYS);
   }
@@ -142,6 +151,18 @@ export function adminAccessPolicy(
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
 
+/** Who takes a step of a request to read a workspace's content without its owner, as its
+ * AdminGrantRecord says. */
+export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via">;
+
+/** What OverseerDurableObject.grantAdminContent() is given: a claimed content access request, and
+ * the admin who approved it, through which session, for the AdminGrantRecord the workspace
+ * appends. `workspaceOwner` is the owner the request named: the workspace refuses
+ * (`workspaceChanged`) a call naming another owner than its own, since a deleted workspace's id
+ * can be initialised again for someone else. */
+export type AdminContentGrantCall = AdminGrantActor &
+    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> & { requestId: string };
+
 /** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
  * UserDurableObject.openForAdmin()), fixed for the view's life. */
 export type AdminViewTerms = {
@@ -149,6 +170,14 @@ export type AdminViewTerms = {
   via: AdminVia;
   /** When the view stops working. */
   expiresAt: Date;
+};
+
+/** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()): an admin
+ * view's terms, and what the view was opened for. */
+export type AdminWorkspaceViewTerms = AdminViewTerms & {
+  /** What the view was opened for (AdminWorkspaceInspectOptions.access): recorded on every
+   * record the view makes, and the most any of its calls returns. */
+  access: AdminViewAccess;
 };
 
 // --- Validation ---
@@ -226,6 +255,56 @@ export function assertAdminViewLive(terms: AdminViewTerms, adminId: string, env:
   }
 }
 
+/**
+ * What each view method's answer can hold, which decides whether its call looks for a grant:
+ *   - "metadata": metadata alone. The call never looks for a grant.
+ *   - "mixed":    content under a grant and metadata without one. Without a grant it answers as
+ *                 the "metadata" level does; it is not refused.
+ *   - "content":  content alone. Without a grant the call is recorded and refused.
+ * One table over every AdminWorkspaceMethod, so that a method added to ADMIN_WORKSPACE_METHODS
+ * does not compile until it is classified: AdminWorkspaceViewImpl.#call reads the kind from here
+ * and from nowhere else.
+ */
+export const ADMIN_METHOD_ANSWERS = {
+  // The open itself, which AdminWorkspaceViewImpl.open() records through #call as the view's
+  // first call: its record never holds content, and a view is opened for content without a
+  // grant being looked for.
+  inspectWorkspace: "metadata",
+  describe: "mixed",
+  listChats: "mixed",
+  getChat: "content",
+  getChatState: "mixed",
+  listChatAttachments: "metadata",
+  readChatAttachment: "content",
+  listActions: "mixed",
+  listFiles: "metadata",
+  readFile: "content",
+  getCommitLog: "mixed",
+  listFilesAtCommit: "metadata",
+  readFileAtCommit: "content",
+  listChangedPaths: "metadata",
+  listPendingChanges: "metadata",
+  readPendingFile: "content",
+  listGatekeepers: "mixed",
+  listObservers: "metadata",
+  listObserverRequirements: "metadata",
+  listShareLinks: "metadata",
+  listAutoApprovals: "metadata",
+  listBlueprints: "mixed",
+  getDiagnostics: "metadata",
+} as const satisfies Record<AdminWorkspaceMethod, "metadata" | "mixed" | "content">;
+
+/** Why a call may return no content before any grant is looked for: `contentNotRequested` for a
+ * view opened for metadata, then `contentOff` while `policy.access` is below "content";
+ * undefined when both allow content. Never throws. */
+export function adminContentRefusal(
+    terms: AdminWorkspaceViewTerms, policy: Pick<AdminAccessPolicy, "access">)
+    : AdminAccessRecord["refused"] | undefined {
+  if (terms.access !== "content") return ADMIN_ACCESS_ERROR_CODES.contentNotRequested;
+  if (policy.access !== "content") return ADMIN_ACCESS_ERROR_CODES.contentOff;
+  return undefined;
+}
+
 // --- Audit text ---
 
 function isHighSurrogate(code: number): boolean {
@@ -262,6 +341,17 @@ export function auditOwnerId(id: string): string {
   let digest = createHash("sha256").update(id).digest("hex").slice(0, OWNER_DIGEST_LENGTH);
   let start = cutAdminAuditText(id, MAX_ADMIN_AUDIT_ARG_LENGTH - OWNER_DIGEST_LENGTH - 1);
   return `${start}#${digest}`;
+}
+
+/** `user` as a record that admins read keeps them (NamedUser): the id as auditOwnerId() gives it,
+ * the name cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH, and no other field of a
+ * profile. The one place a profile becomes a NamedUser, so that no such record holds a profile:
+ * neither an id nor a display name has a bound of its own. */
+export function namedUser(user: Pick<AiChatAuthorInfo, "id" | "name">): NamedUser {
+  return {
+    id: auditOwnerId(user.id),
+    name: cutAdminAuditText(user.name, MAX_ADMIN_AUDIT_ARG_LENGTH),
+  };
 }
 
 /** The arguments an AdminAccessRecord keeps (see AdminAccessRecord.args): undefined ones left out,
@@ -367,20 +457,49 @@ export function adminSettingChange(setting: string, key: string | undefined, bef
   return change;
 }
 
-// --- What an AdminWorkspaceView withholds ---
+// --- What a call made without a grant withholds, and whether an answer holds any of it ---
+//
+// Each *HoldsContent() predicate takes what a view returns, with a grant or without, and says
+// whether it holds something the "metadata" level withholds (AdminAccessRecord.exposed). Present
+// but empty is not content, so each is false for anything its withholder returns.
 
-/** A copy of `meta` as an AdminWorkspaceView lists it: without `queuedSteers`. */
+/** A copy of `meta` as a call without a grant lists it: without `queuedSteers`. */
 export function withholdChatContent(meta: AiChatMetadata): AiChatMetadata {
   let { queuedSteers: _queuedSteers, ...rest } = meta;
   return rest;
 }
 
-/** A copy of `commit` as an AdminWorkspaceView lists it: `message` emptied. */
+/** Whether `meta` holds what withholdChatContent() drops: a queued steer. */
+export function chatHoldsContent(meta: AiChatMetadata): boolean {
+  return (meta.queuedSteers?.length ?? 0) > 0;
+}
+
+/** A copy of `state` as a call without a grant reports it: each queued call without its
+ * `argsSummary`. */
+export function withholdChatStateContent(state: AdminChatState): AdminChatState {
+  return {
+    ...state,
+    queuedCalls: state.queuedCalls.map(({ argsSummary: _argsSummary, ...call }) => call),
+  };
+}
+
+/** Whether `state` holds what withholdChatStateContent() drops: a queued call's argument
+ * summary. */
+export function chatStateHoldsContent(state: AdminChatState): boolean {
+  return state.queuedCalls.some(call => (call.argsSummary ?? "") !== "");
+}
+
+/** A copy of `commit` as a call without a grant lists it: `message` emptied. */
 export function withholdCommitContent(commit: CommitInfo): CommitInfo {
   return { ...commit, message: "" };
 }
 
-/** A copy of `entry` as an AdminWorkspaceView lists it: `description.description` emptied for an
+/** Whether `commit` holds what withholdCommitContent() empties: a message. */
+export function commitHoldsContent(commit: CommitInfo): boolean {
+  return commit.message !== "";
+}
+
+/** A copy of `entry` as a call without a grant lists it: `description.description` emptied for an
  * action, observation or hook entry, and `description.fields` dropped; never mutates `entry`. */
 export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
   switch (entry.type) {
@@ -397,24 +516,63 @@ export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
   }
 }
 
-/** A copy of `hook` as an AdminWorkspaceView lists it: `description.description` emptied. */
+/** Whether `entry` holds what withholdActionContent() withholds: a description, or a field. */
+export function actionHoldsContent(entry: ActionLogEntry): boolean {
+  return entry.description.description !== "" ||
+      (entry.type !== "bindHook" && (entry.description.fields?.length ?? 0) > 0);
+}
+
+/** A copy of `hook` as a call without a grant lists it: `description.description` emptied. */
 export function withholdHookContent(hook: BoundHookInfo): BoundHookInfo {
   return { ...hook, description: { ...hook.description, description: "" } };
 }
 
-/** A copy of `spec` as an AdminWorkspaceView lists it: without `configuration`, which is text the
- * agent that created the resource wrote. */
+/** Whether `hook` holds what withholdHookContent() empties: a description. */
+export function hookHoldsContent(hook: BoundHookInfo): boolean {
+  return hook.description.description !== "";
+}
+
+/** A copy of `spec` as a call without a grant lists it: without `configuration`, which is text
+ * the agent that created the resource wrote. */
 export function withholdCreationContent(spec: GatekeeperCreationSpec): GatekeeperCreationSpec {
   if (spec.type !== "gatekeeper") return spec;
   let { configuration: _configuration, ...rest } = spec;
   return rest;
 }
 
-/** A copy of `blueprint` as an AdminWorkspaceView lists it: `id` emptied, and `screenshotUrl`,
+/** Whether `spec` holds what withholdCreationContent() drops: a configuration. */
+export function creationHoldsContent(spec: GatekeeperCreationSpec): boolean {
+  return spec.type === "gatekeeper" && (spec.configuration ?? "") !== "";
+}
+
+/** Whether `summary` holds what describe() leaves out without a grant: the blueprint a gadget
+ * follows (`upstream: {}` marks a gadget built from scratch, which follows none). */
+export function workpieceHoldsContent(summary: WorkpieceSummary): boolean {
+  return summary.type === "gadget" && summary.upstream?.blueprintId !== undefined;
+}
+
+/** A copy of `blueprint` as a call without a grant lists it: `id` emptied, and `screenshotUrl`,
  * which holds the id, left out. A blueprint's id is a share link to its code, which is why
- * describe() leaves a gadget's `upstream` out too. */
+ * describe() leaves a gadget's `upstream` out without a grant too. */
 export function withholdBlueprintContent(blueprint: BlueprintGadgetSummary)
     : BlueprintGadgetSummary {
   let { screenshotUrl: _screenshotUrl, ...rest } = blueprint;
   return { ...rest, id: "" };
+}
+
+/** Whether `blueprint` holds what withholdBlueprintContent() empties: an id. */
+export function blueprintHoldsContent(blueprint: BlueprintGadgetSummary): boolean {
+  return blueprint.id !== "";
+}
+
+/** Whether `page` holds what getChat() reads: a message, or a compaction summary. */
+export function chatPageHoldsContent(page: AiChatHistoryPage): boolean {
+  return page.messages.length > 0 || page.compacted !== undefined;
+}
+
+/** Whether `file` holds what a file read (readFile(), readFileAtCommit(), readPendingFile())
+ * reads: any file found at the path, an unreadable one too, since its message can quote the file
+ * (a symlink's quotes its target). */
+export function fileHoldsContent(file: AdminFileContent): boolean {
+  return file.kind !== "absent";
 }

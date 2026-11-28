@@ -65,6 +65,16 @@ pnpm cf-os api open-workspace <id> merge-changes <chatId>
 
 If `--timeout` runs out, the turn keeps going: wait again, or `stop-agent <chatId>`.
 
+## An admin's read of content
+
+An admin reads a workspace's content through a view opened for content, and only while a grant is
+live for that workspace. `--out <file>` saves a file the answer streams:
+
+```sh
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' get-chat <chatId>
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' read-file <gadgetId> <path> --out <file>
+```
+
 ## Gatekeeper app UIs, and what needs a browser
 
 `get-gatekeeper-app <vendor> ui` continues with the typed commands of the interface the gatekeeper
@@ -98,7 +108,8 @@ declared type before anything is sent. Put `--` before a value that reads as an 
 Results are JSON on stdout: bigints as strings, bytes as `{"base64": "..."}`, dates as ISO strings.
 Messages go to stderr. A `subscribe-*` command prints one JSON line per event until `--timeout`,
 Ctrl-C or its reader closes; pair a pipe to `head` with `--timeout`. Byte streams go to
-`--out <file|->`.
+`--out <file|->`. `--out <file>` also saves the byte stream a JSON result holds inside it, printed as
+`{"$stream": true}`, and fails with exit 1 when the result holds more than one.
 
 | Code | Means |
 | --- | --- |

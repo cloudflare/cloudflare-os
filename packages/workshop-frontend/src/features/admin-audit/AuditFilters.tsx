@@ -1,11 +1,14 @@
 import { useRef, useState } from 'react'
-import { Button, Combobox, Select } from '@cloudflare/kumo'
+import { Button, Checkbox, Combobox, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
-import type { AdminAuditKind } from '@gadgets/workshop-shared/api'
+import type { AdminAccessExposure, AdminAuditKind } from '@gadgets/workshop-shared/api'
 import {
+  AUDIT_EXPOSURES,
   AUDIT_KINDS,
   AUDIT_METHOD_GROUPS,
   isFiltered,
+  withPendingRequests,
+  withoutUnmatchedPending,
   type AuditFilter,
   type AuditMethod,
 } from './auditFilter'
@@ -20,20 +23,36 @@ const ACTION_GROUPS: ActionGroup[] =
 const ANY_KIND = 'any'
 type KindChoice = AdminAuditKind | typeof ANY_KIND
 
+const ANY_EXPOSURE = 'any'
+type ExposureChoice = AdminAccessExposure | typeof ANY_EXPOSURE
+const EXPOSURE_CHOICE_NAMES: Record<ExposureChoice, string> = {
+  [ANY_EXPOSURE]: 'Anything',
+  content: 'Content reads',
+  metadata: 'Metadata only',
+}
+
 /**
  * The Audit tab's filters. The admin and the target user (the owner of a workspace an admin called
  * into, or the user whose account one inspected) are typed, with `adminSuggestions` and
  * `targetSuggestions` offered, and apply on Enter or once a suggestion is picked. The action is
- * searched by typing, and the kind chosen; both apply at once. The workspace filter is set
- * from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
- * it.
+ * searched by typing, and the kind and what a call exposed chosen; all three apply at once. Only a
+ * call into a workspace can expose content, and a call into a user's account always exposed
+ * metadata, so a choice of what was exposed lists access records alone. "Pending requests only"
+ * lists the requests to read a workspace's content that an admin can still approve or deny, and is
+ * offered when `offerPending` says requests can be made, or while it is set. The
+ * workspace filter is set from a record's details in the log, and shows as a chip named
+ * `workspaceLabel` that removes it.
  */
-export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, workspaceLabel, onFilterChange }: {
+export const AuditFilters = ({
+  filter, adminSuggestions, targetSuggestions, workspaceLabel, offerPending, onFilterChange,
+}: {
   filter: AuditFilter
   adminSuggestions: string[]
   targetSuggestions: string[]
   /** What to call the filtered workspace: its title, or its id when no title is known. */
   workspaceLabel: string | undefined
+  /** Whether content access can be requested and approved: the level in force is Content. */
+  offerPending: boolean
   onFilterChange: (filter: AuditFilter) => void
 }) => {
   // Kumo's Autocomplete hands out no ref to its input, so it is found through this wrapper: the
@@ -43,12 +62,13 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
   // How many times every filter was cleared: text typed in the admin and owner fields and not
   // applied is cleared with them.
   const [clears, setClears] = useState(0)
+  const showPending = offerPending || filter.pending === true
   const focusAdminField = () =>
     adminField.current?.querySelector<HTMLInputElement>('[role="combobox"]')?.focus()
 
   return (
-    <div className="space-y-3">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="search" aria-label="Filter admin activity">
+    <div className="space-y-3" role="search" aria-label="Filter admin activity">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div ref={adminField} data-filter-field="admin">
           <TypedFilterField
             label="Admin"
@@ -63,7 +83,8 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
           label="Action"
           items={ACTION_GROUPS}
           value={filter.method ?? null}
-          onValueChange={(method) => onFilterChange({ ...filter, method: (method as AuditMethod | null) ?? undefined })}
+          onValueChange={(method) =>
+            onFilterChange(withoutUnmatchedPending({ ...filter, method: (method as AuditMethod | null) ?? undefined }))}
         >
           <Combobox.TriggerInput placeholder="Search actions…" clearLabel="Any action" />
           <Combobox.Content>
@@ -90,13 +111,28 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
           value={filter.kind ?? ANY_KIND}
           onValueChange={(kind) => {
             if (kind === null) return
-            onFilterChange({ ...filter, kind: kind === ANY_KIND ? undefined : kind })
+            onFilterChange(withoutUnmatchedPending({ ...filter, kind: kind === ANY_KIND ? undefined : kind }))
           }}
           renderValue={(kind) => kind === ANY_KIND ? 'Any kind' : KIND_NAMES[kind]}
         >
           <Select.Option value={ANY_KIND}>Any kind</Select.Option>
           {AUDIT_KINDS.map((kind) => (
             <Select.Option key={kind} value={kind}>{KIND_NAMES[kind]}</Select.Option>
+          ))}
+        </Select>
+        <Select<ExposureChoice>
+          label="Exposed"
+          className="w-full"
+          value={filter.exposed ?? ANY_EXPOSURE}
+          onValueChange={(exposed) => {
+            if (exposed === null) return
+            onFilterChange(withoutUnmatchedPending({ ...filter, exposed: exposed === ANY_EXPOSURE ? undefined : exposed }))
+          }}
+          renderValue={(exposed) => EXPOSURE_CHOICE_NAMES[exposed]}
+        >
+          <Select.Option value={ANY_EXPOSURE}>{EXPOSURE_CHOICE_NAMES[ANY_EXPOSURE]}</Select.Option>
+          {AUDIT_EXPOSURES.map((exposed) => (
+            <Select.Option key={exposed} value={exposed}>{EXPOSURE_CHOICE_NAMES[exposed]}</Select.Option>
           ))}
         </Select>
         <div data-filter-field="owner">
@@ -110,8 +146,22 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
           />
         </div>
       </div>
-      {isFiltered(filter) && (
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Below the fields, which keep their width, with the chips that remove filters. */}
+      {(showPending || isFiltered(filter)) && (
+        <div className="flex min-h-8 flex-wrap items-center gap-x-4 gap-y-2">
+          {showPending && (
+            <div data-filter-field="pending">
+              <Checkbox
+                label="Pending requests only"
+                checked={filter.pending === true}
+                onCheckedChange={(checked) => {
+                  onFilterChange(checked ? withPendingRequests(filter) : { ...filter, pending: undefined })
+                  // Below Content the box shows only while it is checked: unchecking it removes it.
+                  if (!checked && !offerPending) focusAdminField()
+                }}
+              />
+            </div>
+          )}
           {filter.workspace !== undefined && (
             <Button
               variant="secondary"
@@ -126,18 +176,20 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
               <span className="max-w-64 truncate">Workspace: {workspaceLabel ?? filter.workspace}</span>
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={X}
-            onClick={() => {
-              setClears((n) => n + 1)
-              onFilterChange({})
-              focusAdminField()
-            }}
-          >
-            Clear filters
-          </Button>
+          {isFiltered(filter) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={X}
+              onClick={() => {
+                setClears((n) => n + 1)
+                onFilterChange({})
+                focusAdminField()
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
         </div>
       )}
     </div>

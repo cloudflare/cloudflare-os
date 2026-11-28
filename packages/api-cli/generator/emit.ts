@@ -713,13 +713,46 @@ function buildReturn(schema: Schema, where: string, method: SchemaMethod, args: 
     return { kind: "stub", node: type.service, nullable };
   }
   if (type.kind === "readableStream") return { kind: "stream" };
-  // Bytes, or bytes or null, which `--out` writes decoded: decided here, as the runtime reads no type text.
+  // Bytes, or bytes or null, which `--out` writes decoded, and a byte stream held inside the result,
+  // which `--out` saves: decided here, as the runtime reads no type text.
   const { branches } = present(schema, method.returns);
   const bytes = branches.length === 1 && branches[0]!.kind === "bytes";
   return {
     kind: "value", type: spelledTypeText(schema, method.returns), ...bytes ? { bytes: true } : {},
+    ...holdsStream(schema, method.returns) ? { stream: true } : {},
     ...capabilityProperties(schema, where, type),
   };
+}
+
+/**
+ * Whether a value of the type `shape` may hold a `ReadableStream`, at any depth: through objects,
+ * unions, collections and named types, each named type walked once (`seen`), so a recursive one ends.
+ */
+function holdsStream(schema: Schema, shape: ApiShape, seen = new Set<string>()): boolean {
+  const holds = (inner: ApiShape) => holdsStream(schema, inner, seen);
+  switch (shape.kind) {
+    case "readableStream":
+      return true;
+    case "ref": {
+      if (seen.has(shape.name)) return false;
+      seen.add(shape.name);
+      const named = schema.shapes[shape.name];
+      if (!named) throw new Error(`no shape ${shape.name}`);
+      return holds(named);
+    }
+    case "object":
+      return [...Object.values(shape.properties), ...shape.index ? [shape.index] : []].some(holds);
+    case "union":
+      return shape.branches.some(holds);
+    case "array": case "set":
+      return holds(shape.element);
+    case "tuple":
+      return [...shape.elements, ...shape.rest ? [shape.rest] : []].some(holds);
+    case "map":
+      return holds(shape.key) || holds(shape.value);
+    default:
+      return false;
+  }
 }
 
 /** `shape`'s branches but `null` and `undefined`, dereferenced, and whether it had any of those. */

@@ -417,9 +417,10 @@ function applyBackend(
   config.vars = { ...config.vars, PUBLIC_BASE_URL: baseUrl };
   config.previews = {
     observability: previewObservability(config),
-    // Writes on, so that they can be tried on a preview (docs/admin-access.md), but only there:
-    // the top-level vars are also the shared baseline's (see deployBaselineWorker() in preview.ts).
-    vars: { ...config.vars, ADMIN_WORKSPACE_WRITES: "on" },
+    // Writes on, and the bound at its most, so that writes, grants and content reads can be tried
+    // on a preview (docs/admin-access.md), but only there: the top-level vars are also the shared
+    // baseline's (see deployBaselineWorker() in preview.ts).
+    vars: { ...config.vars, ADMIN_WORKSPACE_WRITES: "on", ADMIN_WORKSPACE_ACCESS_MAX: "content" },
     ...(config.unsafe ? { unsafe: config.unsafe } : {}),
     // preview.ts patches each entry's preview_id once the gatekeeper previews exist.
     services: backendGatekeeperServices(gatekeepers, baseUrl),

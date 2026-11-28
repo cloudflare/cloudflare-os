@@ -142,6 +142,17 @@ test("--out is refused before connecting unless the chain ends on bytes: a strea
   assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "--out", "x"]).end, { kind: "node", node: "Notebook" });
 });
 
+test("--out takes a file for a value that holds a byte stream, and never stdout, where the value is printed", () => {
+  assert.equal(parseInvocation(table, ["export-note", "n", "--out", "note.bin"]).flags.out, "note.bin");
+  assert.equal(parseInvocation(table, ["export-notes", '["a", "b"]', "--out", "notes.bin"]).flags.out, "notes.bin");
+  assert.equal(parseInvocation(table, ["export-note", "n"]).flags.out, undefined);
+  usage(["export-note", "n", "--out", "-"],
+    /^export-note --out -: the result is printed on stdout, so its bytes need a file \(--out <file>\)\.$/);
+  usage(["export-notes", "[]", "--out=-"], /^export-notes --out -: the result is printed on stdout/);
+  // A value that holds none has nothing for --out to write, whatever it names.
+  usage(["find-notes", "q", "--out", "-"], /^find-notes returns a value, not bytes: --out applies only to a command that returns bytes\.$/);
+});
+
 function usage(tokens: string[], message: RegExp): void {
   assert.throws(() => parseInvocation(table, tokens), (error: Error) => error instanceof UsageError && message.test(error.message));
 }
@@ -293,6 +304,9 @@ test("help lists a capability's commands and a command's arguments, events and r
   assert.match(commandHelp(table, "Notebook", "move", ["move"]), /\n {2}--destination <json\|@file\|->  [^\n]*\n {32}Destination: Where a note is filed\.\n/);
   assert.match(flat(commandHelp(realTable, realTable.root, "get-avatar", ["get-avatar"])),
     /Returns Uint8Array \| null: bytes, printed as \{"base64": "\.\.\."\} JSON, or written decoded to --out <file\|->\./);
+  assert.match(flat(commandHelp(table, "FixtureAuthedApi", "export-note", ["export-note"])),
+    /Returns NoteExport = \{ kind: "text"; text: string \} \| \{ [^}]*content: ReadableStream[^}]* \}, printed as JSON; a byte stream inside it is written to --out <file>\./);
+  assert.match(flat(root), /--out <file\|-> where returned bytes go: [^]*; <file> also saves the byte stream a JSON result holds inside it/);
   const findNotes = commandHelp(table, "FixtureAuthedApi", "find-notes", ["find-notes"]);
   assert.match(findNotes, /\[--limit <number>\] \[--arg-url <string>\]/);
   // A plain string argument is taken as typed, which its command's help says, and how to read a file instead.
@@ -400,6 +414,9 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   assert.equal(searchCommands(realTable, "create a blueprint")[0].command, "cf-os api open-workspace <id> get-gadget <id> create-blueprint");
   assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace")
     .some((match) => match.command === "cf-os api open-workspace <id> new-gatekeeper <accountId> <resourceUrl>"));
+  // Reading is one word with the API's `get`, "read" finding get-chat-history, and a command named `read` still comes first.
+  assert.equal(searchCommands(realTable, "read chat history")[0].command, "cf-os api open-workspace <id> get-chat-history <chatId>");
+  assert.equal(searchCommands(realTable, "read a blob")[0].command, "cf-os api open-workspace <id> read-blob <oid>");
   // A capability's CamelCase name is words: "client" meets GadgetClient's commands.
   assert.ok(searchCommands(realTable, "gadget client title").some((match) => match.command.endsWith(" get-gadget <id> get-title")));
   // Summaries are whole first sentences, not cut for a listing or at "e.g.".
@@ -504,6 +521,15 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["share key", openWorkspace, 3],
     // An admin's write to a workspace.
     ["write to a workspace", / write-workspace </, 1],
+    // A grant for admins to read content: the account-wide one, one workspace's, and an admin ending an approval's.
+    ["give admins access", /^cf-os api grant-account-admin-access$/, 1],
+    ["give admins access", /^cf-os api open-workspace <id> grant-admin-access$/, 3],
+    ["end a grant", / end-workspace-grant <workspaceId> <grantId> <reason>$/, 1],
+    // An admin's request to read a workspace's content without its owner, and its approval.
+    ["ask to read a workspace's content", / request-content-access <workspaceId> <reason>$/, 1],
+    ["approve a content access request", / approve-content-access <requestId>$/, 1],
+    // An admin's read of a chat is the view's get-chat, which no word of the task names but "chat".
+    ["read a chat as admin", / inspect-workspace <workspaceId> <reason> get-chat <chatId>$/, 3],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);
@@ -796,17 +822,49 @@ test("an unknown command or option says which was meant: a near name, or where t
   real(["list-worksapces"], /Did you mean list-workspaces\? /);
 });
 
-test("an admin's view of a workspace has seventeen commands, and none reads content", () => {
+test("an admin's view of a workspace has twenty-two commands, five of which read content", () => {
   assert.deepEqual(Object.keys(realTable.nodes.AdminWorkspaceView.commands).toSorted(), [
-    "describe", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions", "list-auto-approvals",
-    "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats", "list-files",
-    "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
-    "list-pending-changes", "list-share-links",
+    "describe", "get-chat", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions",
+    "list-auto-approvals", "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats",
+    "list-files", "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
+    "list-pending-changes", "list-share-links", "read-chat-attachment", "read-file", "read-file-at-commit",
+    "read-pending-file",
   ]);
-  for (const name of ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]) {
-    assert.throws(() => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", name]),
-      (error: Error) => error instanceof UsageError && error.message.startsWith(`AdminWorkspaceView has no command "${name}"`));
+  const view = (...tokens: string[]) =>
+    names(parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", ...tokens]).hops);
+  for (const [name, ...args] of [
+    ["get-chat", "1"], ["read-chat-attachment", "1", "a"], ["read-file", "1", "p"], ["read-file-at-commit", "c", "p"],
+    ["read-pending-file", "1", "1", "p"],
+  ]) {
+    assert.deepEqual(view(name, ...args), ["get-admin-api", "inspect-workspace", name]);
   }
+  // The optional parameter is a flag.
+  assert.deepEqual(view("get-chat", "1", "--before-sequence", "5"), ["get-admin-api", "inspect-workspace", "get-chat"]);
+  // A file read answers with an object that holds a stream, and an attachment read with a stream.
+  const { commands } = realTable.nodes.AdminWorkspaceView;
+  assert.equal(commands["read-chat-attachment"]!.returns.kind, "stream");
+  for (const name of ["read-file", "read-file-at-commit", "read-pending-file"]) {
+    const { returns } = commands[name]!;
+    assert.ok(returns.kind === "value" && returns.stream === true && returns.type.startsWith("AdminFileContent = "), name);
+  }
+  // So --out names a file for a file read, whose JSON is what stdout holds, and a file or stdout for an attachment.
+  const out = (...tokens: string[]) => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", ...tokens]).flags.out;
+  for (const [name, ...args] of [["read-file", "1", "p"], ["read-file-at-commit", "c", "p"], ["read-pending-file", "1", "1", "p"]]) {
+    assert.equal(out(name, ...args, "--out", "p.bin"), "p.bin", name);
+    assert.throws(() => out(name, ...args, "--out", "-"), (error: Error) => error instanceof UsageError &&
+      error.message === `${name} --out -: the result is printed on stdout, so its bytes need a file (--out <file>).`, name);
+  }
+  assert.equal(out("read-chat-attachment", "1", "a", "--out", "-"), "-");
+  assert.throws(() => out("get-chat", "1", "--out", "chat.json"), (error: Error) => error instanceof UsageError &&
+    error.message === "get-chat returns a value, not bytes: --out applies only to a command that returns bytes.");
+});
+
+test("help shows an inspection's access as an option, and where a file read's bytes go", () => {
+  const inspect = flat(commandHelp(realTable, "AdminApi", "inspect-workspace", ["get-admin-api", "inspect-workspace"]));
+  assert.match(inspect, /^Usage: cf-os api get-admin-api inspect-workspace <workspaceId> <reason> \[--options <json\|@file\|->\] /);
+  assert.match(inspect, /--options <json\|@file\|-> AdminWorkspaceInspectOptions = \{ access\?: AdminViewAccess; lifetimeSeconds\?: number \}/);
+  const file = flat(commandHelp(realTable, "AdminWorkspaceView", "read-file", ["get-admin-api", "inspect-workspace", "w", "why", "read-file"]));
+  assert.match(file, /Returns AdminFileContent = .*, printed as JSON; a byte stream inside it is written to --out <file>\./);
 });
 
 test("the root help says what `--` does, and that an option after it is a value", () => {
